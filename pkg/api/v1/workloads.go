@@ -14,7 +14,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
-	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
@@ -26,7 +25,6 @@ type WorkloadRoutes struct {
 	containerRuntime runtime.Runtime
 	debugMode        bool
 	groupManager     groups.Manager
-	secretsProvider  secrets.Provider
 	workloadService  *WorkloadService
 }
 
@@ -41,13 +39,11 @@ func WorkloadRouter(
 	workloadManager workloads.Manager,
 	containerRuntime runtime.Runtime,
 	groupManager groups.Manager,
-	secretsProvider secrets.Provider,
 	debugMode bool,
 ) http.Handler {
 	workloadService := NewWorkloadService(
 		workloadManager,
 		groupManager,
-		secretsProvider,
 		containerRuntime,
 		debugMode,
 	)
@@ -57,7 +53,6 @@ func WorkloadRouter(
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
 		groupManager:     groupManager,
-		secretsProvider:  secretsProvider,
 		workloadService:  workloadService,
 	}
 

@@ -12,26 +12,6 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 )
 
-// fakeDockerAPI provides a minimal test double for dockerAPI used by Client.
-type fakeDockerAPI struct {
-	listFunc    func(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
-	inspectFunc func(ctx context.Context, id string) (container.InspectResponse, error)
-}
-
-func (f *fakeDockerAPI) ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
-	if f.listFunc != nil {
-		return f.listFunc(ctx, options)
-	}
-	return nil, nil
-}
-
-func (f *fakeDockerAPI) ContainerInspect(ctx context.Context, id string) (container.InspectResponse, error) {
-	if f.inspectFunc != nil {
-		return f.inspectFunc(ctx, id)
-	}
-	return container.InspectResponse{}, nil
-}
-
 func TestListWorkloads_FiltersAuxiliaryAndMapsFields(t *testing.T) {
 	t.Parallel()
 

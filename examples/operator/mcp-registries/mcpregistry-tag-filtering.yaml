@@ -1,0 +1,285 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tag-filtering-registry-data
+  namespace: toolhive-system
+data:
+  registry.json: |
+    {
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+      "version": "1.0.0",
+      "last_updated": "2025-09-08T12:00:00Z",
+      "servers": {
+        "secure-vault": {
+          "description": "Secure secrets management and encryption server",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "store_secret",
+            "retrieve_secret",
+            "encrypt_data",
+            "decrypt_data"
+          ],
+          "metadata": {
+            "stars": 3200,
+            "pulls": 75000,
+            "last_updated": "2025-09-08T12:00:00Z"
+          },
+          "repository_url": "https://github.com/vault/secure-mcp-server",
+          "tags": [
+            "security",
+            "encryption",
+            "secrets",
+            "production",
+            "compliance"
+          ],
+          "image": "vault/secure-mcp:4.1.0",
+          "permissions": {
+            "network": {
+              "outbound": {
+                "allow_host": [
+                  ".vault.io"
+                ],
+                "allow_port": [
+                  443
+                ]
+              }
+            }
+          }
+        },
+        "auth-service": {
+          "description": "Authentication and authorization service",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "streamable-http",
+          "tools": [
+            "authenticate_user",
+            "authorize_action",
+            "manage_permissions",
+            "create_token"
+          ],
+          "metadata": {
+            "stars": 2800,
+            "pulls": 60000,
+            "last_updated": "2025-09-07T12:00:00Z"
+          },
+          "repository_url": "https://github.com/auth/service-mcp-server",
+          "tags": [
+            "security",
+            "authentication",
+            "authorization",
+            "production",
+            "identity"
+          ],
+          "image": "auth/service-mcp:3.5.0",
+          "target_port": 9000,
+          "permissions": {
+            "network": {
+              "outbound": {
+                "insecure_allow_all": true
+              }
+            }
+          }
+        },
+        "compliance-scanner": {
+          "description": "Security compliance and vulnerability scanning",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "scan_vulnerabilities",
+            "check_compliance",
+            "generate_report",
+            "remediate_issue"
+          ],
+          "metadata": {
+            "stars": 1500,
+            "pulls": 15000,
+            "last_updated": "2025-09-06T12:00:00Z"
+          },
+          "repository_url": "https://github.com/security/compliance-mcp-server",
+          "tags": [
+            "security",
+            "compliance",
+            "scanning",
+            "vulnerability",
+            "production"
+          ],
+          "image": "security/compliance-mcp:2.8.0",
+          "permissions": {
+            "network": {
+              "outbound": {
+                "insecure_allow_all": true
+              }
+            }
+          }
+        },
+        "file-sync": {
+          "description": "File synchronization and backup service",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "sync_files",
+            "backup_directory",
+            "restore_backup",
+            "compare_files"
+          ],
+          "metadata": {
+            "stars": 800,
+            "pulls": 5000,
+            "last_updated": "2025-09-04T12:00:00Z"
+          },
+          "repository_url": "https://github.com/files/sync-mcp-server",
+          "tags": [
+            "files",
+            "backup",
+            "sync",
+            "storage",
+            "utility"
+          ],
+          "image": "files/sync-mcp:1.9.0",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        },
+        "log-analyzer": {
+          "description": "Log analysis and pattern detection service",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "parse_logs",
+            "detect_patterns",
+            "create_alert",
+            "export_analysis"
+          ],
+          "metadata": {
+            "stars": 650,
+            "pulls": 3500,
+            "last_updated": "2025-09-03T12:00:00Z"
+          },
+          "repository_url": "https://github.com/logs/analyzer-mcp-server",
+          "tags": [
+            "logs",
+            "analysis",
+            "monitoring",
+            "patterns",
+            "utility"
+          ],
+          "image": "logs/analyzer-mcp:2.2.0",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        },
+        "ml-inference": {
+          "description": "Machine learning model inference server",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "streamable-http",
+          "tools": [
+            "run_inference",
+            "load_model",
+            "validate_input",
+            "get_predictions"
+          ],
+          "metadata": {
+            "stars": 1200,
+            "pulls": 8000,
+            "last_updated": "2025-09-05T12:00:00Z"
+          },
+          "repository_url": "https://github.com/ml/inference-mcp-server",
+          "tags": [
+            "machine-learning",
+            "ai",
+            "inference",
+            "models",
+            "experimental"
+          ],
+          "image": "ml/inference-mcp:1.4.0",
+          "target_port": 8888,
+          "permissions": {
+            "network": {
+              "outbound": {
+                "insecure_allow_all": true
+              }
+            }
+          }
+        }
+      }
+    }
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: security-tools-registry
+  namespace: toolhive-system
+spec:
+  displayName: "Security & Compliance Tools"
+  source:
+    type: configmap
+    format: toolhive
+    configmap:
+      name: tag-filtering-registry-data
+      key: registry.json
+  syncPolicy:
+    interval: "20m"
+  filter:
+    tags:
+      include:
+        - "security"      # Security-related tools
+        - "compliance"    # Compliance tools
+        - "encryption"    # Encryption services
+      exclude:
+        - "experimental"  # No experimental security tools
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: utility-tools-registry
+  namespace: toolhive-system
+spec:
+  displayName: "Utility & Support Tools"
+  source:
+    type: configmap
+    format: toolhive
+    configmap:
+      name: tag-filtering-registry-data
+      key: registry.json
+  filter:
+    tags:
+      include:
+        - "utility"       # Utility tools
+        - "backup"        # Backup services
+        - "monitoring"    # Monitoring tools
+        - "analysis"      # Analysis tools
+      exclude:
+        - "security"      # Exclude security tools (handled by other registry)
+        - "experimental"  # No experimental utilities
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: ai-ml-registry
+  namespace: toolhive-system
+spec:
+  displayName: "AI & Machine Learning Tools"
+  source:
+    type: configmap
+    format: toolhive
+    configmap:
+      name: tag-filtering-registry-data
+      key: registry.json
+  filter:
+    tags:
+      include:
+        - "ai"               # AI tools
+        - "machine-learning" # ML tools
+        - "inference"        # Inference engines
+        - "models"           # Model management
+      # Note: No exclude filters - include all AI/ML tools even if experimental

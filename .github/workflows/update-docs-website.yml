@@ -14,7 +14,8 @@ on:
         required: true
 
 jobs:
-  trigger:
+  trigger-docs-update:
+    name: Trigger Documentation Update
     runs-on: ubuntu-latest
 
     steps:

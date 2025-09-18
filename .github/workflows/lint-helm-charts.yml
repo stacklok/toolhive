@@ -7,7 +7,8 @@ on:
   workflow_call:
 
 jobs:
-  lint:
+  lint-helm-charts:
+    name: Lint Helm Charts
     runs-on: ubuntu-latest
     env:
       GO111MODULE: on

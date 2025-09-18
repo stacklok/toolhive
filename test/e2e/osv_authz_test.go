@@ -17,7 +17,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("OSV MCP Server with Authorization", Serial, func() {
+var _ = Describe("OSV MCP Server with Authorization", Label("middleware", "authz", "sse", "e2e"), Serial, func() {
 	var config *e2e.TestConfig
 
 	BeforeEach(func() {

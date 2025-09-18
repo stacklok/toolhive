@@ -3,7 +3,8 @@ on:
   workflow_call:
 
 jobs:
-  release:
+  release-helm-charts:
+    name: Release Helm Charts
     runs-on: ubuntu-latest
 
     permissions:
@@ -42,7 +43,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+        uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
 
       - name: Publish and Sign OCI Charts
         run: |
@@ -76,14 +77,14 @@ jobs:
           json_array="${json_array}]"
           echo "published_charts_matrix=${json_array}" >> $GITHUB_OUTPUT
 
-  update-docs-website:
-    name: Trigger Docs Update
-    needs: [ release ]
+  update-docs-website-charts:
+    name: Trigger Docs Update for Charts
+    needs: [ release-helm-charts ]
     permissions: {}
     uses: ./.github/workflows/update-docs-website.yml
     strategy:
       matrix:
-        version: ${{ fromJSON(needs.release.outputs.released_charts) }}
+        version: ${{ fromJSON(needs.release-helm-charts.outputs.released_charts) }}
     with:
       version: ${{ matrix.version }}
     secrets:

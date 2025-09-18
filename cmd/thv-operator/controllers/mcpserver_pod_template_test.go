@@ -354,6 +354,46 @@ func TestDeploymentForMCPServerWithEnvVars(t *testing.T) {
 	assert.True(t, debugModeArgFound, "DEBUG_MODE should be passed as --env flag")
 }
 
+func TestDeploymentForMCPServerWithProxyMode(t *testing.T) {
+	t.Parallel()
+
+	// Create a test MCPServer with ProxyMode
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-proxy-mode",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "stdio",
+			Port:      8080,
+			ProxyMode: "streamable-http",
+		},
+	}
+
+	// Create a reconciler
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
+	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServer{})
+	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
+	r := &MCPServerReconciler{Scheme: s}
+
+	// Generate deployment and check for --proxy-mode flag
+	deployment := r.deploymentForMCPServer(context.Background(), mcpServer)
+	require.NotNil(t, deployment)
+
+	// Verify --proxy-mode flag is present
+	container := deployment.Spec.Template.Spec.Containers[0]
+	found := false
+	for _, arg := range container.Args {
+		if arg == "--proxy-mode=streamable-http" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "--proxy-mode=streamable-http flag should be present in container args")
+}
+
 func TestProxyRunnerSecurityContext(t *testing.T) {
 	t.Parallel()
 

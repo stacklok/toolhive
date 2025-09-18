@@ -1,0 +1,282 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: advanced-filtering-registry-data
+  namespace: toolhive-system
+data:
+  registry.json: |
+    {
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+      "version": "1.0.0",
+      "last_updated": "2025-09-08T12:00:00Z",
+      "servers": {
+        "prod-postgres": {
+          "description": "Production PostgreSQL database server",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "sse",
+          "tools": [
+            "execute_sql",
+            "backup_database",
+            "analyze_performance"
+          ],
+          "metadata": {
+            "stars": 2500,
+            "pulls": 45000,
+            "last_updated": "2025-09-08T12:00:00Z"
+          },
+          "repository_url": "https://github.com/postgres/prod-mcp-server",
+          "tags": [
+            "database",
+            "postgresql",
+            "production",
+            "sql"
+          ],
+          "image": "postgres/prod-mcp:3.0.0",
+          "target_port": 8000,
+          "permissions": {
+            "network": {
+              "outbound": {
+                "insecure_allow_all": true
+              }
+            }
+          }
+        },
+        "dev-postgres": {
+          "description": "Development PostgreSQL database server with debugging features",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "execute_sql",
+            "debug_queries",
+            "mock_data"
+          ],
+          "metadata": {
+            "stars": 800,
+            "pulls": 5000,
+            "last_updated": "2025-09-05T12:00:00Z"
+          },
+          "repository_url": "https://github.com/postgres/dev-mcp-server",
+          "tags": [
+            "database",
+            "postgresql",
+            "development",
+            "debugging"
+          ],
+          "image": "postgres/dev-mcp:2.5.0",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        },
+        "test-mongodb": {
+          "description": "MongoDB server for testing and integration tests",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "insert_document",
+            "query_collection",
+            "create_index"
+          ],
+          "metadata": {
+            "stars": 400,
+            "pulls": 2000,
+            "last_updated": "2025-09-03T12:00:00Z"
+          },
+          "repository_url": "https://github.com/mongodb/test-mcp-server",
+          "tags": [
+            "database",
+            "mongodb",
+            "testing",
+            "nosql"
+          ],
+          "image": "mongodb/test-mcp:1.8.0",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        },
+        "experimental-graphql": {
+          "description": "Experimental GraphQL API server with advanced features",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "streamable-http",
+          "tools": [
+            "execute_query",
+            "introspect_schema",
+            "validate_mutation"
+          ],
+          "metadata": {
+            "stars": 150,
+            "pulls": 300,
+            "last_updated": "2025-08-20T12:00:00Z"
+          },
+          "repository_url": "https://github.com/graphql/experimental-mcp",
+          "tags": [
+            "api",
+            "graphql",
+            "experimental",
+            "web"
+          ],
+          "image": "graphql/experimental-mcp:0.9.0-alpha",
+          "target_port": 4000,
+          "permissions": {
+            "network": {
+              "outbound": {
+                "insecure_allow_all": true
+              }
+            }
+          }
+        },
+        "legacy-soap-api": {
+          "description": "Legacy SOAP API server - scheduled for deprecation",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "streamable-http",
+          "tools": [
+            "call_soap_service",
+            "parse_wsdl"
+          ],
+          "metadata": {
+            "stars": 20,
+            "pulls": 50,
+            "last_updated": "2024-03-01T12:00:00Z"
+          },
+          "repository_url": "https://github.com/legacy/soap-mcp-server",
+          "tags": [
+            "api",
+            "soap",
+            "legacy",
+            "deprecated"
+          ],
+          "image": "legacy/soap-mcp:1.0.0",
+          "target_port": 8080,
+          "permissions": {
+            "network": {
+              "outbound": {
+                "insecure_allow_all": true
+              }
+            }
+          }
+        },
+        "monitoring-metrics": {
+          "description": "Application monitoring and metrics collection server",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "collect_metrics",
+            "create_alert",
+            "generate_dashboard"
+          ],
+          "metadata": {
+            "stars": 1200,
+            "pulls": 8000,
+            "last_updated": "2025-09-07T12:00:00Z"
+          },
+          "repository_url": "https://github.com/monitoring/metrics-mcp-server",
+          "tags": [
+            "monitoring",
+            "metrics",
+            "observability",
+            "production"
+          ],
+          "image": "monitoring/metrics-mcp:2.3.0",
+          "permissions": {
+            "network": {
+              "outbound": {
+                "insecure_allow_all": true
+              }
+            }
+          }
+        }
+      }
+    }
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: database-only-registry
+  namespace: toolhive-system
+spec:
+  displayName: "Database Servers Only"
+  source:
+    type: configmap
+    format: toolhive
+    configmap:
+      name: advanced-filtering-registry-data
+      key: registry.json
+  syncPolicy:
+    interval: "45m"
+  filter:
+    names:
+      include:
+        - "*-postgres"   # Only PostgreSQL servers
+        - "*-mongodb"    # Only MongoDB servers
+      exclude:
+        - "legacy-*"     # Exclude legacy servers
+    tags:
+      include:
+        - "database"     # Only database servers
+      exclude:
+        - "deprecated"   # Exclude deprecated servers
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: production-monitoring-registry
+  namespace: toolhive-system
+spec:
+  displayName: "Production & Monitoring Tools"
+  source:
+    type: configmap
+    format: toolhive
+    configmap:
+      name: advanced-filtering-registry-data
+      key: registry.json
+  syncPolicy:
+    interval: "15m"  # More frequent sync for production tools
+  filter:
+    names:
+      include:
+        - "prod-*"         # Production servers
+        - "monitoring-*"   # Monitoring servers
+    tags:
+      include:
+        - "production"     # Production-ready servers
+        - "monitoring"     # Monitoring tools
+        - "observability"  # Observability tools
+      exclude:
+        - "experimental"   # No experimental features
+        - "testing"        # No testing tools
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: development-tools-registry
+  namespace: toolhive-system
+spec:
+  displayName: "Development & Testing Tools"
+  source:
+    type: configmap
+    format: toolhive
+    configmap:
+      name: advanced-filtering-registry-data
+      key: registry.json
+  filter:
+    names:
+      exclude:
+        - "prod-*"      # Exclude production servers
+        - "legacy-*"    # Exclude legacy servers
+    tags:
+      include:
+        - "development"   # Development tools
+        - "testing"       # Testing tools
+        - "debugging"     # Debugging tools
+      exclude:
+        - "production"    # No production servers
+        - "deprecated"    # No deprecated tools

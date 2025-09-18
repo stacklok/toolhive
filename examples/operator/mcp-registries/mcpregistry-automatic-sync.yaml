@@ -31,7 +31,7 @@ data:
             "postgresql",
             "sql",
             "analytics",
-            "performance"
+            "production"
           ],
           "image": "crystaldba/postgres-mcp:0.3.0",
           "target_port": 8000,
@@ -56,7 +56,79 @@ data:
             "--sse-port=8000"
           ]
         },
-        "fetch": {
+        "mysql-connector": {
+          "description": "MySQL database connector with advanced query capabilities",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "execute_query",
+            "show_tables",
+            "describe_table",
+            "backup_database"
+          ],
+          "metadata": {
+            "stars": 890,
+            "pulls": 15200,
+            "last_updated": "2025-09-05T08:15:00Z"
+          },
+          "repository_url": "https://github.com/mysql/mysql-mcp-server",
+          "tags": [
+            "database",
+            "mysql",
+            "sql",
+            "production"
+          ],
+          "image": "mysql/mcp-server:2.1.0",
+          "permissions": {
+            "network": {
+              "outbound": {
+                "insecure_allow_all": true
+              }
+            }
+          },
+          "env_vars": [
+            {
+              "name": "MYSQL_CONNECTION_STRING",
+              "description": "MySQL connection string",
+              "required": true,
+              "secret": true
+            }
+          ]
+        },
+        "redis-cache": {
+          "description": "Redis caching and key-value operations",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "get_key",
+            "set_key",
+            "delete_key",
+            "list_keys"
+          ],
+          "metadata": {
+            "stars": 650,
+            "pulls": 8900,
+            "last_updated": "2025-09-03T14:22:00Z"
+          },
+          "repository_url": "https://github.com/redis/redis-mcp-server",
+          "tags": [
+            "database",
+            "redis",
+            "cache",
+            "production"
+          ],
+          "image": "redis/mcp-server:1.5.0",
+          "permissions": {
+            "network": {
+              "outbound": {
+                "insecure_allow_all": true
+              }
+            }
+          }
+        },
+        "fetch-web": {
           "description": "Allows you to fetch content from the web",
           "tier": "Community",
           "status": "Active",
@@ -74,7 +146,8 @@ data:
             "web",
             "scraping",
             "fetch",
-            "http"
+            "http",
+            "development"
           ],
           "image": "ghcr.io/stackloklabs/gofetch/server:0.0.6",
           "permissions": {
@@ -84,6 +157,65 @@ data:
                 "allow_port": [
                   443
                 ]
+              }
+            }
+          }
+        },
+        "analytics-beta": {
+          "description": "Beta analytics and reporting server with experimental features",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "generate_report",
+            "analyze_data",
+            "export_metrics"
+          ],
+          "metadata": {
+            "stars": 85,
+            "pulls": 200,
+            "last_updated": "2025-09-01T09:30:00Z"
+          },
+          "repository_url": "https://github.com/analytics/beta-mcp-server",
+          "tags": [
+            "analytics",
+            "reporting",
+            "beta",
+            "experimental"
+          ],
+          "image": "analytics/beta-server:0.8.0-beta",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        },
+        "old-api-gateway": {
+          "description": "Legacy API gateway - use new microservices architecture instead",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "route_request",
+            "manage_endpoints"
+          ],
+          "metadata": {
+            "stars": 45,
+            "pulls": 150,
+            "last_updated": "2024-12-01T10:00:00Z"
+          },
+          "repository_url": "https://github.com/legacy/api-gateway-mcp",
+          "tags": [
+            "api",
+            "gateway",
+            "legacy",
+            "deprecated"
+          ],
+          "image": "legacy/api-gateway:v1.2",
+          "permissions": {
+            "network": {
+              "outbound": {
+                "insecure_allow_all": true
               }
             }
           }
@@ -107,11 +239,11 @@ spec:
   syncPolicy:
     interval: "30m"  # Automatically sync every 30 minutes
   filter:
-    names:
-      include:
-        - "postgres-mcp-pro"
-        - "fetch"
     tags:
+      include:
+        - "database"    # Only database servers
+        - "production"  # Only production-ready servers
       exclude:
-        - "experimental"  # Exclude any experimental servers
-        - "deprecated"
+        - "experimental"  # Exclude experimental servers
+        - "deprecated"    # Exclude deprecated servers
+        - "beta"          # Exclude beta versions

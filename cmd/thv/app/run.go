@@ -173,6 +173,11 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
+	return runSingleServer(ctx, &runFlags, serverOrImage, cmdArgs, debugMode, cmd, "")
+}
+
+// runSingleServer handles the core logic for running a single MCP server
+func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage string, cmdArgs []string, debugMode bool, cmd *cobra.Command, groupName string) error { //nolint:lll
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
@@ -183,14 +188,16 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
-	if runFlags.Name != "" {
-		exists, err := workloadManager.DoesWorkloadExist(ctx, runFlags.Name)
-		if err != nil {
-			return fmt.Errorf("failed to check if workload exists: %v", err)
-		}
-		if exists {
-			return fmt.Errorf("workload with name '%s' already exists", runFlags.Name)
-		}
+	if runFlags.Name == "" {
+		runFlags.Name = getworkloadDefaultName(serverOrImage)
+		logger.Infof("No workload name specified, using generated name: %s", runFlags.Name)
+	}
+	exists, err := workloadManager.DoesWorkloadExist(ctx, runFlags.Name)
+	if err != nil {
+		return fmt.Errorf("failed to check if workload exists: %v", err)
+	}
+	if exists {
+		return fmt.Errorf("workload with name '%s' already exists", runFlags.Name)
 	}
 	err = validateGroup(ctx, workloadManager, serverOrImage)
 	if err != nil {
@@ -198,7 +205,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Build the run configuration
-	runnerConfig, err := BuildRunnerConfig(ctx, &runFlags, serverOrImage, cmdArgs, debugMode, cmd)
+	runnerConfig, err := BuildRunnerConfig(ctx, runFlags, serverOrImage, cmdArgs, debugMode, cmd, groupName)
 	if err != nil {
 		return err
 	}
@@ -236,6 +243,43 @@ func deriveRemoteName(remoteURL string) (string, error) {
 	}
 
 	return hostname, nil
+}
+
+// getworkloadDefaultName generates a default workload name based on the serverOrImage input
+// This function reuses the existing system's naming logic to ensure consistency
+func getworkloadDefaultName(serverOrImage string) string {
+	// If it's a protocol scheme (uvx://, npx://, go://)
+	if runner.IsImageProtocolScheme(serverOrImage) {
+		// Extract package name from protocol scheme using the existing parseProtocolScheme logic
+		_, packageName, err := runner.ParseProtocolScheme(serverOrImage)
+		if err != nil {
+			return ""
+		}
+
+		// Use the existing packageNameToImageName function from the runner package
+		return runner.PackageNameToImageName(packageName)
+	}
+
+	// If it's a URL (remote server)
+	if networking.IsURL(serverOrImage) {
+		name, err := deriveRemoteName(serverOrImage)
+		if err != nil {
+			return ""
+		}
+		return name
+	}
+
+	// Check if it's a server name from registry
+	// Registry server names are typically multi-word names with hyphens
+	if !strings.Contains(serverOrImage, "://") && !strings.Contains(serverOrImage, "/") && !strings.Contains(serverOrImage, ":") {
+		// Likely a registry server name (no protocol, no slashes, no colons), return as-is
+		return serverOrImage
+	}
+
+	// For container images, use the existing container.GetOrGenerateContainerName logic
+	// We pass empty string as containerName to force generation, and extract the baseName
+	_, baseName := container.GetOrGenerateContainerName("", serverOrImage)
+	return baseName
 }
 
 func runForeground(ctx context.Context, workloadManager workloads.Manager, runnerConfig *runner.RunConfig) error {

@@ -307,6 +307,7 @@ _Appears in:_
 | `syncAttempts` _integer_ | SyncAttempts is the number of sync attempts since last success |  | Minimum: 0 <br /> |
 | `apiEndpoint` _string_ | APIEndpoint is the URL of the registry API service |  |  |
 | `storageRef` _[StorageReference](#storagereference)_ | StorageRef is a reference to the internal storage location |  |  |
+| `lastManualSyncTrigger` _string_ | LastManualSyncTrigger tracks the last processed manual sync annotation value<br />Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation |  |  |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRegistry's state |  |  |
 
 

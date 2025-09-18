@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/config"
@@ -136,6 +137,45 @@ func TestRemoteRegistryProvider(t *testing.T) {
 
 	// Test that it implements the interface
 	var _ Provider = provider
+}
+
+func TestRemoteRegistryProvider_GetRegistry_Error(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		url         string
+		expectError bool
+	}{
+		{
+			name:        "invalid URL scheme",
+			url:         "invalid://url",
+			expectError: true,
+		},
+		{
+			name:        "non-existent host",
+			url:         "https://non-existent-host-12345.com/registry.json",
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider := NewRemoteRegistryProvider(tt.url, false)
+			registry, err := provider.GetRegistry()
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Nil(t, registry)
+			} else {
+				// This case would require a working HTTP server
+				assert.NoError(t, err)
+				assert.NotNil(t, registry)
+			}
+		})
+	}
 }
 
 func TestLocalRegistryProviderWithLocalFile(t *testing.T) {
@@ -396,4 +436,68 @@ func TestListServers(t *testing.T) {
 	if len(servers) != totalServers {
 		t.Errorf("ListServers() returned %d servers, want %d", len(servers), totalServers)
 	}
+}
+
+func TestParseRegistryData(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		data        []byte
+		expectError bool
+	}{
+		{
+			name: "valid registry data",
+			data: []byte(`{
+				"version": "1.0.0",
+				"last_updated": "2023-01-01T00:00:00Z",
+				"servers": {
+					"test-server": {
+						"image": "test/image:latest",
+						"description": "Test server"
+					}
+				}
+			}`),
+			expectError: false,
+		},
+		{
+			name:        "invalid JSON",
+			data:        []byte(`invalid json`),
+			expectError: true,
+		},
+		{
+			name:        "empty data",
+			data:        []byte(``),
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			registry, err := parseRegistryData(tt.data)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Nil(t, registry)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, registry)
+			}
+		})
+	}
+}
+
+func TestLocalRegistryProvider_FileReadError(t *testing.T) {
+	t.Parallel()
+
+	// Test with non-existent file path
+	provider := NewLocalRegistryProvider("/non/existent/path/registry.json")
+
+	registry, err := provider.GetRegistry()
+
+	assert.Error(t, err)
+	assert.Nil(t, registry)
+	assert.Contains(t, err.Error(), "failed to read local registry file")
 }

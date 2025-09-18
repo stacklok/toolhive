@@ -13,7 +13,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-var _ = Describe("TimeStreamableHttpMcpServer", Serial, func() {
+var _ = Describe("TimeStreamableHttpMcpServer", Label("proxy", "streamable-http", "e2e"), Serial, func() {
 	var config *e2e.TestConfig
 
 	BeforeEach(func() {
@@ -118,7 +118,7 @@ var _ = Describe("TimeStreamableHttpMcpServer", Serial, func() {
 			decoder := json.NewDecoder(resp.Body)
 			err = decoder.Decode(&responses)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(len(responses)).To(Equal(2))
+			Expect(responses).To(HaveLen(2))
 
 			ids := map[float64]bool{4: false, 5: false}
 			for _, r := range responses {

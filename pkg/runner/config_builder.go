@@ -76,6 +76,11 @@ func WithRemoteURL(remoteURL string) RunConfigBuilderOption {
 // WithRemoteAuth sets the remote authentication configuration
 func WithRemoteAuth(config *RemoteAuthConfig) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
+		if config == nil {
+			config = &RemoteAuthConfig{
+				CallbackPort: DefaultCallbackPort,
+			}
+		}
 		b.config.RemoteAuthConfig = config
 		return nil
 	}
@@ -968,6 +973,14 @@ func WithEnvFilesFromDirectory(dirPath string) RunConfigBuilderOption {
 		if _, err := b.config.WithEnvFilesFromDirectory(dirPath); err != nil {
 			return err
 		}
+		return nil
+	}
+}
+
+// WithEnvFileDir sets the directory path for loading environment files (for ConfigMap serialization)
+func WithEnvFileDir(dirPath string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.EnvFileDir = dirPath
 		return nil
 	}
 }

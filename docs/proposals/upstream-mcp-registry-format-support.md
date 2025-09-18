@@ -1,377 +1,87 @@
-# Upstream MCP Registry Format Support
-
-## Problem Statement
-
-ToolHive currently uses its own registry format for MCP servers, which is optimized for container execution and ToolHive's specific needs. However, the Model Context Protocol community has developed a standardized `server.json` format for describing MCP servers in a vendor-neutral way. This creates a barrier for:
-
-- **Server developers**: Must maintain separate metadata for different registries
-- **Registry interoperability**: Cannot easily share server definitions between registries
-- **Community adoption**: ToolHive servers cannot be easily discovered by other MCP clients
-- **Ecosystem fragmentation**: Different formats prevent a unified MCP server ecosystem
-
-## Goals
-
-- Add support for ingesting upstream MCP registry format (`server.json`) into ToolHive
-- Enable conversion from ToolHive format to upstream format for ecosystem compatibility
-- Maintain backward compatibility with existing ToolHive registry format
-- Leverage ToolHive-specific extensions for features not covered by upstream format
-- Provide seamless conversion between formats with minimal data loss
-
-## Non-Goals
-
-- Replace ToolHive's existing registry format entirely
-- Support every possible upstream format variation immediately
-- Automatic synchronization with upstream registries (future enhancement)
-- Breaking changes to existing ToolHive APIs
-
-## Architecture Overview
-
-The solution adds bidirectional conversion between ToolHive's container-focused format and the upstream community format:
-
-```
-Upstream Format (server.json)     ToolHive Format (registry.json)
-┌─────────────────────────┐       ┌─────────────────────────┐
-│ • Abstract description  │ ←───→ │ • Container execution   │
-│ • Package-centric       │       │ • Security profiles     │
-│ • Runtime hints         │       │ • Proxy configuration   │
-│ • Multi-deployment      │       │ • ToolHive-specific     │
-└─────────────────────────┘       └─────────────────────────┘
-```
-
-## Detailed Design
-
-### 1. Upstream Format Structs (`pkg/registry/upstream.go`)
-
-Define Go structs that match the upstream `server.json` schema:
-
-```go
-// UpstreamServerDetail represents the complete upstream format
-type UpstreamServerDetail struct {
-    Server     UpstreamServer     `json:"server"`
-    XPublisher *UpstreamPublisher `json:"x-publisher,omitempty"`
-}
-
-// UpstreamServer contains core server information
-type UpstreamServer struct {
-    Name          string                `json:"name"`
-    Description   string                `json:"description"`
-    Status        UpstreamServerStatus  `json:"status,omitempty"`
-    Repository    *UpstreamRepository   `json:"repository,omitempty"`
-    VersionDetail UpstreamVersionDetail `json:"version_detail"`
-    Packages      []UpstreamPackage     `json:"packages,omitempty"`
-    Remotes       []UpstreamRemote      `json:"remotes,omitempty"`
-}
-```
-
-Key features:
-- **Package Support**: npm, pypi, docker, nuget registries
-- **Remote Support**: SSE and streamable HTTP transports
-- **Flexible Arguments**: Named and positional arguments with variable substitution
-- **Environment Variables**: Required/optional, secret/plain, with choices
-
-### 2. ToolHive Extension Format
-
-ToolHive-specific metadata is stored in the `x-publisher` extension field:
-
-```go
-type ToolhivePublisherExtension struct {
-    Tier           string                `json:"tier,omitempty"`
-    Transport      string                `json:"transport,omitempty"`
-    Tools          []string              `json:"tools,omitempty"`
-    Metadata       *Metadata             `json:"metadata,omitempty"`
-    Tags           []string              `json:"tags,omitempty"`
-    CustomMetadata map[string]any        `json:"custom_metadata,omitempty"`
-    Permissions    *permissions.Profile  `json:"permissions,omitempty"`
-    TargetPort     int                   `json:"target_port,omitempty"`
-    DockerTags     []string              `json:"docker_tags,omitempty"`
-    Provenance     *Provenance           `json:"provenance,omitempty"`
-}
-```
-
-This approach:
-- **Preserves ToolHive features** not in upstream format
-- **Maintains compatibility** with upstream tooling
-- **Enables round-trip conversion** without data loss
-- **Follows extension conventions** used by other tools
-
-### 3. Conversion Functions (`pkg/registry/upstream_conversion.go`)
-
-#### Upstream → ToolHive Conversion
-
-```go
-func ConvertUpstreamToToolhive(upstream *UpstreamServerDetail) (ServerMetadata, error)
-```
-
-**Package Type Handling**:
-- `docker` packages → Direct Docker image references (`nginx:latest`)
-- `npm` packages → NPX protocol scheme (`npx://@scope/package@1.0.0`)
-- `pypi` packages → UVX protocol scheme (`uvx://package@1.0.0`)
-- Other packages → Best-effort conversion
-
-**Server Type Detection**:
-- Servers with `remotes` → `RemoteServerMetadata`
-- Servers with `packages` → `ImageMetadata`
-
-**Metadata Extraction**:
-- ToolHive extensions from `x-publisher.x-dev.toolhive`
-- Default values for missing ToolHive-specific fields
-- Conversion of upstream enums to ToolHive values
-
-#### ToolHive → Upstream Conversion
-
-```go
-func ConvertToolhiveToUpstream(server ServerMetadata) (*UpstreamServerDetail, error)
-```
-
-**Package Generation**:
-- Docker images → `docker` registry packages
-- Protocol schemes → Appropriate registry packages
-- Environment variables → Package environment variables
-
-**Extension Population**:
-- ToolHive-specific metadata → `x-publisher.x-dev.toolhive`
-- Standard upstream fields from ToolHive metadata
-- Publisher information for provenance
-
-### 4. Protocol Scheme Handling
-
-ToolHive supports protocol schemes that the upstream format describes as packages:
-
-| Upstream Package | ToolHive Image Format | ToolHive Execution |
-|------------------|----------------------|-------------------|
-| `npm` registry   | `npx://package@version` | Dynamic container build |
-| `pypi` registry  | `uvx://package@version` | Dynamic container build |
-| `docker` registry| `image:tag` | Direct container run |
-
-This mapping allows ToolHive to:
-- **Execute upstream packages** using existing protocol scheme support
-- **Preserve package metadata** for round-trip conversion
-- **Leverage dynamic builds** for non-Docker packages
-
-## Implementation Examples
-
-### Example 1: NPM Package Conversion
-
-**Upstream Format**:
-```json
-{
-  "server": {
-    "name": "io.modelcontextprotocol/brave-search",
-    "description": "MCP server for Brave Search API integration",
-    "packages": [{
-      "registry_name": "npm",
-      "name": "@modelcontextprotocol/server-brave-search",
-      "version": "1.0.2",
-      "environment_variables": [{
-        "name": "BRAVE_API_KEY",
-        "description": "Brave Search API Key",
-        "is_required": true,
-        "is_secret": true
-      }]
-    }]
-  }
-}
-```
-
-**ToolHive Format**:
-```json
-{
-  "name": "io.modelcontextprotocol/brave-search",
-  "description": "MCP server for Brave Search API integration",
-  "tier": "Community",
-  "status": "active",
-  "transport": "stdio",
-  "image": "npx://@modelcontextprotocol/server-brave-search@1.0.2",
-  "env_vars": [{
-    "name": "BRAVE_API_KEY",
-    "description": "Brave Search API Key",
-    "required": true,
-    "secret": true
-  }]
-}
-```
-
-### Example 2: Remote Server Conversion
-
-**Upstream Format**:
-```json
-{
-  "server": {
-    "name": "Remote Filesystem Server",
-    "description": "Cloud-hosted MCP filesystem server",
-    "remotes": [{
-      "transport_type": "sse",
-      "url": "https://mcp-fs.example.com/sse",
-      "headers": [{
-        "name": "X-API-Key",
-        "description": "API key for authentication",
-        "is_required": true,
-        "is_secret": true
-      }]
-    }]
-  }
-}
-```
-
-**ToolHive Format**:
-```json
-{
-  "name": "Remote Filesystem Server",
-  "description": "Cloud-hosted MCP filesystem server",
-  "tier": "Community",
-  "status": "active",
-  "transport": "sse",
-  "url": "https://mcp-fs.example.com/sse",
-  "headers": [{
-    "name": "X-API-Key",
-    "description": "API key for authentication",
-    "required": true,
-    "secret": true
-  }]
-}
-```
-
-## Integration Points
-
-### 1. Registry Loading
-
-Extend existing registry loading to support upstream format:
-
-```go
-// pkg/registry/loader.go
-func LoadUpstreamServer(path string) (*UpstreamServerDetail, error)
-func LoadAndConvertUpstream(path string) (ServerMetadata, error)
-```
-
-### 2. CLI Commands
-
-Add support for upstream format in existing commands:
-
-```bash
-# Import upstream server definition
-thv registry import server.json
-
-# Export ToolHive server to upstream format
-thv registry export --format=upstream server-name
-
-# Validate upstream format
-thv registry validate server.json
-```
-
-### 3. Registry Management
-
-Enhance registry operations to handle both formats:
-
-```go
-// pkg/registry/manager.go
-func (m *Manager) ImportUpstream(path string) error
-func (m *Manager) ExportUpstream(serverName, outputPath string) error
-```
-
-## Testing Strategy
-
-### 1. Unit Tests (`pkg/registry/upstream_conversion_test.go`)
-
-Comprehensive test coverage for:
-- **Conversion accuracy**: Verify data preservation in both directions
-- **Package type handling**: Test npm, pypi, docker, unknown packages
-- **Server type detection**: Remote vs container server classification
-- **Error handling**: Invalid inputs, missing fields, malformed data
-- **Edge cases**: Empty packages, multiple remotes, complex arguments
-
-### 2. Integration Tests
-
-- **Round-trip conversion**: Upstream → ToolHive → Upstream
-- **Real server definitions**: Test with actual community server.json files
-- **CLI integration**: Import/export commands with various formats
-- **Registry operations**: Loading and managing mixed format registries
-
-### 3. Compatibility Tests
-
-- **Upstream schema validation**: Ensure generated upstream format is valid
-- **ToolHive functionality**: Verify converted servers work with existing features
-- **Protocol scheme execution**: Test npm/pypi package execution
-
-## Security Considerations
-
-### 1. Input Validation
-
-- **Schema validation**: Validate upstream format against JSON schema
-- **Package name validation**: Prevent malicious package references
-- **URL validation**: Validate remote server URLs and headers
-- **Path sanitization**: Ensure safe file paths in package arguments
-
-### 2. Extension Field Security
-
-- **Trusted sources**: Only process ToolHive extensions from trusted publishers
-- **Permission validation**: Validate permission profiles in extensions
-- **Metadata sanitization**: Sanitize custom metadata fields
-
-### 3. Conversion Safety
-
-- **Data preservation**: Ensure no sensitive data leaks during conversion
-- **Default security**: Apply secure defaults for missing security fields
-- **Audit logging**: Log conversion operations for security auditing
-
-## Migration Strategy
-
-### Phase 1: Core Implementation
-- Implement upstream format structs and conversion functions
-- Add comprehensive test coverage
-- Create basic CLI import/export commands
-
-### Phase 2: Integration
-- Integrate with existing registry loading
-- Add validation and error handling
-- Enhance CLI commands with format detection
-
-### Phase 3: Ecosystem Support
-- Add support for community registry URLs
-- Implement automatic format detection
-- Create migration tools for existing servers
-
-### Phase 4: Advanced Features
-- Bidirectional synchronization with upstream registries
-- Advanced validation and linting
-- Community contribution workflows
-
-## Success Metrics
-
-1. **Conversion Accuracy**: 100% round-trip conversion for supported features
-2. **Format Coverage**: Support for 95% of upstream format features
-3. **Performance**: Conversion operations complete in <100ms
-4. **Compatibility**: Converted servers execute successfully in ToolHive
-5. **Community Adoption**: Enable contribution to upstream registries
-
-## Alternatives Considered
-
-### 1. Replace ToolHive Format Entirely
-**Rejected**: Would break existing deployments and lose ToolHive-specific features like permission profiles and container optimization.
-
-### 2. Separate Registry for Upstream Format
-**Rejected**: Would fragment the ecosystem and require users to manage multiple registries.
-
-### 3. Custom Extension Mechanism
-**Rejected**: The `x-publisher` field provides a standard way to extend upstream format without breaking compatibility.
-
-### 4. Automatic Format Detection
-**Considered**: Could be added in future phases, but explicit conversion provides better control and error handling.
-
-## Future Enhancements
-
-1. **Registry Synchronization**: Automatic sync with upstream community registries
-2. **Format Migration Tools**: Bulk conversion utilities for existing registries
-3. **Validation Enhancements**: Advanced linting and compatibility checking
-4. **Community Integration**: Direct publishing to upstream registries
-5. **Schema Evolution**: Support for future upstream format versions
-
-## Conclusion
-
-Adding upstream MCP registry format support to ToolHive enables:
-
-- **Ecosystem Interoperability**: Share server definitions with other MCP tools
-- **Community Participation**: Contribute to and benefit from community registries
-- **Developer Experience**: Single source of truth for server metadata
-- **Future Compatibility**: Prepare for ecosystem standardization
-
-The implementation leverages ToolHive's extension mechanism to preserve advanced features while maintaining compatibility with the community standard. This positions ToolHive as both a powerful container execution platform and a good citizen in the broader MCP ecosystem.
+# Proposal: Use the MCP Registry via ToolHive configuration (run by name, no per-run server.json)
+
+Enable ToolHive to run MCP servers published in the upstream MCP Registry by configuring that registry in ToolHive’s config. Users will keep invoking servers “by name” with `thv run`, and ToolHive will resolve those names through the configured registry. We will not accept server.json files as inputs to `thv run`.
+
+## User experience
+
+A single configuration step selects the registry (URL or local file). After that, users keep invoking `thv run <name>` exactly as today. When the configured registry is the upstream MCP Registry, the name is resolved against it and the server runs with the same ergonomics.
+
+Accepted inputs for `thv run` are unchanged:
+- by name (resolved via the configured registry)
+- by image reference
+- by protocol scheme (`uvx://`, `npx://`, `go://`)
+- by remote MCP URL
+
+## Configuration surface (reuse what we already have)
+
+We keep the current configuration model. The application config type is [`config.Config`](pkg/config/config.go:25) and the provider interface is [`config.Provider`](pkg/config/interface.go:7).
+
+Setting the active registry:
+- URL registry via [`config.SetRegistryURL()`](pkg/config/interface.go:45) (backed by [`config.setRegistryURL()`](pkg/config/registry.go:37)).
+- Local file registry via [`config.SetRegistryFile()`](pkg/config/interface.go:50) (backed by [`config.setRegistryFile()`](pkg/config/registry.go:80)).
+
+Inspecting the current selection:
+- [`config.GetRegistryConfig()`](pkg/config/interface.go:60) (backed by [`config.getRegistryConfig()`](pkg/config/registry.go:136)).
+
+The fields `registry_url`, `local_registry_path`, and `allow_private_registry_ip` already exist on [`config.Config`](pkg/config/config.go:25). To use the upstream MCP Registry, set `registry_url` to the service’s base URL. To use a local file registry, set `local_registry_path`.
+
+## Name resolution flow (what changes, what doesn’t)
+
+The entrypoint and builder/runner pipeline are unchanged: we still assemble run state in [`app.BuildRunnerConfig()`](cmd/thv/app/run_flags.go:225), parse protocol/image/remote inputs via [`runner.ParseProtocolScheme()`](pkg/runner/protocol.go:73), construct the configuration with [`runner.NewRunConfigBuilder()`](pkg/runner/config_builder.go:629) and [`runner.RunConfig`](pkg/runner/config.go:34), and execute with [`runner.Runner.Run()`](pkg/runner/runner.go:91).
+
+For “by name” runs, we add a registry-kind check before resolution. If [`config.GetRegistryConfig()`](pkg/config/interface.go:60) indicates a file registry, we read locally as before. If it indicates a URL registry pointing at the upstream MCP Registry, we query it and receive a server.json document. We then convert that document to ToolHive metadata through our upstream model and converter—see [`registry.UpstreamServerDetail`](pkg/registry/upstream.go:6) and [`registry.ConvertUpstreamToToolhive()`](pkg/registry/upstream_conversion.go:38)—so the rest of the flow proceeds identically: metadata plus flags go through the builder into a [`runner.RunConfig`](pkg/runner/config.go:34), then to runtime. Transport, ports, permissions, middleware (OIDC/authz/audit/telemetry), and environment/secret handling remain the same.
+
+## Upstream package types (docker, npm, pypi) and flow integration
+
+This section documents how we will read package data from the upstream MCP Registry (`server.json`) and map it into ToolHive’s existing execution paths. It uses the current upstream schema fields and keeps the CLI and builder flow unchanged; the only code change needed is a small adjustment in the registry retrieval path to enable protocol builds when package data originates from the registry.
+
+### Schema fields we will read
+
+We use the upstream JSON Schema at https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json. From `ServerDetail.packages[]`, we consume: `registry_type` (e.g., npm, pypi, oci), `identifier` (package name or image coordinates), `version` (a concrete version), and `transport` (stdio, streamable-http, or sse). Our current internal “upstream” model used older field names; we will update it and the converter to the official names (`registry_type`, `identifier`, `version`, `transport`).
+
+### How ToolHive will map supported types
+
+We will initially support Docker (OCI), npm, and PyPI. Other ecosystems (e.g., nuget, mcpb) are out of scope for now and can be added incrementally.
+
+- OCI (“docker” in our docs, “oci” in upstream):
+  - Mapping: Build an image reference from identifier and version. If identifier already includes tag or digest, we respect it; otherwise, we form repo/name:version.
+  - Execution: Run as a normal container image via the existing path (no runtime changes).
+  - Transport: We map the upstream transport into ToolHive’s transport enum when building `RunConfig`.
+
+- npm:
+  - Mapping: Convert the package into a protocol-encoded form using npx, e.g., npx://@scope/pkg@version (exact string assembled by the converter).
+  - Execution: Same protocol build pathway ToolHive already uses for CLI protocol inputs; see “Flow integration” below.
+
+- PyPI:
+  - Mapping: Convert the package into a protocol-encoded form using uvx, e.g., uvx://package==version (the pin syntax follows uv’s conventions; final string assembly happens in the converter).
+  - Execution: Same protocol build pathway as npm.
+
+### Flow integration (what changes, what stays)
+
+The CLI continues to accept the same inputs and, after resolution, we still construct a `RunConfig` with the existing builder and execute with the current transport stack. The only change is in the registry resolution path: if the converted `ImageMetadata.Image` is a protocol-encoded string (`npx://` or `uvx://`), the retriever re-detects the protocol and synthesizes a temporary image just as the CLI path does. Practically, after receiving `ImageMetadata` from conversion, [`retriever.GetMCPServer`](pkg/runner/retriever/retriever.go:41) checks the string with [`runner.IsImageProtocolScheme()`](pkg/runner/protocol.go:402) and, when true, builds via [`runner.HandleProtocolScheme()`](pkg/runner/protocol.go:29), then proceeds with verification, pulling, and normal execution. This keeps the CLI and builder/runner behavior intact while making the registry-driven path feature-parity with direct protocol inputs.
+
+
+In short, we consume registry_type, identifier, version, and transport from server.json; support oci (direct image), npm (npx protocol build), and pypi (uvx protocol build) initially; update our upstream model/converter to the official field names; and add a small retriever hook so protocol strings originating from the registry take the same build path as CLI protocol inputs. Additional ecosystems can be added incrementally following the same convert‑then‑run pattern.
+
+## Security and validation
+
+- Registry URL validation and private-IP policies already live in [`config.setRegistryURL()`](pkg/config/registry.go:37); we keep enforcing them.
+- No new `thv run` inputs means no new shell-injection surface. Protocol and image execution paths remain unchanged.
+- Optional: for future integrity features (e.g., file hashes in MCPB flows), we can extend the conversion or pull/verify step without changing the UX.
+
+## Documentation changes (concise)
+
+- “Config → Registry” docs: show how to set `registry_url` to the upstream MCP Registry and how to switch back to a local file registry.
+- “Run” docs: clarify that “by name” always resolves through the configured registry; no additional input forms are needed.
+
+## What we are deliberately not doing
+
+- Not adding `thv run ./server.json` or `thv run https://…/server.json`.
+- Not introducing new `mcp-reg://…` run forms.
+- Not changing the `thv run` flag surface.
+
+## Outcome
+
+- A single place to configure the source of truth (the registry), which can be the upstream MCP Registry or a local file registry.
+- The `thv run <name>` path remains simple and predictable while gaining upstream ecosystem coverage via conversion inside the resolver.
+- Minimal change to user workflows; maximal interoperability.

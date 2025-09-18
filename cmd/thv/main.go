@@ -11,6 +11,7 @@ import (
 
 	"github.com/stacklok/toolhive/cmd/thv/app"
 	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -27,13 +28,24 @@ func main() {
 	// Clean up stale lock files on startup
 	cleanupStaleLockFiles()
 
-	// Check and perform auto-discovery migration if needed
-	// Handles the auto-discovery flag depreciation, only executes once on old config files
-	client.CheckAndPerformAutoDiscoveryMigration()
+	// Check if container runtime is available early, but skip for informational commands
+	if !app.IsInformationalCommand(os.Args) {
+		if err := container.CheckRuntimeAvailable(); err != nil {
+			logger.Errorf("%s", err.Error())
+			os.Exit(1)
+		}
+	}
 
-	// Check and perform default group migration if needed
-	// Migrates existing workloads to the default group, only executes once
-	migration.CheckAndPerformDefaultGroupMigration()
+	// Skip migrations for informational commands that don't need container runtime
+	if !app.IsInformationalCommand(os.Args) {
+		// Check and perform auto-discovery migration if needed
+		// Handles the auto-discovery flag depreciation, only executes once on old config files
+		client.CheckAndPerformAutoDiscoveryMigration()
+
+		// Check and perform default group migration if needed
+		// Migrates existing workloads to the default group, only executes once
+		migration.CheckAndPerformDefaultGroupMigration()
+	}
 
 	// Skip update check for completion command or if we are running in kubernetes
 	if err := app.NewRootCmd(!app.IsCompletionCommand(os.Args) && !runtime.IsKubernetesRuntime()).Execute(); err != nil {

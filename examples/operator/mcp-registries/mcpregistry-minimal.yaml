@@ -10,28 +10,124 @@ data:
       "version": "1.0.0",
       "last_updated": "2025-09-08T12:00:00Z",
       "servers": {
-        "everything": {
-          "description": "This MCP server attempts to exercise all the features of the MCP protocol",
+        "filesystem": {
+          "description": "Allows you to do filesystem operations. Mount paths under /projects using --volume.",
           "tier": "Community",
           "status": "Active",
           "transport": "stdio",
           "tools": [
-            "echo",
-            "add",
-            "longRunningOperation"
+            "read_file",
+            "write_file",
+            "list_directory",
+            "create_directory"
           ],
           "metadata": {
-            "stars": 66732,
-            "pulls": 17019,
-            "last_updated": "2025-09-04T02:27:25Z"
+            "stars": 1500,
+            "pulls": 500,
+            "last_updated": "2025-09-08T12:00:00Z"
           },
           "repository_url": "https://github.com/modelcontextprotocol/servers",
           "tags": [
-            "example",
-            "features",
+            "filesystem",
+            "files",
+            "storage",
+            "production"
+          ],
+          "image": "docker.io/mcp/filesystem:latest",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          },
+          "args": [
+            "/projects"
+          ]
+        },
+        "github": {
+          "description": "Provides integration with GitHub's APIs",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "create_issue",
+            "create_pull_request",
+            "search_repositories"
+          ],
+          "metadata": {
+            "stars": 2200,
+            "pulls": 800,
+            "last_updated": "2025-09-08T12:00:00Z"
+          },
+          "repository_url": "https://github.com/github/github-mcp-server",
+          "tags": [
+            "github",
+            "api",
+            "repository",
+            "production"
+          ],
+          "image": "ghcr.io/github/github-mcp-server:latest",
+          "permissions": {
+            "network": {
+              "outbound": {
+                "allow_host": [
+                  ".github.com",
+                  ".githubusercontent.com"
+                ],
+                "allow_port": [
+                  443
+                ]
+              }
+            }
+          }
+        },
+        "experimental-ai": {
+          "description": "Experimental AI assistant with advanced features",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "analyze_code",
+            "generate_docs",
+            "suggest_improvements"
+          ],
+          "metadata": {
+            "stars": 150,
+            "pulls": 50,
+            "last_updated": "2025-09-01T12:00:00Z"
+          },
+          "repository_url": "https://github.com/example/experimental-ai",
+          "tags": [
+            "ai",
+            "experimental",
+            "analysis"
+          ],
+          "image": "docker.io/mcp/experimental-ai:latest",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        },
+        "deprecated-tool": {
+          "description": "Legacy tool server - use new alternatives",
+          "tier": "Community",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "legacy_process"
+          ],
+          "metadata": {
+            "stars": 10,
+            "pulls": 5,
+            "last_updated": "2024-01-01T12:00:00Z"
+          },
+          "repository_url": "https://github.com/example/deprecated-tool",
+          "tags": [
+            "legacy",
+            "deprecated",
             "tools"
           ],
-          "image": "docker.io/mcp/everything:latest",
+          "image": "docker.io/mcp/deprecated-tool:v1",
           "permissions": {
             "network": {
               "outbound": {}
@@ -47,7 +143,15 @@ metadata:
   name: minimal-registry
   namespace: toolhive-system
 spec:
+  displayName: "Production-Ready MCP Servers"
   source:
     type: configmap
     configmap:
       name: minimal-registry-data
+  filter:
+    tags:
+      include:
+        - "production"
+      exclude:
+        - "experimental"
+        - "deprecated"

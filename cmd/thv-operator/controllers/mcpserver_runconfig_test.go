@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -150,9 +151,12 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "secret-server", config.Name)
-				assert.Len(t, config.Secrets, 2)
-				assert.Equal(t, "secret1,target=TARGET1", config.Secrets[0])
-				assert.Equal(t, "secret2,target=key2", config.Secrets[1])
+				// Secrets are NOT in the RunConfig for ConfigMap mode - handled via k8s pod patch
+				// This avoids secrets provider errors in Kubernetes environment
+				assert.Len(t, config.Secrets, 0)
+				// For ConfigMap mode, K8s pod template patch is NOT in the runconfig
+				// (it's passed via CLI flag instead to avoid redundancy)
+				assert.Empty(t, config.K8sPodTemplatePatch)
 			},
 		},
 		{
@@ -248,9 +252,12 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Len(t, config.Volumes, 2)
 				assert.Equal(t, "/host/path1:/mount/path1", config.Volumes[0])
 				assert.Equal(t, "/host/path2:/mount/path2:ro", config.Volumes[1])
-				assert.Len(t, config.Secrets, 2)
-				assert.Equal(t, "secret1,target=CUSTOM_TARGET", config.Secrets[0])
-				assert.Equal(t, "secret2,target=key2", config.Secrets[1])
+				// Secrets are NOT in the RunConfig for ConfigMap mode - handled via k8s pod patch
+				// This avoids secrets provider errors in Kubernetes environment
+				assert.Len(t, config.Secrets, 0)
+				// For ConfigMap mode, K8s pod template patch is NOT in the runconfig
+				// (it's passed via CLI flag instead to avoid redundancy)
+				assert.Empty(t, config.K8sPodTemplatePatch)
 			},
 		},
 		{
@@ -282,12 +289,370 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Len(t, config.Secrets, 0)
 			},
 		},
+		{
+			name: "with telemetry configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "telemetry-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					Telemetry: &mcpv1alpha1.TelemetryConfig{
+						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
+							Enabled:     true,
+							Endpoint:    "http://otel-collector:4317",
+							ServiceName: "custom-service-name",
+							Insecure:    true,
+							Headers:     []string{"Authorization=Bearer token123", "X-API-Key=abc"},
+							Tracing: &mcpv1alpha1.OpenTelemetryTracingConfig{
+								Enabled:      true,
+								SamplingRate: "0.25",
+							},
+							Metrics: &mcpv1alpha1.OpenTelemetryMetricsConfig{
+								Enabled: true,
+							},
+						},
+						Prometheus: &mcpv1alpha1.PrometheusConfig{
+							Enabled: true,
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "telemetry-server", config.Name)
+
+				// Verify telemetry config is set
+				assert.NotNil(t, config.TelemetryConfig)
+
+				// Check OpenTelemetry settings (endpoint should have http:// prefix stripped)
+				assert.Equal(t, "otel-collector:4317", config.TelemetryConfig.Endpoint)
+				assert.Equal(t, "custom-service-name", config.TelemetryConfig.ServiceName)
+				assert.True(t, config.TelemetryConfig.Insecure)
+				assert.True(t, config.TelemetryConfig.TracingEnabled)
+				assert.True(t, config.TelemetryConfig.MetricsEnabled)
+				assert.Equal(t, 0.25, config.TelemetryConfig.SamplingRate)
+				assert.Equal(t, map[string]string{"Authorization": "Bearer token123", "X-API-Key": "abc"}, config.TelemetryConfig.Headers)
+
+				// Check Prometheus settings
+				assert.True(t, config.TelemetryConfig.EnablePrometheusMetricsPath)
+			},
+		},
+		{
+			name: "with minimal telemetry configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "minimal-telemetry-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					Telemetry: &mcpv1alpha1.TelemetryConfig{
+						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
+							Enabled:  true,
+							Endpoint: "https://secure-otel:4318",
+							// ServiceName not specified - should default to MCPServer name
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "minimal-telemetry-server", config.Name)
+
+				// Verify telemetry config is set
+				assert.NotNil(t, config.TelemetryConfig)
+
+				// Check that service name defaults to MCPServer name
+				assert.Equal(t, "minimal-telemetry-server", config.TelemetryConfig.ServiceName)
+				assert.Equal(t, "secure-otel:4318", config.TelemetryConfig.Endpoint)
+				assert.False(t, config.TelemetryConfig.Insecure)           // Default should be false
+				assert.Equal(t, 0.05, config.TelemetryConfig.SamplingRate) // Default sampling rate
+			},
+		},
+		{
+			name: "with prometheus only telemetry",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "prometheus-only-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					Telemetry: &mcpv1alpha1.TelemetryConfig{
+						Prometheus: &mcpv1alpha1.PrometheusConfig{
+							Enabled: true,
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "prometheus-only-server", config.Name)
+
+				// Verify telemetry config is set
+				assert.NotNil(t, config.TelemetryConfig)
+
+				// Only Prometheus should be enabled
+				assert.True(t, config.TelemetryConfig.EnablePrometheusMetricsPath)
+				assert.False(t, config.TelemetryConfig.TracingEnabled)
+				assert.False(t, config.TelemetryConfig.MetricsEnabled)
+				assert.Equal(t, "", config.TelemetryConfig.Endpoint)
+			},
+		},
+		{
+			name: "with inline authorization configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "authz-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
+						Type: mcpv1alpha1.AuthzConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineAuthzConfig{
+							Policies: []string{
+								`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+								`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
+							},
+							EntitiesJSON: `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`,
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "authz-server", config.Name)
+
+				// Verify authorization config is set
+				assert.NotNil(t, config.AuthzConfig)
+				assert.Equal(t, "v1", config.AuthzConfig.Version)
+				assert.Equal(t, authz.ConfigTypeCedarV1, config.AuthzConfig.Type)
+				assert.NotNil(t, config.AuthzConfig.Cedar)
+
+				// Check Cedar-specific configuration
+				assert.Len(t, config.AuthzConfig.Cedar.Policies, 2)
+				assert.Contains(t, config.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
+				assert.Contains(t, config.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
+				assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, config.AuthzConfig.Cedar.EntitiesJSON)
+			},
+		},
+		{
+			name: "with configmap authorization configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "authz-configmap-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
+						Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
+						ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+							Name: "test-authz-config",
+							Key:  defaultAuthzKey,
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "authz-configmap-server", config.Name)
+
+				// For ConfigMap type, with new feature, authorization config is embedded in RunConfig
+				require.NotNil(t, config.AuthzConfig)
+				assert.Equal(t, "v1", config.AuthzConfig.Version)
+				assert.Equal(t, authz.ConfigTypeCedarV1, config.AuthzConfig.Type)
+				require.NotNil(t, config.AuthzConfig.Cedar)
+				assert.Len(t, config.AuthzConfig.Cedar.Policies, 1)
+				assert.Contains(t, config.AuthzConfig.Cedar.Policies[0], "call_tool")
+				assert.Equal(t, "[]", config.AuthzConfig.Cedar.EntitiesJSON)
+			},
+		},
+		{
+			name: "with inline OIDC authentication configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oidc-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:             "https://auth.example.com",
+							Audience:           "toolhive-api",
+							JWKSURL:            "https://auth.example.com/.well-known/jwks.json",
+							IntrospectionURL:   "https://auth.example.com/oauth/introspect",
+							ClientID:           "toolhive-client",
+							ClientSecret:       "secret123",
+							ThvCABundlePath:    "/etc/ssl/ca-bundle.pem",
+							JWKSAuthTokenPath:  "/etc/auth/token",
+							JWKSAllowPrivateIP: true,
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "oidc-server", config.Name)
+				// Verify OIDC config is set
+				assert.NotNil(t, config.OIDCConfig)
+				assert.Equal(t, "https://auth.example.com", config.OIDCConfig.Issuer)
+				assert.Equal(t, "toolhive-api", config.OIDCConfig.Audience)
+				assert.Equal(t, "https://auth.example.com/.well-known/jwks.json", config.OIDCConfig.JWKSURL)
+				assert.Equal(t, "https://auth.example.com/oauth/introspect", config.OIDCConfig.IntrospectionURL)
+				assert.Equal(t, "toolhive-client", config.OIDCConfig.ClientID)
+				assert.Equal(t, "secret123", config.OIDCConfig.ClientSecret)
+				// NOTE: CACertPath and AuthTokenFile are not currently mapped in WithOIDCConfig function
+				// This is likely a bug that should be fixed separately
+				assert.Equal(t, "", config.OIDCConfig.CACertPath)
+				assert.Equal(t, "", config.OIDCConfig.AuthTokenFile)
+				assert.True(t, config.OIDCConfig.AllowPrivateIP)
+			},
+		},
+		{
+			name: "with configmap OIDC authentication configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oidc-configmap-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+							Name: "test-oidc-config",
+							Key:  "oidc.json",
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "oidc-configmap-server", config.Name)
+				// For ConfigMap type, OIDC config should not be set directly in RunConfig
+				// since it will be handled by proxyrunner when reading from ConfigMap
+				assert.Nil(t, config.OIDCConfig)
+			},
+		},
+		{
+			name: "with audit configuration enabled",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "audit-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					Audit: &mcpv1alpha1.AuditConfig{
+						Enabled: true,
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "audit-server", config.Name)
+				// Verify audit config is set
+				assert.NotNil(t, config.AuditConfig)
+			},
+		},
+		{
+			name: "with audit configuration disabled",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "audit-disabled-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					Port:      8080,
+					Audit: &mcpv1alpha1.AuditConfig{
+						Enabled: false,
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "audit-disabled-server", config.Name)
+				// When audit is disabled, config should be nil
+				assert.Nil(t, config.AuditConfig)
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			r := &MCPServerReconciler{}
+
+			// Build reconciler; if test uses ConfigMap-based authz, provide a fake client with that ConfigMap
+			var r *MCPServerReconciler
+			if tt.mcpServer != nil &&
+				tt.mcpServer.Spec.AuthzConfig != nil &&
+				tt.mcpServer.Spec.AuthzConfig.Type == mcpv1alpha1.AuthzConfigTypeConfigMap &&
+				tt.mcpServer.Spec.AuthzConfig.ConfigMap != nil {
+
+				scheme := createRunConfigTestScheme()
+
+				// Prepare a ConfigMap with authorization configuration content
+				cm := &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      tt.mcpServer.Spec.AuthzConfig.ConfigMap.Name,
+						Namespace: tt.mcpServer.Namespace,
+					},
+					Data: map[string]string{
+						func() string {
+							if k := tt.mcpServer.Spec.AuthzConfig.ConfigMap.Key; k != "" {
+								return k
+							}
+							return defaultAuthzKey
+						}(): `{
+							"version": "v1",
+							"type": "cedarv1",
+							"cedar": {
+								"policies": [
+									"permit(principal, action == Action::\"call_tool\", resource == Tool::\"weather\");"
+								],
+								"entities_json": "[]"
+							}
+						}`,
+					},
+				}
+
+				fakeClient := fake.NewClientBuilder().
+					WithScheme(scheme).
+					WithRuntimeObjects(cm).
+					Build()
+
+				r = &MCPServerReconciler{
+					Client: fakeClient,
+					Scheme: scheme,
+				}
+			} else {
+				r = &MCPServerReconciler{}
+			}
+
 			result, err := r.createRunConfigFromMCPServer(tt.mcpServer)
 			require.NoError(t, err)
 			assert.NotNil(t, result)
@@ -425,10 +790,9 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 	assert.Equal(t, "/host/path2:/container/path2:ro", baseRunConfig.Volumes[0])
 	assert.Equal(t, "/host/path1:/container/path1", baseRunConfig.Volumes[1])
 
-	// Verify secrets (should maintain order from MCPServer)
-	assert.Len(t, baseRunConfig.Secrets, 2)
-	assert.Equal(t, "secret2,target=CUSTOM_TARGET2", baseRunConfig.Secrets[0])
-	assert.Equal(t, "secret1,target=key1", baseRunConfig.Secrets[1])
+	// Verify secrets are NOT in the RunConfig for ConfigMap mode - handled via k8s pod patch
+	// This avoids secrets provider errors in Kubernetes environment
+	assert.Len(t, baseRunConfig.Secrets, 0)
 
 	t.Logf("✅ Deterministic test passed: Generated identical ConfigMaps 10 times")
 	t.Logf("   Checksum: %s", baseChecksum)
@@ -533,13 +897,220 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				assert.NotEmpty(t, cm.Annotations["toolhive.stacklok.dev/content-checksum"])
 			},
 		},
+		{
+			name: "configmap with telemetry configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "telemetry-test",
+					Namespace: "toolhive-system",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/example/server:v1.0.0",
+					Transport: "stdio",
+					Port:      8080,
+					Telemetry: &mcpv1alpha1.TelemetryConfig{
+						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
+							Enabled:     true,
+							Endpoint:    "http://otel-collector:4317",
+							ServiceName: "test-service",
+							Headers:     []string{"Authorization=Bearer test-token"},
+							Insecure:    true,
+							Tracing: &mcpv1alpha1.OpenTelemetryTracingConfig{
+								Enabled:      true,
+								SamplingRate: "0.1",
+							},
+							Metrics: &mcpv1alpha1.OpenTelemetryMetricsConfig{
+								Enabled: true,
+							},
+						},
+						Prometheus: &mcpv1alpha1.PrometheusConfig{
+							Enabled: true,
+						},
+					},
+				},
+			},
+			existingCM:  nil,
+			expectError: false,
+			validateContent: func(t *testing.T, cm *corev1.ConfigMap) {
+				t.Helper()
+				assert.Equal(t, "telemetry-test-runconfig", cm.Name)
+				assert.Equal(t, "toolhive-system", cm.Namespace)
+				assert.Contains(t, cm.Data, "runconfig.json")
+
+				// Parse and validate telemetry configuration in runconfig.json
+				var runConfig runner.RunConfig
+				err := json.Unmarshal([]byte(cm.Data["runconfig.json"]), &runConfig)
+				require.NoError(t, err)
+
+				// Verify basic fields
+				assert.Equal(t, "telemetry-test", runConfig.Name)
+				assert.Equal(t, "ghcr.io/example/server:v1.0.0", runConfig.Image)
+
+				// Verify telemetry configuration is properly serialized
+				assert.NotNil(t, runConfig.TelemetryConfig, "TelemetryConfig should be present in runconfig.json")
+
+				// Check OpenTelemetry settings (endpoint should have http:// prefix stripped)
+				assert.Equal(t, "otel-collector:4317", runConfig.TelemetryConfig.Endpoint)
+				assert.Equal(t, "test-service", runConfig.TelemetryConfig.ServiceName)
+				assert.True(t, runConfig.TelemetryConfig.Insecure)
+				assert.True(t, runConfig.TelemetryConfig.TracingEnabled)
+				assert.True(t, runConfig.TelemetryConfig.MetricsEnabled)
+				assert.Equal(t, 0.1, runConfig.TelemetryConfig.SamplingRate)
+				assert.Equal(t, map[string]string{"Authorization": "Bearer test-token"}, runConfig.TelemetryConfig.Headers)
+
+				// Check Prometheus settings
+				assert.True(t, runConfig.TelemetryConfig.EnablePrometheusMetricsPath)
+			},
+		},
+		{
+			name: "configmap with inline authorization configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "authz-test",
+					Namespace: "toolhive-system",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/example/server:v1.0.0",
+					Transport: "stdio",
+					Port:      8080,
+					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
+						Type: mcpv1alpha1.AuthzConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineAuthzConfig{
+							Policies: []string{
+								`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+								`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
+							},
+							EntitiesJSON: `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`,
+						},
+					},
+				},
+			},
+			existingCM:  nil,
+			expectError: false,
+			validateContent: func(t *testing.T, cm *corev1.ConfigMap) {
+				t.Helper()
+				assert.Equal(t, "authz-test-runconfig", cm.Name)
+				assert.Equal(t, "toolhive-system", cm.Namespace)
+				assert.Contains(t, cm.Data, "runconfig.json")
+
+				// Parse and validate authorization configuration in runconfig.json
+				var runConfig runner.RunConfig
+				err := json.Unmarshal([]byte(cm.Data["runconfig.json"]), &runConfig)
+				require.NoError(t, err)
+
+				// Verify basic fields
+				assert.Equal(t, "authz-test", runConfig.Name)
+				assert.Equal(t, "ghcr.io/example/server:v1.0.0", runConfig.Image)
+
+				// Verify authorization configuration is properly serialized
+				assert.NotNil(t, runConfig.AuthzConfig, "AuthzConfig should be present in runconfig.json")
+				assert.Equal(t, "v1", runConfig.AuthzConfig.Version)
+				assert.Equal(t, authz.ConfigTypeCedarV1, runConfig.AuthzConfig.Type)
+				assert.NotNil(t, runConfig.AuthzConfig.Cedar)
+
+				// Check Cedar-specific configuration
+				assert.Len(t, runConfig.AuthzConfig.Cedar.Policies, 2)
+				assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
+				assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
+				assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, runConfig.AuthzConfig.Cedar.EntitiesJSON)
+			},
+		},
+		{
+			name: "configmap with inline OIDC authentication configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oidc-test",
+					Namespace: "toolhive-system",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/example/server:v1.0.0",
+					Transport: "stdio",
+					Port:      8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:             "https://auth.example.com",
+							Audience:           "toolhive-api",
+							JWKSURL:            "https://auth.example.com/.well-known/jwks.json",
+							IntrospectionURL:   "https://auth.example.com/oauth/introspect",
+							ClientID:           "toolhive-client",
+							ClientSecret:       "secret123",
+							ThvCABundlePath:    "/etc/ssl/ca-bundle.pem",
+							JWKSAuthTokenPath:  "/etc/auth/token",
+							JWKSAllowPrivateIP: true,
+						},
+					},
+				},
+			},
+			existingCM:  nil,
+			expectError: false,
+			validateContent: func(t *testing.T, cm *corev1.ConfigMap) {
+				t.Helper()
+				assert.Equal(t, "oidc-test-runconfig", cm.Name)
+				assert.Equal(t, "toolhive-system", cm.Namespace)
+				assert.Contains(t, cm.Data, "runconfig.json")
+				// Parse and validate OIDC authentication configuration in runconfig.json
+				var runConfig runner.RunConfig
+				err := json.Unmarshal([]byte(cm.Data["runconfig.json"]), &runConfig)
+				require.NoError(t, err)
+				// Verify basic fields
+				assert.Equal(t, "oidc-test", runConfig.Name)
+				assert.Equal(t, "ghcr.io/example/server:v1.0.0", runConfig.Image)
+				// Verify OIDC authentication configuration is properly serialized
+				assert.NotNil(t, runConfig.OIDCConfig, "OIDCConfig should be present in runconfig.json")
+				assert.Equal(t, "https://auth.example.com", runConfig.OIDCConfig.Issuer)
+				assert.Equal(t, "toolhive-api", runConfig.OIDCConfig.Audience)
+				assert.Equal(t, "https://auth.example.com/.well-known/jwks.json", runConfig.OIDCConfig.JWKSURL)
+				assert.Equal(t, "https://auth.example.com/oauth/introspect", runConfig.OIDCConfig.IntrospectionURL)
+				assert.Equal(t, "toolhive-client", runConfig.OIDCConfig.ClientID)
+				assert.Equal(t, "secret123", runConfig.OIDCConfig.ClientSecret)
+				// NOTE: CACertPath and AuthTokenFile are not currently mapped in WithOIDCConfig function
+				assert.Equal(t, "", runConfig.OIDCConfig.CACertPath)
+				assert.Equal(t, "", runConfig.OIDCConfig.AuthTokenFile)
+				assert.True(t, runConfig.OIDCConfig.AllowPrivateIP)
+			},
+		},
+		{
+			name: "configmap with audit configuration enabled",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "audit-test",
+					Namespace: "toolhive-system",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/example/server:v1.0.0",
+					Transport: "stdio",
+					Port:      8080,
+					Audit: &mcpv1alpha1.AuditConfig{
+						Enabled: true,
+					},
+				},
+			},
+			existingCM:  nil,
+			expectError: false,
+			validateContent: func(t *testing.T, cm *corev1.ConfigMap) {
+				t.Helper()
+				assert.Equal(t, "audit-test-runconfig", cm.Name)
+				assert.Equal(t, "toolhive-system", cm.Namespace)
+				assert.Contains(t, cm.Data, "runconfig.json")
+				// Parse and validate audit configuration in runconfig.json
+				var runConfig runner.RunConfig
+				err := json.Unmarshal([]byte(cm.Data["runconfig.json"]), &runConfig)
+				require.NoError(t, err)
+				// Verify basic fields
+				assert.Equal(t, "audit-test", runConfig.Name)
+				assert.Equal(t, "ghcr.io/example/server:v1.0.0", runConfig.Image)
+				// Verify audit configuration is properly serialized
+				assert.NotNil(t, runConfig.AuditConfig, "AuditConfig should be present in runconfig.json")
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			testScheme := createRunConfigTestScheme()
-			objects := []runtime.Object{}
+			objects := []runtime.Object{tt.mcpServer}
 			if tt.existingCM != nil {
 				objects = append(objects, tt.existingCM)
 			}
@@ -586,6 +1157,87 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			}
 		})
 	}
+
+	// Additional test: ConfigMap-based Authz referenced externally should be embedded into runconfig.json
+	t.Run("configmap with external authorization configuration", func(t *testing.T) {
+		t.Parallel()
+		testScheme := createRunConfigTestScheme()
+
+		mcpServer := &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "authz-cm-ext",
+				Namespace: "toolhive-system",
+			},
+			Spec: mcpv1alpha1.MCPServerSpec{
+				Image:     "ghcr.io/example/server:v1.0.0",
+				Transport: "stdio",
+				Port:      8080,
+				AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
+					Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
+					ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+						Name: "ext-authz-config",
+						Key:  "authz.json",
+					},
+				},
+			},
+		}
+
+		authzCM := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "ext-authz-config",
+				Namespace: "toolhive-system",
+			},
+			Data: map[string]string{
+				"authz.json": `{
+					"version": "v1",
+					"type": "cedarv1",
+					"cedar": {
+						"policies": [
+							"permit(principal, action == Action::\"call_tool\", resource == Tool::\"weather\");",
+							"permit(principal, action == Action::\"get_prompt\", resource == Prompt::\"greeting\");"
+						],
+						"entities_json": "[{\"uid\": {\"type\": \"User\", \"id\": \"user1\"}, \"attrs\": {}}]"
+					}
+				}`,
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(testScheme).
+			WithRuntimeObjects(mcpServer, authzCM).
+			Build()
+
+		reconciler := &MCPServerReconciler{
+			Client: fakeClient,
+			Scheme: testScheme,
+		}
+
+		err := reconciler.ensureRunConfigConfigMap(context.TODO(), mcpServer)
+		require.NoError(t, err)
+
+		// Fetch the generated runconfig ConfigMap
+		configMapName := fmt.Sprintf("%s-runconfig", mcpServer.Name)
+		configMap := &corev1.ConfigMap{}
+		err = fakeClient.Get(context.TODO(), types.NamespacedName{
+			Name:      configMapName,
+			Namespace: mcpServer.Namespace,
+		}, configMap)
+		require.NoError(t, err)
+
+		// Validate that authz config is embedded
+		var runConfig runner.RunConfig
+		err = json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
+		require.NoError(t, err)
+
+		require.NotNil(t, runConfig.AuthzConfig)
+		assert.Equal(t, "v1", runConfig.AuthzConfig.Version)
+		assert.Equal(t, authz.ConfigTypeCedarV1, runConfig.AuthzConfig.Type)
+		require.NotNil(t, runConfig.AuthzConfig.Cedar)
+		assert.Len(t, runConfig.AuthzConfig.Cedar.Policies, 2)
+		assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
+		assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
+		assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, runConfig.AuthzConfig.Cedar.EntitiesJSON)
+	})
 }
 
 // TestRunConfigContentEquals tests the content comparison logic
@@ -1084,7 +1736,9 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 				}
 			},
 			expectedChanges: map[string]interface{}{
-				"Secrets": []string{"secret1,target=CUSTOM_ENV1", "secret2,target=key2"},
+				// Secrets are NOT in the RunConfig for ConfigMap mode - handled via k8s pod patch
+				// Since secrets don't affect runconfig content, no changes expected in runconfig
+				"Secrets": ([]string)(nil),
 			},
 		},
 		{
@@ -1145,9 +1799,15 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 			}, updatedConfigMap)
 			require.NoError(t, err)
 
-			// Verify checksum changed
+			// Verify checksum behavior based on test case
 			updatedChecksum := updatedConfigMap.Annotations["toolhive.stacklok.dev/content-checksum"]
-			assert.NotEqual(t, initialChecksum, updatedChecksum, "Checksum should change when content changes")
+			if tt.name == "Secret changes" {
+				// For secrets changes, checksum should NOT change since secrets are handled via k8s pod patch
+				assert.Equal(t, initialChecksum, updatedChecksum, "Checksum should not change for secret changes (secrets handled via k8s pod patch)")
+			} else {
+				// For other changes, checksum should change
+				assert.NotEqual(t, initialChecksum, updatedChecksum, "Checksum should change when content changes")
+			}
 
 			// Verify specific changes in RunConfig
 			var updatedRunConfig runner.RunConfig
@@ -1163,6 +1823,123 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 				actualValue := field.Interface()
 				assert.Equal(t, expectedValue, actualValue, "Field %s should have expected value", fieldName)
 			}
+		})
+	}
+}
+
+func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
+	t.Parallel()
+
+	// Test that EnvFileDir is properly set when Vault Agent Injection is detected
+	testCases := []struct {
+		name           string
+		mcpServer      *mcpv1alpha1.MCPServer
+		expectedEnvDir string
+	}{
+		{
+			name: "vault injection in PodTemplateSpec annotations",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "vault-server",
+					Namespace: "toolhive-system",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/example/server:v1.0.0",
+					Transport: "stdio",
+					Port:      8080,
+					PodTemplateSpec: &corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{
+								"vault.hashicorp.com/agent-inject": "true",
+								"vault.hashicorp.com/role":         "test-role",
+							},
+						},
+					},
+				},
+			},
+			expectedEnvDir: "/vault/secrets",
+		},
+		{
+			name: "vault injection in ResourceOverrides annotations",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "vault-override-server",
+					Namespace: "toolhive-system",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/example/server:v1.0.0",
+					Transport: "stdio",
+					Port:      8080,
+					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
+						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
+							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+								Annotations: map[string]string{
+									"vault.hashicorp.com/agent-inject": "true",
+									"vault.hashicorp.com/role":         "override-role",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedEnvDir: "/vault/secrets",
+		},
+		{
+			name: "no vault injection - should have empty EnvFileDir",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-vault-server",
+					Namespace: "toolhive-system",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/example/server:v1.0.0",
+					Transport: "stdio",
+					Port:      8080,
+				},
+			},
+			expectedEnvDir: "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			testScheme := createRunConfigTestScheme()
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithRuntimeObjects(tc.mcpServer).
+				Build()
+
+			reconciler := &MCPServerReconciler{
+				Client: fakeClient,
+				Scheme: testScheme,
+			}
+
+			// Execute the method under test
+			err := reconciler.ensureRunConfigConfigMap(context.TODO(), tc.mcpServer)
+			require.NoError(t, err)
+
+			// Verify the ConfigMap exists
+			configMapName := fmt.Sprintf("%s-runconfig", tc.mcpServer.Name)
+			configMap := &corev1.ConfigMap{}
+			err = fakeClient.Get(context.TODO(), types.NamespacedName{
+				Name:      configMapName,
+				Namespace: tc.mcpServer.Namespace,
+			}, configMap)
+			require.NoError(t, err)
+
+			// Parse the RunConfig from the ConfigMap
+			var runConfig runner.RunConfig
+			err = json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
+			require.NoError(t, err)
+
+			// Verify EnvFileDir is set correctly
+			assert.Equal(t, tc.expectedEnvDir, runConfig.EnvFileDir, "EnvFileDir should match expected value")
+
+			// Verify basic RunConfig fields
+			assert.Equal(t, tc.mcpServer.Name, runConfig.Name)
+			assert.Equal(t, tc.mcpServer.Spec.Image, runConfig.Image)
 		})
 	}
 }

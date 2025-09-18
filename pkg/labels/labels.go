@@ -36,6 +36,9 @@ const (
 	// LabelGroup is the label that contains the group name
 	LabelGroup = "toolhive-group"
 
+	// LabelAuxiliary is the label that indicates this is an auxiliary workload (like inspector)
+	LabelAuxiliary = "toolhive-auxiliary"
+
 	// LabelToolHiveValue is the value for the LabelToolHive label
 	LabelToolHiveValue = "true"
 )
@@ -126,6 +129,13 @@ func GetGroup(labels map[string]string) string {
 // SetGroup sets the group name in labels
 func SetGroup(labels map[string]string, groupName string) {
 	labels[LabelGroup] = groupName
+}
+
+// IsAuxiliaryWorkload checks if a workload is an auxiliary workload (like inspector)
+// Auxiliary workloads don't follow standard workload management patterns and don't use proxy processes
+func IsAuxiliaryWorkload(labels map[string]string) bool {
+	value, ok := labels[LabelAuxiliary]
+	return ok && strings.ToLower(value) == LabelToolHiveValue
 }
 
 // IsStandardToolHiveLabel checks if a label key is a standard ToolHive label

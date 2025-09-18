@@ -20,7 +20,7 @@ func generateUniqueAuditServerName(prefix string) string {
 	return fmt.Sprintf("%s-%d-%d-%d", prefix, os.Getpid(), time.Now().UnixNano(), GinkgoRandomSeed())
 }
 
-var _ = Describe("Audit Middleware E2E", Serial, func() {
+var _ = Describe("Audit Middleware E2E", Label("middleware", "audit", "sse", "e2e"), Serial, func() {
 	var (
 		config          *e2e.TestConfig
 		mcpServerName   string

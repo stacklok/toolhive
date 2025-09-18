@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Test
+  test-go-code:
+    name: Test Go Code
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
@@ -28,7 +28,7 @@ jobs:
       - name: Install Task
         uses: arduino/setup-task@v2
         with:
-          version: 3.x
+          version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run tests with coverage

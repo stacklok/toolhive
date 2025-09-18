@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  tests:
-    name: Tests
+  operator-tests:
+    name: Operator Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
@@ -26,14 +26,14 @@ jobs:
       - name: Install Task
         uses: arduino/setup-task@v2
         with:
-          version: 3.x
+          version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run tests
         run: task operator-test
 
-  build:
-    name: Build
+  build-operator:
+    name: Build Operator
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
@@ -47,7 +47,7 @@ jobs:
       - name: Install Task
         uses: arduino/setup-task@v2
         with:
-          version: 3.x
+          version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build operator
@@ -68,7 +68,7 @@ jobs:
       - name: Install Task
         uses: arduino/setup-task@v2
         with:
-          version: 3.x
+          version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate CRDs
@@ -77,7 +77,7 @@ jobs:
       - name: Check for changes
         id: git-check
         run: |
-          git diff --exit-code deploy/charts/operator-crds/templates || echo "crd-changes=true" >> $GITHUB_OUTPUT
+          git diff --exit-code deploy/charts/operator-crds/crds || echo "crd-changes=true" >> $GITHUB_OUTPUT
           git diff --exit-code deploy/charts/operator/templates || echo "operator-changes=true" >> $GITHUB_OUTPUT
 
       - name: Fail if CRDs are not up to date
@@ -101,7 +101,7 @@ jobs:
       - name: Install Task
         uses: arduino/setup-task@v2
         with:
-          version: 3.x
+          version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate CRD Docs
@@ -119,8 +119,8 @@ jobs:
           echo "Docs for CRDs are not up to date. Please run 'task crdref-gen' and commit the changes."
           exit 1
 
-  e2e-tests:
-    name: E2E Tests
+  e2e-tests-operator:
+    name: E2E Tests Operator
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -157,7 +157,7 @@ jobs:
     - name: Install Task
       uses: arduino/setup-task@v2
       with:
-        version: 3.x
+        version: 3.44.1
         repo-token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Install yardstick client

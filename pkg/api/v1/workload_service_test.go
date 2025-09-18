@@ -10,150 +10,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
-	"github.com/stacklok/toolhive/pkg/secrets"
-	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
-
-func TestWorkloadService_resolveClientSecret(t *testing.T) {
-	t.Parallel()
-
-	t.Run("with secret parameter", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		defer ctrl.Finish()
-
-		mockSecretsProvider := secretsmocks.NewMockProvider(ctrl)
-		mockSecretsProvider.EXPECT().
-			GetSecret(gomock.Any(), "secret-name").
-			Return("secret-value", nil)
-
-		service := &WorkloadService{
-			secretsProvider: mockSecretsProvider,
-		}
-
-		secretParam := &secrets.SecretParameter{Name: "secret-name"}
-
-		result, err := service.resolveClientSecret(context.Background(), secretParam)
-
-		require.NoError(t, err)
-		assert.Equal(t, "secret-value", result)
-	})
-
-	t.Run("without secret parameter", func(t *testing.T) {
-		t.Parallel()
-
-		service := &WorkloadService{}
-
-		result, err := service.resolveClientSecret(context.Background(), nil)
-
-		require.NoError(t, err)
-		assert.Equal(t, "", result)
-	})
-
-	t.Run("secret provider error", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		defer ctrl.Finish()
-
-		mockSecretsProvider := secretsmocks.NewMockProvider(ctrl)
-		mockSecretsProvider.EXPECT().
-			GetSecret(gomock.Any(), "non-existent-secret").
-			Return("", errors.New("secret not found"))
-
-		service := &WorkloadService{
-			secretsProvider: mockSecretsProvider,
-		}
-
-		secretParam := &secrets.SecretParameter{Name: "non-existent-secret"}
-
-		result, err := service.resolveClientSecret(context.Background(), secretParam)
-
-		assert.Error(t, err)
-		assert.Equal(t, "", result)
-		assert.Contains(t, err.Error(), "failed to resolve OAuth client secret")
-	})
-}
-
-func TestWorkloadService_createRequestToRemoteAuthConfig(t *testing.T) {
-	t.Parallel()
-
-	t.Run("with OAuth config", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		defer ctrl.Finish()
-
-		mockSecretsProvider := secretsmocks.NewMockProvider(ctrl)
-		mockSecretsProvider.EXPECT().
-			GetSecret(gomock.Any(), "secret-name").
-			Return("secret-value", nil)
-
-		service := &WorkloadService{
-			secretsProvider: mockSecretsProvider,
-		}
-
-		req := &createRequest{
-			updateRequest: updateRequest{
-				OAuthConfig: remoteOAuthConfig{
-					ClientID:     "client-id",
-					ClientSecret: &secrets.SecretParameter{Name: "secret-name"},
-					Scopes:       []string{"read", "write"},
-					Issuer:       "https://oauth.example.com",
-					AuthorizeURL: "https://oauth.example.com/auth",
-					TokenURL:     "https://oauth.example.com/token",
-					OAuthParams:  map[string]string{"custom": "param"},
-					CallbackPort: 8081,
-				},
-			},
-		}
-
-		result, err := service.createRequestToRemoteAuthConfig(context.Background(), req)
-
-		require.NoError(t, err)
-		require.NotNil(t, result)
-		assert.Equal(t, "client-id", result.ClientID)
-		assert.Equal(t, "secret-value", result.ClientSecret)
-		assert.Equal(t, []string{"read", "write"}, result.Scopes)
-		assert.Equal(t, "https://oauth.example.com", result.Issuer)
-		assert.Equal(t, "https://oauth.example.com/auth", result.AuthorizeURL)
-		assert.Equal(t, "https://oauth.example.com/token", result.TokenURL)
-		assert.Equal(t, map[string]string{"custom": "param"}, result.OAuthParams)
-		assert.Equal(t, 8081, result.CallbackPort)
-	})
-
-	t.Run("secret resolution fails", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		defer ctrl.Finish()
-
-		mockSecretsProvider := secretsmocks.NewMockProvider(ctrl)
-		mockSecretsProvider.EXPECT().
-			GetSecret(gomock.Any(), "secret-name").
-			Return("", errors.New("secret not found"))
-
-		service := &WorkloadService{
-			secretsProvider: mockSecretsProvider,
-		}
-
-		req := &createRequest{
-			updateRequest: updateRequest{
-				OAuthConfig: remoteOAuthConfig{
-					ClientSecret: &secrets.SecretParameter{Name: "secret-name"},
-				},
-			},
-		}
-
-		result, err := service.createRequestToRemoteAuthConfig(context.Background(), req)
-
-		assert.Error(t, err)
-		assert.Nil(t, result)
-		assert.Contains(t, err.Error(), "failed to resolve OAuth client secret")
-	})
-}
 
 func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 	t.Parallel()
@@ -282,6 +140,6 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 func TestNewWorkloadService(t *testing.T) {
 	t.Parallel()
 
-	service := NewWorkloadService(nil, nil, nil, nil, false)
+	service := NewWorkloadService(nil, nil, nil, false)
 	require.NotNil(t, service)
 }

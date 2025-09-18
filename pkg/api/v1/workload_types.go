@@ -39,6 +39,8 @@ type updateRequest struct {
 	CmdArguments []string `json:"cmd_arguments"`
 	// Port to expose from the container
 	TargetPort int `json:"target_port"`
+	// Port for the HTTP proxy to listen on
+	ProxyPort int `json:"proxy_port"`
 	// Environment variables to set in the container
 	EnvVars map[string]string `json:"env_vars"`
 	// Secret parameters to inject
@@ -218,6 +220,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			Host:              runConfig.Host,
 			CmdArguments:      runConfig.CmdArgs,
 			TargetPort:        runConfig.TargetPort,
+			ProxyPort:         runConfig.Port,
 			EnvVars:           runConfig.EnvVars,
 			Secrets:           secretParams,
 			Volumes:           runConfig.Volumes,

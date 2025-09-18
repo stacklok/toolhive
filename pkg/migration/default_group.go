@@ -6,6 +6,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -97,6 +98,23 @@ func (m *DefaultGroupMigrator) migrateWorkloadsToDefaultGroup(ctx context.Contex
 
 	migratedCount := 0
 	for _, workloadName := range workloadsWithoutGroup {
+		// Check if this is an auxiliary workload (like inspector) that doesn't need migration
+		isAuxiliary := false
+		workloadList, err := m.workloadsManager.ListWorkloads(ctx, true)
+		if err == nil {
+			for _, workload := range workloadList {
+				if workload.Name == workloadName && workload.Labels != nil && labels.IsAuxiliaryWorkload(workload.Labels) {
+					logger.Debugf("Skipping migration of auxiliary workload %s", workloadName)
+					isAuxiliary = true
+					break
+				}
+			}
+		}
+
+		if isAuxiliary {
+			continue
+		}
+
 		// Check the runconfig to validate if the workload is not in a group already
 		// ListWorkloadsInGroup doesn't check the runconfig, so we need an additional check here
 		runConfig, err := runner.LoadState(ctx, workloadName)

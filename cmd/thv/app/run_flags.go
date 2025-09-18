@@ -230,6 +230,7 @@ func BuildRunnerConfig(
 	cmdArgs []string,
 	debugMode bool,
 	cmd *cobra.Command,
+	groupName string,
 ) (*runner.RunConfig, error) {
 	// Validate and setup basic configuration
 	validatedHost, err := ValidateAndNormaliseHostFlag(runFlags.Host)
@@ -258,7 +259,7 @@ func BuildRunnerConfig(
 	}
 
 	// Handle image retrieval
-	imageURL, serverMetadata, err := handleImageRetrieval(ctx, serverOrImage, runFlags)
+	imageURL, serverMetadata, err := handleImageRetrieval(ctx, serverOrImage, runFlags, groupName)
 	if err != nil {
 		return nil, err
 	}
@@ -302,12 +303,14 @@ func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.Token
 func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *telemetry.Config {
 	configProvider := cfg.NewDefaultProvider()
 	config := configProvider.GetConfig()
-	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := getTelemetryFromFlags(cmd, config,
-		runFlags.OtelEndpoint, runFlags.OtelSamplingRate, runFlags.OtelEnvironmentVariables)
+	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables, finalOtelInsecure,
+		finalOtelEnablePrometheusMetricsPath := getTelemetryFromFlags(cmd, config, runFlags.OtelEndpoint,
+		runFlags.OtelSamplingRate, runFlags.OtelEnvironmentVariables, runFlags.OtelInsecure,
+		runFlags.OtelEnablePrometheusMetricsPath)
 
-	return createTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
+	return createTelemetryConfig(finalOtelEndpoint, finalOtelEnablePrometheusMetricsPath,
 		runFlags.OtelServiceName, runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, finalOtelSamplingRate,
-		runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables)
+		runFlags.OtelHeaders, finalOtelInsecure, finalOtelEnvironmentVariables)
 }
 
 // setupRuntimeAndValidation creates container runtime and selects environment variable validator
@@ -333,6 +336,7 @@ func handleImageRetrieval(
 	ctx context.Context,
 	serverOrImage string,
 	runFlags *RunFlags,
+	groupName string,
 ) (
 	string,
 	registry.ServerMetadata,
@@ -341,7 +345,7 @@ func handleImageRetrieval(
 
 	// Try to get server from registry (container or remote) or direct URL
 	imageURL, serverMetadata, err := retriever.GetMCPServer(
-		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage)
+		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage, groupName)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
 	}
@@ -455,14 +459,12 @@ func buildRunnerConfig(
 	)
 
 	if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
-		if remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata); remoteAuthConfig != nil {
-			opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig), runner.WithRemoteURL(remoteServerMetadata.URL))
-		}
+		remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata)
+		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig), runner.WithRemoteURL(remoteServerMetadata.URL))
 	}
 	if runFlags.RemoteURL != "" {
-		if remoteAuthConfig := getRemoteAuthFromRunFlags(runFlags); remoteAuthConfig != nil {
-			opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig))
-		}
+		remoteAuthConfig := getRemoteAuthFromRunFlags(runFlags)
+		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig))
 	}
 
 	// Load authz config if path is provided
@@ -527,6 +529,9 @@ func getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata *registry.Remote
 	}
 
 	if remoteServerMetadata.OAuthConfig != nil {
+		if remoteServerMetadata.OAuthConfig.CallbackPort == 0 {
+			remoteServerMetadata.OAuthConfig.CallbackPort = runner.DefaultCallbackPort
+		}
 		return &runner.RemoteAuthConfig{
 			ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
 			ClientSecret: runFlags.RemoteAuthFlags.RemoteAuthClientSecret,
@@ -575,7 +580,8 @@ func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, strin
 
 // getTelemetryFromFlags extracts telemetry configuration from command flags
 func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint string, otelSamplingRate float64,
-	otelEnvironmentVariables []string) (string, float64, []string) {
+	otelEnvironmentVariables []string, otelInsecure bool, otelEnablePrometheusMetricsPath bool) (
+	string, float64, []string, bool, bool) {
 	// Use config values as fallbacks for OTEL flags if not explicitly set
 	finalOtelEndpoint := otelEndpoint
 	if !cmd.Flags().Changed("otel-endpoint") && config.OTEL.Endpoint != "" {
@@ -592,7 +598,18 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 		finalOtelEnvironmentVariables = config.OTEL.EnvVars
 	}
 
-	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables
+	finalOtelInsecure := otelInsecure
+	if !cmd.Flags().Changed("otel-insecure") {
+		finalOtelInsecure = config.OTEL.Insecure
+	}
+
+	finalOtelEnablePrometheusMetricsPath := otelEnablePrometheusMetricsPath
+	if !cmd.Flags().Changed("otel-enable-prometheus-metrics-path") {
+		finalOtelEnablePrometheusMetricsPath = config.OTEL.EnablePrometheusMetricsPath
+	}
+
+	return finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables,
+		finalOtelInsecure, finalOtelEnablePrometheusMetricsPath
 }
 
 // createOIDCConfig creates an OIDC configuration if any OIDC parameters are provided

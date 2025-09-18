@@ -29,12 +29,10 @@ import (
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
-	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -59,7 +57,6 @@ type ServerBuilder struct {
 	clientManager    client.Manager
 	workloadManager  workloads.Manager
 	groupManager     groups.Manager
-	secretsProvider  secrets.Provider
 }
 
 // NewServerBuilder creates a new ServerBuilder with default configuration
@@ -133,12 +130,6 @@ func (b *ServerBuilder) WithWorkloadManager(manager workloads.Manager) *ServerBu
 // WithGroupManager sets the group manager
 func (b *ServerBuilder) WithGroupManager(manager groups.Manager) *ServerBuilder {
 	b.groupManager = manager
-	return b
-}
-
-// WithSecretsProvider sets the secrets provider
-func (b *ServerBuilder) WithSecretsProvider(provider secrets.Provider) *ServerBuilder {
-	b.secretsProvider = provider
 	return b
 }
 
@@ -216,31 +207,8 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 			return fmt.Errorf("failed to create group manager: %v", err)
 		}
 	}
-	if b.secretsProvider == nil {
-		b.secretsProvider, err = getSecretsManager()
-		if err != nil {
-			return fmt.Errorf("failed to create secrets provider: %v", err)
-		}
-	}
 
 	return nil
-}
-
-// getSecretsManager is a helper function to get the secrets manager
-func getSecretsManager() (secrets.Provider, error) {
-	cfg := config.NewDefaultProvider().GetConfig()
-
-	// Check if secrets setup has been completed
-	if !cfg.Secrets.SetupCompleted {
-		return nil, secrets.ErrSecretsNotSetup
-	}
-
-	providerType, err := cfg.Secrets.GetProviderType()
-	if err != nil {
-		return nil, err
-	}
-
-	return secrets.CreateSecretProvider(providerType)
 }
 
 // setupDefaultRoutes sets up the default API routes
@@ -252,13 +220,12 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 			b.workloadManager,
 			b.containerRuntime,
 			b.groupManager,
-			b.secretsProvider,
 			b.debugMode,
 		),
 		"/api/v1beta/registry":  v1.RegistryRouter(),
 		"/api/v1beta/discovery": v1.DiscoveryRouter(),
 		"/api/v1beta/clients":   v1.ClientRouter(b.clientManager, b.workloadManager, b.groupManager),
-		"/api/v1beta/secrets":   v1.SecretsRouter(b.secretsProvider),
+		"/api/v1beta/secrets":   v1.SecretsRouter(),
 		"/api/v1beta/groups":    v1.GroupsRouter(b.groupManager, b.workloadManager, b.clientManager),
 	}
 

@@ -16,7 +16,14 @@
       "matchFileNames": ["deploy/charts/operator/**"]
     },
     {
-      "groupName": "kindest/node versions",
+      "description": "Only allow patch updates for kindest/node",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["kindest/node"],
+      "matchUpdateTypes": ["minor", "major"],
+      "enabled": false
+    },
+    {
+      "groupName": "kindest/node patch versions",
       "matchManagers": ["custom.regex"],
       "matchPackageNames": ["kindest/node"],
       "matchUpdateTypes": ["patch"]

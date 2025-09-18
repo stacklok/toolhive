@@ -86,7 +86,7 @@ func (m *manager) ensureService(
 // It returns a fully configured ClusterIP service ready for Kubernetes API operations.
 func buildRegistryAPIService(mcpRegistry *mcpv1alpha1.MCPRegistry) *corev1.Service {
 	// Generate service name using the established pattern
-	serviceName := fmt.Sprintf("%s-api", mcpRegistry.Name)
+	serviceName := mcpRegistry.GetAPIResourceName()
 
 	// Define labels using common function
 	labels := labelsForRegistryAPI(mcpRegistry, serviceName)

@@ -85,7 +85,7 @@ func (m *manager) ensureDeployment(
 	}
 
 	// Use CreateOrUpdate pattern for robust deployment management
-	deploymentName := fmt.Sprintf("%s-api", mcpRegistry.Name)
+	deploymentName := mcpRegistry.GetAPIResourceName()
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      deploymentName,
@@ -131,7 +131,7 @@ func (m *manager) buildRegistryAPIDeployment(
 	mcpRegistry *mcpv1alpha1.MCPRegistry, sourceHandler sources.SourceHandler,
 ) (*appsv1.Deployment, error) {
 	// Generate deployment name using the established pattern
-	deploymentName := fmt.Sprintf("%s-api", mcpRegistry.Name)
+	deploymentName := mcpRegistry.GetAPIResourceName()
 
 	// Define labels using common function
 	labels := labelsForRegistryAPI(mcpRegistry, deploymentName)

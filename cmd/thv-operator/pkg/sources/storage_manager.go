@@ -193,7 +193,7 @@ func (*ConfigMapStorageManager) GetType() string {
 
 // getConfigMapName generates the ConfigMap name for registry storage
 func (*ConfigMapStorageManager) getConfigMapName(mcpRegistry *mcpv1alpha1.MCPRegistry) string {
-	return fmt.Sprintf("%s-registry-storage", mcpRegistry.Name)
+	return mcpRegistry.GetStorageName()
 }
 
 // StorageError represents an error that occurred during storage operations

@@ -95,7 +95,7 @@ func (m *manager) ReconcileAPIService(
 func (m *manager) IsAPIReady(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) bool {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
-	deploymentName := fmt.Sprintf("%s-api", mcpRegistry.Name)
+	deploymentName := mcpRegistry.GetAPIResourceName()
 	deployment := &appsv1.Deployment{}
 
 	err := m.client.Get(ctx, client.ObjectKey{
@@ -220,7 +220,7 @@ func (*manager) configureConfigMapStorage(
 // getConfigMapName generates the ConfigMap name for registry storage
 // This mirrors the logic in ConfigMapStorageManager to maintain consistency
 func getConfigMapName(mcpRegistry *mcpv1alpha1.MCPRegistry) string {
-	return fmt.Sprintf("%s-registry-storage", mcpRegistry.Name)
+	return mcpRegistry.GetStorageName()
 }
 
 // labelsForRegistryAPI generates standard labels for registry API resources

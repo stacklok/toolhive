@@ -281,8 +281,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
-	finalOtelEnvironmentVariables := []string{}
-
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
@@ -297,10 +295,17 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	var imageMetadata *registry.ImageMetadata
 
-	// Parse environment variables from slice to map
-	envVarsMap, err := environment.ParseEnvironmentVariables(runFlags.runEnv)
-	if err != nil {
-		return fmt.Errorf("failed to parse environment variables: %v", err)
+	// Parse environment variables from slice to map only if env flag was set
+	var envVarsMap map[string]string
+	if cmd.Flags().Changed("env") {
+		var err error
+		envVarsMap, err = environment.ParseEnvironmentVariables(runFlags.runEnv)
+		if err != nil {
+			return fmt.Errorf("failed to parse environment variables: %v", err)
+		}
+	} else {
+		// Use empty map if no env flags were set
+		envVarsMap = make(map[string]string)
 	}
 
 	// Start with basic options
@@ -314,62 +319,18 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 		opts = applyRunConfigToBuilder(opts, fileBasedConfig)
 	}
 
-	// Apply ALL CLI flags as overrides (they will override file-based configuration)
+	// Apply CLI flag overrides
+	opts = applyBasicFlagOverrides(cmd, &runFlags, validatedHost, opts)
+
+	// Always apply essential runtime options (these are not configuration file fields)
 	opts = append(opts,
-		// Basic configuration
-		runner.WithTransport(runFlags.runTransport),
-		runner.WithPort(runFlags.runProxyPort),
-		runner.WithTargetPort(runFlags.runTargetPort),
-		runner.WithName(runFlags.runName),
-		runner.WithProxyMode(types.ProxyMode(runFlags.runProxyMode)),
-		runner.WithHost(validatedHost),
-		// Essential runtime options
 		runner.WithCmdArgs(cmdArgs),
 		runner.WithImage(mcpServerImage),
 		runner.WithTargetHost(transport.LocalhostIPv4),
-		// All other CLI flags
-		runner.WithVolumes(runFlags.runVolumes),
-		runner.WithSecrets(runFlags.runSecrets),
-		runner.WithAuthzConfigPath(runFlags.runAuthzConfig),
-		runner.WithAuditConfigPath(runFlags.runAuditConfig),
-		runner.WithPermissionProfileNameOrPath(runFlags.runPermissionProfile),
-		runner.WithNetworkIsolation(runFlags.runIsolateNetwork),
-		runner.WithAuditEnabled(runFlags.runEnableAudit, runFlags.runAuditConfig),
-		runner.WithOIDCConfig(
-			runFlags.oidcIssuer,
-			runFlags.oidcAudience,
-			runFlags.oidcJwksURL,
-			runFlags.oidcIntrospectionURL,
-			runFlags.oidcClientID,
-			runFlags.oidcClientSecret,
-			runFlags.runThvCABundle,
-			runFlags.runJWKSAuthTokenFile,
-			runFlags.runResourceURL,
-			runFlags.runJWKSAllowPrivateIP,
-		),
-		runner.WithTelemetryConfig(
-			runFlags.runOtelEndpoint,
-			runFlags.enablePrometheusMetricsPath,
-			runFlags.runOtelTracingEnabled,
-			runFlags.runOtelMetricsEnabled,
-			runFlags.runOtelServiceName,
-			runFlags.runOtelTracingSamplingRate,
-			runFlags.runOtelHeaders,
-			runFlags.runOtelInsecure,
-			finalOtelEnvironmentVariables,
-		),
-		runner.WithToolsFilter(runFlags.runToolsFilter),
 	)
 
-	// Add optional flags
-	if runFlags.runK8sPodPatch != "" {
-		opts = append(opts, runner.WithK8sPodPatch(runFlags.runK8sPodPatch))
-	}
-
-	// Process environment files
-	if runFlags.runEnvFileDir != "" {
-		opts = append(opts, runner.WithEnvFilesFromDirectory(runFlags.runEnvFileDir))
-	}
+	// Apply advanced flag overrides
+	opts = applyAdvancedFlagOverrides(cmd, &runFlags, runFlags.runOtelHeaders, opts)
 
 	runConfig, err := runner.NewRunConfigBuilder(ctx, imageMetadata, envVarsMap, envVarValidator, opts...)
 	if err != nil {
@@ -551,5 +512,137 @@ func applyRunConfigToBuilder(
 		)
 	}
 
+	return opts
+}
+
+// applyBasicFlagOverrides applies basic CLI flag overrides when explicitly set by user
+func applyBasicFlagOverrides(
+	cmd *cobra.Command,
+	runFlags *proxyRunFlags,
+	validatedHost string,
+	opts []runner.RunConfigBuilderOption,
+) []runner.RunConfigBuilderOption {
+	if cmd.Flags().Changed("transport") {
+		opts = append(opts, runner.WithTransport(runFlags.runTransport))
+	}
+	if cmd.Flags().Changed("proxy-port") {
+		opts = append(opts, runner.WithPort(runFlags.runProxyPort))
+	}
+	if cmd.Flags().Changed("target-port") {
+		opts = append(opts, runner.WithTargetPort(runFlags.runTargetPort))
+	}
+	if cmd.Flags().Changed("name") {
+		opts = append(opts, runner.WithName(runFlags.runName))
+	}
+	if cmd.Flags().Changed("proxy-mode") {
+		opts = append(opts, runner.WithProxyMode(types.ProxyMode(runFlags.runProxyMode)))
+	}
+	if cmd.Flags().Changed("host") {
+		opts = append(opts, runner.WithHost(validatedHost))
+	}
+	return opts
+}
+
+// applyAdvancedFlagOverrides applies advanced CLI flag overrides when explicitly set by user
+func applyAdvancedFlagOverrides(
+	cmd *cobra.Command,
+	runFlags *proxyRunFlags,
+	otelHeaders []string,
+	opts []runner.RunConfigBuilderOption,
+) []runner.RunConfigBuilderOption {
+	// Apply simple flags
+	if cmd.Flags().Changed("volume") {
+		opts = append(opts, runner.WithVolumes(runFlags.runVolumes))
+	}
+	if cmd.Flags().Changed("secret") {
+		opts = append(opts, runner.WithSecrets(runFlags.runSecrets))
+	}
+	if cmd.Flags().Changed("authz-config") {
+		opts = append(opts, runner.WithAuthzConfigPath(runFlags.runAuthzConfig))
+	}
+	if cmd.Flags().Changed("audit-config") {
+		opts = append(opts, runner.WithAuditConfigPath(runFlags.runAuditConfig))
+	}
+	if cmd.Flags().Changed("permission-profile") {
+		opts = append(opts, runner.WithPermissionProfileNameOrPath(runFlags.runPermissionProfile))
+	}
+	if cmd.Flags().Changed("isolate-network") {
+		opts = append(opts, runner.WithNetworkIsolation(runFlags.runIsolateNetwork))
+	}
+	if cmd.Flags().Changed("enable-audit") || cmd.Flags().Changed("audit-config") {
+		opts = append(opts, runner.WithAuditEnabled(runFlags.runEnableAudit, runFlags.runAuditConfig))
+	}
+	if cmd.Flags().Changed("tools") {
+		opts = append(opts, runner.WithToolsFilter(runFlags.runToolsFilter))
+	}
+	if cmd.Flags().Changed("env-file-dir") {
+		opts = append(opts, runner.WithEnvFilesFromDirectory(runFlags.runEnvFileDir))
+	}
+
+	// Apply complex config groups
+	opts = applyOIDCConfigIfChanged(cmd, runFlags, opts)
+	opts = applyTelemetryConfigIfChanged(cmd, runFlags, otelHeaders, opts)
+
+	// Add optional flags that are always checked (these are runtime-specific)
+	if runFlags.runK8sPodPatch != "" {
+		opts = append(opts, runner.WithK8sPodPatch(runFlags.runK8sPodPatch))
+	}
+
+	return opts
+}
+
+// applyOIDCConfigIfChanged applies OIDC configuration only if any OIDC flag was set
+func applyOIDCConfigIfChanged(
+	cmd *cobra.Command,
+	runFlags *proxyRunFlags,
+	opts []runner.RunConfigBuilderOption,
+) []runner.RunConfigBuilderOption {
+	if cmd.Flags().Changed("oidc-issuer") || cmd.Flags().Changed("oidc-audience") ||
+		cmd.Flags().Changed("oidc-jwks-url") || cmd.Flags().Changed("oidc-introspection-url") ||
+		cmd.Flags().Changed("oidc-client-id") || cmd.Flags().Changed("oidc-client-secret") ||
+		cmd.Flags().Changed("thv-ca-bundle") || cmd.Flags().Changed("jwks-auth-token-file") ||
+		cmd.Flags().Changed("resource-url") || cmd.Flags().Changed("jwks-allow-private-ip") {
+		opts = append(opts, runner.WithOIDCConfig(
+			runFlags.oidcIssuer,
+			runFlags.oidcAudience,
+			runFlags.oidcJwksURL,
+			runFlags.oidcIntrospectionURL,
+			runFlags.oidcClientID,
+			runFlags.oidcClientSecret,
+			runFlags.runThvCABundle,
+			runFlags.runJWKSAuthTokenFile,
+			runFlags.runResourceURL,
+			runFlags.runJWKSAllowPrivateIP,
+		))
+	}
+	return opts
+}
+
+// applyTelemetryConfigIfChanged applies telemetry configuration only if any telemetry flag was set
+func applyTelemetryConfigIfChanged(
+	cmd *cobra.Command,
+	runFlags *proxyRunFlags,
+	otelHeaders []string,
+	opts []runner.RunConfigBuilderOption,
+) []runner.RunConfigBuilderOption {
+	if cmd.Flags().Changed("otel-endpoint") || cmd.Flags().Changed("enable-prometheus-metrics-path") ||
+		cmd.Flags().Changed("otel-tracing-enabled") || cmd.Flags().Changed("otel-metrics-enabled") ||
+		cmd.Flags().Changed("otel-service-name") || cmd.Flags().Changed("otel-tracing-sampling-rate") {
+
+		// Use empty environment variables for now (this was originally finalOtelEnvironmentVariables)
+		finalOtelEnvironmentVariables := []string{}
+
+		opts = append(opts, runner.WithTelemetryConfig(
+			runFlags.runOtelEndpoint,
+			runFlags.enablePrometheusMetricsPath,
+			runFlags.runOtelTracingEnabled,
+			runFlags.runOtelMetricsEnabled,
+			runFlags.runOtelServiceName,
+			runFlags.runOtelTracingSamplingRate,
+			otelHeaders,
+			runFlags.runOtelInsecure,
+			finalOtelEnvironmentVariables,
+		))
+	}
 	return opts
 }

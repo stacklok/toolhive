@@ -1,7 +1,7 @@
 
 # ToolHive Operator Helm Chart
 
-![Version: 0.2.14](https://img.shields.io/badge/Version-0.2.14-informational?style=flat-square)
+![Version: 0.2.15](https://img.shields.io/badge/Version-0.2.15-informational?style=flat-square)
 ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square)
 
 A Helm chart for deploying the ToolHive Operator into Kubernetes.
@@ -62,7 +62,7 @@ The command removes all the Kubernetes components associated with the chart and 
 | operator.autoscaling.targetCPUUtilizationPercentage | int | `80` | Target CPU utilization percentage for autoscaling |
 | operator.containerSecurityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000}` | Container security context settings for the operator |
 | operator.env | object | `{}` | Environment variables to set in the operator container |
-| operator.image | string | `"ghcr.io/stacklok/toolhive/operator:v0.3.0"` | Container image for the operator |
+| operator.image | string | `"ghcr.io/stacklok/toolhive/operator:v0.3.2"` | Container image for the operator |
 | operator.imagePullPolicy | string | `"IfNotPresent"` | Image pull policy for the operator container |
 | operator.imagePullSecrets | list | `[]` | List of image pull secrets to use |
 | operator.leaderElectionRole | object | `{"binding":{"name":"toolhive-operator-leader-election-rolebinding"},"name":"toolhive-operator-leader-election-role","rules":[{"apiGroups":[""],"resources":["configmaps"],"verbs":["get","list","watch","create","update","patch","delete"]},{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["get","list","watch","create","update","patch","delete"]},{"apiGroups":[""],"resources":["events"],"verbs":["create","patch"]}]}` | Leader election role configuration |
@@ -89,7 +89,7 @@ The command removes all the Kubernetes components associated with the chart and 
 | operator.serviceAccount.labels | object | `{}` | Labels to add to the service account |
 | operator.serviceAccount.name | string | `"toolhive-operator"` | The name of the service account to use. If not set and create is true, a name is generated. |
 | operator.tolerations | list | `[]` | Tolerations for the operator pod |
-| operator.toolhiveRunnerImage | string | `"ghcr.io/stacklok/toolhive/proxyrunner:v0.3.0"` | Image to use for Toolhive runners |
+| operator.toolhiveRunnerImage | string | `"ghcr.io/stacklok/toolhive/proxyrunner:v0.3.2"` | Image to use for Toolhive runners |
 | operator.volumeMounts | list | `[]` | Additional volume mounts on the operator container |
 | operator.volumes | list | `[]` | Additional volumes to mount on the operator pod |
 

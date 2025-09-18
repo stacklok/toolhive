@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 jobs:
-  e2e-tests:
-    name: E2E Tests
+  build-binary:
+    name: Build ToolHive Binary
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
@@ -25,15 +25,63 @@ jobs:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Ginkgo CLI
-        run: go install github.com/onsi/ginkgo/v2/ginkgo@latest
-
       - name: Build ToolHive binary
         run: |
           task build
           # Verify the binary was created and is executable
           ls -la ./bin/
           chmod +x ./bin/thv
+
+      - name: Upload ToolHive binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: toolhive-binary
+          path: ./bin/thv
+          retention-days: 1
+
+  e2e-tests:
+    name: E2E Tests (${{ matrix.title }})
+    runs-on: ubuntu-latest
+    needs: build-binary
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - title: core
+            label_filter: core
+            artifact: e2e-test-results-core
+          - title: mcp
+            label_filter: mcp
+            artifact: e2e-test-results-mcp
+          - title: proxy-mw
+            label_filter: 'proxy || middleware || stability'
+            artifact: e2e-test-results-proxy-mw
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install dependencies
+        run: |
+          go mod download
+      - name: Install Ginkgo CLI
+        run: |
+          go install github.com/onsi/ginkgo/v2/ginkgo@latest
+
+      - name: Download ToolHive binary
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: toolhive-binary
+          path: ./bin/
+
+      - name: Set binary permissions
+        run: |
+          chmod +x ./bin/thv
+          ls -la ./bin/
 
       - name: Set up container runtime (Docker)
         run: |
@@ -42,18 +90,19 @@ jobs:
           # Start Docker daemon if not running
           sudo systemctl start docker
 
-      - name: Run E2E tests
+      - name: Run E2E tests (${{ matrix.title }})
         env:
           THV_BINARY: ${{ github.workspace }}/bin/thv
           TOOLHIVE_EGRESS_IMAGE: ghcr.io/stacklok/toolhive/egress-proxy:latest
           TEST_TIMEOUT: 15m
+          LABEL_FILTER: ${{ matrix.label_filter }}
         run: ./test/e2e/run_tests.sh
 
-      - name: Upload test results
+      - name: Upload test results (${{ matrix.title }})
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: e2e-test-results
+          name: ${{ matrix.artifact }}
           path: |
             test/e2e/ginkgo-report.xml
             test/e2e/junit-report.xml

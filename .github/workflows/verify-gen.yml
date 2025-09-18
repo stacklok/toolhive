@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 jobs:
-  swagger:
-    name: Verify code generation
+  verify-code-generation:
+    name: Verify Code Generation
     runs-on: ubuntu-latest
 
     steps:

@@ -173,6 +173,11 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get debug mode flag
 	debugMode, _ := cmd.Flags().GetBool("debug")
 
+	return runSingleServer(ctx, &runFlags, serverOrImage, cmdArgs, debugMode, cmd, "")
+}
+
+// runSingleServer handles the core logic for running a single MCP server
+func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage string, cmdArgs []string, debugMode bool, cmd *cobra.Command, groupName string) error { //nolint:lll
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
@@ -200,7 +205,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Build the run configuration
-	runnerConfig, err := BuildRunnerConfig(ctx, &runFlags, serverOrImage, cmdArgs, debugMode, cmd)
+	runnerConfig, err := BuildRunnerConfig(ctx, runFlags, serverOrImage, cmdArgs, debugMode, cmd, groupName)
 	if err != nil {
 		return err
 	}

@@ -356,6 +356,9 @@ type OAuthFlowConfig struct {
 	Timeout              time.Duration
 	SkipBrowser          bool
 	OAuthParams          map[string]string
+	// IsResourceMetadataDiscovery indicates that we're discovering from resource metadata
+	// where the issuer may differ from the metadata URL (RFC 8414 allows this)
+	IsResourceMetadataDiscovery bool
 }
 
 // OAuthFlowResult contains the result of an OAuth flow
@@ -419,18 +422,42 @@ func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuth
 
 // getDiscoveryDocument retrieves the OIDC discovery document
 func getDiscoveryDocument(ctx context.Context, issuer string, config *OAuthFlowConfig) (*oauth.OIDCDiscoveryDocument, error) {
-	// If we already have the registration endpoint from earlier discovery, use it
-	if config.RegistrationEndpoint != "" && config.AuthorizeURL != "" && config.TokenURL != "" {
+	// If we already have the essential OAuth endpoints from earlier discovery, use them
+	// This happens when we've discovered from resource metadata where the issuer
+	// may differ from the metadata URL (e.g., Atlassian's case)
+	if config.AuthorizeURL != "" && config.TokenURL != "" {
 		logger.Debugf("Using pre-discovered OAuth endpoints for dynamic registration")
 		return &oauth.OIDCDiscoveryDocument{
 			Issuer:                issuer,
 			AuthorizationEndpoint: config.AuthorizeURL,
 			TokenEndpoint:         config.TokenURL,
-			RegistrationEndpoint:  config.RegistrationEndpoint,
+			RegistrationEndpoint:  config.RegistrationEndpoint, // May be empty if not supported
 		}, nil
 	}
 
 	// Fall back to discovering endpoints
+	// If we're in resource metadata discovery context, allow issuer mismatch
+	// Otherwise, use standard discovery with strict validation
+	if config.IsResourceMetadataDiscovery {
+		// Use DiscoverActualIssuer which doesn't validate issuer match
+		// This is needed for cases like Atlassian where the metadata URL
+		// differs from the actual issuer in the discovery document
+		doc, err := oauth.DiscoverActualIssuer(ctx, issuer)
+		if err != nil {
+			return nil, err
+		}
+
+		// If the discovered issuer is different, log it for debugging
+		if doc.Issuer != issuer {
+			logger.Infof("Discovered actual issuer: %s (from metadata URL: %s)", doc.Issuer, issuer)
+		}
+
+		return doc, nil
+	}
+
+	// For direct issuer specification, use strict validation
+	// This is important for security - when a user explicitly provides an issuer,
+	// we must validate that the discovered issuer matches what was requested.
 	return oauth.DiscoverOIDCEndpoints(ctx, issuer)
 }
 

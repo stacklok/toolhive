@@ -66,8 +66,17 @@ func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) 
 				flowConfig.AuthorizeURL = authServerInfo.AuthorizationURL
 				flowConfig.TokenURL = authServerInfo.TokenURL
 				flowConfig.RegistrationEndpoint = authServerInfo.RegistrationEndpoint
+				// Mark that we're in resource metadata discovery context
+				// This allows issuer mismatch which is legitimate for resource metadata
+				flowConfig.IsResourceMetadataDiscovery = true
 				logger.Infof("Using discovered OAuth endpoints - authorize: %s, token: %s, registration: %s",
 					authServerInfo.AuthorizationURL, authServerInfo.TokenURL, authServerInfo.RegistrationEndpoint)
+			} else if h.config.Issuer == "" && h.config.AuthorizeURL == "" && h.config.TokenURL == "" {
+				// If we derived the issuer from the remote URL (not explicitly configured),
+				// we're in a resource metadata discovery context where issuer mismatch is allowed
+				// This handles cases like Atlassian where the metadata URL differs from the issuer
+				flowConfig.IsResourceMetadataDiscovery = true
+				logger.Debugf("Using derived issuer from remote URL - allowing issuer mismatch per RFC 8414")
 			}
 
 			result, err := discovery.PerformOAuthFlow(ctx, issuer, flowConfig)

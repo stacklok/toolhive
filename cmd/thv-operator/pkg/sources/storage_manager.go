@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,6 +22,9 @@ const (
 	ConfigMapStorageDataKey = "registry.json"
 	// RegistryStorageComponent is the component label for the registry storage
 	RegistryStorageComponent = "registry-storage"
+
+	// StorageTypeConfigMap identifies the ConfigMap storage manager implementation
+	StorageTypeConfigMap = "configmap"
 )
 
 // StorageManager defines the interface for registry data persistence
@@ -39,9 +41,8 @@ type StorageManager interface {
 	// GetStorageReference returns a reference to where the data is stored
 	GetStorageReference(mcpRegistry *mcpv1alpha1.MCPRegistry) *mcpv1alpha1.StorageReference
 
-	// ConfigureDeployment configures a deployment with storage-specific requirements
-	// containerName specifies which container to configure
-	ConfigureDeployment(deployment *appsv1.Deployment, mcpRegistry *mcpv1alpha1.MCPRegistry, containerName string) error
+	// GetType returns the storage manager type as a string
+	GetType() string
 }
 
 // ConfigMapStorageManager implements StorageManager using Kubernetes ConfigMaps
@@ -185,92 +186,14 @@ func (s *ConfigMapStorageManager) GetStorageReference(mcpRegistry *mcpv1alpha1.M
 	}
 }
 
+// GetType returns the storage manager type
+func (*ConfigMapStorageManager) GetType() string {
+	return StorageTypeConfigMap
+}
+
 // getConfigMapName generates the ConfigMap name for registry storage
 func (*ConfigMapStorageManager) getConfigMapName(mcpRegistry *mcpv1alpha1.MCPRegistry) string {
 	return fmt.Sprintf("%s-registry-storage", mcpRegistry.Name)
-}
-
-// ConfigureDeployment configures a deployment with storage-specific requirements
-func (s *ConfigMapStorageManager) ConfigureDeployment(
-	deployment *appsv1.Deployment,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
-	containerName string,
-) error {
-	configMapName := s.getConfigMapName(mcpRegistry)
-
-	// Find the container by name
-	container := findContainerByName(deployment.Spec.Template.Spec.Containers, containerName)
-	if container == nil {
-		return fmt.Errorf("container '%s' not found in deployment", containerName)
-	}
-
-	// Replace container args completely with the correct set of arguments
-	// This ensures idempotent behavior across multiple reconciliations
-	filePath := fmt.Sprintf("/data/registry/%s", ConfigMapStorageDataKey)
-	container.Args = []string{
-		"serve",
-		fmt.Sprintf("--from-file=%s", filePath),
-		fmt.Sprintf("--registry-name=%s", mcpRegistry.Name),
-	}
-
-	// Add ConfigMap volume to deployment if not already present
-	volumeName := "registry-data"
-	if !hasVolume(deployment.Spec.Template.Spec.Volumes, volumeName) {
-		volume := corev1.Volume{
-			Name: volumeName,
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: configMapName,
-					},
-				},
-			},
-		}
-		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, volume)
-	}
-
-	// Add volume mount to the container if not already present
-	mountPath := "/data/registry"
-	if !hasVolumeMount(container.VolumeMounts, volumeName) {
-		volumeMount := corev1.VolumeMount{
-			Name:      volumeName,
-			MountPath: mountPath,
-			ReadOnly:  true,
-		}
-		container.VolumeMounts = append(container.VolumeMounts, volumeMount)
-	}
-
-	return nil
-}
-
-// findContainerByName finds a container by name in a slice of containers
-func findContainerByName(containers []corev1.Container, name string) *corev1.Container {
-	for i := range containers {
-		if containers[i].Name == name {
-			return &containers[i]
-		}
-	}
-	return nil
-}
-
-// hasVolume checks if a volume with the given name exists in the volumes slice
-func hasVolume(volumes []corev1.Volume, name string) bool {
-	for _, volume := range volumes {
-		if volume.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-// hasVolumeMount checks if a volume mount with the given name exists in the volume mounts slice
-func hasVolumeMount(volumeMounts []corev1.VolumeMount, name string) bool {
-	for _, mount := range volumeMounts {
-		if mount.Name == name {
-			return true
-		}
-	}
-	return false
 }
 
 // StorageError represents an error that occurred during storage operations

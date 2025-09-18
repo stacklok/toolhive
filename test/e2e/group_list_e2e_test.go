@@ -119,7 +119,7 @@ var _ = Describe("Group List E2E", Label("core", "groups", "e2e"), func() {
 			}
 
 			By("Verifying test groups are in alphanumeric order")
-			Expect(len(testGroups)).To(Equal(len(mixedGroupNames)), "All test groups should be found")
+			Expect(testGroups).To(HaveLen(len(mixedGroupNames)), "All test groups should be found")
 
 			// Check that our test groups are sorted correctly
 			for i := 1; i < len(testGroups); i++ {

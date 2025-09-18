@@ -5,6 +5,7 @@ on:
 
 jobs:
   image-build-and-publish:
+    name: Build and Publish Main Image
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -84,6 +85,7 @@ jobs:
           fi
 
   egress-proxy-image-build-and-publish:
+    name: Build and Publish Egress Proxy Image
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -157,6 +159,7 @@ jobs:
           cosign sign -y $BASE_REPO:latest
 
   operator-image-build-and-publish:
+    name: Build and Publish Operator Image
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -245,6 +248,7 @@ jobs:
           fi
 
   proxyrunner-image-build-and-publish:
+    name: Build and Publish Proxy Runner Image
     runs-on: ubuntu-latest
     permissions:
       contents: write

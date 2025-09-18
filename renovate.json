@@ -16,9 +16,23 @@
       "matchFileNames": ["deploy/charts/operator/**"]
     },
     {
+      "description": "Only allow patch updates for kindest/node",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["kindest/node"],
+      "matchUpdateTypes": ["minor", "major"],
+      "enabled": false
+    },
+    {
+      "groupName": "kindest/node patch versions",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["kindest/node"],
+      "matchUpdateTypes": ["patch"]
+    },
+    {
       "groupName": "dockerfile template base images",
       "matchDatasources": ["docker"],
-      "matchManagers": ["custom.regex"]
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["!kindest/node"]
     }
   ],
   "customManagers": [
@@ -30,6 +44,16 @@
         "FROM (?<depName>[a-z0-9.-]+):(?<currentValue>[a-z0-9.-]+)"
       ],
       "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Update kindest/node versions in GitHub workflows",
+      "managerFilePatterns": [".github/workflows/*.yml", ".github/workflows/*.yaml"],
+      "matchStrings": [
+        "\"(?<depName>kindest/node):v(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "semver"
     }
   ],
   "postUpdateOptions": ["gomodTidy"]

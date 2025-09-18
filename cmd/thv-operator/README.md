@@ -53,6 +53,44 @@ flowchart LR
 
 ## Installation
 
+## Running Operator Unit & Integration Tests
+
+To run the basic operator-only tests (unit and integration), use the following command from the root of the project:
+
+```bash
+task operator:operator-test
+```
+
+This will run all Go tests in the operator codebase.
+
+## Running Operator E2E Tests
+
+The `task` commands for the operator are designed to be run from the root of the project.
+
+### E2E Test Prerequisites
+
+To run the Operator end-to-end (E2E) tests locally, ensure you have the following installed:
+
+- [Go](https://golang.org/doc/install)
+- [Kind](https://kind.sigs.k8s.io/)
+- [Kind Load Balancer](https://kind.sigs.k8s.io/docs/user/loadbalancer/)
+- [Task](https://taskfile.dev/#/installation)
+- [Chainsaw](https://github.com/kubernetes-sigs/chainsaw) (automatically installed by the Taskfile for local runs)
+
+### Steps
+
+1. **Set up the Kind cluster:**
+  ```bash
+  task operator:kind-setup
+  ```
+
+2. **Run the Operator E2E tests:**
+  ```bash
+  task operator:operator-e2e-test
+  ```
+
+Note: The Taskfile will ensure Chainsaw is installed locally if not present. In CI, Chainsaw is installed via the GitHub Action.
+
 ### Prerequisites
 
 - Kubernetes cluster (v1.19+)

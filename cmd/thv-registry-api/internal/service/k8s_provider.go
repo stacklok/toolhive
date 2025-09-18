@@ -41,15 +41,21 @@ type K8sRegistryDataProvider struct {
 	client        kubernetes.Interface
 	configMapName string
 	namespace     string
+	registryName  string
 }
 
 // NewK8sRegistryDataProvider creates a new Kubernetes-based registry data provider.
-// It requires a Kubernetes client and the ConfigMap details where registry data is stored.
-func NewK8sRegistryDataProvider(kubeClient kubernetes.Interface, configMapName, namespace string) *K8sRegistryDataProvider {
+// It requires a Kubernetes client, the ConfigMap details where registry data is stored,
+// and the registry name identifier for business logic purposes.
+func NewK8sRegistryDataProvider(
+	kubeClient kubernetes.Interface,
+	configMapName, namespace, registryName string,
+) *K8sRegistryDataProvider {
 	return &K8sRegistryDataProvider{
 		client:        kubeClient,
 		configMapName: configMapName,
 		namespace:     namespace,
+		registryName:  registryName,
 	}
 }
 
@@ -84,6 +90,12 @@ func (p *K8sRegistryDataProvider) GetRegistryData(ctx context.Context) (*registr
 // It returns a descriptive string indicating the ConfigMap source.
 func (p *K8sRegistryDataProvider) GetSource() string {
 	return fmt.Sprintf("configmap:%s/%s", p.namespace, p.configMapName)
+}
+
+// GetRegistryName implements RegistryDataProvider.GetRegistryName.
+// It returns the injected registry name identifier.
+func (p *K8sRegistryDataProvider) GetRegistryName() string {
+	return p.registryName
 }
 
 // K8sDeploymentProvider implements DeploymentProvider using Kubernetes API.

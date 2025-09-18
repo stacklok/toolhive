@@ -41,6 +41,14 @@ spec:
             exit 1
           fi
       
+  - name: deploy-test-secret
+    description: Deploy test secret for MCPServer
+    try:
+    - apply:
+        file: test-secret.yaml
+    - assert:
+        file: test-secret.yaml
+
   - name: deploy-mcpserver-configmap-mode
     description: Deploy MCPServer instance (will use ConfigMap mode due to env var)
     try:
@@ -92,14 +100,21 @@ spec:
           fi
           
           # Verify deployment arguments
-          echo "Verifying deployment uses --from-configmap flag..."
+          echo "Verifying deployment uses --from-configmap and --k8s-pod-patch flags..."
           DEPLOYMENT_ARGS=$(kubectl get deployment yardstick -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].args}')
           echo "Deployment args: $DEPLOYMENT_ARGS"
-          
+
           if echo "$DEPLOYMENT_ARGS" | grep -q -- "--from-configmap=toolhive-system/yardstick-runconfig"; then
             echo "✓ Deployment uses --from-configmap flag"
           else
             echo "✗ Deployment does not use --from-configmap flag"
+            exit 1
+          fi
+
+          if echo "$DEPLOYMENT_ARGS" | grep -q -- "--k8s-pod-patch="; then
+            echo "✓ Deployment uses --k8s-pod-patch flag"
+          else
+            echo "✗ Deployment does not use --k8s-pod-patch flag"
             exit 1
           fi
           
@@ -115,12 +130,54 @@ spec:
           fi
           
           echo "✓ Individual config flags correctly omitted"
-          
-          # Wait for pod to be ready
-          echo "Waiting for pod to be ready..."
-          kubectl wait --for=condition=Ready pod -l app=mcpserver,app.kubernetes.io/instance=yardstick -n toolhive-system --timeout=120s
-          
-          echo "✅ ConfigMap mode functionality verified successfully!"
+
+          # Validate k8s-pod-patch contains secrets
+          echo "Validating k8s-pod-patch contains secrets..."
+          # Extract the JSON argument by finding the --k8s-pod-patch flag in the args array
+          POD_PATCH_ARG=$(echo "$DEPLOYMENT_ARGS" | jq -r '.[] | select(startswith("--k8s-pod-patch=")) | sub("^--k8s-pod-patch="; "")')
+
+          if [ -n "$POD_PATCH_ARG" ]; then
+            echo "Pod patch argument found, validating contents..."
+            echo "Pod patch JSON: $POD_PATCH_ARG"
+
+            # Check if pod patch contains MCP container with env vars
+            if echo "$POD_PATCH_ARG" | jq -e '.spec.containers[] | select(.name=="mcp") | .env[]' > /dev/null 2>&1; then
+              echo "✓ Pod patch contains MCP container with environment variables"
+            else
+              echo "✗ Pod patch does not contain MCP container with environment variables"
+              echo "Pod patch contents: $POD_PATCH_ARG"
+              exit 1
+            fi
+
+            # Validate specific secret environment variables
+            if echo "$POD_PATCH_ARG" | jq -e '.spec.containers[] | select(.name=="mcp") | .env[] | select(.name=="YARDSTICK_API_TOKEN")' > /dev/null 2>&1; then
+              echo "✓ Pod patch contains YARDSTICK_API_TOKEN environment variable"
+            else
+              echo "✗ Pod patch missing YARDSTICK_API_TOKEN environment variable"
+              exit 1
+            fi
+
+            if echo "$POD_PATCH_ARG" | jq -e '.spec.containers[] | select(.name=="mcp") | .env[] | select(.name=="GITHUB_TOKEN")' > /dev/null 2>&1; then
+              echo "✓ Pod patch contains GITHUB_TOKEN environment variable"
+            else
+              echo "✗ Pod patch missing GITHUB_TOKEN environment variable"
+              exit 1
+            fi
+
+            # Validate secretKeyRef structure
+            if echo "$POD_PATCH_ARG" | jq -e '.spec.containers[] | select(.name=="mcp") | .env[] | select(.name=="YARDSTICK_API_TOKEN") | .valueFrom.secretKeyRef | select(.name=="yardstick-test-secret" and .key=="api-token")' > /dev/null 2>&1; then
+              echo "✓ YARDSTICK_API_TOKEN has correct secretKeyRef structure"
+            else
+              echo "✗ YARDSTICK_API_TOKEN secretKeyRef structure is incorrect"
+              exit 1
+            fi
+
+          else
+            echo "✗ No pod patch argument found"
+            exit 1
+          fi
+
+          echo "✅ ConfigMap mode functionality with secrets verified successfully!"
 
   - name: cleanup-configmap-mode
     description: Disable ConfigMap mode to avoid affecting subsequent tests

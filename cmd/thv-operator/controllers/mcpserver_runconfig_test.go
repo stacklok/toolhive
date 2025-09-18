@@ -151,9 +151,12 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "secret-server", config.Name)
-				assert.Len(t, config.Secrets, 2)
-				assert.Equal(t, "secret1,target=TARGET1", config.Secrets[0])
-				assert.Equal(t, "secret2,target=key2", config.Secrets[1])
+				// Secrets are NOT in the RunConfig for ConfigMap mode - handled via k8s pod patch
+				// This avoids secrets provider errors in Kubernetes environment
+				assert.Len(t, config.Secrets, 0)
+				// For ConfigMap mode, K8s pod template patch is NOT in the runconfig
+				// (it's passed via CLI flag instead to avoid redundancy)
+				assert.Empty(t, config.K8sPodTemplatePatch)
 			},
 		},
 		{
@@ -249,9 +252,12 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Len(t, config.Volumes, 2)
 				assert.Equal(t, "/host/path1:/mount/path1", config.Volumes[0])
 				assert.Equal(t, "/host/path2:/mount/path2:ro", config.Volumes[1])
-				assert.Len(t, config.Secrets, 2)
-				assert.Equal(t, "secret1,target=CUSTOM_TARGET", config.Secrets[0])
-				assert.Equal(t, "secret2,target=key2", config.Secrets[1])
+				// Secrets are NOT in the RunConfig for ConfigMap mode - handled via k8s pod patch
+				// This avoids secrets provider errors in Kubernetes environment
+				assert.Len(t, config.Secrets, 0)
+				// For ConfigMap mode, K8s pod template patch is NOT in the runconfig
+				// (it's passed via CLI flag instead to avoid redundancy)
+				assert.Empty(t, config.K8sPodTemplatePatch)
 			},
 		},
 		{
@@ -784,10 +790,9 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 	assert.Equal(t, "/host/path2:/container/path2:ro", baseRunConfig.Volumes[0])
 	assert.Equal(t, "/host/path1:/container/path1", baseRunConfig.Volumes[1])
 
-	// Verify secrets (should maintain order from MCPServer)
-	assert.Len(t, baseRunConfig.Secrets, 2)
-	assert.Equal(t, "secret2,target=CUSTOM_TARGET2", baseRunConfig.Secrets[0])
-	assert.Equal(t, "secret1,target=key1", baseRunConfig.Secrets[1])
+	// Verify secrets are NOT in the RunConfig for ConfigMap mode - handled via k8s pod patch
+	// This avoids secrets provider errors in Kubernetes environment
+	assert.Len(t, baseRunConfig.Secrets, 0)
 
 	t.Logf("✅ Deterministic test passed: Generated identical ConfigMaps 10 times")
 	t.Logf("   Checksum: %s", baseChecksum)
@@ -1731,7 +1736,9 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 				}
 			},
 			expectedChanges: map[string]interface{}{
-				"Secrets": []string{"secret1,target=CUSTOM_ENV1", "secret2,target=key2"},
+				// Secrets are NOT in the RunConfig for ConfigMap mode - handled via k8s pod patch
+				// Since secrets don't affect runconfig content, no changes expected in runconfig
+				"Secrets": ([]string)(nil),
 			},
 		},
 		{
@@ -1792,9 +1799,15 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 			}, updatedConfigMap)
 			require.NoError(t, err)
 
-			// Verify checksum changed
+			// Verify checksum behavior based on test case
 			updatedChecksum := updatedConfigMap.Annotations["toolhive.stacklok.dev/content-checksum"]
-			assert.NotEqual(t, initialChecksum, updatedChecksum, "Checksum should change when content changes")
+			if tt.name == "Secret changes" {
+				// For secrets changes, checksum should NOT change since secrets are handled via k8s pod patch
+				assert.Equal(t, initialChecksum, updatedChecksum, "Checksum should not change for secret changes (secrets handled via k8s pod patch)")
+			} else {
+				// For other changes, checksum should change
+				assert.NotEqual(t, initialChecksum, updatedChecksum, "Checksum should change when content changes")
+			}
 
 			// Verify specific changes in RunConfig
 			var updatedRunConfig runner.RunConfig

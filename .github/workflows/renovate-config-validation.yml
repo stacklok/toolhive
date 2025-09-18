@@ -1,0 +1,53 @@
+name: Renovate Config Validation
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'renovate.json'
+      - '.github/workflows/renovate-config-validation.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'renovate.json'
+      - '.github/workflows/renovate-config-validation.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-renovate-config:
+    name: Validate Renovate Configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+
+      - name: Verify configuration syntax
+        run: |
+          echo "Verifying renovate.json is valid JSON..."
+          if jq empty renovate.json; then
+            echo "✅ renovate.json is valid JSON"
+          else
+            echo "❌ renovate.json is not valid JSON"
+            exit 1
+          fi
+          
+          echo "Checking for required schema..."
+          if jq -e '."$schema"' renovate.json > /dev/null; then
+            echo "✅ Schema is defined"
+          else
+            echo "❌ No schema defined"
+            exit 1
+          fi
+
+      - name: Validate renovate.json
+        run: |
+          echo "Node version: $(node --version)"
+          echo "NPM version: $(npm --version)"
+          echo "Installing latest renovate..."
+          npx --yes --package renovate@latest -- renovate --version
+          echo "Running renovate-config-validator..."
+          npx --yes --package renovate@latest -- renovate-config-validator
+          echo "✅ Renovate configuration is valid"

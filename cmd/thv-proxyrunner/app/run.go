@@ -298,8 +298,9 @@ func validateConfigMapOnlyMode(cmd *cobra.Command) error {
 // These are typically operational flags that don't affect the RunConfig
 func isSafeFlagWithConfigMap(flagName string) bool {
 	safeFlagsWithConfigMap := map[string]bool{
-		"help":  true,
-		"debug": true,
+		"help":          true,
+		"debug":         true,
+		"k8s-pod-patch": true, // Allow pod template patch to be used with ConfigMap
 		// Add other safe flags here if needed
 	}
 	return safeFlagsWithConfigMap[flagName]
@@ -378,6 +379,11 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 			runner.WithDebug(debugMode),
 		}
 		opts = applyRunConfigToBuilder(opts, configMapRunConfig)
+
+		// Apply CLI-only flags that can override or supplement ConfigMap settings
+		if runFlags.runK8sPodPatch != "" {
+			opts = append(opts, runner.WithK8sPodPatch(runFlags.runK8sPodPatch))
+		}
 	} else {
 		// Initialize a new set of options with values from command-line flags
 		opts = []runner.RunConfigBuilderOption{

@@ -209,3 +209,18 @@ func (mr *MockManagerMockRecorder) StopWorkloads(ctx, names any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StopWorkloads", reflect.TypeOf((*MockManager)(nil).StopWorkloads), ctx, names)
 }
+
+// UpdateWorkload mocks base method.
+func (m *MockManager) UpdateWorkload(ctx context.Context, workloadName string, newConfig *runner.RunConfig) (*errgroup.Group, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateWorkload", ctx, workloadName, newConfig)
+	ret0, _ := ret[0].(*errgroup.Group)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// UpdateWorkload indicates an expected call of UpdateWorkload.
+func (mr *MockManagerMockRecorder) UpdateWorkload(ctx, workloadName, newConfig any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateWorkload", reflect.TypeOf((*MockManager)(nil).UpdateWorkload), ctx, workloadName, newConfig)
+}

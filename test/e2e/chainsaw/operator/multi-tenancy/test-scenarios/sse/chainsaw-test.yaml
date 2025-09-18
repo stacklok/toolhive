@@ -41,6 +41,52 @@ spec:
         file: ../common/proxyrunner-rolebinding.yaml
     - assert:
         file: ../common/proxyrunner-serviceaccount.yaml
+    # Validate that ConfigMap is created with runconfig.json content (multi-tenancy)
+    - script:
+        content: |
+          echo "Verifying ConfigMap creation and content in test-namespace..."
+          
+          # Wait for ConfigMap to be created
+          for i in $(seq 1 10); do
+            if kubectl get configmap yardstick-runconfig -n test-namespace >/dev/null 2>&1; then
+              echo "✓ ConfigMap yardstick-runconfig exists in test-namespace"
+              break
+            fi
+            echo "  Waiting for ConfigMap... (attempt $i/10)"
+            sleep 2
+          done
+          
+          # Verify ConfigMap contains runconfig.json with proper content
+          CONFIGMAP_JSON=$(kubectl get configmap yardstick-runconfig -n test-namespace -o jsonpath='{.data.runconfig\.json}' 2>/dev/null || echo "")
+          
+          if [ -z "$CONFIGMAP_JSON" ]; then
+            echo "✗ ConfigMap does not contain runconfig.json data"
+            kubectl get configmap yardstick-runconfig -n test-namespace -o yaml
+            exit 1
+          fi
+          
+          echo "✓ ConfigMap contains runconfig.json data"
+          
+          # Validate JSON structure contains expected fields
+          if echo "$CONFIGMAP_JSON" | jq -e '.schema_version and .image and .name and .transport' > /dev/null 2>&1; then
+            echo "✓ runconfig.json contains required fields (schema_version, image, name, transport)"
+          else
+            echo "✗ runconfig.json missing required fields"
+            echo "ConfigMap content:"
+            echo "$CONFIGMAP_JSON"
+            exit 1
+          fi
+          
+          # Verify transport matches expected value (sse)
+          TRANSPORT=$(echo "$CONFIGMAP_JSON" | jq -r '.transport' 2>/dev/null)
+          if [ "$TRANSPORT" = "sse" ]; then
+            echo "✓ runconfig.json transport is correctly set to 'sse'"
+          else
+            echo "✗ runconfig.json transport is '$TRANSPORT', expected 'sse'"
+            exit 1
+          fi
+          
+          echo "✅ ConfigMap validation passed in multi-tenancy mode!"
     - apply:
         file: ../common/proxy-svc-loadbalancer.yaml
     - assert:

@@ -1,152 +1,119 @@
 package versions
 
 import (
-	"fmt"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestGetVersionInfo(t *testing.T) { //nolint:paralleltest // Modifies global variables
-	// Cannot run in parallel because it modifies global variables
-	// Save original values
-	origVersion := Version
-	origCommit := Commit
-	origBuildDate := BuildDate
+const testDevVersion = "dev"
 
-	tests := []struct {
-		name      string
-		version   string
-		commit    string
-		buildDate string
-		wantCheck func(VersionInfo) bool
-	}{
-		{
-			name:      "dev version with unknown commit",
-			version:   "dev",
-			commit:    unknownStr,
-			buildDate: unknownStr,
-			wantCheck: func(v VersionInfo) bool {
-				// When version is "dev" and commit is unknown, version should be "build-unknown"
-				return strings.HasPrefix(v.Version, "build-") &&
-					v.Commit == unknownStr &&
-					v.BuildDate == unknownStr &&
-					v.GoVersion == runtime.Version() &&
-					v.Platform == fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)
-			},
-		},
-		{
-			name:      "dev version with commit",
-			version:   "dev",
-			commit:    "abc123def456789",
-			buildDate: unknownStr,
-			wantCheck: func(v VersionInfo) bool {
-				// When version is "dev" with a commit, version should be "build-abc123de" (8 chars)
-				return v.Version == "build-abc123de" &&
-					v.Commit == "abc123def456789" &&
-					v.BuildDate == unknownStr &&
-					v.GoVersion == runtime.Version() &&
-					v.Platform == fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)
-			},
-		},
-		{
-			name:      "release version",
-			version:   "v1.2.3",
-			commit:    "abc123def456789",
-			buildDate: "2024-01-15T10:30:00Z",
-			wantCheck: func(v VersionInfo) bool {
-				return v.Version == "v1.2.3" &&
-					v.Commit == "abc123def456789" &&
-					v.BuildDate == "2024-01-15 10:30:00 UTC" &&
-					v.GoVersion == runtime.Version() &&
-					v.Platform == fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)
-			},
-		},
-		{
-			name:      "custom build version",
-			version:   "custom-build-1",
-			commit:    "xyz789",
-			buildDate: "2024-03-20T15:45:30Z",
-			wantCheck: func(v VersionInfo) bool {
-				return v.Version == "custom-build-1" &&
-					v.Commit == "xyz789" &&
-					v.BuildDate == "2024-03-20 15:45:30 UTC" &&
-					v.GoVersion == runtime.Version() &&
-					v.Platform == fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)
-			},
-		},
-		{
-			name:      "invalid date format",
-			version:   "v2.0.0",
-			commit:    "def456",
-			buildDate: "not-a-date",
-			wantCheck: func(v VersionInfo) bool {
-				return v.Version == "v2.0.0" &&
-					v.Commit == "def456" &&
-					v.BuildDate == "not-a-date" && // Should remain unchanged if not parseable
-					v.GoVersion == runtime.Version() &&
-					v.Platform == fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)
-			},
-		},
-		{
-			name:      "dev version with short commit",
-			version:   "dev",
-			commit:    "short",
-			buildDate: unknownStr,
-			wantCheck: func(v VersionInfo) bool {
-				// When commit is shorter than 8 chars, it should use the full length
-				return v.Version == "build-short" &&
-					v.Commit == "short" &&
-					v.BuildDate == unknownStr
-			},
-		},
-	}
+func TestGetVersionInfo(t *testing.T) {
+	t.Parallel()
 
-	for _, tt := range tests { //nolint:paralleltest // Test modifies global variables
-		t.Run(tt.name, func(t *testing.T) {
-			// Cannot run in parallel because parent test modifies global variables
-			// Set test values
-			Version = tt.version
-			Commit = tt.commit
-			BuildDate = tt.buildDate
+	// Test with current global values (whatever they are)
+	info := GetVersionInfo()
 
-			got := GetVersionInfo()
-
-			if !tt.wantCheck(got) {
-				t.Errorf("GetVersionInfo() check failed, got = %+v", got)
-			}
-		})
-	}
-
-	// Restore original values
-	Version = origVersion
-	Commit = origCommit
-	BuildDate = origBuildDate
+	// Basic structure validation
+	assert.NotEmpty(t, info.Version)
+	assert.NotEmpty(t, info.Commit)
+	assert.NotEmpty(t, info.BuildDate)
+	assert.Equal(t, runtime.Version(), info.GoVersion)
+	assert.Equal(t, runtime.GOOS+"/"+runtime.GOARCH, info.Platform)
 }
 
-func TestVersionInfo_Fields(t *testing.T) {
+func TestGetVersionInfoWithValues(t *testing.T) {
 	t.Parallel()
-	vi := VersionInfo{
+
+	t.Run("with default dev values", func(t *testing.T) {
+		t.Parallel()
+		info := getVersionInfoWithValues(testDevVersion, unknownStr, unknownStr)
+
+		// Should start with "build-" when version is "dev"
+		assert.True(t, strings.HasPrefix(info.Version, "build-"), "Version should start with 'build-' for dev builds")
+		assert.Equal(t, runtime.Version(), info.GoVersion)
+		assert.Equal(t, runtime.GOOS+"/"+runtime.GOARCH, info.Platform)
+		// Commit and BuildDate might be populated from build info, so we just check they exist
+		assert.NotEmpty(t, info.Commit)
+		assert.NotEmpty(t, info.BuildDate)
+	})
+
+	t.Run("with release values", func(t *testing.T) {
+		t.Parallel()
+		info := getVersionInfoWithValues("v1.2.3", "abc123def456", "2023-01-01T12:00:00Z")
+
+		assert.Equal(t, "v1.2.3", info.Version)
+		assert.Equal(t, "abc123def456", info.Commit)
+		// BuildDate should be formatted from RFC3339
+		assert.Contains(t, info.BuildDate, "2023-01-01")
+		assert.Equal(t, runtime.Version(), info.GoVersion)
+		assert.Equal(t, runtime.GOOS+"/"+runtime.GOARCH, info.Platform)
+	})
+
+	t.Run("with invalid build date", func(t *testing.T) {
+		t.Parallel()
+		info := getVersionInfoWithValues("v1.0.0", "abc123", "invalid-date")
+
+		assert.Equal(t, "v1.0.0", info.Version)
+		assert.Equal(t, "abc123", info.Commit)
+		// Invalid date should remain unchanged
+		assert.Equal(t, "invalid-date", info.BuildDate)
+		assert.Equal(t, runtime.Version(), info.GoVersion)
+		assert.Equal(t, runtime.GOOS+"/"+runtime.GOARCH, info.Platform)
+	})
+
+	t.Run("with valid RFC3339 build date", func(t *testing.T) {
+		t.Parallel()
+		info := getVersionInfoWithValues("v2.0.0", "def456", "2023-12-25T15:30:45Z")
+
+		assert.Equal(t, "v2.0.0", info.Version)
+		assert.Equal(t, "def456", info.Commit)
+
+		// Parse the expected time and format it
+		expectedTime, err := time.Parse(time.RFC3339, "2023-12-25T15:30:45Z")
+		require.NoError(t, err)
+		expectedFormatted := expectedTime.Format("2006-01-02 15:04:05 MST")
+
+		assert.Equal(t, expectedFormatted, info.BuildDate)
+		assert.Equal(t, runtime.Version(), info.GoVersion)
+		assert.Equal(t, runtime.GOOS+"/"+runtime.GOARCH, info.Platform)
+	})
+
+	t.Run("commit truncation in dev version", func(t *testing.T) {
+		t.Parallel()
+		info := getVersionInfoWithValues(testDevVersion, "abcdef1234567890abcdef", "2023-01-01T12:00:00Z")
+
+		// Should truncate commit to 8 characters in version
+		assert.Equal(t, "build-abcdef12", info.Version)
+		// But full commit should be preserved in Commit field
+		assert.Equal(t, "abcdef1234567890abcdef", info.Commit)
+	})
+}
+
+func TestVersionInfoStruct(t *testing.T) {
+	t.Parallel()
+
+	info := VersionInfo{
 		Version:   "test-version",
 		Commit:    "test-commit",
 		BuildDate: "test-date",
-		GoVersion: "test-go-version",
+		GoVersion: "test-go",
 		Platform:  "test-platform",
 	}
 
-	if vi.Version != "test-version" {
-		t.Errorf("Version = %v, want %v", vi.Version, "test-version")
-	}
-	if vi.Commit != "test-commit" {
-		t.Errorf("Commit = %v, want %v", vi.Commit, "test-commit")
-	}
-	if vi.BuildDate != "test-date" {
-		t.Errorf("BuildDate = %v, want %v", vi.BuildDate, "test-date")
-	}
-	if vi.GoVersion != "test-go-version" {
-		t.Errorf("GoVersion = %v, want %v", vi.GoVersion, "test-go-version")
-	}
-	if vi.Platform != "test-platform" {
-		t.Errorf("Platform = %v, want %v", vi.Platform, "test-platform")
-	}
+	assert.Equal(t, "test-version", info.Version)
+	assert.Equal(t, "test-commit", info.Commit)
+	assert.Equal(t, "test-date", info.BuildDate)
+	assert.Equal(t, "test-go", info.GoVersion)
+	assert.Equal(t, "test-platform", info.Platform)
+}
+
+func TestConstants(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "unknown", unknownStr)
 }

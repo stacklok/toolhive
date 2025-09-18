@@ -91,64 +91,69 @@ func TestCreateTraceExporter(t *testing.T) {
 	}
 }
 
-func TestNewTracerProvider(t *testing.T) {
+func TestNewTracerProviderWithShutdown(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		config     Config
-		expectNoOp bool
-		ctx        func() context.Context
-		wantErr    bool
-		errMsg     string
+		name           string
+		config         Config
+		ctx            func() context.Context
+		wantErr        bool
+		errMsg         string
+		expectNoOp     bool
+		expectShutdown bool
 	}{
 		{
-			name: "valid config with endpoint",
+			name: "valid config with endpoint returns SDK provider with shutdown",
 			config: Config{
 				Endpoint:     "localhost:4318",
 				SamplingRate: 0.5,
 				Headers:      map[string]string{"Authorization": "Bearer token"},
 				Insecure:     true,
 			},
-			expectNoOp: false,
-			ctx:        func() context.Context { return context.Background() },
-			wantErr:    false,
+			ctx:            func() context.Context { return context.Background() },
+			wantErr:        false,
+			expectNoOp:     false,
+			expectShutdown: true,
 		},
 		{
-			name: "no endpoint returns noop",
+			name: "no endpoint returns noop provider with nil shutdown",
 			config: Config{
 				SamplingRate: 0.1,
 			},
-			expectNoOp: true,
-			ctx:        func() context.Context { return context.Background() },
-			wantErr:    false,
+			ctx:            func() context.Context { return context.Background() },
+			wantErr:        false,
+			expectNoOp:     true,
+			expectShutdown: false,
 		},
 		{
-			name: "config with custom sampling",
+			name: "config with custom sampling returns SDK provider with shutdown",
 			config: Config{
 				Endpoint:     "localhost:4318",
 				SamplingRate: 1.0, // Always sample
 				Insecure:     true,
 			},
-			expectNoOp: false,
-			ctx:        func() context.Context { return context.Background() },
-			wantErr:    false,
+			ctx:            func() context.Context { return context.Background() },
+			wantErr:        false,
+			expectNoOp:     false,
+			expectShutdown: true,
 		},
 		{
-			name: "expect error creating trace exporter due to canceled context",
+			name: "error creating trace exporter propagates error",
 			config: Config{
 				Endpoint:     "localhost:4318",
-				SamplingRate: 1.0, // Always sample
+				SamplingRate: 1.0,
 				Insecure:     true,
 			},
-			expectNoOp: false,
 			ctx: func() context.Context {
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
 				return ctx
 			},
-			wantErr: true,
-			errMsg:  "failed to create trace exporter",
+			wantErr:        true,
+			errMsg:         "failed to create trace exporter",
+			expectNoOp:     false,
+			expectShutdown: false,
 		},
 	}
 
@@ -165,11 +170,12 @@ func TestNewTracerProvider(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			provider, err := NewTracerProvider(ctx, tt.config, res)
+			provider, shutdown, err := NewTracerProviderWithShutdown(ctx, tt.config, res)
 
 			if tt.wantErr {
 				assert.Error(t, err)
 				assert.Nil(t, provider)
+				assert.Nil(t, shutdown)
 				if tt.errMsg != "" {
 					assert.Contains(t, err.Error(), tt.errMsg)
 				}
@@ -177,12 +183,23 @@ func TestNewTracerProvider(t *testing.T) {
 				assert.NoError(t, err)
 				assert.NotNil(t, provider)
 
-				// Check if it's a no-op provider
+				// Check provider type
 				providerType := fmt.Sprintf("%T", provider)
 				if tt.expectNoOp {
 					assert.Contains(t, providerType, "noop")
 				} else {
 					assert.NotContains(t, providerType, "noop")
+				}
+
+				// Check shutdown function
+				if tt.expectShutdown {
+					assert.NotNil(t, shutdown)
+					// Test that shutdown function works
+					shutdownCtx := context.Background()
+					err := shutdown(shutdownCtx)
+					assert.NoError(t, err)
+				} else {
+					assert.Nil(t, shutdown)
 				}
 			}
 		})

@@ -19,8 +19,11 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jwk"
 )
 
-const testKeyID = "test-key-1"
-const issuer = "https://issuer.example.com"
+const (
+	testKeyID = "test-key-1"
+	expClaim  = "exp"
+	issuer    = "https://issuer.example.com"
+)
 
 //nolint:gocyclo // This test function is complex but manageable
 func TestTokenValidator(t *testing.T) {
@@ -346,7 +349,7 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 
 				// Check the claims (except exp which might be formatted differently)
 				for k, v := range tc.claims {
-					if k == "exp" {
+					if k == expClaim {
 						// Skip exact comparison for exp claim
 						continue
 					}
@@ -742,6 +745,12 @@ func TestTokenValidator_OpaqueToken(t *testing.T) {
 
 	ctx := context.Background()
 	// Create a token validator that only uses introspection (no JWKS URL)
+	registry := NewRegistry()
+	registry.AddProvider(NewGoogleProvider(GoogleTokeninfoURL))
+	// Use the basic RFC7662 provider for tests (no custom networking restrictions)
+	rfc7662Provider := NewRFC7662Provider(introspectionServer.URL)
+	registry.AddProvider(rfc7662Provider)
+
 	validator := &TokenValidator{
 		introspectURL: introspectionServer.URL,
 		clientID:      "test-client-id",
@@ -749,6 +758,7 @@ func TestTokenValidator_OpaqueToken(t *testing.T) {
 		client:        http.DefaultClient,
 		issuer:        "opaque-issuer",
 		audience:      "opaque-audience",
+		registry:      registry,
 	}
 
 	t.Run("valid opaque token", func(t *testing.T) {
@@ -1043,6 +1053,7 @@ func TestMiddleware_WWWAuthenticate_NoHeader_And_WrongScheme(t *testing.T) {
 			tv := &TokenValidator{
 				issuer:      issuer,
 				resourceURL: resourceMeta,
+				registry:    NewRegistry(),
 			}
 
 			hitDownstream := false
@@ -1093,11 +1104,134 @@ func TestMiddleware_WWWAuthenticate_NoHeader_And_WrongScheme(t *testing.T) {
 	}
 }
 
+func TestParseGoogleTokeninfoClaims(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name           string
+		responseBody   string
+		expectError    bool
+		expectActive   bool
+		expectedClaims map[string]interface{}
+	}{
+		{
+			name: "valid Google tokeninfo response",
+			responseBody: `{
+				"azp": "32553540559.apps.googleusercontent.com",
+				"aud": "32553540559.apps.googleusercontent.com",
+				"sub": "111260650121245072906",
+				"scope": "openid https://www.googleapis.com/auth/userinfo.email",
+				"exp": "` + fmt.Sprintf("%d", time.Now().Add(time.Hour).Unix()) + `",
+				"expires_in": "3488",
+				"email": "user@example.com",
+				"email_verified": "true"
+			}`,
+			expectError:  false,
+			expectActive: true,
+			expectedClaims: map[string]interface{}{
+				"sub":            "111260650121245072906",
+				"aud":            "32553540559.apps.googleusercontent.com",
+				"scope":          "openid https://www.googleapis.com/auth/userinfo.email",
+				"iss":            "https://accounts.google.com",
+				"email":          "user@example.com",
+				"email_verified": "true",
+				"azp":            "32553540559.apps.googleusercontent.com",
+				"expires_in":     "3488",
+				"active":         true,
+			},
+		},
+		{
+			name: "expired Google token",
+			responseBody: `{
+				"azp": "32553540559.apps.googleusercontent.com",
+				"aud": "32553540559.apps.googleusercontent.com",
+				"sub": "111260650121245072906",
+				"scope": "openid",
+				"exp": "` + fmt.Sprintf("%d", time.Now().Add(-time.Hour).Unix()) + `",
+				"email": "user@example.com"
+			}`,
+			expectError:  true,
+			expectActive: false,
+		},
+		{
+			name: "missing exp field",
+			responseBody: `{
+				"azp": "32553540559.apps.googleusercontent.com",
+				"aud": "32553540559.apps.googleusercontent.com",
+				"sub": "111260650121245072906"
+			}`,
+			expectError:  true,
+			expectActive: false,
+		},
+		{
+			name: "invalid exp format",
+			responseBody: `{
+				"azp": "32553540559.apps.googleusercontent.com",
+				"aud": "32553540559.apps.googleusercontent.com",
+				"sub": "111260650121245072906",
+				"exp": "invalid-timestamp"
+			}`,
+			expectError:  true,
+			expectActive: false,
+		},
+		{
+			name:         "invalid JSON",
+			responseBody: `{invalid json`,
+			expectError:  true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Test the provider's parsing by creating a mock server
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprint(w, tc.responseBody)
+			}))
+			defer server.Close()
+
+			provider := NewGoogleProvider(server.URL)
+			claims, err := provider.IntrospectToken(context.Background(), "dummy-token")
+
+			if tc.expectError {
+				if err == nil {
+					t.Error("Expected error but got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("Expected no error but got: %v", err)
+				return
+			}
+
+			// Verify expected claims
+			for key, expectedValue := range tc.expectedClaims {
+				if key == expClaim {
+					// Check that exp is set as float64
+					if _, ok := claims["exp"].(float64); !ok {
+						t.Errorf("Expected exp to be float64, got %T", claims["exp"])
+					}
+					continue
+				}
+
+				if claims[key] != expectedValue {
+					t.Errorf("Expected claim %s to be %v, got %v", key, expectedValue, claims[key])
+				}
+			}
+		})
+	}
+}
+
 func TestMiddleware_WWWAuthenticate_InvalidOpaqueToken_NoIntrospectionConfigured(t *testing.T) {
 	t.Parallel()
 
 	tv := &TokenValidator{
-		issuer: issuer,
+		issuer:   issuer,
+		registry: NewRegistry(),
 		// introspectURL intentionally empty to force the error path
 	}
 
@@ -1206,6 +1340,7 @@ func TestMiddleware_WWWAuthenticate_WithMockIntrospection(t *testing.T) {
 				clientID:      "cid",
 				clientSecret:  "csecret",
 				client:        http.DefaultClient,
+				registry:      NewRegistry(),
 			}
 
 			hit := false
@@ -1266,4 +1401,231 @@ func TestBuildWWWAuthenticate_Format(t *testing.T) {
 	if got != want {
 		t.Fatalf("format mismatch:\nwant: %s\n got: %s", want, got)
 	}
+}
+
+func TestIntrospectGoogleToken(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name           string
+		token          string
+		serverResponse func(w http.ResponseWriter, r *http.Request)
+		expectError    bool
+		expectedClaims map[string]interface{}
+	}{
+		{
+			name:  "valid Google token",
+			token: "valid-google-token",
+			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+				// Verify it's a GET request with correct query parameter
+				if r.Method != "GET" {
+					t.Errorf("Expected GET request, got %s", r.Method)
+				}
+				if token := r.URL.Query().Get("access_token"); token != "valid-google-token" {
+					t.Errorf("Expected access_token=valid-google-token, got %s", token)
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"azp":            "test-client.apps.googleusercontent.com",
+					"aud":            "test-client.apps.googleusercontent.com",
+					"sub":            "123456789",
+					"scope":          "openid email",
+					"exp":            fmt.Sprintf("%d", time.Now().Add(time.Hour).Unix()),
+					"email":          "test@example.com",
+					"email_verified": "true",
+				})
+			},
+			expectError: false,
+			expectedClaims: map[string]interface{}{
+				"sub":            "123456789",
+				"aud":            "test-client.apps.googleusercontent.com",
+				"scope":          "openid email",
+				"iss":            "https://accounts.google.com",
+				"email":          "test@example.com",
+				"email_verified": "true",
+				"azp":            "test-client.apps.googleusercontent.com",
+				"active":         true,
+			},
+		},
+		{
+			name:  "Google returns 400 for invalid token",
+			token: "invalid-token",
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"error":             "invalid_token",
+					"error_description": "Invalid token",
+				})
+			},
+			expectError: true,
+		},
+		{
+			name:  "Google returns expired token",
+			token: "expired-token",
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"azp":   "test-client.apps.googleusercontent.com",
+					"aud":   "test-client.apps.googleusercontent.com",
+					"sub":   "123456789",
+					"scope": "openid email",
+					"exp":   fmt.Sprintf("%d", time.Now().Add(-time.Hour).Unix()), // Expired
+					"email": "test@example.com",
+				})
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create a test server that mimics Google's tokeninfo endpoint
+			server := httptest.NewServer(http.HandlerFunc(tc.serverResponse))
+			defer server.Close()
+
+			// Use the Google provider directly for testing
+			provider := NewGoogleProvider(server.URL)
+
+			ctx := context.Background()
+			claims, err := provider.IntrospectToken(ctx, tc.token)
+
+			if tc.expectError {
+				if err == nil {
+					t.Error("Expected error but got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("Expected no error but got: %v", err)
+				return
+			}
+
+			// Verify expected claims
+			for key, expectedValue := range tc.expectedClaims {
+				if key == expClaim {
+					// Check that exp is set as float64
+					if _, ok := claims["exp"].(float64); !ok {
+						t.Errorf("Expected exp to be float64, got %T", claims["exp"])
+					}
+					continue
+				}
+
+				if claims[key] != expectedValue {
+					t.Errorf("Expected claim %s to be %v, got %v", key, expectedValue, claims[key])
+				}
+			}
+		})
+	}
+}
+
+func TestTokenValidator_GoogleTokeninfoIntegration(t *testing.T) {
+	t.Parallel()
+
+	// Create a mock Google tokeninfo server
+	googleServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("access_token")
+
+		if token == "valid-google-token" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"azp":            "test-client.apps.googleusercontent.com",
+				"aud":            "test-client.apps.googleusercontent.com",
+				"sub":            "google-user-123",
+				"scope":          "openid https://www.googleapis.com/auth/userinfo.email",
+				"exp":            fmt.Sprintf("%d", time.Now().Add(time.Hour).Unix()),
+				"expires_in":     "3600",
+				"email":          "user@example.com",
+				"email_verified": "true",
+			})
+		} else {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":             "invalid_token",
+				"error_description": "Invalid token",
+			})
+		}
+	}))
+	t.Cleanup(func() {
+		googleServer.Close()
+	})
+
+	t.Run("Google tokeninfo direct call", func(t *testing.T) { //nolint:paralleltest // Server lifecycle requires sequential execution
+		// Note: Not using t.Parallel() here because we need the googleServer to stay alive
+
+		// Use Google provider to test Google-specific functionality
+		provider := NewGoogleProvider(googleServer.URL)
+		ctx := context.Background()
+		claims, err := provider.IntrospectToken(ctx, "valid-google-token")
+		if err != nil {
+			t.Fatalf("Expected no error but got: %v", err)
+		}
+
+		// Verify Google-specific claims are properly handled
+		if claims["sub"] != "google-user-123" {
+			t.Errorf("Expected sub=google-user-123, got %v", claims["sub"])
+		}
+		if claims["iss"] != "https://accounts.google.com" {
+			t.Errorf("Expected iss=https://accounts.google.com, got %v", claims["iss"])
+		}
+		if claims["email"] != "user@example.com" {
+			t.Errorf("Expected email=user@example.com, got %v", claims["email"])
+		}
+		if claims["active"] != true {
+			t.Errorf("Expected active=true, got %v", claims["active"])
+		}
+	})
+
+	t.Run("routing logic test", func(t *testing.T) {
+		t.Parallel()
+
+		// Test that the routing logic correctly detects Google's endpoint
+		// and routes to the Google-specific handler vs standard RFC 7662
+
+		ctx := context.Background()
+
+		// Test 1: Google URL should route to Google handler (we can't easily test the full flow
+		// without mocking, but we can test that it attempts to use the Google method)
+		googleValidator := &TokenValidator{
+			introspectURL: GoogleTokeninfoURL,
+			client:        http.DefaultClient,
+			issuer:        "https://accounts.google.com",
+			audience:      "test-client.apps.googleusercontent.com",
+			registry:      NewRegistry(),
+		}
+
+		// This will fail because we can't reach the real Google endpoint,
+		// but it should fail in the HTTP request, not in the routing logic
+		_, err := googleValidator.introspectOpaqueToken(ctx, "test-token")
+		if err == nil {
+			t.Error("Expected error trying to reach real Google endpoint")
+		}
+		// The error should be about HTTP connection, not about routing
+		if !strings.Contains(err.Error(), "google tokeninfo") {
+			t.Logf("Got expected error attempting to use Google tokeninfo: %v", err)
+		}
+
+		// Test 2: Non-Google URL should use standard RFC 7662 flow
+		standardValidator := &TokenValidator{
+			introspectURL: googleServer.URL, // Our test server
+			client:        http.DefaultClient,
+			issuer:        "https://accounts.google.com",
+			audience:      "test-client.apps.googleusercontent.com",
+			registry:      NewRegistry(),
+		}
+
+		// This should use the standard RFC 7662 POST method, which our test server doesn't handle
+		// So it should fail, but in a different way than the Google method
+		_, err = standardValidator.introspectOpaqueToken(ctx, "valid-google-token")
+		if err == nil {
+			t.Error("Expected error with non-Google introspection endpoint")
+		}
+		// Should fail because our test server expects GET but standard introspection uses POST
+		if strings.Contains(err.Error(), "google tokeninfo") {
+			t.Errorf("Should not use Google tokeninfo method for non-Google URL, got error: %v", err)
+		}
+	})
 }

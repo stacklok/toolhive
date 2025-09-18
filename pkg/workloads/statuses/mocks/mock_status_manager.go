@@ -86,6 +86,34 @@ func (mr *MockStatusManagerMockRecorder) ListWorkloads(ctx, listAll, labelFilter
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWorkloads", reflect.TypeOf((*MockStatusManager)(nil).ListWorkloads), ctx, listAll, labelFilters)
 }
 
+// ResetWorkloadPID mocks base method.
+func (m *MockStatusManager) ResetWorkloadPID(ctx context.Context, workloadName string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ResetWorkloadPID", ctx, workloadName)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ResetWorkloadPID indicates an expected call of ResetWorkloadPID.
+func (mr *MockStatusManagerMockRecorder) ResetWorkloadPID(ctx, workloadName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ResetWorkloadPID", reflect.TypeOf((*MockStatusManager)(nil).ResetWorkloadPID), ctx, workloadName)
+}
+
+// SetWorkloadPID mocks base method.
+func (m *MockStatusManager) SetWorkloadPID(ctx context.Context, workloadName string, pid int) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetWorkloadPID", ctx, workloadName, pid)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetWorkloadPID indicates an expected call of SetWorkloadPID.
+func (mr *MockStatusManagerMockRecorder) SetWorkloadPID(ctx, workloadName, pid any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetWorkloadPID", reflect.TypeOf((*MockStatusManager)(nil).SetWorkloadPID), ctx, workloadName, pid)
+}
+
 // SetWorkloadStatus mocks base method.
 func (m *MockStatusManager) SetWorkloadStatus(ctx context.Context, workloadName string, status runtime.WorkloadStatus, contextMsg string) error {
 	m.ctrl.T.Helper()
@@ -98,18 +126,4 @@ func (m *MockStatusManager) SetWorkloadStatus(ctx context.Context, workloadName 
 func (mr *MockStatusManagerMockRecorder) SetWorkloadStatus(ctx, workloadName, status, contextMsg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetWorkloadStatus", reflect.TypeOf((*MockStatusManager)(nil).SetWorkloadStatus), ctx, workloadName, status, contextMsg)
-}
-
-// SetWorkloadStatusAndPID mocks base method.
-func (m *MockStatusManager) SetWorkloadStatusAndPID(ctx context.Context, workloadName string, status runtime.WorkloadStatus, contextMsg string, pid int) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetWorkloadStatusAndPID", ctx, workloadName, status, contextMsg, pid)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// SetWorkloadStatusAndPID indicates an expected call of SetWorkloadStatusAndPID.
-func (mr *MockStatusManagerMockRecorder) SetWorkloadStatusAndPID(ctx, workloadName, status, contextMsg, pid any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetWorkloadStatusAndPID", reflect.TypeOf((*MockStatusManager)(nil).SetWorkloadStatusAndPID), ctx, workloadName, status, contextMsg, pid)
 }

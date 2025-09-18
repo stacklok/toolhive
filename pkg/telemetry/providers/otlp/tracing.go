@@ -1,4 +1,3 @@
-// Package otlp provides OpenTelemetry Protocol (OTLP) provider implementations
 package otlp
 
 import (
@@ -11,24 +10,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
-
-// NewTracerProvider creates a standalone OTLP tracer provider
-func NewTracerProvider(ctx context.Context, config Config, res *resource.Resource) (trace.TracerProvider, error) {
-	if config.Endpoint == "" {
-		return tracenoop.NewTracerProvider(), nil
-	}
-
-	exporter, err := createTraceExporter(ctx, config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create trace exporter: %w", err)
-	}
-
-	return sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
-		sdktrace.WithResource(res),
-		sdktrace.WithSampler(sdktrace.TraceIDRatioBased(config.SamplingRate)),
-	), nil
-}
 
 func createTraceExporter(ctx context.Context, config Config) (sdktrace.SpanExporter, error) {
 	opts := []otlptracehttp.Option{
@@ -43,5 +24,33 @@ func createTraceExporter(ctx context.Context, config Config) (sdktrace.SpanExpor
 		opts = append(opts, otlptracehttp.WithInsecure())
 	}
 
-	return otlptracehttp.New(ctx, opts...)
+	exporter, err := otlptracehttp.New(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create trace exporter: %w", err)
+	}
+	return exporter, nil
+}
+
+// NewTracerProviderWithShutdown creates an OTLP tracer provider with a shutdown function
+func NewTracerProviderWithShutdown(
+	ctx context.Context,
+	config Config,
+	res *resource.Resource,
+) (trace.TracerProvider, func(context.Context) error, error) {
+	if config.Endpoint == "" {
+		return tracenoop.NewTracerProvider(), nil, nil
+	}
+
+	exporter, err := createTraceExporter(ctx, config)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create trace provider: %w", err)
+	}
+
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(res),
+		sdktrace.WithSampler(sdktrace.TraceIDRatioBased(config.SamplingRate)),
+	)
+
+	return provider, provider.Shutdown, nil
 }

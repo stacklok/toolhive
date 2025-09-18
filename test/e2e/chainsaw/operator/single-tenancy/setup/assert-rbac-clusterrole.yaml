@@ -8,20 +8,7 @@ rules:
   - ""
   resources:
   - configmaps
-  - services
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - "rbac.authorization.k8s.io"
-  resources:
-  - roles
-  - rolebindings
+  - serviceaccounts
   verbs:
   - create
   - delete
@@ -47,90 +34,6 @@ rules:
   - list
   - watch
 - apiGroups:
-  - apps
-  resources:
-  - deployments
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - toolhive.stacklok.dev
-  resources:
-  - mcpservers
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - toolhive.stacklok.dev
-  resources:
-  - mcpservers/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - toolhive.stacklok.dev
-  resources:
-  - mcpservers/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - ""
-  resources:
-  - serviceaccounts
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - "apps"
-  resources:
-  - statefulsets
-  verbs:
-  - get
-  - list
-  - watch
-  - create
-  - update
-  - patch
-  - delete
-  - apply
-- apiGroups:
-  - ""
-  resources:
-  - services
-  verbs:
-  - get
-  - list
-  - watch
-  - create
-  - update
-  - patch
-  - delete
-  - apply
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
   - ""
   resources:
   - pods/attach
@@ -143,3 +46,86 @@ rules:
   - pods/log
   verbs:
   - get
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - apply
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - apply
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  - roles
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - mcpregistries
+  - mcpservers
+  - mcptoolconfigs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - mcpregistries/finalizers
+  - mcpservers/finalizers
+  - mcptoolconfigs/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - mcpregistries/status
+  - mcpservers/status
+  - mcptoolconfigs/status
+  verbs:
+  - get
+  - patch
+  - update

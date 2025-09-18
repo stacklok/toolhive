@@ -494,7 +494,9 @@ func TestHTTPMiddleware_ExtractServerName(t *testing.T) {
 func TestHTTPMiddleware_ExtractBackendTransport(t *testing.T) {
 	t.Parallel()
 
-	middleware := &HTTPMiddleware{}
+	middleware := &HTTPMiddleware{
+		transport: "stdio",
+	}
 
 	tests := []struct {
 		name     string

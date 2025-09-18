@@ -1,7 +1,6 @@
 package v1
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,17 +9,12 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/core"
 	thverrors "github.com/stacklok/toolhive/pkg/errors"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
-	"github.com/stacklok/toolhive/pkg/transport"
-	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
@@ -32,6 +26,8 @@ type WorkloadRoutes struct {
 	containerRuntime runtime.Runtime
 	debugMode        bool
 	groupManager     groups.Manager
+	secretsProvider  secrets.Provider
+	workloadService  *WorkloadService
 }
 
 //	@title			ToolHive API
@@ -45,13 +41,24 @@ func WorkloadRouter(
 	workloadManager workloads.Manager,
 	containerRuntime runtime.Runtime,
 	groupManager groups.Manager,
+	secretsProvider secrets.Provider,
 	debugMode bool,
 ) http.Handler {
+	workloadService := NewWorkloadService(
+		workloadManager,
+		groupManager,
+		secretsProvider,
+		containerRuntime,
+		debugMode,
+	)
+
 	routes := WorkloadRoutes{
 		workloadManager:  workloadManager,
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
 		groupManager:     groupManager,
+		secretsProvider:  secretsProvider,
+		workloadService:  workloadService,
 	}
 
 	r := chi.NewRouter()
@@ -284,21 +291,11 @@ func (s *WorkloadRoutes) createWorkload(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Default proxy mode to SSE if not specified
-	if !types.IsValidProxyMode(req.ProxyMode) {
-		if req.ProxyMode == "" {
-			req.ProxyMode = types.ProxyModeSSE.String()
-		} else {
-			http.Error(w, "Invalid proxy_mode", http.StatusBadRequest)
-			return
-		}
-	}
-
 	// Create the workload using shared logic
-	runConfig, err := s.createWorkloadFromRequest(ctx, &req)
+	runConfig, err := s.workloadService.CreateWorkloadFromRequest(ctx, &req)
 	if err != nil {
 		// Error messages already logged in createWorkloadFromRequest
-		if errors.Is(err, retriever.ErrImageNotFound) || err.Error() == "MCP server image not found" {
+		if errors.Is(err, retriever.ErrImageNotFound) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 		} else if errors.Is(err, retriever.ErrInvalidRunConfig) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -359,24 +356,16 @@ func (s *WorkloadRoutes) updateWorkload(w http.ResponseWriter, r *http.Request) 
 		Name:          name, // Use the name from URL path, not from request body
 	}
 
-	// Stop the existing workload
-	if _, err = s.workloadManager.StopWorkloads(ctx, []string{name}); err != nil {
-		logger.Errorf("Failed to stop workload %s: %v", name, err)
-		http.Error(w, "Failed to stop workload", http.StatusInternalServerError)
-		return
-	}
-
-	// Delete the existing workload
-	if _, err = s.workloadManager.DeleteWorkloads(ctx, []string{name}); err != nil {
-		logger.Errorf("Failed to delete workload %s: %v", name, err)
-		http.Error(w, "Failed to delete workload", http.StatusInternalServerError)
-		return
-	}
-
-	// Create the new workload using shared logic
-	runConfig, err := s.createWorkloadFromRequest(ctx, &createReq)
+	runConfig, err := s.workloadService.UpdateWorkloadFromRequest(ctx, name, &createReq)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		// Error messages already logged in UpdateWorkloadFromRequest
+		if errors.Is(err, retriever.ErrImageNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		} else if errors.Is(err, retriever.ErrInvalidRunConfig) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -416,7 +405,7 @@ func (s *WorkloadRoutes) stopWorkloadsBulk(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	workloadNames, err := s.getWorkloadNamesFromRequest(ctx, req)
+	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -461,7 +450,7 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	workloadNames, err := s.getWorkloadNamesFromRequest(ctx, req)
+	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -507,7 +496,7 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	workloadNames, err := s.getWorkloadNamesFromRequest(ctx, req)
+	workloadNames, err := s.workloadService.GetWorkloadNamesFromRequest(ctx, req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -632,273 +621,5 @@ func (*WorkloadRoutes) exportWorkload(w http.ResponseWriter, r *http.Request) {
 		logger.Errorf("Failed to encode workload configuration: %v", err)
 		http.Error(w, "Failed to encode workload configuration", http.StatusInternalServerError)
 		return
-	}
-}
-
-// Response type definitions.
-
-// workloadListResponse represents the response for listing workloads
-//
-//	@Description	Response containing a list of workloads
-type workloadListResponse struct {
-	// List of container information for each workload
-	Workloads []core.Workload `json:"workloads"`
-}
-
-// workloadStatusResponse represents the response for getting workload status
-//
-//	@Description	Response containing workload status information
-type workloadStatusResponse struct {
-	// Current status of the workload
-	Status runtime.WorkloadStatus `json:"status"`
-}
-
-// updateRequest represents the request to update an existing workload
-//
-//	@Description	Request to update an existing workload (name cannot be changed)
-type updateRequest struct {
-	// Docker image to use
-	Image string `json:"image"`
-	// Host to bind to
-	Host string `json:"host"`
-	// Command arguments to pass to the container
-	CmdArguments []string `json:"cmd_arguments"`
-	// Port to expose from the container
-	TargetPort int `json:"target_port"`
-	// Environment variables to set in the container
-	EnvVars map[string]string `json:"env_vars"`
-	// Secret parameters to inject
-	Secrets []secrets.SecretParameter `json:"secrets"`
-	// Volume mounts
-	Volumes []string `json:"volumes"`
-	// Transport configuration
-	Transport string `json:"transport"`
-	// Authorization configuration
-	AuthzConfig string `json:"authz_config"`
-	// OIDC configuration options
-	OIDC oidcOptions `json:"oidc"`
-	// Permission profile to apply
-	PermissionProfile *permissions.Profile `json:"permission_profile"`
-	// Proxy mode to use
-	ProxyMode string `json:"proxy_mode"`
-	// Whether network isolation is turned on. This applies the rules in the permission profile.
-	NetworkIsolation bool `json:"network_isolation"`
-	// Tools filter
-	ToolsFilter []string `json:"tools"`
-	// Group name this workload belongs to
-	Group string `json:"group,omitempty"`
-}
-
-// createRequest represents the request to create a new workload
-//
-//	@Description	Request to create a new workload
-type createRequest struct {
-	updateRequest
-	// Name of the workload
-	Name string `json:"name"`
-}
-
-// oidcOptions represents OIDC configuration options
-//
-//	@Description	OIDC configuration for workload authentication
-type oidcOptions struct {
-	// OIDC issuer URL
-	Issuer string `json:"issuer"`
-	// Expected audience
-	Audience string `json:"audience"`
-	// JWKS URL for key verification
-	JwksURL string `json:"jwks_url"`
-	// Token introspection URL for OIDC
-	IntrospectionURL string `json:"introspection_url"`
-	// OAuth2 client ID
-	ClientID string `json:"client_id"`
-	// OAuth2 client secret
-	ClientSecret string `json:"client_secret"`
-}
-
-// createWorkloadResponse represents the response for workload creation
-//
-//	@Description	Response after successfully creating a workload
-type createWorkloadResponse struct {
-	// Name of the created workload
-	Name string `json:"name"`
-	// Port the workload is listening on
-	Port int `json:"port"`
-}
-
-// bulkOperationRequest represents a request for bulk operations on workloads
-type bulkOperationRequest struct {
-	// Names of the workloads to operate on
-	Names []string `json:"names"`
-	// Group name to operate on (mutually exclusive with names)
-	Group string `json:"group,omitempty"`
-}
-
-// validateBulkOperationRequest validates the bulk operation request
-func validateBulkOperationRequest(req bulkOperationRequest) error {
-	if len(req.Names) > 0 && req.Group != "" {
-		return fmt.Errorf("cannot specify both names and group")
-	}
-	if len(req.Names) == 0 && req.Group == "" {
-		return fmt.Errorf("must specify either names or group")
-	}
-	return nil
-}
-
-// getWorkloadNamesFromRequest gets workload names from either the names field or group
-func (s *WorkloadRoutes) getWorkloadNamesFromRequest(ctx context.Context, req bulkOperationRequest) ([]string, error) {
-	if len(req.Names) > 0 {
-		return req.Names, nil
-	}
-
-	if err := validation.ValidateGroupName(req.Group); err != nil {
-		return nil, fmt.Errorf("invalid group name: %w", err)
-	}
-
-	// Check if the group exists
-	exists, err := s.groupManager.Exists(ctx, req.Group)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check if group exists: %v", err)
-	}
-	if !exists {
-		return nil, fmt.Errorf("group '%s' does not exist", req.Group)
-	}
-
-	// Get all workload names in the group
-	workloadNames, err := s.workloadManager.ListWorkloadsInGroup(ctx, req.Group)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list workloads in group: %v", err)
-	}
-
-	return workloadNames, nil
-}
-
-// createWorkloadFromRequest creates a workload from a request
-func (s *WorkloadRoutes) createWorkloadFromRequest(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
-	// Default group if not specified
-	groupName := req.Group
-	if groupName == "" {
-		groupName = groups.DefaultGroup
-	}
-
-	// Validate that the group exists
-	exists, err := s.groupManager.Exists(ctx, groupName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check if group exists: %v", err)
-	}
-	if !exists {
-		return nil, fmt.Errorf("group '%s' does not exist", groupName)
-	}
-
-	// Fetch or build the requested image
-	imageURL, serverMetadata, err := retriever.GetMCPServer(
-		ctx,
-		req.Image,
-		"", // We do not let the user specify a CA cert path here.
-		retriever.VerifyImageWarn,
-	)
-	if err != nil {
-		if errors.Is(err, retriever.ErrImageNotFound) {
-			return nil, fmt.Errorf("MCP server image not found")
-		}
-		return nil, fmt.Errorf("failed to retrieve MCP server image: %v", err)
-	}
-
-	// Build RunConfig
-	runSecrets := secrets.SecretParametersToCLI(req.Secrets)
-
-	// Handle server metadata - API only supports container servers
-	imageMetadata, _ := serverMetadata.(*registry.ImageMetadata)
-
-	runConfig, err := runner.NewRunConfigBuilder().
-		WithRuntime(s.containerRuntime).
-		WithCmdArgs(req.CmdArguments).
-		WithName(req.Name).
-		WithGroup(groupName).
-		WithImage(imageURL).
-		WithHost(req.Host).
-		WithTargetHost(transport.LocalhostIPv4).
-		WithDebug(s.debugMode).
-		WithVolumes(req.Volumes).
-		WithSecrets(runSecrets).
-		WithAuthzConfigPath(req.AuthzConfig).
-		WithAuditConfigPath("").
-		WithPermissionProfile(req.PermissionProfile).
-		WithNetworkIsolation(req.NetworkIsolation).
-		WithK8sPodPatch("").
-		WithProxyMode(types.ProxyMode(req.ProxyMode)).
-		WithTransportAndPorts(req.Transport, 0, req.TargetPort).
-		WithAuditEnabled(false, "").
-		WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID,
-			"", "", "", "", "", false).
-		WithTelemetryConfig("", false, "", 0.0, nil, false, nil).
-		WithToolsFilter(req.ToolsFilter).
-		Build(ctx, imageMetadata, req.EnvVars, &runner.DetachedEnvVarValidator{})
-	if err != nil {
-		logger.Errorf("Failed to build run config: %v", err)
-		return nil, fmt.Errorf("%w: %v", retriever.ErrInvalidRunConfig, err)
-	}
-
-	// Save the workload state
-	if err := runConfig.SaveState(ctx); err != nil {
-		logger.Errorf("Failed to save workload config: %v", err)
-		return nil, fmt.Errorf("failed to save workload config")
-	}
-
-	// Start workload
-	if err := s.workloadManager.RunWorkloadDetached(ctx, runConfig); err != nil {
-		logger.Errorf("Failed to start workload: %v", err)
-		return nil, fmt.Errorf("failed to start workload")
-	}
-
-	return runConfig, nil
-}
-
-// runConfigToCreateRequest converts a RunConfig to createRequest for API responses
-func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
-	// Convert CLI secrets ([]string) back to SecretParameters
-	secretParams := make([]secrets.SecretParameter, 0, len(runConfig.Secrets))
-	for _, secretStr := range runConfig.Secrets {
-		// Parse the CLI format: "<name>,target=<target>"
-		if secretParam, err := secrets.ParseSecretParameter(secretStr); err == nil {
-			secretParams = append(secretParams, secretParam)
-		}
-		// Ignore invalid secrets rather than failing the entire conversion
-	}
-
-	// Get OIDC fields from RunConfig
-	var oidcConfig oidcOptions
-	if runConfig.OIDCConfig != nil {
-		oidcConfig = oidcOptions{
-			Issuer:           runConfig.OIDCConfig.Issuer,
-			Audience:         runConfig.OIDCConfig.Audience,
-			JwksURL:          runConfig.OIDCConfig.JWKSURL,
-			IntrospectionURL: runConfig.OIDCConfig.IntrospectionURL,
-			ClientID:         runConfig.OIDCConfig.ClientID,
-			ClientSecret:     runConfig.OIDCConfig.ClientSecret,
-		}
-	}
-
-	authzConfigPath := ""
-
-	return &createRequest{
-		updateRequest: updateRequest{
-			Image:             runConfig.Image,
-			Host:              runConfig.Host,
-			CmdArguments:      runConfig.CmdArgs,
-			TargetPort:        runConfig.TargetPort,
-			EnvVars:           runConfig.EnvVars,
-			Secrets:           secretParams,
-			Volumes:           runConfig.Volumes,
-			Transport:         string(runConfig.Transport),
-			AuthzConfig:       authzConfigPath,
-			OIDC:              oidcConfig,
-			PermissionProfile: runConfig.PermissionProfile,
-			ProxyMode:         string(runConfig.ProxyMode),
-			NetworkIsolation:  runConfig.IsolateNetwork,
-			ToolsFilter:       runConfig.ToolsFilter,
-			Group:             runConfig.Group,
-		},
-		Name: runConfig.Name,
 	}
 }

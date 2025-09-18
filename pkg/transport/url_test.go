@@ -72,7 +72,7 @@ func TestGenerateMCPServerURL(t *testing.T) {
 			port:          12345,
 			containerName: "test-container",
 			targetURI:     "http://example.com",
-			expected:      "http://localhost:12345/sse#test-container",
+			expected:      "http://localhost:12345#test-container",
 		},
 		{
 			name:          "SSE transport with targetURI root path",
@@ -81,7 +81,7 @@ func TestGenerateMCPServerURL(t *testing.T) {
 			port:          12345,
 			containerName: "test-container",
 			targetURI:     "http://example.com/",
-			expected:      "http://localhost:12345/sse#test-container",
+			expected:      "http://localhost:12345#test-container",
 		},
 		// Major targetURI test cases - Streamable HTTP transport
 		{
@@ -100,7 +100,7 @@ func TestGenerateMCPServerURL(t *testing.T) {
 			port:          12345,
 			containerName: "test-container",
 			targetURI:     "http://remote-server.com",
-			expected:      "http://localhost:12345/mcp",
+			expected:      "http://localhost:12345",
 		},
 		{
 			name:          "Streamable HTTP transport with targetURI root path",
@@ -109,7 +109,7 @@ func TestGenerateMCPServerURL(t *testing.T) {
 			port:          12345,
 			containerName: "test-container",
 			targetURI:     "http://remote-server.com/",
-			expected:      "http://localhost:12345/mcp",
+			expected:      "http://localhost:12345",
 		},
 	}
 

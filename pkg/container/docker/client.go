@@ -55,11 +55,19 @@ const (
 	LabelValueTrue                 = "true"
 )
 
+// dockerAPI defines the minimal Docker client surface we need for unit-testing
+// ListWorkloads/GetWorkloadInfo through an adapter without requiring a live daemon.
+type dockerAPI interface {
+	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+}
+
 // Client implements the Deployer interface for Docker (and compatible runtimes)
 type Client struct {
 	runtimeType  runtime.Type
 	socketPath   string
 	client       *client.Client
+	api          dockerAPI
 	imageManager images.ImageManager
 }
 
@@ -76,6 +84,7 @@ func NewClient(ctx context.Context) (*Client, error) {
 		runtimeType:  runtimeType,
 		socketPath:   socketPath,
 		client:       dockerClient,
+		api:          dockerClient,
 		imageManager: imageManager,
 	}
 
@@ -224,7 +233,7 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 	filterArgs.Add("label", "toolhive=true")
 
 	// List containers
-	containers, err := c.client.ContainerList(ctx, container.ListOptions{
+	containers, err := c.api.ContainerList(ctx, container.ListOptions{
 		All:     true,
 		Filters: filterArgs,
 	})
@@ -629,29 +638,19 @@ func addIgnoreOverlays(config *runtime.PermissionConfig, sourceDir, containerPat
 		// Continue without local patterns
 	}
 
-	// Get overlay mounts (both tmpfs for directories and bind for files)
+	// Get overlay mounts (all using bind mounts now)
 	overlayMounts := ignoreProcessor.GetOverlayMounts(sourceDir, containerPath)
 
 	// Add overlay mounts to the configuration
 	for _, overlayMount := range overlayMounts {
-		var mountType runtime.MountType
-		var source string
-
-		if overlayMount.Type == "tmpfs" {
-			mountType = runtime.MountTypeTmpfs
-			source = "" // No source for tmpfs
-		} else {
-			mountType = runtime.MountTypeBind
-			source = overlayMount.HostPath
-		}
-
+		// All overlays now use bind mounts (no more tmpfs)
 		config.Mounts = append(config.Mounts, runtime.Mount{
-			Source:   source,
+			Source:   overlayMount.HostPath,
 			Target:   overlayMount.ContainerPath,
 			ReadOnly: false,
-			Type:     mountType,
+			Type:     runtime.MountTypeBind,
 		})
-		logger.Debugf("Added %s overlay for ignored path: %s -> %s", overlayMount.Type, source, overlayMount.ContainerPath)
+		logger.Debugf("Added bind overlay for ignored path: %s -> %s", overlayMount.HostPath, overlayMount.ContainerPath)
 	}
 }
 
@@ -1115,21 +1114,13 @@ func convertEnvVars(envVars map[string]string) []string {
 func convertMounts(mounts []runtime.Mount) []mount.Mount {
 	result := make([]mount.Mount, 0, len(mounts))
 	for _, m := range mounts {
-		if m.Type == runtime.MountTypeTmpfs {
-			// Create tmpfs mount to mask/hide sensitive directories
-			result = append(result, mount.Mount{
-				Type:   mount.TypeTmpfs,
-				Target: m.Target,
-				// No TmpfsOptions needed - default size is sufficient for masking
-			})
-		} else {
-			result = append(result, mount.Mount{
-				Type:     mount.TypeBind,
-				Source:   m.Source,
-				Target:   m.Target,
-				ReadOnly: m.ReadOnly,
-			})
-		}
+		// All mounts are now bind mounts (removed tmpfs support for overlays)
+		result = append(result, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   m.Source,
+			Target:   m.Target,
+			ReadOnly: m.ReadOnly,
+		})
 	}
 	return result
 }
@@ -1531,26 +1522,60 @@ func dockerToDomainStatus(status string) runtime.WorkloadStatus {
 	return runtime.WorkloadStatusUnknown
 }
 
-// inspectContainerByName finds a container by the workload name and inspects it.
-func (c *Client) inspectContainerByName(ctx context.Context, workloadName string) (container.InspectResponse, error) {
-	empty := container.InspectResponse{}
-
-	// Since the Docker API expects a lookup by ID, do a search by name and label instead.
+// findContainerByLabel finds a container by the base name label.
+// Returns the container ID if found, empty string otherwise.
+func (c *Client) findContainerByLabel(ctx context.Context, workloadName string) (string, error) {
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("label", "toolhive=true")
-	filterArgs.Add("name", workloadName)
+	filterArgs.Add("label", fmt.Sprintf("toolhive-basename=%s", workloadName))
 
-	containers, err := c.client.ContainerList(ctx, container.ListOptions{
+	containers, err := c.api.ContainerList(ctx, container.ListOptions{
 		All:     true,
 		Filters: filterArgs,
 	})
 	if err != nil {
-		return empty, NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
+		return "", NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
 	}
 
 	if len(containers) == 0 {
-		return empty, NewContainerError(runtime.ErrWorkloadNotFound, workloadName, "no containers found")
+		return "", nil
 	}
+
+	// If multiple containers have the same base name, prefer the running one
+	var containerID string
+	for _, cont := range containers {
+		if cont.State == "running" {
+			containerID = cont.ID
+			break
+		}
+	}
+	// If no running container found, use the first one
+	if containerID == "" {
+		containerID = containers[0].ID
+	}
+
+	return containerID, nil
+}
+
+// findContainerByExactName finds a container by exact name matching.
+// Returns the container ID if found, empty string otherwise.
+func (c *Client) findContainerByExactName(ctx context.Context, workloadName string) (string, error) {
+	filterArgs := filters.NewArgs()
+	filterArgs.Add("label", "toolhive=true")
+	filterArgs.Add("name", workloadName)
+
+	containers, err := c.api.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filterArgs,
+	})
+	if err != nil {
+		return "", NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
+	}
+
+	if len(containers) == 0 {
+		return "", nil
+	}
+
 	// Docker does a prefix match on the name. If we find multiple containers,
 	// we need to filter down to the exact name requested.
 	var containerID string
@@ -1565,12 +1590,38 @@ func (c *Client) inspectContainerByName(ctx context.Context, workloadName string
 			return slices.Contains(c.Names, prefixedName)
 		})
 		if idx == -1 {
-			return empty, NewContainerError(runtime.ErrWorkloadNotFound, workloadName, "no containers found with the exact name")
+			return "", nil
 		}
 		containerID = containers[idx].ID
 	} else {
 		containerID = containers[0].ID
 	}
 
-	return c.client.ContainerInspect(ctx, containerID)
+	return containerID, nil
+}
+
+// inspectContainerByName finds a container by the workload name and inspects it.
+// It first tries to find by base name label, then falls back to exact name matching.
+func (c *Client) inspectContainerByName(ctx context.Context, workloadName string) (container.InspectResponse, error) {
+	empty := container.InspectResponse{}
+
+	// First try to find container by base name label
+	containerID, err := c.findContainerByLabel(ctx, workloadName)
+	if err != nil {
+		return empty, err
+	}
+	if containerID != "" {
+		return c.api.ContainerInspect(ctx, containerID)
+	}
+
+	// Fall back to exact name matching for backward compatibility
+	containerID, err = c.findContainerByExactName(ctx, workloadName)
+	if err != nil {
+		return empty, err
+	}
+	if containerID == "" {
+		return empty, NewContainerError(runtime.ErrWorkloadNotFound, workloadName, "no containers found")
+	}
+
+	return c.api.ContainerInspect(ctx, containerID)
 }

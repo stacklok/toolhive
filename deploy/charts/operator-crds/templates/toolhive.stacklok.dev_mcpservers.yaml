@@ -54,6 +54,17 @@ spec:
                 items:
                   type: string
                 type: array
+              audit:
+                description: Audit defines audit logging configuration for the MCP
+                  server
+                properties:
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled controls whether audit logging is enabled
+                      When true, enables audit logging with default configuration
+                    type: boolean
+                type: object
               authzConfig:
                 description: AuthzConfig defines authorization policy configuration
                   for the MCP server
@@ -8693,6 +8704,15 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
+              proxyMode:
+                default: sse
+                description: |-
+                  ProxyMode is the proxy mode for stdio transport (sse or streamable-http)
+                  This setting is only used when Transport is "stdio"
+                enum:
+                - sse
+                - streamable-http
+                type: string
               resourceOverrides:
                 description: ResourceOverrides allows overriding annotations and labels
                   for resources created by the operator
@@ -8729,6 +8749,21 @@ spec:
                         additionalProperties:
                           type: string
                         description: Labels to add or override on the resource
+                        type: object
+                      podTemplateMetadataOverrides:
+                        description: ResourceMetadataOverrides defines metadata overrides
+                          for a resource
+                        properties:
+                          annotations:
+                            additionalProperties:
+                              type: string
+                            description: Annotations to add or override on the resource
+                            type: object
+                          labels:
+                            additionalProperties:
+                              type: string
+                            description: Labels to add or override on the resource
+                            type: object
                         type: object
                     type: object
                   proxyService:
@@ -8843,7 +8878,7 @@ spec:
                           configuration
                         properties:
                           enabled:
-                            default: true
+                            default: false
                             description: Enabled controls whether OTLP metrics are
                               sent
                             type: boolean
@@ -8853,6 +8888,19 @@ spec:
                           ServiceName is the service name for telemetry
                           If not specified, defaults to the MCPServer name
                         type: string
+                      tracing:
+                        description: Tracing defines OpenTelemetry tracing configuration
+                        properties:
+                          enabled:
+                            default: false
+                            description: Enabled controls whether OTLP tracing is
+                              sent
+                            type: boolean
+                          samplingRate:
+                            default: "0.05"
+                            description: SamplingRate is the trace sampling rate (0.0-1.0)
+                            type: string
+                        type: object
                     type: object
                   prometheus:
                     description: Prometheus defines Prometheus-specific configuration
@@ -8864,9 +8912,24 @@ spec:
                         type: boolean
                     type: object
                 type: object
+              toolConfigRef:
+                description: |-
+                  ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.
+                  The referenced MCPToolConfig must exist in the same namespace as this MCPServer.
+                  Cross-namespace references are not supported for security and isolation reasons.
+                  If specified, this takes precedence over the inline ToolsFilter field.
+                properties:
+                  name:
+                    description: Name is the name of the MCPToolConfig resource in
+                      the same namespace
+                    type: string
+                required:
+                - name
+                type: object
               tools:
-                description: ToolsFilter is the filter on tools applied to the MCP
-                  server
+                description: |-
+                  ToolsFilter is the filter on tools applied to the MCP server
+                  Deprecated: Use ToolConfigRef instead
                 items:
                   type: string
                 type: array
@@ -8980,6 +9043,10 @@ spec:
                 - Running
                 - Failed
                 - Terminating
+                type: string
+              toolConfigHash:
+                description: ToolConfigHash stores the hash of the referenced ToolConfig
+                  for change detection
                 type: string
               url:
                 description: URL is the URL where the MCP server can be accessed

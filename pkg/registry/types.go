@@ -14,6 +14,18 @@ import (
 // The embedded registry.json is automatically validated against the schema during tests.
 // See pkg/registry/schema_validation_test.go for the validation implementation.
 
+// Group represents a collection of related MCP servers that can be deployed together
+type Group struct {
+	// Name is the identifier for the group, used when referencing the group in commands
+	Name string `json:"name" yaml:"name"`
+	// Description is a human-readable description of the group's purpose and functionality
+	Description string `json:"description" yaml:"description"`
+	// Servers is a map of server names to their corresponding server definitions within this group
+	Servers map[string]*ImageMetadata `json:"servers,omitempty" yaml:"servers,omitempty"`
+	// RemoteServers is a map of server names to their corresponding remote server definitions within this group
+	RemoteServers map[string]*RemoteServerMetadata `json:"remote_servers,omitempty" yaml:"remote_servers,omitempty"`
+}
+
 // Registry represents the top-level structure of the MCP registry
 type Registry struct {
 	// Version is the schema version of the registry
@@ -25,6 +37,8 @@ type Registry struct {
 	// RemoteServers is a map of server names to their corresponding remote server definitions
 	// These are MCP servers accessed via HTTP/HTTPS using the thv proxy command
 	RemoteServers map[string]*RemoteServerMetadata `json:"remote_servers,omitempty" yaml:"remote_servers,omitempty"`
+	// Groups is a slice of group definitions containing related MCP servers
+	Groups []*Group `json:"groups,omitempty" yaml:"groups,omitempty"`
 }
 
 // BaseServerMetadata contains common fields shared between container and remote MCP servers
@@ -443,6 +457,51 @@ func (reg *Registry) GetServerByName(name string) (ServerMetadata, bool) {
 	}
 
 	return nil, false
+}
+
+// GetAllGroups returns all groups in the registry
+func (reg *Registry) GetAllGroups() []*Group {
+	if reg == nil {
+		return nil
+	}
+
+	return reg.Groups
+}
+
+// GetGroupByName returns a group by name
+func (reg *Registry) GetGroupByName(name string) (*Group, bool) {
+	if reg == nil {
+		return nil, false
+	}
+
+	for _, group := range reg.Groups {
+		if group != nil && group.Name == name {
+			return group, true
+		}
+	}
+
+	return nil, false
+}
+
+// GetAllGroupServers returns all servers from a specific group (both container and remote) as a unified list
+func (g *Group) GetAllGroupServers() []ServerMetadata {
+	if g == nil {
+		return nil
+	}
+
+	servers := make([]ServerMetadata, 0, len(g.Servers)+len(g.RemoteServers))
+
+	// Add container servers from the group
+	for _, server := range g.Servers {
+		servers = append(servers, server)
+	}
+
+	// Add remote servers from the group
+	for _, server := range g.RemoteServers {
+		servers = append(servers, server)
+	}
+
+	return servers
 }
 
 // SortServersByName sorts a slice of ServerMetadata by name

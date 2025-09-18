@@ -61,7 +61,7 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 
 	testCases := []struct {
 		name                      string
-		setupBuilder              func(*RunConfigBuilder) *RunConfigBuilder
+		builderOptions            []RunConfigBuilderOption
 		profileContent            string // The JSON content for the profile file
 		needsTempFile             bool   // Whether this test case needs a temp file
 		expectedPermissionProfile *permissions.Profile
@@ -70,41 +70,39 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 	}{
 		{
 			name: "Direct permission profile",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithPermissionProfile(permissions.BuiltinNetworkProfile())
+			builderOptions: []RunConfigBuilderOption{
+				WithPermissionProfile(permissions.BuiltinNetworkProfile()),
 			},
 			imageMetadata:             imageMetadata,
 			expectedPermissionProfile: permissions.BuiltinNetworkProfile(),
 		},
 		{
 			name: "Network profile by name",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithPermissionProfileNameOrPath(permissions.ProfileNetwork)
+			builderOptions: []RunConfigBuilderOption{
+				WithPermissionProfileNameOrPath(permissions.ProfileNetwork),
 			},
 			imageMetadata:             imageMetadata,
 			expectedPermissionProfile: permissions.BuiltinNetworkProfile(),
 		},
 		{
 			name: "None profile by name",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithPermissionProfileNameOrPath(permissions.ProfileNone)
+			builderOptions: []RunConfigBuilderOption{
+				WithPermissionProfileNameOrPath(permissions.ProfileNone),
 			},
 			imageMetadata:             nil,
 			expectedPermissionProfile: permissions.BuiltinNoneProfile(),
 		},
 		{
 			name: "Stdio profile by name",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithPermissionProfileNameOrPath("stdio")
+			builderOptions: []RunConfigBuilderOption{
+				WithPermissionProfileNameOrPath("stdio"),
 			},
 			imageMetadata:             nil,
 			expectedPermissionProfile: permissions.BuiltinNoneProfile(),
 		},
 		{
-			name: "Custom profile from file",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b
-			},
+			name:                      "Custom profile from file",
+			builderOptions:            []RunConfigBuilderOption{},
 			profileContent:            string(curstomProfileJSON),
 			needsTempFile:             true,
 			imageMetadata:             nil,
@@ -112,26 +110,26 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 		},
 		{
 			name: "Profile name overrides direct profile",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithPermissionProfile(permissions.BuiltinNoneProfile()).
-					WithPermissionProfileNameOrPath(permissions.ProfileNetwork)
+			builderOptions: []RunConfigBuilderOption{
+				WithPermissionProfile(permissions.BuiltinNoneProfile()),
+				WithPermissionProfileNameOrPath(permissions.ProfileNetwork),
 			},
 			imageMetadata:             imageMetadata,
 			expectedPermissionProfile: permissions.BuiltinNetworkProfile(),
 		},
 		{
 			name: "Direct profile overrides profile name",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithPermissionProfileNameOrPath(permissions.ProfileNetwork).
-					WithPermissionProfile(permissions.BuiltinNoneProfile())
+			builderOptions: []RunConfigBuilderOption{
+				WithPermissionProfileNameOrPath(permissions.ProfileNetwork),
+				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			imageMetadata:             imageMetadata,
 			expectedPermissionProfile: permissions.BuiltinNoneProfile(),
 		},
 		{
 			name: "Permissions from image metadata",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithName("test-container")
+			builderOptions: []RunConfigBuilderOption{
+				WithName("test-container"),
 			},
 			imageMetadata: imageMetadata,
 			expectedPermissionProfile: &permissions.Profile{
@@ -146,25 +144,23 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 		},
 		{
 			name: "Defaults to network profile",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b
+			builderOptions: []RunConfigBuilderOption{
+				WithPermissionProfileNameOrPath(permissions.ProfileNetwork),
 			},
 			imageMetadata:             nil,
 			expectedPermissionProfile: permissions.BuiltinNetworkProfile(),
 		},
 		{
 			name: "Non-existent profile file",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithPermissionProfileNameOrPath("/non/existent/file.json")
+			builderOptions: []RunConfigBuilderOption{
+				WithPermissionProfileNameOrPath("/non/existent/file.json"),
 			},
 			imageMetadata: nil,
 			expectError:   true,
 		},
 		{
-			name: "Invalid JSON in profile file",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b
-			},
+			name:           "Invalid JSON in profile file",
+			builderOptions: []RunConfigBuilderOption{},
 			profileContent: invalidJSON,
 			needsTempFile:  true,
 			imageMetadata:  nil,
@@ -176,20 +172,23 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create a new builder and apply the setup
-			builder := tc.setupBuilder(NewRunConfigBuilder())
-			require.NotNil(t, builder, "Builder should not be nil")
+			opts := tc.builderOptions
 
 			// Create a temporary profile file if needed
 			if tc.needsTempFile {
 				tempFilePath, cleanup := createTempProfileFile(t, tc.profileContent)
 				defer cleanup()
-				builder.WithPermissionProfileNameOrPath(tempFilePath)
+				opts = append(opts, WithPermissionProfileNameOrPath(tempFilePath))
 			}
 
-			// Build the configuration with required parameters
 			ctx := context.Background()
-			config, err := builder.Build(ctx, tc.imageMetadata, nil, mockValidator)
+			config, err := NewRunConfigBuilder(
+				ctx,
+				tc.imageMetadata,
+				nil,
+				mockValidator,
+				opts...,
+			)
 
 			if tc.expectError {
 				assert.Error(t, err, "Build should return an error")
@@ -242,15 +241,15 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 
 	testCases := []struct {
 		name                string
-		setupBuilder        func(*RunConfigBuilder) *RunConfigBuilder
+		builderOptions      []RunConfigBuilderOption
 		expectError         bool
 		expectedReadMounts  int
 		expectedWriteMounts int
 	}{
 		{
 			name: "No volumes",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithVolumes([]string{})
+			builderOptions: []RunConfigBuilderOption{
+				WithVolumes([]string{}),
 			},
 			expectError:         false,
 			expectedReadMounts:  0,
@@ -258,9 +257,9 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		},
 		{
 			name: "Volumes without permission profile but with profile name",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithVolumes([]string{"/host:/container"}).
-					WithPermissionProfileNameOrPath(permissions.ProfileNone)
+			builderOptions: []RunConfigBuilderOption{
+				WithVolumes([]string{"/host:/container"}),
+				WithPermissionProfileNameOrPath(permissions.ProfileNone),
 			},
 			expectError:         false,
 			expectedReadMounts:  0,
@@ -268,9 +267,9 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		},
 		{
 			name: "Read-only volume with existing profile",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithVolumes([]string{"/host:/container:ro"}).
-					WithPermissionProfile(permissions.BuiltinNoneProfile())
+			builderOptions: []RunConfigBuilderOption{
+				WithVolumes([]string{"/host:/container:ro"}),
+				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError:         false,
 			expectedReadMounts:  1,
@@ -278,9 +277,9 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		},
 		{
 			name: "Read-write volume with existing profile",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithVolumes([]string{"/host:/container"}).
-					WithPermissionProfile(permissions.BuiltinNoneProfile())
+			builderOptions: []RunConfigBuilderOption{
+				WithVolumes([]string{"/host:/container"}),
+				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError:         false,
 			expectedReadMounts:  0,
@@ -288,12 +287,13 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		},
 		{
 			name: "Multiple volumes with existing profile",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithVolumes([]string{
+			builderOptions: []RunConfigBuilderOption{
+				WithVolumes([]string{
 					"/host1:/container1:ro",
 					"/host2:/container2",
 					"/host3:/container3:ro",
-				}).WithPermissionProfile(permissions.BuiltinNoneProfile())
+				}),
+				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError:         false,
 			expectedReadMounts:  2,
@@ -301,9 +301,9 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		},
 		{
 			name: "Invalid volume format",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithVolumes([]string{"invalid:format:with:too:many:colons"}).
-					WithPermissionProfile(permissions.BuiltinNoneProfile())
+			builderOptions: []RunConfigBuilderOption{
+				WithVolumes([]string{"invalid:format:with:too:many:colons"}),
+				WithPermissionProfile(permissions.BuiltinNoneProfile()),
 			},
 			expectError: true,
 		},
@@ -313,22 +313,17 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create a new builder and apply the setup
-			builder := tc.setupBuilder(NewRunConfigBuilder())
-			require.NotNil(t, builder, "Builder should not be nil")
-
-			// Save original read/write mounts count if there's a permission profile
-			var originalReadMounts, originalWriteMounts int
-			if builder.config.PermissionProfile != nil {
-				originalReadMounts = len(builder.config.PermissionProfile.Read)
-				originalWriteMounts = len(builder.config.PermissionProfile.Write)
-			}
-
-			// Build the configuration with required parameters
 			ctx := context.Background()
-			config, err := builder.Build(ctx, nil, nil, mockValidator)
+			config, err := NewRunConfigBuilder(
+				ctx,
+				nil,
+				nil,
+				mockValidator,
+				tc.builderOptions...,
+			)
 
 			if tc.expectError {
+				assert.Nil(t, config, "Builder should be nil")
 				assert.Error(t, err, "Build should return an error for invalid volume mounts")
 			} else {
 				assert.NoError(t, err, "Build should not return an error")
@@ -338,11 +333,11 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 				// because it's required by Build to succeed
 				if config.PermissionProfile != nil {
 					// Check read mounts
-					assert.Equal(t, tc.expectedReadMounts, len(config.PermissionProfile.Read)-originalReadMounts,
+					assert.Equal(t, tc.expectedReadMounts, len(config.PermissionProfile.Read),
 						"Number of read mounts should match expected")
 
 					// Check write mounts
-					assert.Equal(t, tc.expectedWriteMounts, len(config.PermissionProfile.Write)-originalWriteMounts,
+					assert.Equal(t, tc.expectedWriteMounts, len(config.PermissionProfile.Write),
 						"Number of write mounts should match expected")
 				}
 			}
@@ -375,6 +370,9 @@ func TestRunConfigBuilder_WithToolOverride(t *testing.T) {
 
 	// Needed to prevent a nil pointer dereference in the logger.
 	logger.Initialize()
+
+	// Create a mock environment variable validator
+	mockValidator := &mockEnvVarValidator{}
 
 	testCases := []struct {
 		name           string
@@ -458,56 +456,22 @@ func TestRunConfigBuilder_WithToolOverride(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			builder := NewRunConfigBuilder()
-			result := builder.WithToolOverride(tc.toolOverride)
+			config, err := NewRunConfigBuilder(
+				context.Background(),
+				nil,
+				nil,
+				mockValidator,
+				WithToolsOverride(tc.toolOverride),
+			)
 
-			assert.NotNil(t, result, "Builder should not be nil")
-			assert.Equal(t, tc.expectedResult, builder.config.ToolOverride, "Tool override should match expected")
-		})
-	}
-}
-
-func TestRunConfigBuilder_WithToolOverrideFile(t *testing.T) {
-	t.Parallel()
-
-	// Needed to prevent a nil pointer dereference in the logger.
-	logger.Initialize()
-
-	testCases := []struct {
-		name             string
-		toolOverrideFile string
-		expectedResult   string
-		expectError      bool
-	}{
-		{
-			name:             "Valid tool override file path",
-			toolOverrideFile: "/path/to/tool-override.json",
-			expectedResult:   "/path/to/tool-override.json",
-			expectError:      false,
-		},
-		{
-			name:             "Empty tool override file path",
-			toolOverrideFile: "",
-			expectedResult:   "",
-			expectError:      false,
-		},
-		{
-			name:             "Relative tool override file path",
-			toolOverrideFile: "./tool-override.json",
-			expectedResult:   "./tool-override.json",
-			expectError:      false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			builder := NewRunConfigBuilder()
-			result := builder.WithToolOverrideFile(tc.toolOverrideFile)
-
-			assert.NotNil(t, result, "Builder should not be nil")
-			assert.Equal(t, tc.expectedResult, builder.config.ToolOverrideFile, "Tool override file should match expected")
+			if tc.expectError {
+				assert.Nil(t, config, "Builder should be nil")
+				assert.Error(t, err, "Builder should return an error")
+			} else {
+				assert.NotNil(t, config, "Builder should not be nil")
+				assert.NoError(t, err, "Builder should not return an error")
+				assert.Equal(t, tc.expectedResult, config.ToolsOverride, "Tool override should match expected")
+			}
 		})
 	}
 }
@@ -529,52 +493,36 @@ func TestRunConfigBuilder_ToolOverrideMutualExclusivity(t *testing.T) {
 	}
 
 	testCases := []struct {
-		name          string
-		setupBuilder  func(*RunConfigBuilder) *RunConfigBuilder
-		expectError   bool
-		errorContains string
+		name           string
+		builderOptions []RunConfigBuilderOption
+		expectError    bool
+		errorContains  string
 	}{
 		{
-			name: "Both tool override map and file set - should error",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithToolOverride(map[string]ToolOverride{
-					"tool1": {Name: "renamed-tool1"},
-				}).WithToolOverrideFile("/path/to/override.json")
-			},
-			expectError:   true,
-			errorContains: "both tool override map and tool override file are set, they are mutually exclusive",
-		},
-		{
 			name: "Tool override map with invalid override - should error",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithToolOverride(map[string]ToolOverride{
+			builderOptions: []RunConfigBuilderOption{
+				WithToolsOverride(map[string]ToolOverride{
 					"tool1": {}, // Empty override (no name or description)
-				})
+				}),
 			},
 			expectError:   true,
 			errorContains: "tool override for tool1 must have either Name or Description set",
 		},
 		{
 			name: "Valid tool override map only",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithToolOverride(map[string]ToolOverride{
+			builderOptions: []RunConfigBuilderOption{
+				WithToolsOverride(map[string]ToolOverride{
 					"tool1": {Name: "renamed-tool1"},
 					"tool2": {Description: "New description"},
-				})
-			},
-			expectError: false,
-		},
-		{
-			name: "Valid tool override file only",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithToolOverrideFile("/path/to/override.json")
+				}),
 			},
 			expectError: false,
 		},
 		{
 			name: "Neither tool override map nor file set",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithName("test-server").WithImage("test-image")
+			builderOptions: []RunConfigBuilderOption{
+				WithName("test-server"),
+				WithImage("test-image"),
 			},
 			expectError: false,
 		},
@@ -584,21 +532,24 @@ func TestRunConfigBuilder_ToolOverrideMutualExclusivity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create a new builder and apply the setup
-			builder := tc.setupBuilder(NewRunConfigBuilder())
-			require.NotNil(t, builder, "Builder should not be nil")
-
-			// Build the configuration
 			ctx := context.Background()
-			_, err := builder.Build(ctx, imageMetadata, nil, mockValidator)
+			config, err := NewRunConfigBuilder(
+				ctx,
+				imageMetadata,
+				nil,
+				mockValidator,
+				tc.builderOptions...,
+			)
 
 			if tc.expectError {
+				assert.Nil(t, config, "Builder should be nil")
 				assert.Error(t, err, "Build should return an error")
 				if tc.errorContains != "" {
 					assert.Contains(t, err.Error(), tc.errorContains, "Error should contain expected message")
 				}
 			} else {
-				assert.NoError(t, err, "Build should not return an error")
+				assert.NotNil(t, config, "Builder should not be nil")
+				assert.NoError(t, err, "Builder should not return an error")
 			}
 		})
 	}
@@ -621,32 +572,233 @@ func TestRunConfigBuilder_ToolOverrideWithToolsFilter(t *testing.T) {
 	}
 
 	testCases := []struct {
-		name         string
-		setupBuilder func(*RunConfigBuilder) *RunConfigBuilder
-		expectError  bool
+		name           string
+		builderOptions []RunConfigBuilderOption
+		expectError    bool
 	}{
 		{
 			name: "Tool override with valid tools filter",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithToolOverride(map[string]ToolOverride{
+			builderOptions: []RunConfigBuilderOption{
+				WithToolsOverride(map[string]ToolOverride{
 					"tool1": {Name: "renamed-tool1"},
-				}).WithToolsFilter([]string{"tool1", "tool2"})
+				}),
+				WithToolsFilter([]string{"tool1", "tool2"}),
 			},
 			expectError: false,
 		},
 		{
 			name: "Tool override with invalid tools filter",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithToolOverride(map[string]ToolOverride{
+			builderOptions: []RunConfigBuilderOption{
+				WithToolsOverride(map[string]ToolOverride{
 					"tool1": {Name: "renamed-tool1"},
-				}).WithToolsFilter([]string{"tool1", "nonexistent-tool"})
+				}),
+				WithToolsFilter([]string{"tool1", "nonexistent-tool"}),
 			},
 			expectError: true,
 		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			config, err := NewRunConfigBuilder(
+				ctx,
+				imageMetadata,
+				nil,
+				mockValidator,
+				tc.builderOptions...,
+			)
+
+			if tc.expectError {
+				assert.Nil(t, config, "Builder should be nil")
+				assert.Error(t, err, "Build should return an error")
+			} else {
+				assert.NotNil(t, config, "Builder should not be nil")
+				assert.NoError(t, err, "Build should not return an error")
+			}
+		})
+	}
+}
+
+// TestNewOperatorRunConfigBuilder tests the NewOperatorRunConfigBuilder function
+func TestNewOperatorRunConfigBuilder(t *testing.T) {
+	t.Parallel()
+
+	// Create a mock environment variable validator
+	mockValidator := &mockEnvVarValidator{}
+	imageMetadata := &registry.ImageMetadata{
+		BaseServerMetadata: registry.BaseServerMetadata{
+			Name:  "test-image",
+			Tools: []string{"tool1", "tool2", "tool3"},
+		},
+	}
+
+	config, err := NewOperatorRunConfigBuilder(context.Background(), imageMetadata, nil, mockValidator)
+	require.NoError(t, err)
+	assert.NotNil(t, config, "Builder config should be initialized")
+	assert.NotNil(t, config.EnvVars, "EnvVars should be initialized")
+	assert.NotNil(t, config.ContainerLabels, "ContainerLabels should be initialized")
+}
+
+// TestWithEnvVars tests the WithEnvVars method
+func TestWithEnvVars(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		envVars  map[string]string
+		expected map[string]string
+	}{
 		{
-			name: "Tool override file with valid tools filter",
-			setupBuilder: func(b *RunConfigBuilder) *RunConfigBuilder {
-				return b.WithToolOverrideFile("/path/to/override.json").WithToolsFilter([]string{"tool1", "tool2"})
+			name:    "Empty env vars",
+			envVars: map[string]string{},
+			expected: map[string]string{
+				"MCP_TRANSPORT": "stdio",
+			},
+		},
+		{
+			name: "Single env var",
+			envVars: map[string]string{
+				"TEST_VAR": "test_value",
+			},
+			expected: map[string]string{
+				"MCP_TRANSPORT": "stdio",
+				"TEST_VAR":      "test_value",
+			},
+		},
+		{
+			name: "Multiple env vars",
+			envVars: map[string]string{
+				"VAR1": "value1",
+				"VAR2": "value2",
+				"VAR3": "value3",
+			},
+			expected: map[string]string{
+				"MCP_TRANSPORT": "stdio",
+				"VAR1":          "value1",
+				"VAR2":          "value2",
+				"VAR3":          "value3",
+			},
+		},
+		{
+			name:    "Nil env vars",
+			envVars: nil,
+			expected: map[string]string{
+				"MCP_TRANSPORT": "stdio",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create a mock environment variable validator
+			mockValidator := &mockEnvVarValidator{}
+			imageMetadata := &registry.ImageMetadata{
+				BaseServerMetadata: registry.BaseServerMetadata{
+					Name:  "test-image",
+					Tools: []string{"tool1", "tool2", "tool3"},
+				},
+			}
+
+			config, err := NewRunConfigBuilder(
+				context.Background(),
+				imageMetadata,
+				nil,
+				mockValidator,
+				WithEnvVars(tc.envVars),
+			)
+			require.NoError(t, err)
+			require.NotNil(t, config)
+
+			assert.Equal(t, tc.expected, config.EnvVars, "Environment variables should match expected")
+		})
+	}
+}
+
+// TestWithEnvVarsOverwrite tests that WithEnvVars can overwrite existing env vars
+func TestWithEnvVarsOverwrite(t *testing.T) {
+	t.Parallel()
+
+	// Create a mock environment variable validator
+	mockValidator := &mockEnvVarValidator{}
+	imageMetadata := &registry.ImageMetadata{
+		BaseServerMetadata: registry.BaseServerMetadata{
+			Name:  "test-image",
+			Tools: []string{"tool1", "tool2", "tool3"},
+		},
+	}
+
+	// Add initial env vars
+	initialEnvVars := map[string]string{
+		"EXISTING_VAR": "old_value",
+		"OTHER_VAR":    "other_value",
+	}
+
+	// Add new env vars that overwrite some existing ones
+	newEnvVars := map[string]string{
+		"EXISTING_VAR": "new_value",
+		"NEW_VAR":      "new_value",
+	}
+
+	config, err := NewRunConfigBuilder(
+		context.Background(),
+		imageMetadata,
+		nil,
+		mockValidator,
+		WithEnvVars(initialEnvVars),
+		WithEnvVars(newEnvVars),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	expected := map[string]string{
+		"EXISTING_VAR":  "new_value",   // Should be overwritten
+		"OTHER_VAR":     "other_value", // Should remain unchanged
+		"NEW_VAR":       "new_value",   // Should be added
+		"MCP_TRANSPORT": "stdio",
+	}
+	assert.Equal(t, expected, config.EnvVars, "Environment variables should be merged correctly")
+}
+
+// TestBuildForOperator tests the BuildForOperator method
+func TestBuildForOperator(t *testing.T) {
+	t.Parallel()
+
+	// Initialize logger to prevent nil pointer dereference
+	logger.Initialize()
+
+	testCases := []struct {
+		name           string
+		builderOptions []RunConfigBuilderOption
+		expectError    bool
+	}{
+		{
+			name: "Valid operator config with all fields",
+			builderOptions: []RunConfigBuilderOption{
+				WithName("test-server"),
+				WithImage("test-image:latest"),
+				WithTransportAndPorts("stdio", 8080, 8080),
+			},
+			expectError: false,
+		},
+		{
+			name: "Valid operator config with minimal fields",
+			builderOptions: []RunConfigBuilderOption{
+				WithName("test-server"),
+				WithImage("test-image:latest"),
+			},
+			expectError: false,
+		},
+		{
+			name: "Valid operator config with env vars",
+			builderOptions: []RunConfigBuilderOption{
+				WithName("test-server"),
+				WithImage("test-image:latest"),
+				WithEnvVars(map[string]string{"TEST_VAR": "test_value"}),
 			},
 			expectError: false,
 		},
@@ -656,18 +808,31 @@ func TestRunConfigBuilder_ToolOverrideWithToolsFilter(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create a new builder and apply the setup
-			builder := tc.setupBuilder(NewRunConfigBuilder())
-			require.NotNil(t, builder, "Builder should not be nil")
+			// Create a mock environment variable validator
+			mockValidator := &mockEnvVarValidator{}
+			imageMetadata := &registry.ImageMetadata{
+				BaseServerMetadata: registry.BaseServerMetadata{
+					Name:  "test-image",
+					Tools: []string{"tool1", "tool2", "tool3"},
+				},
+			}
 
-			// Build the configuration
-			ctx := context.Background()
-			_, err := builder.Build(ctx, imageMetadata, nil, mockValidator)
+			config, err := NewOperatorRunConfigBuilder(
+				context.Background(),
+				imageMetadata,
+				nil,
+				mockValidator,
+				tc.builderOptions...,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, config)
 
 			if tc.expectError {
-				assert.Error(t, err, "Build should return an error")
+				require.Error(t, err, "BuildForOperator should return an error")
+				assert.Nil(t, config, "Config should be nil on error")
 			} else {
-				assert.NoError(t, err, "Build should not return an error")
+				require.NoError(t, err, "BuildForOperator should not return an error")
+				assert.NotNil(t, config, "Config should not be nil on success")
 			}
 		})
 	}

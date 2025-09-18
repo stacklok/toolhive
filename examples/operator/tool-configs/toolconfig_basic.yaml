@@ -1,0 +1,11 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPToolConfig
+metadata:
+  name: basic-tool-filter
+  namespace: default
+spec:
+  # Filter to only allow specific tools
+  toolsFilter:
+    - read_file
+    - write_file
+    - list_directory

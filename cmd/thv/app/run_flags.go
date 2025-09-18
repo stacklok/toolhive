@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/cli"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -70,6 +71,8 @@ type RunFlags struct {
 	// Telemetry configuration
 	OtelEndpoint                    string
 	OtelServiceName                 string
+	OtelTracingEnabled              bool
+	OtelMetricsEnabled              bool
 	OtelSamplingRate                float64
 	OtelHeaders                     []string
 	OtelInsecure                    bool
@@ -87,6 +90,8 @@ type RunFlags struct {
 
 	// Tools filter
 	ToolsFilter []string
+	// Tools override file
+	ToolsOverride string
 
 	// Configuration import
 	FromConfig string
@@ -174,6 +179,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)")
 	cmd.Flags().StringVar(&config.OtelServiceName, "otel-service-name", "",
 		"OpenTelemetry service name (defaults to toolhive-mcp-proxy)")
+	cmd.Flags().BoolVar(&config.OtelTracingEnabled, "otel-tracing-enabled", true,
+		"Enable distributed tracing (when OTLP endpoint is configured)")
+	cmd.Flags().BoolVar(&config.OtelMetricsEnabled, "otel-metrics-enabled", true,
+		"Enable OTLP metrics export (when OTLP endpoint is configured)")
 	cmd.Flags().Float64Var(&config.OtelSamplingRate, "otel-sampling-rate", 0.1, "OpenTelemetry trace sampling rate (0.0-1.0)")
 	cmd.Flags().StringArrayVar(&config.OtelHeaders, "otel-headers", nil,
 		"OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
@@ -193,6 +202,12 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"tools",
 		nil,
 		"Filter MCP server tools (comma-separated list of tool names)",
+	)
+	cmd.Flags().StringVar(
+		&config.ToolsOverride,
+		"tools-override",
+		"",
+		"Path to a JSON file containing overrides for MCP server tools names and descriptions",
 	)
 	cmd.Flags().StringVar(&config.FromConfig, "from-config", "", "Load configuration from exported file")
 
@@ -237,7 +252,6 @@ func BuildRunnerConfig(
 		return nil, err
 	}
 
-	// If --remote flag is provided, use it as the serverOrImage
 	if runFlags.RemoteURL != "" {
 		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, nil,
 			nil, envVarValidator, oidcConfig, telemetryConfig)
@@ -292,8 +306,8 @@ func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *teleme
 		runFlags.OtelEndpoint, runFlags.OtelSamplingRate, runFlags.OtelEnvironmentVariables)
 
 	return createTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
-		runFlags.OtelServiceName, finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure,
-		finalOtelEnvironmentVariables)
+		runFlags.OtelServiceName, runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, finalOtelSamplingRate,
+		runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables)
 }
 
 // setupRuntimeAndValidation creates container runtime and selects environment variable validator
@@ -385,60 +399,76 @@ func buildRunnerConfig(
 	} else if serverMetadata != nil {
 		transportType = serverMetadata.GetTransport()
 	}
-	// Create a builder for the RunConfig
-	builder := runner.NewRunConfigBuilder().
-		WithRuntime(rt).
-		WithCmdArgs(cmdArgs).
-		WithName(runFlags.Name).
-		WithImage(imageURL).
-		WithRemoteURL(runFlags.RemoteURL).
-		WithHost(validatedHost).
-		WithTargetHost(runFlags.TargetHost).
-		WithDebug(debugMode).
-		WithVolumes(runFlags.Volumes).
-		WithSecrets(runFlags.Secrets).
-		WithAuthzConfigPath(runFlags.AuthzConfig).
-		WithAuditConfigPath(runFlags.AuditConfig).
-		WithPermissionProfileNameOrPath(runFlags.PermissionProfile).
-		WithNetworkIsolation(runFlags.IsolateNetwork).
-		WithK8sPodPatch(runFlags.K8sPodPatch).
-		WithProxyMode(types.ProxyMode(runFlags.ProxyMode)).
-		WithTransportAndPorts(transportType, runFlags.ProxyPort, runFlags.TargetPort).
-		WithAuditEnabled(runFlags.EnableAudit, runFlags.AuditConfig).
-		WithLabels(runFlags.Labels).
-		WithGroup(runFlags.Group).
-		WithIgnoreConfig(&ignore.Config{
+
+	// set default options
+	opts := []runner.RunConfigBuilderOption{
+		runner.WithRuntime(rt),
+		runner.WithCmdArgs(cmdArgs),
+		runner.WithName(runFlags.Name),
+		runner.WithImage(imageURL),
+		runner.WithRemoteURL(runFlags.RemoteURL),
+		runner.WithHost(validatedHost),
+		runner.WithTargetHost(runFlags.TargetHost),
+		runner.WithDebug(debugMode),
+		runner.WithVolumes(runFlags.Volumes),
+		runner.WithSecrets(runFlags.Secrets),
+		runner.WithAuthzConfigPath(runFlags.AuthzConfig),
+		runner.WithAuditConfigPath(runFlags.AuditConfig),
+		runner.WithPermissionProfileNameOrPath(runFlags.PermissionProfile),
+		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
+		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
+		runner.WithProxyMode(types.ProxyMode(runFlags.ProxyMode)),
+		runner.WithTransportAndPorts(transportType, runFlags.ProxyPort, runFlags.TargetPort),
+		runner.WithAuditEnabled(runFlags.EnableAudit, runFlags.AuditConfig),
+		runner.WithLabels(runFlags.Labels),
+		runner.WithGroup(runFlags.Group),
+		runner.WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    runFlags.IgnoreGlobally,
 			PrintOverlays: runFlags.PrintOverlays,
-		})
+		}),
+	}
 
+	var toolsOverride map[string]runner.ToolOverride
+	if runFlags.ToolsOverride != "" {
+		loadedToolsOverride, err := cli.LoadToolsOverride(runFlags.ToolsOverride)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load tools override: %v", err)
+		}
+		toolsOverride = *loadedToolsOverride
+	}
+
+	opts = append(opts, runner.WithToolsOverride(toolsOverride))
 	// Configure middleware from flags
-	builder = builder.WithMiddlewareFromFlags(
-		oidcConfig,
-		runFlags.ToolsFilter,
-		telemetryConfig,
-		runFlags.AuthzConfig,
-		runFlags.EnableAudit,
-		runFlags.AuditConfig,
-		runFlags.Name,
-		runFlags.Transport,
+	opts = append(
+		opts,
+		runner.WithMiddlewareFromFlags(
+			oidcConfig,
+			runFlags.ToolsFilter,
+			toolsOverride,
+			telemetryConfig,
+			runFlags.AuthzConfig,
+			runFlags.EnableAudit,
+			runFlags.AuditConfig,
+			runFlags.Name,
+			runFlags.Transport,
+		),
 	)
 
 	if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
 		if remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata); remoteAuthConfig != nil {
-			builder = builder.WithRemoteAuth(remoteAuthConfig)
+			opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig), runner.WithRemoteURL(remoteServerMetadata.URL))
 		}
 	}
 	if runFlags.RemoteURL != "" {
 		if remoteAuthConfig := getRemoteAuthFromRunFlags(runFlags); remoteAuthConfig != nil {
-			builder = builder.WithRemoteAuth(remoteAuthConfig)
+			opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig))
 		}
 	}
 
 	// Load authz config if path is provided
 	if runFlags.AuthzConfig != "" {
 		if authzConfigData, err := authz.LoadConfig(runFlags.AuthzConfig); err == nil {
-			builder = builder.WithAuthzConfig(authzConfigData)
+			opts = append(opts, runner.WithAuthzConfig(authzConfigData))
 		}
 		// Note: Path is already set via WithAuthzConfigPath above
 	}
@@ -448,29 +478,30 @@ func buildRunnerConfig(
 	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := extractTelemetryValues(telemetryConfig)
 
 	// Set additional configurations that are still needed in old format for other parts of the system
-	builder = builder.WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
-		runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP).
-		WithTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath, runFlags.OtelServiceName,
-			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables).
-		WithToolsFilter(runFlags.ToolsFilter)
+	opts = append(opts,
+		runner.WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
+			runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP,
+		),
+		runner.WithTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
+			runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, runFlags.OtelServiceName,
+			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables,
+		),
+		runner.WithToolsFilter(runFlags.ToolsFilter))
 
 	imageMetadata, _ := serverMetadata.(*registry.ImageMetadata)
 	// Process environment files
 	var err error
 	if runFlags.EnvFile != "" {
-		builder, err = builder.WithEnvFile(runFlags.EnvFile)
+		opts = append(opts, runner.WithEnvFile(runFlags.EnvFile))
 		if err != nil {
 			return nil, fmt.Errorf("failed to process env file %s: %v", runFlags.EnvFile, err)
 		}
 	}
 	if runFlags.EnvFileDir != "" {
-		builder, err = builder.WithEnvFilesFromDirectory(runFlags.EnvFileDir)
-		if err != nil {
-			return nil, fmt.Errorf("failed to process env files from directory %s: %v", runFlags.EnvFileDir, err)
-		}
+		opts = append(opts, runner.WithEnvFilesFromDirectory(runFlags.EnvFileDir))
 	}
 
-	return builder.Build(ctx, imageMetadata, envVars, envVarValidator)
+	return runner.NewRunConfigBuilder(ctx, imageMetadata, envVars, envVarValidator, opts...)
 }
 
 // extractOIDCValues extracts OIDC values from the OIDC config for legacy configuration
@@ -585,7 +616,7 @@ func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionUR
 
 // createTelemetryConfig creates a telemetry configuration if any telemetry parameters are provided
 func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
-	otelServiceName string, otelSamplingRate float64, otelHeaders []string,
+	otelServiceName string, otelTracingEnabled bool, otelMetricsEnabled bool, otelSamplingRate float64, otelHeaders []string,
 	otelInsecure bool, otelEnvironmentVariables []string) *telemetry.Config {
 	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
 		return nil
@@ -623,6 +654,8 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		Endpoint:                    otelEndpoint,
 		ServiceName:                 serviceName,
 		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
+		TracingEnabled:              otelTracingEnabled,
+		MetricsEnabled:              otelMetricsEnabled,
 		SamplingRate:                otelSamplingRate,
 		Headers:                     headers,
 		Insecure:                    otelInsecure,

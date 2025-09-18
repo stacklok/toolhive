@@ -4,13 +4,11 @@ kind: ClusterRole
 metadata:
   name: toolhive-operator-manager-role
 rules:
-# Below are permissions the operator needs to do it's job managing resources.
-# Allow the operator to manage ConfigMaps, Services
 - apiGroups:
   - ""
   resources:
   - configmaps
-  - services
+  - serviceaccounts
   verbs:
   - create
   - delete
@@ -19,21 +17,6 @@ rules:
   - patch
   - update
   - watch
-# Allow the operator to create, delete, get, list, patch, update, and watch Roles and RoleBindings.
-- apiGroups:
-  - "rbac.authorization.k8s.io"
-  resources:
-  - roles
-  - rolebindings
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-# Allow the operator to create and patch Events.
 - apiGroups:
   - ""
   resources:
@@ -41,7 +24,6 @@ rules:
   verbs:
   - create
   - patch
-# Allow the operator to get, list, and watch Pods.
 - apiGroups:
   - ""
   resources:
@@ -51,7 +33,32 @@ rules:
   - get
   - list
   - watch
-# Allow the operator to create, delete, get, list, patch, update, and watch Deployments.
+- apiGroups:
+  - ""
+  resources:
+  - pods/attach
+  verbs:
+  - create
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - apply
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - apps
   resources:
@@ -64,105 +71,61 @@ rules:
   - patch
   - update
   - watch
-# Allow the operator to create, delete, get, list, patch, update, and watch MCP Servers.
 - apiGroups:
-  - toolhive.stacklok.dev
-  resources:
-  - mcpservers
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-# Allow the operator to update the finalizers of MCP Servers.
-- apiGroups:
-  - toolhive.stacklok.dev
-  resources:
-  - mcpservers/finalizers
-  verbs:
-  - update
-# Allow the operator to update and get the status of MCP Servers.
-- apiGroups:
-  - toolhive.stacklok.dev
-  resources:
-  - mcpservers/status
-  verbs:
-  - get
-  - patch
-  - update
-
-# The below are permissions the operator needs in order to give to create further RBAC resources
-# that are used by the ToolHive ProxyRunner and MCP server pods.
-# Allow the operator to give permissions to create, delete, get, list, patch, update, and watch ServiceAccounts.
-- apiGroups:
-  - ""
-  resources:
-  - serviceaccounts
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-
-# Allow the operator to give permissions to create, delete, get, list, patch, update, watch and apply StatefulSets.
-- apiGroups:
-  - "apps"
+  - apps
   resources:
   - statefulsets
   verbs:
-  - get
-  - list
-  - watch
-  - create
-  - update
-  - patch
-  - delete
   - apply
-
-# Allow the operator to give permissions to create, delete, get, list, patch, update, watch and apply Services.
-- apiGroups:
-  - ""
-  resources:
-  - services
-  verbs:
-  - get
-  - list
-  - watch
   - create
-  - update
-  - patch
   - delete
-  - apply
-
-# Allow the operator to give permissions to get, list, and watch Pods.
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
   - get
   - list
+  - patch
+  - update
   - watch
-
-# Allow the operator to give permissions to create and get attachments to Pods.
 - apiGroups:
-  - ""
+  - rbac.authorization.k8s.io
   resources:
-  - pods/attach
+  - rolebindings
+  - roles
   verbs:
   - create
+  - delete
   - get
-
-# Allow the operator to give permissions to get logs from Pods.
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
-  - ""
+  - toolhive.stacklok.dev
   resources:
-  - pods/log
+  - mcpregistries
+  - mcpservers
+  - mcptoolconfigs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - mcpregistries/finalizers
+  - mcpservers/finalizers
+  - mcptoolconfigs/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - mcpregistries/status
+  - mcpservers/status
+  - mcptoolconfigs/status
   verbs:
   - get
+  - patch
+  - update

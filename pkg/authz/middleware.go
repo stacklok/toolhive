@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -179,8 +180,7 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 			if err := filteringWriter.Flush(); err != nil {
 				// If flushing fails, we've already started writing the response,
 				// so we can't return an error response. Just log it.
-				// In a real application, you might want to use a proper logger here.
-				fmt.Printf("Error flushing filtered response: %v\n", err)
+				logger.Warnf("Error flushing filtered response: %v", err)
 			}
 			return
 		}

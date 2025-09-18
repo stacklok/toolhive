@@ -1,0 +1,118 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.3
+  name: mcptoolconfigs.toolhive.stacklok.dev
+spec:
+  group: toolhive.stacklok.dev
+  names:
+    kind: MCPToolConfig
+    listKind: MCPToolConfigList
+    plural: mcptoolconfigs
+    shortNames:
+    - tc
+    - toolconfig
+    singular: mcptoolconfig
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.toolsFilter[*]
+      name: Filter Count
+      type: integer
+    - jsonPath: .spec.toolsOverride
+      name: Override Count
+      type: integer
+    - jsonPath: .status.referencingServers
+      name: Referenced By
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          MCPToolConfig is the Schema for the mcptoolconfigs API.
+          MCPToolConfig resources are namespace-scoped and can only be referenced by
+          MCPServer resources within the same namespace. Cross-namespace references
+          are not supported for security and isolation reasons.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              MCPToolConfigSpec defines the desired state of MCPToolConfig.
+              MCPToolConfig resources are namespace-scoped and can only be referenced by
+              MCPServer resources in the same namespace.
+            properties:
+              toolsFilter:
+                description: |-
+                  ToolsFilter is a list of tool names to filter (allow list).
+                  Only tools in this list will be exposed by the MCP server.
+                  If empty, all tools are exposed.
+                items:
+                  type: string
+                type: array
+              toolsOverride:
+                additionalProperties:
+                  description: |-
+                    ToolOverride represents a tool override configuration.
+                    Both Name and Description can be overridden independently, but
+                    they can't be both empty.
+                  properties:
+                    description:
+                      description: Description is the redefined description of the
+                        tool
+                      type: string
+                    name:
+                      description: Name is the redefined name of the tool
+                      type: string
+                  type: object
+                description: |-
+                  ToolsOverride is a map from actual tool names to their overridden configuration.
+                  This allows renaming tools and/or changing their descriptions.
+                type: object
+            type: object
+          status:
+            description: MCPToolConfigStatus defines the observed state of MCPToolConfig
+            properties:
+              configHash:
+                description: ConfigHash is a hash of the current configuration for
+                  change detection
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the most recent generation observed for this MCPToolConfig.
+                  It corresponds to the MCPToolConfig's generation, which is updated on mutation by the API Server.
+                format: int64
+                type: integer
+              referencingServers:
+                description: |-
+                  ReferencingServers is a list of MCPServer resources that reference this MCPToolConfig
+                  This helps track which servers need to be reconciled when this config changes
+                items:
+                  type: string
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

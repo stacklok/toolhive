@@ -11,12 +11,13 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
-	"github.com/gofrs/flock"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/transport/proxy"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
@@ -134,6 +135,23 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 		result.StatusContext = statusFile.StatusContext
 		result.CreatedAt = statusFile.CreatedAt
 		fileFound = true
+
+		// Check if PID migration is needed
+		if statusFile.Status == rt.WorkloadStatusRunning && statusFile.ProcessID == 0 {
+			// Try PID migration - the migration function will handle cases
+			// where container info is not available gracefully
+			if migratedPID, wasMigrated := f.migratePIDFromFile(workloadName, nil); wasMigrated {
+				// Update the status file with the migrated PID
+				statusFile.ProcessID = migratedPID
+				statusFile.UpdatedAt = time.Now()
+				if err := f.writeStatusFile(statusFilePath, *statusFile); err != nil {
+					logger.Warnf("failed to write migrated PID for workload %s: %v", workloadName, err)
+				} else {
+					logger.Debugf("successfully migrated PID %d to status file for workload %s", migratedPID, workloadName)
+				}
+			}
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -186,6 +204,12 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 
 	// TODO: Fetch the runconfig if present to populate additional fields like package, tool type, group etc.
 	// There's currently an import cycle between this package and the runconfig package
+
+	for _, fileWorkload := range fileWorkloads {
+		if fileWorkload.Remote { // Remote workloads are not managed by the container runtime
+			delete(fileWorkloads, fileWorkload.Name) // Skip remote workloads here, we add them in workload manager
+		}
+	}
 
 	// Create a map of runtime workloads by name for easy lookup
 	workloadMap := f.mergeRuntimeAndFileWorkloads(ctx, runtimeContainers, fileWorkloads)
@@ -303,16 +327,84 @@ func (f *fileStatusManager) DeleteWorkloadStatus(ctx context.Context, workloadNa
 	})
 }
 
-// SetWorkloadStatusAndPID sets the status and PID of a workload by its name.
-// It otherwise behaves like SetWorkloadStatus.
-func (f *fileStatusManager) SetWorkloadStatusAndPID(
-	ctx context.Context,
-	workloadName string,
-	status rt.WorkloadStatus,
-	contextMsg string,
-	pid int,
-) error {
-	return f.setWorkloadStatusInternal(ctx, workloadName, status, contextMsg, &pid)
+// SetWorkloadPID sets the PID of a workload by its name.
+// This method will do nothing if the workload does not exist.
+func (f *fileStatusManager) SetWorkloadPID(ctx context.Context, workloadName string, pid int) error {
+	err := f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
+		// Check if file exists
+		if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
+			// File doesn't exist, nothing to do
+			logger.Debugf("workload %s does not exist, skipping PID update", workloadName)
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("failed to check status file for workload %s: %w", workloadName, err)
+		}
+
+		// Read existing file
+		statusFile, err := f.readStatusFile(statusFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to read existing status for workload %s: %w", workloadName, err)
+		}
+
+		// Update only the PID and UpdatedAt timestamp
+		statusFile.ProcessID = pid
+		statusFile.UpdatedAt = time.Now()
+
+		if err = f.writeStatusFile(statusFilePath, *statusFile); err != nil {
+			return fmt.Errorf("failed to write updated PID for workload %s: %w", workloadName, err)
+		}
+
+		logger.Debugf("workload %s PID set to %d", workloadName, pid)
+		return nil
+	})
+
+	if err != nil {
+		logger.Errorf("error updating workload %s PID: %v", workloadName, err)
+	}
+	return err
+}
+
+// ResetWorkloadPID resets the PID of a workload to 0.
+// This method will do nothing if the workload does not exist.
+func (f *fileStatusManager) ResetWorkloadPID(ctx context.Context, workloadName string) error {
+	return f.SetWorkloadPID(ctx, workloadName, 0)
+}
+
+// migratePIDFromFile migrates PID from legacy PID file to status file if needed.
+// This is called when the status is running and ProcessID is 0.
+// Returns (migratedPID, wasUpdated) where wasUpdated indicates if the PID was successfully migrated
+func (*fileStatusManager) migratePIDFromFile(workloadName string, containerInfo *rt.ContainerInfo) (int, bool) {
+	// Get the base name from container labels
+	var baseName string
+	if containerInfo != nil {
+		baseName = labels.GetContainerBaseName(containerInfo.Labels)
+	} else {
+		// If we don't have container info, try using workload name as base name
+		baseName = workloadName
+	}
+
+	if baseName == "" {
+		logger.Debugf("no base name available for workload %s, skipping PID migration", workloadName)
+		return 0, false
+	}
+
+	// Try to read PID from PID file
+	// The ReadPIDFile function handles checking both old and new locations
+	pid, err := process.ReadPIDFile(baseName)
+	if err != nil {
+		logger.Debugf("failed to read PID file for workload %s (base name: %s): %v", workloadName, baseName, err)
+		return 0, false
+	}
+	logger.Debugf("found PID %d in PID file for workload %s, will update status file", pid, workloadName)
+
+	// TODO: reinstate this once we decide to completely get rid of PID files.
+	// Delete the PID file after successful migration
+	/*if err := process.RemovePIDFile(baseName); err != nil {
+		logger.Warnf("failed to remove PID file for workload %s (base name: %s): %v", workloadName, baseName, err)
+		// Don't return false here - the migration succeeded, cleanup just failed
+	}*/
+
+	return pid, true
 }
 
 // getStatusFilePath returns the file path for a given workload's status file.
@@ -348,16 +440,8 @@ func (f *fileStatusManager) withFileLock(ctx context.Context, workloadName strin
 	lockFilePath := f.getLockFilePath(workloadName)
 
 	// Create file lock
-	fileLock := flock.New(lockFilePath)
-	defer func() {
-		if err := fileLock.Unlock(); err != nil {
-			logger.Warnf("failed to unlock file %s: %v", lockFilePath, err)
-		}
-		// Attempt to remove lock file (best effort)
-		if err := os.Remove(lockFilePath); err != nil && !os.IsNotExist(err) {
-			logger.Warnf("failed to remove lock file for workload %s: %v", workloadName, err)
-		}
-	}()
+	fileLock := lockfile.NewTrackedLock(lockFilePath)
+	defer lockfile.ReleaseTrackedLock(lockFilePath, fileLock)
 
 	// Create context with timeout
 	lockCtx, cancel := context.WithTimeout(ctx, lockTimeout)
@@ -391,12 +475,8 @@ func (f *fileStatusManager) withFileReadLock(ctx context.Context, workloadName s
 	lockFilePath := f.getLockFilePath(workloadName)
 
 	// Create file lock
-	fileLock := flock.New(lockFilePath)
-	defer func() {
-		if err := fileLock.Unlock(); err != nil {
-			logger.Warnf("failed to unlock file %s: %v", lockFilePath, err)
-		}
-	}()
+	fileLock := lockfile.NewTrackedLock(lockFilePath)
+	defer lockfile.ReleaseTrackedLock(lockFilePath, fileLock)
 
 	// Create context with timeout
 	lockCtx, cancel := context.WithTimeout(ctx, lockTimeout)
@@ -498,8 +578,8 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 		// Extract workload name from filename (remove .json extension)
 		workloadName := strings.TrimSuffix(filepath.Base(file), ".json")
 
-		// Use proper file locking like GetWorkload does
-		err := f.withFileReadLock(ctx, workloadName, func(statusFilePath string) error {
+		// Use write lock since we may need to update the file for PID migration
+		err := f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
 			// Check if file exists first
 			if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
 				logger.Debugf("status file for workload %s no longer exists, skipping", workloadName)
@@ -536,6 +616,22 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 			}
 			if remote {
 				workload.Remote = true
+			}
+
+			// Check if PID migration is needed
+			if statusFile.Status == rt.WorkloadStatusRunning && statusFile.ProcessID == 0 {
+				// Try PID migration - the migration function will handle cases
+				// where container info is not available gracefully
+				if migratedPID, wasMigrated := f.migratePIDFromFile(workloadName, nil); wasMigrated {
+					// Update the status file with the migrated PID
+					statusFile.ProcessID = migratedPID
+					statusFile.UpdatedAt = time.Now()
+					if err := f.writeStatusFile(statusFilePath, *statusFile); err != nil {
+						logger.Warnf("failed to write migrated PID for workload %s: %v", workloadName, err)
+					} else {
+						logger.Debugf("successfully migrated PID %d to status file for workload %s", migratedPID, workloadName)
+					}
+				}
 			}
 
 			workloads[workloadName] = workload
@@ -722,7 +818,12 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 ) map[string]core.Workload {
 	runtimeWorkloadMap := make(map[string]rt.ContainerInfo)
 	for _, container := range runtimeContainers {
-		runtimeWorkloadMap[container.Name] = container
+		// Use base name from labels for matching, fall back to container name if not available
+		baseName := labels.GetContainerBaseName(container.Labels)
+		if baseName == "" {
+			baseName = container.Name // fallback for containers without base name label
+		}
+		runtimeWorkloadMap[baseName] = container
 	}
 
 	// Create result map to avoid duplicates and merge data
@@ -735,14 +836,19 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 			logger.Warnf("failed to convert container info for workload %s: %v", container.Name, err)
 			continue
 		}
-		workloadMap[container.Name] = workload
+		// Use base name for consistency with file workloads
+		baseName := labels.GetContainerBaseName(container.Labels)
+		if baseName == "" {
+			baseName = container.Name // fallback for containers without base name label
+		}
+		workloadMap[baseName] = workload
 	}
 
 	// Then, merge with file workloads, validating running workloads
 	for name, fileWorkload := range fileWorkloads {
 
 		if fileWorkload.Remote { // Remote workloads are not managed by the container runtime
-			continue
+			continue // Skip remote workloads here, we add them in workload manager
 		}
 		if runtimeContainer, exists := runtimeWorkloadMap[name]; exists {
 			// Validate running workloads similar to GetWorkload
@@ -750,11 +856,15 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 			if err != nil {
 				logger.Warnf("failed to validate workload %s in list: %v", name, err)
 				// Fall back to basic merge without validation
-				runtimeWorkload := workloadMap[name]
-				runtimeWorkload.Status = fileWorkload.Status
-				runtimeWorkload.StatusContext = fileWorkload.StatusContext
-				runtimeWorkload.CreatedAt = fileWorkload.CreatedAt
-				workloadMap[name] = runtimeWorkload
+				if runtimeWorkload, exists := workloadMap[name]; exists {
+					runtimeWorkload.Status = fileWorkload.Status
+					runtimeWorkload.StatusContext = fileWorkload.StatusContext
+					runtimeWorkload.CreatedAt = fileWorkload.CreatedAt
+					workloadMap[name] = runtimeWorkload
+				} else {
+					// Runtime workload not found, just use the file workload
+					workloadMap[name] = fileWorkload
+				}
 			} else {
 				workloadMap[name] = validatedWorkload
 			}

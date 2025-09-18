@@ -16,6 +16,13 @@ type MCPServerSpec struct {
 	// +kubebuilder:default=stdio
 	Transport string `json:"transport,omitempty"`
 
+	// ProxyMode is the proxy mode for stdio transport (sse or streamable-http)
+	// This setting is only used when Transport is "stdio"
+	// +kubebuilder:validation:Enum=sse;streamable-http
+	// +kubebuilder:default=sse
+	// +optional
+	ProxyMode string `json:"proxyMode,omitempty"`
+
 	// Port is the port to expose the MCP server on
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
@@ -76,9 +83,21 @@ type MCPServerSpec struct {
 	// +optional
 	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
 
+	// Audit defines audit logging configuration for the MCP server
+	// +optional
+	Audit *AuditConfig `json:"audit,omitempty"`
+
 	// ToolsFilter is the filter on tools applied to the MCP server
+	// Deprecated: Use ToolConfigRef instead
 	// +optional
 	ToolsFilter []string `json:"tools,omitempty"`
+
+	// ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.
+	// The referenced MCPToolConfig must exist in the same namespace as this MCPServer.
+	// Cross-namespace references are not supported for security and isolation reasons.
+	// If specified, this takes precedence over the inline ToolsFilter field.
+	// +optional
+	ToolConfigRef *ToolConfigRef `json:"toolConfigRef,omitempty"`
 
 	// Telemetry defines observability configuration for the MCP server
 	// +optional
@@ -100,6 +119,8 @@ type ResourceOverrides struct {
 type ProxyDeploymentOverrides struct {
 	// ResourceMetadataOverrides is embedded to inherit annotations and labels fields
 	ResourceMetadataOverrides `json:",inline"` // nolint:revive
+
+	PodTemplateMetadataOverrides *ResourceMetadataOverrides `json:"podTemplateMetadataOverrides,omitempty"`
 
 	// Env are environment variables to set in the proxy container (thv run process)
 	// These affect the toolhive proxy itself, not the MCP server it manages
@@ -427,6 +448,14 @@ type ConfigMapAuthzRef struct {
 	Key string `json:"key,omitempty"`
 }
 
+// ToolConfigRef defines a reference to a MCPToolConfig resource.
+// The referenced MCPToolConfig must be in the same namespace as the MCPServer.
+type ToolConfigRef struct {
+	// Name is the name of the MCPToolConfig resource in the same namespace
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+}
+
 // InlineAuthzConfig contains direct authorization configuration
 type InlineAuthzConfig struct {
 	// Policies is a list of Cedar policy strings
@@ -438,6 +467,15 @@ type InlineAuthzConfig struct {
 	// +kubebuilder:default="[]"
 	// +optional
 	EntitiesJSON string `json:"entitiesJson,omitempty"`
+}
+
+// AuditConfig defines audit logging configuration for the MCP server
+type AuditConfig struct {
+	// Enabled controls whether audit logging is enabled
+	// When true, enables audit logging with default configuration
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // TelemetryConfig defines observability configuration for the MCP server
@@ -480,6 +518,10 @@ type OpenTelemetryConfig struct {
 	// Metrics defines OpenTelemetry metrics-specific configuration
 	// +optional
 	Metrics *OpenTelemetryMetricsConfig `json:"metrics,omitempty"`
+
+	// Tracing defines OpenTelemetry tracing configuration
+	// +optional
+	Tracing *OpenTelemetryTracingConfig `json:"tracing,omitempty"`
 }
 
 // PrometheusConfig defines Prometheus-specific configuration
@@ -490,10 +532,23 @@ type PrometheusConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
 }
 
+// OpenTelemetryTracingConfig defines OpenTelemetry tracing configuration
+type OpenTelemetryTracingConfig struct {
+	// Enabled controls whether OTLP tracing is sent
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// SamplingRate is the trace sampling rate (0.0-1.0)
+	// +kubebuilder:default="0.05"
+	// +optional
+	SamplingRate string `json:"samplingRate,omitempty"`
+}
+
 // OpenTelemetryMetricsConfig defines OpenTelemetry metrics configuration
 type OpenTelemetryMetricsConfig struct {
 	// Enabled controls whether OTLP metrics are sent
-	// +kubebuilder:default=true
+	// +kubebuilder:default=false
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 }
@@ -503,6 +558,10 @@ type MCPServerStatus struct {
 	// Conditions represent the latest available observations of the MCPServer's state
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// ToolConfigHash stores the hash of the referenced ToolConfig for change detection
+	// +optional
+	ToolConfigHash string `json:"toolConfigHash,omitempty"`
 
 	// URL is the URL where the MCP server can be accessed
 	// +optional

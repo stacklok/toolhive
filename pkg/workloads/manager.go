@@ -25,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
+	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/proxy"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
@@ -1152,12 +1153,24 @@ func (d *defaultManager) getRemoteWorkloadsFromState(
 		// Use the transport type directly since it's already parsed
 		transportType := runConfig.Transport
 
+		// Generate the local proxy URL (not the remote server URL)
+		proxyURL := ""
+		if runConfig.Port > 0 {
+			proxyURL = transport.GenerateMCPServerURL(
+				transportType.String(),
+				transport.LocalhostIPv4,
+				runConfig.Port,
+				name,
+				runConfig.RemoteURL, // Pass remote URL to preserve path
+			)
+		}
+
 		// Create a workload from the run configuration
 		workload := core.Workload{
 			Name:          name,
 			Package:       "remote",
 			Status:        workloadStatus.Status,
-			URL:           runConfig.RemoteURL,
+			URL:           proxyURL,
 			Port:          runConfig.Port,
 			TransportType: transportType,
 			ProxyMode:     string(runConfig.ProxyMode),

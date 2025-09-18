@@ -186,6 +186,9 @@ func (s *SecretsRoutes) setupSecretsProvider(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Need to force the singleton to be reloaded so that SetupComplete is updated.
+	config.ResetSingleton()
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 

@@ -233,7 +233,7 @@ func CheckTHVBinaryAvailable(config *TestConfig) error {
 	stdout, stderr, err := NewTHVCommand(config, "--help").Run()
 	if err != nil {
 		return fmt.Errorf(
-			"thv binary not available at %s: %w\nstdout: %s\nstderr: %s\n",
+			"thv binary not available at %s: %w\nstdout: %s\nstderr: %s",
 			config.THVBinary,
 			err,
 			stdout,

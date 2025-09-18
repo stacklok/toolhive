@@ -224,6 +224,13 @@ func (c *Config) save() error {
 // saveToPath serializes the config struct and writes it to a specific path.
 // If configPath is empty, it uses the default path.
 func (c *Config) saveToPath(configPath string) error {
+	return c.saveToPathWithReset(configPath, true)
+}
+
+// saveToPathWithReset serializes the config struct and writes it to a specific path.
+// If configPath is empty, it uses the default path.
+// The resetSingleton parameter controls whether to reset the config singleton after saving.
+func (c *Config) saveToPathWithReset(configPath string, resetSingleton bool) error {
 	if configPath == "" {
 		var err error
 		configPath, err = getConfigPath()
@@ -242,8 +249,10 @@ func (c *Config) saveToPath(configPath string) error {
 		return fmt.Errorf("error writing config file: %w", err)
 	}
 
-	// Important: Need to reset config singleton or else it won't pick up changes.
-	ResetSingleton()
+	if resetSingleton {
+		// Important: Need to reset config singleton or else it won't pick up changes.
+		ResetSingleton()
+	}
 
 	return nil
 }
@@ -293,7 +302,8 @@ func UpdateConfigAtPath(configPath string, updateFn func(*Config)) error {
 	updateFn(c)
 
 	// Write the updated config to disk.
-	err = c.saveToPath(configPath)
+	// Don't reset singleton since this is a programmatic update within the same process.
+	err = c.saveToPathWithReset(configPath, false)
 	if err != nil {
 		return fmt.Errorf("failed to save config: %w", err)
 	}

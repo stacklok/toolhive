@@ -1,4 +1,4 @@
-{{- if .Values.registryAPI.serviceAccount.create }}
+{{- if .Values.operator.features.experimental }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:

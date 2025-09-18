@@ -19,6 +19,12 @@
       "groupName": "dockerfile template base images",
       "matchDatasources": ["docker"],
       "matchManagers": ["custom.regex"]
+    },
+    {
+      "groupName": "kindest/node versions",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["kindest/node"],
+      "matchUpdateTypes": ["patch"]
     }
   ],
   "customManagers": [
@@ -30,6 +36,16 @@
         "FROM (?<depName>[a-z0-9.-]+):(?<currentValue>[a-z0-9.-]+)"
       ],
       "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Update kindest/node versions in GitHub workflows",
+      "managerFilePatterns": [".github/workflows/*.yml", ".github/workflows/*.yaml"],
+      "matchStrings": [
+        "\"(?<depName>kindest/node):v(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "semver"
     }
   ],
   "postUpdateOptions": ["gomodTidy"]

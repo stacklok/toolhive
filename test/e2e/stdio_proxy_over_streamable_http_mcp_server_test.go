@@ -118,7 +118,7 @@ var _ = Describe("TimeStreamableHttpMcpServer", Label("proxy", "streamable-http"
 			decoder := json.NewDecoder(resp.Body)
 			err = decoder.Decode(&responses)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(len(responses)).To(Equal(2))
+			Expect(responses).To(HaveLen(2))
 
 			ids := map[float64]bool{4: false, 5: false}
 			for _, r := range responses {

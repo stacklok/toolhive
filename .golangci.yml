@@ -12,6 +12,7 @@ linters:
   enable:
     - depguard
     - exhaustive
+    - ginkgolinter
     - goconst
     - gocyclo
     - gosec
@@ -37,6 +38,29 @@ linters:
           deny:
             - pkg: io/ioutil
               desc: this is deprecated
+    ginkgolinter:
+      # Suppress the wrong length assertion warning
+      suppress-len-assertion: false
+      # Suppress the wrong nil assertion warning
+      suppress-nil-assertion: false
+      # Suppress the wrong error assertion warning
+      suppress-err-assertion: false
+      # Suppress the wrong comparison assertion warning
+      suppress-compare-assertion: false
+      # Suppress the wrong async assertion warning
+      suppress-async-assertion: false
+      # Suppress warning for comparing values from different types
+      suppress-type-compare-assertion: false
+      # Forbid focus containers (FIt, FDescribe, etc.)
+      forbid-focus-container: true
+      # Force using Expect with To/ToNot instead of Should/ShouldNot
+      force-expect-to: false
+      # Validate async intervals (timeout vs polling)
+      validate-async-intervals: true
+      # Forbid spec pollution (variable initialization in container nodes)
+      forbid-spec-pollution: false
+      # Force using Succeed() for functions and HaveOccurred() for errors
+      force-succeed: false
     gocyclo:
       min-complexity: 15
     gosec:

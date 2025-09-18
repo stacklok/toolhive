@@ -182,6 +182,13 @@ tasks:
   operator-e2e-test:
     desc: Run E2E tests for the operator
     cmds:
+      - |
+        if [ -z "$CI" ]; then
+          if ! command -v chainsaw >/dev/null 2>&1; then
+            echo "Chainsaw not found, installing..."
+            go install github.com/kubernetes-sigs/chainsaw/cmd/chainsaw@latest
+          fi
+        fi
       - chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/setup
       - chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/test-scenarios
       - chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/cleanup

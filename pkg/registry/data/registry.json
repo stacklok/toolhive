@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-17T00:16:54Z",
+  "last_updated": "2025-09-18T00:16:42Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -142,7 +142,7 @@
         "apollo",
         "mcp"
       ],
-      "image": "ghcr.io/apollographql/apollo-mcp-server:v0.7.5",
+      "image": "ghcr.io/apollographql/apollo-mcp-server:v0.8.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -696,9 +696,9 @@
         "workbooks"
       ],
       "metadata": {
-        "stars": 1137,
+        "stars": 1155,
         "pulls": 1809,
-        "last_updated": "2025-08-31T02:31:31Z"
+        "last_updated": "2025-09-17T02:27:40Z"
       },
       "repository_url": "https://github.com/Azure/azure-mcp",
       "tags": [
@@ -711,7 +711,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.5.13",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.7.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -1465,7 +1465,7 @@
         "merging",
         "reproducibility"
       ],
-      "image": "docker.io/dolthub/dolt-mcp:0.2.0",
+      "image": "docker.io/dolthub/dolt-mcp:0.2.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -2796,9 +2796,9 @@
         "pg_upgrade"
       ],
       "metadata": {
-        "stars": 62,
+        "stars": 64,
         "pulls": 104,
-        "last_updated": "2025-08-31T02:31:31Z"
+        "last_updated": "2025-09-17T02:27:41Z"
       },
       "repository_url": "https://github.com/heroku/heroku-mcp-server",
       "tags": [
@@ -3972,9 +3972,9 @@
         "update-many"
       ],
       "metadata": {
-        "stars": 592,
+        "stars": 627,
         "pulls": 5060,
-        "last_updated": "2025-08-31T02:31:31Z"
+        "last_updated": "2025-09-17T02:27:41Z"
       },
       "repository_url": "https://github.com/mongodb-js/mongodb-mcp-server",
       "tags": [
@@ -3985,7 +3985,7 @@
         "data",
         "query"
       ],
-      "image": "docker.io/mongodb/mongodb-mcp-server:0.3.0",
+      "image": "docker.io/mongodb/mongodb-mcp-server:1.0.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -4859,9 +4859,9 @@
         "search_issues"
       ],
       "metadata": {
-        "stars": 327,
+        "stars": 346,
         "pulls": 127,
-        "last_updated": "2025-08-30T02:27:20Z"
+        "last_updated": "2025-09-17T02:27:40Z"
       },
       "repository_url": "https://github.com/getsentry/sentry-mcp",
       "tags": [
@@ -4961,7 +4961,7 @@
       "metadata": {
         "stars": 10,
         "pulls": 4212,
-        "last_updated": "2025-08-31T02:31:31Z"
+        "last_updated": "2025-09-17T02:27:42Z"
       },
       "repository_url": "https://github.com/StacklokLabs/sqlite-mcp",
       "tags": [

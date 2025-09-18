@@ -144,7 +144,7 @@ func (m *manager) buildRegistryAPIDeployment(
 			Labels:    labels,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &[]int32{1}[0], // Single replica for registry API
+			Replicas: &[]int32{DefaultReplicas}[0], // Single replica for registry API
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"app.kubernetes.io/name":      deploymentName,
@@ -159,52 +159,52 @@ func (m *manager) buildRegistryAPIDeployment(
 					},
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: "toolhive-registry-api",
+					ServiceAccountName: DefaultServiceAccountName,
 					Containers: []corev1.Container{
 						{
 							Name:  registryAPIContainerName,
 							Image: getRegistryAPIImage(),
 							Args: []string{
-								"serve",
+								ServeCommand,
 							},
 							Ports: []corev1.ContainerPort{
 								{
-									ContainerPort: 8080,
-									Name:          "http",
+									ContainerPort: RegistryAPIPort,
+									Name:          RegistryAPIPortName,
 									Protocol:      corev1.ProtocolTCP,
 								},
 							},
 							// Add resource limits and requests for production readiness
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("100m"),
-									corev1.ResourceMemory: resource.MustParse("128Mi"),
+									corev1.ResourceCPU:    resource.MustParse(DefaultCPURequest),
+									corev1.ResourceMemory: resource.MustParse(DefaultMemoryRequest),
 								},
 								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("500m"),
-									corev1.ResourceMemory: resource.MustParse("512Mi"),
+									corev1.ResourceCPU:    resource.MustParse(DefaultCPULimit),
+									corev1.ResourceMemory: resource.MustParse(DefaultMemoryLimit),
 								},
 							},
 							// Add liveness and readiness probes
 							LivenessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/health",
-										Port: intstr.FromInt32(8080),
+										Path: HealthCheckPath,
+										Port: intstr.FromInt32(RegistryAPIPort),
 									},
 								},
-								InitialDelaySeconds: 30,
-								PeriodSeconds:       10,
+								InitialDelaySeconds: LivenessInitialDelay,
+								PeriodSeconds:       LivenessPeriod,
 							},
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/readiness",
-										Port: intstr.FromInt32(8080),
+										Path: ReadinessCheckPath,
+										Port: intstr.FromInt32(RegistryAPIPort),
 									},
 								},
-								InitialDelaySeconds: 5,
-								PeriodSeconds:       5,
+								InitialDelaySeconds: ReadinessInitialDelay,
+								PeriodSeconds:       ReadinessPeriod,
 							},
 						},
 					},
@@ -229,8 +229,6 @@ func (*manager) getSourceDataHash(
 	// Get current hash from source using the existing handler
 	hash, err := sourceHandler.CurrentHash(context.Background(), mcpRegistry)
 	if err != nil {
-		// If we can't get the hash, return a fixed error value instead of time-based
-		// This prevents endless reconciliation loops due to changing annotations
 		return "hash-unavailable"
 	}
 

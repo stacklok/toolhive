@@ -109,9 +109,9 @@ func buildRegistryAPIService(mcpRegistry *mcpv1alpha1.MCPRegistry) *corev1.Servi
 			Selector: selector,
 			Ports: []corev1.ServicePort{
 				{
-					Name:       "http",
-					Port:       8080,
-					TargetPort: intstr.FromInt32(8080),
+					Name:       RegistryAPIPortName,
+					Port:       RegistryAPIPort,
+					TargetPort: intstr.FromInt32(RegistryAPIPort),
 					Protocol:   corev1.ProtocolTCP,
 				},
 			},

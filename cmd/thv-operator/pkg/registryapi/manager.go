@@ -180,15 +180,15 @@ func (*manager) configureConfigMapStorage(
 
 	// Replace container args completely with the correct set of arguments
 	// This ensures idempotent behavior across multiple reconciliations
-	filePath := fmt.Sprintf("/data/registry/%s", sources.ConfigMapStorageDataKey)
+	filePath := fmt.Sprintf("%s/%s", RegistryDataMountPath, sources.ConfigMapStorageDataKey)
 	container.Args = []string{
-		"serve",
+		ServeCommand,
 		fmt.Sprintf("--from-file=%s", filePath),
 		fmt.Sprintf("--registry-name=%s", mcpRegistry.Name),
 	}
 
 	// Add ConfigMap volume to deployment if not already present
-	volumeName := "registry-data"
+	volumeName := RegistryDataVolumeName
 	if !hasVolume(deployment.Spec.Template.Spec.Volumes, volumeName) {
 		volume := corev1.Volume{
 			Name: volumeName,
@@ -204,7 +204,7 @@ func (*manager) configureConfigMapStorage(
 	}
 
 	// Add volume mount to the container if not already present
-	mountPath := "/data/registry"
+	mountPath := RegistryDataMountPath
 	if !hasVolumeMount(container.VolumeMounts, volumeName) {
 		volumeMount := corev1.VolumeMount{
 			Name:      volumeName,

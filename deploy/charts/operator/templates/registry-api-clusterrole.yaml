@@ -9,14 +9,6 @@ metadata:
     app.kubernetes.io/managed-by: toolhive-operator
 rules:
 - apiGroups:
-  - ""
-  resources:
-  - configmaps
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
   - toolhive.stacklok.dev
   resources:
   - mcpservers

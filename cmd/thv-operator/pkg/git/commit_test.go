@@ -35,16 +35,6 @@ func TestDefaultGitClient_CloneSpecificCommit_RealRepo(t *testing.T) {
 		t.Fatalf("Failed to clone repository at specific commit: %v", err)
 	}
 
-	// Verify we're at the correct commit
-	hash, err := client.GetCommitHash(repoInfo)
-	if err != nil {
-		t.Fatalf("Failed to get commit hash: %v", err)
-	}
-
-	if hash != config.Commit {
-		t.Errorf("Expected commit hash %s, got %s", config.Commit, hash)
-	}
-
 	// Verify we can read the registry file at this commit
 	content, err := client.GetFileContent(repoInfo, "pkg/registry/data/registry.json")
 	if err != nil {

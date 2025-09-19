@@ -27,9 +27,6 @@ type RepositoryInfo struct {
 	// Repository is the go-git repository instance
 	Repository *git.Repository
 
-	// CurrentCommit is the current commit hash
-	CurrentCommit string
-
 	// Branch is the current branch name
 	Branch string
 

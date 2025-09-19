@@ -120,17 +120,13 @@ func TestRepositoryInfo_Fields(t *testing.T) {
 	t.Parallel()
 	repo := &git.Repository{} // Mock repository
 	repoInfo := RepositoryInfo{
-		Repository:    repo,
-		CurrentCommit: "abc123def456",
-		Branch:        mainBranch,
-		RemoteURL:     testRepoURL,
+		Repository: repo,
+		Branch:     mainBranch,
+		RemoteURL:  testRepoURL,
 	}
 
 	if repoInfo.Repository != repo {
 		t.Error("Expected Repository to be set correctly")
-	}
-	if repoInfo.CurrentCommit != "abc123def456" {
-		t.Errorf("Expected CurrentCommit to be 'abc123def456', got %q", repoInfo.CurrentCommit)
 	}
 	if repoInfo.Branch != mainBranch {
 		t.Errorf("Expected Branch to be %q, got %q", mainBranch, repoInfo.Branch)
@@ -146,9 +142,6 @@ func TestRepositoryInfo_EmptyValues(t *testing.T) {
 
 	if repoInfo.Repository != nil {
 		t.Error("Expected Repository to be nil")
-	}
-	if repoInfo.CurrentCommit != "" {
-		t.Errorf("Expected CurrentCommit to be empty, got %q", repoInfo.CurrentCommit)
 	}
 	if repoInfo.Branch != "" {
 		t.Errorf("Expected Branch to be empty, got %q", repoInfo.Branch)
@@ -275,18 +268,14 @@ func TestRepositoryInfo_AllFieldsSet(t *testing.T) {
 	// Test that we can set all fields
 	repo := &git.Repository{}
 	repoInfo := RepositoryInfo{
-		Repository:    repo,
-		CurrentCommit: "current123",
-		Branch:        "feature",
-		RemoteURL:     "https://example.com/repo.git",
+		Repository: repo,
+		Branch:     "feature",
+		RemoteURL:  "https://example.com/repo.git",
 	}
 
 	// Verify all fields are accessible
 	if repoInfo.Repository == nil {
 		t.Error("Repository should be set")
-	}
-	if repoInfo.CurrentCommit == "" {
-		t.Error("CurrentCommit should be set")
 	}
 	if repoInfo.Branch == "" {
 		t.Error("Branch should be set")

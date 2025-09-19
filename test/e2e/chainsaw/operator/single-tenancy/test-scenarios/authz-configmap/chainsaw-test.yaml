@@ -153,21 +153,36 @@ spec:
         content: |
           echo "Verifying proxyrunner reads authorization config from ConfigMap..."
           
-          # Get the deployment to verify it uses --from-configmap flag
+          # Get the deployment to verify it uses volume mounting
           DEPLOYMENT_ARGS=$(kubectl get deployment authz-configmap-test -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null || echo "")
-          
+          VOLUME_MOUNTS=$(kubectl get deployment authz-configmap-test -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].volumeMounts}' 2>/dev/null || echo "")
+          VOLUMES=$(kubectl get deployment authz-configmap-test -n toolhive-system -o jsonpath='{.spec.template.spec.volumes}' 2>/dev/null || echo "")
+
           if [ -z "$DEPLOYMENT_ARGS" ]; then
             echo "✗ Could not find deployment arguments"
             exit 1
           fi
-          
-          # Check if --from-configmap flag is present
-          if ! echo "$DEPLOYMENT_ARGS" | grep -q "\--from-configmap"; then
-            echo "✗ --from-configmap flag not found in deployment arguments"
-            echo "Deployment args: $DEPLOYMENT_ARGS"
+
+          echo "✓ Using volume mounting for configuration"
+
+          # Verify ConfigMap volume is mounted
+          echo "Verifying ConfigMap volume mounting..."
+          if echo "$VOLUME_MOUNTS" | jq -e '.[] | select(.name=="runconfig" and .mountPath=="/etc/runconfig" and .readOnly==true)' > /dev/null 2>&1; then
+            echo "✓ runconfig volume mount found at /etc/runconfig"
+          else
+            echo "✗ runconfig volume mount not found or incorrect configuration"
+            echo "Volume mounts: $VOLUME_MOUNTS"
             exit 1
           fi
-          echo "✓ --from-configmap flag found in deployment arguments"
+
+          # Check for ConfigMap volume source
+          if echo "$VOLUMES" | jq -e '.[] | select(.name=="runconfig" and .configMap.name=="authz-configmap-test-runconfig")' > /dev/null 2>&1; then
+            echo "✓ ConfigMap volume source found referencing authz-configmap-test-runconfig"
+          else
+            echo "✗ ConfigMap volume source not found or incorrect configuration"
+            echo "Volumes: $VOLUMES"
+            exit 1
+          fi
           
           # Verify no authorization flags are present (they should be read from ConfigMap)
           if echo "$DEPLOYMENT_ARGS" | grep -q "\--authz-config"; then

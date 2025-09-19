@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -97,11 +100,39 @@ func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1
 		Directory: tempDir,
 	}
 
-	// Clone the repository
+	// Clone the repository with timing and metrics
+	logger := log.FromContext(ctx)
+	startTime := time.Now()
+	logger.Info("Starting git clone",
+		"repository", cloneConfig.URL,
+		"branch", cloneConfig.Branch,
+		"tag", cloneConfig.Tag,
+		"commit", cloneConfig.Commit)
+
 	repoInfo, err := h.gitClient.Clone(ctx, cloneConfig)
+	cloneDuration := time.Since(startTime)
+
 	if err != nil {
+		logger.Error(err, "Git clone failed",
+			"repository", cloneConfig.URL,
+			"duration", cloneDuration.String())
 		return nil, fmt.Errorf("failed to clone repository: %w", err)
 	}
+
+	// Calculate directory size and object count
+	dirSize, objectCount, sizeErr := calculateDirectoryMetrics(tempDir)
+	if sizeErr != nil {
+		logger.Error(sizeErr, "Failed to calculate directory metrics")
+		dirSize = 0
+		objectCount = 0
+	}
+
+	logger.Info("Git clone completed",
+		"repository", cloneConfig.URL,
+		"duration", cloneDuration.String(),
+		"directory_size_mb", fmt.Sprintf("%.2f", float64(dirSize)/(1024*1024)),
+		"object_count", objectCount,
+		"branch", repoInfo.Branch)
 
 	// Ensure cleanup
 	defer func() {
@@ -189,4 +220,26 @@ func (h *GitSourceHandler) CurrentHash(ctx context.Context, mcpRegistry *mcpv1al
 	// Compute and return hash of the data
 	hash := fmt.Sprintf("%x", sha256.Sum256(registryData))
 	return hash, nil
+}
+
+// calculateDirectoryMetrics calculates the total size and file count of a directory
+func calculateDirectoryMetrics(dirPath string) (totalSize int64, fileCount int, err error) {
+	err = filepath.WalkDir(dirPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !d.IsDir() {
+			fileCount++
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			totalSize += info.Size()
+		}
+
+		return nil
+	})
+
+	return totalSize, fileCount, err
 }

@@ -54,6 +54,8 @@ const (
 	DefaultReplicas = 1
 )
 
+//go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=types.go Manager
+
 // Manager handles registry API deployment operations
 type Manager interface {
 	// ReconcileAPIService orchestrates the deployment, service creation, and readiness checking for the registry API

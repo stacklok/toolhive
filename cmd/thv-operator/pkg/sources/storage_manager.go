@@ -27,6 +27,8 @@ const (
 	StorageTypeConfigMap = "configmap"
 )
 
+//go:generate mockgen -destination=mocks/mock_storage_manager.go -package=mocks -source=storage_manager.go StorageManager
+
 // StorageManager defines the interface for registry data persistence
 type StorageManager interface {
 	// Store saves a Registry instance to persistent storage

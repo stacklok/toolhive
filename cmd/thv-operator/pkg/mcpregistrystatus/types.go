@@ -10,6 +10,8 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
+//go:generate mockgen -destination=mocks/mock_collector.go -package=mocks -source=types.go Collector
+
 // Collector defines the interface for collecting MCPRegistry status updates.
 // It provides methods to collect status changes during reconciliation
 // and apply them in a single batch update at the end.

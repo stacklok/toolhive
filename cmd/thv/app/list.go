@@ -10,6 +10,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -108,10 +109,14 @@ func printMCPServersOutput(workloadList []core.Workload) error {
 	mcpServers := make(map[string]map[string]string)
 
 	for _, c := range workloadList {
+		// Determine the effective transport type to show to users
+		// This is the transport they actually connect to, not the underlying MCP server transport
+		effectiveTransport := getEffectiveTransportType(c)
+
 		// Add the MCP server to the map
 		mcpServers[c.Name] = map[string]string{
 			"url":  c.URL,
-			"type": c.TransportType.String(),
+			"type": effectiveTransport,
 		}
 	}
 
@@ -156,4 +161,18 @@ func printTextOutput(workloadList []core.Workload) {
 	if err := w.Flush(); err != nil {
 		logger.Errorf("Warning: Failed to flush tabwriter: %v", err)
 	}
+}
+
+// getEffectiveTransportType determines the effective transport type that clients should use
+// This handles the case where stdio MCP servers are proxied through SSE or streamable-http
+func getEffectiveTransportType(workload core.Workload) string {
+	// If the underlying transport is stdio and we have a proxy mode set,
+	// return the proxy mode as that's what clients actually connect to
+	if workload.TransportType == types.TransportTypeStdio && workload.ProxyMode != "" {
+		return workload.ProxyMode
+	}
+
+	// For all other cases (direct sse, streamable-http, or when no proxy mode is set),
+	// return the transport type directly
+	return workload.TransportType.String()
 }

@@ -17,6 +17,8 @@ type MiddlewareParams struct {
 	ConfigPath string  `json:"config_path,omitempty"` // Kept for backwards compatibility
 	ConfigData *Config `json:"config_data,omitempty"` // New field for config contents
 	Component  string  `json:"component,omitempty"`
+	// Transport information for dynamic transport detection
+	TransportType string `json:"transport_type,omitempty"` // e.g., "sse", "streamable-http"
 }
 
 // Middleware wraps audit middleware functionality
@@ -65,7 +67,8 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		auditConfig.Component = params.Component
 	}
 
-	middleware, err := auditConfig.CreateMiddleware()
+	// Always use the transport-aware constructor
+	middleware, err := auditConfig.CreateMiddlewareWithTransport(params.TransportType)
 	if err != nil {
 		return fmt.Errorf("failed to create audit middleware: %w", err)
 	}

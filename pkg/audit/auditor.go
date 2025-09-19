@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // LevelAudit is a custom audit log level - between Info and Warn
@@ -35,12 +36,13 @@ func NewAuditLogger(w io.Writer) *slog.Logger {
 
 // Auditor handles audit logging for HTTP requests.
 type Auditor struct {
-	config      *Config
-	auditLogger *slog.Logger
+	config        *Config
+	auditLogger   *slog.Logger
+	transportType string // e.g., "sse", "streamable-http"
 }
 
-// NewAuditor creates a new Auditor with the given configuration.
-func NewAuditor(config *Config) (*Auditor, error) {
+// NewAuditorWithTransport creates a new Auditor with the given configuration and transport information.
+func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, error) {
 	var logWriter io.Writer = os.Stdout // default to stdout
 
 	if config != nil {
@@ -54,9 +56,15 @@ func NewAuditor(config *Config) (*Auditor, error) {
 	}
 
 	return &Auditor{
-		config:      config,
-		auditLogger: NewAuditLogger(logWriter),
+		config:        config,
+		auditLogger:   NewAuditLogger(logWriter),
+		transportType: transportType,
 	}, nil
+}
+
+// isSSETransport checks if the current transport is SSE
+func (a *Auditor) isSSETransport() bool {
+	return a.transportType == types.TransportTypeSSE.String()
 }
 
 // responseWriter wraps http.ResponseWriter to capture response data and status.
@@ -88,7 +96,7 @@ func (a *Auditor) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Handle SSE endpoints specially - log the connection event immediately
 		// since SSE connections are long-lived and don't follow normal request/response pattern
-		if r.URL.Path == "/sse" {
+		if a.isSSETransport() {
 			// Log SSE connection event immediately
 			a.logSSEConnectionEvent(r)
 
@@ -164,7 +172,7 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 	}
 
 	// Add metadata
-	a.addMetadata(event, r, duration, rw)
+	a.addMetadata(event, duration, rw)
 
 	// Add request/response data if configured
 	a.addEventData(event, r, rw, requestData)
@@ -184,7 +192,7 @@ func (a *Auditor) determineEventType(r *http.Request) string {
 	path := r.URL.Path
 
 	// Handle SSE connection establishment
-	if strings.Contains(path, "/sse") {
+	if a.isSSETransport() {
 		return EventTypeMCPInitialize
 	}
 
@@ -372,7 +380,7 @@ func (*Auditor) extractTarget(r *http.Request, eventType string) map[string]stri
 }
 
 // addMetadata adds metadata to the audit event.
-func (*Auditor) addMetadata(event *AuditEvent, r *http.Request, duration time.Duration, rw *responseWriter) {
+func (a *Auditor) addMetadata(event *AuditEvent, duration time.Duration, rw *responseWriter) {
 	if event.Metadata.Extra == nil {
 		event.Metadata.Extra = make(map[string]any)
 	}
@@ -381,11 +389,7 @@ func (*Auditor) addMetadata(event *AuditEvent, r *http.Request, duration time.Du
 	event.Metadata.Extra[MetadataExtraKeyDuration] = duration.Milliseconds()
 
 	// Add transport information
-	if strings.Contains(r.URL.Path, "/sse") {
-		event.Metadata.Extra[MetadataExtraKeyTransport] = "sse"
-	} else {
-		event.Metadata.Extra[MetadataExtraKeyTransport] = "http"
-	}
+	event.Metadata.Extra[MetadataExtraKeyTransport] = a.transportType
 
 	// Add response size if available
 	if rw.body != nil {
@@ -454,7 +458,7 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request) {
 
 	// Add metadata
 	event.Metadata.Extra = map[string]any{
-		"transport":  "sse",
+		"transport":  a.transportType,
 		"user_agent": r.Header.Get("User-Agent"),
 	}
 

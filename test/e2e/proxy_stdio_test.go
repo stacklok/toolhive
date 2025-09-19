@@ -43,7 +43,7 @@ var _ = Describe("Proxy Stdio E2E", Label("proxy", "stdio", "e2e"), Serial, func
 
 	JustBeforeEach(func() {
 		// Build args after mcpServerName is set
-		args := []string{"run", "--name", workloadName, "--transport", transportType.String()}
+		args := []string{"run", "--name", workloadName, "--transport", transportType.String(), "--enable-audit"}
 
 		if transportType == types.TransportTypeStdio {
 			Expect(proxyMode).ToNot(BeEmpty())

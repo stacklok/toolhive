@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -112,6 +113,42 @@ func TestAuditorMiddlewareWithResponseData(t *testing.T) {
 	assert.Equal(t, responseData, rr.Body.String())
 }
 
+func TestAuditorMiddlewareWithDifferentSSEPaths(t *testing.T) {
+	t.Parallel()
+	config := &Config{}
+	auditor, err := NewAuditorWithTransport(config, "sse")
+	require.NoError(t, err)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("test response"))
+	})
+
+	middleware := auditor.Middleware(handler)
+
+	// Test different SSE paths to ensure transport type detection works correctly
+	testPaths := []string{
+		"/sse",
+		"/v1/sse",
+		"/api/sse",
+		"/mcp/v2/sse",
+		"/events", // Non-SSE path but SSE transport
+	}
+
+	for _, path := range testPaths {
+		t.Run(fmt.Sprintf("path_%s", strings.ReplaceAll(path, "/", "_")), func(t *testing.T) {
+			req := httptest.NewRequest("GET", path, nil)
+			rr := httptest.NewRecorder()
+
+			middleware.ServeHTTP(rr, req)
+
+			// All requests should succeed regardless of path since transport type is SSE
+			assert.Equal(t, http.StatusOK, rr.Code)
+			assert.Equal(t, "test response", rr.Body.String())
+		})
+	}
+}
+
 func TestDetermineEventType(t *testing.T) {
 	t.Parallel()
 
@@ -125,6 +162,34 @@ func TestDetermineEventType(t *testing.T) {
 		{
 			name:      "SSE endpoint",
 			path:      "/sse",
+			method:    "GET",
+			transport: "sse",
+			expected:  EventTypeMCPInitialize,
+		},
+		{
+			name:      "SSE endpoint with version path",
+			path:      "/v1/sse",
+			method:    "GET",
+			transport: "sse",
+			expected:  EventTypeMCPInitialize,
+		},
+		{
+			name:      "SSE endpoint with API prefix",
+			path:      "/api/sse",
+			method:    "GET",
+			transport: "sse",
+			expected:  EventTypeMCPInitialize,
+		},
+		{
+			name:      "SSE endpoint with nested path",
+			path:      "/mcp/v2/sse",
+			method:    "GET",
+			transport: "sse",
+			expected:  EventTypeMCPInitialize,
+		},
+		{
+			name:      "SSE transport with non-SSE path",
+			path:      "/events",
 			method:    "GET",
 			transport: "sse",
 			expected:  EventTypeMCPInitialize,

@@ -96,7 +96,7 @@ func (a *Auditor) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Handle SSE endpoints specially - log the connection event immediately
 		// since SSE connections are long-lived and don't follow normal request/response pattern
-		if a.isSSETransport() {
+		if a.isSSETransport() && r.Method == http.MethodGet {
 			// Log SSE connection event immediately
 			a.logSSEConnectionEvent(r)
 
@@ -188,16 +188,12 @@ func (a *Auditor) determineEventType(r *http.Request) string {
 		return a.mapMCPMethodToEventType(mcpMethod)
 	}
 
-	// Fall back to path-based detection for non-MCP requests
-	path := r.URL.Path
-
 	// Handle SSE connection establishment
-	if a.isSSETransport() {
-		return EventTypeMCPInitialize
+	if a.isSSETransport() && r.Method == http.MethodGet {
+		return EventTypeSSEConnection
 	}
-
 	// Handle MCP message endpoints that weren't parsed (malformed requests)
-	if strings.Contains(path, "/messages") && r.Method == "POST" {
+	if a.isSSETransport() && r.Method == http.MethodPost {
 		return EventTypeMCPRequest
 	}
 
@@ -450,7 +446,7 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request) {
 	component := a.determineComponent(r)
 
 	// Create the audit event for SSE connection
-	event := NewAuditEvent("sse_connection", source, OutcomeSuccess, subjects, component)
+	event := NewAuditEvent(EventTypeSSEConnection, source, OutcomeSuccess, subjects, component)
 
 	// Add target information
 	target := map[string]string{
@@ -462,7 +458,7 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request) {
 
 	// Add metadata
 	event.Metadata.Extra = map[string]any{
-		"transport":  a.transportType,
+		"transport":  "sse",
 		"user_agent": r.Header.Get("User-Agent"),
 	}
 

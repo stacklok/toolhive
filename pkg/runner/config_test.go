@@ -21,6 +21,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
+const (
+	localhostStr = "localhost"
+)
+
 func TestNewRunConfig(t *testing.T) {
 	t.Parallel()
 	config := NewRunConfig()
@@ -531,13 +535,13 @@ func TestRunConfigBuilder(t *testing.T) {
 		TargetPort: 9090,
 		Args:       []string{"--metadata-arg"},
 	}
-	host := "localhost"
+	host := localhostStr
 	debug := true
 	volumes := []string{"/host:/container"}
 	secretsList := []string{"secret1,target=ENV_VAR1"}
 	authzConfigPath := "" // Empty to skip loading the authorization configuration
 	permissionProfile := permissions.ProfileNone
-	targetHost := "localhost"
+	targetHost := localhostStr
 	mcpTransport := "sse"
 	proxyPort := 60000
 	targetPort := 9000
@@ -803,8 +807,8 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 				WithCmdArgs(nil),
 				WithName("test-server"),
 				WithImage("test-image"),
-				WithHost("localhost"),
-				WithTargetHost("localhost"),
+				WithHost(localhostStr),
+				WithTargetHost(localhostStr),
 				WithDebug(false),
 				WithVolumes(nil),
 				WithSecrets(nil),
@@ -850,8 +854,8 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 		WithCmdArgs(nil),
 		WithName("test-server"),
 		WithImage("test-image"),
-		WithHost("localhost"),
-		WithTargetHost("localhost"),
+		WithHost(localhostStr),
+		WithTargetHost(localhostStr),
 		WithDebug(false),
 		WithVolumes(nil),
 		WithSecrets(nil),
@@ -902,8 +906,8 @@ func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 		WithCmdArgs(userArgs),
 		WithName("test-server"),
 		WithImage("test-image"),
-		WithHost("localhost"),
-		WithTargetHost("localhost"),
+		WithHost(localhostStr),
+		WithTargetHost(localhostStr),
 		WithDebug(false),
 		WithVolumes(nil),
 		WithSecrets(nil),
@@ -957,8 +961,8 @@ func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 		WithCmdArgs(userArgs),
 		WithName("test-server"),
 		WithImage("test-image"),
-		WithHost("localhost"),
-		WithTargetHost("localhost"),
+		WithHost(localhostStr),
+		WithTargetHost(localhostStr),
 		WithDebug(false),
 		WithVolumes(nil),
 		WithSecrets(nil),
@@ -1008,8 +1012,8 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 		WithCmdArgs(nil),
 		WithName("test-server"),
 		WithImage("test-image"),
-		WithHost("localhost"),
-		WithTargetHost("localhost"),
+		WithHost(localhostStr),
+		WithTargetHost(localhostStr),
 		WithDebug(false),
 		WithVolumes(volumes),
 		WithSecrets(nil),
@@ -1081,8 +1085,8 @@ func TestRunConfigBuilder_FilesystemMCPScenario(t *testing.T) {
 		WithCmdArgs(userArgs),
 		WithName("filesystem"),
 		WithImage("mcp/filesystem:latest"),
-		WithHost("localhost"),
-		WithTargetHost("localhost"),
+		WithHost(localhostStr),
+		WithTargetHost(localhostStr),
 		WithDebug(false),
 		WithVolumes(nil),
 		WithSecrets(nil),

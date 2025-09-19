@@ -195,7 +195,10 @@ components:
             This is embedded in the URL.
           type: integer
         proxy_mode:
-          description: ProxyMode is the proxy mode for stdio transport (sse or streamable-http).
+          description: |-
+            ProxyMode is the proxy mode that clients should use to connect.
+            For stdio transports, this will be the proxy mode (sse or streamable-http).
+            For direct transports (sse/streamable-http), this will be the same as TransportType.
           type: string
         remote:
           description: Remote indicates whether this is a remote workload (true) or

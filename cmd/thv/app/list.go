@@ -111,7 +111,7 @@ func printMCPServersOutput(workloadList []core.Workload) error {
 		// Add the MCP server to the map
 		mcpServers[c.Name] = map[string]string{
 			"url":  c.URL,
-			"type": c.TransportType.String(),
+			"type": c.ProxyMode,
 		}
 	}
 

@@ -2,8 +2,11 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -12,6 +15,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sync"
 )
@@ -22,7 +27,11 @@ type MCPRegistryReconciler struct {
 	Scheme *runtime.Scheme
 
 	// Sync manager handles all sync operations
-	syncManager sync.Manager
+	syncManager          sync.Manager
+	storageManager       sources.StorageManager
+	sourceHandlerFactory sources.SourceHandlerFactory
+	// Registry API manager handles API deployment operations
+	registryAPIManager registryapi.Manager
 }
 
 // NewMCPRegistryReconciler creates a new MCPRegistryReconciler with required dependencies
@@ -30,11 +39,15 @@ func NewMCPRegistryReconciler(k8sClient client.Client, scheme *runtime.Scheme) *
 	sourceHandlerFactory := sources.NewSourceHandlerFactory(k8sClient)
 	storageManager := sources.NewConfigMapStorageManager(k8sClient, scheme)
 	syncManager := sync.NewDefaultSyncManager(k8sClient, scheme, sourceHandlerFactory, storageManager)
+	registryAPIManager := registryapi.NewManager(k8sClient, scheme, storageManager, sourceHandlerFactory)
 
 	return &MCPRegistryReconciler{
-		Client:      k8sClient,
-		Scheme:      scheme,
-		syncManager: syncManager,
+		Client:               k8sClient,
+		Scheme:               scheme,
+		syncManager:          syncManager,
+		storageManager:       storageManager,
+		sourceHandlerFactory: sourceHandlerFactory,
+		registryAPIManager:   registryAPIManager,
 	}
 }
 
@@ -43,9 +56,15 @@ func NewMCPRegistryReconciler(k8sClient client.Client, scheme *runtime.Scheme) *
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpregistries/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+//
+// For creating registry-api deployment and service
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
+//
+//nolint:gocyclo // Complex reconciliation logic requires multiple conditions
 func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -106,8 +125,42 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	// 3. Check if sync is needed before performing it
-	result, err := r.reconcileSync(ctx, mcpRegistry)
+	// 3. Create status collector for batched updates
+	statusCollector := mcpregistrystatus.NewCollector(mcpRegistry)
+
+	// 4. Reconcile sync operation
+	result, syncErr := r.reconcileSync(ctx, mcpRegistry, statusCollector)
+
+	// 5. Reconcile API service (deployment and service, independent of sync status)
+	if syncErr == nil {
+		if apiErr := r.registryAPIManager.ReconcileAPIService(ctx, mcpRegistry, statusCollector); apiErr != nil {
+			ctxLogger.Error(apiErr, "Failed to reconcile API service")
+			if syncErr == nil {
+				err = apiErr
+			}
+		}
+	}
+
+	// 6. Check if we need to requeue for API readiness
+	if syncErr == nil && !r.registryAPIManager.IsAPIReady(ctx, mcpRegistry) {
+		ctxLogger.Info("API not ready yet, scheduling requeue to check readiness")
+		if result.RequeueAfter == 0 || result.RequeueAfter > time.Second*30 {
+			result.RequeueAfter = time.Second * 30
+		}
+	}
+
+	// 7. Apply all status changes in a single batch update
+	if statusUpdateErr := statusCollector.Apply(ctx, r.Status()); statusUpdateErr != nil {
+		ctxLogger.Error(statusUpdateErr, "Failed to apply batched status update")
+		// Return the status update error only if there was no main reconciliation error
+		if syncErr == nil {
+			err = statusUpdateErr
+		}
+	}
+
+	if err == nil {
+		err = syncErr
+	}
 
 	// Log reconciliation completion
 	if err != nil {
@@ -124,16 +177,13 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 }
 
 // reconcileSync checks if sync is needed and performs it if necessary
-func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, error) {
+// This method only handles data synchronization to the target ConfigMap
+func (r *MCPRegistryReconciler) reconcileSync(
+	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, statusCollector mcpregistrystatus.Collector,
+) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
-	// Refresh the object to get latest status for accurate timing calculations
-	if err := r.Get(ctx, client.ObjectKeyFromObject(mcpRegistry), mcpRegistry); err != nil {
-		ctxLogger.Error(err, "Failed to refresh MCPRegistry object for sync check")
-		return ctrl.Result{}, err
-	}
-
-	// Check if sync is needed
+	// Check if sync is needed - no need to refresh object here since we just fetched it
 	syncNeeded, syncReason, nextSyncTime, err := r.syncManager.ShouldSync(ctx, mcpRegistry)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to determine if sync is needed")
@@ -155,6 +205,10 @@ func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *
 
 	ctxLogger.Info("Sync needed", "reason", syncReason)
 
+	// Set phase to syncing before starting the sync process
+	statusCollector.SetPhase(mcpv1alpha1.MCPRegistryPhaseSyncing)
+	statusCollector.SetMessage("Syncing registry data")
+
 	// Handle manual sync with no data changes - update trigger tracking only
 	if syncReason == sync.ReasonManualNoChanges {
 		return r.syncManager.UpdateManualSyncTriggerOnly(ctx, mcpRegistry)
@@ -165,6 +219,8 @@ func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *
 	if err != nil {
 		// Sync failed - schedule retry with exponential backoff
 		ctxLogger.Error(err, "Sync failed, scheduling retry")
+		statusCollector.SetPhase(mcpv1alpha1.MCPRegistryPhaseFailed)
+		statusCollector.SetMessage(fmt.Sprintf("Sync failed: %v", err))
 		// Use a shorter retry interval instead of the full sync interval
 		retryAfter := time.Minute * 5 // Default retry interval
 		if result.RequeueAfter > 0 {
@@ -173,6 +229,11 @@ func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *
 		}
 		return ctrl.Result{RequeueAfter: retryAfter}, err
 	}
+
+	// Sync successful - keep in syncing phase until API is also ready
+	statusCollector.SetMessage("Registry data synced successfully")
+
+	ctxLogger.Info("Registry data sync completed successfully")
 
 	// Schedule next automatic sync only if this was an automatic sync (not manual)
 	if mcpRegistry.Spec.SyncPolicy != nil && !sync.IsManualSync(syncReason) {
@@ -196,7 +257,7 @@ func (r *MCPRegistryReconciler) reconcileSync(ctx context.Context, mcpRegistry *
 func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registry *mcpv1alpha1.MCPRegistry) error {
 	ctxLogger := log.FromContext(ctx)
 
-	// Update the MCPRegistry status to indicate termination
+	// Update the MCPRegistry status to indicate termination - immediate update needed since object is being deleted
 	registry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseTerminating
 	registry.Status.Message = "MCPRegistry is being terminated"
 	if err := r.Status().Update(ctx, registry); err != nil {
@@ -211,7 +272,7 @@ func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registr
 	}
 
 	// TODO: Add additional cleanup logic when other features are implemented:
-	// - Clean up Registry API service
+	// - Clean up Registry API deployment and service (will be handled by owner references)
 	// - Cancel any running sync operations
 
 	ctxLogger.Info("MCPRegistry finalization completed", "registry", registry.Name)
@@ -222,5 +283,8 @@ func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registr
 func (r *MCPRegistryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPRegistry{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}).
 		Complete(r)
 }

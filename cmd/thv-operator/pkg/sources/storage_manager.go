@@ -22,7 +22,12 @@ const (
 	ConfigMapStorageDataKey = "registry.json"
 	// RegistryStorageComponent is the component label for the registry storage
 	RegistryStorageComponent = "registry-storage"
+
+	// StorageTypeConfigMap identifies the ConfigMap storage manager implementation
+	StorageTypeConfigMap = "configmap"
 )
+
+//go:generate mockgen -destination=mocks/mock_storage_manager.go -package=mocks -source=storage_manager.go StorageManager
 
 // StorageManager defines the interface for registry data persistence
 type StorageManager interface {
@@ -37,6 +42,9 @@ type StorageManager interface {
 
 	// GetStorageReference returns a reference to where the data is stored
 	GetStorageReference(mcpRegistry *mcpv1alpha1.MCPRegistry) *mcpv1alpha1.StorageReference
+
+	// GetType returns the storage manager type as a string
+	GetType() string
 }
 
 // ConfigMapStorageManager implements StorageManager using Kubernetes ConfigMaps
@@ -180,9 +188,14 @@ func (s *ConfigMapStorageManager) GetStorageReference(mcpRegistry *mcpv1alpha1.M
 	}
 }
 
+// GetType returns the storage manager type
+func (*ConfigMapStorageManager) GetType() string {
+	return StorageTypeConfigMap
+}
+
 // getConfigMapName generates the ConfigMap name for registry storage
 func (*ConfigMapStorageManager) getConfigMapName(mcpRegistry *mcpv1alpha1.MCPRegistry) string {
-	return fmt.Sprintf("%s-registry-storage", mcpRegistry.Name)
+	return mcpRegistry.GetStorageName()
 }
 
 // StorageError represents an error that occurred during storage operations

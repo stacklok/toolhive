@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -248,6 +250,16 @@ type MCPRegistryList struct {
 	metav1.TypeMeta `json:",inline"` // nolint:revive
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []MCPRegistry `json:"items"`
+}
+
+// GetStorageName returns the name used for registry storage resources
+func (r *MCPRegistry) GetStorageName() string {
+	return fmt.Sprintf("%s-registry-storage", r.Name)
+}
+
+// GetAPIResourceName returns the base name for registry API resources (deployment, service)
+func (r *MCPRegistry) GetAPIResourceName() string {
+	return fmt.Sprintf("%s-api", r.Name)
 }
 
 func init() {

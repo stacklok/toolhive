@@ -95,6 +95,9 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 		return core.Workload{}, err
 	}
 
+	// Calculate the effective proxy mode that clients should use
+	effectiveProxyMode := GetEffectiveProxyMode(tType, runConfig.ProxyMode)
+
 	// Translate to the domain model.
 	return core.Workload{
 		Name:          name, // Use the calculated workload name (base name), not container name
@@ -102,7 +105,7 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 		URL:           url,
 		ToolType:      toolType,
 		TransportType: tType,
-		ProxyMode:     runConfig.ProxyMode,
+		ProxyMode:     effectiveProxyMode,
 		Status:        container.State,
 		StatusContext: container.Status,
 		CreatedAt:     container.Created,
@@ -110,4 +113,23 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 		Labels:        userLabels,
 		Group:         runConfig.Group,
 	}, nil
+}
+
+// GetEffectiveProxyMode determines the effective proxy mode that clients should use
+// For stdio transports, this returns the proxy mode (sse or streamable-http)
+// For direct transports (sse/streamable-http), this returns the transport type as the proxy mode
+func GetEffectiveProxyMode(transportType types.TransportType, proxyMode string) string {
+	// If the underlying transport is stdio and we have a proxy mode set,
+	// return the proxy mode as that's what clients actually connect to
+	if transportType == types.TransportTypeStdio && proxyMode != "" {
+		return proxyMode
+	}
+
+	// For direct transports (sse, streamable-http), return the transport type as proxy mode
+	if transportType == types.TransportTypeSSE || transportType == types.TransportTypeStreamableHTTP {
+		return transportType.String()
+	}
+
+	// For stdio without proxy mode or other cases, return original proxy mode (could be empty)
+	return proxyMode
 }

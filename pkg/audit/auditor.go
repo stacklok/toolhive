@@ -389,7 +389,11 @@ func (a *Auditor) addMetadata(event *AuditEvent, duration time.Duration, rw *res
 	event.Metadata.Extra[MetadataExtraKeyDuration] = duration.Milliseconds()
 
 	// Add transport information
-	event.Metadata.Extra[MetadataExtraKeyTransport] = a.transportType
+	if a.isSSETransport() {
+		event.Metadata.Extra[MetadataExtraKeyTransport] = "sse"
+	} else {
+		event.Metadata.Extra[MetadataExtraKeyTransport] = "http"
+	}
 
 	// Add response size if available
 	if rw.body != nil {

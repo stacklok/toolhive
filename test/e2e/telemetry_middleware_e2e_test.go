@@ -43,7 +43,7 @@ var _ = Describe("Telemetry Middleware E2E", Label("middleware", "telemetry", "e
 
 	JustBeforeEach(func() {
 		// Build args for running the MCP server
-		args := []string{"run", "--name", workloadName, "--transport", transportType.String(), "--enable-audit"}
+		args := []string{"run", "--name", workloadName, "--transport", transportType.String()}
 
 		if transportType == types.TransportTypeStdio {
 			Expect(proxyMode).ToNot(BeEmpty())

@@ -75,7 +75,7 @@ func NewMCPRegistryReconciler(k8sClient client.Client, scheme *runtime.Scheme) *
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpregistries,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpregistries/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpregistries/finalizers,verbs=update
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpregistries/finalizers,verbs=update;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 //
@@ -133,8 +133,10 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			}
 
 			// Remove the finalizer. Once all finalizers have been removed, the object will be deleted.
+			original := mcpRegistry.DeepCopy()
 			controllerutil.RemoveFinalizer(mcpRegistry, "mcpregistry.toolhive.stacklok.dev/finalizer")
-			err := r.Update(ctx, mcpRegistry)
+			patch := client.MergeFrom(original)
+			err := r.Patch(ctx, mcpRegistry, patch)
 			if err != nil {
 				ctxLogger.Error(err, "Reconciliation completed with error while removing finalizer",
 					"MCPRegistry.Name", mcpRegistry.Name)

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -27,8 +29,13 @@ func NewStatusTestHelper(ctx context.Context, k8sClient client.Client, namespace
 // WaitForPhase waits for an MCPRegistry to reach the specified phase
 func (h *StatusTestHelper) WaitForPhase(registryName string, expectedPhase mcpv1alpha1.MCPRegistryPhase, timeout time.Duration) {
 	gomega.Eventually(func() mcpv1alpha1.MCPRegistryPhase {
+		ginkgo.By(fmt.Sprintf("waiting for registry %s to reach phase %s", registryName, expectedPhase))
 		registry, err := h.registryHelper.GetRegistry(registryName)
 		if err != nil {
+			if errors.IsNotFound(err) {
+				ginkgo.By(fmt.Sprintf("registry %s not found", registryName))
+				return mcpv1alpha1.MCPRegistryPhaseTerminating
+			}
 			return ""
 		}
 		return registry.Status.Phase

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -232,6 +234,13 @@ func (h *MCPRegistryTestHelper) CleanupRegistries() error {
 		if err := h.Client.Delete(h.Context, &registry); err != nil {
 			return err
 		}
+
+		// Wait for registry to be actually deleted
+		ginkgo.By(fmt.Sprintf("waiting for registry %s to be deleted", registry.Name))
+		gomega.Eventually(func() bool {
+			_, err := h.GetRegistry(registry.Name)
+			return err != nil && errors.IsNotFound(err)
+		}, LongTimeout, DefaultPollingInterval).Should(gomega.BeTrue())
 	}
 	return nil
 }

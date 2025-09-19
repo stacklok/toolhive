@@ -14,14 +14,8 @@ type Client interface {
 	// Clone clones a repository with the given configuration
 	Clone(ctx context.Context, config *CloneConfig) (*RepositoryInfo, error)
 
-	// Pull updates an existing repository
-	Pull(ctx context.Context, repoInfo *RepositoryInfo) error
-
 	// GetFileContent retrieves the content of a file from the repository
 	GetFileContent(repoInfo *RepositoryInfo, path string) ([]byte, error)
-
-	// GetCommitHash returns the current commit hash
-	GetCommitHash(repoInfo *RepositoryInfo) (string, error)
 
 	// Cleanup removes local repository directory
 	Cleanup(repoInfo *RepositoryInfo) error
@@ -90,23 +84,6 @@ func (c *DefaultGitClient) Clone(ctx context.Context, config *CloneConfig) (*Rep
 	return repoInfo, nil
 }
 
-// Pull updates an existing repository
-func (*DefaultGitClient) Pull(_ context.Context, repoInfo *RepositoryInfo) error {
-	if repoInfo == nil || repoInfo.Repository == nil {
-		return fmt.Errorf("repository is nil")
-	}
-
-	workTree, err := repoInfo.Repository.Worktree()
-	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
-	}
-
-	// For now, just return nil as pull implementation will be added later
-	// when authentication is fully implemented
-	_ = workTree
-	return nil
-}
-
 // GetFileContent retrieves the content of a file from the repository
 func (*DefaultGitClient) GetFileContent(repoInfo *RepositoryInfo, path string) ([]byte, error) {
 	if repoInfo == nil || repoInfo.Repository == nil {
@@ -146,20 +123,6 @@ func (*DefaultGitClient) GetFileContent(repoInfo *RepositoryInfo, path string) (
 	return []byte(content), nil
 }
 
-// GetCommitHash returns the current commit hash
-func (*DefaultGitClient) GetCommitHash(repoInfo *RepositoryInfo) (string, error) {
-	if repoInfo == nil || repoInfo.Repository == nil {
-		return "", fmt.Errorf("repository is nil")
-	}
-
-	ref, err := repoInfo.Repository.Head()
-	if err != nil {
-		return "", fmt.Errorf("failed to get HEAD reference: %w", err)
-	}
-
-	return ref.Hash().String(), nil
-}
-
 // Cleanup removes local repository directory
 func (*DefaultGitClient) Cleanup(repoInfo *RepositoryInfo) error {
 	if repoInfo == nil || repoInfo.Repository == nil {
@@ -177,17 +140,10 @@ func (*DefaultGitClient) Cleanup(repoInfo *RepositoryInfo) error {
 }
 
 // updateRepositoryInfo updates the repository info with current state
-func (c *DefaultGitClient) updateRepositoryInfo(repoInfo *RepositoryInfo) error {
+func (*DefaultGitClient) updateRepositoryInfo(repoInfo *RepositoryInfo) error {
 	if repoInfo == nil || repoInfo.Repository == nil {
 		return fmt.Errorf("repository is nil")
 	}
-
-	// Get current commit hash
-	commitHash, err := c.GetCommitHash(repoInfo)
-	if err != nil {
-		return err
-	}
-	repoInfo.CurrentCommit = commitHash
 
 	// Get current branch name
 	ref, err := repoInfo.Repository.Head()

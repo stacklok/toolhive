@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/git"
 )
@@ -105,7 +107,7 @@ func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1
 	defer func() {
 		if cleanupErr := h.gitClient.Cleanup(repoInfo); cleanupErr != nil {
 			// Log error but don't fail the operation
-			fmt.Printf("Warning: failed to cleanup repository: %v\n", cleanupErr)
+			log.FromContext(ctx).Error(cleanupErr, "Failed to cleanup repository")
 		}
 	}()
 

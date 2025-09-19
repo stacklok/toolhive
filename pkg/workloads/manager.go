@@ -1154,6 +1154,9 @@ func (d *defaultManager) getRemoteWorkloadsFromState(
 			)
 		}
 
+		// Calculate the effective proxy mode that clients should use
+		effectiveProxyMode := types.GetEffectiveProxyMode(transportType, string(runConfig.ProxyMode))
+
 		// Create a workload from the run configuration
 		workload := core.Workload{
 			Name:          name,
@@ -1162,7 +1165,7 @@ func (d *defaultManager) getRemoteWorkloadsFromState(
 			URL:           proxyURL,
 			Port:          runConfig.Port,
 			TransportType: transportType,
-			ProxyMode:     string(runConfig.ProxyMode),
+			ProxyMode:     effectiveProxyMode,
 			ToolType:      "remote",
 			Group:         runConfig.Group,
 			CreatedAt:     workloadStatus.CreatedAt,

@@ -310,7 +310,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Update the MCPServer status with the service URL
 	if mcpServer.Status.URL == "" {
-		mcpServer.Status.URL = createServiceURL(mcpServer.Name, mcpServer.Namespace, mcpServer.Spec.Port)
+		mcpServer.Status.URL = createServiceURL(mcpServer.Name, mcpServer.Namespace, mcpServer.Spec.ProxyPort)
 		err = r.Status().Update(ctx, mcpServer)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update MCPServer status")
@@ -715,12 +715,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		}
 	} else {
 		// Use individual configuration flags (existing behavior)
-		args = append(args, fmt.Sprintf("--proxy-port=%d", m.Spec.Port))
+		args = append(args, fmt.Sprintf("--proxy-port=%d", m.Spec.ProxyPort))
 		args = append(args, fmt.Sprintf("--name=%s", m.Name))
 		args = append(args, fmt.Sprintf("--transport=%s", m.Spec.Transport))
 		args = append(args, fmt.Sprintf("--host=%s", getProxyHost()))
-		if m.Spec.TargetPort != 0 {
-			args = append(args, fmt.Sprintf("--target-port=%d", m.Spec.TargetPort))
+		if m.Spec.McpPort != 0 {
+			args = append(args, fmt.Sprintf("--target-port=%d", m.Spec.McpPort))
 		}
 		// Add proxy mode for stdio transport
 		if m.Spec.ProxyMode != "" {
@@ -776,7 +776,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		// Add OAuth discovery resource URL for RFC 9728 compliance
 		resourceURL := m.Spec.OIDCConfig.ResourceURL
 		if resourceURL == "" {
-			resourceURL = createServiceURL(m.Name, m.Namespace, m.Spec.Port)
+			resourceURL = createServiceURL(m.Name, m.Namespace, m.Spec.ProxyPort)
 		}
 		args = append(args, fmt.Sprintf("--resource-url=%s", resourceURL))
 	}
@@ -995,7 +995,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 						VolumeMounts: volumeMounts,
 						Resources:    resources,
 						Ports: []corev1.ContainerPort{{
-							ContainerPort: m.Spec.Port,
+							ContainerPort: m.Spec.ProxyPort,
 							Name:          "http",
 							Protocol:      corev1.ProtocolTCP,
 						}},
@@ -1134,8 +1134,8 @@ func (r *MCPServerReconciler) serviceForMCPServer(m *mcpv1alpha1.MCPServer) *cor
 		Spec: corev1.ServiceSpec{
 			Selector: ls, // Keep original labels for selector
 			Ports: []corev1.ServicePort{{
-				Port:       m.Spec.Port,
-				TargetPort: intstr.FromInt(int(m.Spec.Port)),
+				Port:       m.Spec.ProxyPort,
+				TargetPort: intstr.FromInt(int(m.Spec.ProxyPort)),
 				Protocol:   corev1.ProtocolTCP,
 				Name:       "http",
 			}},
@@ -1280,7 +1280,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(deployment *appsv1.Deploymen
 		}
 
 		// Check if the port has changed
-		portArg := fmt.Sprintf("--proxy-port=%d", mcpServer.Spec.Port)
+		portArg := fmt.Sprintf("--proxy-port=%d", mcpServer.Spec.ProxyPort)
 		found = false
 		for _, arg := range container.Args {
 			if arg == portArg {
@@ -1333,7 +1333,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(deployment *appsv1.Deploymen
 		}
 
 		// Check if the container port has changed
-		if len(container.Ports) > 0 && container.Ports[0].ContainerPort != mcpServer.Spec.Port {
+		if len(container.Ports) > 0 && container.Ports[0].ContainerPort != mcpServer.Spec.ProxyPort {
 			return true
 		}
 
@@ -1419,12 +1419,12 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(deployment *appsv1.Deploymen
 			return true
 		}
 
-		// Check if the targetPort has changed
-		if mcpServer.Spec.TargetPort != 0 {
-			targetPortArg := fmt.Sprintf("--target-port=%d", mcpServer.Spec.TargetPort)
+		// Check if the mcpPort has changed
+		if mcpServer.Spec.McpPort != 0 {
+			mcpPortArg := fmt.Sprintf("--target-port=%d", mcpServer.Spec.McpPort)
 			found := false
 			for _, arg := range container.Args {
-				if arg == targetPortArg {
+				if arg == mcpPortArg {
 					found = true
 					break
 				}
@@ -1486,7 +1486,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(deployment *appsv1.Deploymen
 // serviceNeedsUpdate checks if the service needs to be updated
 func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1alpha1.MCPServer) bool {
 	// Check if the service port has changed
-	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != mcpServer.Spec.Port {
+	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != mcpServer.Spec.ProxyPort {
 		return true
 	}
 

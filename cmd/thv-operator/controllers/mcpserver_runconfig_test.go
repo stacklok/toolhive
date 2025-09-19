@@ -44,7 +44,7 @@ func createTestMCPServerWithConfig(name, namespace, image string, envVars []mcpv
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     image,
 			Transport: stdioTransport,
-			Port:      8080,
+			ProxyPort: 8080,
 			Env:       envVars,
 		},
 	}
@@ -68,7 +68,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 				},
 			},
 			//nolint:thelper // We want to see the error at the specific line
@@ -89,7 +89,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "env-image:latest",
 					Transport: "sse",
-					Port:      9090,
+					ProxyPort: 9090,
 					Env: []mcpv1alpha1.EnvVar{
 						{Name: "VAR1", Value: "value1"},
 						{Name: "VAR2", Value: "value2"},
@@ -116,7 +116,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "vol-image:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					Volumes: []mcpv1alpha1.Volume{
 						{Name: "vol1", HostPath: "/host/path1", MountPath: "/mount/path1", ReadOnly: false},
 						{Name: "vol2", HostPath: "/host/path2", MountPath: "/mount/path2", ReadOnly: true},
@@ -141,7 +141,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "secret-image:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					Secrets: []mcpv1alpha1.SecretRef{
 						{Name: "secret1", Key: "key1", TargetEnvName: "TARGET1"},
 						{Name: "secret2", Key: "key2"}, // No target, should use key as target
@@ -169,7 +169,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					ProxyMode: streamableHTTPProxyMode,
 				},
 			},
@@ -192,7 +192,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					// ProxyMode not specified
 				},
 			},
@@ -215,8 +215,8 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:       "comprehensive:latest",
 					Transport:   "streamable-http",
-					Port:        9090,
-					TargetPort:  8080,
+					ProxyPort:   9090,
+					McpPort:     8080,
 					ProxyMode:   "streamable-http",
 					Args:        []string{"--comprehensive", "--test"},
 					ToolsFilter: []string{"tool1", "tool2"},
@@ -270,7 +270,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:       "edge:latest",
 					Transport:   "stdio",
-					Port:        8080,
+					ProxyPort:   8080,
 					Args:        []string{},             // Empty slice
 					ToolsFilter: nil,                    // Nil slice
 					Env:         nil,                    // Nil slice
@@ -299,7 +299,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					Telemetry: &mcpv1alpha1.TelemetryConfig{
 						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
 							Enabled:     true,
@@ -351,7 +351,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					Telemetry: &mcpv1alpha1.TelemetryConfig{
 						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
 							Enabled:  true,
@@ -385,7 +385,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					Telemetry: &mcpv1alpha1.TelemetryConfig{
 						Prometheus: &mcpv1alpha1.PrometheusConfig{
 							Enabled: true,
@@ -417,7 +417,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
 						Type: mcpv1alpha1.AuthzConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineAuthzConfig{
@@ -457,7 +457,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
 						Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
 						ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
@@ -491,7 +491,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -536,7 +536,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
 						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
@@ -564,7 +564,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					Audit: &mcpv1alpha1.AuditConfig{
 						Enabled: true,
 					},
@@ -587,7 +587,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					Audit: &mcpv1alpha1.AuditConfig{
 						Enabled: false,
 					},
@@ -675,8 +675,8 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:       "deterministic-test:v1.2.3",
 			Transport:   "sse",
-			Port:        9090,
-			TargetPort:  8080,
+			ProxyPort:   9090,
+			McpPort:     8080,
 			Args:        []string{"--arg1", "--arg2", "--complex-flag=value"},
 			ToolsFilter: []string{"tool3", "tool1", "tool2"}, // Different order to test sorting
 			Env: []mcpv1alpha1.EnvVar{
@@ -907,7 +907,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/example/server:v1.0.0",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					Telemetry: &mcpv1alpha1.TelemetryConfig{
 						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
 							Enabled:     true,
@@ -972,7 +972,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/example/server:v1.0.0",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
 						Type: mcpv1alpha1.AuthzConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineAuthzConfig{
@@ -1025,7 +1025,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/example/server:v1.0.0",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -1080,7 +1080,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/example/server:v1.0.0",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					Audit: &mcpv1alpha1.AuditConfig{
 						Enabled: true,
 					},
@@ -1171,7 +1171,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			Spec: mcpv1alpha1.MCPServerSpec{
 				Image:     "ghcr.io/example/server:v1.0.0",
 				Transport: "stdio",
-				Port:      8080,
+				ProxyPort: 8080,
 				AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
 					Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
 					ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
@@ -1665,12 +1665,13 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 			},
 			modifyServer: func(server *mcpv1alpha1.MCPServer) {
 				server.Spec.Transport = "sse"
-				server.Spec.Port = 9090
-				server.Spec.TargetPort = 8080
+				server.Spec.ProxyPort = 9090
+				server.Spec.McpPort = 8080
 			},
 			expectedChanges: map[string]interface{}{
-				"Transport": transporttypes.TransportTypeSSE,
-				"Port":      9090,
+				"Transport":  transporttypes.TransportTypeSSE,
+				"Port":       9090,
+				"TargetPort": 8080,
 			},
 		},
 		{
@@ -1846,7 +1847,7 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/example/server:v1.0.0",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					PodTemplateSpec: &corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
 							Annotations: map[string]string{
@@ -1869,7 +1870,7 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/example/server:v1.0.0",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
@@ -1894,7 +1895,7 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/example/server:v1.0.0",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 				},
 			},
 			expectedEnvDir: "",

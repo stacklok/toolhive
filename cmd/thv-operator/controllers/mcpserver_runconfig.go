@@ -209,8 +209,8 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	}
 
 	port := 8080
-	if m.Spec.Port != 0 {
-		port = int(m.Spec.Port)
+	if m.Spec.ProxyPort != 0 {
+		port = int(m.Spec.ProxyPort)
 	}
 
 	// Helper functions to convert MCPServer spec to builder format
@@ -261,7 +261,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		runner.WithName(m.Name),
 		runner.WithImage(m.Spec.Image),
 		runner.WithCmdArgs(m.Spec.Args),
-		runner.WithTransportAndPorts(m.Spec.Transport, port, int(m.Spec.TargetPort)),
+		runner.WithTransportAndPorts(m.Spec.Transport, port, int(m.Spec.McpPort)),
 		runner.WithProxyMode(transporttypes.ProxyMode(proxyMode)),
 		runner.WithHost(proxyHost),
 		runner.WithToolsFilter(toolsFilter),

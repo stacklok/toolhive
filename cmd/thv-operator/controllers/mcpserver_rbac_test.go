@@ -329,7 +329,7 @@ func createTestMCPServer(name, namespace string) *mcpv1alpha1.MCPServer {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 }

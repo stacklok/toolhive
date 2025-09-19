@@ -28,7 +28,7 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 			PodTemplateSpec: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					Tolerations: []corev1.Toleration{
@@ -162,7 +162,7 @@ func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -194,7 +194,7 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 			Secrets: []mcpv1alpha1.SecretRef{
 				{
 					Name:          "github-token",
@@ -300,7 +300,7 @@ func TestDeploymentForMCPServerWithEnvVars(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 			Env: []mcpv1alpha1.EnvVar{
 				{
 					Name:  "API_KEY",
@@ -366,7 +366,7 @@ func TestDeploymentForMCPServerWithProxyMode(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 			ProxyMode: "streamable-http",
 		},
 	}
@@ -406,7 +406,7 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -455,7 +455,7 @@ func TestProxyRunnerStructuredLogsEnvVar(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 

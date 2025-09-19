@@ -105,7 +105,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -180,7 +180,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_OpenShift(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -261,7 +261,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_PlatformDetectionError(t *te
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 

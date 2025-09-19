@@ -6,7 +6,7 @@ metadata:
 spec:
   image: docker.io/mcp/github
   transport: stdio
-  port: 8080
+  proxyPort: 8080
   permissionProfile:
     type: builtin
     name: network

@@ -224,7 +224,7 @@ func (h *GitSourceHandler) CurrentHash(ctx context.Context, mcpRegistry *mcpv1al
 
 // calculateDirectoryMetrics calculates the total size and file count of a directory
 func calculateDirectoryMetrics(dirPath string) (totalSize int64, fileCount int, err error) {
-	err = filepath.WalkDir(dirPath, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(dirPath, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

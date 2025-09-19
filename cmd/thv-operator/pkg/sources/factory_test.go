@@ -52,6 +52,12 @@ func TestDefaultSourceHandlerFactory_CreateHandler(t *testing.T) {
 			expectedType: &ConfigMapSourceHandler{},
 		},
 		{
+			name:         "git source type",
+			sourceType:   mcpv1alpha1.RegistrySourceTypeGit,
+			expectError:  false,
+			expectedType: &GitSourceHandler{},
+		},
+		{
 			name:          "unsupported source type",
 			sourceType:    "unsupported",
 			expectError:   true,

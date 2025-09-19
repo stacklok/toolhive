@@ -1252,6 +1252,8 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 						State:  "running",
 						Labels: map[string]string{"toolhive-basename": "test-workload"},
 					}, nil)
+				// Mock GetWorkloadPID call from stopProcess
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(1234, nil)
 				rt.EXPECT().StopWorkload(gomock.Any(), "test-workload").Return(nil)
 				sm.EXPECT().ResetWorkloadPID(gomock.Any(), "test-workload").Return(nil)
 
@@ -1288,6 +1290,8 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 						State:  "running",
 						Labels: map[string]string{"toolhive-basename": "test-workload"},
 					}, nil)
+				// Mock GetWorkloadPID call from stopProcess
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(1234, nil)
 				rt.EXPECT().StopWorkload(gomock.Any(), "test-workload").Return(nil)
 				sm.EXPECT().ResetWorkloadPID(gomock.Any(), "test-workload").Return(nil)
 

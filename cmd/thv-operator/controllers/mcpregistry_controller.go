@@ -129,18 +129,20 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	statusCollector := mcpregistrystatus.NewCollector(mcpRegistry)
 
 	// 4. Reconcile sync operation
-	result, err := r.reconcileSync(ctx, mcpRegistry, statusCollector)
+	result, syncErr := r.reconcileSync(ctx, mcpRegistry, statusCollector)
 
 	// 5. Reconcile API service (deployment and service, independent of sync status)
-	if apiErr := r.registryAPIManager.ReconcileAPIService(ctx, mcpRegistry, statusCollector); apiErr != nil {
-		ctxLogger.Error(apiErr, "Failed to reconcile API service")
-		if err == nil {
-			err = apiErr
+	if syncErr == nil {
+		if apiErr := r.registryAPIManager.ReconcileAPIService(ctx, mcpRegistry, statusCollector); apiErr != nil {
+			ctxLogger.Error(apiErr, "Failed to reconcile API service")
+			if syncErr == nil {
+				err = apiErr
+			}
 		}
 	}
 
 	// 6. Check if we need to requeue for API readiness
-	if err == nil && !r.registryAPIManager.IsAPIReady(ctx, mcpRegistry) {
+	if syncErr == nil && !r.registryAPIManager.IsAPIReady(ctx, mcpRegistry) {
 		ctxLogger.Info("API not ready yet, scheduling requeue to check readiness")
 		if result.RequeueAfter == 0 || result.RequeueAfter > time.Second*30 {
 			result.RequeueAfter = time.Second * 30
@@ -151,9 +153,13 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if statusUpdateErr := statusCollector.Apply(ctx, r.Status()); statusUpdateErr != nil {
 		ctxLogger.Error(statusUpdateErr, "Failed to apply batched status update")
 		// Return the status update error only if there was no main reconciliation error
-		if err == nil {
+		if syncErr == nil {
 			err = statusUpdateErr
 		}
+	}
+
+	if err == nil {
+		err = syncErr
 	}
 
 	// Log reconciliation completion

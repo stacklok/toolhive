@@ -278,8 +278,8 @@ func TestFindContainerByName(t *testing.T) {
 				{Name: "container1", Image: "image1"},
 				{Name: "container2", Image: "image2"},
 			},
-			searchName: "container2",
-			expected:   &corev1.Container{Name: "container2", Image: "image2"},
+			searchName:  "container2",
+			expected:    &corev1.Container{Name: "container2", Image: "image2"},
 			description: "Should return pointer to found container",
 		},
 		{

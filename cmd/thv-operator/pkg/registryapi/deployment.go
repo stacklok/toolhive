@@ -77,51 +77,54 @@ func (m *manager) ensureDeployment(
 ) (*appsv1.Deployment, error) {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
-	// Build the desired deployment configuration
 	// Get source handler for config hash calculation
 	sourceHandler, err := m.sourceHandlerFactory.CreateHandler(mcpRegistry.Spec.Source.Type)
 	if err != nil {
+		ctxLogger.Error(err, "Failed to create source handler for deployment")
 		return nil, fmt.Errorf("failed to create source handler for deployment: %w", err)
 	}
 
-	// Use CreateOrUpdate pattern for robust deployment management
-	deploymentName := mcpRegistry.GetAPIResourceName()
-	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      deploymentName,
-			Namespace: mcpRegistry.Namespace,
-		},
+	// Build the desired deployment configuration
+	deployment, err := m.buildRegistryAPIDeployment(mcpRegistry, sourceHandler)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to build deployment configuration")
+		return nil, fmt.Errorf("failed to build deployment configuration: %w", err)
+	}
+	deploymentName := deployment.Name
+
+	// Set owner reference for automatic garbage collection
+	if err := controllerutil.SetControllerReference(mcpRegistry, deployment, m.scheme); err != nil {
+		ctxLogger.Error(err, "Failed to set controller reference for deployment")
+		return nil, fmt.Errorf("failed to set controller reference for deployment: %w", err)
 	}
 
 	// Check if deployment already exists
-	err = m.client.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: mcpRegistry.Namespace}, deployment)
-	if errors.IsNotFound(err) {
-		// Deployment doesn't exist, create it
-		desired, buildErr := m.buildRegistryAPIDeployment(mcpRegistry, sourceHandler)
-		if buildErr != nil {
-			return nil, fmt.Errorf("failed to build deployment configuration: %w", buildErr)
-		}
+	existing := &appsv1.Deployment{}
+	err = m.client.Get(ctx, client.ObjectKey{
+		Name:      deploymentName,
+		Namespace: mcpRegistry.Namespace,
+	}, existing)
 
-		// Set owner reference
-		if ownerErr := controllerutil.SetControllerReference(mcpRegistry, desired, m.scheme); ownerErr != nil {
-			return nil, fmt.Errorf("failed to set controller reference: %w", ownerErr)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Deployment doesn't exist, create it
+			ctxLogger.Info("Creating registry-api deployment", "deployment", deploymentName)
+			if err := m.client.Create(ctx, deployment); err != nil {
+				ctxLogger.Error(err, "Failed to create deployment")
+				return nil, fmt.Errorf("failed to create deployment %s: %w", deploymentName, err)
+			}
+			ctxLogger.Info("Successfully created registry-api deployment", "deployment", deploymentName)
+			return deployment, nil
 		}
-
-		if createErr := m.client.Create(ctx, desired); createErr != nil {
-			return nil, fmt.Errorf("failed to create deployment %s: %w", deploymentName, createErr)
-		}
-
-		ctxLogger.Info("Deployment created successfully", "deployment", deploymentName)
-		return desired, nil
-	} else if err != nil {
-		// Some other error occurred
+		// Unexpected error
+		ctxLogger.Error(err, "Failed to get deployment")
 		return nil, fmt.Errorf("failed to get deployment %s: %w", deploymentName, err)
 	}
 
 	// TODO: Implement deployment updates when needed (e.g., when config hash changes)
 	// For now, just return the existing deployment to avoid endless reconciliation loops
 	ctxLogger.Info("Deployment already exists, skipping update", "deployment", deploymentName)
-	return deployment, nil
+	return existing, nil
 }
 
 // buildRegistryAPIDeployment creates and configures a Deployment object for the registry API.

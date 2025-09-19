@@ -38,6 +38,7 @@ func (c *DefaultGitClient) Clone(ctx context.Context, config *CloneConfig) (*Rep
 
 	// Set reference if specified (but not for commit-based clones)
 	if config.Commit == "" {
+		cloneOptions.Depth = 1
 		if config.Branch != "" {
 			cloneOptions.ReferenceName = plumbing.NewBranchReferenceName(config.Branch)
 			cloneOptions.SingleBranch = true

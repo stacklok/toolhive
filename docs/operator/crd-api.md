@@ -121,6 +121,26 @@ _Appears in:_
 | `value` _string_ | Value of the environment variable |  | Required: \{\} <br /> |
 
 
+#### GitSource
+
+
+
+GitSource defines Git repository source configuration
+
+
+
+_Appears in:_
+- [MCPRegistrySource](#mcpregistrysource)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `repository` _string_ | Repository is the Git repository URL (HTTP/HTTPS/SSH) |  | MinLength: 1 <br />Pattern: `^(https?://\|git@\|ssh://\|git://).*` <br />Required: \{\} <br /> |
+| `branch` _string_ | Branch is the Git branch to use (mutually exclusive with Tag and Commit) |  | MinLength: 1 <br /> |
+| `tag` _string_ | Tag is the Git tag to use (mutually exclusive with Branch and Commit) |  | MinLength: 1 <br /> |
+| `commit` _string_ | Commit is the Git commit SHA to use (mutually exclusive with Branch and Tag) |  | MinLength: 1 <br /> |
+| `path` _string_ | Path is the path to the registry file within the repository | registry.json | Pattern: `^.*\.json$` <br /> |
+
+
 #### InlineAuthzConfig
 
 
@@ -261,9 +281,10 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type is the type of source (configmap) | configmap | Enum: [configmap] <br /> |
+| `type` _string_ | Type is the type of source (configmap, git) | configmap | Enum: [configmap git] <br /> |
 | `format` _string_ | Format is the data format (toolhive, upstream) | toolhive | Enum: [toolhive upstream] <br /> |
 | `configmap` _[ConfigMapSource](#configmapsource)_ | ConfigMap defines the ConfigMap source configuration<br />Only used when Type is "configmap" |  |  |
+| `git` _[GitSource](#gitsource)_ | Git defines the Git repository source configuration<br />Only used when Type is "git" |  |  |
 
 
 #### MCPRegistrySpec

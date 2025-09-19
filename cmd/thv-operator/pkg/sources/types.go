@@ -15,6 +15,8 @@ type SourceDataValidator interface {
 	ValidateData(data []byte, format string) (*registry.Registry, error)
 }
 
+//go:generate mockgen -destination=mocks/mock_source_handler.go -package=mocks -source=types.go SourceHandler,SourceHandlerFactory
+
 // SourceHandler is an interface with methods to fetch data from external data sources
 type SourceHandler interface {
 	// FetchRegistry retrieves data from the source and returns the result

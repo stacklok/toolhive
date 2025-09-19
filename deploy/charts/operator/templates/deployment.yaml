@@ -56,6 +56,8 @@ spec:
             value: "{{ .Values.operator.toolhiveRunnerImage }}"
           - name: TOOLHIVE_PROXY_HOST
             value: "{{ .Values.operator.proxyHost }}"
+          - name: TOOLHIVE_REGISTRY_API_IMAGE
+            value: "{{ .Values.registryAPI.image }}"
           {{- if .Values.operator.env }}
             {{- toYaml .Values.operator.env | nindent 10 }}
           {{- end }}

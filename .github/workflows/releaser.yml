@@ -77,6 +77,35 @@ jobs:
       - name: Install Cosign
         uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
 
+      - name: Build and Verify Binary Version
+        env:
+          VERSION: ${{ needs.compute-build-flags.outputs.version }}
+          COMMIT: ${{ needs.compute-build-flags.outputs.commit }}
+          COMMIT_DATE: ${{ needs.compute-build-flags.outputs.commit-date }}
+          TREE_STATE: ${{ needs.compute-build-flags.outputs.tree-state }}
+        run: |
+          # Build a test binary using the same env vars as GoReleaser
+          go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version=${VERSION} -X github.com/stacklok/toolhive/pkg/versions.Commit=${COMMIT} -X github.com/stacklok/toolhive/pkg/versions.BuildDate=$(date -Iseconds) -X github.com/stacklok/toolhive/pkg/versions.BuildType=release" -o ./thv-test ./cmd/thv
+
+          # Get version from binary
+          BINARY_VERSION=$(./thv-test version --format json | jq -r '.version')
+          EXPECTED_TAG="${GITHUB_REF_NAME}"
+
+          echo "Expected tag: $EXPECTED_TAG"
+          echo "Binary reports version: $BINARY_VERSION"
+
+          # Verify version matches tag
+          if [[ "$BINARY_VERSION" != "$EXPECTED_TAG" ]]; then
+            echo "❌ VERSION MISMATCH!"
+            echo "  Expected: $EXPECTED_TAG"
+            echo "  Got:      $BINARY_VERSION"
+            echo "This indicates a bug in the release process - stopping before publishing."
+            exit 1
+          fi
+
+          echo "✅ Version verification passed: $BINARY_VERSION"
+          rm ./thv-test
+
       - name: Run GoReleaser
         id: run-goreleaser
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6

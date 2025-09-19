@@ -427,5 +427,5 @@ func TestConfigMapStorageManager_GetStorageReference(t *testing.T) {
 	assert.NotNil(t, ref)
 	assert.Equal(t, "configmap", ref.Type)
 	assert.NotNil(t, ref.ConfigMapRef)
-	assert.Equal(t, "test-registry-registry-storage", ref.ConfigMapRef.Name)
+	assert.Equal(t, mcpRegistry.GetStorageName(), ref.ConfigMapRef.Name)
 }

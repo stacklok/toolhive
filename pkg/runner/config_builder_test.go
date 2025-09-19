@@ -935,67 +935,7 @@ func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
 		expectedPort       int
 		checkTargetPort    bool
 		expectedTargetPort int
-	}{
-		{
-			name: "WithTransport sets transport",
-			opts: []RunConfigBuilderOption{
-				WithTransport("sse"),
-			},
-			expectedTransport: "sse",
-			// Port and TargetPort will be auto-generated for SSE transport
-			checkPort:       false,
-			checkTargetPort: false,
-		},
-		{
-			name: "WithPort sets port with stdio transport",
-			opts: []RunConfigBuilderOption{
-				WithTransport("stdio"), // Stdio transport to avoid auto-generated ports
-				WithPort(9090),
-			},
-			expectedTransport: "stdio",
-			checkPort:         true,
-			expectedPort:      9090,
-			checkTargetPort:   false,
-		},
-		{
-			name: "WithTargetPort sets target port for SSE transport",
-			opts: []RunConfigBuilderOption{
-				WithTransport("sse"),
-				WithTargetPort(8080),
-			},
-			expectedTransport:  "sse",
-			checkPort:          false,
-			checkTargetPort:    true,
-			expectedTargetPort: 8080,
-		},
-		{
-			name: "All individual options together with SSE",
-			opts: []RunConfigBuilderOption{
-				WithTransport("sse"),
-				WithPort(3000),
-				WithTargetPort(4000),
-			},
-			expectedTransport:  "sse",
-			checkPort:          true,
-			expectedPort:       3000,
-			checkTargetPort:    true,
-			expectedTargetPort: 4000,
-		},
-		{
-			name: "Individual options override combined option",
-			opts: []RunConfigBuilderOption{
-				WithTransportAndPorts("stdio", 8080, 8080),
-				WithTransport("sse"),
-				WithPort(9000),
-				WithTargetPort(9001),
-			},
-			expectedTransport:  "sse",
-			checkPort:          true,
-			expectedPort:       9000,
-			checkTargetPort:    true,
-			expectedTargetPort: 9001,
-		},
-	}
+	}{}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

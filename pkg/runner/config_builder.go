@@ -278,30 +278,6 @@ func WithTransportAndPorts(mcpTransport string, port, targetPort int) RunConfigB
 	}
 }
 
-// WithTransport configures the MCP transport protocol
-func WithTransport(mcpTransport string) RunConfigBuilderOption {
-	return func(b *runConfigBuilder) error {
-		b.transportString = mcpTransport
-		return nil
-	}
-}
-
-// WithPort configures the proxy port
-func WithPort(port int) RunConfigBuilderOption {
-	return func(b *runConfigBuilder) error {
-		b.port = port
-		return nil
-	}
-}
-
-// WithTargetPort configures the target port
-func WithTargetPort(targetPort int) RunConfigBuilderOption {
-	return func(b *runConfigBuilder) error {
-		b.targetPort = targetPort
-		return nil
-	}
-}
-
 // WithAuditEnabled configures audit settings
 func WithAuditEnabled(enableAudit bool, auditConfigPath string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-18T08:17:16Z",
+  "last_updated": "2025-09-19T00:17:19Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -534,7 +534,7 @@
         "cloud",
         "reference"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/aws-documentation:1.1.2",
+      "image": "ghcr.io/stacklok/dockyard/uvx/aws-documentation:1.1.7",
       "permissions": {
         "network": {
           "outbound": {

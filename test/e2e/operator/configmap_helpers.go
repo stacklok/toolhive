@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	ginkgo "github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,17 +37,22 @@ func NewConfigMapTestHelper(ctx context.Context, k8sClient client.Client, namesp
 
 // RegistryServer represents a server definition in the registry
 type RegistryServer struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description,omitempty"`
-	Version     string            `json:"version,omitempty"`
-	SourceURL   string            `json:"sourceUrl,omitempty"`
-	Transport   map[string]string `json:"transport,omitempty"`
-	Tags        []string          `json:"tags,omitempty"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Tier        string   `json:"tier"`
+	Status      string   `json:"status"`
+	Transport   string   `json:"transport"`
+	Tools       []string `json:"tools"`
+	Image       string   `json:"image"`
+	Tags        []string `json:"tags,omitempty"`
 }
 
 // ToolHiveRegistryData represents the ToolHive registry format
 type ToolHiveRegistryData struct {
-	Servers []RegistryServer `json:"servers"`
+	Version       string                    `json:"version"`
+	LastUpdated   string                    `json:"last_updated"`
+	Servers       map[string]RegistryServer `json:"servers"`
+	RemoteServers map[string]RegistryServer `json:"remoteServers"`
 }
 
 // UpstreamRegistryData represents the upstream MCP registry format
@@ -92,7 +98,18 @@ func (cb *ConfigMapBuilder) WithData(key, value string) *ConfigMapBuilder {
 
 // WithToolHiveRegistry adds ToolHive format registry data
 func (cb *ConfigMapBuilder) WithToolHiveRegistry(key string, servers []RegistryServer) *ConfigMapBuilder {
-	registryData := ToolHiveRegistryData{Servers: servers}
+	// Convert slice to map using server names as keys
+	serverMap := make(map[string]RegistryServer)
+	for _, server := range servers {
+		serverMap[server.Name] = server
+	}
+
+	registryData := ToolHiveRegistryData{
+		Version:       "1.0.0",
+		LastUpdated:   "2025-01-15T10:30:00Z",
+		Servers:       serverMap,
+		RemoteServers: make(map[string]RegistryServer),
+	}
 	jsonData, err := json.MarshalIndent(registryData, "", "  ")
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to marshal ToolHive registry data")
 	cb.configMap.Data[key] = string(jsonData)
@@ -127,17 +144,21 @@ func (h *ConfigMapTestHelper) CreateSampleToolHiveRegistry(name string) *corev1.
 		{
 			Name:        "filesystem",
 			Description: "File system operations for secure file access",
-			Version:     "1.0.0",
-			SourceURL:   "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
-			Transport:   map[string]string{"type": "stdio"},
+			Tier:        "Community",
+			Status:      "Active",
+			Transport:   "stdio",
+			Tools:       []string{"filesystem_tool"},
+			Image:       "filesystem/server:latest",
 			Tags:        []string{"filesystem", "files"},
 		},
 		{
 			Name:        "fetch",
 			Description: "Web content fetching with readability processing",
-			Version:     "0.1.0",
-			SourceURL:   "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
-			Transport:   map[string]string{"type": "stdio"},
+			Tier:        "Community",
+			Status:      "Active",
+			Transport:   "stdio",
+			Tools:       []string{"fetch_tool"},
+			Image:       "fetch/server:latest",
 			Tags:        []string{"web", "fetch", "readability"},
 		},
 	}
@@ -153,9 +174,11 @@ func (h *ConfigMapTestHelper) CreateSampleUpstreamRegistry(name string) *corev1.
 		"filesystem": {
 			Name:        "filesystem",
 			Description: "File system operations",
-			Version:     "1.0.0",
-			SourceURL:   "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
-			Transport:   map[string]string{"type": "stdio"},
+			Tier:        "Community",
+			Status:      "Active",
+			Transport:   "stdio",
+			Tools:       []string{"filesystem_tool"},
+			Image:       "filesystem/server:latest",
 			Tags:        []string{"filesystem"},
 		},
 	}
@@ -275,11 +298,8 @@ func (h *ConfigMapTestHelper) ContainsServer(configMapName, key, format, serverN
 		if err := json.Unmarshal([]byte(data), &registryData); err != nil {
 			return false, err
 		}
-		for _, server := range registryData.Servers {
-			if server.Name == serverName {
-				return true, nil
-			}
-		}
+		_, exists := registryData.Servers[serverName]
+		return exists, nil
 	case registryFormatUpstream:
 		var registryData UpstreamRegistryData
 		if err := json.Unmarshal([]byte(data), &registryData); err != nil {
@@ -291,7 +311,6 @@ func (h *ConfigMapTestHelper) ContainsServer(configMapName, key, format, serverN
 		return false, fmt.Errorf("unknown registry format: %s", format)
 	}
 
-	return false, nil
 }
 
 // ListConfigMaps returns all ConfigMaps in the namespace
@@ -311,6 +330,7 @@ func (h *ConfigMapTestHelper) CleanupConfigMaps() error {
 	for _, cm := range cmList.Items {
 		// Only delete ConfigMaps with our test label
 		if cm.Labels != nil && cm.Labels["test.toolhive.io/suite"] == "operator-e2e" {
+			ginkgo.By(fmt.Sprintf("deleting ConfigMap %s", cm.Name))
 			if err := h.Client.Delete(h.Context, &cm); err != nil {
 				return err
 			}

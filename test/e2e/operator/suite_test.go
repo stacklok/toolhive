@@ -14,18 +14,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 )
 
 var (
 	cfg       *rest.Config
 	k8sClient client.Client
 	testEnv   *envtest.Environment
+	testMgr   ctrl.Manager
 	ctx       context.Context
 	cancel    context.CancelFunc
 )
@@ -40,6 +44,11 @@ var _ = BeforeSuite(func() {
 
 	ctx, cancel = context.WithCancel(context.TODO())
 
+	// Enable experimental features for MCPRegistry controller
+	By("enabling experimental features")
+	err := os.Setenv("ENABLE_EXPERIMENTAL_FEATURES", "true")
+	Expect(err).NotTo(HaveOccurred())
+
 	By("bootstrapping test environment")
 
 	// Check if we should use an existing cluster (for CI/CD)
@@ -53,7 +62,6 @@ var _ = BeforeSuite(func() {
 		ErrorIfCRDPathMissing: true,
 	}
 
-	var err error
 	cfg, err = testEnv.Start()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(cfg).NotTo(BeNil())
@@ -76,6 +84,38 @@ var _ = BeforeSuite(func() {
 			Name:      "test-availability-check",
 		}, mcpRegistry)
 	}, time.Minute, time.Second).Should(MatchError(ContainSubstring("not found")))
+
+	// Set up the manager for controllers (only for envtest, not existing cluster)
+	if !useExistingCluster {
+		By("setting up controller manager for envtest")
+		testMgr, err = ctrl.NewManager(cfg, ctrl.Options{
+			Scheme: scheme.Scheme,
+			Metrics: metricsserver.Options{
+				BindAddress: "0", // Disable metrics server for tests
+			},
+			HealthProbeBindAddress: "0", // Disable health probe for tests
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Set up MCPRegistry controller
+		By("setting up MCPRegistry controller")
+		err = controllers.NewMCPRegistryReconciler(testMgr.GetClient(), testMgr.GetScheme()).SetupWithManager(testMgr)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Start the manager in the background
+		By("starting controller manager")
+		go func() {
+			defer GinkgoRecover()
+			err = testMgr.Start(ctx)
+			Expect(err).NotTo(HaveOccurred(), "failed to run manager")
+		}()
+
+		// Wait for the manager to be ready
+		By("waiting for controller manager to be ready")
+		Eventually(func() bool {
+			return testMgr.GetCache().WaitForCacheSync(ctx)
+		}, time.Minute, time.Second).Should(BeTrue())
+	}
 })
 
 var _ = AfterSuite(func() {

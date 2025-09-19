@@ -172,9 +172,11 @@ func (*TestDataFactory) GenerateTestServer(index int) RegistryServer {
 	return RegistryServer{
 		Name:        fmt.Sprintf("%s-server-%d", serverType, index),
 		Description: fmt.Sprintf("Test %s server for e2e testing", serverType),
-		Version:     fmt.Sprintf("1.%d.0", index),
-		SourceURL:   fmt.Sprintf("https://github.com/test/servers/tree/main/src/%s", serverType),
-		Transport:   map[string]string{"type": transport},
+		Tier:        "Community",
+		Status:      "Active",
+		Transport:   transport,
+		Tools:       []string{fmt.Sprintf("%s_tool", serverType)},
+		Image:       fmt.Sprintf("%s/server:1.%d.0", serverType, index),
 		Tags:        []string{serverType, "test", fmt.Sprintf("v1-%d", index)},
 	}
 }
@@ -344,12 +346,15 @@ func (f *TestDataFactory) RandomRegistryData(serverCount int) []RegistryServer {
 	servers := make([]RegistryServer, serverCount)
 
 	for i := 0; i < serverCount; i++ {
+		serverName := f.randomServerName()
 		servers[i] = RegistryServer{
-			Name:        f.randomServerName(),
+			Name:        serverName,
 			Description: f.randomDescription(),
-			Version:     f.randomVersion(),
-			SourceURL:   f.randomSourceURL(),
-			Transport:   map[string]string{"type": f.randomTransport()},
+			Tier:        f.randomTier(),
+			Status:      "Active",
+			Transport:   f.randomTransport(),
+			Tools:       []string{fmt.Sprintf("%s_tool", serverName)},
+			Image:       fmt.Sprintf("%s/server:%s", serverName, f.randomVersion()),
 			Tags:        f.randomTags(),
 		}
 	}
@@ -403,23 +408,16 @@ func (*TestDataFactory) randomVersion() string {
 	return fmt.Sprintf("%d.%d.%d", major, minor, patch)
 }
 
-func (*TestDataFactory) randomSourceURL() string {
-	orgs := []string{"test-org", "demo-company", "sample-corp"}
-	repos := []string{"servers", "tools", "services", "handlers"}
-
-	orgBig, _ := rand.Int(rand.Reader, big.NewInt(int64(len(orgs))))
-	repoBig, _ := rand.Int(rand.Reader, big.NewInt(int64(len(repos))))
-
-	org := orgs[orgBig.Int64()]
-	repo := repos[repoBig.Int64()]
-
-	return fmt.Sprintf("https://github.com/%s/%s", org, repo)
-}
-
 func (*TestDataFactory) randomTransport() string {
 	transports := []string{"stdio", "sse", "http"}
 	transportBig, _ := rand.Int(rand.Reader, big.NewInt(int64(len(transports))))
 	return transports[transportBig.Int64()]
+}
+
+func (*TestDataFactory) randomTier() string {
+	tiers := []string{"Community", "Official", "Enterprise"}
+	tierBig, _ := rand.Int(rand.Reader, big.NewInt(int64(len(tiers))))
+	return tiers[tierBig.Int64()]
 }
 
 func (*TestDataFactory) randomTags() []string {

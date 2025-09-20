@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
@@ -61,4 +62,56 @@ func (f *fakeDockerAPI) ContainerRemove(ctx context.Context, containerID string,
 		return f.removeFunc(ctx, containerID, options)
 	}
 	return nil
+}
+
+// fakeImageManager provides a minimal test double for ImageManager
+type fakeImageManager struct {
+	pulledImages    map[string]struct{}
+	availableImages map[string]struct{}
+}
+
+func (f *fakeImageManager) BuildImage(_ context.Context, _, image string) error {
+	f.makeImagePulled(image)
+	return nil
+}
+
+func (f *fakeImageManager) ImageExists(_ context.Context, image string) (bool, error) {
+	return f.hasImagePulled(image), nil
+}
+
+func (f *fakeImageManager) PullImage(_ context.Context, image string) error {
+	if f.hasImagePulled(image) {
+		return nil
+	}
+	if !f.hasImageAvailable(image) {
+		return fmt.Errorf("failed to pull image %q", image)
+	}
+	f.makeImagePulled(image)
+
+	return nil
+}
+
+func (f *fakeImageManager) hasImageAvailable(image string) bool {
+	if f.availableImages == nil {
+		return false
+	}
+
+	_, available := f.availableImages[image]
+	return available
+}
+
+func (f *fakeImageManager) hasImagePulled(image string) bool {
+	if f.pulledImages == nil {
+		return false
+	}
+	_, exists := f.pulledImages[image]
+	return exists
+}
+
+func (f *fakeImageManager) makeImagePulled(imageName string) {
+	if f.pulledImages == nil {
+		f.pulledImages = make(map[string]struct{})
+	}
+
+	f.pulledImages[imageName] = struct{}{}
 }

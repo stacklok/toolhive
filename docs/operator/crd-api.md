@@ -324,7 +324,6 @@ _Appears in:_
 | `lastSyncTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastSyncTime is the timestamp of the last successful sync |  |  |
 | `lastSyncHash` _string_ | LastSyncHash is the hash of the last successfully synced data<br />Used to detect changes in source data |  |  |
 | `serverCount` _integer_ | ServerCount is the total number of servers in the registry |  | Minimum: 0 <br /> |
-| `deployedServerCount` _integer_ | DeployedServerCount is the number of deployed servers with matching labels |  | Minimum: 0 <br /> |
 | `syncAttempts` _integer_ | SyncAttempts is the number of sync attempts since last success |  | Minimum: 0 <br /> |
 | `apiEndpoint` _string_ | APIEndpoint is the URL of the registry API service |  |  |
 | `storageRef` _[StorageReference](#storagereference)_ | StorageRef is a reference to the internal storage location |  |  |

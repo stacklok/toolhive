@@ -182,11 +182,6 @@ type MCPRegistryStatus struct {
 	// +kubebuilder:validation:Minimum=0
 	ServerCount int `json:"serverCount,omitempty"`
 
-	// DeployedServerCount is the number of deployed servers with matching labels
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	DeployedServerCount int `json:"deployedServerCount,omitempty"`
-
 	// SyncAttempts is the number of sync attempts since last success
 	// +optional
 	// +kubebuilder:validation:Minimum=0
@@ -264,7 +259,6 @@ const (
 //+kubebuilder:subresource:status
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.serverCount"
-//+kubebuilder:printcolumn:name="Deployed",type="integer",JSONPath=".status.deployedServerCount"
 //+kubebuilder:printcolumn:name="Last Sync",type="date",JSONPath=".status.lastSyncTime"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:scope=Namespaced,categories=toolhive

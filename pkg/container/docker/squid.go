@@ -140,7 +140,7 @@ func createSquidContainer(
 		NetworkMode: container.NetworkMode("bridge"),
 		CapAdd:      []string{"CAP_SETUID", "CAP_SETGID"},
 		CapDrop:     nil,
-		SecurityOpt: nil,
+		SecurityOpt: []string{"label:disable"},
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},

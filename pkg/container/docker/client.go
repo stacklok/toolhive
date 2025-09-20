@@ -1345,7 +1345,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 		NetworkMode: container.NetworkMode("bridge"),
 		CapAdd:      nil,
 		CapDrop:     nil,
-		SecurityOpt: nil,
+		SecurityOpt: []string{"label:disable"},
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},

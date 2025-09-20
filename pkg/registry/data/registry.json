@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-19T00:17:19Z",
+  "last_updated": "2025-09-20T00:16:42Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -711,7 +711,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.7.0",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.8.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -1691,9 +1691,9 @@
         "firecrawl_map"
       ],
       "metadata": {
-        "stars": 4381,
+        "stars": 4542,
         "pulls": 12644,
-        "last_updated": "2025-09-02T02:31:26Z"
+        "last_updated": "2025-09-19T02:29:48Z"
       },
       "repository_url": "https://github.com/mendableai/firecrawl-mcp-server",
       "tags": [
@@ -1794,7 +1794,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.14.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.15.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -1823,9 +1823,9 @@
         "git_init"
       ],
       "metadata": {
-        "stars": 66503,
+        "stars": 68206,
         "pulls": 10404,
-        "last_updated": "2025-09-02T02:31:27Z"
+        "last_updated": "2025-09-19T02:29:48Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -2915,9 +2915,9 @@
         "help"
       ],
       "metadata": {
-        "stars": 11,
+        "stars": 13,
         "pulls": 4946,
-        "last_updated": "2025-09-02T02:31:27Z"
+        "last_updated": "2025-09-19T02:29:49Z"
       },
       "repository_url": "https://github.com/nirmata/kyverno-mcp",
       "tags": [
@@ -4269,7 +4269,7 @@
         "browser",
         "navigate"
       ],
-      "image": "mcr.microsoft.com/playwright/mcp:v0.0.37",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.39",
       "target_port": 8931,
       "permissions": {
         "network": {
@@ -4342,9 +4342,9 @@
         "analyze_db_health"
       ],
       "metadata": {
-        "stars": 1043,
-        "pulls": 22175,
-        "last_updated": "2025-09-01T02:37:23Z"
+        "stars": 1164,
+        "pulls": 28297,
+        "last_updated": "2025-09-19T02:29:47Z"
       },
       "repository_url": "https://github.com/crystaldba/postgres-mcp",
       "tags": [
@@ -4906,7 +4906,7 @@
         "api",
         "real-time"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/tavily-mcp:0.2.9",
+      "image": "ghcr.io/stacklok/dockyard/npx/tavily-mcp:0.2.10",
       "permissions": {
         "network": {
           "outbound": {
@@ -4997,9 +4997,9 @@
         "convert_time"
       ],
       "metadata": {
-        "stars": 66503,
+        "stars": 68206,
         "pulls": 10986,
-        "last_updated": "2025-09-02T02:31:27Z"
+        "last_updated": "2025-09-19T02:29:49Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [

@@ -39,10 +39,11 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 			})
 
 			It("should successfully start and be accessible via Streamable HTTP [Serial]", func() {
-				By("Starting the OSV MCP server with Streamable HTTP transport")
+				By("Starting the OSV MCP server with Streamable HTTP transport and audit enabled")
 				stdout, stderr := e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "streamable-http",
+					"--enable-audit",
 					"osv").ExpectSuccess()
 
 				// The command should indicate success
@@ -60,10 +61,11 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 			})
 
 			It("should be accessible via HTTP Streamable HTTP endpoint [Serial]", func() {
-				By("Starting the OSV MCP server")
+				By("Starting the OSV MCP server with audit enabled")
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "streamable-http",
+					"--enable-audit",
 					"osv").ExpectSuccess()
 
 				By("Waiting for the server to be running")

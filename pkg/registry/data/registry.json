@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-20T00:16:42Z",
+  "last_updated": "2025-09-21T00:18:35Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1558,9 +1558,9 @@
         "annotatedMessage"
       ],
       "metadata": {
-        "stars": 66732,
+        "stars": 68300,
         "pulls": 17019,
-        "last_updated": "2025-09-04T02:27:25Z"
+        "last_updated": "2025-09-20T02:26:30Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1944,9 +1944,9 @@
         "update_pull_request_branch"
       ],
       "metadata": {
-        "stars": 22113,
+        "stars": 22775,
         "pulls": 5000,
-        "last_updated": "2025-09-02T02:31:28Z"
+        "last_updated": "2025-09-20T02:26:29Z"
       },
       "repository_url": "https://github.com/github/github-mcp-server",
       "tags": [
@@ -2867,8 +2867,8 @@
       ],
       "metadata": {
         "stars": 7,
-        "pulls": 114,
-        "last_updated": "2025-09-03T18:57:03Z"
+        "pulls": 216,
+        "last_updated": "2025-09-20T02:26:29Z"
       },
       "repository_url": "https://github.com/kionsoftware/kion-mcp",
       "tags": [
@@ -4077,9 +4077,9 @@
         "get_vulnerability"
       ],
       "metadata": {
-        "stars": 19,
+        "stars": 21,
         "pulls": 10318,
-        "last_updated": "2025-09-04T02:27:25Z"
+        "last_updated": "2025-09-20T02:26:30Z"
       },
       "repository_url": "https://github.com/StacklokLabs/osv-mcp",
       "tags": [
@@ -4440,9 +4440,9 @@
         "unsubscribe"
       ],
       "metadata": {
-        "stars": 230,
+        "stars": 246,
         "pulls": 10366,
-        "last_updated": "2025-09-04T02:27:25Z"
+        "last_updated": "2025-09-20T02:26:30Z"
       },
       "repository_url": "https://github.com/redis/mcp-redis",
       "tags": [

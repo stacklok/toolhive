@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -162,24 +163,36 @@ type methodHandler func(map[string]interface{}) (string, map[string]interface{})
 
 // methodHandlers maps MCP methods to their respective handlers
 var methodHandlers = map[string]methodHandler{
-	"initialize":            handleInitializeMethod,
-	"tools/call":            handleNamedResourceMethod,
-	"prompts/get":           handleNamedResourceMethod,
-	"resources/read":        handleResourceReadMethod,
-	"resources/list":        handleListMethod,
-	"tools/list":            handleListMethod,
-	"prompts/list":          handleListMethod,
-	"progress/update":       handleProgressMethod,
-	"notifications/message": handleNotificationMethod,
-	"logging/setLevel":      handleLoggingMethod,
-	"completion/complete":   handleCompletionMethod,
+	"initialize":               handleInitializeMethod,
+	"tools/call":               handleNamedResourceMethod,
+	"prompts/get":              handleNamedResourceMethod,
+	"resources/read":           handleResourceReadMethod,
+	"resources/list":           handleListMethod,
+	"tools/list":               handleListMethod,
+	"prompts/list":             handleListMethod,
+	"progress/update":          handleProgressMethod,
+	"notifications/message":    handleNotificationMethod,
+	"logging/setLevel":         handleLoggingMethod,
+	"completion/complete":      handleCompletionMethod,
+	"elicitation/create":       handleElicitationMethod,
+	"sampling/createMessage":   handleSamplingMethod,
+	"resources/subscribe":      handleResourceSubscribeMethod,
+	"resources/unsubscribe":    handleResourceUnsubscribeMethod,
+	"resources/templates/list": handleListMethod,
+	"roots/list":               handleListMethod,
+	"notifications/progress":   handleProgressNotificationMethod,
+	"notifications/cancelled":  handleCancelledNotificationMethod,
 }
 
 // staticResourceIDs maps methods to their static resource IDs
 var staticResourceIDs = map[string]string{
-	"ping":                             "ping",
-	"notifications/roots/list_changed": "roots",
-	"notifications/initialized":        "initialized",
+	"ping":                                 "ping",
+	"notifications/roots/list_changed":     "roots",
+	"notifications/initialized":            "initialized",
+	"notifications/prompts/list_changed":   "prompts",
+	"notifications/resources/list_changed": "resources",
+	"notifications/resources/updated":      "resources",
+	"notifications/tools/list_changed":     "tools",
 }
 
 func extractResourceAndArguments(method string, params json.RawMessage) (string, map[string]interface{}) {
@@ -279,10 +292,90 @@ func handleLoggingMethod(paramsMap map[string]interface{}) (string, map[string]i
 
 // handleCompletionMethod extracts resource ID for completion requests
 func handleCompletionMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
+	// Check if ref is a map (PromptReference or ResourceTemplateReference)
+	if ref, ok := paramsMap["ref"].(map[string]interface{}); ok {
+		// Try to extract name for PromptReference
+		if name, ok := ref["name"].(string); ok {
+			return name, paramsMap
+		}
+		// Try to extract uri for ResourceTemplateReference
+		if uri, ok := ref["uri"].(string); ok {
+			return uri, paramsMap
+		}
+	}
+	// Fallback to string ref (legacy support)
 	if ref, ok := paramsMap["ref"].(string); ok {
-		return ref, nil
+		return ref, paramsMap
+	}
+	return "", paramsMap
+}
+
+// handleElicitationMethod extracts resource ID for elicitation requests
+func handleElicitationMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
+	// The message field could be used as a resource identifier
+	if message, ok := paramsMap["message"].(string); ok {
+		return message, paramsMap
+	}
+	return "", paramsMap
+}
+
+// handleSamplingMethod extracts resource ID for sampling/createMessage requests
+func handleSamplingMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
+	// Use model preferences or system prompt as identifier if available
+	if modelPrefs, ok := paramsMap["modelPreferences"].(map[string]interface{}); ok {
+		if name, ok := modelPrefs["name"].(string); ok {
+			return name, paramsMap
+		}
+	}
+	if systemPrompt, ok := paramsMap["systemPrompt"].(string); ok && systemPrompt != "" {
+		// Use first 50 chars of system prompt as identifier
+		if len(systemPrompt) > 50 {
+			return systemPrompt[:50], paramsMap
+		}
+		return systemPrompt, paramsMap
+	}
+	return "", paramsMap
+}
+
+// handleResourceSubscribeMethod extracts resource ID for resource subscribe operations
+func handleResourceSubscribeMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
+	if uri, ok := paramsMap["uri"].(string); ok {
+		return uri, nil
 	}
 	return "", nil
+}
+
+// handleResourceUnsubscribeMethod extracts resource ID for resource unsubscribe operations
+func handleResourceUnsubscribeMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
+	if uri, ok := paramsMap["uri"].(string); ok {
+		return uri, nil
+	}
+	return "", nil
+}
+
+// handleProgressNotificationMethod extracts resource ID for progress notifications
+func handleProgressNotificationMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
+	if token, ok := paramsMap["progressToken"].(string); ok {
+		return token, paramsMap
+	}
+	// Also handle numeric progress tokens
+	if token, ok := paramsMap["progressToken"].(float64); ok {
+		return fmt.Sprintf("%.0f", token), paramsMap
+	}
+	return "", paramsMap
+}
+
+// handleCancelledNotificationMethod extracts resource ID for cancelled notifications
+func handleCancelledNotificationMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
+	// Extract request ID as the resource identifier
+	if requestId, ok := paramsMap["requestId"].(string); ok {
+		return requestId, paramsMap
+	}
+	// Handle numeric request IDs
+	if requestId, ok := paramsMap["requestId"].(float64); ok {
+		return fmt.Sprintf("%.0f", requestId), paramsMap
+	}
+	return "", paramsMap
 }
 
 // GetMCPMethod is a convenience function to get the MCP method from the context.

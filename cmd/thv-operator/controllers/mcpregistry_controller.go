@@ -286,7 +286,7 @@ func (r *MCPRegistryReconciler) reconcileSync(
 		getCurrentAttemptCount(mcpRegistry)+1, nil, "", 0)
 
 	// Perform the sync - the sync manager will handle core registry field updates
-	result, err := r.syncManager.PerformSync(ctx, mcpRegistry)
+	result, syncResult, err := r.syncManager.PerformSync(ctx, mcpRegistry)
 
 	if err != nil {
 		// Sync failed - set sync status to failed
@@ -316,12 +316,10 @@ func (r *MCPRegistryReconciler) reconcileSync(
 		return ctrl.Result{RequeueAfter: retryAfter}, err
 	}
 
-	// Sync successful - set sync status to complete
-	// For now, sync manager still updates the old fields directly, so we can use them
-	// TODO: In the future, we should get these values from the sync result
+	// Sync successful - set sync status to complete using data from sync result
 	now := metav1.Now()
 	statusCollector.SetSyncStatus(mcpv1alpha1.SyncPhaseComplete, "Registry data synchronized successfully", 0,
-		&now, mcpRegistry.Status.LastSyncHash, mcpRegistry.Status.ServerCount)
+		&now, syncResult.Hash, syncResult.ServerCount)
 
 	ctxLogger.Info("Registry data sync completed successfully")
 

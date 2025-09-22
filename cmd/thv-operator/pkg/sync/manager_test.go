@@ -495,7 +495,7 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			result, err := syncManager.PerformSync(ctx, tt.mcpRegistry)
+			result, syncResult, err := syncManager.PerformSync(ctx, tt.mcpRegistry)
 
 			if tt.expectedError {
 				assert.Error(t, err)
@@ -513,8 +513,8 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 			assert.Equal(t, tt.expectedPhase, tt.mcpRegistry.Status.Phase)
 
 			// Validate server count if expected
-			if tt.expectedServerCount != nil {
-				assert.Equal(t, *tt.expectedServerCount, tt.mcpRegistry.Status.ServerCount, "ServerCount should match expected value after sync")
+			if tt.expectedServerCount != nil && syncResult != nil {
+				assert.Equal(t, *tt.expectedServerCount, syncResult.ServerCount, "ServerCount should match expected value after sync")
 			}
 
 			if tt.validateConditions {

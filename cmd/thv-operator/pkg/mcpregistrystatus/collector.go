@@ -135,13 +135,6 @@ func (s *StatusCollector) Apply(ctx context.Context, k8sClient client.Client) er
 	// Apply sync status change
 	if s.syncStatus != nil {
 		latestRegistry.Status.SyncStatus = s.syncStatus
-
-		// For backward compatibility, also populate the deprecated fields
-		if s.syncStatus.LastSyncTime != nil {
-			latestRegistry.Status.LastSyncTime = s.syncStatus.LastSyncTime
-		}
-		latestRegistry.Status.LastSyncHash = s.syncStatus.LastSyncHash
-		latestRegistry.Status.ServerCount = s.syncStatus.ServerCount
 	}
 
 	// Apply API status change

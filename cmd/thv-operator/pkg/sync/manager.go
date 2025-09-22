@@ -17,6 +17,12 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 )
 
+// Result contains the result of a successful sync operation
+type Result struct {
+	Hash        string
+	ServerCount int
+}
+
 // Sync reason constants
 const (
 	// Registry state related reasons
@@ -68,7 +74,7 @@ type Manager interface {
 	ShouldSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, string, *time.Time, error)
 
 	// PerformSync executes the complete sync operation
-	PerformSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, error)
+	PerformSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, *Result, error)
 
 	// UpdateManualSyncTriggerOnly updates manual sync trigger tracking without performing actual sync
 	UpdateManualSyncTriggerOnly(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, error)
@@ -132,30 +138,9 @@ func (s *DefaultSyncManager) ShouldSync(
 		return false, ReasonAlreadyInProgress, nil, nil
 	}
 
-	// If we have sync status, use it to determine sync readiness
-	if mcpRegistry.Status.SyncStatus != nil {
-		syncPhase := mcpRegistry.Status.SyncStatus.Phase
-		// If sync is failed, sync is needed
-		if syncPhase == mcpv1alpha1.SyncPhaseFailed {
-			return true, ReasonRegistryNotReady, nil, nil
-		}
-		// If sync is not complete, sync is needed
-		if syncPhase != mcpv1alpha1.SyncPhaseComplete && syncPhase != mcpv1alpha1.SyncPhaseIdle {
-			return true, ReasonRegistryNotReady, nil, nil
-		}
-		// Sync is complete, proceed to check for data changes or manual triggers
-	} else {
-		// Fallback to old behavior when sync status is not available
-		// Only trigger sync if registry is truly not ready (Failed or initial Pending)
-		// Don't trigger sync if registry has successful sync data (LastSyncTime set)
-		if mcpRegistry.Status.Phase == mcpv1alpha1.MCPRegistryPhaseFailed {
-			return true, ReasonRegistryNotReady, nil, nil
-		}
-		// If phase is Pending but we have LastSyncTime, sync was completed before
-		if mcpRegistry.Status.Phase == mcpv1alpha1.MCPRegistryPhasePending && mcpRegistry.Status.LastSyncTime == nil {
-			return true, ReasonRegistryNotReady, nil, nil
-		}
-		// For all other cases (Ready, or Pending with LastSyncTime), proceed to check data changes
+	// Check if sync is needed based on registry state
+	if syncNeeded := s.isSyncNeededForState(mcpRegistry); syncNeeded {
+		return true, ReasonRegistryNotReady, nil, nil
 	}
 
 	// Check if source data has changed by comparing hash
@@ -194,26 +179,67 @@ func (s *DefaultSyncManager) ShouldSync(
 	return false, ReasonUpToDateNoPolicy, nil, nil
 }
 
+// isSyncNeededForState checks if sync is needed based on the registry's current state
+func (*DefaultSyncManager) isSyncNeededForState(mcpRegistry *mcpv1alpha1.MCPRegistry) bool {
+	// If we have sync status, use it to determine sync readiness
+	if mcpRegistry.Status.SyncStatus != nil {
+		syncPhase := mcpRegistry.Status.SyncStatus.Phase
+		// If sync is failed, sync is needed
+		if syncPhase == mcpv1alpha1.SyncPhaseFailed {
+			return true
+		}
+		// If sync is not complete, sync is needed
+		if syncPhase != mcpv1alpha1.SyncPhaseComplete && syncPhase != mcpv1alpha1.SyncPhaseIdle {
+			return true
+		}
+		// Sync is complete, no sync needed based on state
+		return false
+	}
+
+	// Fallback to old behavior when sync status is not available
+	if mcpRegistry.Status.Phase == mcpv1alpha1.MCPRegistryPhaseFailed {
+		return true
+	}
+	// If phase is Pending but we have LastSyncTime, sync was completed before
+	var lastSyncTime *metav1.Time
+	if mcpRegistry.Status.SyncStatus != nil {
+		lastSyncTime = mcpRegistry.Status.SyncStatus.LastSyncTime
+	}
+	if mcpRegistry.Status.Phase == mcpv1alpha1.MCPRegistryPhasePending && lastSyncTime == nil {
+		return true
+	}
+	// For all other cases (Ready, or Pending with LastSyncTime), no sync needed based on state
+	return false
+}
+
 // PerformSync performs the complete sync operation for the MCPRegistry
 // The controller is responsible for setting sync status via the status collector
-func (s *DefaultSyncManager) PerformSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, error) {
+func (s *DefaultSyncManager) PerformSync(
+	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
+) (ctrl.Result, *Result, error) {
 	// Fetch and process registry data
 	fetchResult, err := s.fetchAndProcessRegistryData(ctx, mcpRegistry)
 	if err != nil {
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil, err
 	}
 
 	// Store the processed registry data
 	if err := s.storeRegistryData(ctx, mcpRegistry, fetchResult); err != nil {
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil, err
 	}
 
 	// Update the core registry fields that sync manager owns
 	if err := s.updateCoreRegistryFields(ctx, mcpRegistry, fetchResult); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, nil, err
 	}
 
-	return ctrl.Result{}, nil
+	// Return sync result with data for status collector
+	syncResult := &Result{
+		Hash:        fetchResult.Hash,
+		ServerCount: fetchResult.ServerCount,
+	}
+
+	return ctrl.Result{}, syncResult, nil
 }
 
 // UpdateManualSyncTriggerOnly updates the manual sync trigger tracking without performing actual sync
@@ -416,13 +442,7 @@ func (s *DefaultSyncManager) updateCoreRegistryFields(
 	// Get storage reference
 	storageRef := s.storageManager.GetStorageReference(mcpRegistry)
 
-	// Update core registry fields only - no phase, message, or conditions
-	now := metav1.Now()
-	mcpRegistry.Status.LastSyncTime = &now
-	mcpRegistry.Status.LastSyncHash = fetchResult.Hash
-	mcpRegistry.Status.ServerCount = fetchResult.ServerCount
-	// Note: These fields will be moved to SyncStatus in the future, but for now keep them here
-	// for backward compatibility until all components are updated
+	// Update storage reference only - status fields are now handled by status collector
 	if storageRef != nil {
 		mcpRegistry.Status.StorageRef = storageRef
 	}

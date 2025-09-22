@@ -48,7 +48,9 @@ func TestDefaultDataChangeDetector_IsDataChanged(t *testing.T) {
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					LastSyncHash: "", // No hash means data changed
+					SyncStatus: &mcpv1alpha1.SyncStatus{
+						LastSyncHash: "", // No hash means data changed
+					},
 				},
 			},
 			configMap: &corev1.ConfigMap{

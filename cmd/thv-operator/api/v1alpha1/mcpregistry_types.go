@@ -190,25 +190,6 @@ type MCPRegistryStatus struct {
 	// +optional
 	LastManualSyncTrigger string `json:"lastManualSyncTrigger,omitempty"`
 
-	// DEPRECATED: The following fields are deprecated and moved to SyncStatus
-	// They are kept for backward compatibility and will be removed in a future version
-
-	// LastSyncTime is the timestamp of the last successful sync
-	// DEPRECATED: Use SyncStatus.LastSyncTime instead
-	// +optional
-	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
-
-	// LastSyncHash is the hash of the last successfully synced data
-	// DEPRECATED: Use SyncStatus.LastSyncHash instead
-	// +optional
-	LastSyncHash string `json:"lastSyncHash,omitempty"`
-
-	// ServerCount is the total number of servers in the registry
-	// DEPRECATED: Use SyncStatus.ServerCount instead
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	ServerCount int `json:"serverCount,omitempty"`
-
 	// Conditions represent the latest available observations of the MCPRegistry's state
 	// +optional
 	// +listType=map

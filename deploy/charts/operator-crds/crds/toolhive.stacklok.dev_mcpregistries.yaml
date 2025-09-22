@@ -296,17 +296,6 @@ spec:
                   LastManualSyncTrigger tracks the last processed manual sync annotation value
                   Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation
                 type: string
-              lastSyncHash:
-                description: |-
-                  LastSyncHash is the hash of the last successfully synced data
-                  DEPRECATED: Use SyncStatus.LastSyncHash instead
-                type: string
-              lastSyncTime:
-                description: |-
-                  LastSyncTime is the timestamp of the last successful sync
-                  DEPRECATED: Use SyncStatus.LastSyncTime instead
-                format: date-time
-                type: string
               message:
                 description: Message provides additional information about the current
                   phase
@@ -322,12 +311,6 @@ spec:
                 - Syncing
                 - Terminating
                 type: string
-              serverCount:
-                description: |-
-                  ServerCount is the total number of servers in the registry
-                  DEPRECATED: Use SyncStatus.ServerCount instead
-                minimum: 0
-                type: integer
               storageRef:
                 description: StorageRef is a reference to the internal storage location
                 properties:

@@ -187,11 +187,19 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		ctxLogger.Error(err, "Reconciliation completed with error",
 			"MCPRegistry.Name", mcpRegistry.Name)
 	} else {
+		var syncPhase, apiPhase string
+		if mcpRegistry.Status.SyncStatus != nil {
+			syncPhase = string(mcpRegistry.Status.SyncStatus.Phase)
+		}
+		if mcpRegistry.Status.APIStatus != nil {
+			apiPhase = string(mcpRegistry.Status.APIStatus.Phase)
+		}
+
 		ctxLogger.Info("Reconciliation completed successfully",
 			"MCPRegistry.Name", mcpRegistry.Name,
 			"phase", mcpRegistry.Status.Phase,
-			"syncPhase", mcpRegistry.Status.SyncStatus.Phase,
-			"apiPhase", mcpRegistry.Status.APIStatus.Phase,
+			"syncPhase", syncPhase,
+			"apiPhase", apiPhase,
 			"requeueAfter", result.RequeueAfter)
 	}
 

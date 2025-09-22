@@ -136,18 +136,25 @@ func parseMCPRequest(bodyBytes []byte) *ParsedMCPRequest {
 		return nil
 	}
 
-	// Handle only request messages
+	// Handle only request messages (both calls with ID and notifications without ID)
 	req, ok := msg.(*jsonrpc2.Request)
 	if !ok {
+		// Response or error messages are not parsed here
 		return nil
 	}
 
 	// Extract resource ID and arguments based on the method
 	resourceID, arguments := extractResourceAndArguments(req.Method, req.Params)
 
+	// Determine the ID - will be nil for notifications
+	var id interface{}
+	if req.ID.IsValid() {
+		id = req.ID.Raw()
+	}
+
 	return &ParsedMCPRequest{
 		Method:     req.Method,
-		ID:         req.ID.Raw(),
+		ID:         id,
 		Params:     req.Params,
 		ResourceID: resourceID,
 		Arguments:  arguments,

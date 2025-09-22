@@ -464,6 +464,200 @@ func TestExtractResourceAndArguments(t *testing.T) {
 			expectedResourceID: "tools",
 			expectedArguments:  nil,
 		},
+		// Edge cases and additional coverage
+		{
+			name:               "empty params for method with handler",
+			method:             "tools/call",
+			params:             `{}`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "null params",
+			method:             "tools/call",
+			params:             `null`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "resources/read with empty uri",
+			method:             "resources/read",
+			params:             `{"uri":""}`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "resources/read with missing uri",
+			method:             "resources/read",
+			params:             `{"other":"value"}`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "progress/update with missing token",
+			method:             "progress/update",
+			params:             `{"progress":50}`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "logging/setLevel with missing level",
+			method:             "logging/setLevel",
+			params:             `{"other":"value"}`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "notifications/message with method field",
+			method:             "notifications/message",
+			params:             `{"method":"test-method","data":"test"}`,
+			expectedResourceID: "test-method",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "notifications/message without method field",
+			method:             "notifications/message",
+			params:             `{"data":"test"}`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "elicitation/create without message",
+			method:             "elicitation/create",
+			params:             `{"requestedSchema":{"type":"object"}}`,
+			expectedResourceID: "",
+			expectedArguments: map[string]interface{}{
+				"requestedSchema": map[string]interface{}{
+					"type": "object",
+				},
+			},
+		},
+		{
+			name:               "sampling/createMessage without preferences or prompt",
+			method:             "sampling/createMessage",
+			params:             `{"messages":[],"maxTokens":100}`,
+			expectedResourceID: "",
+			expectedArguments: map[string]interface{}{
+				"messages":  []interface{}{},
+				"maxTokens": float64(100),
+			},
+		},
+		{
+			name:               "sampling/createMessage with long system prompt",
+			method:             "sampling/createMessage",
+			params:             `{"systemPrompt":"This is a very long system prompt that exceeds fifty characters and should be truncated","messages":[],"maxTokens":100}`,
+			expectedResourceID: "This is a very long system prompt that exceeds fif",
+			expectedArguments: map[string]interface{}{
+				"systemPrompt": "This is a very long system prompt that exceeds fifty characters and should be truncated",
+				"messages":     []interface{}{},
+				"maxTokens":    float64(100),
+			},
+		},
+		{
+			name:               "resources/subscribe with missing uri",
+			method:             "resources/subscribe",
+			params:             `{"other":"value"}`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "resources/unsubscribe with missing uri",
+			method:             "resources/unsubscribe",
+			params:             `{"other":"value"}`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "completion/complete with legacy string ref",
+			method:             "completion/complete",
+			params:             `{"ref":"legacy-ref","argument":{"name":"test","value":"val"}}`,
+			expectedResourceID: "legacy-ref",
+			expectedArguments: map[string]interface{}{
+				"ref": "legacy-ref",
+				"argument": map[string]interface{}{
+					"name":  "test",
+					"value": "val",
+				},
+			},
+		},
+		{
+			name:               "completion/complete with invalid ref type",
+			method:             "completion/complete",
+			params:             `{"ref":123,"argument":{"name":"test","value":"val"}}`,
+			expectedResourceID: "",
+			expectedArguments: map[string]interface{}{
+				"ref":      float64(123),
+				"argument": map[string]interface{}{"name": "test", "value": "val"},
+			},
+		},
+		{
+			name:               "completion/complete with ref missing name and uri",
+			method:             "completion/complete",
+			params:             `{"ref":{"type":"ref/prompt"},"argument":{"name":"test","value":"val"}}`,
+			expectedResourceID: "",
+			expectedArguments: map[string]interface{}{
+				"ref": map[string]interface{}{
+					"type": "ref/prompt",
+				},
+				"argument": map[string]interface{}{
+					"name":  "test",
+					"value": "val",
+				},
+			},
+		},
+		{
+			name:               "notifications/progress with missing progressToken",
+			method:             "notifications/progress",
+			params:             `{"progress":50}`,
+			expectedResourceID: "",
+			expectedArguments: map[string]interface{}{
+				"progress": float64(50),
+			},
+		},
+		{
+			name:               "notifications/cancelled with missing requestId",
+			method:             "notifications/cancelled",
+			params:             `{"reason":"User cancelled"}`,
+			expectedResourceID: "",
+			expectedArguments: map[string]interface{}{
+				"reason": "User cancelled",
+			},
+		},
+		{
+			name:               "tools/list with empty cursor",
+			method:             "tools/list",
+			params:             `{"cursor":""}`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "prompts/list with empty cursor",
+			method:             "prompts/list",
+			params:             `{"cursor":""}`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "resources/list with empty cursor",
+			method:             "resources/list",
+			params:             `{"cursor":""}`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "resources/templates/list with empty cursor",
+			method:             "resources/templates/list",
+			params:             `{"cursor":""}`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "roots/list with cursor",
+			method:             "roots/list",
+			params:             `{"cursor":"page-2"}`,
+			expectedResourceID: "page-2",
+			expectedArguments:  nil,
+		},
 	}
 
 	for _, tt := range tests {
@@ -673,4 +867,354 @@ func TestMiddlewarePreservesRequestBody(t *testing.T) {
 
 	// Verify the request body was preserved for the next handler
 	assert.Equal(t, originalBody, capturedBody)
+}
+
+func TestParsingMiddlewareErrorHandling(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		method       string
+		path         string
+		contentType  string
+		body         io.Reader
+		expectParsed bool
+	}{
+		{
+			name:         "body read error simulation",
+			method:       "POST",
+			path:         "/messages",
+			contentType:  "application/json",
+			body:         &errorReader{},
+			expectParsed: false,
+		},
+		{
+			name:         "empty body",
+			method:       "POST",
+			path:         "/messages",
+			contentType:  "application/json",
+			body:         bytes.NewBufferString(""),
+			expectParsed: false,
+		},
+		{
+			name:         "malformed JSON",
+			method:       "POST",
+			path:         "/messages",
+			contentType:  "application/json",
+			body:         bytes.NewBufferString(`{"invalid json`),
+			expectParsed: false,
+		},
+		{
+			name:         "JSON array instead of object",
+			method:       "POST",
+			path:         "/messages",
+			contentType:  "application/json",
+			body:         bytes.NewBufferString(`[{"jsonrpc":"2.0"}]`),
+			expectParsed: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// Create a test handler that captures the context
+			var capturedCtx context.Context
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedCtx = r.Context()
+				w.WriteHeader(http.StatusOK)
+			})
+
+			// Wrap with parsing middleware
+			middleware := ParsingMiddleware(testHandler)
+
+			// Create test request
+			req := httptest.NewRequest(tt.method, tt.path, tt.body)
+			req.Header.Set("Content-Type", tt.contentType)
+			w := httptest.NewRecorder()
+
+			// Execute the middleware
+			middleware.ServeHTTP(w, req)
+
+			// Check if parsing occurred as expected
+			parsed := GetParsedMCPRequest(capturedCtx)
+			if tt.expectParsed {
+				assert.NotNil(t, parsed)
+			} else {
+				assert.Nil(t, parsed)
+			}
+		})
+	}
+}
+
+// errorReader simulates an io.Reader that always returns an error
+type errorReader struct{}
+
+func (*errorReader) Read(_ []byte) (n int, err error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
+func TestExtractResourceAndArgumentsNilParams(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name               string
+		method             string
+		expectedResourceID string
+	}{
+		{
+			name:               "method with static resource ID",
+			method:             "ping",
+			expectedResourceID: "ping",
+		},
+		{
+			name:               "method without handler or static ID",
+			method:             "unknown/method",
+			expectedResourceID: "",
+		},
+		{
+			name:               "notifications/initialized",
+			method:             "notifications/initialized",
+			expectedResourceID: "initialized",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resourceID, arguments := extractResourceAndArguments(tt.method, nil)
+			assert.Equal(t, tt.expectedResourceID, resourceID)
+			assert.Nil(t, arguments)
+		})
+	}
+}
+
+func TestParsingMiddlewareWithBatchRequests(t *testing.T) {
+	t.Parallel()
+	// Test batch JSON-RPC requests (currently not supported but should not crash)
+	batchBody := `[
+		{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tool1"}},
+		{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tool2"}}
+	]`
+
+	var capturedCtx context.Context
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedCtx = r.Context()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := ParsingMiddleware(testHandler)
+	req := httptest.NewRequest("POST", "/messages", bytes.NewBufferString(batchBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	middleware.ServeHTTP(w, req)
+
+	// Batch requests should not be parsed (not supported yet)
+	parsed := GetParsedMCPRequest(capturedCtx)
+	assert.Nil(t, parsed)
+}
+
+func TestConvenienceFunctionsWithNilContext(t *testing.T) {
+	t.Parallel()
+	// Test convenience functions with nil parsed request
+	ctx := context.Background()
+
+	assert.Equal(t, "", GetMCPMethod(ctx))
+	assert.Equal(t, "", GetMCPResourceID(ctx))
+	assert.Nil(t, GetMCPArguments(ctx))
+}
+
+func TestHandlerFunctionsEdgeCases(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		handler    func(map[string]interface{}) (string, map[string]interface{})
+		params     map[string]interface{}
+		expectedID string
+		checkArgs  bool
+	}{
+		{
+			name:    "handleInitializeMethod with missing clientInfo",
+			handler: handleInitializeMethod,
+			params: map[string]interface{}{
+				"protocolVersion": "2024-11-05",
+			},
+			expectedID: "",
+			checkArgs:  true,
+		},
+		{
+			name:    "handleInitializeMethod with non-map clientInfo",
+			handler: handleInitializeMethod,
+			params: map[string]interface{}{
+				"clientInfo": "not-a-map",
+			},
+			expectedID: "",
+			checkArgs:  true,
+		},
+		{
+			name:    "handleInitializeMethod with clientInfo missing name",
+			handler: handleInitializeMethod,
+			params: map[string]interface{}{
+				"clientInfo": map[string]interface{}{
+					"version": "1.0.0",
+				},
+			},
+			expectedID: "",
+			checkArgs:  true,
+		},
+		{
+			name:    "handleNamedResourceMethod with non-string name",
+			handler: handleNamedResourceMethod,
+			params: map[string]interface{}{
+				"name": 123,
+			},
+			expectedID: "",
+			checkArgs:  false,
+		},
+		{
+			name:    "handleNamedResourceMethod with non-map arguments",
+			handler: handleNamedResourceMethod,
+			params: map[string]interface{}{
+				"name":      "test",
+				"arguments": "not-a-map",
+			},
+			expectedID: "test",
+			checkArgs:  false,
+		},
+		{
+			name:    "handleSamplingMethod with non-map modelPreferences",
+			handler: handleSamplingMethod,
+			params: map[string]interface{}{
+				"modelPreferences": "not-a-map",
+			},
+			expectedID: "",
+			checkArgs:  true,
+		},
+		{
+			name:    "handleSamplingMethod with modelPreferences missing name",
+			handler: handleSamplingMethod,
+			params: map[string]interface{}{
+				"modelPreferences": map[string]interface{}{
+					"speedPriority": 1,
+				},
+			},
+			expectedID: "",
+			checkArgs:  true,
+		},
+		{
+			name:    "handleProgressNotificationMethod with invalid numeric token",
+			handler: handleProgressNotificationMethod,
+			params: map[string]interface{}{
+				"progressToken": "not-a-number",
+			},
+			expectedID: "not-a-number",
+			checkArgs:  true,
+		},
+		{
+			name:    "handleCancelledNotificationMethod with invalid numeric requestId",
+			handler: handleCancelledNotificationMethod,
+			params: map[string]interface{}{
+				"requestId": "not-a-number",
+			},
+			expectedID: "not-a-number",
+			checkArgs:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resourceID, args := tt.handler(tt.params)
+			assert.Equal(t, tt.expectedID, resourceID)
+			if tt.checkArgs {
+				assert.Equal(t, tt.params, args)
+			}
+		})
+	}
+}
+
+func TestParsingMiddlewareIntegration(t *testing.T) {
+	t.Parallel()
+	// Test that the middleware correctly integrates with a full request/response cycle
+	tests := []struct {
+		name               string
+		body               string
+		expectedMethod     string
+		expectedResourceID string
+		expectedArguments  map[string]interface{}
+	}{
+		{
+			name: "complex nested parameters",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": "complex-1",
+				"method": "tools/call",
+				"params": {
+					"name": "complex_tool",
+					"arguments": {
+						"nested": {
+							"deep": {
+								"value": "test"
+							}
+						},
+						"array": [1, 2, 3],
+						"boolean": true,
+						"null": null
+					}
+				}
+			}`,
+			expectedMethod:     "tools/call",
+			expectedResourceID: "complex_tool",
+			expectedArguments: map[string]interface{}{
+				"nested": map[string]interface{}{
+					"deep": map[string]interface{}{
+						"value": "test",
+					},
+				},
+				"array":   []interface{}{float64(1), float64(2), float64(3)},
+				"boolean": true,
+				"null":    nil,
+			},
+		},
+		{
+			name: "JSON-RPC notification (no id)",
+			body: `{
+				"jsonrpc": "2.0",
+				"method": "notifications/message",
+				"params": {
+					"method": "log",
+					"level": "info",
+					"message": "test"
+				}
+			}`,
+			expectedMethod:     "notifications/message",
+			expectedResourceID: "log",
+			expectedArguments:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var parsed *ParsedMCPRequest
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				parsed = GetParsedMCPRequest(r.Context())
+				w.WriteHeader(http.StatusOK)
+			})
+
+			middleware := ParsingMiddleware(testHandler)
+			req := httptest.NewRequest("POST", "/messages", bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			middleware.ServeHTTP(w, req)
+
+			if tt.expectedMethod != "" {
+				require.NotNil(t, parsed)
+				assert.Equal(t, tt.expectedMethod, parsed.Method)
+				assert.Equal(t, tt.expectedResourceID, parsed.ResourceID)
+				assert.Equal(t, tt.expectedArguments, parsed.Arguments)
+			} else {
+				assert.Nil(t, parsed)
+			}
+		})
+	}
 }

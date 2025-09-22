@@ -61,11 +61,6 @@ const (
 	conditionReasonValidationFailed      = "ValidationFailed"
 	conditionReasonFetchFailed           = "FetchFailed"
 	conditionReasonStorageFailed         = "StorageFailed"
-
-	// Success reasons (commented out since sync manager no longer sets conditions)
-	// conditionReasonSourceReady   = "SourceReady"
-	// conditionReasonDataValid     = "DataValid"
-	// conditionReasonSyncCompleted = "SyncCompleted"
 )
 
 // Manager manages synchronization operations for MCPRegistry resources

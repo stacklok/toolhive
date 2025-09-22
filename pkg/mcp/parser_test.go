@@ -287,6 +287,183 @@ func TestExtractResourceAndArguments(t *testing.T) {
 			expectedResourceID: "",
 			expectedArguments:  nil,
 		},
+		{
+			name:               "elicitation/create with message",
+			method:             "elicitation/create",
+			params:             `{"message":"Please provide your API key","requestedSchema":{"type":"object","properties":{"apiKey":{"type":"string"}}}}`,
+			expectedResourceID: "Please provide your API key",
+			expectedArguments: map[string]interface{}{
+				"message": "Please provide your API key",
+				"requestedSchema": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"apiKey": map[string]interface{}{
+							"type": "string",
+						},
+					},
+				},
+			},
+		},
+		{
+			name:               "sampling/createMessage with model preferences",
+			method:             "sampling/createMessage",
+			params:             `{"modelPreferences":{"name":"gpt-4"},"messages":[{"role":"user","content":{"type":"text","text":"Hello"}}],"maxTokens":100}`,
+			expectedResourceID: "gpt-4",
+			expectedArguments: map[string]interface{}{
+				"modelPreferences": map[string]interface{}{
+					"name": "gpt-4",
+				},
+				"messages": []interface{}{
+					map[string]interface{}{
+						"role": "user",
+						"content": map[string]interface{}{
+							"type": "text",
+							"text": "Hello",
+						},
+					},
+				},
+				"maxTokens": float64(100),
+			},
+		},
+		{
+			name:               "sampling/createMessage with system prompt",
+			method:             "sampling/createMessage",
+			params:             `{"systemPrompt":"You are a helpful assistant","messages":[],"maxTokens":100}`,
+			expectedResourceID: "You are a helpful assistant",
+			expectedArguments: map[string]interface{}{
+				"systemPrompt": "You are a helpful assistant",
+				"messages":     []interface{}{},
+				"maxTokens":    float64(100),
+			},
+		},
+		{
+			name:               "resources/subscribe with URI",
+			method:             "resources/subscribe",
+			params:             `{"uri":"file:///watched.txt"}`,
+			expectedResourceID: "file:///watched.txt",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "resources/unsubscribe with URI",
+			method:             "resources/unsubscribe",
+			params:             `{"uri":"file:///unwatched.txt"}`,
+			expectedResourceID: "file:///unwatched.txt",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "resources/templates/list with cursor",
+			method:             "resources/templates/list",
+			params:             `{"cursor":"page-2"}`,
+			expectedResourceID: "page-2",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "roots/list empty params",
+			method:             "roots/list",
+			params:             `{}`,
+			expectedResourceID: "",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "notifications/progress with string token",
+			method:             "notifications/progress",
+			params:             `{"progressToken":"task-456","progress":75,"total":100}`,
+			expectedResourceID: "task-456",
+			expectedArguments: map[string]interface{}{
+				"progressToken": "task-456",
+				"progress":      float64(75),
+				"total":         float64(100),
+			},
+		},
+		{
+			name:               "notifications/progress with numeric token",
+			method:             "notifications/progress",
+			params:             `{"progressToken":123,"progress":50}`,
+			expectedResourceID: "123",
+			expectedArguments: map[string]interface{}{
+				"progressToken": float64(123),
+				"progress":      float64(50),
+			},
+		},
+		{
+			name:               "notifications/cancelled with string requestId",
+			method:             "notifications/cancelled",
+			params:             `{"requestId":"req-789","reason":"User cancelled"}`,
+			expectedResourceID: "req-789",
+			expectedArguments: map[string]interface{}{
+				"requestId": "req-789",
+				"reason":    "User cancelled",
+			},
+		},
+		{
+			name:               "notifications/cancelled with numeric requestId",
+			method:             "notifications/cancelled",
+			params:             `{"requestId":456}`,
+			expectedResourceID: "456",
+			expectedArguments: map[string]interface{}{
+				"requestId": float64(456),
+			},
+		},
+		{
+			name:               "completion/complete with PromptReference",
+			method:             "completion/complete",
+			params:             `{"ref":{"type":"ref/prompt","name":"greeting"},"argument":{"name":"user","value":"Alice"}}`,
+			expectedResourceID: "greeting",
+			expectedArguments: map[string]interface{}{
+				"ref": map[string]interface{}{
+					"type": "ref/prompt",
+					"name": "greeting",
+				},
+				"argument": map[string]interface{}{
+					"name":  "user",
+					"value": "Alice",
+				},
+			},
+		},
+		{
+			name:               "completion/complete with ResourceTemplateReference",
+			method:             "completion/complete",
+			params:             `{"ref":{"type":"ref/resource","uri":"template://example"},"argument":{"name":"param","value":"test"}}`,
+			expectedResourceID: "template://example",
+			expectedArguments: map[string]interface{}{
+				"ref": map[string]interface{}{
+					"type": "ref/resource",
+					"uri":  "template://example",
+				},
+				"argument": map[string]interface{}{
+					"name":  "param",
+					"value": "test",
+				},
+			},
+		},
+		{
+			name:               "notifications/prompts/list_changed",
+			method:             "notifications/prompts/list_changed",
+			params:             `{}`,
+			expectedResourceID: "prompts",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "notifications/resources/list_changed",
+			method:             "notifications/resources/list_changed",
+			params:             `{}`,
+			expectedResourceID: "resources",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "notifications/resources/updated",
+			method:             "notifications/resources/updated",
+			params:             `{"uri":"file:///updated.txt"}`,
+			expectedResourceID: "resources",
+			expectedArguments:  nil,
+		},
+		{
+			name:               "notifications/tools/list_changed",
+			method:             "notifications/tools/list_changed",
+			params:             `{}`,
+			expectedResourceID: "tools",
+			expectedArguments:  nil,
+		},
 	}
 
 	for _, tt := range tests {

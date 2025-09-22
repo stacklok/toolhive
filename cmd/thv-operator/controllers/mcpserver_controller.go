@@ -5,6 +5,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	goerr "errors"
 	"fmt"
 	"maps"
 	"os"
@@ -18,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -30,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -40,6 +43,7 @@ type MCPServerReconciler struct {
 	platformDetector kubernetes.PlatformDetector
 	detectedPlatform kubernetes.Platform
 	platformOnce     sync.Once
+	ImageValidation  validation.ImageValidation
 }
 
 // defaultRBACRules are the default RBAC rules that the
@@ -191,6 +195,59 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPToolConfig error")
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Validate MCPServer image against enforcing registries
+	imageValidator := validation.NewImageValidator(r.Client, mcpServer.Namespace, r.ImageValidation)
+	err = imageValidator.ValidateImage(ctx, mcpServer.Spec.Image)
+	if goerr.Is(err, validation.ErrImageNotChecked) {
+		ctxLogger.Info("Image validation skipped - no enforcement configured")
+		// Set condition to indicate validation was skipped
+		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+			Type:    mcpv1alpha1.ConditionImageValidated,
+			Status:  metav1.ConditionTrue,
+			Reason:  mcpv1alpha1.ConditionReasonImageValidationSkipped,
+			Message: "Image validation was not performed (no enforcement configured)",
+		})
+	} else if goerr.Is(err, validation.ErrImageInvalid) {
+		ctxLogger.Error(err, "MCPServer image validation failed", "image", mcpServer.Spec.Image)
+		// Update status to reflect validation failure
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Message = err.Error() // Gets the specific validation failure reason
+		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+			Type:    mcpv1alpha1.ConditionImageValidated,
+			Status:  metav1.ConditionFalse,
+			Reason:  mcpv1alpha1.ConditionReasonImageValidationFailed,
+			Message: err.Error(), // This will include the wrapped error context with specific reason
+		})
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after validation error")
+		}
+		// Requeue after 5 minutes to retry validation
+		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	} else if err != nil {
+		// Other system/infrastructure errors
+		ctxLogger.Error(err, "MCPServer image validation system error", "image", mcpServer.Spec.Image)
+		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+			Type:    mcpv1alpha1.ConditionImageValidated,
+			Status:  metav1.ConditionFalse,
+			Reason:  mcpv1alpha1.ConditionReasonImageValidationError,
+			Message: fmt.Sprintf("Error checking image validity: %v", err),
+		})
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after validation error")
+		}
+		// Requeue after 5 minutes to retry validation
+		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	} else {
+		// Validation passed
+		ctxLogger.Info("Image validation passed", "image", mcpServer.Spec.Image)
+		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+			Type:    mcpv1alpha1.ConditionImageValidated,
+			Status:  metav1.ConditionTrue,
+			Reason:  mcpv1alpha1.ConditionReasonImageValidationSuccess,
+			Message: "Image validation passed - image found in enforced registries",
+		})
 	}
 
 	// Check if the MCPServer instance is marked to be deleted

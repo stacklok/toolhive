@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 )
@@ -15,8 +17,14 @@ type DefaultDataChangeDetector struct {
 
 // IsDataChanged checks if source data has changed by comparing hashes
 func (d *DefaultDataChangeDetector) IsDataChanged(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, error) {
+	// Check for hash in syncStatus first, then fallback
+	var lastSyncHash string
+	if mcpRegistry.Status.SyncStatus != nil {
+		lastSyncHash = mcpRegistry.Status.SyncStatus.LastSyncHash
+	}
+
 	// If we don't have a last sync hash, consider data changed
-	if mcpRegistry.Status.LastSyncHash == "" {
+	if lastSyncHash == "" {
 		return true, nil
 	}
 
@@ -33,7 +41,7 @@ func (d *DefaultDataChangeDetector) IsDataChanged(ctx context.Context, mcpRegist
 	}
 
 	// Compare hashes - data changed if different
-	return currentHash != mcpRegistry.Status.LastSyncHash, nil
+	return currentHash != lastSyncHash, nil
 }
 
 // DefaultManualSyncChecker implements ManualSyncChecker
@@ -75,13 +83,19 @@ func (*DefaultAutomaticSyncChecker) IsIntervalSyncNeeded(mcpRegistry *mcpv1alpha
 
 	now := time.Now()
 
+	// Check for last sync time in syncStatus first, then fallback
+	var lastSyncTime *metav1.Time
+	if mcpRegistry.Status.SyncStatus != nil {
+		lastSyncTime = mcpRegistry.Status.SyncStatus.LastSyncTime
+	}
+
 	// If we don't have a last sync time, sync is needed
-	if mcpRegistry.Status.LastSyncTime == nil {
+	if lastSyncTime == nil {
 		return true, now.Add(interval), nil
 	}
 
 	// Calculate when next sync should happen based on last sync
-	nextSyncTime := mcpRegistry.Status.LastSyncTime.Add(interval)
+	nextSyncTime := lastSyncTime.Add(interval)
 
 	// Check if it's time for the next sync
 	syncNeeded := now.After(nextSyncTime) || now.Equal(nextSyncTime)

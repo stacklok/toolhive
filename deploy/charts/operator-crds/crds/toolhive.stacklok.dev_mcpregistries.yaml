@@ -20,10 +20,16 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.serverCount
+    - jsonPath: .status.syncStatus.phase
+      name: Sync
+      type: string
+    - jsonPath: .status.apiStatus.phase
+      name: API
+      type: string
+    - jsonPath: .status.syncStatus.serverCount
       name: Servers
       type: integer
-    - jsonPath: .status.lastSyncTime
+    - jsonPath: .status.syncStatus.lastSyncTime
       name: Last Sync
       type: date
     - jsonPath: .metadata.creationTimestamp
@@ -190,6 +196,40 @@ spec:
               apiEndpoint:
                 description: APIEndpoint is the URL of the registry API service
                 type: string
+              apiStatus:
+                description: APIStatus provides detailed information about the API
+                  service
+                properties:
+                  endpoint:
+                    description: Endpoint is the URL where the API is accessible
+                    type: string
+                  message:
+                    description: Message provides additional information about the
+                      API status
+                    type: string
+                  phase:
+                    allOf:
+                    - enum:
+                      - NotStarted
+                      - Deploying
+                      - Ready
+                      - Unhealthy
+                      - Error
+                    - enum:
+                      - NotStarted
+                      - Deploying
+                      - Ready
+                      - Unhealthy
+                      - Error
+                    description: Phase represents the current API service phase
+                    type: string
+                  readySince:
+                    description: ReadySince is the timestamp when the API became ready
+                    format: date-time
+                    type: string
+                required:
+                - phase
+                type: object
               conditions:
                 description: Conditions represent the latest available observations
                   of the MCPRegistry's state
@@ -259,11 +299,12 @@ spec:
               lastSyncHash:
                 description: |-
                   LastSyncHash is the hash of the last successfully synced data
-                  Used to detect changes in source data
+                  DEPRECATED: Use SyncStatus.LastSyncHash instead
                 type: string
               lastSyncTime:
-                description: LastSyncTime is the timestamp of the last successful
-                  sync
+                description: |-
+                  LastSyncTime is the timestamp of the last successful sync
+                  DEPRECATED: Use SyncStatus.LastSyncTime instead
                 format: date-time
                 type: string
               message:
@@ -271,7 +312,9 @@ spec:
                   phase
                 type: string
               phase:
-                description: Phase represents the current phase of the MCPRegistry
+                description: |-
+                  Phase represents the current overall phase of the MCPRegistry
+                  Derived from sync and API status
                 enum:
                 - Pending
                 - Ready
@@ -280,7 +323,9 @@ spec:
                 - Terminating
                 type: string
               serverCount:
-                description: ServerCount is the total number of servers in the registry
+                description: |-
+                  ServerCount is the total number of servers in the registry
+                  DEPRECATED: Use SyncStatus.ServerCount instead
                 minimum: 0
                 type: integer
               storageRef:
@@ -310,11 +355,54 @@ spec:
                 required:
                 - type
                 type: object
-              syncAttempts:
-                description: SyncAttempts is the number of sync attempts since last
-                  success
-                minimum: 0
-                type: integer
+              syncStatus:
+                description: SyncStatus provides detailed information about data synchronization
+                properties:
+                  attemptCount:
+                    description: AttemptCount is the number of sync attempts since
+                      last success
+                    minimum: 0
+                    type: integer
+                  lastAttempt:
+                    description: LastAttempt is the timestamp of the last sync attempt
+                    format: date-time
+                    type: string
+                  lastSyncHash:
+                    description: |-
+                      LastSyncHash is the hash of the last successfully synced data
+                      Used to detect changes in source data
+                    type: string
+                  lastSyncTime:
+                    description: LastSyncTime is the timestamp of the last successful
+                      sync
+                    format: date-time
+                    type: string
+                  message:
+                    description: Message provides additional information about the
+                      sync status
+                    type: string
+                  phase:
+                    allOf:
+                    - enum:
+                      - Idle
+                      - Syncing
+                      - Complete
+                      - Failed
+                    - enum:
+                      - Idle
+                      - Syncing
+                      - Complete
+                      - Failed
+                    description: Phase represents the current synchronization phase
+                    type: string
+                  serverCount:
+                    description: ServerCount is the total number of servers in the
+                      registry
+                    minimum: 0
+                    type: integer
+                required:
+                - phase
+                type: object
             type: object
         type: object
         x-kubernetes-validations:

@@ -116,8 +116,11 @@ func TestDefaultSyncManager_ShouldSync(t *testing.T) {
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					Phase:        mcpv1alpha1.MCPRegistryPhaseReady,
-					LastSyncHash: "", // No hash means data changed
+					Phase: mcpv1alpha1.MCPRegistryPhaseReady,
+					SyncStatus: &mcpv1alpha1.SyncStatus{
+						Phase:        mcpv1alpha1.SyncPhaseComplete, // Registry has completed sync
+						LastSyncHash: "",                            // No hash means data changed
+					},
 				},
 			},
 			configMap:          nil,
@@ -148,8 +151,11 @@ func TestDefaultSyncManager_ShouldSync(t *testing.T) {
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
 					Phase:                 mcpv1alpha1.MCPRegistryPhaseReady,
-					LastSyncHash:          "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", // SHA256 of "test"
 					LastManualSyncTrigger: "old-trigger",
+					SyncStatus: &mcpv1alpha1.SyncStatus{
+						Phase:        mcpv1alpha1.SyncPhaseComplete,                                      // Registry has completed sync
+						LastSyncHash: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", // SHA256 of "test"
+					},
 				},
 			},
 			configMap: &corev1.ConfigMap{
@@ -261,9 +267,9 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 				},
 			},
 			expectedError:       false,
-			expectedPhase:       mcpv1alpha1.MCPRegistryPhaseReady,
+			expectedPhase:       mcpv1alpha1.MCPRegistryPhasePending,
 			expectedServerCount: intPtr(1), // 1 server in the registry data
-			validateConditions:  true,
+			validateConditions:  false,
 		},
 		{
 			name: "sync fails when source configmap not found",
@@ -288,7 +294,7 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 				},
 			},
 			sourceConfigMap:     nil,
-			expectedError:       false, // PerformSync handles errors internally and sets phase
+			expectedError:       true, // PerformSync now returns errors for controller to handle
 			expectedPhase:       mcpv1alpha1.MCPRegistryPhaseFailed,
 			expectedServerCount: nil, // Don't validate server count for failed sync
 			errorContains:       "",
@@ -316,7 +322,7 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					Phase: mcpv1alpha1.MCPRegistryPhaseReady,
+					Phase: mcpv1alpha1.MCPRegistryPhasePending,
 				},
 			},
 			sourceConfigMap: &corev1.ConfigMap{
@@ -329,9 +335,9 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 				},
 			},
 			expectedError:       false,
-			expectedPhase:       mcpv1alpha1.MCPRegistryPhaseReady,
+			expectedPhase:       mcpv1alpha1.MCPRegistryPhasePending,
 			expectedServerCount: intPtr(0), // 0 servers in the registry data
-			validateConditions:  true,
+			validateConditions:  false,
 		},
 		{
 			name: "successful sync with name filtering",
@@ -371,9 +377,9 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 				},
 			},
 			expectedError:       false,
-			expectedPhase:       mcpv1alpha1.MCPRegistryPhaseReady,
+			expectedPhase:       mcpv1alpha1.MCPRegistryPhasePending,
 			expectedServerCount: intPtr(1), // 1 server after filtering (test-server matches include, others excluded/don't match)
-			validateConditions:  true,
+			validateConditions:  false,
 		},
 		{
 			name: "successful sync with tag filtering",
@@ -413,9 +419,9 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 				},
 			},
 			expectedError:       false,
-			expectedPhase:       mcpv1alpha1.MCPRegistryPhaseReady,
+			expectedPhase:       mcpv1alpha1.MCPRegistryPhasePending,
 			expectedServerCount: intPtr(1), // 1 server after filtering (db-server has "database" tag, old-db-server excluded by "deprecated", web-server doesn't have "database")
-			validateConditions:  true,
+			validateConditions:  false,
 		},
 		{
 			name: "successful sync with combined name and tag filtering",
@@ -458,9 +464,9 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 				},
 			},
 			expectedError:       false,
-			expectedPhase:       mcpv1alpha1.MCPRegistryPhaseReady,
+			expectedPhase:       mcpv1alpha1.MCPRegistryPhasePending,
 			expectedServerCount: intPtr(2), // 2 servers after filtering (prod-db and prod-web match name pattern and have "production" tag, prod-experimental excluded by "experimental", dev-db doesn't match "prod-*")
-			validateConditions:  true,
+			validateConditions:  false,
 		},
 	}
 
@@ -512,16 +518,14 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 			}
 
 			if tt.validateConditions {
-				// Check that success conditions are set when sync succeeds
-				if tt.expectedPhase == mcpv1alpha1.MCPRegistryPhaseReady {
-					assert.Len(t, tt.mcpRegistry.Status.Conditions, 3)
+				// Check that conditions are NOT set by sync manager (they're handled by controller now)
+				assert.Len(t, tt.mcpRegistry.Status.Conditions, 0, "Sync manager should not set conditions")
+			}
 
-					// Verify manual sync trigger is processed if annotation exists
-					if tt.mcpRegistry.Annotations != nil {
-						if triggerValue := tt.mcpRegistry.Annotations[SyncTriggerAnnotation]; triggerValue != "" {
-							assert.Equal(t, triggerValue, tt.mcpRegistry.Status.LastManualSyncTrigger)
-						}
-					}
+			// Verify manual sync trigger is processed if annotation exists (this is still done by sync manager)
+			if tt.mcpRegistry.Annotations != nil {
+				if triggerValue := tt.mcpRegistry.Annotations[SyncTriggerAnnotation]; triggerValue != "" {
+					assert.Equal(t, triggerValue, tt.mcpRegistry.Status.LastManualSyncTrigger)
 				}
 			}
 		})
@@ -559,7 +563,7 @@ func TestDefaultSyncManager_UpdateManualSyncTriggerOnly(t *testing.T) {
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					Phase: mcpv1alpha1.MCPRegistryPhaseReady,
+					Phase: mcpv1alpha1.MCPRegistryPhasePending,
 				},
 			},
 			expectedError:        false,
@@ -580,7 +584,7 @@ func TestDefaultSyncManager_UpdateManualSyncTriggerOnly(t *testing.T) {
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					Phase: mcpv1alpha1.MCPRegistryPhaseReady,
+					Phase: mcpv1alpha1.MCPRegistryPhasePending,
 				},
 			},
 			expectedError:        false,

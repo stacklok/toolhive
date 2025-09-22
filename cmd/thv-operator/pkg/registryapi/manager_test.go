@@ -419,6 +419,7 @@ func TestManagerUpdateAPIStatus(t *testing.T) {
 			isReady: true,
 			setupMocks: func(m *mcpregistrystatusmocks.MockCollector) {
 				m.EXPECT().SetAPIEndpoint("http://test-service.test-namespace.svc.cluster.local:8080")
+				m.EXPECT().SetAPIStatus(mcpv1alpha1.APIPhaseReady, "Registry API is ready and serving requests", "http://test-service.test-namespace.svc.cluster.local:8080")
 				m.EXPECT().SetAPIReadyCondition("APIReady", "Registry API is ready and serving requests", metav1.ConditionTrue)
 			},
 			description: "Should set endpoint and ready condition when API is ready",
@@ -441,6 +442,7 @@ func TestManagerUpdateAPIStatus(t *testing.T) {
 			isReady: false,
 			setupMocks: func(m *mcpregistrystatusmocks.MockCollector) {
 				m.EXPECT().SetAPIEndpoint("http://test-service.test-namespace.svc.cluster.local:8080")
+				m.EXPECT().SetAPIStatus(mcpv1alpha1.APIPhaseDeploying, "Registry API deployment is not ready yet", "http://test-service.test-namespace.svc.cluster.local:8080")
 				m.EXPECT().SetAPIReadyCondition("APINotReady", "Registry API deployment is not ready yet", metav1.ConditionFalse)
 			},
 			description: "Should set endpoint and not ready condition when API is not ready",
@@ -450,6 +452,7 @@ func TestManagerUpdateAPIStatus(t *testing.T) {
 			service: nil,
 			isReady: false,
 			setupMocks: func(m *mcpregistrystatusmocks.MockCollector) {
+				m.EXPECT().SetAPIStatus(mcpv1alpha1.APIPhaseDeploying, "Registry API deployment is not ready yet", "")
 				m.EXPECT().SetAPIReadyCondition("APINotReady", "Registry API deployment is not ready yet", metav1.ConditionFalse)
 			},
 			description: "Should only set condition when no service is provided",

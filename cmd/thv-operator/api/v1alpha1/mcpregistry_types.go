@@ -160,7 +160,8 @@ type TagFilter struct {
 
 // MCPRegistryStatus defines the observed state of MCPRegistry
 type MCPRegistryStatus struct {
-	// Phase represents the current phase of the MCPRegistry
+	// Phase represents the current overall phase of the MCPRegistry
+	// Derived from sync and API status
 	// +optional
 	Phase MCPRegistryPhase `json:"phase,omitempty"`
 
@@ -168,24 +169,13 @@ type MCPRegistryStatus struct {
 	// +optional
 	Message string `json:"message,omitempty"`
 
-	// LastSyncTime is the timestamp of the last successful sync
+	// SyncStatus provides detailed information about data synchronization
 	// +optional
-	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
+	SyncStatus *SyncStatus `json:"syncStatus,omitempty"`
 
-	// LastSyncHash is the hash of the last successfully synced data
-	// Used to detect changes in source data
+	// APIStatus provides detailed information about the API service
 	// +optional
-	LastSyncHash string `json:"lastSyncHash,omitempty"`
-
-	// ServerCount is the total number of servers in the registry
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	ServerCount int `json:"serverCount,omitempty"`
-
-	// SyncAttempts is the number of sync attempts since last success
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	SyncAttempts int `json:"syncAttempts,omitempty"`
+	APIStatus *APIStatus `json:"apiStatus,omitempty"`
 
 	// APIEndpoint is the URL of the registry API service
 	// +optional
@@ -200,12 +190,123 @@ type MCPRegistryStatus struct {
 	// +optional
 	LastManualSyncTrigger string `json:"lastManualSyncTrigger,omitempty"`
 
+	// DEPRECATED: The following fields are deprecated and moved to SyncStatus
+	// They are kept for backward compatibility and will be removed in a future version
+
+	// LastSyncTime is the timestamp of the last successful sync
+	// DEPRECATED: Use SyncStatus.LastSyncTime instead
+	// +optional
+	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
+
+	// LastSyncHash is the hash of the last successfully synced data
+	// DEPRECATED: Use SyncStatus.LastSyncHash instead
+	// +optional
+	LastSyncHash string `json:"lastSyncHash,omitempty"`
+
+	// ServerCount is the total number of servers in the registry
+	// DEPRECATED: Use SyncStatus.ServerCount instead
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	ServerCount int `json:"serverCount,omitempty"`
+
 	// Conditions represent the latest available observations of the MCPRegistry's state
 	// +optional
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
+
+// SyncStatus provides detailed information about data synchronization
+type SyncStatus struct {
+	// Phase represents the current synchronization phase
+	// +kubebuilder:validation:Enum=Idle;Syncing;Complete;Failed
+	Phase SyncPhase `json:"phase"`
+
+	// Message provides additional information about the sync status
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// LastAttempt is the timestamp of the last sync attempt
+	// +optional
+	LastAttempt *metav1.Time `json:"lastAttempt,omitempty"`
+
+	// AttemptCount is the number of sync attempts since last success
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	AttemptCount int `json:"attemptCount,omitempty"`
+
+	// LastSyncTime is the timestamp of the last successful sync
+	// +optional
+	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
+
+	// LastSyncHash is the hash of the last successfully synced data
+	// Used to detect changes in source data
+	// +optional
+	LastSyncHash string `json:"lastSyncHash,omitempty"`
+
+	// ServerCount is the total number of servers in the registry
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	ServerCount int `json:"serverCount,omitempty"`
+}
+
+// APIStatus provides detailed information about the API service
+type APIStatus struct {
+	// Phase represents the current API service phase
+	// +kubebuilder:validation:Enum=NotStarted;Deploying;Ready;Unhealthy;Error
+	Phase APIPhase `json:"phase"`
+
+	// Message provides additional information about the API status
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// Endpoint is the URL where the API is accessible
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// ReadySince is the timestamp when the API became ready
+	// +optional
+	ReadySince *metav1.Time `json:"readySince,omitempty"`
+}
+
+// SyncPhase represents the data synchronization state
+// +kubebuilder:validation:Enum=Idle;Syncing;Complete;Failed
+type SyncPhase string
+
+const (
+	// SyncPhaseIdle means no sync is needed or scheduled
+	SyncPhaseIdle SyncPhase = "Idle"
+
+	// SyncPhaseSyncing means sync is currently in progress
+	SyncPhaseSyncing SyncPhase = "Syncing"
+
+	// SyncPhaseComplete means sync completed successfully
+	SyncPhaseComplete SyncPhase = "Complete"
+
+	// SyncPhaseFailed means sync failed
+	SyncPhaseFailed SyncPhase = "Failed"
+)
+
+// APIPhase represents the API service state
+// +kubebuilder:validation:Enum=NotStarted;Deploying;Ready;Unhealthy;Error
+type APIPhase string
+
+const (
+	// APIPhaseNotStarted means API deployment has not been created
+	APIPhaseNotStarted APIPhase = "NotStarted"
+
+	// APIPhaseDeploying means API is being deployed
+	APIPhaseDeploying APIPhase = "Deploying"
+
+	// APIPhaseReady means API is ready to serve requests
+	APIPhaseReady APIPhase = "Ready"
+
+	// APIPhaseUnhealthy means API is deployed but not healthy
+	APIPhaseUnhealthy APIPhase = "Unhealthy"
+
+	// APIPhaseError means API deployment failed
+	APIPhaseError APIPhase = "Error"
+)
 
 // StorageReference defines a reference to internal storage
 type StorageReference struct {
@@ -258,8 +359,10 @@ const (
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.serverCount"
-//+kubebuilder:printcolumn:name="Last Sync",type="date",JSONPath=".status.lastSyncTime"
+//+kubebuilder:printcolumn:name="Sync",type="string",JSONPath=".status.syncStatus.phase"
+//+kubebuilder:printcolumn:name="API",type="string",JSONPath=".status.apiStatus.phase"
+//+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.syncStatus.serverCount"
+//+kubebuilder:printcolumn:name="Last Sync",type="date",JSONPath=".status.syncStatus.lastSyncTime"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:scope=Namespaced,categories=toolhive
 //nolint:lll
@@ -292,6 +395,48 @@ func (r *MCPRegistry) GetStorageName() string {
 // GetAPIResourceName returns the base name for registry API resources (deployment, service)
 func (r *MCPRegistry) GetAPIResourceName() string {
 	return fmt.Sprintf("%s-api", r.Name)
+}
+
+// DeriveOverallPhase determines the overall MCPRegistry phase based on sync and API status
+func (r *MCPRegistry) DeriveOverallPhase() MCPRegistryPhase {
+	syncStatus := r.Status.SyncStatus
+	apiStatus := r.Status.APIStatus
+
+	// Default phases if status not set
+	syncPhase := SyncPhaseIdle
+	if syncStatus != nil {
+		syncPhase = syncStatus.Phase
+	}
+
+	apiPhase := APIPhaseNotStarted
+	if apiStatus != nil {
+		apiPhase = apiStatus.Phase
+	}
+
+	// If sync failed, overall is Failed
+	if syncPhase == SyncPhaseFailed {
+		return MCPRegistryPhaseFailed
+	}
+
+	// If sync in progress, overall is Syncing
+	if syncPhase == SyncPhaseSyncing {
+		return MCPRegistryPhaseSyncing
+	}
+
+	// If sync is complete or idle (no sync needed), check API status
+	if syncPhase == SyncPhaseComplete || syncPhase == SyncPhaseIdle {
+		switch apiPhase {
+		case APIPhaseReady:
+			return MCPRegistryPhaseReady
+		case APIPhaseError:
+			return MCPRegistryPhaseFailed
+		case APIPhaseNotStarted, APIPhaseDeploying, APIPhaseUnhealthy:
+			return MCPRegistryPhasePending // API still starting/not healthy
+		}
+	}
+
+	// Default to pending for initial states
+	return MCPRegistryPhasePending
 }
 
 func init() {

@@ -22,12 +22,20 @@ type Collector interface {
 	// SetAPIEndpoint sets the API endpoint in the status
 	SetAPIEndpoint(endpoint string)
 
-	// SetPhase sets the MCPRegistry phase in the status
+	// SetPhase sets the MCPRegistry phase in the status (overall phase)
 	SetPhase(phase mcpv1alpha1.MCPRegistryPhase)
 
-	// SetMessage sets the status message
+	// SetMessage sets the status message (overall message)
 	SetMessage(message string)
 
+	// SetSyncStatus sets the detailed sync status
+	SetSyncStatus(
+		phase mcpv1alpha1.SyncPhase, message string, attemptCount int,
+		lastSyncTime *metav1.Time, lastSyncHash string, serverCount int)
+
+	// SetAPIStatus sets the detailed API status
+	SetAPIStatus(phase mcpv1alpha1.APIPhase, message string, endpoint string)
+
 	// Apply applies all collected status changes in a single batch update
-	Apply(ctx context.Context, statusWriter client.StatusWriter) error
+	Apply(ctx context.Context, k8sClient client.Client) error
 }

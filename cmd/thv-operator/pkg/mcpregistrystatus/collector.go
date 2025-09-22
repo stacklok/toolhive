@@ -22,6 +22,8 @@ type StatusCollector struct {
 	phase       *mcpv1alpha1.MCPRegistryPhase
 	message     *string
 	apiEndpoint *string
+	syncStatus  *mcpv1alpha1.SyncStatus
+	apiStatus   *mcpv1alpha1.APIStatus
 	conditions  map[string]metav1.Condition
 }
 
@@ -62,36 +64,98 @@ func (s *StatusCollector) SetAPIReadyCondition(reason, message string, status me
 	s.hasChanges = true
 }
 
+// SetSyncStatus sets the detailed sync status.
+func (s *StatusCollector) SetSyncStatus(
+	phase mcpv1alpha1.SyncPhase, message string, attemptCount int,
+	lastSyncTime *metav1.Time, lastSyncHash string, serverCount int) {
+	now := metav1.Now()
+	s.syncStatus = &mcpv1alpha1.SyncStatus{
+		Phase:        phase,
+		Message:      message,
+		LastAttempt:  &now,
+		AttemptCount: attemptCount,
+		LastSyncTime: lastSyncTime,
+		LastSyncHash: lastSyncHash,
+		ServerCount:  serverCount,
+	}
+	s.hasChanges = true
+}
+
+// SetAPIStatus sets the detailed API status.
+func (s *StatusCollector) SetAPIStatus(phase mcpv1alpha1.APIPhase, message string, endpoint string) {
+	s.apiStatus = &mcpv1alpha1.APIStatus{
+		Phase:    phase,
+		Message:  message,
+		Endpoint: endpoint,
+	}
+
+	// Set ReadySince timestamp when API becomes ready
+	if phase == mcpv1alpha1.APIPhaseReady &&
+		(s.mcpRegistry.Status.APIStatus == nil || s.mcpRegistry.Status.APIStatus.Phase != mcpv1alpha1.APIPhaseReady) {
+		now := metav1.Now()
+		s.apiStatus.ReadySince = &now
+	} else if s.mcpRegistry.Status.APIStatus != nil && s.mcpRegistry.Status.APIStatus.ReadySince != nil {
+		// Preserve existing ReadySince if already set and still ready
+		s.apiStatus.ReadySince = s.mcpRegistry.Status.APIStatus.ReadySince
+	}
+
+	s.hasChanges = true
+}
+
 // Apply applies all collected status changes in a single batch update.
-func (s *StatusCollector) Apply(ctx context.Context, statusWriter client.StatusWriter) error {
+func (s *StatusCollector) Apply(ctx context.Context, k8sClient client.Client) error {
 	if !s.hasChanges {
 		return nil
 	}
 
 	ctxLogger := log.FromContext(ctx)
 
+	// Refetch the latest version of the resource to avoid conflicts
+	latestRegistry := &mcpv1alpha1.MCPRegistry{}
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(s.mcpRegistry), latestRegistry); err != nil {
+		ctxLogger.Error(err, "Failed to fetch latest MCPRegistry version for status update")
+		return fmt.Errorf("failed to fetch latest MCPRegistry version: %w", err)
+	}
+
 	// Apply phase change
 	if s.phase != nil {
-		s.mcpRegistry.Status.Phase = *s.phase
+		latestRegistry.Status.Phase = *s.phase
 	}
 
 	// Apply message change
 	if s.message != nil {
-		s.mcpRegistry.Status.Message = *s.message
+		latestRegistry.Status.Message = *s.message
 	}
 
 	// Apply API endpoint change
 	if s.apiEndpoint != nil {
-		s.mcpRegistry.Status.APIEndpoint = *s.apiEndpoint
+		latestRegistry.Status.APIEndpoint = *s.apiEndpoint
+	}
+
+	// Apply sync status change
+	if s.syncStatus != nil {
+		latestRegistry.Status.SyncStatus = s.syncStatus
+
+		// For backward compatibility, also populate the deprecated fields
+		if s.syncStatus.LastSyncTime != nil {
+			latestRegistry.Status.LastSyncTime = s.syncStatus.LastSyncTime
+		}
+		latestRegistry.Status.LastSyncHash = s.syncStatus.LastSyncHash
+		latestRegistry.Status.ServerCount = s.syncStatus.ServerCount
+	}
+
+	// Apply API status change
+	if s.apiStatus != nil {
+		latestRegistry.Status.APIStatus = s.apiStatus
 	}
 
 	// Apply condition changes
 	for _, condition := range s.conditions {
-		meta.SetStatusCondition(&s.mcpRegistry.Status.Conditions, condition)
+		meta.SetStatusCondition(&latestRegistry.Status.Conditions, condition)
 	}
 
-	// Single status update
-	if err := statusWriter.Update(ctx, s.mcpRegistry); err != nil {
+	// Single status update using the latest version
+	if err := k8sClient.Status().Update(ctx, latestRegistry); err != nil {
 		ctxLogger.Error(err, "Failed to apply batched status update")
 		return fmt.Errorf("failed to apply batched status update: %w", err)
 	}

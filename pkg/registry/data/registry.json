@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-21T00:18:35Z",
+  "last_updated": "2025-09-22T00:18:38Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1003,9 +1003,9 @@
         "user_token_organization"
       ],
       "metadata": {
-        "stars": 34,
+        "stars": 36,
         "pulls": 3424,
-        "last_updated": "2025-09-04T08:11:54Z"
+        "last_updated": "2025-09-21T02:32:11Z"
       },
       "repository_url": "https://github.com/buildkite/buildkite-mcp-server",
       "tags": [
@@ -1467,9 +1467,9 @@
         "search"
       ],
       "metadata": {
-        "stars": 447,
+        "stars": 476,
         "pulls": 10995,
-        "last_updated": "2025-09-04T08:11:55Z"
+        "last_updated": "2025-09-21T02:32:11Z"
       },
       "repository_url": "https://github.com/elastic/mcp-server-elasticsearch",
       "tags": [
@@ -2358,7 +2358,7 @@
         "ingestion",
         "data-connectors"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20250830001",
+      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20250920001",
       "permissions": {
         "network": {
           "outbound": {
@@ -4126,9 +4126,9 @@
         "perplexity_reason"
       ],
       "metadata": {
-        "stars": 1551,
+        "stars": 1591,
         "pulls": 15188,
-        "last_updated": "2025-09-04T02:27:26Z"
+        "last_updated": "2025-09-21T02:32:10Z"
       },
       "repository_url": "https://github.com/ppl-ai/modelcontextprotocol",
       "tags": [
@@ -4295,9 +4295,9 @@
         "generate_plot"
       ],
       "metadata": {
-        "stars": 2,
+        "stars": 3,
         "pulls": 1314,
-        "last_updated": "2025-09-04T08:11:53Z"
+        "last_updated": "2025-09-21T02:32:11Z"
       },
       "repository_url": "https://github.com/StacklokLabs/plotting-mcp",
       "tags": [
@@ -4682,9 +4682,9 @@
         "sequentialthinking"
       ],
       "metadata": {
-        "stars": 66732,
+        "stars": 68368,
         "pulls": 14819,
-        "last_updated": "2025-09-04T02:27:26Z"
+        "last_updated": "2025-09-21T02:32:10Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [

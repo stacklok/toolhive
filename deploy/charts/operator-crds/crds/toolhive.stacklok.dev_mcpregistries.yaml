@@ -23,9 +23,6 @@ spec:
     - jsonPath: .status.serverCount
       name: Servers
       type: integer
-    - jsonPath: .status.deployedServerCount
-      name: Deployed
-      type: integer
     - jsonPath: .status.lastSyncTime
       name: Last Sync
       type: date
@@ -254,11 +251,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              deployedServerCount:
-                description: DeployedServerCount is the number of deployed servers
-                  with matching labels
-                minimum: 0
-                type: integer
               lastManualSyncTrigger:
                 description: |-
                   LastManualSyncTrigger tracks the last processed manual sync annotation value

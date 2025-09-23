@@ -146,16 +146,15 @@ func (v *RegistryEnforcingValidator) validateAgainstAllRegistries(
 	image string,
 	mcpRegistryList *mcpv1alpha1.MCPRegistryList,
 ) error {
-	// Check if any registry enforces validation
-	// If no enforcement required, return ErrImageNotChecked to indicate no validation was performed
-	hasEnforcement := v.hasEnforcingRegistry(mcpRegistryList)
-	if !hasEnforcement {
+	// Get only enforcing registries for efficient processing
+	enforcingRegistries := v.getEnforcingRegistries(mcpRegistryList)
+	if len(enforcingRegistries) == 0 {
 		return ErrImageNotChecked
 	}
 
-	// Enforcement is required, check each registry for the image
+	// Enforcement is required, check each enforcing registry for the image
 	var registryErrors []string
-	for _, mcpRegistry := range mcpRegistryList.Items {
+	for _, mcpRegistry := range enforcingRegistries {
 		found, err := v.checkImageInRegistry(ctx, &mcpRegistry, image)
 		if err != nil {
 			// Collect errors but continue checking other registries
@@ -177,14 +176,14 @@ func (v *RegistryEnforcingValidator) validateAgainstAllRegistries(
 	return fmt.Errorf("image %q not found in enforced registries: %w", image, ErrImageInvalid)
 }
 
-func (*RegistryEnforcingValidator) hasEnforcingRegistry(mcpRegistryList *mcpv1alpha1.MCPRegistryList) bool {
+func (*RegistryEnforcingValidator) getEnforcingRegistries(mcpRegistryList *mcpv1alpha1.MCPRegistryList) []mcpv1alpha1.MCPRegistry {
+	var enforcingRegistries []mcpv1alpha1.MCPRegistry
 	for _, mcpRegistry := range mcpRegistryList.Items {
 		if mcpRegistry.Spec.EnforceServers {
-			return true
+			enforcingRegistries = append(enforcingRegistries, mcpRegistry)
 		}
 	}
-
-	return false
+	return enforcingRegistries
 }
 
 // checkImageInRegistry checks if an image exists in a specific MCPRegistry

@@ -203,23 +203,17 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if goerr.Is(err, validation.ErrImageNotChecked) {
 		ctxLogger.Info("Image validation skipped - no enforcement configured")
 		// Set condition to indicate validation was skipped
-		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionImageValidated,
-			Status:  metav1.ConditionTrue,
-			Reason:  mcpv1alpha1.ConditionReasonImageValidationSkipped,
-			Message: "Image validation was not performed (no enforcement configured)",
-		})
+		setImageValidationCondition(mcpServer, metav1.ConditionTrue,
+			mcpv1alpha1.ConditionReasonImageValidationSkipped,
+			"Image validation was not performed (no enforcement configured)")
 	} else if goerr.Is(err, validation.ErrImageInvalid) {
 		ctxLogger.Error(err, "MCPServer image validation failed", "image", mcpServer.Spec.Image)
 		// Update status to reflect validation failure
 		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
 		mcpServer.Status.Message = err.Error() // Gets the specific validation failure reason
-		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionImageValidated,
-			Status:  metav1.ConditionFalse,
-			Reason:  mcpv1alpha1.ConditionReasonImageValidationFailed,
-			Message: err.Error(), // This will include the wrapped error context with specific reason
-		})
+		setImageValidationCondition(mcpServer, metav1.ConditionFalse,
+			mcpv1alpha1.ConditionReasonImageValidationFailed,
+			err.Error()) // This will include the wrapped error context with specific reason
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after validation error")
 		}
@@ -228,12 +222,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	} else if err != nil {
 		// Other system/infrastructure errors
 		ctxLogger.Error(err, "MCPServer image validation system error", "image", mcpServer.Spec.Image)
-		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionImageValidated,
-			Status:  metav1.ConditionFalse,
-			Reason:  mcpv1alpha1.ConditionReasonImageValidationError,
-			Message: fmt.Sprintf("Error checking image validity: %v", err),
-		})
+		setImageValidationCondition(mcpServer, metav1.ConditionFalse,
+			mcpv1alpha1.ConditionReasonImageValidationError,
+			fmt.Sprintf("Error checking image validity: %v", err))
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after validation error")
 		}
@@ -242,12 +233,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	} else {
 		// Validation passed
 		ctxLogger.Info("Image validation passed", "image", mcpServer.Spec.Image)
-		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionImageValidated,
-			Status:  metav1.ConditionTrue,
-			Reason:  mcpv1alpha1.ConditionReasonImageValidationSuccess,
-			Message: "Image validation passed - image found in enforced registries",
-		})
+		setImageValidationCondition(mcpServer, metav1.ConditionTrue,
+			mcpv1alpha1.ConditionReasonImageValidationSuccess,
+			"Image validation passed - image found in enforced registries")
 	}
 
 	// Check if the MCPServer instance is marked to be deleted
@@ -405,6 +393,17 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// setImageValidationCondition is a helper function to set the image validation status condition
+// This reduces code duplication in the image validation logic
+func setImageValidationCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+		Type:    mcpv1alpha1.ConditionImageValidated,
+		Status:  status,
+		Reason:  reason,
+		Message: message,
+	})
 }
 
 // handleRestartAnnotation checks if the restart annotation has been updated and triggers a restart if needed

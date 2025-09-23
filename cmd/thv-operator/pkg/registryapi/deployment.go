@@ -240,7 +240,13 @@ func (*manager) getSourceDataHash(
 
 // getRegistryAPIImage returns the registry API container image to use
 func getRegistryAPIImage() string {
-	if img := os.Getenv("TOOLHIVE_REGISTRY_API_IMAGE"); img != "" {
+	return getRegistryAPIImageWithEnvGetter(os.Getenv)
+}
+
+// getRegistryAPIImageWithEnvGetter returns the registry API container image to use
+// with a custom environment variable getter function for testing
+func getRegistryAPIImageWithEnvGetter(envGetter func(string) string) string {
+	if img := envGetter("TOOLHIVE_REGISTRY_API_IMAGE"); img != "" {
 		return img
 	}
 	return "ghcr.io/stacklok/toolhive/thv-registry-api:latest"

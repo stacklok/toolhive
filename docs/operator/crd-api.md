@@ -344,7 +344,7 @@ _Appears in:_
 | `source` _[MCPRegistrySource](#mcpregistrysource)_ | Source defines the configuration for the registry data source |  | Required: \{\} <br /> |
 | `syncPolicy` _[SyncPolicy](#syncpolicy)_ | SyncPolicy defines the automatic synchronization behavior for the registry.<br />If specified, enables automatic synchronization at the given interval.<br />Manual synchronization is always supported via annotation-based triggers<br />regardless of this setting. |  |  |
 | `filter` _[RegistryFilter](#registryfilter)_ | Filter defines include/exclude patterns for registry content |  |  |
-| `enforce` _boolean_ | Enforce indicates whether MCPServers in this namespace must exist in this registry.<br />When true, MCPServers that are not found in this registry will be rejected.<br />When false (default), MCPServers can be deployed regardless of registry presence. | false |  |
+| `enforceServers` _boolean_ | EnforceServers indicates whether MCPServers in this namespace must exist in this registry.<br />When true, MCPServers that are not found in this registry will be rejected.<br />When false (default), MCPServers can be deployed regardless of registry presence. | false |  |
 
 
 #### MCPRegistryStatus

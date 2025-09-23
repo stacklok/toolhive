@@ -1,6 +1,6 @@
 # Example MCPRegistry with enforcement enabled
 # This demonstrates how to create a registry that enforces image validation
-# When enforce: true, MCPServers in this namespace must exist in the registry
+# When enforceServers: true, MCPServers in this namespace must exist in the registry
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -143,13 +143,13 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Approved MCP Servers (Enforcing)"
-  # When enforce is true, MCPServers in this namespace must exist in this registry
+  # When enforceServers is true, MCPServers in this namespace must exist in this registry
   # Images allowed by this registry:
   # - docker.io/mcp/filesystem:latest
   # - ghcr.io/github/github-mcp-server:latest
   # - docker.io/anthropic/mcp-tools:v1.0.0
   # - docker.io/mcp/code-analyzer:v2.1.0 (from the development-tools group)
-  enforce: true
+  enforceServers: true
   source:
     type: configmap
     configmap:

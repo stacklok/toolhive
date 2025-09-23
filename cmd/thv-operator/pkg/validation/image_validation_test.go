@@ -191,7 +191,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Enforce: false,
+						EnforceServers: false,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
 						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
@@ -211,7 +211,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Enforce: true,
+						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
 						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
@@ -242,7 +242,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Enforce: true,
+						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
 						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
@@ -273,7 +273,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Enforce: true,
+						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
 						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
@@ -306,7 +306,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Enforce: true,
+						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
 						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
@@ -339,7 +339,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Enforce: true,
+						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
 						Phase: mcpv1alpha1.MCPRegistryPhasePending,
@@ -361,7 +361,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Enforce: true,
+						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
 						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
@@ -373,7 +373,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Enforce: false,
+						EnforceServers: false,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
 						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
@@ -415,7 +415,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Enforce: true,
+						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
 						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
@@ -427,7 +427,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Enforce: false,
+						EnforceServers: false,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
 						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
@@ -460,7 +460,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Enforce: true,
+						EnforceServers: true,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
 						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
@@ -472,7 +472,7 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 						Namespace: "test-namespace",
 					},
 					Spec: mcpv1alpha1.MCPRegistrySpec{
-						Enforce: false,
+						EnforceServers: false,
 					},
 					Status: mcpv1alpha1.MCPRegistryStatus{
 						Phase: mcpv1alpha1.MCPRegistryPhaseReady,

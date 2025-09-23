@@ -65,10 +65,10 @@ spec:
               displayName:
                 description: DisplayName is a human-readable name for the registry
                 type: string
-              enforce:
+              enforceServers:
                 default: false
                 description: |-
-                  Enforce indicates whether MCPServers in this namespace must exist in this registry.
+                  EnforceServers indicates whether MCPServers in this namespace must exist in this registry.
                   When true, MCPServers that are not found in this registry will be rejected.
                   When false (default), MCPServers can be deployed regardless of registry presence.
                 type: boolean

@@ -114,7 +114,7 @@ func (v *RegistryEnforcingValidator) ValidateImage(ctx context.Context, image st
 
 func (*RegistryEnforcingValidator) hasEnforcingRegistry(mcpRegistryList *mcpv1alpha1.MCPRegistryList) bool {
 	for _, mcpRegistry := range mcpRegistryList.Items {
-		if mcpRegistry.Spec.Enforce {
+		if mcpRegistry.Spec.EnforceServers {
 			return true
 		}
 	}

@@ -45,12 +45,12 @@ type MCPRegistrySpec struct {
 	// +optional
 	Filter *RegistryFilter `json:"filter,omitempty"`
 
-	// Enforce indicates whether MCPServers in this namespace must exist in this registry.
+	// EnforceServers indicates whether MCPServers in this namespace must exist in this registry.
 	// When true, MCPServers that are not found in this registry will be rejected.
 	// When false (default), MCPServers can be deployed regardless of registry presence.
 	// +kubebuilder:default=false
 	// +optional
-	Enforce bool `json:"enforce,omitempty"`
+	EnforceServers bool `json:"enforceServers,omitempty"`
 }
 
 // MCPRegistrySource defines the source configuration for registry data

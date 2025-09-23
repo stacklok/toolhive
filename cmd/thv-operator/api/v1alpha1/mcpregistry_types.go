@@ -177,10 +177,6 @@ type MCPRegistryStatus struct {
 	// +optional
 	APIStatus *APIStatus `json:"apiStatus,omitempty"`
 
-	// APIEndpoint is the URL of the registry API service
-	// +optional
-	APIEndpoint string `json:"apiEndpoint,omitempty"`
-
 	// StorageRef is a reference to the internal storage location
 	// +optional
 	StorageRef *StorageReference `json:"storageRef,omitempty"`

@@ -21,7 +21,6 @@ type StatusCollector struct {
 	hasChanges  bool
 	phase       *mcpv1alpha1.MCPRegistryPhase
 	message     *string
-	apiEndpoint *string
 	syncStatus  *mcpv1alpha1.SyncStatus
 	apiStatus   *mcpv1alpha1.APIStatus
 	conditions  map[string]metav1.Condition
@@ -44,12 +43,6 @@ func (s *StatusCollector) SetPhase(phase mcpv1alpha1.MCPRegistryPhase) {
 // SetMessage sets the message to be updated.
 func (s *StatusCollector) SetMessage(message string) {
 	s.message = &message
-	s.hasChanges = true
-}
-
-// SetAPIEndpoint sets the API endpoint to be updated.
-func (s *StatusCollector) SetAPIEndpoint(endpoint string) {
-	s.apiEndpoint = &endpoint
 	s.hasChanges = true
 }
 
@@ -125,11 +118,6 @@ func (s *StatusCollector) Apply(ctx context.Context, k8sClient client.Client) er
 	// Apply message change
 	if s.message != nil {
 		latestRegistry.Status.Message = *s.message
-	}
-
-	// Apply API endpoint change
-	if s.apiEndpoint != nil {
-		latestRegistry.Status.APIEndpoint = *s.apiEndpoint
 	}
 
 	// Apply sync status change

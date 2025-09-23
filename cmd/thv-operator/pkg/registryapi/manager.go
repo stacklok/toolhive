@@ -120,7 +120,6 @@ func (*manager) updateAPIStatus(ctx context.Context, mcpRegistry *mcpv1alpha1.MC
 		// Construct internal URL from service information
 		endpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:%d",
 			service.Name, service.Namespace, service.Spec.Ports[0].Port)
-		statusCollector.SetAPIEndpoint(endpoint)
 	}
 
 	// Set detailed API status

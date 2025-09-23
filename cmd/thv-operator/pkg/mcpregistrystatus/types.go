@@ -19,9 +19,6 @@ type Collector interface {
 	// SetAPIReadyCondition sets the API ready condition with the specified reason, message, and status
 	SetAPIReadyCondition(reason, message string, status metav1.ConditionStatus)
 
-	// SetAPIEndpoint sets the API endpoint in the status
-	SetAPIEndpoint(endpoint string)
-
 	// SetPhase sets the MCPRegistry phase in the status (overall phase)
 	SetPhase(phase mcpv1alpha1.MCPRegistryPhase)
 

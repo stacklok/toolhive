@@ -83,20 +83,6 @@ func TestStatusCollector_SetMessage(t *testing.T) {
 	assert.Equal(t, testMessage, *collector.message)
 }
 
-func TestStatusCollector_SetAPIEndpoint(t *testing.T) {
-	t.Parallel()
-
-	registry := &mcpv1alpha1.MCPRegistry{}
-	collector := NewCollector(registry).(*StatusCollector)
-	testEndpoint := "http://test-api.default.svc.cluster.local:8080"
-
-	collector.SetAPIEndpoint(testEndpoint)
-
-	assert.True(t, collector.hasChanges)
-	assert.NotNil(t, collector.apiEndpoint)
-	assert.Equal(t, testEndpoint, *collector.apiEndpoint)
-}
-
 func TestStatusCollector_SetAPIReadyCondition(t *testing.T) {
 	t.Parallel()
 
@@ -360,7 +346,6 @@ func TestStatusCollector_Apply(t *testing.T) {
 		// Set various status fields
 		collector.SetPhase(mcpv1alpha1.MCPRegistryPhaseReady)
 		collector.SetMessage("Registry is ready")
-		collector.SetAPIEndpoint("http://test-api.default.svc.cluster.local:8080")
 		collector.SetSyncStatus(mcpv1alpha1.SyncPhaseComplete, "Sync complete", 0, &metav1.Time{}, "hash123", 5)
 		collector.SetAPIStatus(mcpv1alpha1.APIPhaseReady, "API ready", "http://test-api.default.svc.cluster.local:8080")
 		collector.SetAPIReadyCondition("APIReady", "API is ready", metav1.ConditionTrue)
@@ -371,12 +356,11 @@ func TestStatusCollector_Apply(t *testing.T) {
 		assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseReady, *collector.phase)
 		assert.NotNil(t, collector.message)
 		assert.Equal(t, "Registry is ready", *collector.message)
-		assert.NotNil(t, collector.apiEndpoint)
-		assert.Equal(t, "http://test-api.default.svc.cluster.local:8080", *collector.apiEndpoint)
 		assert.NotNil(t, collector.syncStatus)
 		assert.Equal(t, mcpv1alpha1.SyncPhaseComplete, collector.syncStatus.Phase)
 		assert.NotNil(t, collector.apiStatus)
 		assert.Equal(t, mcpv1alpha1.APIPhaseReady, collector.apiStatus.Phase)
+		assert.Equal(t, "http://test-api.default.svc.cluster.local:8080", collector.apiStatus.Endpoint)
 		assert.Len(t, collector.conditions, 1)
 		assert.Contains(t, collector.conditions, mcpv1alpha1.ConditionAPIReady)
 	})

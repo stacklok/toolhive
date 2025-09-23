@@ -418,7 +418,6 @@ func TestManagerUpdateAPIStatus(t *testing.T) {
 			},
 			isReady: true,
 			setupMocks: func(m *mcpregistrystatusmocks.MockCollector) {
-				m.EXPECT().SetAPIEndpoint("http://test-service.test-namespace.svc.cluster.local:8080")
 				m.EXPECT().SetAPIStatus(mcpv1alpha1.APIPhaseReady, "Registry API is ready and serving requests", "http://test-service.test-namespace.svc.cluster.local:8080")
 				m.EXPECT().SetAPIReadyCondition("APIReady", "Registry API is ready and serving requests", metav1.ConditionTrue)
 			},
@@ -441,7 +440,6 @@ func TestManagerUpdateAPIStatus(t *testing.T) {
 			},
 			isReady: false,
 			setupMocks: func(m *mcpregistrystatusmocks.MockCollector) {
-				m.EXPECT().SetAPIEndpoint("http://test-service.test-namespace.svc.cluster.local:8080")
 				m.EXPECT().SetAPIStatus(mcpv1alpha1.APIPhaseDeploying, "Registry API deployment is not ready yet", "http://test-service.test-namespace.svc.cluster.local:8080")
 				m.EXPECT().SetAPIReadyCondition("APINotReady", "Registry API deployment is not ready yet", metav1.ConditionFalse)
 			},

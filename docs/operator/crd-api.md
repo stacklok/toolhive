@@ -363,7 +363,6 @@ _Appears in:_
 | `message` _string_ | Message provides additional information about the current phase |  |  |
 | `syncStatus` _[SyncStatus](#syncstatus)_ | SyncStatus provides detailed information about data synchronization |  |  |
 | `apiStatus` _[APIStatus](#apistatus)_ | APIStatus provides detailed information about the API service |  |  |
-| `apiEndpoint` _string_ | APIEndpoint is the URL of the registry API service |  |  |
 | `storageRef` _[StorageReference](#storagereference)_ | StorageRef is a reference to the internal storage location |  |  |
 | `lastManualSyncTrigger` _string_ | LastManualSyncTrigger tracks the last processed manual sync annotation value<br />Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation |  |  |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRegistry's state |  |  |

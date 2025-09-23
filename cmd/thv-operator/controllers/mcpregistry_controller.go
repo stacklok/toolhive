@@ -100,8 +100,12 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		apiPhase = mcpRegistry.Status.APIStatus.Phase
 	}
 
+	apiEndpoint := ""
+	if mcpRegistry.Status.APIStatus != nil {
+		apiEndpoint = mcpRegistry.Status.APIStatus.Endpoint
+	}
 	ctxLogger.Info("Reconciling MCPRegistry", "MCPRegistry.Name", mcpRegistry.Name, "phase", mcpRegistry.Status.Phase,
-		"syncPhase", syncPhase, "apiPhase", apiPhase, "apiEndpoint", mcpRegistry.Status.APIEndpoint)
+		"syncPhase", syncPhase, "apiPhase", apiPhase, "apiEndpoint", apiEndpoint)
 
 	// 2. Handle deletion if DeletionTimestamp is set
 	if mcpRegistry.GetDeletionTimestamp() != nil {

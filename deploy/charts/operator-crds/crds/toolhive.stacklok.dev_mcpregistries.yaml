@@ -193,9 +193,6 @@ spec:
           status:
             description: MCPRegistryStatus defines the observed state of MCPRegistry
             properties:
-              apiEndpoint:
-                description: APIEndpoint is the URL of the registry API service
-                type: string
               apiStatus:
                 description: APIStatus provides detailed information about the API
                   service

@@ -57,18 +57,6 @@ func (mr *MockCollectorMockRecorder) Apply(ctx, k8sClient any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Apply", reflect.TypeOf((*MockCollector)(nil).Apply), ctx, k8sClient)
 }
 
-// SetAPIEndpoint mocks base method.
-func (m *MockCollector) SetAPIEndpoint(endpoint string) {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "SetAPIEndpoint", endpoint)
-}
-
-// SetAPIEndpoint indicates an expected call of SetAPIEndpoint.
-func (mr *MockCollectorMockRecorder) SetAPIEndpoint(endpoint any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetAPIEndpoint", reflect.TypeOf((*MockCollector)(nil).SetAPIEndpoint), endpoint)
-}
-
 // SetAPIReadyCondition mocks base method.
 func (m *MockCollector) SetAPIReadyCondition(reason, message string, status v1.ConditionStatus) {
 	m.ctrl.T.Helper()

@@ -210,6 +210,18 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return result, err
 }
 
+// preserveExistingSyncData extracts sync data from existing status for preservation
+// Returns lastSyncTime, lastSyncHash, and serverCount from the current sync status
+func (*MCPRegistryReconciler) preserveExistingSyncData(mcpRegistry *mcpv1alpha1.MCPRegistry) (*metav1.Time, string, int) {
+	if mcpRegistry.Status.SyncStatus != nil {
+		return mcpRegistry.Status.SyncStatus.LastSyncTime,
+			mcpRegistry.Status.SyncStatus.LastSyncHash,
+			mcpRegistry.Status.SyncStatus.ServerCount
+	}
+	// Fallback to zero values for new installation
+	return nil, "", 0
+}
+
 // reconcileSync checks if sync is needed and performs it if necessary
 // This method only handles data synchronization to the target ConfigMap
 //
@@ -242,19 +254,7 @@ func (r *MCPRegistryReconciler) reconcileSync(
 		// Only set sync status if it needs to change
 		if currentSyncPhase != mcpv1alpha1.SyncPhaseIdle || currentMessage != "No sync required" {
 			// Preserve existing sync data when no sync is needed
-			var lastSyncTime *metav1.Time
-			var lastSyncHash string
-			var serverCount int
-			if mcpRegistry.Status.SyncStatus != nil {
-				lastSyncTime = mcpRegistry.Status.SyncStatus.LastSyncTime
-				lastSyncHash = mcpRegistry.Status.SyncStatus.LastSyncHash
-				serverCount = mcpRegistry.Status.SyncStatus.ServerCount
-			} else {
-				// Fallback to zero values for new installation
-				lastSyncTime = nil
-				lastSyncHash = ""
-				serverCount = 0
-			}
+			lastSyncTime, lastSyncHash, serverCount := r.preserveExistingSyncData(mcpRegistry)
 			statusCollector.SetSyncStatus(mcpv1alpha1.SyncPhaseIdle, "No sync required", 0, lastSyncTime, lastSyncHash, serverCount)
 		}
 
@@ -272,19 +272,7 @@ func (r *MCPRegistryReconciler) reconcileSync(
 	// Handle manual sync with no data changes - update trigger tracking only
 	if syncReason == sync.ReasonManualNoChanges {
 		// Preserve existing sync data for manual sync with no changes
-		var lastSyncTime *metav1.Time
-		var lastSyncHash string
-		var serverCount int
-		if mcpRegistry.Status.SyncStatus != nil {
-			lastSyncTime = mcpRegistry.Status.SyncStatus.LastSyncTime
-			lastSyncHash = mcpRegistry.Status.SyncStatus.LastSyncHash
-			serverCount = mcpRegistry.Status.SyncStatus.ServerCount
-		} else {
-			// Fallback to zero values for new installation
-			lastSyncTime = nil
-			lastSyncHash = ""
-			serverCount = 0
-		}
+		lastSyncTime, lastSyncHash, serverCount := r.preserveExistingSyncData(mcpRegistry)
 		statusCollector.SetSyncStatus(
 			mcpv1alpha1.SyncPhaseComplete, "Manual sync completed (no data changes)", 0,
 			lastSyncTime, lastSyncHash, serverCount)
@@ -304,19 +292,7 @@ func (r *MCPRegistryReconciler) reconcileSync(
 		// Sync failed - set sync status to failed
 		ctxLogger.Error(err, "Sync failed, scheduling retry")
 		// Preserve existing sync data when sync fails
-		var lastSyncTime *metav1.Time
-		var lastSyncHash string
-		var serverCount int
-		if mcpRegistry.Status.SyncStatus != nil {
-			lastSyncTime = mcpRegistry.Status.SyncStatus.LastSyncTime
-			lastSyncHash = mcpRegistry.Status.SyncStatus.LastSyncHash
-			serverCount = mcpRegistry.Status.SyncStatus.ServerCount
-		} else {
-			// Fallback to zero values for new installation
-			lastSyncTime = nil
-			lastSyncHash = ""
-			serverCount = 0
-		}
+		lastSyncTime, lastSyncHash, serverCount := r.preserveExistingSyncData(mcpRegistry)
 		statusCollector.SetSyncStatus(mcpv1alpha1.SyncPhaseFailed,
 			fmt.Sprintf("Sync failed: %v", err), getCurrentAttemptCount(mcpRegistry)+1, lastSyncTime, lastSyncHash, serverCount)
 		// Use a shorter retry interval instead of the full sync interval

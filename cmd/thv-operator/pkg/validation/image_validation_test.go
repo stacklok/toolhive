@@ -44,7 +44,9 @@ func TestAlwaysAllowValidator(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validator.ValidateImage(ctx, tt.image)
+			// Create empty metadata for test
+			metadata := metav1.ObjectMeta{}
+			err := validator.ValidateImage(ctx, tt.image, metadata)
 			assert.ErrorIs(t, err, ErrImageNotChecked)
 		})
 	}
@@ -523,7 +525,9 @@ func TestRegistryEnforcingValidator_ValidateImage(t *testing.T) {
 				namespace: tt.namespace,
 			}
 
-			err := validator.ValidateImage(ctx, tt.image)
+			// Create empty metadata for test (original behavior)
+			metadata := metav1.ObjectMeta{}
+			err := validator.ValidateImage(ctx, tt.image, metadata)
 
 			if tt.expectedValid {
 				// Validation should pass (no error or ErrImageNotChecked)
@@ -781,6 +785,330 @@ func TestFindImageInRegistry(t *testing.T) {
 			t.Parallel()
 			result := findImageInRegistry(tt.registry, tt.image)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestRegistryEnforcingValidator_ValidateImageWithRegistryLabel(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	ctx := context.Background()
+
+	// Test registry data
+	registryDataWithImage := `{
+		"version": "1.0",
+		"servers": {
+			"test-server": {
+				"name": "test-server",
+				"image": "docker.io/toolhive/test:v1.0.0",
+				"description": "Test server"
+			}
+		}
+	}`
+
+	tests := []struct {
+		name             string
+		namespace        string
+		image            string
+		metadata         metav1.ObjectMeta
+		registries       []runtime.Object
+		configMaps       []runtime.Object
+		expectedValid    bool
+		expectedError    bool
+		expectedErrorMsg string
+	}{
+		{
+			name:      "registry label points to enforcing registry with image - validation passes",
+			namespace: "test-namespace",
+			image:     "docker.io/toolhive/test:v1.0.0",
+			metadata: metav1.ObjectMeta{
+				Labels: map[string]string{
+					RegistryNameLabel: "target-registry",
+				},
+			},
+			registries: []runtime.Object{
+				&mcpv1alpha1.MCPRegistry{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "target-registry",
+						Namespace: "test-namespace",
+					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						EnforceServers: true,
+					},
+					Status: mcpv1alpha1.MCPRegistryStatus{
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
+					},
+				},
+				&mcpv1alpha1.MCPRegistry{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "other-registry",
+						Namespace: "test-namespace",
+					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						EnforceServers: true,
+					},
+					Status: mcpv1alpha1.MCPRegistryStatus{
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
+					},
+				},
+			},
+			configMaps: []runtime.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "target-registry-registry-storage",
+						Namespace: "test-namespace",
+					},
+					Data: map[string]string{
+						"registry.json": registryDataWithImage,
+					},
+				},
+			},
+			expectedValid: true,
+		},
+		{
+			name:      "registry label points to non-enforcing registry - validation skipped",
+			namespace: "test-namespace",
+			image:     "docker.io/toolhive/test:v1.0.0",
+			metadata: metav1.ObjectMeta{
+				Labels: map[string]string{
+					RegistryNameLabel: "target-registry",
+				},
+			},
+			registries: []runtime.Object{
+				&mcpv1alpha1.MCPRegistry{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "target-registry",
+						Namespace: "test-namespace",
+					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						EnforceServers: false,
+					},
+					Status: mcpv1alpha1.MCPRegistryStatus{
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
+					},
+				},
+			},
+			expectedValid: true,
+		},
+		{
+			name:      "registry label points to enforcing registry without image - validation fails",
+			namespace: "test-namespace",
+			image:     "docker.io/toolhive/missing:v1.0.0",
+			metadata: metav1.ObjectMeta{
+				Labels: map[string]string{
+					RegistryNameLabel: "target-registry",
+				},
+			},
+			registries: []runtime.Object{
+				&mcpv1alpha1.MCPRegistry{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "target-registry",
+						Namespace: "test-namespace",
+					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						EnforceServers: true,
+					},
+					Status: mcpv1alpha1.MCPRegistryStatus{
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
+					},
+				},
+			},
+			configMaps: []runtime.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "target-registry-registry-storage",
+						Namespace: "test-namespace",
+					},
+					Data: map[string]string{
+						"registry.json": registryDataWithImage,
+					},
+				},
+			},
+			expectedValid:    false,
+			expectedError:    true,
+			expectedErrorMsg: "not found in specified registry",
+		},
+		{
+			name:      "registry label points to non-existent registry - validation fails",
+			namespace: "test-namespace",
+			image:     "docker.io/toolhive/test:v1.0.0",
+			metadata: metav1.ObjectMeta{
+				Labels: map[string]string{
+					RegistryNameLabel: "non-existent-registry",
+				},
+			},
+			registries: []runtime.Object{
+				&mcpv1alpha1.MCPRegistry{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "different-registry",
+						Namespace: "test-namespace",
+					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						EnforceServers: true,
+					},
+					Status: mcpv1alpha1.MCPRegistryStatus{
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
+					},
+				},
+			},
+			expectedValid:    false,
+			expectedError:    true,
+			expectedErrorMsg: "specified registry \"non-existent-registry\" not found",
+		},
+		{
+			name:      "registry label with enforcing registry but image in different registry - validation fails",
+			namespace: "test-namespace",
+			image:     "docker.io/toolhive/test:v1.0.0",
+			metadata: metav1.ObjectMeta{
+				Labels: map[string]string{
+					RegistryNameLabel: "empty-registry",
+				},
+			},
+			registries: []runtime.Object{
+				&mcpv1alpha1.MCPRegistry{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "empty-registry",
+						Namespace: "test-namespace",
+					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						EnforceServers: true,
+					},
+					Status: mcpv1alpha1.MCPRegistryStatus{
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
+					},
+				},
+				&mcpv1alpha1.MCPRegistry{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "registry-with-image",
+						Namespace: "test-namespace",
+					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						EnforceServers: true,
+					},
+					Status: mcpv1alpha1.MCPRegistryStatus{
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
+					},
+				},
+			},
+			configMaps: []runtime.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "empty-registry-registry-storage",
+						Namespace: "test-namespace",
+					},
+					Data: map[string]string{
+						"registry.json": `{"version": "1.0", "servers": {}}`,
+					},
+				},
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "registry-with-image-registry-storage",
+						Namespace: "test-namespace",
+					},
+					Data: map[string]string{
+						"registry.json": registryDataWithImage,
+					},
+				},
+			},
+			expectedValid:    false,
+			expectedError:    true,
+			expectedErrorMsg: "not found in specified registry \"empty-registry\"",
+		},
+		{
+			name:      "no registry label - falls back to original behavior (all registries)",
+			namespace: "test-namespace",
+			image:     "docker.io/toolhive/test:v1.0.0",
+			metadata:  metav1.ObjectMeta{}, // No registry label
+			registries: []runtime.Object{
+				&mcpv1alpha1.MCPRegistry{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "registry1",
+						Namespace: "test-namespace",
+					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						EnforceServers: true,
+					},
+					Status: mcpv1alpha1.MCPRegistryStatus{
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
+					},
+				},
+				&mcpv1alpha1.MCPRegistry{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "registry2",
+						Namespace: "test-namespace",
+					},
+					Spec: mcpv1alpha1.MCPRegistrySpec{
+						EnforceServers: true,
+					},
+					Status: mcpv1alpha1.MCPRegistryStatus{
+						Phase: mcpv1alpha1.MCPRegistryPhaseReady,
+					},
+				},
+			},
+			configMaps: []runtime.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "registry1-registry-storage",
+						Namespace: "test-namespace",
+					},
+					Data: map[string]string{
+						"registry.json": `{"version": "1.0", "servers": {}}`,
+					},
+				},
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "registry2-registry-storage",
+						Namespace: "test-namespace",
+					},
+					Data: map[string]string{
+						"registry.json": registryDataWithImage,
+					},
+				},
+			},
+			expectedValid: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// Build fake client with test objects
+			var objs []runtime.Object
+			objs = append(objs, tt.registries...)
+			objs = append(objs, tt.configMaps...)
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(objs...).
+				Build()
+
+			validator := &RegistryEnforcingValidator{
+				client:    fakeClient,
+				namespace: tt.namespace,
+			}
+
+			err := validator.ValidateImage(ctx, tt.image, tt.metadata)
+
+			if tt.expectedValid {
+				// Validation should pass (no error or ErrImageNotChecked)
+				if err != nil {
+					assert.ErrorIs(t, err, ErrImageNotChecked)
+				}
+			} else {
+				// Validation should fail
+				if tt.expectedError {
+					assert.Error(t, err)
+					if tt.expectedErrorMsg != "" {
+						assert.Contains(t, err.Error(), tt.expectedErrorMsg)
+					}
+				} else {
+					assert.NoError(t, err)
+				}
+			}
 		})
 	}
 }

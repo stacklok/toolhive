@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -35,24 +36,28 @@ const (
 	ImageValidationAlwaysAllow ImageValidation = "always-allow"
 	// ImageValidationRegistryEnforcing indicates that images must be validated against MCPRegistry resources
 	ImageValidationRegistryEnforcing ImageValidation = "registry-enforcing"
+
+	// RegistryNameLabel is the label key used to specify which registry an MCPServer should use
+	RegistryNameLabel = "toolhive.stacklok.io/registry-name"
 )
 
 // ImageValidator defines the interface for validating container images
 type ImageValidator interface {
 	// ValidateImage checks if an image is valid for use.
+	// The metadata parameter contains MCPServer metadata (labels, annotations) that may affect validation.
 	// Returns:
 	//   - nil if validation passes
 	//   - ErrImageNotChecked if no validation was performed
 	//   - wrapped ErrImageInvalid if image fails validation (with specific reason in error message)
 	//   - other errors for system/infrastructure failures
-	ValidateImage(ctx context.Context, image string) error
+	ValidateImage(ctx context.Context, image string, metadata metav1.ObjectMeta) error
 }
 
 // AlwaysAllowValidator is a no-op validator that always allows images
 type AlwaysAllowValidator struct{}
 
 // ValidateImage always returns ErrImageNotChecked, indicating no validation was performed
-func (*AlwaysAllowValidator) ValidateImage(_ context.Context, _ string) error {
+func (*AlwaysAllowValidator) ValidateImage(_ context.Context, _ string, _ metav1.ObjectMeta) error {
 	return ErrImageNotChecked
 }
 
@@ -74,13 +79,73 @@ type RegistryEnforcingValidator struct {
 }
 
 // ValidateImage checks if an image should be validated and if it exists in registries
-func (v *RegistryEnforcingValidator) ValidateImage(ctx context.Context, image string) error {
+// If the MCPServer has a registry-name label, validation is restricted to that specific registry.
+// Otherwise, all registries are checked according to the original behavior.
+func (v *RegistryEnforcingValidator) ValidateImage(ctx context.Context, image string, metadata metav1.ObjectMeta) error {
+	// Check if MCPServer specifies a specific registry to use
+	registryName, hasRegistryLabel := metadata.Labels[RegistryNameLabel]
+
 	// List all MCPRegistry resources in the namespace
 	mcpRegistryList := &mcpv1alpha1.MCPRegistryList{}
 	if err := v.client.List(ctx, mcpRegistryList, client.InNamespace(v.namespace)); err != nil {
 		return fmt.Errorf("failed to list MCPRegistry resources: %w", err)
 	}
 
+	if hasRegistryLabel {
+		// MCPServer specifies a specific registry - validate against that registry only
+		return v.validateAgainstSpecificRegistry(ctx, image, registryName, mcpRegistryList)
+	}
+
+	// No specific registry specified - use original behavior (check all registries)
+	return v.validateAgainstAllRegistries(ctx, image, mcpRegistryList)
+}
+
+// validateAgainstSpecificRegistry validates an image against a specific registry
+func (v *RegistryEnforcingValidator) validateAgainstSpecificRegistry(
+	ctx context.Context,
+	image string,
+	registryName string,
+	mcpRegistryList *mcpv1alpha1.MCPRegistryList,
+) error {
+	// Find the specified registry
+	var targetRegistry *mcpv1alpha1.MCPRegistry
+	for i := range mcpRegistryList.Items {
+		if mcpRegistryList.Items[i].Name == registryName {
+			targetRegistry = &mcpRegistryList.Items[i]
+			break
+		}
+	}
+
+	if targetRegistry == nil {
+		return fmt.Errorf("specified registry %q not found: %w", registryName, ErrImageInvalid)
+	}
+
+	// Check if the specified registry enforces validation
+	if !targetRegistry.Spec.EnforceServers {
+		// Registry exists but doesn't enforce - validation not performed
+		return ErrImageNotChecked
+	}
+
+	// Check if image exists in the specified registry
+	found, err := v.checkImageInRegistry(ctx, targetRegistry, image)
+	if err != nil {
+		return fmt.Errorf("error checking image in registry %q: %v: %w", registryName, err, ErrImageInvalid)
+	}
+
+	if !found {
+		return fmt.Errorf("image %q not found in specified registry %q: %w", image, registryName, ErrImageInvalid)
+	}
+
+	// Image found in specified registry
+	return nil
+}
+
+// validateAgainstAllRegistries validates an image against all registries (original behavior)
+func (v *RegistryEnforcingValidator) validateAgainstAllRegistries(
+	ctx context.Context,
+	image string,
+	mcpRegistryList *mcpv1alpha1.MCPRegistryList,
+) error {
 	// Check if any registry enforces validation
 	// If no enforcement required, return ErrImageNotChecked to indicate no validation was performed
 	hasEnforcement := v.hasEnforcingRegistry(mcpRegistryList)

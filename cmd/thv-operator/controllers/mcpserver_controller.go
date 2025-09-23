@@ -199,7 +199,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Validate MCPServer image against enforcing registries
 	imageValidator := validation.NewImageValidator(r.Client, mcpServer.Namespace, r.ImageValidation)
-	err = imageValidator.ValidateImage(ctx, mcpServer.Spec.Image)
+	err = imageValidator.ValidateImage(ctx, mcpServer.Spec.Image, mcpServer.ObjectMeta)
 	if goerr.Is(err, validation.ErrImageNotChecked) {
 		ctxLogger.Info("Image validation skipped - no enforcement configured")
 		// Set condition to indicate validation was skipped

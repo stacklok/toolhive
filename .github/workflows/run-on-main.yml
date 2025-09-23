@@ -13,6 +13,12 @@ jobs:
   linting:
     name: Linting
     uses: ./.github/workflows/lint.yml
+  security-scan:
+    name: Security Scan
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/security-scan.yml
   tests:
     name: Tests
     uses: ./.github/workflows/test.yml
@@ -25,7 +31,7 @@ jobs:
     uses: ./.github/workflows/verify-gen.yml
   image-build-and-push:
     name: Build and Sign Image
-    needs: [ linting, tests, e2e-tests, codegen ]
+    needs: [ linting, security-scan, tests, e2e-tests, codegen ]
     permissions:
       contents: write
       packages: write

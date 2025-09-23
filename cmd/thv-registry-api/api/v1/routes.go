@@ -101,11 +101,7 @@ func Router(svc service.RegistryService) http.Handler {
 	r := chi.NewRouter()
 
 	// MCP Registry API v0 compatible endpoints
-	r.Get("/servers", routes.listServers)
 	r.Post("/publish", routes.publishServer)
-
-	// V0 individual server endpoint (must come before /servers route group)
-	r.Get("/v0/servers/{name}", routes.getServer)
 
 	// Registry metadata
 	r.Get("/info", routes.getRegistryInfo)
@@ -442,7 +438,10 @@ func populateContainerServerFields(response *ServerDetailResponse, server regist
 
 // populateRemoteServerFields populates fields specific to remote servers
 func populateRemoteServerFields(response *ServerDetailResponse, server registry.ServerMetadata) {
-	remoteMetadata, ok := server.(*registry.RemoteServerMetadata)
+	// The server might be wrapped in a serverWithName struct from the service layer
+	actualServer := extractEmbeddedServerMetadata(server)
+
+	remoteMetadata, ok := actualServer.(*registry.RemoteServerMetadata)
 	if !ok {
 		return
 	}

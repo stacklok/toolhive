@@ -706,7 +706,7 @@ func TestRoutesWithRealData(t *testing.T) {
 			assert.Contains(t, server, "tier")
 			assert.Contains(t, server, "status")
 			assert.Contains(t, server, "transport")
-			assert.Contains(t, server, "tools")
+			assert.Contains(t, server, "tools_count")
 		}
 	})
 
@@ -969,7 +969,7 @@ func TestRoutesWithRealisticData(t *testing.T) {
 			assert.Contains(t, server, "tier")
 			assert.Contains(t, server, "status")
 			assert.Contains(t, server, "transport")
-			assert.Contains(t, server, "tools")
+			assert.Contains(t, server, "tools_count")
 		}
 	})
 
@@ -1271,7 +1271,7 @@ func TestServerResponseStructures(t *testing.T) {
 
 	t.Run("get server details returns full tools array and image field", func(t *testing.T) {
 		t.Parallel()
-		req, err := http.NewRequest("GET", "/v0/servers/apollo-mcp-server", nil)
+		req, err := http.NewRequest("GET", "/servers/apollo-mcp-server", nil)
 		require.NoError(t, err)
 
 		rr := httptest.NewRecorder()
@@ -1319,7 +1319,7 @@ func TestResponseFieldMapping(t *testing.T) {
 
 	t.Run("container server with env vars and permissions", func(t *testing.T) {
 		t.Parallel()
-		req, err := http.NewRequest("GET", "/v0/servers/adb-mysql-mcp-server", nil)
+		req, err := http.NewRequest("GET", "/servers/adb-mysql-mcp-server", nil)
 		require.NoError(t, err)
 
 		rr := httptest.NewRecorder()
@@ -1361,7 +1361,7 @@ func TestResponseFieldMapping(t *testing.T) {
 
 	t.Run("remote server fields", func(t *testing.T) {
 		t.Parallel()
-		req, err := http.NewRequest("GET", "/v0/servers/atlassian-remote", nil)
+		req, err := http.NewRequest("GET", "/servers/atlassian-remote", nil)
 		require.NoError(t, err)
 
 		rr := httptest.NewRecorder()
@@ -1519,7 +1519,11 @@ func TestErrorScenarios(t *testing.T) {
 
 	t.Run("empty server name", func(t *testing.T) {
 		t.Parallel()
-		router := v1.Router(mockSvc)
+		// This test needs its own mock since it calls ListServers (chi routes /servers/ to list endpoint)
+		emptyNameMockSvc := mocks.NewMockRegistryService(ctrl)
+		emptyNameMockSvc.EXPECT().ListServers(gomock.Any()).Return([]registry.ServerMetadata{}, nil)
+
+		router := v1.Router(emptyNameMockSvc)
 
 		// Test with empty path parameter (though chi wouldn't normally route this)
 		req, err := http.NewRequest("GET", "/servers/", nil)

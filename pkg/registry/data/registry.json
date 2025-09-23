@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-22T00:18:38Z",
+  "last_updated": "2025-09-23T00:17:24Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1252,9 +1252,9 @@
         "idp_investigate_entity"
       ],
       "metadata": {
-        "stars": 49,
+        "stars": 56,
         "pulls": 3771,
-        "last_updated": "2025-09-05T02:29:05Z"
+        "last_updated": "2025-09-22T02:32:00Z"
       },
       "repository_url": "https://github.com/crowdstrike/falcon-mcp",
       "tags": [
@@ -1591,9 +1591,9 @@
         "fetch"
       ],
       "metadata": {
-        "stars": 17,
+        "stars": 18,
         "pulls": 12390,
-        "last_updated": "2025-09-05T02:29:06Z"
+        "last_updated": "2025-09-22T02:32:00Z"
       },
       "repository_url": "https://github.com/stackloklabs/gofetch",
       "tags": [
@@ -2358,7 +2358,7 @@
         "ingestion",
         "data-connectors"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20250920001",
+      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20250921001",
       "permissions": {
         "network": {
           "outbound": {
@@ -2478,9 +2478,9 @@
         "get_error_log"
       ],
       "metadata": {
-        "stars": 170,
+        "stars": 190,
         "pulls": 17082,
-        "last_updated": "2025-09-04T08:11:55Z"
+        "last_updated": "2025-09-22T02:31:59Z"
       },
       "repository_url": "https://github.com/voska/hass-mcp",
       "tags": [
@@ -2777,9 +2777,9 @@
         "apply_resource"
       ],
       "metadata": {
-        "stars": 46,
+        "stars": 49,
         "pulls": 13952,
-        "last_updated": "2025-09-05T02:29:06Z"
+        "last_updated": "2025-09-22T02:32:01Z"
       },
       "repository_url": "https://github.com/StacklokLabs/mkp",
       "tags": [
@@ -4550,9 +4550,9 @@
         "semgrep_scan_with_custom_rule"
       ],
       "metadata": {
-        "stars": 522,
+        "stars": 565,
         "pulls": 12180,
-        "last_updated": "2025-09-04T08:11:56Z"
+        "last_updated": "2025-09-22T02:32:00Z"
       },
       "repository_url": "https://github.com/semgrep/mcp",
       "tags": [

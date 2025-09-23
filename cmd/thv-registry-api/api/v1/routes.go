@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
@@ -33,20 +34,47 @@ type RegistryInfoResponse struct {
 	TotalServers int    `json:"total_servers"`
 }
 
-// ServerResponse represents a server in API responses
-type ServerResponse struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Tier        string   `json:"tier"`
-	Status      string   `json:"status"`
-	Transport   string   `json:"transport"`
-	Tools       []string `json:"tools"`
+// ServerSummaryResponse represents a server in list API responses (summary view)
+type ServerSummaryResponse struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Tier        string `json:"tier"`
+	Status      string `json:"status"`
+	Transport   string `json:"transport"`
+	ToolsCount  int    `json:"tools_count"`
+}
+
+// EnvVarDetail represents detailed environment variable information
+type EnvVarDetail struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
+	Default     string `json:"default,omitempty"`
+	Secret      bool   `json:"secret,omitempty"`
+}
+
+// ServerDetailResponse represents a server in detail API responses (full view)
+type ServerDetailResponse struct {
+	Name          string                 `json:"name"`
+	Description   string                 `json:"description"`
+	Tier          string                 `json:"tier"`
+	Status        string                 `json:"status"`
+	Transport     string                 `json:"transport"`
+	Tools         []string               `json:"tools"`
+	EnvVars       []EnvVarDetail         `json:"env_vars,omitempty"`
+	Permissions   map[string]interface{} `json:"permissions,omitempty"`
+	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+	RepositoryURL string                 `json:"repository_url,omitempty"`
+	Tags          []string               `json:"tags,omitempty"`
+	Args          []string               `json:"args,omitempty"`
+	Volumes       map[string]interface{} `json:"volumes,omitempty"`
+	Image         string                 `json:"image,omitempty"`
 }
 
 // ListServersResponse represents the servers list response
 type ListServersResponse struct {
-	Servers []ServerResponse `json:"servers"`
-	Total   int              `json:"total"`
+	Servers []ServerSummaryResponse `json:"servers"`
+	Total   int                     `json:"total"`
 }
 
 // ErrorResponse represents a standardized error response
@@ -75,6 +103,9 @@ func Router(svc service.RegistryService) http.Handler {
 	// MCP Registry API v0 compatible endpoints
 	r.Get("/servers", routes.listServers)
 	r.Post("/publish", routes.publishServer)
+
+	// V0 individual server endpoint (must come before /servers route group)
+	r.Get("/v0/servers/{name}", routes.getServer)
 
 	// Registry metadata
 	r.Get("/info", routes.getRegistryInfo)
@@ -185,10 +216,10 @@ func (rr *Routes) listServers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert to response format
-	serverResponses := make([]ServerResponse, len(servers))
+	// Convert to summary response format
+	serverResponses := make([]ServerSummaryResponse, len(servers))
 	for i := range servers {
-		serverResponses[i] = newServerResponse(servers[i])
+		serverResponses[i] = newServerSummaryResponse(servers[i])
 	}
 
 	// Toolhive format response
@@ -209,7 +240,7 @@ func (rr *Routes) listServers(w http.ResponseWriter, r *http.Request) {
 //	@Produce		json
 //	@Param			name	path		string	true	"Server name"
 //	@Param			format	query		string	false	"Response format"	Enums(toolhive,upstream)	default(toolhive)
-//	@Success		200		{object}	ServerResponse
+//	@Success		200		{object}	ServerDetailResponse
 //	@Failure		400		{object}	ErrorResponse
 //	@Failure		404		{object}	ErrorResponse
 //	@Failure		501		{object}	ErrorResponse
@@ -250,8 +281,8 @@ func (rr *Routes) getServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert to response format
-	serverResponse := newServerResponse(server)
+	// Convert to detailed response format
+	serverResponse := newServerDetailResponse(server)
 
 	// Toolhive format
 	rr.writeJSONResponse(w, serverResponse)
@@ -291,16 +322,167 @@ func (rr *Routes) listDeployedServers(w http.ResponseWriter, r *http.Request) {
 	rr.writeJSONResponse(w, servers)
 }
 
-// newServerResponse creates a ServerResponse from server metadata
-func newServerResponse(server registry.ServerMetadata) ServerResponse {
-	return ServerResponse{
+// newServerSummaryResponse creates a ServerSummaryResponse from server metadata
+func newServerSummaryResponse(server registry.ServerMetadata) ServerSummaryResponse {
+	return ServerSummaryResponse{
 		Name:        server.GetName(),
 		Description: server.GetDescription(),
 		Tier:        server.GetTier(),
 		Status:      server.GetStatus(),
 		Transport:   server.GetTransport(),
-		Tools:       server.GetTools(),
+		ToolsCount:  len(server.GetTools()),
 	}
+}
+
+// newServerDetailResponse creates a ServerDetailResponse from server metadata with all available fields
+func newServerDetailResponse(server registry.ServerMetadata) ServerDetailResponse {
+	response := ServerDetailResponse{
+		Name:          server.GetName(),
+		Description:   server.GetDescription(),
+		Tier:          server.GetTier(),
+		Status:        server.GetStatus(),
+		Transport:     server.GetTransport(),
+		Tools:         server.GetTools(),
+		RepositoryURL: server.GetRepositoryURL(),
+		Tags:          server.GetTags(),
+	}
+
+	populateEnvVars(&response, server)
+	populateMetadata(&response, server)
+	populateServerTypeSpecificFields(&response, server)
+
+	return response
+}
+
+// populateEnvVars converts and populates environment variables in the response
+func populateEnvVars(response *ServerDetailResponse, server registry.ServerMetadata) {
+	envVars := server.GetEnvVars()
+	if envVars == nil {
+		return
+	}
+
+	response.EnvVars = make([]EnvVarDetail, 0, len(envVars))
+	for _, envVar := range envVars {
+		if envVar != nil {
+			response.EnvVars = append(response.EnvVars, EnvVarDetail{
+				Name:        envVar.Name,
+				Description: envVar.Description,
+				Required:    envVar.Required,
+				Default:     envVar.Default,
+				Secret:      envVar.Secret,
+			})
+		}
+	}
+}
+
+// populateMetadata converts and populates metadata in the response
+func populateMetadata(response *ServerDetailResponse, server registry.ServerMetadata) {
+	// Convert metadata from *Metadata to map[string]interface{}
+	if metadata := server.GetMetadata(); metadata != nil {
+		response.Metadata = map[string]interface{}{
+			"stars":        metadata.Stars,
+			"pulls":        metadata.Pulls,
+			"last_updated": metadata.LastUpdated,
+		}
+	}
+
+	// Add custom metadata
+	if customMetadata := server.GetCustomMetadata(); customMetadata != nil {
+		if response.Metadata == nil {
+			response.Metadata = make(map[string]interface{})
+		}
+		for k, v := range customMetadata {
+			response.Metadata[k] = v
+		}
+	}
+}
+
+// populateServerTypeSpecificFields populates fields specific to container or remote servers
+func populateServerTypeSpecificFields(response *ServerDetailResponse, server registry.ServerMetadata) {
+	if !server.IsRemote() {
+		populateContainerServerFields(response, server)
+	} else {
+		populateRemoteServerFields(response, server)
+	}
+}
+
+// populateContainerServerFields populates fields specific to container servers (ImageMetadata)
+func populateContainerServerFields(response *ServerDetailResponse, server registry.ServerMetadata) {
+	// The server might be wrapped in a serverWithName struct from the service layer
+	actualServer := extractEmbeddedServerMetadata(server)
+
+	// Type assert to access ImageMetadata-specific fields
+	imgMetadata, ok := actualServer.(*registry.ImageMetadata)
+	if !ok {
+		return
+	}
+
+	// Add permissions if available
+	if imgMetadata.Permissions != nil {
+		response.Permissions = map[string]interface{}{
+			"profile": imgMetadata.Permissions,
+		}
+	}
+
+	// Add args if available
+	if imgMetadata.Args != nil {
+		response.Args = imgMetadata.Args
+	}
+
+	// Add image as top-level field
+	response.Image = imgMetadata.Image
+
+	// Add image-specific metadata
+	if response.Metadata == nil {
+		response.Metadata = make(map[string]interface{})
+	}
+	response.Metadata["target_port"] = imgMetadata.TargetPort
+	response.Metadata["docker_tags"] = imgMetadata.DockerTags
+}
+
+// populateRemoteServerFields populates fields specific to remote servers
+func populateRemoteServerFields(response *ServerDetailResponse, server registry.ServerMetadata) {
+	remoteMetadata, ok := server.(*registry.RemoteServerMetadata)
+	if !ok {
+		return
+	}
+
+	if response.Metadata == nil {
+		response.Metadata = make(map[string]interface{})
+	}
+
+	response.Metadata["url"] = remoteMetadata.URL
+	if remoteMetadata.Headers != nil {
+		response.Metadata["headers_count"] = len(remoteMetadata.Headers)
+	}
+	response.Metadata["oauth_enabled"] = remoteMetadata.OAuthConfig != nil
+}
+
+// extractEmbeddedServerMetadata extracts the embedded ServerMetadata from serverWithName wrapper
+func extractEmbeddedServerMetadata(server registry.ServerMetadata) registry.ServerMetadata {
+	// Use reflection to check if this is a struct with an embedded ServerMetadata field
+	v := reflect.ValueOf(server)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+
+	if v.Kind() == reflect.Struct {
+		// Look for an embedded field of type registry.ServerMetadata
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Field(i)
+			fieldType := v.Type().Field(i)
+
+			// Check if it's an embedded field (Anonymous) that implements ServerMetadata
+			if fieldType.Anonymous && field.CanInterface() {
+				if serverMetadata, ok := field.Interface().(registry.ServerMetadata); ok {
+					return serverMetadata
+				}
+			}
+		}
+	}
+
+	// If not wrapped, return the original server
+	return server
 }
 
 // getDeployedServer handles GET /api/v1/registry/servers/deployed/{name}
@@ -463,4 +645,16 @@ func serveOpenAPIYAML(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/x-yaml")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(yamlData)
+}
+
+// Test helpers - these functions are exported only for testing purposes
+
+// NewServerSummaryResponseForTesting creates a ServerSummaryResponse for testing
+func NewServerSummaryResponseForTesting(server registry.ServerMetadata) ServerSummaryResponse {
+	return newServerSummaryResponse(server)
+}
+
+// NewServerDetailResponseForTesting creates a ServerDetailResponse for testing
+func NewServerDetailResponseForTesting(server registry.ServerMetadata) ServerDetailResponse {
+	return newServerDetailResponse(server)
 }

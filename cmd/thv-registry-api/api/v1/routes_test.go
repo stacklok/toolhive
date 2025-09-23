@@ -617,6 +617,15 @@ func (*fileBasedRegistryProvider) GetRegistryName() string {
 	return "embedded-registry"
 }
 
+// Helper functions for testing the response conversion functions
+func newServerSummaryResponseForTesting(server registry.ServerMetadata) v1.ServerSummaryResponse {
+	return v1.NewServerSummaryResponseForTesting(server)
+}
+
+func newServerDetailResponseForTesting(server registry.ServerMetadata) v1.ServerDetailResponse {
+	return v1.NewServerDetailResponseForTesting(server)
+}
+
 // TestRoutesWithRealData tests all routes using the embedded registry.json data
 // This provides integration-style testing with realistic MCP server configurations
 func TestRoutesWithRealData(t *testing.T) {
@@ -1211,4 +1220,384 @@ func BenchmarkRoutesWithRealData(b *testing.B) {
 			router.ServeHTTP(rr, req)
 		}
 	})
+}
+
+// TestServerResponseStructures tests the new response structure changes
+func TestServerResponseStructures(t *testing.T) {
+	t.Parallel()
+
+	provider, err := newRealisticRegistryProvider()
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	svc, err := service.NewService(ctx, provider, nil)
+	require.NoError(t, err)
+
+	router := v1.Router(svc)
+
+	t.Run("list servers returns tools_count instead of tools array", func(t *testing.T) {
+		t.Parallel()
+		req, err := http.NewRequest("GET", "/servers", nil)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusOK, rr.Code)
+
+		var response struct {
+			Servers []struct {
+				Name        string   `json:"name"`
+				Description string   `json:"description"`
+				Tier        string   `json:"tier"`
+				Status      string   `json:"status"`
+				Transport   string   `json:"transport"`
+				ToolsCount  int      `json:"tools_count"`
+				Tools       []string `json:"tools,omitempty"` // Should not be present
+			} `json:"servers"`
+			Total int `json:"total"`
+		}
+		err = json.Unmarshal(rr.Body.Bytes(), &response)
+		require.NoError(t, err)
+
+		assert.Greater(t, len(response.Servers), 0)
+
+		// Verify that we have tools_count and not tools array
+		for _, server := range response.Servers {
+			assert.Greater(t, server.ToolsCount, 0, "server %s should have tools_count > 0", server.Name)
+			assert.Nil(t, server.Tools, "server %s should not have tools array in summary", server.Name)
+		}
+	})
+
+	t.Run("get server details returns full tools array and image field", func(t *testing.T) {
+		t.Parallel()
+		req, err := http.NewRequest("GET", "/v0/servers/apollo-mcp-server", nil)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusOK, rr.Code)
+
+		var response struct {
+			Name        string   `json:"name"`
+			Description string   `json:"description"`
+			Tier        string   `json:"tier"`
+			Status      string   `json:"status"`
+			Transport   string   `json:"transport"`
+			Tools       []string `json:"tools"`
+			Image       string   `json:"image"`
+			ToolsCount  int      `json:"tools_count,omitempty"` // Should not be present
+		}
+		err = json.Unmarshal(rr.Body.Bytes(), &response)
+		require.NoError(t, err)
+
+		// Verify detailed response has full tools array and image
+		assert.Greater(t, len(response.Tools), 0, "should have tools array in detailed response")
+		assert.NotEmpty(t, response.Image, "should have image field")
+		assert.Equal(t, 0, response.ToolsCount, "should not have tools_count in detailed response")
+
+		// Verify specific fields
+		assert.Equal(t, "apollo-mcp-server", response.Name)
+		assert.Equal(t, "streamable-http", response.Transport)
+		assert.Contains(t, response.Image, "apollo-mcp-server")
+	})
+}
+
+// TestResponseFieldMapping tests the mapping between different response types
+func TestResponseFieldMapping(t *testing.T) {
+	t.Parallel()
+
+	provider, err := newRealisticRegistryProvider()
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	svc, err := service.NewService(ctx, provider, nil)
+	require.NoError(t, err)
+
+	router := v1.Router(svc)
+
+	t.Run("container server with env vars and permissions", func(t *testing.T) {
+		t.Parallel()
+		req, err := http.NewRequest("GET", "/v0/servers/adb-mysql-mcp-server", nil)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusOK, rr.Code)
+
+		var response map[string]interface{}
+		err = json.Unmarshal(rr.Body.Bytes(), &response)
+		require.NoError(t, err)
+
+		// Check that env_vars are properly structured
+		envVars, exists := response["env_vars"]
+		assert.True(t, exists, "should have env_vars field")
+
+		envVarsList, ok := envVars.([]interface{})
+		assert.True(t, ok, "env_vars should be an array")
+		assert.Greater(t, len(envVarsList), 0, "should have environment variables")
+
+		// Check first env var structure
+		if len(envVarsList) > 0 {
+			envVar, ok := envVarsList[0].(map[string]interface{})
+			assert.True(t, ok, "env var should be an object")
+
+			assert.Contains(t, envVar, "name", "env var should have name")
+			assert.Contains(t, envVar, "description", "env var should have description")
+			assert.Contains(t, envVar, "required", "env var should have required field")
+		}
+
+		// Check permissions
+		_, exists = response["permissions"]
+		assert.True(t, exists, "should have permissions field")
+
+		// Check image field
+		image, exists := response["image"]
+		assert.True(t, exists, "should have image field")
+		assert.NotEmpty(t, image, "image field should not be empty")
+	})
+
+	t.Run("remote server fields", func(t *testing.T) {
+		t.Parallel()
+		req, err := http.NewRequest("GET", "/v0/servers/atlassian-remote", nil)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusOK, rr.Code)
+
+		var response map[string]interface{}
+		err = json.Unmarshal(rr.Body.Bytes(), &response)
+		require.NoError(t, err)
+
+		// Remote servers should have metadata with URL info
+		metadata, exists := response["metadata"]
+		assert.True(t, exists, "remote server should have metadata")
+
+		metadataMap, ok := metadata.(map[string]interface{})
+		assert.True(t, ok, "metadata should be an object")
+
+		// Check remote-specific metadata fields
+		assert.Contains(t, metadataMap, "url", "remote server metadata should contain URL")
+		assert.Contains(t, metadataMap, "oauth_enabled", "remote server metadata should contain oauth_enabled")
+
+		// Should not have image field for remote servers
+		_, hasImage := response["image"]
+		assert.False(t, hasImage, "remote server should not have image field")
+	})
+}
+
+// TestHelperFunctions tests the individual helper functions
+func TestHelperFunctions(t *testing.T) {
+	t.Parallel()
+
+	// Test data setup
+	testImageMetadata := &registry.ImageMetadata{
+		BaseServerMetadata: registry.BaseServerMetadata{
+			Name:        "test-server",
+			Description: "Test server",
+			Tier:        "Community",
+			Status:      "Active",
+			Transport:   "stdio",
+			Tools:       []string{"tool1", "tool2", "tool3"},
+		},
+		Image: "test-image:latest",
+	}
+
+	testRemoteMetadata := &registry.RemoteServerMetadata{
+		BaseServerMetadata: registry.BaseServerMetadata{
+			Name:        "remote-server",
+			Description: "Remote test server",
+			Tier:        "Official",
+			Status:      "Active",
+			Transport:   "sse",
+			Tools:       []string{"remote1", "remote2"},
+		},
+		URL: "https://remote.example.com",
+	}
+
+	t.Run("newServerSummaryResponse", func(t *testing.T) {
+		t.Parallel()
+		summary := newServerSummaryResponseForTesting(testImageMetadata)
+
+		assert.Equal(t, "test-server", summary.Name)
+		assert.Equal(t, "Test server", summary.Description)
+		assert.Equal(t, "Community", summary.Tier)
+		assert.Equal(t, "Active", summary.Status)
+		assert.Equal(t, "stdio", summary.Transport)
+		assert.Equal(t, 3, summary.ToolsCount)
+	})
+
+	t.Run("newServerDetailResponse with container server", func(t *testing.T) {
+		t.Parallel()
+		detail := newServerDetailResponseForTesting(testImageMetadata)
+
+		assert.Equal(t, "test-server", detail.Name)
+		assert.Equal(t, "Test server", detail.Description)
+		assert.Equal(t, "Community", detail.Tier)
+		assert.Equal(t, "Active", detail.Status)
+		assert.Equal(t, "stdio", detail.Transport)
+		assert.Equal(t, []string{"tool1", "tool2", "tool3"}, detail.Tools)
+		assert.Equal(t, "test-image:latest", detail.Image)
+	})
+
+	t.Run("newServerDetailResponse with remote server", func(t *testing.T) {
+		t.Parallel()
+		detail := newServerDetailResponseForTesting(testRemoteMetadata)
+
+		assert.Equal(t, "remote-server", detail.Name)
+		assert.Equal(t, "Remote test server", detail.Description)
+		assert.Equal(t, "Official", detail.Tier)
+		assert.Equal(t, "Active", detail.Status)
+		assert.Equal(t, "sse", detail.Transport)
+		assert.Equal(t, []string{"remote1", "remote2"}, detail.Tools)
+		assert.Empty(t, detail.Image, "remote server should not have image")
+
+		// Check metadata contains URL info
+		assert.Contains(t, detail.Metadata, "url")
+		assert.Equal(t, "https://remote.example.com", detail.Metadata["url"])
+	})
+}
+
+// TestErrorScenarios tests various error conditions
+func TestErrorScenarios(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockSvc := mocks.NewMockRegistryService(ctrl)
+
+	t.Run("registry info service error", func(t *testing.T) {
+		t.Parallel()
+		mockSvc.EXPECT().GetRegistry(gomock.Any()).Return(nil, "", assert.AnError)
+
+		router := v1.Router(mockSvc)
+		req, err := http.NewRequest("GET", "/info", nil)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusInternalServerError, rr.Code)
+
+		var response map[string]interface{}
+		err = json.Unmarshal(rr.Body.Bytes(), &response)
+		require.NoError(t, err)
+		assert.Contains(t, response, "error")
+	})
+
+	t.Run("list servers service error", func(t *testing.T) {
+		t.Parallel()
+		mockSvc.EXPECT().ListServers(gomock.Any()).Return(nil, assert.AnError)
+
+		router := v1.Router(mockSvc)
+		req, err := http.NewRequest("GET", "/servers", nil)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
+
+	t.Run("get server service error", func(t *testing.T) {
+		t.Parallel()
+		mockSvc.EXPECT().GetServer(gomock.Any(), "error-server").Return(nil, assert.AnError)
+
+		router := v1.Router(mockSvc)
+		req, err := http.NewRequest("GET", "/servers/error-server", nil)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	})
+
+	t.Run("empty server name", func(t *testing.T) {
+		t.Parallel()
+		router := v1.Router(mockSvc)
+
+		// Test with empty path parameter (though chi wouldn't normally route this)
+		req, err := http.NewRequest("GET", "/servers/", nil)
+		require.NoError(t, err)
+
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		// Chi will route this to the list servers endpoint, not the individual server endpoint
+		// So we expect either a valid response or method not allowed
+		assert.True(t, rr.Code == http.StatusOK || rr.Code == http.StatusMethodNotAllowed || rr.Code == http.StatusNotFound)
+	})
+}
+
+// TestOpenAPIEndpoint tests the OpenAPI YAML endpoint
+func TestOpenAPIEndpoint(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockSvc := mocks.NewMockRegistryService(ctrl)
+	router := v1.Router(mockSvc)
+
+	req, err := http.NewRequest("GET", "/openapi.yaml", nil)
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "application/x-yaml", rr.Header().Get("Content-Type"))
+	assert.Greater(t, len(rr.Body.String()), 0, "OpenAPI YAML should not be empty")
+}
+
+// TestPublishServerEndpoint tests the publish endpoint
+func TestPublishServerEndpoint(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockSvc := mocks.NewMockRegistryService(ctrl)
+	router := v1.Router(mockSvc)
+
+	req, err := http.NewRequest("POST", "/publish", nil)
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusNotImplemented, rr.Code)
+
+	var response map[string]interface{}
+	err = json.Unmarshal(rr.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.Contains(t, response, "error")
+	assert.Equal(t, "Publishing is not supported by this registry implementation", response["error"])
+}
+
+// TestReadinessWithServiceError tests readiness endpoint when service has errors
+func TestReadinessWithServiceError(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockSvc := mocks.NewMockRegistryService(ctrl)
+	mockSvc.EXPECT().CheckReadiness(gomock.Any()).Return(assert.AnError)
+
+	router := v1.HealthRouter(mockSvc)
+	req, err := http.NewRequest("GET", "/readiness", nil)
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
+
+	var response map[string]interface{}
+	err = json.Unmarshal(rr.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.Contains(t, response, "error")
 }

@@ -1,16 +1,86 @@
 package docker
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
+
+func TestCreateSquidContainer_Basics(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	var gotHost *container.HostConfig
+
+	var createCalled bool
+	var startCalled bool
+
+	api := &fakeDockerAPI{
+		createFunc: func(_ context.Context, _ *container.Config, host *container.HostConfig, _ *network.NetworkingConfig, _ *v1.Platform, _ string) (container.CreateResponse, error) {
+			createCalled = true
+			gotHost = host
+			return container.CreateResponse{ID: "cid-new"}, nil
+		},
+		startFunc: func(_ context.Context, id string, _ container.StartOptions) error {
+			startCalled = true
+			assert.Equal(t, "cid-new", id)
+			return nil
+		},
+	}
+
+	c := &Client{
+		api:          api,
+		imageManager: &fakeImageManager{},
+	}
+
+	_, err := createSquidContainer(
+		ctx,
+		c,
+		"squid-test",
+		true,
+		map[string]struct{}{},
+		map[string]*network.EndpointSettings{},
+		map[string][]runtime.PortBinding{},
+		"/tmp/squid.conf",
+	)
+
+	require.NoError(t, err)
+
+	require.True(t, createCalled)
+	require.True(t, startCalled)
+
+	// Validate HostConfig
+	require.NotNil(t, gotHost)
+	assert.Equal(t, gotHost.NetworkMode, container.NetworkMode("bridge"))
+	assert.ElementsMatch(t, gotHost.Mounts, []mount.Mount{
+		{
+			Type:     mount.TypeBind,
+			Source:   "/tmp/squid.conf",
+			Target:   "/etc/squid/squid.conf",
+			ReadOnly: true,
+		},
+	})
+	assert.ElementsMatch(t, gotHost.CapAdd, []string{"CAP_SETUID", "CAP_SETGID"})
+	assert.Nil(t, gotHost.CapDrop)
+	assert.Contains(t, gotHost.SecurityOpt, "label:disable")
+	assert.Equal(t, gotHost.RestartPolicy, container.RestartPolicy{
+		Name: "unless-stopped",
+	})
+	// TODO: Validate exposed ports & port bindings
+}
 
 func TestCreateTempEgressSquidConf_AllowAllWhenNil(t *testing.T) {
 	t.Parallel()

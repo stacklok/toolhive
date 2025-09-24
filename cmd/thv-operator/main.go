@@ -22,6 +22,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
 )
@@ -74,16 +75,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controllers.MCPServerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	rec := &controllers.MCPServerReconciler{
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		ImageValidation: validation.ImageValidationAlwaysAllow,
+	}
+
+	if err = rec.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "MCPServer")
 		os.Exit(1)
 	}
 
 	// Only register MCPRegistry controller if feature flag is enabled
 	if os.Getenv("ENABLE_EXPERIMENTAL_FEATURES") == "true" {
+		rec.ImageValidation = validation.ImageValidationRegistryEnforcing
+
 		if err = (controllers.NewMCPRegistryReconciler(mgr.GetClient(), mgr.GetScheme())).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "MCPRegistry")
 			os.Exit(1)

@@ -1,0 +1,156 @@
+# Example MCPRegistry with enforcement enabled
+# This demonstrates how to create a registry that enforces image validation
+# When enforceServers: true, MCPServers in this namespace must exist in the registry
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: enforcing-registry-data
+  namespace: toolhive-system
+data:
+  registry.json: |
+    {
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+      "version": "1.0.0",
+      "last_updated": "2025-09-08T12:00:00Z",
+      "servers": {
+        "filesystem": {
+          "description": "Allows you to do filesystem operations",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "read_file",
+            "write_file",
+            "list_directory",
+            "create_directory"
+          ],
+          "metadata": {
+            "stars": 1500,
+            "pulls": 500,
+            "last_updated": "2025-09-08T12:00:00Z"
+          },
+          "repository_url": "https://github.com/modelcontextprotocol/servers",
+          "tags": [
+            "filesystem",
+            "approved"
+          ],
+          "image": "docker.io/mcp/filesystem:latest",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        },
+        "github": {
+          "description": "Provides integration with GitHub's APIs",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "create_issue",
+            "create_pull_request",
+            "search_repositories"
+          ],
+          "metadata": {
+            "stars": 2200,
+            "pulls": 800,
+            "last_updated": "2025-09-08T12:00:00Z"
+          },
+          "repository_url": "https://github.com/github/github-mcp-server",
+          "tags": [
+            "github",
+            "approved"
+          ],
+          "image": "ghcr.io/github/github-mcp-server:latest",
+          "permissions": {
+            "network": {
+              "outbound": {
+                "allow_host": [
+                  ".github.com",
+                  ".githubusercontent.com"
+                ],
+                "allow_port": [
+                  443
+                ]
+              }
+            }
+          }
+        },
+        "anthropic-tools": {
+          "description": "Anthropic's official MCP tools",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": [
+            "analyze",
+            "generate",
+            "transform"
+          ],
+          "metadata": {
+            "stars": 5000,
+            "pulls": 2000,
+            "last_updated": "2025-09-08T12:00:00Z"
+          },
+          "repository_url": "https://github.com/anthropics/mcp-tools",
+          "tags": [
+            "anthropic",
+            "approved",
+            "official"
+          ],
+          "image": "docker.io/anthropic/mcp-tools:v1.0.0",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        }
+      },
+      "groups": [
+        {
+          "name": "development-tools",
+          "description": "Development and coding tools",
+          "servers": {
+            "code-analyzer": {
+              "description": "Static code analysis tools",
+              "tier": "Community",
+              "status": "Active",
+              "transport": "stdio",
+              "tools": [
+                "analyze_python",
+                "analyze_go",
+                "analyze_javascript"
+              ],
+              "tags": [
+                "development",
+                "approved"
+              ],
+              "image": "docker.io/mcp/code-analyzer:v2.1.0",
+              "permissions": {
+                "network": {
+                  "outbound": {}
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: enforcing-registry
+  namespace: toolhive-system
+spec:
+  displayName: "Approved MCP Servers (Enforcing)"
+  # When enforceServers is true, MCPServers in this namespace must exist in this registry
+  # Images allowed by this registry:
+  # - docker.io/mcp/filesystem:latest
+  # - ghcr.io/github/github-mcp-server:latest
+  # - docker.io/anthropic/mcp-tools:v1.0.0
+  # - docker.io/mcp/code-analyzer:v2.1.0 (from the development-tools group)
+  enforceServers: true
+  source:
+    type: configmap
+    configmap:
+      name: enforcing-registry-data

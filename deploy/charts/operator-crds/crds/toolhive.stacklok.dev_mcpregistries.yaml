@@ -65,6 +65,15 @@ spec:
               displayName:
                 description: DisplayName is a human-readable name for the registry
                 type: string
+              enforceServers:
+                default: false
+                description: |-
+                  EnforceServers indicates whether MCPServers in this namespace must have their images
+                  present in at least one registry in the namespace. When any registry in the namespace
+                  has this field set to true, enforcement is enabled for the entire namespace.
+                  MCPServers with images not found in any registry will be rejected.
+                  When false (default), MCPServers can be deployed regardless of registry presence.
+                type: boolean
               filter:
                 description: Filter defines include/exclude patterns for registry
                   content

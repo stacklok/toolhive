@@ -44,6 +44,15 @@ type MCPRegistrySpec struct {
 	// Filter defines include/exclude patterns for registry content
 	// +optional
 	Filter *RegistryFilter `json:"filter,omitempty"`
+
+	// EnforceServers indicates whether MCPServers in this namespace must have their images
+	// present in at least one registry in the namespace. When any registry in the namespace
+	// has this field set to true, enforcement is enabled for the entire namespace.
+	// MCPServers with images not found in any registry will be rejected.
+	// When false (default), MCPServers can be deployed regardless of registry presence.
+	// +kubebuilder:default=false
+	// +optional
+	EnforceServers bool `json:"enforceServers,omitempty"`
 }
 
 // MCPRegistrySource defines the source configuration for registry data

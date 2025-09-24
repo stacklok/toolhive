@@ -176,7 +176,9 @@ func (v *RegistryEnforcingValidator) validateAgainstAllRegistries(
 	return fmt.Errorf("image %q not found in enforced registries: %w", image, ErrImageInvalid)
 }
 
-func (*RegistryEnforcingValidator) getEnforcingRegistries(mcpRegistryList *mcpv1alpha1.MCPRegistryList) []mcpv1alpha1.MCPRegistry {
+func (*RegistryEnforcingValidator) getEnforcingRegistries(
+	mcpRegistryList *mcpv1alpha1.MCPRegistryList,
+) []mcpv1alpha1.MCPRegistry {
 	var enforcingRegistries []mcpv1alpha1.MCPRegistry
 	for _, mcpRegistry := range mcpRegistryList.Items {
 		if mcpRegistry.Spec.EnforceServers {

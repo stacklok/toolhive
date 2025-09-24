@@ -2,7 +2,6 @@ package registryapi
 
 import (
 	"errors"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -199,16 +198,6 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 func TestGetRegistryAPIImage(t *testing.T) {
 	t.Parallel()
 
-	// Save original environment variable
-	originalImage := os.Getenv("TOOLHIVE_REGISTRY_API_IMAGE")
-	t.Cleanup(func() {
-		if originalImage != "" {
-			os.Setenv("TOOLHIVE_REGISTRY_API_IMAGE", originalImage)
-		} else {
-			os.Unsetenv("TOOLHIVE_REGISTRY_API_IMAGE")
-		}
-	})
-
 	tests := []struct {
 		name        string
 		envValue    string
@@ -249,14 +238,15 @@ func TestGetRegistryAPIImage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Cleanup environment before each test
-			os.Unsetenv("TOOLHIVE_REGISTRY_API_IMAGE")
-
-			if tt.setEnv {
-				os.Setenv("TOOLHIVE_REGISTRY_API_IMAGE", tt.envValue)
+			// Create a mock environment getter function for this test case
+			envGetter := func(key string) string {
+				if key == "TOOLHIVE_REGISTRY_API_IMAGE" && tt.setEnv {
+					return tt.envValue
+				}
+				return ""
 			}
 
-			result := getRegistryAPIImage()
+			result := getRegistryAPIImageWithEnvGetter(envGetter)
 			assert.Equal(t, tt.expected, result, tt.description)
 		})
 	}

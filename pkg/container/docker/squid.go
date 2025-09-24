@@ -106,7 +106,7 @@ func createSquidContainer(
 	err := c.imageManager.PullImage(ctx, squidImage)
 	if err != nil {
 		// Check if the squid image exists locally before failing
-		_, inspectErr := c.client.ImageInspect(ctx, squidImage)
+		_, inspectErr := c.imageManager.ImageExists(ctx, squidImage)
 		if inspectErr == nil {
 			logger.Infof("Squid image %s exists locally, continuing despite pull failure", squidImage)
 		} else {
@@ -140,7 +140,7 @@ func createSquidContainer(
 		NetworkMode: container.NetworkMode("bridge"),
 		CapAdd:      []string{"CAP_SETUID", "CAP_SETGID"},
 		CapDrop:     nil,
-		SecurityOpt: nil,
+		SecurityOpt: []string{"label:disable"},
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},

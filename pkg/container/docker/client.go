@@ -759,7 +759,7 @@ func (c *Client) getPermissionConfigFromProfile(
 		NetworkMode: "", // set to blank as podman is not recognizing the "none" value when we attach to other networks
 		CapDrop:     []string{"ALL"},
 		CapAdd:      []string{},
-		SecurityOpt: []string{},
+		SecurityOpt: []string{"label:disable"},
 		Privileged:  profile.Privileged,
 	}
 
@@ -1345,7 +1345,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 		NetworkMode: container.NetworkMode("bridge"),
 		CapAdd:      nil,
 		CapDrop:     nil,
-		SecurityOpt: nil,
+		SecurityOpt: []string{"label:disable"},
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},

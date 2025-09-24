@@ -1,0 +1,463 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: kagent-integration
+spec:
+  description: Tests Kagent integration - verifies ToolServer and RemoteMCPServer creation
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    exec: 300s
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+      
+  - name: deploy-mcpserver-with-kagent-disabled
+    description: Deploy MCPServer with Kagent integration disabled (default)
+    try:
+    - apply:
+        file: ../common/mcp_serviceaccount.yaml
+    - assert:
+        file: ../common/mcp_serviceaccount.yaml
+    - apply:
+        file: mcpserver-kagent-disabled.yaml
+    - assert:
+        file: mcpserver-kagent-disabled.yaml
+    - assert:
+        file: assert-mcpserver-running.yaml
+    - assert:
+        file: assert-mcpserver-pod-running.yaml
+    # Verify no Kagent resources are created when integration is disabled
+    - script:
+        content: |
+          echo "Verifying no Kagent resources are created when integration is disabled..."
+          
+          # Check that no ToolServer exists
+          if kubectl get toolserver toolhive-kagent-test -n toolhive-system >/dev/null 2>&1; then
+            echo "✗ ToolServer should not exist when Kagent integration is disabled"
+            exit 1
+          else
+            echo "✓ No ToolServer created (expected when disabled)"
+          fi
+          
+          # Check that no RemoteMCPServer exists
+          if kubectl get remotemcpserver toolhive-kagent-test -n toolhive-system >/dev/null 2>&1; then
+            echo "✗ RemoteMCPServer should not exist when Kagent integration is disabled"
+            exit 1
+          else
+            echo "✓ No RemoteMCPServer created (expected when disabled)"
+          fi
+          
+          echo "✅ Kagent integration correctly disabled!"
+
+  - name: enable-kagent-integration
+    description: Enable Kagent integration in operator
+    try:
+    - script:
+        content: |
+          echo "Enabling Kagent integration in operator..."
+          
+          # Update operator deployment to enable Kagent integration
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='json' -p='[
+            {
+              "op": "replace",
+              "path": "/spec/template/spec/containers/0/env",
+              "value": [
+                {"name": "UNSTRUCTURED_LOGS", "value": "false"},
+                {"name": "ENABLE_EXPERIMENTAL_FEATURES", "value": "false"},
+                {"name": "TOOLHIVE_RUNNER_IMAGE", "value": "ghcr.io/stacklok/toolhive/proxyrunner:v0.3.5"},
+                {"name": "TOOLHIVE_PROXY_HOST", "value": "0.0.0.0"},
+                {"name": "TOOLHIVE_REGISTRY_API_IMAGE", "value": "ghcr.io/stacklok/toolhive/registry-api:v0.3.5"},
+                {"name": "KAGENT_INTEGRATION_ENABLED", "value": "true"},
+                {"name": "KAGENT_API_VERSION", "value": "v1alpha1"}
+              ]
+            }
+          ]'
+          
+          # Wait for operator to restart
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          
+          echo "✓ Kagent integration enabled"
+
+  - name: install-kagent-crds
+    description: Install Kagent CRDs for testing
+    try:
+    - script:
+        content: |
+          echo "Installing Kagent CRDs for testing..."
+          
+          # Create ToolServer CRD (v1alpha1)
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          metadata:
+            name: toolservers.kagent.dev
+          spec:
+            group: kagent.dev
+            versions:
+            - name: v1alpha1
+              served: true
+              storage: true
+              schema:
+                openAPIV3Schema:
+                  type: object
+                  properties:
+                    spec:
+                      type: object
+                      properties:
+                        description:
+                          type: string
+                        config:
+                          type: object
+                          properties:
+                            type:
+                              type: string
+                            sse:
+                              type: object
+                              properties:
+                                url:
+                                  type: string
+                            streamableHttp:
+                              type: object
+                              properties:
+                                url:
+                                  type: string
+                    status:
+                      type: object
+            scope: Namespaced
+            names:
+              plural: toolservers
+              singular: toolserver
+              kind: ToolServer
+          EOF
+          
+          # Create RemoteMCPServer CRD (v1alpha2)
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          metadata:
+            name: remotemcpservers.kagent.dev
+          spec:
+            group: kagent.dev
+            versions:
+            - name: v1alpha2
+              served: true
+              storage: true
+              schema:
+                openAPIV3Schema:
+                  type: object
+                  properties:
+                    spec:
+                      type: object
+                      properties:
+                        description:
+                          type: string
+                        url:
+                          type: string
+                        protocol:
+                          type: string
+                          enum: ["SSE", "STREAMABLE_HTTP"]
+                    status:
+                      type: object
+            scope: Namespaced
+            names:
+              plural: remotemcpservers
+              singular: remotemcpserver
+              kind: RemoteMCPServer
+          EOF
+          
+          echo "✓ Kagent CRDs installed"
+
+  - name: test-kagent-v1alpha1-integration
+    description: Test Kagent v1alpha1 ToolServer integration
+    try:
+    - apply:
+        file: mcpserver-kagent-enabled.yaml
+    - assert:
+        file: mcpserver-kagent-enabled.yaml
+    - assert:
+        file: assert-mcpserver-running.yaml
+    - assert:
+        file: assert-mcpserver-pod-running.yaml
+    # Verify ToolServer is created
+    - script:
+        content: |
+          echo "Verifying ToolServer (v1alpha1) creation..."
+          
+          # Wait for ToolServer to be created
+          for i in $(seq 1 30); do
+            if kubectl get toolserver toolhive-kagent-test -n toolhive-system >/dev/null 2>&1; then
+              echo "✓ ToolServer toolhive-kagent-test exists"
+              break
+            fi
+            echo "  Waiting for ToolServer... (attempt $i/30)"
+            sleep 2
+          done
+          
+          # Verify ToolServer exists
+          if ! kubectl get toolserver toolhive-kagent-test -n toolhive-system >/dev/null 2>&1; then
+            echo "✗ ToolServer was not created"
+            kubectl get toolserver -A
+            exit 1
+          fi
+          
+          # Verify ToolServer spec
+          TOOLSERVER_SPEC=$(kubectl get toolserver toolhive-kagent-test -n toolhive-system -o json)
+          
+          # Check description
+          DESCRIPTION=$(echo "$TOOLSERVER_SPEC" | jq -r '.spec.description // empty')
+          if [[ "$DESCRIPTION" == *"ToolHive MCP Server: kagent-test"* ]]; then
+            echo "✓ ToolServer description is correct"
+          else
+            echo "✗ ToolServer description is incorrect: $DESCRIPTION"
+            exit 1
+          fi
+          
+          # Check config type
+          CONFIG_TYPE=$(echo "$TOOLSERVER_SPEC" | jq -r '.spec.config.type // empty')
+          if [ "$CONFIG_TYPE" = "sse" ]; then
+            echo "✓ ToolServer config type is 'sse'"
+          else
+            echo "✗ ToolServer config type is '$CONFIG_TYPE', expected 'sse'"
+            exit 1
+          fi
+          
+          # Check SSE URL
+          SSE_URL=$(echo "$TOOLSERVER_SPEC" | jq -r '.spec.config.sse.url // empty')
+          if [[ "$SSE_URL" == *"kagent-test-service.toolhive-system.svc.cluster.local:8080"* ]]; then
+            echo "✓ ToolServer SSE URL is correct: $SSE_URL"
+          else
+            echo "✗ ToolServer SSE URL is incorrect: $SSE_URL"
+            exit 1
+          fi
+          
+          # Check owner references
+          OWNER_KIND=$(echo "$TOOLSERVER_SPEC" | jq -r '.metadata.ownerReferences[0].kind // empty')
+          OWNER_NAME=$(echo "$TOOLSERVER_SPEC" | jq -r '.metadata.ownerReferences[0].name // empty')
+          if [ "$OWNER_KIND" = "MCPServer" ] && [ "$OWNER_NAME" = "kagent-test" ]; then
+            echo "✓ ToolServer has correct owner reference"
+          else
+            echo "✗ ToolServer owner reference is incorrect: kind=$OWNER_KIND, name=$OWNER_NAME"
+            exit 1
+          fi
+          
+          # Check labels
+          MANAGED_BY=$(echo "$TOOLSERVER_SPEC" | jq -r '.metadata.labels."toolhive.stacklok.dev/managed-by" // empty')
+          MCPSERVER_LABEL=$(echo "$TOOLSERVER_SPEC" | jq -r '.metadata.labels."toolhive.stacklok.dev/mcpserver" // empty')
+          if [ "$MANAGED_BY" = "toolhive-operator" ] && [ "$MCPSERVER_LABEL" = "kagent-test" ]; then
+            echo "✓ ToolServer has correct labels"
+          else
+            echo "✗ ToolServer labels are incorrect: managed-by=$MANAGED_BY, mcpserver=$MCPSERVER_LABEL"
+            exit 1
+          fi
+          
+          echo "✅ ToolServer (v1alpha1) integration test passed!"
+
+  - name: test-kagent-v1alpha2-integration
+    description: Test Kagent v1alpha2 RemoteMCPServer integration
+    try:
+    # Update operator to prefer v1alpha2
+    - script:
+        content: |
+          echo "Updating operator to prefer Kagent v1alpha2..."
+          
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='json' -p='[
+            {
+              "op": "replace",
+              "path": "/spec/template/spec/containers/0/env",
+              "value": [
+                {"name": "UNSTRUCTURED_LOGS", "value": "false"},
+                {"name": "ENABLE_EXPERIMENTAL_FEATURES", "value": "false"},
+                {"name": "TOOLHIVE_RUNNER_IMAGE", "value": "ghcr.io/stacklok/toolhive/proxyrunner:v0.3.5"},
+                {"name": "TOOLHIVE_PROXY_HOST", "value": "0.0.0.0"},
+                {"name": "TOOLHIVE_REGISTRY_API_IMAGE", "value": "ghcr.io/stacklok/toolhive/registry-api:v0.3.5"},
+                {"name": "KAGENT_INTEGRATION_ENABLED", "value": "true"},
+                {"name": "KAGENT_API_VERSION", "value": "v1alpha2"}
+              ]
+            }
+          ]'
+          
+          # Wait for operator to restart
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          
+          echo "✓ Operator updated to prefer v1alpha2"
+    # Delete and recreate MCPServer to trigger v1alpha2 creation
+    - script:
+        content: |
+          echo "Recreating MCPServer to trigger v1alpha2 resource creation..."
+          kubectl delete mcpserver kagent-test -n toolhive-system --ignore-not-found=true
+          sleep 5
+    - apply:
+        file: mcpserver-kagent-enabled.yaml
+    - assert:
+        file: mcpserver-kagent-enabled.yaml
+    - assert:
+        file: assert-mcpserver-running.yaml
+    - assert:
+        file: assert-mcpserver-pod-running.yaml
+    # Verify RemoteMCPServer is created
+    - script:
+        content: |
+          echo "Verifying RemoteMCPServer (v1alpha2) creation..."
+          
+          # Wait for RemoteMCPServer to be created
+          for i in $(seq 1 30); do
+            if kubectl get remotemcpserver toolhive-kagent-test -n toolhive-system >/dev/null 2>&1; then
+              echo "✓ RemoteMCPServer toolhive-kagent-test exists"
+              break
+            fi
+            echo "  Waiting for RemoteMCPServer... (attempt $i/30)"
+            sleep 2
+          done
+          
+          # Verify RemoteMCPServer exists
+          if ! kubectl get remotemcpserver toolhive-kagent-test -n toolhive-system >/dev/null 2>&1; then
+            echo "✗ RemoteMCPServer was not created"
+            kubectl get remotemcpserver -A
+            exit 1
+          fi
+          
+          # Verify RemoteMCPServer spec
+          REMOTEMCP_SPEC=$(kubectl get remotemcpserver toolhive-kagent-test -n toolhive-system -o json)
+          
+          # Check description
+          DESCRIPTION=$(echo "$REMOTEMCP_SPEC" | jq -r '.spec.description // empty')
+          if [[ "$DESCRIPTION" == *"ToolHive MCP Server: kagent-test"* ]]; then
+            echo "✓ RemoteMCPServer description is correct"
+          else
+            echo "✗ RemoteMCPServer description is incorrect: $DESCRIPTION"
+            exit 1
+          fi
+          
+          # Check protocol
+          PROTOCOL=$(echo "$REMOTEMCP_SPEC" | jq -r '.spec.protocol // empty')
+          if [ "$PROTOCOL" = "SSE" ]; then
+            echo "✓ RemoteMCPServer protocol is 'SSE'"
+          else
+            echo "✗ RemoteMCPServer protocol is '$PROTOCOL', expected 'SSE'"
+            exit 1
+          fi
+          
+          # Check URL
+          URL=$(echo "$REMOTEMCP_SPEC" | jq -r '.spec.url // empty')
+          if [[ "$URL" == *"kagent-test-service.toolhive-system.svc.cluster.local:8080"* ]]; then
+            echo "✓ RemoteMCPServer URL is correct: $URL"
+          else
+            echo "✗ RemoteMCPServer URL is incorrect: $URL"
+            exit 1
+          fi
+          
+          # Check owner references
+          OWNER_KIND=$(echo "$REMOTEMCP_SPEC" | jq -r '.metadata.ownerReferences[0].kind // empty')
+          OWNER_NAME=$(echo "$REMOTEMCP_SPEC" | jq -r '.metadata.ownerReferences[0].name // empty')
+          if [ "$OWNER_KIND" = "MCPServer" ] && [ "$OWNER_NAME" = "kagent-test" ]; then
+            echo "✓ RemoteMCPServer has correct owner reference"
+          else
+            echo "✗ RemoteMCPServer owner reference is incorrect: kind=$OWNER_KIND, name=$OWNER_NAME"
+            exit 1
+          fi
+          
+          # Check labels
+          MANAGED_BY=$(echo "$REMOTEMCP_SPEC" | jq -r '.metadata.labels."toolhive.stacklok.dev/managed-by" // empty')
+          MCPSERVER_LABEL=$(echo "$REMOTEMCP_SPEC" | jq -r '.metadata.labels."toolhive.stacklok.dev/mcpserver" // empty')
+          if [ "$MANAGED_BY" = "toolhive-operator" ] && [ "$MCPSERVER_LABEL" = "kagent-test" ]; then
+            echo "✓ RemoteMCPServer has correct labels"
+          else
+            echo "✗ RemoteMCPServer labels are incorrect: managed-by=$MANAGED_BY, mcpserver=$MCPSERVER_LABEL"
+            exit 1
+          fi
+          
+          echo "✅ RemoteMCPServer (v1alpha2) integration test passed!"
+
+  - name: test-transport-mapping
+    description: Test different transport mode mappings
+    try:
+    # Test streamable-http transport
+    - apply:
+        file: mcpserver-streamable-http.yaml
+    - assert:
+        file: mcpserver-streamable-http.yaml
+    - script:
+        content: |
+          echo "Testing streamable-http transport mapping..."
+          
+          # Wait for RemoteMCPServer to be created/updated
+          sleep 10
+          
+          # Verify protocol mapping for streamable-http
+          PROTOCOL=$(kubectl get remotemcpserver toolhive-kagent-streamable-http -n toolhive-system -o jsonpath='{.spec.protocol}' 2>/dev/null || echo "")
+          if [ "$PROTOCOL" = "STREAMABLE_HTTP" ]; then
+            echo "✓ streamable-http correctly mapped to STREAMABLE_HTTP protocol"
+          else
+            echo "✗ streamable-http mapping failed: got '$PROTOCOL', expected 'STREAMABLE_HTTP'"
+            exit 1
+          fi
+          
+          echo "✅ Transport mapping test passed!"
+
+  - name: test-kagent-cleanup
+    description: Test Kagent resource cleanup when MCPServer is deleted
+    try:
+    - script:
+        content: |
+          echo "Testing Kagent resource cleanup..."
+          
+          # Delete MCPServer
+          kubectl delete mcpserver kagent-test -n toolhive-system --ignore-not-found=true
+          kubectl delete mcpserver kagent-streamable-http -n toolhive-system --ignore-not-found=true
+          
+          # Wait for cleanup
+          sleep 10
+          
+          # Verify RemoteMCPServer is cleaned up
+          if kubectl get remotemcpserver toolhive-kagent-test -n toolhive-system >/dev/null 2>&1; then
+            echo "✗ RemoteMCPServer should be cleaned up when MCPServer is deleted"
+            exit 1
+          else
+            echo "✓ RemoteMCPServer cleaned up correctly"
+          fi
+          
+          if kubectl get remotemcpserver toolhive-kagent-streamable-http -n toolhive-system >/dev/null 2>&1; then
+            echo "✗ RemoteMCPServer (streamable-http) should be cleaned up when MCPServer is deleted"
+            exit 1
+          else
+            echo "✓ RemoteMCPServer (streamable-http) cleaned up correctly"
+          fi
+          
+          echo "✅ Kagent resource cleanup test passed!"
+
+  - name: disable-kagent-integration
+    description: Disable Kagent integration and cleanup
+    try:
+    - script:
+        content: |
+          echo "Disabling Kagent integration..."
+          
+          # Restore operator to disabled state
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='json' -p='[
+            {
+              "op": "replace",
+              "path": "/spec/template/spec/containers/0/env",
+              "value": [
+                {"name": "UNSTRUCTURED_LOGS", "value": "false"},
+                {"name": "ENABLE_EXPERIMENTAL_FEATURES", "value": "false"},
+                {"name": "TOOLHIVE_RUNNER_IMAGE", "value": "ghcr.io/stacklok/toolhive/proxyrunner:v0.3.5"},
+                {"name": "TOOLHIVE_PROXY_HOST", "value": "0.0.0.0"},
+                {"name": "TOOLHIVE_REGISTRY_API_IMAGE", "value": "ghcr.io/stacklok/toolhive/registry-api:v0.3.5"},
+                {"name": "KAGENT_INTEGRATION_ENABLED", "value": "false"}
+              ]
+            }
+          ]'
+          
+          # Wait for operator to restart
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          
+          # Clean up Kagent CRDs
+          kubectl delete crd toolservers.kagent.dev --ignore-not-found=true
+          kubectl delete crd remotemcpservers.kagent.dev --ignore-not-found=true
+          
+          echo "✓ Kagent integration disabled and cleaned up"

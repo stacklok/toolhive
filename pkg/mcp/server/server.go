@@ -136,6 +136,24 @@ func registerTools(mcpServer *server.MCPServer, handler *Handler) {
 						"type": "string",
 					},
 				},
+				"secrets": map[string]interface{}{
+					"type":        "array",
+					"description": "Secrets to pass to the server as environment variables",
+					"items": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"name": map[string]interface{}{
+								"type":        "string",
+								"description": "Name of the secret in the ToolHive secrets store",
+							},
+							"target": map[string]interface{}{
+								"type":        "string",
+								"description": "Target environment variable name in the server container",
+							},
+						},
+						"required": []string{"name", "target"},
+					},
+				},
 			},
 			Required: []string{"server"},
 		},
@@ -194,4 +212,32 @@ func registerTools(mcpServer *server.MCPServer, handler *Handler) {
 			Required: []string{"name"},
 		},
 	}, handler.GetServerLogs)
+
+	mcpServer.AddTool(mcp.Tool{
+		Name:        "list_secrets",
+		Description: "List all available secrets in the ToolHive secrets store",
+		InputSchema: mcp.ToolInputSchema{
+			Type:       "object",
+			Properties: map[string]interface{}{},
+		},
+	}, handler.ListSecrets)
+
+	mcpServer.AddTool(mcp.Tool{
+		Name:        "set_secret",
+		Description: "Set a secret by reading its value from a file",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "Name of the secret to set",
+				},
+				"file_path": map[string]interface{}{
+					"type":        "string",
+					"description": "Path to the file containing the secret value",
+				},
+			},
+			Required: []string{"name", "file_path"},
+		},
+	}, handler.SetSecret)
 }

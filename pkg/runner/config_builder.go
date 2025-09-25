@@ -378,10 +378,11 @@ func WithTelemetryConfig(
 			}
 		}
 
+		defaultConfig := telemetry.DefaultConfig()
 		b.config.TelemetryConfig = &telemetry.Config{
 			Endpoint:                    otelEndpoint,
 			ServiceName:                 serviceName,
-			ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
+			ServiceVersion:              defaultConfig.ServiceVersion,
 			TracingEnabled:              otelTracingEnabled,
 			MetricsEnabled:              otelMetricsEnabled,
 			SamplingRate:                otelSamplingRate,
@@ -389,6 +390,18 @@ func WithTelemetryConfig(
 			Insecure:                    otelInsecure,
 			EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 			EnvironmentVariables:        processedEnvVars,
+			UsageAnalyticsEnabled:       defaultConfig.UsageAnalyticsEnabled,
+			AnalyticsEndpoint:           defaultConfig.AnalyticsEndpoint,
+		}
+		return nil
+	}
+}
+
+// WithUsageAnalyticsEnabled sets the usage analytics enabled flag
+func WithUsageAnalyticsEnabled(enabled bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if b.config.TelemetryConfig != nil {
+			b.config.TelemetryConfig.UsageAnalyticsEnabled = enabled
 		}
 		return nil
 	}

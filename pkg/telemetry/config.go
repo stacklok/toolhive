@@ -56,6 +56,16 @@ type Config struct {
 	// be read from the host machine and included in spans for observability.
 	// Example: []string{"NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"}
 	EnvironmentVariables []string `json:"environmentVariables"`
+
+	// UsageAnalyticsEnabled controls whether anonymous usage analytics are sent to Stacklok
+	// When true, anonymous tool call metrics are sent to Stacklok's collector for product analytics
+	// When false, no usage analytics are collected
+	// This is independent of the user's configured Endpoint
+	UsageAnalyticsEnabled bool `json:"usageAnalyticsEnabled"`
+
+	// AnalyticsEndpoint is the Stacklok collector endpoint for usage analytics
+	// This is typically set internally and not user-configurable
+	AnalyticsEndpoint string `json:"analyticsEndpoint"`
 }
 
 // DefaultConfig returns a default telemetry configuration.
@@ -69,18 +79,21 @@ func DefaultConfig() Config {
 		SamplingRate:                0.05, // 5% sampling by default
 		Headers:                     make(map[string]string),
 		Insecure:                    false,
-		EnablePrometheusMetricsPath: false,      // No metrics endpoint by default
-		EnvironmentVariables:        []string{}, // No environment variables by default
+		EnablePrometheusMetricsPath: false,                                                // No metrics endpoint by default
+		EnvironmentVariables:        []string{},                                           // No environment variables by default
+		UsageAnalyticsEnabled:       true,                                                 // Enable usage analytics by default
+		AnalyticsEndpoint:           "https://analytics.toolhive.stacklok.dev/v1/metrics", // Default Stacklok collector endpoint
 	}
 }
 
 // Provider encapsulates OpenTelemetry providers and configuration.
 type Provider struct {
-	config            Config
-	tracerProvider    trace.TracerProvider
-	meterProvider     metric.MeterProvider
-	prometheusHandler http.Handler
-	shutdown          func(context.Context) error
+	config                 Config
+	tracerProvider         trace.TracerProvider
+	meterProvider          metric.MeterProvider
+	analyticsMeterProvider metric.MeterProvider
+	prometheusHandler      http.Handler
+	shutdown               func(context.Context) error
 }
 
 // NewProvider creates a new OpenTelemetry provider with the given configuration.
@@ -100,6 +113,8 @@ func NewProvider(ctx context.Context, config Config) (*Provider, error) {
 		providers.WithMetricsEnabled(config.MetricsEnabled),
 		providers.WithSamplingRate(config.SamplingRate),
 		providers.WithEnablePrometheusMetricsPath(config.EnablePrometheusMetricsPath),
+		providers.WithUsageAnalyticsEnabled(config.UsageAnalyticsEnabled),
+		providers.WithAnalyticsEndpoint(config.AnalyticsEndpoint),
 	}
 
 	telemetryProviders, err := providers.NewCompositeProvider(ctx, telemetryOptions...)
@@ -114,6 +129,7 @@ func NewProvider(ctx context.Context, config Config) (*Provider, error) {
 func setGlobalProvidersAndReturn(telemetryProviders *providers.CompositeProvider, config Config) (*Provider, error) {
 	tracingProvider := telemetryProviders.TracerProvider()
 	meterProvider := telemetryProviders.MeterProvider()
+	analyticsMeterProvider := telemetryProviders.AnalyticsMeterProvider()
 
 	// set the global providers for OTEL
 	otel.SetTracerProvider(tracingProvider)
@@ -124,11 +140,12 @@ func setGlobalProvidersAndReturn(telemetryProviders *providers.CompositeProvider
 	))
 
 	return &Provider{
-		config:            config,
-		tracerProvider:    tracingProvider,
-		meterProvider:     meterProvider,
-		prometheusHandler: telemetryProviders.PrometheusHandler(),
-		shutdown:          telemetryProviders.Shutdown,
+		config:                 config,
+		tracerProvider:         tracingProvider,
+		meterProvider:          meterProvider,
+		analyticsMeterProvider: analyticsMeterProvider,
+		prometheusHandler:      telemetryProviders.PrometheusHandler(),
+		shutdown:               telemetryProviders.Shutdown,
 	}, nil
 }
 
@@ -136,7 +153,7 @@ func setGlobalProvidersAndReturn(telemetryProviders *providers.CompositeProvider
 // serverName is the name of the MCP server (e.g., "github", "fetch")
 // transport is the backend transport type ("stdio" or "sse")
 func (p *Provider) Middleware(serverName, transport string) types.MiddlewareFunction {
-	return NewHTTPMiddleware(p.config, p.tracerProvider, p.meterProvider, serverName, transport)
+	return NewHTTPMiddleware(p.config, p.tracerProvider, p.meterProvider, p.analyticsMeterProvider, serverName, transport)
 }
 
 // Shutdown gracefully shuts down the telemetry provider.
@@ -155,6 +172,11 @@ func (p *Provider) TracerProvider() trace.TracerProvider {
 // MeterProvider returns the configured meter provider.
 func (p *Provider) MeterProvider() metric.MeterProvider {
 	return p.meterProvider
+}
+
+// AnalyticsMeterProvider returns the configured analytics meter provider.
+func (p *Provider) AnalyticsMeterProvider() metric.MeterProvider {
+	return p.analyticsMeterProvider
 }
 
 // PrometheusHandler returns the Prometheus metrics handler if configured.

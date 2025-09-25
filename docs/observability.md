@@ -26,6 +26,8 @@ operations through:
    debugging
 4. **Protocol-aware instrumentation**: MCP-specific insights beyond generic HTTP
    metrics
+5. **Privacy-first usage analytics**: Anonymous tool call metrics for product
+   improvement (can be disabled)
 
 See [the original design document](./proposals/otel-integration-proposal.md) for
 more details on the design and goals of this observability architecture.
@@ -84,3 +86,32 @@ The telemetry middleware:
 
 This provides end-to-end visibility across the entire request lifecycle while
 maintaining the modular architecture of ToolHive's middleware system.
+
+## Usage Analytics
+
+ToolHive includes privacy-first usage analytics that collect anonymous tool call
+metrics for product improvement. This feature uses a dual-endpoint architecture
+to ensure user telemetry remains unaffected.
+
+**Key Features:**
+- **Anonymous**: Only tool call counts with success/error status
+- **Privacy-first**: No server names, tool names, or sensitive data collected
+- **Dual-endpoint**: Separate from user's telemetry configuration
+- **Opt-out**: Can be disabled via configuration
+- **Default enabled**: Helps improve ToolHive for all users
+
+**Architecture:**
+```mermaid
+graph TD
+    A[Telemetry Middleware] --> B[User OTLP Endpoint]
+    A --> C[Analytics Collector]
+
+    B --> D[User's Observability Platform]
+    C --> E[Stacklok Analytics]
+
+    A --> F[Anonymous Metrics Only]
+    F --> C
+```
+
+For detailed information on usage analytics, including privacy policy and
+configuration options, see [Usage Analytics Documentation](./usage-analytics.md).

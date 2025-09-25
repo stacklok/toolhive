@@ -310,7 +310,7 @@ func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *teleme
 
 	return createTelemetryConfig(finalOtelEndpoint, finalOtelEnablePrometheusMetricsPath,
 		runFlags.OtelServiceName, runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, finalOtelSamplingRate,
-		runFlags.OtelHeaders, finalOtelInsecure, finalOtelEnvironmentVariables)
+		runFlags.OtelHeaders, finalOtelInsecure, finalOtelEnvironmentVariables, config)
 }
 
 // setupRuntimeAndValidation creates container runtime and selects environment variable validator
@@ -634,7 +634,7 @@ func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionUR
 // createTelemetryConfig creates a telemetry configuration if any telemetry parameters are provided
 func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
 	otelServiceName string, otelTracingEnabled bool, otelMetricsEnabled bool, otelSamplingRate float64, otelHeaders []string,
-	otelInsecure bool, otelEnvironmentVariables []string) *telemetry.Config {
+	otelInsecure bool, otelEnvironmentVariables []string, _ *cfg.Config) *telemetry.Config {
 	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
 		return nil
 	}
@@ -667,10 +667,16 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		}
 	}
 
+	defaultConfig := telemetry.DefaultConfig()
+
+	// Usage analytics defaults to enabled unless explicitly disabled in config
+	usageAnalyticsEnabled := defaultConfig.UsageAnalyticsEnabled
+	analyticsEndpoint := defaultConfig.AnalyticsEndpoint
+
 	return &telemetry.Config{
 		Endpoint:                    otelEndpoint,
 		ServiceName:                 serviceName,
-		ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
+		ServiceVersion:              defaultConfig.ServiceVersion,
 		TracingEnabled:              otelTracingEnabled,
 		MetricsEnabled:              otelMetricsEnabled,
 		SamplingRate:                otelSamplingRate,
@@ -678,5 +684,7 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		Insecure:                    otelInsecure,
 		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 		EnvironmentVariables:        processedEnvVars,
+		UsageAnalyticsEnabled:       usageAnalyticsEnabled,
+		AnalyticsEndpoint:           analyticsEndpoint,
 	}
 }

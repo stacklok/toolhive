@@ -7,22 +7,23 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/trace/noop"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 func TestHTTPMiddleware_SSEHandling(t *testing.T) {
 	t.Parallel()
 
 	// Create test providers
-	tracerProvider := noop.NewTracerProvider()
+	tracerProvider := tracenoop.NewTracerProvider()
 	meterProvider := sdkmetric.NewMeterProvider()
 
 	// Create middleware
 	config := Config{
 		EnablePrometheusMetricsPath: true,
 	}
-	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, "test-server", "sse")
+	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, noop.NewMeterProvider(), "test-server", "sse")
 
 	tests := []struct {
 		name           string
@@ -107,7 +108,7 @@ func TestHTTPMiddleware_RecordSSEConnection(t *testing.T) {
 
 	// Create a real meter provider to capture metrics
 	meterProvider := sdkmetric.NewMeterProvider()
-	tracerProvider := noop.NewTracerProvider()
+	tracerProvider := tracenoop.NewTracerProvider()
 
 	config := Config{
 		EnablePrometheusMetricsPath: true,
@@ -156,13 +157,13 @@ func TestHTTPMiddleware_SSEIntegration(t *testing.T) {
 
 	// Create test providers with readers to capture data
 	meterProvider := sdkmetric.NewMeterProvider()
-	tracerProvider := noop.NewTracerProvider()
+	tracerProvider := tracenoop.NewTracerProvider()
 
 	config := Config{
 		EnablePrometheusMetricsPath: true,
 	}
 
-	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, "test-server", "sse")
+	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, noop.NewMeterProvider(), "test-server", "sse")
 
 	// Create a test handler that simulates SSE behavior
 	sseHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

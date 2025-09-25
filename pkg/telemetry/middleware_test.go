@@ -36,7 +36,7 @@ func TestNewHTTPMiddleware(t *testing.T) {
 	tracerProvider := tracenoop.NewTracerProvider()
 	meterProvider := noop.NewMeterProvider()
 
-	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, "github", "stdio")
+	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, noop.NewMeterProvider(), "github", "stdio")
 	assert.NotNil(t, middleware)
 }
 
@@ -51,7 +51,7 @@ func TestHTTPMiddleware_Handler_BasicRequest(t *testing.T) {
 	tracerProvider := tracenoop.NewTracerProvider()
 	meterProvider := noop.NewMeterProvider()
 
-	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, "github", "stdio")
+	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, noop.NewMeterProvider(), "github", "stdio")
 
 	// Create a test handler
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -85,7 +85,7 @@ func TestHTTPMiddleware_Handler_WithMCPData(t *testing.T) {
 	tracerProvider := tracenoop.NewTracerProvider()
 	meterProvider := noop.NewMeterProvider()
 
-	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, "github", "stdio")
+	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, noop.NewMeterProvider(), "github", "stdio")
 
 	// Create a test handler
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -633,7 +633,7 @@ func TestHTTPMiddleware_WithRealMetrics(t *testing.T) {
 	}
 	tracerProvider := tracenoop.NewTracerProvider()
 
-	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, "github", "stdio")
+	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, noop.NewMeterProvider(), "github", "stdio")
 
 	// Create test handler
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -38,6 +38,7 @@ func TestGetMCPServer_WithGroup(t *testing.T) {
 	}
 	if group == nil {
 		t.Skip("Test group is nil, skipping")
+		return
 	}
 
 	// Find a server in the group to test with

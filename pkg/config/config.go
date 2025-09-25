@@ -307,4 +307,5 @@ type OpenTelemetryConfig struct {
 	TracingEnabled              bool     `yaml:"tracing-enabled,omitempty"`
 	Insecure                    bool     `yaml:"insecure,omitempty"`
 	EnablePrometheusMetricsPath bool     `yaml:"enable-prometheus-metrics-path,omitempty"`
+	UsageAnalyticsEnabled       bool     `yaml:"usage-analytics-enabled,omitempty"`
 }

@@ -532,6 +532,13 @@ type OpenTelemetryConfig struct {
 	// +optional
 	Insecure bool `json:"insecure,omitempty"`
 
+	// UsageAnalyticsEnabled controls whether anonymous usage analytics are sent to Stacklok
+	// When true, anonymous tool call metrics are sent to Stacklok's collector for product analytics
+	// When false, no usage analytics are collected. This setting is independent of the Endpoint above.
+	// +kubebuilder:default=true
+	// +optional
+	UsageAnalyticsEnabled *bool `json:"usageAnalyticsEnabled,omitempty"`
+
 	// Metrics defines OpenTelemetry metrics-specific configuration
 	// +optional
 	Metrics *OpenTelemetryMetricsConfig `json:"metrics,omitempty"`

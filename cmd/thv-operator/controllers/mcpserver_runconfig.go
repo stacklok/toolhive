@@ -584,6 +584,7 @@ func addTelemetryConfigOptions(
 	var otelHeaders []string
 	var otelInsecure bool
 	var otelEnvironmentVariables []string
+	var usageAnalyticsEnabled *bool
 
 	// Process OpenTelemetry configuration
 	if telemetryConfig.OpenTelemetry != nil && telemetryConfig.OpenTelemetry.Enabled {
@@ -616,6 +617,9 @@ func addTelemetryConfigOptions(
 		if otel.Metrics != nil {
 			otelMetricsEnabled = otel.Metrics.Enabled
 		}
+
+		// Handle usage analytics configuration
+		usageAnalyticsEnabled = otel.UsageAnalyticsEnabled
 	}
 
 	// Process Prometheus configuration
@@ -635,6 +639,11 @@ func addTelemetryConfigOptions(
 		otelInsecure,
 		otelEnvironmentVariables,
 	))
+
+	// Add usage analytics configuration if explicitly set in CRD
+	if usageAnalyticsEnabled != nil {
+		*options = append(*options, runner.WithUsageAnalyticsEnabled(*usageAnalyticsEnabled))
+	}
 }
 
 // addAuthzConfigOptions adds authorization configuration options to the builder options

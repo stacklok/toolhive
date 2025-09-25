@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -183,7 +184,7 @@ func TestTelemetryIntegration_WithRealProviders(t *testing.T) {
 	}
 
 	// Create middleware directly with real providers
-	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, "github", "stdio")
+	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, noop.NewMeterProvider(), "github", "stdio")
 
 	// Create test handler
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -366,7 +367,7 @@ func TestTelemetryIntegration_ToolSpecificMetrics(t *testing.T) {
 		ServiceVersion: "1.0.0",
 	}
 
-	middleware := NewHTTPMiddleware(config, tracenoop.NewTracerProvider(), meterProvider, "github", "stdio")
+	middleware := NewHTTPMiddleware(config, tracenoop.NewTracerProvider(), meterProvider, noop.NewMeterProvider(), "github", "stdio")
 
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

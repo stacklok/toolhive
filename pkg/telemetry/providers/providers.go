@@ -15,6 +15,7 @@ import (
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/telemetry/providers/analytics"
 )
 
 // Config holds the telemetry configuration for all providers.
@@ -31,6 +32,10 @@ type Config struct {
 	TracingEnabled bool              // TracingEnabled controls whether tracing is enabled for OTLP
 	MetricsEnabled bool              // MetricsEnabled controls whether metrics are enabled for OTLP
 	SamplingRate   float64           // SamplingRate controls trace sampling (0.0 to 1.0)
+
+	// Usage Analytics configuration
+	UsageAnalyticsEnabled bool   // UsageAnalyticsEnabled controls whether anonymous usage analytics are sent to Stacklok
+	AnalyticsEndpoint     string // AnalyticsEndpoint is the Stacklok collector endpoint for usage analytics
 
 	// Prometheus configuration
 	EnablePrometheusMetricsPath bool // EnablePrometheusMetricsPath enables Prometheus /metrics endpoint
@@ -117,13 +122,30 @@ func WithEnablePrometheusMetricsPath(enablePrometheusMetricsPath bool) ProviderO
 	}
 }
 
+// WithUsageAnalyticsEnabled sets the usage analytics enabled flag
+func WithUsageAnalyticsEnabled(usageAnalyticsEnabled bool) ProviderOption {
+	return func(config *Config) error {
+		config.UsageAnalyticsEnabled = usageAnalyticsEnabled
+		return nil
+	}
+}
+
+// WithAnalyticsEndpoint sets the analytics endpoint
+func WithAnalyticsEndpoint(analyticsEndpoint string) ProviderOption {
+	return func(config *Config) error {
+		config.AnalyticsEndpoint = analyticsEndpoint
+		return nil
+	}
+}
+
 // CompositeProvider combines telemetry providers into a single interface.
 // It manages tracer providers, meter providers, Prometheus handlers, and cleanup.
 type CompositeProvider struct {
-	tracerProvider    trace.TracerProvider          // tracerProvider provides distributed tracing
-	meterProvider     metric.MeterProvider          // meterProvider provides metrics collection
-	prometheusHandler http.Handler                  // prometheusHandler serves Prometheus metrics
-	shutdownFuncs     []func(context.Context) error // shutdownFuncs clean up resources on shutdown
+	tracerProvider         trace.TracerProvider          // tracerProvider provides distributed tracing
+	meterProvider          metric.MeterProvider          // meterProvider provides metrics collection for user telemetry
+	analyticsMeterProvider metric.MeterProvider          // analyticsMeterProvider provides metrics collection for usage analytics
+	prometheusHandler      http.Handler                  // prometheusHandler serves Prometheus metrics
+	shutdownFuncs          []func(context.Context) error // shutdownFuncs clean up resources on shutdown
 }
 
 // NewCompositeProvider creates the appropriate providers based on provided options
@@ -165,10 +187,11 @@ func NewCompositeProvider(
 
 func createNoOpProvider() *CompositeProvider {
 	return &CompositeProvider{
-		tracerProvider:    tracenoop.NewTracerProvider(),
-		meterProvider:     noop.NewMeterProvider(),
-		prometheusHandler: nil,
-		shutdownFuncs:     []func(context.Context) error{},
+		tracerProvider:         tracenoop.NewTracerProvider(),
+		meterProvider:          noop.NewMeterProvider(),
+		analyticsMeterProvider: noop.NewMeterProvider(),
+		prometheusHandler:      nil,
+		shutdownFuncs:          []func(context.Context) error{},
 	}
 }
 
@@ -184,6 +207,10 @@ func buildProviders(
 	}
 
 	if err := createMetricsProvider(ctx, config, composite, selector, res); err != nil {
+		return nil, err
+	}
+
+	if err := createAnalyticsProvider(ctx, config, composite, res); err != nil {
 		return nil, err
 	}
 
@@ -225,6 +252,37 @@ func createMetricsProvider(
 	return nil
 }
 
+// createAnalyticsProvider creates the analytics provider for the composite provider
+func createAnalyticsProvider(
+	ctx context.Context,
+	config Config,
+	composite *CompositeProvider,
+	res *resource.Resource,
+) error {
+	// Only create analytics provider if usage analytics are enabled
+	if !config.UsageAnalyticsEnabled {
+		logger.Infof("Usage analytics disabled, using no-op analytics provider")
+		composite.analyticsMeterProvider = noop.NewMeterProvider()
+		return nil
+	}
+
+	// Create analytics meter provider
+	analyticsMeterProvider, analyticsShutdown, err := analytics.CreateAnalyticsMeterProvider(
+		ctx, config.AnalyticsEndpoint, res)
+	if err != nil {
+		return fmt.Errorf("failed to create analytics meter provider with endpoint %s: %w",
+			config.AnalyticsEndpoint, err)
+	}
+
+	composite.analyticsMeterProvider = analyticsMeterProvider
+
+	if analyticsShutdown != nil {
+		composite.shutdownFuncs = append(composite.shutdownFuncs, analyticsShutdown)
+	}
+
+	return nil
+}
+
 // createTracingProvider creates the tracing provider for the composite provider
 func createTracingProvider(
 	ctx context.Context,
@@ -260,6 +318,11 @@ func (p *CompositeProvider) TracerProvider() trace.TracerProvider {
 // MeterProvider returns the primary meter provider
 func (p *CompositeProvider) MeterProvider() metric.MeterProvider {
 	return p.meterProvider
+}
+
+// AnalyticsMeterProvider returns the analytics meter provider for usage analytics
+func (p *CompositeProvider) AnalyticsMeterProvider() metric.MeterProvider {
+	return p.analyticsMeterProvider
 }
 
 // PrometheusHandler returns the Prometheus metrics handler if configured

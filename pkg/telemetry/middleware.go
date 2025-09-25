@@ -30,18 +30,23 @@ const (
 
 // HTTPMiddleware provides OpenTelemetry instrumentation for HTTP requests.
 type HTTPMiddleware struct {
-	config         Config
-	tracerProvider trace.TracerProvider
-	tracer         trace.Tracer
-	meterProvider  metric.MeterProvider
-	meter          metric.Meter
-	serverName     string
-	transport      string
+	config                 Config
+	tracerProvider         trace.TracerProvider
+	tracer                 trace.Tracer
+	meterProvider          metric.MeterProvider
+	meter                  metric.Meter
+	analyticsMeterProvider metric.MeterProvider
+	analyticsMeter         metric.Meter
+	serverName             string
+	transport              string
 
-	// Metrics
+	// User telemetry metrics
 	requestCounter    metric.Int64Counter
 	requestDuration   metric.Float64Histogram
 	activeConnections metric.Int64UpDownCounter
+
+	// Anonymous usage analytics metrics
+	analyticsToolCallCounter metric.Int64Counter
 }
 
 // NewHTTPMiddleware creates a new HTTP middleware for OpenTelemetry instrumentation.
@@ -51,11 +56,13 @@ func NewHTTPMiddleware(
 	config Config,
 	tracerProvider trace.TracerProvider,
 	meterProvider metric.MeterProvider,
+	analyticsMeterProvider metric.MeterProvider,
 	serverName, transport string,
 ) types.MiddlewareFunction {
 	meter := meterProvider.Meter(instrumentationName)
+	analyticsMeter := analyticsMeterProvider.Meter(instrumentationName)
 
-	// Initialize metrics
+	// Initialize user telemetry metrics
 	requestCounter, _ := meter.Int64Counter(
 		"toolhive_mcp_requests", // The exporter adds the _total suffix automatically
 		metric.WithDescription("Total number of MCP requests"),
@@ -72,17 +79,26 @@ func NewHTTPMiddleware(
 		metric.WithDescription("Number of active MCP connections"),
 	)
 
+	// Initialize anonymous usage analytics metrics
+	analyticsToolCallCounter, _ := analyticsMeter.Int64Counter(
+		"toolhive_usage_tool_calls", // Anonymous tool call counter for usage analytics
+		metric.WithDescription("Anonymous count of MCP tool calls for usage analytics"),
+	)
+
 	middleware := &HTTPMiddleware{
-		config:            config,
-		tracerProvider:    tracerProvider,
-		tracer:            tracerProvider.Tracer(instrumentationName),
-		meterProvider:     meterProvider,
-		meter:             meter,
-		serverName:        serverName,
-		transport:         transport,
-		requestCounter:    requestCounter,
-		requestDuration:   requestDuration,
-		activeConnections: activeConnections,
+		config:                   config,
+		tracerProvider:           tracerProvider,
+		tracer:                   tracerProvider.Tracer(instrumentationName),
+		meterProvider:            meterProvider,
+		meter:                    meter,
+		analyticsMeterProvider:   analyticsMeterProvider,
+		analyticsMeter:           analyticsMeter,
+		serverName:               serverName,
+		transport:                transport,
+		requestCounter:           requestCounter,
+		requestDuration:          requestDuration,
+		activeConnections:        activeConnections,
+		analyticsToolCallCounter: analyticsToolCallCounter,
 	}
 
 	return middleware.Handler
@@ -456,8 +472,28 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 			); err == nil {
 				toolCounter.Add(ctx, 1, toolAttrs)
 			}
+
+			// Record anonymous analytics for tool calls
+			m.recordAnonymousAnalytics(ctx, status)
 		}
 	}
+}
+
+// recordAnonymousAnalytics records anonymous usage analytics for tool calls.
+// This sends minimal, privacy-first metrics to Stacklok's analytics collector.
+func (m *HTTPMiddleware) recordAnonymousAnalytics(ctx context.Context, status string) {
+	// Only record analytics if enabled and analytics counter is available
+	if !m.config.UsageAnalyticsEnabled || m.analyticsToolCallCounter == nil {
+		return
+	}
+
+	// Record anonymous tool call count with minimal attributes
+	// No server names, tool names, or other identifying information
+	analyticsAttrs := metric.WithAttributes(
+		attribute.String("status", status), // Only include success/error status
+	)
+
+	m.analyticsToolCallCounter.Add(ctx, 1, analyticsAttrs)
 }
 
 // recordSSEConnection records telemetry for SSE connection establishment.

@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -15,7 +16,7 @@ func TestMCPServerPodTemplateSpecBuilder_AllCombinations(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name                   string
-		userTemplate           *corev1.PodTemplateSpec
+		userTemplate           *runtime.RawExtension
 		serviceAccount         *string
 		secrets                []mcpv1alpha1.SecretRef
 		expectedServiceAccount string
@@ -32,7 +33,7 @@ func TestMCPServerPodTemplateSpecBuilder_AllCombinations(t *testing.T) {
 		},
 		{
 			name:         "empty_user_template_only",
-			userTemplate: &corev1.PodTemplateSpec{},
+			userTemplate: podTemplateSpecToRawExtension(t, &corev1.PodTemplateSpec{}),
 			expectNil:    true,
 			description:  "Empty user template with no other customizations should return nil",
 		},
@@ -108,7 +109,7 @@ func TestMCPServerPodTemplateSpecBuilder_AllCombinations(t *testing.T) {
 		// User template with various combinations
 		{
 			name: "user_template_with_existing_mcp_container_and_service_account",
-			userTemplate: &corev1.PodTemplateSpec{
+			userTemplate: podTemplateSpecToRawExtension(t, &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "user-sa",
 					Containers: []corev1.Container{
@@ -122,7 +123,7 @@ func TestMCPServerPodTemplateSpecBuilder_AllCombinations(t *testing.T) {
 						},
 					},
 				},
-			},
+			}),
 			serviceAccount: ptr.To("override-sa"),
 			secrets: []mcpv1alpha1.SecretRef{
 				{Name: "secret1", Key: "key1"},
@@ -134,7 +135,7 @@ func TestMCPServerPodTemplateSpecBuilder_AllCombinations(t *testing.T) {
 		},
 		{
 			name: "user_template_without_mcp_container_and_secrets",
-			userTemplate: &corev1.PodTemplateSpec{
+			userTemplate: podTemplateSpecToRawExtension(t, &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{
@@ -143,7 +144,7 @@ func TestMCPServerPodTemplateSpecBuilder_AllCombinations(t *testing.T) {
 						},
 					},
 				},
-			},
+			}),
 			secrets: []mcpv1alpha1.SecretRef{
 				{Name: "secret1", Key: "key1"},
 			},
@@ -157,7 +158,10 @@ func TestMCPServerPodTemplateSpecBuilder_AllCombinations(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			// Build the PodTemplateSpec
-			result := NewMCPServerPodTemplateSpecBuilder(tt.userTemplate).
+			builder, err := NewMCPServerPodTemplateSpecBuilder(tt.userTemplate)
+			require.NoError(t, err, "Failed to create builder")
+
+			result := builder.
 				WithServiceAccount(tt.serviceAccount).
 				WithSecrets(tt.secrets).
 				Build()
@@ -224,7 +228,10 @@ func TestMCPServerPodTemplateSpecBuilder_SecretEnvVarNaming(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := NewMCPServerPodTemplateSpecBuilder(nil).
+			builder, err := NewMCPServerPodTemplateSpecBuilder(nil)
+			require.NoError(t, err, "Failed to create builder")
+
+			result := builder.
 				WithSecrets([]mcpv1alpha1.SecretRef{tt.secret}).
 				Build()
 
@@ -252,7 +259,8 @@ func TestMCPServerPodTemplateSpecBuilder_IsEmpty(t *testing.T) {
 		{
 			name: "completely_empty",
 			setupBuilder: func() *MCPServerPodTemplateSpecBuilder {
-				return NewMCPServerPodTemplateSpecBuilder(nil)
+				builder, _ := NewMCPServerPodTemplateSpecBuilder(nil)
+				return builder
 			},
 			expectedEmpty:  true,
 			expectedResult: false,
@@ -261,7 +269,8 @@ func TestMCPServerPodTemplateSpecBuilder_IsEmpty(t *testing.T) {
 			name: "with_service_account",
 			setupBuilder: func() *MCPServerPodTemplateSpecBuilder {
 				sa := "test-sa"
-				return NewMCPServerPodTemplateSpecBuilder(nil).WithServiceAccount(&sa)
+				builder, _ := NewMCPServerPodTemplateSpecBuilder(nil)
+				return builder.WithServiceAccount(&sa)
 			},
 			expectedEmpty:  false,
 			expectedResult: true,
@@ -269,7 +278,8 @@ func TestMCPServerPodTemplateSpecBuilder_IsEmpty(t *testing.T) {
 		{
 			name: "with_secrets",
 			setupBuilder: func() *MCPServerPodTemplateSpecBuilder {
-				return NewMCPServerPodTemplateSpecBuilder(nil).WithSecrets([]mcpv1alpha1.SecretRef{
+				builder, _ := NewMCPServerPodTemplateSpecBuilder(nil)
+				return builder.WithSecrets([]mcpv1alpha1.SecretRef{
 					{Name: "secret1", Key: "key1"},
 				})
 			},

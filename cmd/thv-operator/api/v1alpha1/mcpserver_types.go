@@ -1,8 +1,8 @@
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // Condition types for MCPServer
@@ -85,8 +85,11 @@ type MCPServerSpec struct {
 	// This allows for customizing the pod configuration beyond what is provided by the other fields.
 	// Note that to modify the specific container the MCP server runs in, you must specify
 	// the `mcp` container name in the PodTemplateSpec.
+	// This field accepts a PodTemplateSpec object as JSON/YAML.
 	// +optional
-	PodTemplateSpec *corev1.PodTemplateSpec `json:"podTemplateSpec,omitempty"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
 
 	// ResourceOverrides allows overriding annotations and labels for resources created by the operator
 	// +optional

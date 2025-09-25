@@ -1,0 +1,10 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: invalid-podtemplate
+  namespace: toolhive-system
+status:
+  conditions:
+  - type: PodTemplateValid
+    status: "False"
+    reason: InvalidPodTemplateSpec

@@ -106,8 +106,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	podNamespace, _ := os.LookupEnv("POD_NAMESPACE")
 	// Set up telemetry service - only runs when elected as leader
-	telemetryService := telemetry.NewService(mgr.GetClient(), "")
+	telemetryService := telemetry.NewService(mgr.GetClient(), podNamespace)
 	if err := mgr.Add(&telemetry.LeaderTelemetryRunnable{
 		TelemetryService: telemetryService,
 	}); err != nil {

@@ -124,23 +124,25 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if mcpRegistry.GetDeletionTimestamp() != nil {
 		// The object is being deleted
 		if controllerutil.ContainsFinalizer(mcpRegistry, "mcpregistry.toolhive.stacklok.dev/finalizer") {
-			// Run finalization logic. If the finalization logic fails,
-			// don't remove the finalizer so that we can retry during the next reconciliation.
-			if err := r.finalizeMCPRegistry(ctx, mcpRegistry); err != nil {
-				ctxLogger.Error(err, "Reconciliation completed with error while finalizing MCPRegistry",
-					"MCPRegistry.Name", mcpRegistry.Name)
-				return ctrl.Result{}, err
-			}
-
-			// Remove the finalizer. Once all finalizers have been removed, the object will be deleted.
-			original := mcpRegistry.DeepCopy()
-			controllerutil.RemoveFinalizer(mcpRegistry, "mcpregistry.toolhive.stacklok.dev/finalizer")
-			patch := client.MergeFrom(original)
-			err := r.Patch(ctx, mcpRegistry, patch)
-			if err != nil {
-				ctxLogger.Error(err, "Reconciliation completed with error while removing finalizer",
-					"MCPRegistry.Name", mcpRegistry.Name)
-				return ctrl.Result{}, err
+			// Run finalization logic only if not already terminating to avoid redundant work
+			if mcpRegistry.Status.Phase != mcpv1alpha1.MCPRegistryPhaseTerminating {
+				// Run finalization logic. If the finalization logic fails,
+				// don't remove the finalizer so that we can retry during the next reconciliation.
+				if err := r.finalizeMCPRegistry(ctx, mcpRegistry); err != nil {
+					ctxLogger.Error(err, "Reconciliation completed with error while finalizing MCPRegistry",
+						"MCPRegistry.Name", mcpRegistry.Name)
+					return ctrl.Result{}, err
+				}
+				// Remove the finalizer. Once all finalizers have been removed, the object will be deleted.
+				original := mcpRegistry.DeepCopy()
+				controllerutil.RemoveFinalizer(mcpRegistry, "mcpregistry.toolhive.stacklok.dev/finalizer")
+				patch := client.MergeFrom(original)
+				err := r.Patch(ctx, mcpRegistry, patch)
+				if err != nil {
+					ctxLogger.Error(err, "Reconciliation completed with error while removing finalizer",
+						"MCPRegistry.Name", mcpRegistry.Name)
+					return ctrl.Result{}, err
+				}
 			}
 		}
 		ctxLogger.Info("Reconciliation of deleted MCPRegistry completed successfully",

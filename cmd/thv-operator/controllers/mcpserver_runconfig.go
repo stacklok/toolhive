@@ -315,9 +315,14 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	vaultDetected := false
 
 	// Check for Vault injection in pod template annotations
-	if m.Spec.PodTemplateSpec != nil &&
-		m.Spec.PodTemplateSpec.Annotations != nil {
-		vaultDetected = hasVaultAgentInjection(m.Spec.PodTemplateSpec.Annotations)
+	if m.Spec.PodTemplateSpec != nil && m.Spec.PodTemplateSpec.Raw != nil {
+		// Try to unmarshal the raw extension to check annotations
+		var podTemplateSpec corev1.PodTemplateSpec
+		if err := json.Unmarshal(m.Spec.PodTemplateSpec.Raw, &podTemplateSpec); err == nil {
+			if podTemplateSpec.Annotations != nil {
+				vaultDetected = hasVaultAgentInjection(podTemplateSpec.Annotations)
+			}
+		}
 	}
 
 	// Also check resource overrides annotations using the accessor for safe access

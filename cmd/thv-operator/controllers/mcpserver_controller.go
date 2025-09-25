@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -40,6 +41,7 @@ import (
 type MCPServerReconciler struct {
 	client.Client
 	Scheme           *runtime.Scheme
+	Recorder         record.EventRecorder
 	platformDetector kubernetes.PlatformDetector
 	detectedPlatform kubernetes.Platform
 	platformOnce     sync.Once
@@ -295,6 +297,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	deployment := &appsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, deployment)
 	if err != nil && errors.IsNotFound(err) {
+		// Validate PodTemplateSpec and update status
+		r.validateAndUpdatePodTemplateStatus(ctx, mcpServer)
+
 		// Define a new deployment
 		dep := r.deploymentForMCPServer(ctx, mcpServer)
 		if dep == nil {
@@ -364,6 +369,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Check if the deployment spec changed
 	if r.deploymentNeedsUpdate(ctx, deployment, mcpServer) {
+		// Validate PodTemplateSpec and update status
+		r.validateAndUpdatePodTemplateStatus(ctx, mcpServer)
+
 		// Update the deployment
 		newDeployment := r.deploymentForMCPServer(ctx, mcpServer)
 		deployment.Spec = newDeployment.Spec
@@ -404,6 +412,47 @@ func setImageValidationCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1
 		Reason:  reason,
 		Message: message,
 	})
+}
+
+// validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and updates the MCPServer status
+// with appropriate conditions and events
+func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+	ctxLogger := log.FromContext(ctx)
+
+	// Only validate if PodTemplateSpec is provided
+	if mcpServer.Spec.PodTemplateSpec == nil || mcpServer.Spec.PodTemplateSpec.Raw == nil {
+		return
+	}
+
+	_, err := NewMCPServerPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec)
+	if err != nil {
+		// Record event for invalid PodTemplateSpec
+		r.Recorder.Eventf(mcpServer, corev1.EventTypeWarning, "InvalidPodTemplateSpec",
+			"Failed to parse PodTemplateSpec: %v. Deployment will continue without pod customizations.", err)
+
+		// Set condition for invalid PodTemplateSpec
+		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+			Type:               "PodTemplateValid",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: mcpServer.Generation,
+			Reason:             "InvalidPodTemplateSpec",
+			Message:            fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment continues without customizations.", err),
+		})
+	} else {
+		// Set condition for valid PodTemplateSpec
+		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+			Type:               "PodTemplateValid",
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: mcpServer.Generation,
+			Reason:             "ValidPodTemplateSpec",
+			Message:            "PodTemplateSpec is valid",
+		})
+	}
+
+	// Update status with the condition
+	if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+		ctxLogger.Error(statusErr, "Failed to update MCPServer status with PodTemplateSpec validation")
+	}
 }
 
 // handleRestartAnnotation checks if the restart annotation has been updated and triggers a restart if needed
@@ -756,17 +805,22 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		args = append(args, fmt.Sprintf("--from-configmap=%s", configMapRef))
 
 		// Also add pod template patch for secrets (same as regular flags approach)
-		finalPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec).
-			WithSecrets(m.Spec.Secrets).
-			Build()
-		// Add pod template patch if we have one
-		if finalPodTemplateSpec != nil {
-			podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
-			if err != nil {
-				ctxLogger := log.FromContext(ctx)
-				ctxLogger.Error(err, "Failed to marshal pod template spec")
-			} else {
-				args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
+		builder, err := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Invalid PodTemplateSpec in MCPServer spec, continuing without customizations")
+			// Continue without pod template patch - the deployment will still work
+		} else {
+			finalPodTemplateSpec := builder.WithSecrets(m.Spec.Secrets).Build()
+			// Add pod template patch if we have one
+			if finalPodTemplateSpec != nil {
+				podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
+				if err != nil {
+					ctxLogger := log.FromContext(ctx)
+					ctxLogger.Error(err, "Failed to marshal pod template spec")
+				} else {
+					args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
+				}
 			}
 		}
 	} else {
@@ -794,18 +848,26 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 			defaultSA := mcpServerServiceAccountName(m.Name)
 			serviceAccount = &defaultSA
 		}
-		finalPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec).
-			WithServiceAccount(serviceAccount).
-			WithSecrets(m.Spec.Secrets).
-			Build()
-		// Add pod template patch if we have one
-		if finalPodTemplateSpec != nil {
-			podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
-			if err != nil {
-				ctxLogger := log.FromContext(ctx)
-				ctxLogger.Error(err, "Failed to marshal pod template spec")
-			} else {
-				args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
+
+		builder, err := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Invalid PodTemplateSpec in MCPServer spec, continuing without customizations")
+			// Continue without pod template patch - the deployment will still work
+		} else {
+			finalPodTemplateSpec := builder.
+				WithServiceAccount(serviceAccount).
+				WithSecrets(m.Spec.Secrets).
+				Build()
+			// Add pod template patch if we have one
+			if finalPodTemplateSpec != nil {
+				podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
+				if err != nil {
+					ctxLogger := log.FromContext(ctx)
+					ctxLogger.Error(err, "Failed to marshal pod template spec")
+				} else {
+					args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
+				}
 			}
 		}
 
@@ -1379,20 +1441,18 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		// TODO: Add more comprehensive checks for PodTemplateSpec changes beyond just the args
 		// This would involve comparing the actual pod template spec fields with what would be
 		// generated by the operator, rather than just checking the command-line arguments.
-		if mcpServer.Spec.PodTemplateSpec != nil {
-			podTemplatePatch, err := json.Marshal(mcpServer.Spec.PodTemplateSpec)
-			if err == nil {
-				podTemplatePatchArg := fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch))
-				found := false
-				for _, arg := range container.Args {
-					if arg == podTemplatePatchArg {
-						found = true
-						break
-					}
+		if mcpServer.Spec.PodTemplateSpec != nil && mcpServer.Spec.PodTemplateSpec.Raw != nil {
+			// Use the raw bytes directly since PodTemplateSpec is now a RawExtension
+			podTemplatePatchArg := fmt.Sprintf("--k8s-pod-patch=%s", string(mcpServer.Spec.PodTemplateSpec.Raw))
+			found := false
+			for _, arg := range container.Args {
+				if arg == podTemplatePatchArg {
+					found = true
+					break
 				}
-				if !found {
-					return true
-				}
+			}
+			if !found {
+				return true
 			}
 		}
 
@@ -1447,7 +1507,14 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			defaultSA := mcpServerServiceAccountName(mcpServer.Name)
 			serviceAccount = &defaultSA
 		}
-		expectedPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec).
+
+		builder, err := NewMCPServerPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec)
+		if err != nil {
+			// If we can't parse the PodTemplateSpec, consider it as needing update
+			return true
+		}
+
+		expectedPodTemplateSpec := builder.
 			WithServiceAccount(serviceAccount).
 			WithSecrets(mcpServer.Spec.Secrets).
 			Build()
@@ -1513,7 +1580,6 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		if !equalOpenTelemetryArgs(otelConfig, container.Args) {
 			return true
 		}
-
 	}
 
 	// Check if the service account name has changed

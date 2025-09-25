@@ -393,3 +393,165 @@ func TestStatusCollector_MultipleConditions(t *testing.T) {
 	assert.Len(t, collector.conditions, 1)
 	assert.Contains(t, collector.conditions, mcpv1alpha1.ConditionAPIReady)
 }
+
+func TestStatusCollector_ApplyErrors(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	// Create scheme
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+
+	t.Run("error fetching latest registry", func(t *testing.T) {
+		t.Parallel()
+
+		// Create client that will fail on Get
+		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+		// Create collector with registry that doesn't exist in client
+		registry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "nonexistent-registry",
+				Namespace: "default",
+			},
+		}
+
+		collector := newStatusCollector(registry)
+		collector.SetPhase(mcpv1alpha1.MCPRegistryPhaseReady) // Make some changes
+
+		err := collector.Apply(ctx, k8sClient)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to fetch latest MCPRegistry version")
+	})
+
+}
+
+func TestStatusCollector_InterfaceMethods(t *testing.T) {
+	t.Parallel()
+
+	registry := &mcpv1alpha1.MCPRegistry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-registry",
+			Namespace: "default",
+		},
+	}
+
+	collector := newStatusCollector(registry)
+
+	t.Run("Sync method returns sync collector", func(t *testing.T) {
+		t.Parallel()
+		syncCollector := collector.Sync()
+		assert.NotNil(t, syncCollector)
+		assert.IsType(t, &syncStatusCollector{}, syncCollector)
+	})
+
+	t.Run("API method returns API collector", func(t *testing.T) {
+		t.Parallel()
+		apiCollector := collector.API()
+		assert.NotNil(t, apiCollector)
+		assert.IsType(t, &apiStatusCollector{}, apiCollector)
+	})
+
+	t.Run("SetOverallStatus delegates correctly", func(t *testing.T) {
+		t.Parallel()
+		collector.SetOverallStatus(mcpv1alpha1.MCPRegistryPhaseReady, "Test message")
+
+		assert.True(t, collector.hasChanges)
+		assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseReady, *collector.phase)
+		assert.Equal(t, "Test message", *collector.message)
+	})
+}
+
+func TestSyncStatusCollector_Methods(t *testing.T) {
+	t.Parallel()
+
+	registry := &mcpv1alpha1.MCPRegistry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-registry",
+			Namespace: "default",
+		},
+	}
+
+	collector := newStatusCollector(registry)
+	syncCollector := collector.Sync()
+
+	t.Run("SetSyncCondition delegates correctly", func(t *testing.T) {
+		t.Parallel()
+		condition := metav1.Condition{
+			Type:    "TestCondition",
+			Status:  metav1.ConditionTrue,
+			Reason:  "TestReason",
+			Message: "Test message",
+		}
+
+		syncCollector.SetSyncCondition(condition)
+
+		assert.True(t, collector.hasChanges)
+		assert.Contains(t, collector.conditions, "TestCondition")
+		assert.Equal(t, condition, collector.conditions["TestCondition"])
+	})
+
+	t.Run("SetSyncStatus delegates correctly", func(t *testing.T) {
+		t.Parallel()
+		now := metav1.Now()
+		syncCollector.SetSyncStatus(
+			mcpv1alpha1.SyncPhaseComplete,
+			"Sync completed",
+			1,
+			&now,
+			"hash123",
+			5,
+		)
+
+		assert.True(t, collector.hasChanges)
+		assert.NotNil(t, collector.syncStatus)
+		assert.Equal(t, mcpv1alpha1.SyncPhaseComplete, collector.syncStatus.Phase)
+		assert.Equal(t, "Sync completed", collector.syncStatus.Message)
+		assert.Equal(t, 1, collector.syncStatus.AttemptCount)
+		assert.Equal(t, &now, collector.syncStatus.LastSyncTime)
+		assert.Equal(t, "hash123", collector.syncStatus.LastSyncHash)
+		assert.Equal(t, 5, collector.syncStatus.ServerCount)
+	})
+}
+
+func TestAPIStatusCollector_Methods(t *testing.T) {
+	t.Parallel()
+
+	registry := &mcpv1alpha1.MCPRegistry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-registry",
+			Namespace: "default",
+		},
+	}
+
+	collector := newStatusCollector(registry)
+	apiCollector := collector.API()
+
+	t.Run("SetAPIStatus delegates correctly", func(t *testing.T) {
+		t.Parallel()
+		apiCollector.SetAPIStatus(
+			mcpv1alpha1.APIPhaseReady,
+			"API is ready",
+			"http://example.com",
+		)
+
+		assert.True(t, collector.hasChanges)
+		assert.NotNil(t, collector.apiStatus)
+		assert.Equal(t, mcpv1alpha1.APIPhaseReady, collector.apiStatus.Phase)
+		assert.Equal(t, "API is ready", collector.apiStatus.Message)
+		assert.Equal(t, "http://example.com", collector.apiStatus.Endpoint)
+	})
+
+	t.Run("SetAPIReadyCondition delegates correctly", func(t *testing.T) {
+		t.Parallel()
+		apiCollector.SetAPIReadyCondition("APIReady", "API is ready", metav1.ConditionTrue)
+
+		assert.True(t, collector.hasChanges)
+		assert.Contains(t, collector.conditions, mcpv1alpha1.ConditionAPIReady)
+		condition := collector.conditions[mcpv1alpha1.ConditionAPIReady]
+		assert.Equal(t, metav1.ConditionTrue, condition.Status)
+		assert.Equal(t, "APIReady", condition.Reason)
+		assert.Equal(t, "API is ready", condition.Message)
+	})
+}

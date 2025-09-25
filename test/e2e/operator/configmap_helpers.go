@@ -139,7 +139,7 @@ func (cb *ConfigMapBuilder) Create(h *ConfigMapTestHelper) *corev1.ConfigMap {
 }
 
 // CreateSampleToolHiveRegistry creates a ConfigMap with sample ToolHive registry data
-func (h *ConfigMapTestHelper) CreateSampleToolHiveRegistry(name string) *corev1.ConfigMap {
+func (h *ConfigMapTestHelper) CreateSampleToolHiveRegistry(name string) (*corev1.ConfigMap, int) {
 	servers := []RegistryServer{
 		{
 			Name:        "filesystem",
@@ -165,11 +165,11 @@ func (h *ConfigMapTestHelper) CreateSampleToolHiveRegistry(name string) *corev1.
 
 	return h.NewConfigMapBuilder(name).
 		WithToolHiveRegistry("registry.json", servers).
-		Create(h)
+		Create(h), len(servers)
 }
 
 // CreateSampleUpstreamRegistry creates a ConfigMap with sample upstream registry data
-func (h *ConfigMapTestHelper) CreateSampleUpstreamRegistry(name string) *corev1.ConfigMap {
+func (h *ConfigMapTestHelper) CreateSampleUpstreamRegistry(name string) (*corev1.ConfigMap, int) {
 	servers := map[string]RegistryServer{
 		"filesystem": {
 			Name:        "filesystem",
@@ -185,7 +185,7 @@ func (h *ConfigMapTestHelper) CreateSampleUpstreamRegistry(name string) *corev1.
 
 	return h.NewConfigMapBuilder(name).
 		WithUpstreamRegistry("registry.json", servers).
-		Create(h)
+		Create(h), len(servers)
 }
 
 // GetConfigMap retrieves a ConfigMap by name

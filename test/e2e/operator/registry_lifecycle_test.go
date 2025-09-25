@@ -24,6 +24,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 		configMapHelper *ConfigMapTestHelper
 		statusHelper    *StatusTestHelper
 		timingHelper    *TimingTestHelper
+		k8sHelper       *K8sResourceTestHelper
 		testNamespace   string
 	)
 
@@ -36,6 +37,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 		configMapHelper = NewConfigMapTestHelper(ctx, k8sClient, testNamespace)
 		statusHelper = NewStatusTestHelper(ctx, k8sClient, testNamespace)
 		timingHelper = NewTimingTestHelper(ctx, k8sClient)
+		k8sHelper = NewK8sResourceTestHelper(ctx, k8sClient, testNamespace)
 	})
 
 	AfterEach(func() {
@@ -48,7 +50,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 	Context("Basic Registry Creation", func() {
 		It("should create MCPRegistry with correct initial status", func() {
 			// Create test ConfigMap
-			configMap := configMapHelper.CreateSampleToolHiveRegistry("test-config")
+			configMap, numServers := configMapHelper.CreateSampleToolHiveRegistry("test-config")
 
 			// Create MCPRegistry
 			registry := registryHelper.NewRegistryBuilder("test-registry").
@@ -65,6 +67,16 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 			Expect(registry.Spec.Source.ConfigMap.Name).To(Equal(configMap.Name))
 			Expect(registry.Spec.SyncPolicy.Interval).To(Equal("1h"))
 
+			// Verify finalizer was added
+			By("waiting for finalizer to be added")
+			timingHelper.WaitForControllerReconciliation(func() interface{} {
+				updatedRegistry, err := registryHelper.GetRegistry(registry.Name)
+				if err != nil {
+					return false
+				}
+				return containsFinalizer(updatedRegistry.Finalizers, registryFinalizerName)
+			}).Should(BeTrue())
+
 			// Wait for controller to process and verify initial status
 			By("waiting for controller to process and verify initial status")
 			timingHelper.WaitForControllerReconciliation(func() interface{} {
@@ -79,20 +91,84 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 				mcpv1alpha1.MCPRegistryPhaseSyncing,
 			))
 
-			// Verify finalizer was added
-			By("waiting for finalizer to be added")
-			timingHelper.WaitForControllerReconciliation(func() interface{} {
-				updatedRegistry, err := registryHelper.GetRegistry(registry.Name)
-				if err != nil {
-					return false
-				}
-				return containsFinalizer(updatedRegistry.Finalizers, registryFinalizerName)
-			}).Should(BeTrue())
-
-			By("verifying registry status")
+			By("verifying storage ConfigMap is defined in status and exists")
 			updatedRegistry, err := registryHelper.GetRegistry(registry.Name)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(updatedRegistry.Status.Phase).To(Equal(mcpv1alpha1.MCPRegistryPhaseReady))
+
+			// Verify storage reference is set in status
+			Expect(updatedRegistry.Status.StorageRef).NotTo(BeNil())
+			Expect(updatedRegistry.Status.StorageRef.Type).To(Equal("configmap"))
+			Expect(updatedRegistry.Status.StorageRef.ConfigMapRef).NotTo(BeNil())
+			Expect(updatedRegistry.Status.StorageRef.ConfigMapRef.Name).NotTo(BeEmpty())
+
+			// Verify the storage ConfigMap actually exists
+			storageConfigMapName := updatedRegistry.Status.StorageRef.ConfigMapRef.Name
+			storageConfigMap, err := k8sHelper.GetConfigMap(storageConfigMapName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(storageConfigMap.Name).To(Equal(storageConfigMapName))
+			Expect(storageConfigMap.Namespace).To(Equal(testNamespace))
+
+			// Verify it has the registry.json key
+			Expect(storageConfigMap.Data).To(HaveKey("registry.json"))
+			Expect(storageConfigMap.Data["registry.json"]).NotTo(BeEmpty())
+
+			By("verifying Registry API Service and Deployment exist")
+			apiResourceName := updatedRegistry.GetAPIResourceName()
+
+			// Wait for Service to be created
+			timingHelper.WaitForControllerReconciliation(func() interface{} {
+				return k8sHelper.ServiceExists(apiResourceName)
+			}).Should(BeTrue(), "Registry API Service should exist")
+
+			// Wait for Deployment to be created
+			timingHelper.WaitForControllerReconciliation(func() interface{} {
+				return k8sHelper.DeploymentExists(apiResourceName)
+			}).Should(BeTrue(), "Registry API Deployment should exist")
+
+			// Verify the Service has correct configuration
+			service, err := k8sHelper.GetService(apiResourceName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(service.Name).To(Equal(apiResourceName))
+			Expect(service.Namespace).To(Equal(testNamespace))
+			Expect(service.Spec.Ports).To(HaveLen(1))
+			Expect(service.Spec.Ports[0].Name).To(Equal("http"))
+
+			// Verify the Deployment has correct configuration
+			deployment, err := k8sHelper.GetDeployment(apiResourceName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deployment.Name).To(Equal(apiResourceName))
+			Expect(deployment.Namespace).To(Equal(testNamespace))
+			Expect(deployment.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(deployment.Spec.Template.Spec.Containers[0].Name).To(Equal("registry-api"))
+
+			By("verifying deployment has proper ownership")
+			Expect(deployment.OwnerReferences).To(HaveLen(1))
+			Expect(deployment.OwnerReferences[0].Kind).To(Equal("MCPRegistry"))
+			Expect(deployment.OwnerReferences[0].Name).To(Equal(registry.Name))
+
+			By("verifying registry status")
+			updatedRegistry, err = registryHelper.GetRegistry(registry.Name)
+			Expect(err).NotTo(HaveOccurred())
+			// In envtest, the deployment won't actually be ready, so expect Pending phase
+			// but verify that sync is complete and API deployment is in progress
+			Expect(updatedRegistry.Status.Phase).To(BeElementOf(
+				mcpv1alpha1.MCPRegistryPhasePending, // API deployment in progress
+				mcpv1alpha1.MCPRegistryPhaseReady,   // If somehow API becomes ready
+			))
+
+			// Verify sync is complete
+			Expect(updatedRegistry.Status.SyncStatus).NotTo(BeNil())
+			Expect(updatedRegistry.Status.SyncStatus.Phase).To(BeElementOf(mcpv1alpha1.SyncPhaseComplete, mcpv1alpha1.SyncPhaseIdle))
+			Expect(updatedRegistry.Status.SyncStatus.AttemptCount).To(Equal(0))
+			Expect(updatedRegistry.Status.SyncStatus.ServerCount).To(Equal(numServers))
+
+			// Verify API status exists and shows deployment
+			Expect(updatedRegistry.Status.APIStatus).NotTo(BeNil())
+			Expect(updatedRegistry.Status.APIStatus.Phase).To(BeElementOf(
+				mcpv1alpha1.APIPhaseDeploying, // Deployment created but not ready
+				mcpv1alpha1.APIPhaseReady,     // If somehow becomes ready
+			))
+			Expect(updatedRegistry.Status.APIStatus.Endpoint).To(Equal(fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", apiResourceName, testNamespace)))
 			By("BYE")
 		})
 
@@ -125,7 +201,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 		})
 
 		It("should set correct metadata labels and annotations", func() {
-			configMap := configMapHelper.CreateSampleToolHiveRegistry("labeled-config")
+			configMap, _ := configMapHelper.CreateSampleToolHiveRegistry("labeled-config")
 
 			registry := registryHelper.NewRegistryBuilder("labeled-registry").
 				WithConfigMapSource(configMap.Name, "registry.json").
@@ -143,7 +219,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 
 	Context("Finalizer Management", func() {
 		It("should add finalizer on creation", func() {
-			configMap := configMapHelper.CreateSampleToolHiveRegistry("finalizer-config")
+			configMap, _ := configMapHelper.CreateSampleToolHiveRegistry("finalizer-config")
 
 			registry := registryHelper.NewRegistryBuilder("finalizer-test").
 				WithConfigMapSource(configMap.Name, "registry.json").
@@ -160,7 +236,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 		})
 
 		It("should remove finalizer during deletion", func() {
-			configMap := configMapHelper.CreateSampleToolHiveRegistry("deletion-config")
+			configMap, _ := configMapHelper.CreateSampleToolHiveRegistry("deletion-config")
 
 			registry := registryHelper.NewRegistryBuilder("deletion-test").
 				WithConfigMapSource(configMap.Name, "registry.json").
@@ -191,7 +267,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 
 	Context("Deletion Handling", func() {
 		It("should perform graceful deletion with cleanup", func() {
-			configMap := configMapHelper.CreateSampleToolHiveRegistry("cleanup-config")
+			configMap, _ := configMapHelper.CreateSampleToolHiveRegistry("cleanup-config")
 
 			registry := registryHelper.NewRegistryBuilder("cleanup-test").
 				WithConfigMapSource(configMap.Name, "registry.json").
@@ -229,7 +305,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 		})
 
 		It("should handle deletion when source ConfigMap is missing", func() {
-			configMap := configMapHelper.CreateSampleToolHiveRegistry("missing-config")
+			configMap, _ := configMapHelper.CreateSampleToolHiveRegistry("missing-config")
 
 			registry := registryHelper.NewRegistryBuilder("missing-source-test").
 				WithConfigMapSource(configMap.Name, "registry.json").
@@ -272,7 +348,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 		})
 
 		It("should reject invalid sync interval", func() {
-			configMap := configMapHelper.CreateSampleToolHiveRegistry("interval-config")
+			configMap, _ := configMapHelper.CreateSampleToolHiveRegistry("interval-config")
 
 			invalidRegistry := &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
@@ -313,10 +389,12 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 	})
 
 	Context("Multiple Registry Management", func() {
+		var numServers1, numServers2 int
+		var configMap1, configMap2 *corev1.ConfigMap
 		It("should handle multiple registries in same namespace", func() {
 			// Create multiple ConfigMaps
-			configMap1 := configMapHelper.CreateSampleToolHiveRegistry("config-1")
-			configMap2 := configMapHelper.CreateSampleUpstreamRegistry("config-2")
+			configMap1, numServers1 = configMapHelper.CreateSampleToolHiveRegistry("config-1")
+			configMap2, numServers2 = configMapHelper.CreateSampleUpstreamRegistry("config-2")
 
 			// Create multiple registries
 			registry1 := registryHelper.NewRegistryBuilder("registry-1").
@@ -342,7 +420,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 
 		It("should allow multiple registries with same ConfigMap source", func() {
 			// Create shared ConfigMap
-			sharedConfigMap := configMapHelper.CreateSampleToolHiveRegistry("shared-config")
+			sharedConfigMap, _ := configMapHelper.CreateSampleToolHiveRegistry("shared-config")
 
 			// Create multiple registries using same source
 			registry1 := registryHelper.NewRegistryBuilder("shared-registry-1").
@@ -360,12 +438,12 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 			statusHelper.WaitForPhase(registry2.Name, mcpv1alpha1.MCPRegistryPhaseReady, MediumTimeout)
 
 			// Both should have same server count from shared source
-			statusHelper.WaitForServerCount(registry1.Name, 2, MediumTimeout)
-			statusHelper.WaitForServerCount(registry2.Name, 2, MediumTimeout)
+			statusHelper.WaitForServerCount(registry1.Name, numServers1, MediumTimeout)
+			statusHelper.WaitForServerCount(registry2.Name, numServers2, MediumTimeout)
 		})
 
 		It("should handle registry name conflicts gracefully", func() {
-			configMap := configMapHelper.CreateSampleToolHiveRegistry("conflict-config")
+			configMap, _ := configMapHelper.CreateSampleToolHiveRegistry("conflict-config")
 
 			// Create first registry
 			registry1 := registryHelper.NewRegistryBuilder("conflict-registry").

@@ -75,31 +75,19 @@ func (h *StatusTestHelper) WaitForServerCount(registryName string, expectedCount
 		if err != nil {
 			return -1
 		}
-		return status.ServerCount
+		return status.SyncStatus.ServerCount
 	}, timeout, time.Second).Should(gomega.Equal(expectedCount),
 		"MCPRegistry %s should have server count %d", registryName, expectedCount)
-}
-
-// WaitForDeployedServerCount waits for the registry to report a specific deployed server count
-func (h *StatusTestHelper) WaitForDeployedServerCount(registryName string, expectedCount int, timeout time.Duration) {
-	gomega.Eventually(func() int {
-		status, err := h.registryHelper.GetRegistryStatus(registryName)
-		if err != nil {
-			return -1
-		}
-		return status.DeployedServerCount
-	}, timeout, time.Second).Should(gomega.Equal(expectedCount),
-		"MCPRegistry %s should have deployed server count %d", registryName, expectedCount)
 }
 
 // WaitForLastSyncTime waits for the registry to update its last sync time
 func (h *StatusTestHelper) WaitForLastSyncTime(registryName string, afterTime time.Time, timeout time.Duration) {
 	gomega.Eventually(func() bool {
 		status, err := h.registryHelper.GetRegistryStatus(registryName)
-		if err != nil || status.LastSyncTime == nil {
+		if err != nil || status.SyncStatus.LastSyncTime == nil {
 			return false
 		}
-		return status.LastSyncTime.After(afterTime)
+		return status.SyncStatus.LastSyncTime.After(afterTime)
 	}, timeout, time.Second).Should(gomega.BeTrue(),
 		"MCPRegistry %s should update last sync time after %s", registryName, afterTime)
 }
@@ -111,7 +99,7 @@ func (h *StatusTestHelper) WaitForLastSyncHash(registryName string, timeout time
 		if err != nil {
 			return ""
 		}
-		return status.LastSyncHash
+		return status.SyncStatus.LastSyncHash
 	}, timeout, time.Second).ShouldNot(gomega.BeEmpty(),
 		"MCPRegistry %s should have a last sync hash", registryName)
 }
@@ -172,7 +160,7 @@ func (h *StatusTestHelper) AssertConditionReason(registryName, conditionType, ex
 func (h *StatusTestHelper) AssertServerCount(registryName string, expectedCount int) {
 	status, err := h.registryHelper.GetRegistryStatus(registryName)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to get registry status")
-	gomega.Expect(status.ServerCount).To(gomega.Equal(expectedCount),
+	gomega.Expect(status.SyncStatus.ServerCount).To(gomega.Equal(expectedCount),
 		"MCPRegistry %s should have server count %d", registryName, expectedCount)
 }
 
@@ -205,7 +193,7 @@ func (h *StatusTestHelper) AssertStorageRef(registryName, expectedType string) {
 func (h *StatusTestHelper) AssertAPIEndpoint(registryName string) {
 	status, err := h.registryHelper.GetRegistryStatus(registryName)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to get registry status")
-	gomega.Expect(status.APIEndpoint).NotTo(gomega.BeEmpty(), "API endpoint should be set")
+	gomega.Expect(status.APIStatus.Endpoint).NotTo(gomega.BeEmpty(), "API endpoint should be set")
 }
 
 // GetConditionMessage returns the message of a specific condition
@@ -237,13 +225,12 @@ func (h *StatusTestHelper) PrintStatus(registryName string) {
 	fmt.Printf("=== MCPRegistry %s Status ===\n", registryName)
 	fmt.Printf("Phase: %s\n", registry.Status.Phase)
 	fmt.Printf("Message: %s\n", registry.Status.Message)
-	fmt.Printf("Server Count: %d\n", registry.Status.ServerCount)
-	fmt.Printf("Deployed Server Count: %d\n", registry.Status.DeployedServerCount)
-	if registry.Status.LastSyncTime != nil {
-		fmt.Printf("Last Sync Time: %s\n", registry.Status.LastSyncTime.Format(time.RFC3339))
+	fmt.Printf("Server Count: %d\n", registry.Status.SyncStatus.ServerCount)
+	if registry.Status.SyncStatus.LastSyncTime != nil {
+		fmt.Printf("Last Sync Time: %s\n", registry.Status.SyncStatus.LastSyncTime.Format(time.RFC3339))
 	}
-	fmt.Printf("Last Sync Hash: %s\n", registry.Status.LastSyncHash)
-	fmt.Printf("Sync Attempts: %d\n", registry.Status.SyncAttempts)
+	fmt.Printf("Last Sync Hash: %s\n", registry.Status.SyncStatus.LastSyncHash)
+	fmt.Printf("Sync Attempts: %d\n", registry.Status.SyncStatus.AttemptCount)
 
 	if len(registry.Status.Conditions) > 0 {
 		fmt.Printf("Conditions:\n")

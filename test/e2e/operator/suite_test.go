@@ -54,12 +54,23 @@ var _ = BeforeSuite(func() {
 	// Check if we should use an existing cluster (for CI/CD)
 	useExistingCluster := os.Getenv("USE_EXISTING_CLUSTER") == "true"
 
+	// // Get kubebuilder assets path
+	kubebuilderAssets := os.Getenv("KUBEBUILDER_ASSETS")
+
+	if !useExistingCluster {
+		By(fmt.Sprintf("using kubebuilder assets from: %s", kubebuilderAssets))
+		if kubebuilderAssets == "" {
+			By("WARNING: no kubebuilder assets found, test may fail")
+		}
+	}
+
 	testEnv = &envtest.Environment{
 		UseExistingCluster: &useExistingCluster,
 		CRDDirectoryPaths: []string{
 			filepath.Join("..", "..", "..", "deploy", "charts", "operator-crds", "crds"),
 		},
 		ErrorIfCRDPathMissing: true,
+		BinaryAssetsDirectory: kubebuilderAssets,
 	}
 
 	cfg, err = testEnv.Start()

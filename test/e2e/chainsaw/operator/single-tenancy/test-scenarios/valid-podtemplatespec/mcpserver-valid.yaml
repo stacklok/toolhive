@@ -1,0 +1,21 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: valid-podtemplate
+  namespace: toolhive-system
+spec:
+  image: ghcr.io/stackloklabs/mcp-fetch:latest
+  transport: stdio
+  port: 8080
+  # Valid PodTemplateSpec with proper structure
+  podTemplateSpec:
+    spec:
+      containers:
+      - name: mcp
+        resources:
+          limits:
+            cpu: "100m"
+            memory: "128Mi"
+          requests:
+            cpu: "50m"
+            memory: "64Mi"

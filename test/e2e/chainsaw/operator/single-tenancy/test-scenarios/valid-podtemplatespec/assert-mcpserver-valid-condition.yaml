@@ -1,0 +1,13 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: valid-podtemplate
+  namespace: toolhive-system
+status:
+  conditions:
+  - type: PodTemplateValid
+    status: "True"
+    reason: ValidPodTemplateSpec
+  - type: ImageValidated
+    status: "True"
+    reason: ImageValidationSkipped

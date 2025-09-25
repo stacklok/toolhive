@@ -13,6 +13,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -352,6 +353,122 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				}
 				return hasNewImage
 			}, timeout, interval).Should(BeTrue())
+		})
+	})
+
+	Context("When creating an MCPServer with invalid PodTemplateSpec", Ordered, func() {
+		var (
+			namespace     string
+			mcpServerName string
+			mcpServer     *mcpv1alpha1.MCPServer
+		)
+
+		BeforeAll(func() {
+			namespace = "default"
+			mcpServerName = "test-invalid-podtemplate"
+
+			// Create namespace if it doesn't exist
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			// Define the MCPServer resource with invalid PodTemplateSpec
+			mcpServer = &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
+					Transport: "stdio",
+					Port:      8080,
+					// Invalid PodTemplateSpec - containers should be an array, not a string
+					PodTemplateSpec: &runtime.RawExtension{
+						Raw: []byte(`{"spec": {"containers": "invalid-not-an-array"}}`),
+					},
+				},
+			}
+
+			// Create the MCPServer
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+		})
+
+		AfterAll(func() {
+			// Clean up the MCPServer
+			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
+		})
+
+		It("Should set PodTemplateValid condition to False", func() {
+			// Wait for the status to be updated with the invalid condition
+			Eventually(func() bool {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+
+				// Check for PodTemplateValid condition
+				for _, cond := range updatedMCPServer.Status.Conditions {
+					if cond.Type == "PodTemplateValid" {
+						return cond.Status == metav1.ConditionFalse &&
+							cond.Reason == "InvalidPodTemplateSpec"
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+
+			// Verify the condition message contains expected text
+			updatedMCPServer := &mcpv1alpha1.MCPServer{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      mcpServerName,
+				Namespace: namespace,
+			}, updatedMCPServer)).Should(Succeed())
+
+			var foundCondition *metav1.Condition
+			for i, cond := range updatedMCPServer.Status.Conditions {
+				if cond.Type == "PodTemplateValid" {
+					foundCondition = &updatedMCPServer.Status.Conditions[i]
+					break
+				}
+			}
+
+			Expect(foundCondition).NotTo(BeNil())
+			Expect(foundCondition.Message).To(ContainSubstring("Failed to parse PodTemplateSpec"))
+			Expect(foundCondition.Message).To(ContainSubstring("Deployment blocked until fixed"))
+		})
+
+		It("Should not create a Deployment for invalid MCPServer", func() {
+			// Verify that no deployment was created
+			deployment := &appsv1.Deployment{}
+			Consistently(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, deployment)
+				return err != nil
+			}, time.Second*5, interval).Should(BeTrue())
+		})
+
+		It("Should have Failed phase in status", func() {
+			updatedMCPServer := &mcpv1alpha1.MCPServer{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+				return updatedMCPServer.Status.Phase == mcpv1alpha1.MCPServerPhaseFailed
+			}, timeout, interval).Should(BeTrue())
+
+			Expect(updatedMCPServer.Status.Message).To(ContainSubstring("Invalid PodTemplateSpec"))
 		})
 	})
 })

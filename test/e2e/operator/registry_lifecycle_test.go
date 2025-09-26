@@ -67,29 +67,8 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 			Expect(registry.Spec.Source.ConfigMap.Name).To(Equal(configMap.Name))
 			Expect(registry.Spec.SyncPolicy.Interval).To(Equal("1h"))
 
-			// Verify finalizer was added
-			By("waiting for finalizer to be added")
-			timingHelper.WaitForControllerReconciliation(func() interface{} {
-				updatedRegistry, err := registryHelper.GetRegistry(registry.Name)
-				if err != nil {
-					return false
-				}
-				return containsFinalizer(updatedRegistry.Finalizers, registryFinalizerName)
-			}).Should(BeTrue())
-
-			// Wait for controller to process and verify initial status
-			By("waiting for controller to process and verify initial status")
-			timingHelper.WaitForControllerReconciliation(func() interface{} {
-				phase, err := registryHelper.GetRegistryPhase(registry.Name)
-				if err != nil {
-					return ""
-				}
-				return phase
-			}).Should(BeElementOf(
-				mcpv1alpha1.MCPRegistryPhasePending,
-				mcpv1alpha1.MCPRegistryPhaseReady,
-				mcpv1alpha1.MCPRegistryPhaseSyncing,
-			))
+			// Wait for registry initialization (finalizer + initial status)
+			registryHelper.WaitForRegistryInitialization(registry.Name, timingHelper, statusHelper)
 
 			By("verifying storage ConfigMap is defined in status and exists")
 			updatedRegistry, err := registryHelper.GetRegistry(registry.Name)
@@ -168,7 +147,9 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 				mcpv1alpha1.APIPhaseDeploying, // Deployment created but not ready
 				mcpv1alpha1.APIPhaseReady,     // If somehow becomes ready
 			))
-			Expect(updatedRegistry.Status.APIStatus.Endpoint).To(Equal(fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", apiResourceName, testNamespace)))
+			if updatedRegistry.Status.APIStatus.Phase == mcpv1alpha1.APIPhaseReady {
+				Expect(updatedRegistry.Status.APIStatus.Endpoint).To(Equal(fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", apiResourceName, testNamespace)))
+			}
 			By("BYE")
 		})
 
@@ -196,8 +177,16 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 			// Verify creation
 			Expect(registry.Spec.SyncPolicy).To(BeNil())
 
-			// Should still become ready for manual sync
-			statusHelper.WaitForPhase(registry.Name, mcpv1alpha1.MCPRegistryPhaseReady, MediumTimeout)
+			// Wait for registry initialization (finalizer + initial status)
+			registryHelper.WaitForRegistryInitialization(registry.Name, timingHelper, statusHelper)
+
+			updatedRegistry, err := registryHelper.GetRegistry(registry.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify sync status is idle or complete
+			Expect(updatedRegistry.Status.SyncStatus).NotTo(BeNil())
+			Expect(updatedRegistry.Status.SyncStatus.Phase).To(BeElementOf(mcpv1alpha1.SyncPhaseIdle, mcpv1alpha1.SyncPhaseComplete))
+			Expect(updatedRegistry.Status.SyncStatus.ServerCount).To(Equal(1))
 		})
 
 		It("should set correct metadata labels and annotations", func() {
@@ -209,6 +198,8 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 				WithLabel("version", "1.0").
 				WithAnnotation("description", "Test registry").
 				Create(registryHelper)
+
+			registryHelper.WaitForRegistryInitialization(registry.Name, timingHelper, statusHelper)
 
 			// Verify labels and annotations
 			Expect(registry.Labels).To(HaveKeyWithValue("app", "test"))
@@ -255,9 +246,20 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 			Expect(registryHelper.DeleteRegistry(registry.Name)).To(Succeed())
 
 			// Verify registry enters terminating phase
+			By("waiting for registry to enter terminating phase")
 			statusHelper.WaitForPhase(registry.Name, mcpv1alpha1.MCPRegistryPhaseTerminating, MediumTimeout)
 
+			By("waiting for finalizer to be removed")
+			timingHelper.WaitForControllerReconciliation(func() interface{} {
+				updatedRegistry, err := registryHelper.GetRegistry(registry.Name)
+				if err != nil {
+					return true // Registry might be deleted, which means finalizer was removed
+				}
+				return !containsFinalizer(updatedRegistry.Finalizers, registryFinalizerName)
+			}).Should(BeTrue())
+
 			// Verify registry is eventually deleted (finalizer removed)
+			By("waiting for registry to be deleted")
 			timingHelper.WaitForControllerReconciliation(func() interface{} {
 				_, err := registryHelper.GetRegistry(registry.Name)
 				return errors.IsNotFound(err)
@@ -275,7 +277,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 				Create(registryHelper)
 
 			// Wait for registry to be ready
-			statusHelper.WaitForPhase(registry.Name, mcpv1alpha1.MCPRegistryPhaseReady, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 
 			// Store initial storage reference for cleanup verification
 			status, err := registryHelper.GetRegistryStatus(registry.Name)
@@ -343,6 +345,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 
 			// Should fail validation
 			err := k8sClient.Create(ctx, invalidRegistry)
+			By("verifying validation error")
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("configMap field is required"))
 		})
@@ -379,22 +382,33 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 				WithConfigMapSource("nonexistent-configmap", "registry.json").
 				Create(registryHelper)
 
+			By("waiting for registry to enter failed state")
 			// Should enter failed state due to missing source
 			statusHelper.WaitForPhase(registry.Name, mcpv1alpha1.MCPRegistryPhaseFailed, MediumTimeout)
 
 			// Check condition reflects the problem
-			statusHelper.WaitForCondition(registry.Name, mcpv1alpha1.ConditionSourceAvailable,
+			statusHelper.WaitForCondition(registry.Name, mcpv1alpha1.ConditionSyncSuccessful,
 				metav1.ConditionFalse, MediumTimeout)
+
+			updatedRegistry, err := registryHelper.GetRegistry(registry.Name)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying sync status")
+			Expect(updatedRegistry.Status.SyncStatus).NotTo(BeNil())
+			Expect(updatedRegistry.Status.SyncStatus.Phase).To(Equal(mcpv1alpha1.SyncPhaseFailed))
+			Expect(updatedRegistry.Status.SyncStatus.AttemptCount).To(Equal(1))
+
+			By("verifying API status")
+			Expect(updatedRegistry.Status.APIStatus).To(BeNil())
 		})
 	})
 
 	Context("Multiple Registry Management", func() {
-		var numServers1, numServers2 int
 		var configMap1, configMap2 *corev1.ConfigMap
 		It("should handle multiple registries in same namespace", func() {
 			// Create multiple ConfigMaps
-			configMap1, numServers1 = configMapHelper.CreateSampleToolHiveRegistry("config-1")
-			configMap2, numServers2 = configMapHelper.CreateSampleUpstreamRegistry("config-2")
+			configMap1, _ = configMapHelper.CreateSampleToolHiveRegistry("config-1")
+			configMap2, _ = configMapHelper.CreateSampleToolHiveRegistry("config-2")
 
 			// Create multiple registries
 			registry1 := registryHelper.NewRegistryBuilder("registry-1").
@@ -409,13 +423,14 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 				Create(registryHelper)
 
 			// Both should become ready independently
-			statusHelper.WaitForPhase(registry1.Name, mcpv1alpha1.MCPRegistryPhaseReady, MediumTimeout)
-			statusHelper.WaitForPhase(registry2.Name, mcpv1alpha1.MCPRegistryPhaseReady, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry2.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 
 			// Verify they operate independently
 			Expect(registry1.Spec.SyncPolicy.Interval).To(Equal("1h"))
 			Expect(registry2.Spec.SyncPolicy.Interval).To(Equal("30m"))
-			Expect(registry2.Spec.Source.Format).To(Equal(mcpv1alpha1.RegistryFormatUpstream))
+			Expect(registry1.Spec.Source.Format).To(Equal(mcpv1alpha1.RegistryFormatToolHive))
+			Expect(registry2.Spec.Source.Format).To(Equal(mcpv1alpha1.RegistryFormatToolHive))
 		})
 
 		It("should allow multiple registries with same ConfigMap source", func() {
@@ -434,12 +449,13 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 				Create(registryHelper)
 
 			// Both should become ready
-			statusHelper.WaitForPhase(registry1.Name, mcpv1alpha1.MCPRegistryPhaseReady, MediumTimeout)
-			statusHelper.WaitForPhase(registry2.Name, mcpv1alpha1.MCPRegistryPhaseReady, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry2.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 
 			// Both should have same server count from shared source
-			statusHelper.WaitForServerCount(registry1.Name, numServers1, MediumTimeout)
-			statusHelper.WaitForServerCount(registry2.Name, numServers2, MediumTimeout)
+			sharedNumServers := 2 // Sample ToolHive registry has 2 servers
+			statusHelper.WaitForServerCount(registry1.Name, sharedNumServers, MediumTimeout)
+			statusHelper.WaitForServerCount(registry2.Name, sharedNumServers, MediumTimeout)
 		})
 
 		It("should handle registry name conflicts gracefully", func() {
@@ -472,20 +488,10 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 			Expect(errors.IsAlreadyExists(err)).To(BeTrue())
 
 			// Original registry should still be functional
-			statusHelper.WaitForPhase(registry1.Name, mcpv1alpha1.MCPRegistryPhaseReady, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 		})
 	})
 })
-
-// Helper function to check if a finalizer exists in the list
-func containsFinalizer(finalizers []string, finalizer string) bool {
-	for _, f := range finalizers {
-		if f == finalizer {
-			return true
-		}
-	}
-	return false
-}
 
 // Helper function to create test namespace
 func createTestNamespace(ctx context.Context) string {

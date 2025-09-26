@@ -334,7 +334,7 @@ func (s *DefaultSyncManager) fetchAndProcessRegistryData(
 	// Execute fetch operation
 	fetchResult, err := sourceHandler.FetchRegistry(ctx, mcpRegistry)
 	if err != nil {
-		ctxLogger.Error(err, "Fetch operation failed")
+		ctxLogger.Info("Fetch operation failed", "error", err.Error())
 		// Sync attempt counting is now handled by the controller via status collector
 		return nil, &mcpregistrystatus.Error{
 			Err:             err,

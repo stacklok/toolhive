@@ -137,42 +137,47 @@ func (s *StatusCollector) Apply(ctx context.Context, k8sClient client.Client) er
 		return fmt.Errorf("failed to fetch latest MCPRegistry version: %w", err)
 	}
 
+	updatedStatus := latestRegistry.Status.DeepCopy()
 	// Apply phase change
 	if s.phase != nil {
-		latestRegistry.Status.Phase = *s.phase
+		updatedStatus.Phase = *s.phase
 	}
 
 	// Apply message change
 	if s.message != nil {
-		latestRegistry.Status.Message = *s.message
+		updatedStatus.Message = *s.message
 	}
 
 	// Apply sync status change
 	if s.syncStatus != nil {
-		latestRegistry.Status.SyncStatus = s.syncStatus
+		updatedStatus.SyncStatus = s.syncStatus
 	}
 
 	// Apply API status change
 	if s.apiStatus != nil {
-		latestRegistry.Status.APIStatus = s.apiStatus
+		updatedStatus.APIStatus = s.apiStatus
 	}
 
 	// Apply condition changes
 	for _, condition := range s.conditions {
-		meta.SetStatusCondition(&latestRegistry.Status.Conditions, condition)
+		meta.SetStatusCondition(&updatedStatus.Conditions, condition)
 	}
 
-	// Single status update using the latest version
-	if err := k8sClient.Status().Update(ctx, latestRegistry); err != nil {
-		ctxLogger.Error(err, "Failed to apply batched status update")
-		return fmt.Errorf("failed to apply batched status update: %w", err)
+	if !latestRegistry.Status.IsEqualTo(ctx, *updatedStatus) {
+		latestRegistry.Status = *updatedStatus
+		// Single status update using the latest version
+		if err := k8sClient.Status().Update(ctx, latestRegistry); err != nil {
+			ctxLogger.Error(err, "Failed to apply batched status update")
+			return fmt.Errorf("failed to apply batched status update: %w", err)
+		}
+
+		ctxLogger.V(1).Info("Applied batched status update",
+			"phase", s.phase,
+			"message", s.message,
+			"conditionsCount", len(s.conditions))
+	} else {
+		ctxLogger.V(1).Info("No changes to apply to MCPRegistry status")
 	}
-
-	ctxLogger.V(1).Info("Applied batched status update",
-		"phase", s.phase,
-		"message", s.message,
-		"conditionsCount", len(s.conditions))
-
 	return nil
 }
 
@@ -196,6 +201,11 @@ func (s *StatusCollector) SetOverallStatus(phase mcpv1alpha1.MCPRegistryPhase, m
 
 // SyncStatusCollector implementation
 
+// Status returns the current status
+func (sc *syncStatusCollector) Status() *mcpv1alpha1.SyncStatus {
+	return sc.parent.syncStatus
+}
+
 // SetSyncCondition sets a sync-related condition
 func (sc *syncStatusCollector) SetSyncCondition(condition metav1.Condition) {
 	sc.parent.conditions[condition.Type] = condition
@@ -209,6 +219,10 @@ func (sc *syncStatusCollector) SetSyncStatus(phase mcpv1alpha1.SyncPhase, messag
 }
 
 // APIStatusCollector implementation
+// Status returns the current status
+func (ac *apiStatusCollector) Status() *mcpv1alpha1.APIStatus {
+	return ac.parent.apiStatus
+}
 
 // SetAPIStatus delegates to the parent's SetAPIStatus method
 func (ac *apiStatusCollector) SetAPIStatus(phase mcpv1alpha1.APIPhase, message string, endpoint string) {

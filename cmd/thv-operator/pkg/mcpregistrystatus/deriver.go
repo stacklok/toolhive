@@ -35,7 +35,7 @@ func (*DefaultStatusDeriver) DeriveOverallStatus(
 
 	// Check if both sync and API are ready
 	syncReady := syncStatus != nil &&
-		(syncStatus.Phase == mcpv1alpha1.SyncPhaseComplete)
+		(syncStatus.Phase == mcpv1alpha1.SyncPhaseComplete || syncStatus.Phase == mcpv1alpha1.SyncPhaseIdle)
 	apiReady := apiStatus != nil && apiStatus.Phase == mcpv1alpha1.APIPhaseReady
 
 	if syncReady && apiReady {

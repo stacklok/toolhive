@@ -26,10 +26,13 @@ func (e *Error) Unwrap() error {
 	return e.Err
 }
 
-//go:generate mockgen -destination=mocks/mock_status.go -package=mocks -source=types.go SyncStatusCollector,APIStatusCollector,StatusDeriver,StatusManager
+//go:generate mockgen -destination=mocks/mock_collector.go -package=mocks -source=types.go SyncStatusCollector,APIStatusCollector,StatusDeriver,StatusManager
 
 // SyncStatusCollector handles sync-related status updates
 type SyncStatusCollector interface {
+	// Status returns the current sync status
+	Status() *mcpv1alpha1.SyncStatus
+
 	// SetSyncStatus sets the detailed sync status
 	SetSyncStatus(phase mcpv1alpha1.SyncPhase, message string, attemptCount int,
 		lastSyncTime *metav1.Time, lastSyncHash string, serverCount int)
@@ -40,6 +43,9 @@ type SyncStatusCollector interface {
 
 // APIStatusCollector handles API-related status updates
 type APIStatusCollector interface {
+	// Status returns the current status
+	Status() *mcpv1alpha1.APIStatus
+
 	// SetAPIStatus sets the detailed API status
 	SetAPIStatus(phase mcpv1alpha1.APIPhase, message string, endpoint string)
 

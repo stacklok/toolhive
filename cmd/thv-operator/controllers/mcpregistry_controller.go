@@ -75,7 +75,7 @@ func NewMCPRegistryReconciler(k8sClient client.Client, scheme *runtime.Scheme) *
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpregistries,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpregistries/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpregistries/finalizers,verbs=update;delete
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpregistries/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 //
@@ -124,25 +124,21 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if mcpRegistry.GetDeletionTimestamp() != nil {
 		// The object is being deleted
 		if controllerutil.ContainsFinalizer(mcpRegistry, "mcpregistry.toolhive.stacklok.dev/finalizer") {
-			// Run finalization logic only if not already terminating to avoid redundant work
-			if mcpRegistry.Status.Phase != mcpv1alpha1.MCPRegistryPhaseTerminating {
-				// Run finalization logic. If the finalization logic fails,
-				// don't remove the finalizer so that we can retry during the next reconciliation.
-				if err := r.finalizeMCPRegistry(ctx, mcpRegistry); err != nil {
-					ctxLogger.Error(err, "Reconciliation completed with error while finalizing MCPRegistry",
-						"MCPRegistry.Name", mcpRegistry.Name)
-					return ctrl.Result{}, err
-				}
-				// Remove the finalizer. Once all finalizers have been removed, the object will be deleted.
-				original := mcpRegistry.DeepCopy()
-				controllerutil.RemoveFinalizer(mcpRegistry, "mcpregistry.toolhive.stacklok.dev/finalizer")
-				patch := client.MergeFrom(original)
-				err := r.Patch(ctx, mcpRegistry, patch)
-				if err != nil {
-					ctxLogger.Error(err, "Reconciliation completed with error while removing finalizer",
-						"MCPRegistry.Name", mcpRegistry.Name)
-					return ctrl.Result{}, err
-				}
+			// Run finalization logic. If the finalization logic fails,
+			// don't remove the finalizer so that we can retry during the next reconciliation.
+			if err := r.finalizeMCPRegistry(ctx, mcpRegistry); err != nil {
+				ctxLogger.Error(err, "Reconciliation completed with error while finalizing MCPRegistry",
+					"MCPRegistry.Name", mcpRegistry.Name)
+				return ctrl.Result{}, err
+			}
+
+			// Remove the finalizer. Once all finalizers have been removed, the object will be deleted.
+			controllerutil.RemoveFinalizer(mcpRegistry, "mcpregistry.toolhive.stacklok.dev/finalizer")
+			err := r.Update(ctx, mcpRegistry)
+			if err != nil {
+				ctxLogger.Error(err, "Reconciliation completed with error while removing finalizer",
+					"MCPRegistry.Name", mcpRegistry.Name)
+				return ctrl.Result{}, err
 			}
 		}
 		ctxLogger.Info("Reconciliation of deleted MCPRegistry completed successfully",
@@ -167,6 +163,7 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// 3. Create status manager for batched updates with separation of concerns
 	statusManager := mcpregistrystatus.NewStatusManager(mcpRegistry)
+	statusDeriver := mcpregistrystatus.NewDefaultStatusDeriver()
 
 	// 4. Reconcile sync operation
 	result, syncErr := r.reconcileSync(ctx, mcpRegistry, statusManager)
@@ -245,6 +242,10 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			"requeueAfter", result.RequeueAfter)
 	}
 
+	if result.RequeueAfter > 0 {
+		ctxLogger.Info("Resetting error to nil because of requeue")
+		err = nil
+	}
 	return result, err
 }
 
@@ -308,7 +309,7 @@ func (r *MCPRegistryReconciler) reconcileSync(
 
 	if syncErr != nil {
 		// Sync failed - set sync status to failed
-		ctxLogger.Error(syncErr, "Sync failed, scheduling retry")
+		ctxLogger.Info("Sync failed, scheduling retry", "error", syncErr.Error())
 		// Preserve existing sync data when sync fails
 		lastSyncTime, lastSyncHash, serverCount := r.preserveExistingSyncData(mcpRegistry)
 
@@ -393,8 +394,8 @@ func (*MCPRegistryReconciler) deriveOverallStatus(
 	// Use the StatusDeriver to determine the overall phase and message
 	// based on current sync and API statuses
 	derivedPhase, derivedMessage := statusDeriver.DeriveOverallStatus(
-		mcpRegistry.Status.SyncStatus,
-		mcpRegistry.Status.APIStatus,
+		statusManager.Sync().Status(),
+		statusManager.API().Status(),
 	)
 
 	// Only update phase and message if they've changed

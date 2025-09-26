@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -14,6 +15,7 @@ type Handler struct {
 	ctx              context.Context
 	workloadManager  workloads.Manager
 	registryProvider registry.Provider
+	configProvider   config.Provider
 }
 
 // NewHandler creates a new ToolHive handler
@@ -30,9 +32,13 @@ func NewHandler(ctx context.Context) (*Handler, error) {
 		return nil, fmt.Errorf("failed to get registry provider: %w", err)
 	}
 
+	// Create config provider
+	configProvider := config.NewDefaultProvider()
+
 	return &Handler{
 		ctx:              ctx,
 		workloadManager:  workloadManager,
 		registryProvider: registryProvider,
+		configProvider:   configProvider,
 	}, nil
 }

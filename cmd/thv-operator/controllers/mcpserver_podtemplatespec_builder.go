@@ -1,7 +1,11 @@
 package controllers
 
 import (
+	"encoding/json"
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
@@ -12,9 +16,17 @@ type MCPServerPodTemplateSpecBuilder struct {
 }
 
 // NewMCPServerPodTemplateSpecBuilder creates a new builder, optionally starting with a user-provided template
-func NewMCPServerPodTemplateSpecBuilder(userTemplate *corev1.PodTemplateSpec) *MCPServerPodTemplateSpecBuilder {
+// Returns an error if the provided raw extension cannot be unmarshaled into a valid PodTemplateSpec
+func NewMCPServerPodTemplateSpecBuilder(userTemplateRaw *runtime.RawExtension) (*MCPServerPodTemplateSpecBuilder, error) {
 	var spec *corev1.PodTemplateSpec
-	if userTemplate != nil {
+
+	if userTemplateRaw != nil && userTemplateRaw.Raw != nil {
+		// Try to unmarshal the raw extension into a PodTemplateSpec
+		var userTemplate corev1.PodTemplateSpec
+		if err := json.Unmarshal(userTemplateRaw.Raw, &userTemplate); err != nil {
+			// Return error if unmarshaling fails - this indicates invalid PodTemplateSpec data
+			return nil, fmt.Errorf("failed to unmarshal PodTemplateSpec: %w", err)
+		}
 		spec = userTemplate.DeepCopy()
 	} else {
 		spec = &corev1.PodTemplateSpec{
@@ -24,7 +36,7 @@ func NewMCPServerPodTemplateSpecBuilder(userTemplate *corev1.PodTemplateSpec) *M
 		}
 	}
 
-	return &MCPServerPodTemplateSpecBuilder{spec: spec}
+	return &MCPServerPodTemplateSpecBuilder{spec: spec}, nil
 }
 
 // WithServiceAccount sets the service account name

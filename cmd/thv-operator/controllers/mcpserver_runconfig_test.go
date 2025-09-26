@@ -1847,14 +1847,18 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 					Image:     "ghcr.io/example/server:v1.0.0",
 					Transport: "stdio",
 					Port:      8080,
-					PodTemplateSpec: &corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Annotations: map[string]string{
-								"vault.hashicorp.com/agent-inject": "true",
-								"vault.hashicorp.com/role":         "test-role",
+					PodTemplateSpec: func() *runtime.RawExtension {
+						pts := &corev1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{
+								Annotations: map[string]string{
+									"vault.hashicorp.com/agent-inject": "true",
+									"vault.hashicorp.com/role":         "test-role",
+								},
 							},
-						},
-					},
+						}
+						raw, _ := json.Marshal(pts)
+						return &runtime.RawExtension{Raw: raw}
+					}(),
 				},
 			},
 			expectedEnvDir: "/vault/secrets",

@@ -28,8 +28,14 @@ func NewStatusTestHelper(ctx context.Context, k8sClient client.Client, namespace
 
 // WaitForPhase waits for an MCPRegistry to reach the specified phase
 func (h *StatusTestHelper) WaitForPhase(registryName string, expectedPhase mcpv1alpha1.MCPRegistryPhase, timeout time.Duration) {
+	h.WaitForPhaseAny(registryName, []mcpv1alpha1.MCPRegistryPhase{expectedPhase}, timeout)
+}
+
+// WaitForPhaseAny waits for an MCPRegistry to reach any of the specified phases
+func (h *StatusTestHelper) WaitForPhaseAny(registryName string,
+	expectedPhases []mcpv1alpha1.MCPRegistryPhase, timeout time.Duration) {
 	gomega.Eventually(func() mcpv1alpha1.MCPRegistryPhase {
-		ginkgo.By(fmt.Sprintf("waiting for registry %s to reach phase %s", registryName, expectedPhase))
+		ginkgo.By(fmt.Sprintf("waiting for registry %s to reach one of phases %v", registryName, expectedPhases))
 		registry, err := h.registryHelper.GetRegistry(registryName)
 		if err != nil {
 			if errors.IsNotFound(err) {
@@ -39,8 +45,8 @@ func (h *StatusTestHelper) WaitForPhase(registryName string, expectedPhase mcpv1
 			return ""
 		}
 		return registry.Status.Phase
-	}, timeout, time.Second).Should(gomega.Equal(expectedPhase),
-		"MCPRegistry %s should reach phase %s", registryName, expectedPhase)
+	}, timeout, time.Second).Should(gomega.BeElementOf(expectedPhases),
+		"MCPRegistry %s should reach one of phases %v", registryName, expectedPhases)
 }
 
 // WaitForCondition waits for a specific condition to have the expected status

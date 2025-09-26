@@ -244,3 +244,38 @@ func (h *MCPRegistryTestHelper) CleanupRegistries() error {
 	}
 	return nil
 }
+
+// WaitForRegistryInitialization waits for common initialization steps after registry creation:
+// 1. Wait for finalizer to be added
+// 2. Wait for controller to process the registry into an acceptable initial phase
+func (h *MCPRegistryTestHelper) WaitForRegistryInitialization(registryName string,
+	timingHelper *TimingTestHelper, statusHelper *StatusTestHelper) {
+	// Wait for finalizer to be added
+	ginkgo.By("waiting for finalizer to be added")
+	timingHelper.WaitForControllerReconciliation(func() interface{} {
+		updatedRegistry, err := h.GetRegistry(registryName)
+		if err != nil {
+			return false
+		}
+		return containsFinalizer(updatedRegistry.Finalizers, "mcpregistry.toolhive.stacklok.dev/finalizer")
+	}).Should(gomega.BeTrue())
+
+	// Wait for controller to process and verify initial status
+	ginkgo.By("waiting for controller to process and verify initial status")
+	statusHelper.WaitForPhaseAny(registryName, []mcpv1alpha1.MCPRegistryPhase{
+		mcpv1alpha1.MCPRegistryPhasePending,
+		mcpv1alpha1.MCPRegistryPhaseReady,
+		mcpv1alpha1.MCPRegistryPhaseSyncing,
+	}, MediumTimeout)
+}
+
+// containsFinalizer checks if the registry finalizer exists in the list
+func containsFinalizer(finalizers []string, _ string) bool {
+	const registryFinalizer = "mcpregistry.toolhive.stacklok.dev/finalizer"
+	for _, f := range finalizers {
+		if f == registryFinalizer {
+			return true
+		}
+	}
+	return false
+}

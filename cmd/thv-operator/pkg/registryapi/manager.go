@@ -6,7 +6,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -43,8 +42,8 @@ func NewManager(
 // This method coordinates all aspects of API service including creating/updating the deployment and service,
 // checking readiness, and updating the MCPRegistry status with deployment references and endpoint information.
 func (m *manager) ReconcileAPIService(
-	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, statusCollector mcpregistrystatus.Collector,
-) error {
+	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
+) *mcpregistrystatus.Error {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 	ctxLogger.Info("Reconciling API service")
 
@@ -52,33 +51,33 @@ func (m *manager) ReconcileAPIService(
 	deployment, err := m.ensureDeployment(ctx, mcpRegistry)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to ensure deployment")
-		// Update status with failure condition
-		statusCollector.SetAPIStatus(mcpv1alpha1.APIPhaseError,
-			fmt.Sprintf("Failed to ensure deployment: %v", err), "")
-		statusCollector.SetAPIReadyCondition("DeploymentFailed",
-			fmt.Sprintf("Failed to ensure deployment: %v", err), metav1.ConditionFalse)
-		return fmt.Errorf("failed to ensure deployment: %w", err)
+		return &mcpregistrystatus.Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to ensure deployment: %v", err),
+			ConditionType:   mcpv1alpha1.ConditionAPIReady,
+			ConditionReason: "DeploymentFailed",
+		}
 	}
 
 	// Step 2: Ensure service exists and is configured correctly
-	service, err := m.ensureService(ctx, mcpRegistry)
+	_, err = m.ensureService(ctx, mcpRegistry)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to ensure service")
-		// Update status with failure condition
-		statusCollector.SetAPIStatus(mcpv1alpha1.APIPhaseError,
-			fmt.Sprintf("Failed to ensure service: %v", err), "")
-		statusCollector.SetAPIReadyCondition("ServiceFailed",
-			fmt.Sprintf("Failed to ensure service: %v", err), metav1.ConditionFalse)
-		return fmt.Errorf("failed to ensure service: %w", err)
+		return &mcpregistrystatus.Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to ensure service: %v", err),
+			ConditionType:   mcpv1alpha1.ConditionAPIReady,
+			ConditionReason: "ServiceFailed",
+		}
 	}
 
 	// Step 3: Check API readiness
 	isReady := m.CheckAPIReadiness(ctx, deployment)
 
-	// Step 4: Update MCPRegistry status with deployment and service references
-	m.updateAPIStatus(ctx, mcpRegistry, deployment, service, isReady, statusCollector)
+	// Note: Status updates are now handled by the controller
+	// The controller can call IsAPIReady to check readiness and update status accordingly
 
-	// Step 5: Log completion status
+	// Step 4: Log completion status
 	if isReady {
 		ctxLogger.Info("API service reconciliation completed successfully - API is ready")
 	} else {
@@ -107,59 +106,6 @@ func (m *manager) IsAPIReady(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRe
 
 	// Delegate to the existing CheckAPIReadiness method for consistency
 	return m.CheckAPIReadiness(ctx, deployment)
-}
-
-// updateAPIStatus updates the MCPRegistry status with deployment and service references and API endpoint information
-func (*manager) updateAPIStatus(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
-	_ *appsv1.Deployment, service *corev1.Service, isReady bool, statusCollector mcpregistrystatus.Collector) {
-	ctxLogger := log.FromContext(ctx)
-
-	// Determine API endpoint
-	var endpoint string
-	if service != nil {
-		// Construct internal URL from service information
-		endpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:%d",
-			service.Name, service.Namespace, service.Spec.Ports[0].Port)
-	}
-
-	// Set detailed API status
-	var apiPhase mcpv1alpha1.APIPhase
-	var reason, message string
-
-	if isReady {
-		apiPhase = mcpv1alpha1.APIPhaseReady
-		reason = "APIReady"
-		message = "Registry API is ready and serving requests"
-	} else {
-		apiPhase = mcpv1alpha1.APIPhaseDeploying
-		reason = "APINotReady"
-		message = "Registry API deployment is not ready yet"
-	}
-
-	// Only update API status if it has changed
-	currentAPIPhase := mcpv1alpha1.APIPhaseNotStarted // default
-	currentMessage := ""
-	currentEndpoint := ""
-	if mcpRegistry.Status.APIStatus != nil {
-		currentAPIPhase = mcpRegistry.Status.APIStatus.Phase
-		currentMessage = mcpRegistry.Status.APIStatus.Message
-		currentEndpoint = mcpRegistry.Status.APIStatus.Endpoint
-	}
-
-	// Set API status only if it has changed
-	if currentAPIPhase != apiPhase || currentMessage != message || currentEndpoint != endpoint {
-		statusCollector.SetAPIStatus(apiPhase, message, endpoint)
-		statusCollector.SetAPIReadyCondition(reason, message,
-			func() metav1.ConditionStatus {
-				if isReady {
-					return metav1.ConditionTrue
-				}
-				return metav1.ConditionFalse
-			}())
-	}
-
-	ctxLogger.V(1).Info("Prepared API status update for batching",
-		"apiPhase", apiPhase, "apiReady", isReady)
 }
 
 // ConfigureDeploymentStorage configures a deployment with storage-specific requirements.

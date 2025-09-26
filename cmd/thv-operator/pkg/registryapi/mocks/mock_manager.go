@@ -72,15 +72,15 @@ func (mr *MockManagerMockRecorder) IsAPIReady(ctx, mcpRegistry any) *gomock.Call
 }
 
 // ReconcileAPIService mocks base method.
-func (m *MockManager) ReconcileAPIService(ctx context.Context, mcpRegistry *v1alpha1.MCPRegistry, statusCollector mcpregistrystatus.Collector) error {
+func (m *MockManager) ReconcileAPIService(ctx context.Context, mcpRegistry *v1alpha1.MCPRegistry) *mcpregistrystatus.Error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ReconcileAPIService", ctx, mcpRegistry, statusCollector)
-	ret0, _ := ret[0].(error)
+	ret := m.ctrl.Call(m, "ReconcileAPIService", ctx, mcpRegistry)
+	ret0, _ := ret[0].(*mcpregistrystatus.Error)
 	return ret0
 }
 
 // ReconcileAPIService indicates an expected call of ReconcileAPIService.
-func (mr *MockManagerMockRecorder) ReconcileAPIService(ctx, mcpRegistry, statusCollector any) *gomock.Call {
+func (mr *MockManagerMockRecorder) ReconcileAPIService(ctx, mcpRegistry any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReconcileAPIService", reflect.TypeOf((*MockManager)(nil).ReconcileAPIService), ctx, mcpRegistry, statusCollector)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReconcileAPIService", reflect.TypeOf((*MockManager)(nil).ReconcileAPIService), ctx, mcpRegistry)
 }

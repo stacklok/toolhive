@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-24T00:17:37Z",
+  "last_updated": "2025-09-26T00:17:03Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -711,7 +711,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.8.0",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.8.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -1197,9 +1197,9 @@
         "get-library-docs"
       ],
       "metadata": {
-        "stars": 29129,
+        "stars": 31260,
         "pulls": 313,
-        "last_updated": "2025-09-06T02:26:40Z"
+        "last_updated": "2025-09-24T02:28:46Z"
       },
       "repository_url": "https://github.com/upstash/context7",
       "tags": [
@@ -2241,9 +2241,9 @@
         "fetch_pyroscope_profile"
       ],
       "metadata": {
-        "stars": 1521,
+        "stars": 1610,
         "pulls": 8120,
-        "last_updated": "2025-09-06T02:26:40Z"
+        "last_updated": "2025-09-24T02:28:46Z"
       },
       "repository_url": "https://github.com/grafana/mcp-grafana",
       "tags": [
@@ -2358,7 +2358,7 @@
         "ingestion",
         "data-connectors"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20250922001",
+      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20250925001",
       "permissions": {
         "network": {
           "outbound": {
@@ -3832,9 +3832,9 @@
         "list_netbird_nameservers"
       ],
       "metadata": {
-        "stars": 38,
+        "stars": 39,
         "pulls": 10904,
-        "last_updated": "2025-09-05T02:29:06Z"
+        "last_updated": "2025-09-24T02:28:46Z"
       },
       "repository_url": "https://github.com/aantti/mcp-netbird",
       "tags": [
@@ -3954,7 +3954,7 @@
       "metadata": {
         "stars": 10,
         "pulls": 8029,
-        "last_updated": "2025-09-06T02:26:40Z"
+        "last_updated": "2025-09-24T02:28:46Z"
       },
       "repository_url": "https://github.com/StacklokLabs/ocireg-mcp",
       "tags": [
@@ -4953,9 +4953,9 @@
         "search_providers"
       ],
       "metadata": {
-        "stars": 901,
+        "stars": 953,
         "pulls": 9600,
-        "last_updated": "2025-09-05T02:29:06Z"
+        "last_updated": "2025-09-24T02:28:46Z"
       },
       "repository_url": "https://github.com/hashicorp/terraform-mcp-server",
       "tags": [
@@ -4973,7 +4973,7 @@
         "gcp",
         "azure"
       ],
-      "image": "docker.io/hashicorp/terraform-mcp-server:0.2.3",
+      "image": "docker.io/hashicorp/terraform-mcp-server:0.3.0",
       "permissions": {
         "network": {
           "outbound": {

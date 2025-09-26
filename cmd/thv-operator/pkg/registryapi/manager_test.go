@@ -13,7 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	mcpregistrystatusmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus/mocks"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 	sourcesmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources/mocks"
 )
@@ -387,95 +386,6 @@ func TestManagerCheckAPIReadiness(t *testing.T) {
 			result := manager.CheckAPIReadiness(ctx, tt.deployment)
 
 			assert.Equal(t, tt.expected, result, tt.description)
-		})
-	}
-}
-
-func TestManagerUpdateAPIStatus(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		service     *corev1.Service
-		isReady     bool
-		setupMocks  func(*mcpregistrystatusmocks.MockCollector)
-		description string
-	}{
-		{
-			name: "ready API with service",
-			service: &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-service",
-					Namespace: "test-namespace",
-				},
-				Spec: corev1.ServiceSpec{
-					Ports: []corev1.ServicePort{
-						{
-							Port: 8080,
-						},
-					},
-				},
-			},
-			isReady: true,
-			setupMocks: func(m *mcpregistrystatusmocks.MockCollector) {
-				m.EXPECT().SetAPIStatus(mcpv1alpha1.APIPhaseReady, "Registry API is ready and serving requests", "http://test-service.test-namespace.svc.cluster.local:8080")
-				m.EXPECT().SetAPIReadyCondition("APIReady", "Registry API is ready and serving requests", metav1.ConditionTrue)
-			},
-			description: "Should set endpoint and ready condition when API is ready",
-		},
-		{
-			name: "not ready API with service",
-			service: &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-service",
-					Namespace: "test-namespace",
-				},
-				Spec: corev1.ServiceSpec{
-					Ports: []corev1.ServicePort{
-						{
-							Port: 8080,
-						},
-					},
-				},
-			},
-			isReady: false,
-			setupMocks: func(m *mcpregistrystatusmocks.MockCollector) {
-				m.EXPECT().SetAPIStatus(mcpv1alpha1.APIPhaseDeploying, "Registry API deployment is not ready yet", "http://test-service.test-namespace.svc.cluster.local:8080")
-				m.EXPECT().SetAPIReadyCondition("APINotReady", "Registry API deployment is not ready yet", metav1.ConditionFalse)
-			},
-			description: "Should set endpoint and not ready condition when API is not ready",
-		},
-		{
-			name:    "no service provided",
-			service: nil,
-			isReady: false,
-			setupMocks: func(m *mcpregistrystatusmocks.MockCollector) {
-				m.EXPECT().SetAPIStatus(mcpv1alpha1.APIPhaseDeploying, "Registry API deployment is not ready yet", "")
-				m.EXPECT().SetAPIReadyCondition("APINotReady", "Registry API deployment is not ready yet", metav1.ConditionFalse)
-			},
-			description: "Should only set condition when no service is provided",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-
-			mockCollector := mcpregistrystatusmocks.NewMockCollector(ctrl)
-			tt.setupMocks(mockCollector)
-
-			manager := &manager{}
-			ctx := context.Background()
-			mcpRegistry := &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-				},
-			}
-
-			manager.updateAPIStatus(ctx, mcpRegistry, nil, tt.service, tt.isReady, mockCollector)
 		})
 	}
 }

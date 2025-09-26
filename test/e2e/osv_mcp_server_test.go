@@ -48,10 +48,11 @@ var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 			})
 
 			It("should successfully start and be accessible via SSE [Serial]", func() {
-				By("Starting the OSV MCP server with SSE transport")
+				By("Starting the OSV MCP server with SSE transport and audit enabled")
 				stdout, stderr := e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "sse",
+					"--enable-audit",
 					"osv").ExpectSuccess()
 
 				// The command should indicate success
@@ -69,10 +70,11 @@ var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 			})
 
 			It("should be accessible via HTTP SSE endpoint [Serial]", func() {
-				By("Starting the OSV MCP server")
+				By("Starting the OSV MCP server with audit enabled")
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "sse",
+					"--enable-audit",
 					"osv").ExpectSuccess()
 
 				By("Waiting for the server to be running")

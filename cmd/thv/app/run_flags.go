@@ -404,6 +404,14 @@ func buildRunnerConfig(
 		transportType = serverMetadata.GetTransport()
 	}
 
+	// Determine server name for telemetry (similar to validateConfig logic)
+	// This ensures telemetry middleware gets the correct server name
+	imageMetadata, _ := serverMetadata.(*registry.ImageMetadata)
+	serverName := runFlags.Name
+	if serverName == "" && imageMetadata != nil {
+		serverName = imageMetadata.Name
+	}
+
 	// set default options
 	opts := []runner.RunConfigBuilderOption{
 		runner.WithRuntime(rt),
@@ -443,6 +451,7 @@ func buildRunnerConfig(
 
 	opts = append(opts, runner.WithToolsOverride(toolsOverride))
 	// Configure middleware from flags
+	// Use computed serverName and transportType for correct telemetry labels
 	opts = append(
 		opts,
 		runner.WithMiddlewareFromFlags(
@@ -453,8 +462,8 @@ func buildRunnerConfig(
 			runFlags.AuthzConfig,
 			runFlags.EnableAudit,
 			runFlags.AuditConfig,
-			runFlags.Name,
-			runFlags.Transport,
+			serverName,
+			transportType,
 		),
 	)
 
@@ -490,14 +499,9 @@ func buildRunnerConfig(
 		),
 		runner.WithToolsFilter(runFlags.ToolsFilter))
 
-	imageMetadata, _ := serverMetadata.(*registry.ImageMetadata)
 	// Process environment files
-	var err error
 	if runFlags.EnvFile != "" {
 		opts = append(opts, runner.WithEnvFile(runFlags.EnvFile))
-		if err != nil {
-			return nil, fmt.Errorf("failed to process env file %s: %v", runFlags.EnvFile, err)
-		}
 	}
 	if runFlags.EnvFileDir != "" {
 		opts = append(opts, runner.WithEnvFilesFromDirectory(runFlags.EnvFileDir))

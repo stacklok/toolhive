@@ -143,49 +143,6 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --debug   Enable debug mode
 ```
 
-## Network Isolation Examples
-
-When using the `--isolate-network` flag, you can control which hosts and ports the MCP server can access using permission profiles.
-
-### Accessing workloads on the same container network
-
-To allow an MCP server to access other workloads running on the same container network (such as databases or APIs running on the host), create a permission profile:
-
-1. Create a permission profile file `docker-host-access.json`:
-
-```json
-{
-  "name": "docker-host-access",
-  "network": {
-    "outbound": {
-      "allow_host": [
-        "host.docker.internal"
-      ],
-      "allow_port": [
-        3000,
-        5432,
-        3306
-      ]
-    }
-  }
-}
-```
-
-2. Run the MCP server with network isolation and the custom profile:
-
-```bash
-thv run your-mcp-server \
-  --isolate-network \
-  --permission-profile ./docker-host-access.json
-```
-
-### Common use cases
-
-- **Database access**: Allow PostgreSQL (port 5432), MySQL (port 3306), or Redis (port 6379)
-- **Development services**: Access local APIs on ports 3000, 8000, 8080
-- **Docker services**: Use `host.docker.internal` to access services on the Docker host
-
-
 ### SEE ALSO
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers

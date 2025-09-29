@@ -1,6 +1,6 @@
 # Design & Decisions
 
-This document captures architectural decisions and design patterns for the ToolHive Operator.
+This document captures architectural decisions and design patterns for the ToolHive Operator. For user-facing documentation, see [REGISTRY.md](REGISTRY.md).
 
 ## Operator Design Principles
 
@@ -20,6 +20,7 @@ When building operators, the decision of when to use a `podTemplateSpec` and whe
 - **Standard Kubernetes pod configuration**
 - **Things a cluster admin would typically configure**
 
+#### Quick Decision Test:
 #### Quick Decision Test:
 1. **"Does this affect my operator's reconciliation logic?"** -> Dedicated attribute
 2. **"Is this standard Kubernetes pod configuration?"** -> PodTemplateSpec

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-09-29T00:18:11Z",
+  "last_updated": "2025-09-30T00:17:43Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -2880,7 +2880,7 @@
         "governance",
         "cloud-costs"
       ],
-      "image": "kionsoftware/kion-mcp:0.2.0",
+      "image": "kionsoftware/kion-mcp:v0.3.0",
       "permissions": {
         "network": {
           "outbound": {

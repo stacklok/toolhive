@@ -5,6 +5,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -15,6 +16,7 @@ import (
 func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 	return map[string]types.MiddlewareFactory{
 		auth.MiddlewareType:              auth.CreateMiddleware,
+		tokenexchange.MiddlewareType:     tokenexchange.CreateMiddleware,
 		mcp.ParserMiddlewareType:         mcp.CreateParserMiddleware,
 		mcp.ToolFilterMiddlewareType:     mcp.CreateToolFilterMiddleware,
 		mcp.ToolCallFilterMiddlewareType: mcp.CreateToolCallFilterMiddleware,

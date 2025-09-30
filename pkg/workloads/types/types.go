@@ -119,12 +119,11 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 // For stdio transports, this returns the proxy mode (sse or streamable-http)
 // For direct transports (sse/streamable-http), this returns the transport type as the proxy mode
 func GetEffectiveProxyMode(transportType types.TransportType, proxyMode string) string {
-	// If the underlying transport is stdio and we have a proxy mode set,
-	// return the proxy mode as that's what clients actually connect to
-	if transportType == types.TransportTypeStdio && proxyMode != "" {
+	// If the underlying transport is stdio, return the proxy mode (could be empty)
+	if transportType == types.TransportTypeStdio {
 		return proxyMode
 	}
 
-	// For all other cases, return the transport type as the proxy mode
+	// For direct transports (sse, streamable-http), return the transport type as the proxy mode
 	return transportType.String()
 }

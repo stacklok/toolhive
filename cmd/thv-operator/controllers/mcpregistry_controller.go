@@ -167,8 +167,8 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// API reconciliation successful - check readiness and set appropriate status
 			isReady := r.registryAPIManager.IsAPIReady(ctx, mcpRegistry)
 			if isReady {
-				// TODO: Get actual service endpoint - for now, construct it
-				endpoint := fmt.Sprintf("http://%s.%s.svc.cluster.local:8080",
+				// In-cluster endpoint (simplified form works for internal access)
+				endpoint := fmt.Sprintf("http://%s.%s:8080",
 					mcpRegistry.GetAPIResourceName(), mcpRegistry.Namespace)
 				statusManager.API().SetAPIStatus(mcpv1alpha1.APIPhaseReady,
 					"Registry API is ready and serving requests", endpoint)

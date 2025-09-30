@@ -44,29 +44,17 @@ func (m *MockCollector) EXPECT() *MockCollectorMockRecorder {
 }
 
 // Apply mocks base method.
-func (m *MockCollector) Apply(ctx context.Context, statusWriter client.StatusWriter) error {
+func (m *MockCollector) Apply(ctx context.Context, k8sClient client.Client) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Apply", ctx, statusWriter)
+	ret := m.ctrl.Call(m, "Apply", ctx, k8sClient)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Apply indicates an expected call of Apply.
-func (mr *MockCollectorMockRecorder) Apply(ctx, statusWriter any) *gomock.Call {
+func (mr *MockCollectorMockRecorder) Apply(ctx, k8sClient any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Apply", reflect.TypeOf((*MockCollector)(nil).Apply), ctx, statusWriter)
-}
-
-// SetAPIEndpoint mocks base method.
-func (m *MockCollector) SetAPIEndpoint(endpoint string) {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "SetAPIEndpoint", endpoint)
-}
-
-// SetAPIEndpoint indicates an expected call of SetAPIEndpoint.
-func (mr *MockCollectorMockRecorder) SetAPIEndpoint(endpoint any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetAPIEndpoint", reflect.TypeOf((*MockCollector)(nil).SetAPIEndpoint), endpoint)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Apply", reflect.TypeOf((*MockCollector)(nil).Apply), ctx, k8sClient)
 }
 
 // SetAPIReadyCondition mocks base method.
@@ -79,6 +67,18 @@ func (m *MockCollector) SetAPIReadyCondition(reason, message string, status v1.C
 func (mr *MockCollectorMockRecorder) SetAPIReadyCondition(reason, message, status any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetAPIReadyCondition", reflect.TypeOf((*MockCollector)(nil).SetAPIReadyCondition), reason, message, status)
+}
+
+// SetAPIStatus mocks base method.
+func (m *MockCollector) SetAPIStatus(phase v1alpha1.APIPhase, message, endpoint string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetAPIStatus", phase, message, endpoint)
+}
+
+// SetAPIStatus indicates an expected call of SetAPIStatus.
+func (mr *MockCollectorMockRecorder) SetAPIStatus(phase, message, endpoint any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetAPIStatus", reflect.TypeOf((*MockCollector)(nil).SetAPIStatus), phase, message, endpoint)
 }
 
 // SetMessage mocks base method.
@@ -103,4 +103,16 @@ func (m *MockCollector) SetPhase(phase v1alpha1.MCPRegistryPhase) {
 func (mr *MockCollectorMockRecorder) SetPhase(phase any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetPhase", reflect.TypeOf((*MockCollector)(nil).SetPhase), phase)
+}
+
+// SetSyncStatus mocks base method.
+func (m *MockCollector) SetSyncStatus(phase v1alpha1.SyncPhase, message string, attemptCount int, lastSyncTime *v1.Time, lastSyncHash string, serverCount int) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetSyncStatus", phase, message, attemptCount, lastSyncTime, lastSyncHash, serverCount)
+}
+
+// SetSyncStatus indicates an expected call of SetSyncStatus.
+func (mr *MockCollectorMockRecorder) SetSyncStatus(phase, message, attemptCount, lastSyncTime, lastSyncHash, serverCount any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetSyncStatus", reflect.TypeOf((*MockCollector)(nil).SetSyncStatus), phase, message, attemptCount, lastSyncTime, lastSyncHash, serverCount)
 }

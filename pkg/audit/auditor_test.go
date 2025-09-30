@@ -160,7 +160,7 @@ func TestDetermineEventType(t *testing.T) {
 		transport string
 		expected  string
 	}{
-		/*{
+		{
 			name:      "SSE endpoint",
 			path:      "/sse",
 			method:    "GET",
@@ -194,7 +194,7 @@ func TestDetermineEventType(t *testing.T) {
 			method:    "GET",
 			transport: "sse",
 			expected:  EventTypeSSEConnection,
-		},*/
+		},
 		{
 			name:      "MCP messages endpoint",
 			path:      "/messages",

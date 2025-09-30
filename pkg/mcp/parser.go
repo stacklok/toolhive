@@ -5,9 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"golang.org/x/exp/jsonrpc2"
@@ -297,7 +297,12 @@ func handleLoggingMethod(paramsMap map[string]interface{}) (string, map[string]i
 	return "", nil
 }
 
-// handleCompletionMethod extracts resource ID for completion requests
+// handleCompletionMethod extracts resource ID for completion requests.
+// For PromptReference: extracts the prompt name
+// For ResourceTemplateReference: extracts the template URI
+// For legacy string ref: returns the string value
+// Always returns paramsMap as arguments since completion requests need the full context
+// including the argument being completed and any context from previous completions.
 func handleCompletionMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
 	// Check if ref is a map (PromptReference or ResourceTemplateReference)
 	if ref, ok := paramsMap["ref"].(map[string]interface{}); ok {
@@ -326,16 +331,29 @@ func handleElicitationMethod(paramsMap map[string]interface{}) (string, map[stri
 	return "", paramsMap
 }
 
-// handleSamplingMethod extracts resource ID for sampling/createMessage requests
+// handleSamplingMethod extracts resource ID for sampling/createMessage requests.
+// Returns the model name from modelPreferences if available, otherwise returns a
+// truncated version of the systemPrompt. The 50-character truncation provides a
+// reasonable balance between uniqueness and readability for authorization and audit logs.
 func handleSamplingMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
 	// Use model preferences or system prompt as identifier if available
-	if modelPrefs, ok := paramsMap["modelPreferences"].(map[string]interface{}); ok {
-		if name, ok := modelPrefs["name"].(string); ok {
+	if modelPrefs, ok := paramsMap["modelPreferences"].(map[string]interface{}); ok && modelPrefs != nil {
+		// Try direct name field first (simplified structure)
+		if name, ok := modelPrefs["name"].(string); ok && name != "" {
 			return name, paramsMap
+		}
+		// Try to get model name from hints array (full spec structure)
+		if hints, ok := modelPrefs["hints"].([]interface{}); ok && len(hints) > 0 {
+			if hint, ok := hints[0].(map[string]interface{}); ok {
+				if name, ok := hint["name"].(string); ok && name != "" {
+					return name, paramsMap
+				}
+			}
 		}
 	}
 	if systemPrompt, ok := paramsMap["systemPrompt"].(string); ok && systemPrompt != "" {
 		// Use first 50 chars of system prompt as identifier
+		// This provides a reasonable balance between uniqueness and readability
 		if len(systemPrompt) > 50 {
 			return systemPrompt[:50], paramsMap
 		}
@@ -360,19 +378,21 @@ func handleResourceUnsubscribeMethod(paramsMap map[string]interface{}) (string, 
 	return "", nil
 }
 
-// handleProgressNotificationMethod extracts resource ID for progress notifications
+// handleProgressNotificationMethod extracts resource ID for progress notifications.
+// Extracts the progressToken which can be either a string or numeric value.
 func handleProgressNotificationMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
 	if token, ok := paramsMap["progressToken"].(string); ok {
 		return token, paramsMap
 	}
 	// Also handle numeric progress tokens
 	if token, ok := paramsMap["progressToken"].(float64); ok {
-		return fmt.Sprintf("%.0f", token), paramsMap
+		return strconv.FormatFloat(token, 'f', 0, 64), paramsMap
 	}
 	return "", paramsMap
 }
 
-// handleCancelledNotificationMethod extracts resource ID for cancelled notifications
+// handleCancelledNotificationMethod extracts resource ID for cancelled notifications.
+// Extracts the requestId which can be either a string or numeric value.
 func handleCancelledNotificationMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
 	// Extract request ID as the resource identifier
 	if requestId, ok := paramsMap["requestId"].(string); ok {
@@ -380,7 +400,7 @@ func handleCancelledNotificationMethod(paramsMap map[string]interface{}) (string
 	}
 	// Handle numeric request IDs
 	if requestId, ok := paramsMap["requestId"].(float64); ok {
-		return fmt.Sprintf("%.0f", requestId), paramsMap
+		return strconv.FormatFloat(requestId, 'f', 0, 64), paramsMap
 	}
 	return "", paramsMap
 }

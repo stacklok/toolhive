@@ -98,7 +98,11 @@ var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 
 				maxRetries := 5
 				for i := 0; i < maxRetries; i++ {
-					resp, httpErr = client.Get(serverURL)
+					req, err := http.NewRequest("GET", serverURL, nil)
+					Expect(err).ToNot(HaveOccurred())
+					req.Header.Set("Accept", "text/event-stream")
+
+					resp, httpErr = client.Do(req)
 					if httpErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 500 {
 						break
 					}

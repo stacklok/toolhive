@@ -245,9 +245,21 @@ components:
           description: Whether to print resolved overlay paths for debugging
           type: boolean
       type: object
+    permissions.InboundNetworkPermissions:
+      description: Inbound defines inbound network permissions
+      properties:
+        allow_host:
+          description: AllowHost is a list of allowed hosts for inbound connections
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
     permissions.NetworkPermissions:
       description: Network defines network permissions
       properties:
+        inbound:
+          $ref: '#/components/schemas/permissions.InboundNetworkPermissions'
         outbound:
           $ref: '#/components/schemas/permissions.OutboundNetworkPermissions'
       type: object

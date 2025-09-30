@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -430,6 +431,7 @@ func WithIgnoreConfig(ignoreConfig *ignore.Config) RunConfigBuilderOption {
 // WithMiddlewareFromFlags creates middleware configurations directly from flag values
 func WithMiddlewareFromFlags(
 	oidcConfig *auth.TokenValidatorConfig,
+	tokenExchangeConfig *tokenexchange.Config,
 	toolsFilter []string,
 	toolsOverride map[string]ToolOverride,
 	telemetryConfig *telemetry.Config,
@@ -456,7 +458,7 @@ func WithMiddlewareFromFlags(
 		middlewareConfigs = addToolFilterMiddlewares(middlewareConfigs, toolsFilter, toolsOverride)
 
 		// Add core middlewares (always present)
-		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig)
+		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig, tokenExchangeConfig)
 
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
@@ -520,7 +522,9 @@ func addToolFilterMiddlewares(
 
 // addCoreMiddlewares adds core middlewares that are always present
 func addCoreMiddlewares(
-	middlewareConfigs []types.MiddlewareConfig, oidcConfig *auth.TokenValidatorConfig,
+	middlewareConfigs []types.MiddlewareConfig,
+	oidcConfig *auth.TokenValidatorConfig,
+	tokenExchangeConfig *tokenexchange.Config,
 ) []types.MiddlewareConfig {
 	// Authentication middleware (always present)
 	authParams := auth.MiddlewareParams{
@@ -528,6 +532,16 @@ func addCoreMiddlewares(
 	}
 	if authConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, authParams); err == nil {
 		middlewareConfigs = append(middlewareConfigs, *authConfig)
+	}
+
+	// Token Exchange middleware (conditionally present)
+	if tokenExchangeConfig != nil {
+		tokenExchangeParams := tokenexchange.MiddlewareParams{
+			TokenExchangeConfig: tokenExchangeConfig,
+		}
+		if tokenExchangeMwConfig, err := types.NewMiddlewareConfig(tokenexchange.MiddlewareType, tokenExchangeParams); err == nil {
+			middlewareConfigs = append(middlewareConfigs, *tokenExchangeMwConfig)
+		}
 	}
 
 	// MCP Parser middleware (always present)

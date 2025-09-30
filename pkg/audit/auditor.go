@@ -91,12 +91,27 @@ func (rw *responseWriter) Write(data []byte) (int, error) {
 	return rw.ResponseWriter.Write(data)
 }
 
+// isMCPStreamOpenRequest returns true only for MCP "stream" opens:
+// - SSE transport's SSE endpoint (GET + Accept: text/event-stream)
+// - Streamable HTTP's GET stream (same header pattern)
+// Everything else (including POST message sends) is non-sticky.
+func (*Auditor) isMCPStreamOpenRequest(r *http.Request) bool {
+	// Optional hardening: limit to your MCP base path(s)
+	// if !strings.HasPrefix(r.URL.Path, a.config.MCPBasePath) { return false }
+
+	if r.Method != http.MethodGet {
+		return false
+	}
+	accept := r.Header.Get("Accept")
+	return strings.Contains(strings.ToLower(accept), "text/event-stream")
+}
+
 // Middleware creates an HTTP middleware that logs audit events.
 func (a *Auditor) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Handle SSE endpoints specially - log the connection event immediately
 		// since SSE connections are long-lived and don't follow normal request/response pattern
-		if a.isSSETransport() && r.Method == http.MethodGet {
+		if a.isMCPStreamOpenRequest(r) {
 			// Log SSE connection event immediately
 			a.logSSEConnectionEvent(r)
 
@@ -458,7 +473,7 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request) {
 
 	// Add metadata
 	event.Metadata.Extra = map[string]any{
-		"transport":  "sse",
+		"transport":  a.transportType,
 		"user_agent": r.Header.Get("User-Agent"),
 	}
 

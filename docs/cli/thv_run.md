@@ -77,65 +77,72 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
 ### Options
 
 ```
-      --audit-config string                     Path to the audit configuration file
-      --authz-config string                     Path to the authorization configuration file
-      --ca-cert string                          Path to a custom CA certificate file to use for container builds
-      --enable-audit                            Enable audit logging with default configuration
-  -e, --env stringArray                         Environment variables to pass to the MCP server (format: KEY=VALUE)
-      --env-file string                         Load environment variables from a single file
-      --env-file-dir string                     Load environment variables from all files in a directory
-  -f, --foreground                              Run in foreground mode (block until container exits)
-      --from-config string                      Load configuration from exported file
-      --group string                            Name of the group this workload belongs to (defaults to 'default' if not specified) (default "default")
-  -h, --help                                    help for run
-      --host string                             Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
-      --ignore-globally                         Load global ignore patterns from ~/.config/toolhive/thvignore (default true)
-      --image-verification string               Set image verification mode (warn, enabled, disabled) (default "warn")
-      --isolate-network                         Isolate the container network from the host (default: false)
-      --jwks-allow-private-ip                   Allow JWKS/OIDC endpoints on private IP addresses (use with caution)
-      --jwks-auth-token-file string             Path to file containing bearer token for authenticating JWKS/OIDC requests
-  -l, --label stringArray                       Set labels on the container (format: key=value)
-      --name string                             Name of the MCP server (auto-generated from image if not provided)
-      --oidc-audience string                    Expected audience for the token
-      --oidc-client-id string                   OIDC client ID
-      --oidc-client-secret string               OIDC client secret (optional, for introspection)
-      --oidc-introspection-url string           URL for token introspection endpoint
-      --oidc-issuer string                      OIDC issuer URL (e.g., https://accounts.google.com)
-      --oidc-jwks-url string                    URL to fetch the JWKS from
-      --otel-enable-prometheus-metrics-path     Enable Prometheus-style /metrics endpoint on the main transport port
-      --otel-endpoint string                    OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)
-      --otel-env-vars stringArray               Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)
-      --otel-headers stringArray                OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)
-      --otel-insecure                           Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS
-      --otel-metrics-enabled                    Enable OTLP metrics export (when OTLP endpoint is configured) (default true)
-      --otel-sampling-rate float                OpenTelemetry trace sampling rate (0.0-1.0) (default 0.1)
-      --otel-service-name string                OpenTelemetry service name (defaults to toolhive-mcp-proxy)
-      --otel-tracing-enabled                    Enable distributed tracing (when OTLP endpoint is configured) (default true)
-      --permission-profile string               Permission profile to use (none, network, or path to JSON file)
-      --print-resolved-overlays                 Debug: show resolved container paths for tmpfs overlays
-      --proxy-mode string                       Proxy mode for stdio transport (sse or streamable-http) (default "sse")
-      --proxy-port int                          Port for the HTTP proxy to listen on (host port)
-      --remote-auth                             Enable OAuth/OIDC authentication to remote MCP server
-      --remote-auth-authorize-url string        OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
-      --remote-auth-callback-port int           Port for OAuth callback server during remote authentication (default 8666)
-      --remote-auth-client-id string            OAuth client ID for remote server authentication
-      --remote-auth-client-secret string        OAuth client secret for remote server authentication (optional for PKCE)
-      --remote-auth-client-secret-file string   Path to file containing OAuth client secret (alternative to --remote-auth-client-secret)
-      --remote-auth-issuer string               OAuth/OIDC issuer URL for remote server authentication (e.g., https://accounts.google.com)
-      --remote-auth-scopes strings              OAuth scopes to request for remote server authentication (defaults: OIDC uses 'openid,profile,email')
-      --remote-auth-skip-browser                Skip opening browser for remote server OAuth flow
-      --remote-auth-timeout duration            Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s) (default 30s)
-      --remote-auth-token-url string            OAuth token endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
-      --resource-url string                     Explicit resource URL for OAuth discovery endpoint (RFC 9728)
-      --secret stringArray                      Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
-      --target-host string                      Host to forward traffic to (only applicable to SSE or Streamable HTTP transport) (default "127.0.0.1")
-      --target-port int                         Port for the container to expose (only applicable to SSE or Streamable HTTP transport)
-      --thv-ca-bundle string                    Path to CA certificate bundle for ToolHive HTTP operations (JWKS, OIDC discovery, etc.)
-      --tools stringArray                       Filter MCP server tools (comma-separated list of tool names)
-      --tools-override string                   Path to a JSON file containing overrides for MCP server tools names and descriptions
-      --transport string                        Transport mode (sse, streamable-http or stdio)
-      --trust-proxy-headers                     Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix)
-  -v, --volume stringArray                      Mount a volume into the container (format: host-path:container-path[:ro])
+      --audit-config string                        Path to the audit configuration file
+      --authz-config string                        Path to the authorization configuration file
+      --ca-cert string                             Path to a custom CA certificate file to use for container builds
+      --enable-audit                               Enable audit logging with default configuration
+  -e, --env stringArray                            Environment variables to pass to the MCP server (format: KEY=VALUE)
+      --env-file string                            Load environment variables from a single file
+      --env-file-dir string                        Load environment variables from all files in a directory
+  -f, --foreground                                 Run in foreground mode (block until container exits)
+      --from-config string                         Load configuration from exported file
+      --group string                               Name of the group this workload belongs to (defaults to 'default' if not specified) (default "default")
+  -h, --help                                       help for run
+      --host string                                Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
+      --ignore-globally                            Load global ignore patterns from ~/.config/toolhive/thvignore (default true)
+      --image-verification string                  Set image verification mode (warn, enabled, disabled) (default "warn")
+      --isolate-network                            Isolate the container network from the host (default: false)
+      --jwks-allow-private-ip                      Allow JWKS/OIDC endpoints on private IP addresses (use with caution)
+      --jwks-auth-token-file string                Path to file containing bearer token for authenticating JWKS/OIDC requests
+  -l, --label stringArray                          Set labels on the container (format: key=value)
+      --name string                                Name of the MCP server (auto-generated from image if not provided)
+      --oidc-audience string                       Expected audience for the token
+      --oidc-client-id string                      OIDC client ID
+      --oidc-client-secret string                  OIDC client secret (optional, for introspection)
+      --oidc-introspection-url string              URL for token introspection endpoint
+      --oidc-issuer string                         OIDC issuer URL (e.g., https://accounts.google.com)
+      --oidc-jwks-url string                       URL to fetch the JWKS from
+      --otel-enable-prometheus-metrics-path        Enable Prometheus-style /metrics endpoint on the main transport port
+      --otel-endpoint string                       OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)
+      --otel-env-vars stringArray                  Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)
+      --otel-headers stringArray                   OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)
+      --otel-insecure                              Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS
+      --otel-metrics-enabled                       Enable OTLP metrics export (when OTLP endpoint is configured) (default true)
+      --otel-sampling-rate float                   OpenTelemetry trace sampling rate (0.0-1.0) (default 0.1)
+      --otel-service-name string                   OpenTelemetry service name (defaults to toolhive-mcp-proxy)
+      --otel-tracing-enabled                       Enable distributed tracing (when OTLP endpoint is configured) (default true)
+      --permission-profile string                  Permission profile to use (none, network, or path to JSON file)
+      --print-resolved-overlays                    Debug: show resolved container paths for tmpfs overlays
+      --proxy-mode string                          Proxy mode for stdio transport (sse or streamable-http) (default "sse")
+      --proxy-port int                             Port for the HTTP proxy to listen on (host port)
+      --remote-auth                                Enable OAuth/OIDC authentication to remote MCP server
+      --remote-auth-authorize-url string           OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
+      --remote-auth-callback-port int              Port for OAuth callback server during remote authentication (default 8666)
+      --remote-auth-client-id string               OAuth client ID for remote server authentication
+      --remote-auth-client-secret string           OAuth client secret for remote server authentication (optional for PKCE)
+      --remote-auth-client-secret-file string      Path to file containing OAuth client secret (alternative to --remote-auth-client-secret)
+      --remote-auth-issuer string                  OAuth/OIDC issuer URL for remote server authentication (e.g., https://accounts.google.com)
+      --remote-auth-scopes strings                 OAuth scopes to request for remote server authentication (defaults: OIDC uses 'openid,profile,email')
+      --remote-auth-skip-browser                   Skip opening browser for remote server OAuth flow
+      --remote-auth-timeout duration               Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s) (default 30s)
+      --remote-auth-token-url string               OAuth token endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
+      --resource-url string                        Explicit resource URL for OAuth discovery endpoint (RFC 9728)
+      --secret stringArray                         Specify a secret to be fetched from the secrets manager and set as an environment variable (format: NAME,target=TARGET)
+      --target-host string                         Host to forward traffic to (only applicable to SSE or Streamable HTTP transport) (default "127.0.0.1")
+      --target-port int                            Port for the container to expose (only applicable to SSE or Streamable HTTP transport)
+      --thv-ca-bundle string                       Path to CA certificate bundle for ToolHive HTTP operations (JWKS, OIDC discovery, etc.)
+      --token-exchange-audience string             Target audience for exchanged tokens
+      --token-exchange-client-id string            OAuth client ID for token exchange operations
+      --token-exchange-client-secret string        OAuth client secret for token exchange operations
+      --token-exchange-client-secret-file string   Path to file containing OAuth client secret for token exchange (alternative to --token-exchange-client-secret)
+      --token-exchange-header-name string          Custom header name for injecting exchanged token (default: replaces Authorization header)
+      --token-exchange-scopes strings              Scopes to request for exchanged tokens
+      --token-exchange-url string                  OAuth 2.0 token exchange endpoint URL (enables token exchange when provided)
+      --tools stringArray                          Filter MCP server tools (comma-separated list of tool names)
+      --tools-override string                      Path to a JSON file containing overrides for MCP server tools names and descriptions
+      --transport string                           Transport mode (sse, streamable-http or stdio)
+      --trust-proxy-headers                        Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix)
+  -v, --volume stringArray                         Mount a volume into the container (format: host-path:container-path[:ro])
 ```
 
 ### Options inherited from parent commands

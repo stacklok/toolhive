@@ -455,13 +455,19 @@ func buildRunnerConfig(
 		toolsOverride = *loadedToolsOverride
 	}
 
-	opts = append(opts, runner.WithToolsOverride(toolsOverride))
 	// Configure middleware from flags
+	tokenExchangeConfig, err := runFlags.RemoteAuthFlags.BuildTokenExchangeConfig()
+	if err != nil {
+		return nil, fmt.Errorf("invalid token exchange configuration: %w", err)
+	}
+
 	// Use computed serverName and transportType for correct telemetry labels
+	opts = append(opts, runner.WithToolsOverride(toolsOverride))
 	opts = append(
 		opts,
 		runner.WithMiddlewareFromFlags(
 			oidcConfig,
+			tokenExchangeConfig,
 			runFlags.ToolsFilter,
 			toolsOverride,
 			telemetryConfig,

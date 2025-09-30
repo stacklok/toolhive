@@ -7,8 +7,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -227,10 +226,9 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 	middlewares = append(middlewares, authMiddleware)
 
-	// Add OAuth token injection middleware for outgoing requests if we have an access token
-	if tokenSource != nil {
-		tokenMiddleware := createTokenInjectionMiddleware(tokenSource)
-		middlewares = append(middlewares, tokenMiddleware)
+	// Add OAuth token injection or token exchange middleware for outgoing requests
+	if err := addExternalTokenMiddleware(&middlewares, tokenSource); err != nil {
+		return err
 	}
 
 	// Create the transparent proxy
@@ -357,19 +355,7 @@ func resolveClientSecret() (string, error) {
 
 	// 2. Check if provided via file
 	if remoteAuthFlags.RemoteAuthClientSecretFile != "" {
-		// Clean the file path to prevent path traversal
-		cleanPath := filepath.Clean(remoteAuthFlags.RemoteAuthClientSecretFile)
-		logger.Debugf("Reading client secret from file: %s", cleanPath)
-		// #nosec G304 - file path is cleaned above
-		secretBytes, err := os.ReadFile(cleanPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to read client secret file %s: %w", cleanPath, err)
-		}
-		secret := strings.TrimSpace(string(secretBytes))
-		if secret == "" {
-			return "", fmt.Errorf("client secret file %s is empty", cleanPath)
-		}
-		return secret, nil
+		return readSecretFromFile(remoteAuthFlags.RemoteAuthClientSecretFile, "client secret")
 	}
 
 	// 3. Check environment variable
@@ -397,6 +383,29 @@ func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.Middl
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// addExternalTokenMiddleware adds token exchange or token injection middleware to the middleware chain
+func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSource *oauth2.TokenSource) error {
+	if remoteAuthFlags.TokenExchangeURL != "" {
+		// Use token exchange middleware when token exchange is configured
+		tokenExchangeConfig, err := remoteAuthFlags.BuildTokenExchangeConfig()
+		if err != nil {
+			return fmt.Errorf("invalid token exchange configuration: %w", err)
+		}
+		if tokenExchangeConfig != nil {
+			tokenExchangeMiddleware, err := tokenexchange.CreateTokenExchangeMiddlewareFromClaims(*tokenExchangeConfig)
+			if err != nil {
+				return fmt.Errorf("failed to create token exchange middleware: %v", err)
+			}
+			*middlewares = append(*middlewares, tokenExchangeMiddleware)
+		}
+	} else if tokenSource != nil {
+		// Fallback to direct token injection when no token exchange is configured
+		tokenMiddleware := createTokenInjectionMiddleware(tokenSource)
+		*middlewares = append(*middlewares, tokenMiddleware)
+	}
+	return nil
 }
 
 // validateProxyTargetURI validates that the target URI for the proxy is valid and does not contain a path

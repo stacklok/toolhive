@@ -747,14 +747,13 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	// Prepare container args
 	args := []string{"run", "--foreground=true"}
 
+	// Prepare container volume mounts
+	volumeMounts := []corev1.VolumeMount{}
+	volumes := []corev1.Volume{}
+
 	// Check if global ConfigMap mode is enabled via environment variable
 	useConfigMap := os.Getenv("TOOLHIVE_USE_CONFIGMAP") == trueValue
 	if useConfigMap {
-		// Use the operator-created ConfigMap (format: {name}-runconfig)
-		configMapName := fmt.Sprintf("%s-runconfig", m.Name)
-		configMapRef := fmt.Sprintf("%s/%s", m.Namespace, configMapName)
-		args = append(args, fmt.Sprintf("--from-configmap=%s", configMapRef))
-
 		// Also add pod template patch for secrets (same as regular flags approach)
 		finalPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec).
 			WithSecrets(m.Spec.Secrets).
@@ -769,6 +768,25 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 				args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
 			}
 		}
+
+		// Add volume mount for ConfigMap
+		configMapName := fmt.Sprintf("%s-runconfig", m.Name)
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "runconfig",
+			MountPath: "/etc/runconfig",
+			ReadOnly:  true,
+		})
+
+		volumes = append(volumes, corev1.Volume{
+			Name: "runconfig",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: configMapName,
+					},
+				},
+			},
+		})
 	} else {
 		// Use individual configuration flags (existing behavior)
 		args = append(args, fmt.Sprintf("--proxy-port=%d", m.Spec.Port))
@@ -908,10 +926,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 			})
 		}
 	}
-
-	// Prepare container volume mounts
-	volumeMounts := []corev1.VolumeMount{}
-	volumes := []corev1.Volume{}
 
 	// Add volume mounts for user-defined volumes
 	for _, v := range m.Spec.Volumes {

@@ -194,7 +194,7 @@ func TestDefaultSyncManager_ShouldSync(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			syncNeeded, reason, nextSyncTime, err := syncManager.ShouldSync(ctx, tt.mcpRegistry)
+			syncNeeded, reason, nextSyncTime := syncManager.ShouldSync(ctx, tt.mcpRegistry)
 
 			// We expect some errors for ConfigMap not found, but that's okay for this test
 			if tt.expectedSyncNeeded {
@@ -203,7 +203,6 @@ func TestDefaultSyncManager_ShouldSync(t *testing.T) {
 			} else {
 				assert.False(t, syncNeeded, "Expected sync not to be needed")
 				assert.Equal(t, tt.expectedReason, reason, "Expected specific sync reason")
-				assert.NoError(t, err, "Should not have error when sync not needed")
 			}
 
 			if tt.expectedNextTime {

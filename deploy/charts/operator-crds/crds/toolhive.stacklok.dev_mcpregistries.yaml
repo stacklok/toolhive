@@ -373,12 +373,10 @@ spec:
                   phase:
                     allOf:
                     - enum:
-                      - Idle
                       - Syncing
                       - Complete
                       - Failed
                     - enum:
-                      - Idle
                       - Syncing
                       - Complete
                       - Failed

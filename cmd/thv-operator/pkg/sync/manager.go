@@ -26,8 +26,9 @@ type Result struct {
 // Sync reason constants
 const (
 	// Registry state related reasons
-	ReasonAlreadyInProgress = "sync-already-in-progress"
-	ReasonRegistryNotReady  = "registry-not-ready"
+	ReasonAlreadyInProgress     = "sync-already-in-progress"
+	ReasonRegistryNotReady      = "registry-not-ready"
+	ReasonRequeueTimeNotElapsed = "requeue-time-not-elapsed"
 
 	// Data change related reasons
 	ReasonSourceDataChanged    = "source-data-changed"
@@ -63,10 +64,23 @@ const (
 	conditionReasonStorageFailed         = "StorageFailed"
 )
 
+// Default timing constants for the sync manager
+const (
+	// DefaultSyncRequeueAfterConstant is the constant default requeue interval for sync operations
+	DefaultSyncRequeueAfterConstant = time.Minute * 5
+)
+
+// Configurable timing variables for testing
+var (
+	// DefaultSyncRequeueAfter is the configurable default requeue interval for sync operations
+	// This can be modified in tests to speed up requeue behavior
+	DefaultSyncRequeueAfter = DefaultSyncRequeueAfterConstant
+)
+
 // Manager manages synchronization operations for MCPRegistry resources
 type Manager interface {
 	// ShouldSync determines if a sync operation is needed
-	ShouldSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, string, *time.Time, error)
+	ShouldSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, string, *time.Time)
 
 	// PerformSync executes the complete sync operation
 	PerformSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, *Result, *mcpregistrystatus.Error)
@@ -127,21 +141,29 @@ func NewDefaultSyncManager(k8sClient client.Client, scheme *runtime.Scheme,
 // ShouldSync determines if a sync operation is needed and when the next sync should occur
 func (s *DefaultSyncManager) ShouldSync(
 	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, string, *time.Time, error) {
+	mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, string, *time.Time) {
+	ctxLogger := log.FromContext(ctx)
+
 	// If registry is currently syncing, don't start another sync
 	if mcpRegistry.Status.Phase == mcpv1alpha1.MCPRegistryPhaseSyncing {
-		return false, ReasonAlreadyInProgress, nil, nil
+		return false, ReasonAlreadyInProgress, nil
 	}
 
 	// Check if sync is needed based on registry state
 	if syncNeeded := s.isSyncNeededForState(mcpRegistry); syncNeeded {
-		return true, ReasonRegistryNotReady, nil, nil
+		if requeueElapsed := s.isRequeueElapsed(mcpRegistry); requeueElapsed {
+			return true, ReasonRegistryNotReady, nil
+		}
+		ctxLogger.Info("Sync not needed because requeue time not elapsed",
+			"requeueTime", DefaultSyncRequeueAfter, "lastAttempt", mcpRegistry.Status.SyncStatus.LastAttempt)
+		return false, ReasonRequeueTimeNotElapsed, nil
 	}
 
 	// Check if source data has changed by comparing hash
 	dataChanged, err := s.dataChangeDetector.IsDataChanged(ctx, mcpRegistry)
 	if err != nil {
-		return true, ReasonErrorCheckingChanges, nil, err
+		ctxLogger.Error(err, "Failed to determine if data has changed")
+		return true, ReasonErrorCheckingChanges, nil
 	}
 
 	// Check for manual sync trigger first (always update trigger tracking)
@@ -149,29 +171,30 @@ func (s *DefaultSyncManager) ShouldSync(
 	// Manual sync was requested - but only sync if data has actually changed
 	if manualSyncRequested {
 		if dataChanged {
-			return true, ReasonManualWithChanges, nil, nil
+			return true, ReasonManualWithChanges, nil
 		}
 		// Manual sync requested but no data changes - update trigger tracking only
-		return true, ReasonManualNoChanges, nil, nil
+		return true, ReasonManualNoChanges, nil
 	}
 
 	if dataChanged {
-		return true, ReasonSourceDataChanged, nil, nil
+		return true, ReasonSourceDataChanged, nil
 	}
 
 	// Data hasn't changed - check if we need to schedule future checks
 	if mcpRegistry.Spec.SyncPolicy != nil {
 		_, nextSyncTime, err := s.automaticSyncChecker.IsIntervalSyncNeeded(mcpRegistry)
 		if err != nil {
-			return true, ReasonErrorParsingInterval, nil, err
+			ctxLogger.Error(err, "Failed to determine if interval sync is needed")
+			return true, ReasonErrorParsingInterval, nil
 		}
 
 		// No sync needed since data hasn't changed, but schedule next check
-		return false, ReasonUpToDateWithPolicy, &nextSyncTime, nil
+		return false, ReasonUpToDateWithPolicy, &nextSyncTime
 	}
 
 	// No automatic sync policy, registry is up-to-date
-	return false, ReasonUpToDateNoPolicy, nil, nil
+	return false, ReasonUpToDateNoPolicy, nil
 }
 
 // isSyncNeededForState checks if sync is needed based on the registry's current state
@@ -184,7 +207,7 @@ func (*DefaultSyncManager) isSyncNeededForState(mcpRegistry *mcpv1alpha1.MCPRegi
 			return true
 		}
 		// If sync is not complete, sync is needed
-		if syncPhase != mcpv1alpha1.SyncPhaseComplete && syncPhase != mcpv1alpha1.SyncPhaseIdle {
+		if syncPhase != mcpv1alpha1.SyncPhaseComplete {
 			return true
 		}
 		// Sync is complete, no sync needed based on state
@@ -207,6 +230,14 @@ func (*DefaultSyncManager) isSyncNeededForState(mcpRegistry *mcpv1alpha1.MCPRegi
 	return false
 }
 
+// isRequeueElapsed checks if the requeue time has elapsed
+func (*DefaultSyncManager) isRequeueElapsed(mcpRegistry *mcpv1alpha1.MCPRegistry) bool {
+	if mcpRegistry.Status.SyncStatus != nil && mcpRegistry.Status.SyncStatus.LastAttempt != nil {
+		return time.Now().After(mcpRegistry.Status.SyncStatus.LastAttempt.Add(DefaultSyncRequeueAfter))
+	}
+	return true
+}
+
 // PerformSync performs the complete sync operation for the MCPRegistry
 // The controller is responsible for setting sync status via the status collector
 func (s *DefaultSyncManager) PerformSync(
@@ -215,12 +246,12 @@ func (s *DefaultSyncManager) PerformSync(
 	// Fetch and process registry data
 	fetchResult, err := s.fetchAndProcessRegistryData(ctx, mcpRegistry)
 	if err != nil {
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil, err
+		return ctrl.Result{RequeueAfter: DefaultSyncRequeueAfter}, nil, err
 	}
 
 	// Store the processed registry data
 	if err := s.storeRegistryData(ctx, mcpRegistry, fetchResult); err != nil {
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil, err
+		return ctrl.Result{RequeueAfter: DefaultSyncRequeueAfter}, nil, err
 	}
 
 	// Update the core registry fields that sync manager owns

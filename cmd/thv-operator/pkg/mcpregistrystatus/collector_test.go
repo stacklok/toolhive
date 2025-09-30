@@ -143,8 +143,8 @@ func TestStatusCollector_SetSyncStatus(t *testing.T) {
 		serverCount  int
 	}{
 		{
-			name:         "sync status idle",
-			phase:        mcpv1alpha1.SyncPhaseIdle,
+			name:         "sync status complete",
+			phase:        mcpv1alpha1.SyncPhaseComplete,
 			message:      "No sync required",
 			attemptCount: 0,
 			lastSyncTime: &metav1.Time{Time: metav1.Now().Time},

@@ -877,14 +877,13 @@ _Underlying type:_ _string_
 SyncPhase represents the data synchronization state
 
 _Validation:_
-- Enum: [Idle Syncing Complete Failed]
+- Enum: [Syncing Complete Failed]
 
 _Appears in:_
 - [SyncStatus](#syncstatus)
 
 | Field | Description |
 | --- | --- |
-| `Idle` | SyncPhaseIdle means no sync is needed or scheduled<br /> |
 | `Syncing` | SyncPhaseSyncing means sync is currently in progress<br /> |
 | `Complete` | SyncPhaseComplete means sync completed successfully<br /> |
 | `Failed` | SyncPhaseFailed means sync failed<br /> |
@@ -922,7 +921,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `phase` _[SyncPhase](#syncphase)_ | Phase represents the current synchronization phase |  | Enum: [Idle Syncing Complete Failed] <br /> |
+| `phase` _[SyncPhase](#syncphase)_ | Phase represents the current synchronization phase |  | Enum: [Syncing Complete Failed] <br /> |
 | `message` _string_ | Message provides additional information about the sync status |  |  |
 | `lastAttempt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastAttempt is the timestamp of the last sync attempt |  |  |
 | `attemptCount` _integer_ | AttemptCount is the number of sync attempts since last success |  | Minimum: 0 <br /> |

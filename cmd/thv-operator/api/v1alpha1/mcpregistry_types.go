@@ -205,7 +205,7 @@ type MCPRegistryStatus struct {
 // SyncStatus provides detailed information about data synchronization
 type SyncStatus struct {
 	// Phase represents the current synchronization phase
-	// +kubebuilder:validation:Enum=Idle;Syncing;Complete;Failed
+	// +kubebuilder:validation:Enum=Syncing;Complete;Failed
 	Phase SyncPhase `json:"phase"`
 
 	// Message provides additional information about the sync status
@@ -256,13 +256,10 @@ type APIStatus struct {
 }
 
 // SyncPhase represents the data synchronization state
-// +kubebuilder:validation:Enum=Idle;Syncing;Complete;Failed
+// +kubebuilder:validation:Enum=Syncing;Complete;Failed
 type SyncPhase string
 
 const (
-	// SyncPhaseIdle means no sync is needed or scheduled
-	SyncPhaseIdle SyncPhase = "Idle"
-
 	// SyncPhaseSyncing means sync is currently in progress
 	SyncPhaseSyncing SyncPhase = "Syncing"
 
@@ -389,7 +386,7 @@ func (r *MCPRegistry) DeriveOverallPhase() MCPRegistryPhase {
 	apiStatus := r.Status.APIStatus
 
 	// Default phases if status not set
-	syncPhase := SyncPhaseIdle
+	var syncPhase SyncPhase
 	if syncStatus != nil {
 		syncPhase = syncStatus.Phase
 	}
@@ -409,8 +406,8 @@ func (r *MCPRegistry) DeriveOverallPhase() MCPRegistryPhase {
 		return MCPRegistryPhaseSyncing
 	}
 
-	// If sync is complete or idle (no sync needed), check API status
-	if syncPhase == SyncPhaseComplete || syncPhase == SyncPhaseIdle {
+	// If sync is complete (no sync needed), check API status
+	if syncPhase == SyncPhaseComplete {
 		switch apiPhase {
 		case APIPhaseReady:
 			return MCPRegistryPhaseReady

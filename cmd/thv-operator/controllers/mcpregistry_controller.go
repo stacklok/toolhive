@@ -22,6 +22,19 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sync"
 )
 
+// Default timing constants for the controller
+const (
+	// DefaultControllerRetryAfterConstant is the constant default retry interval for controller operations that fail
+	DefaultControllerRetryAfterConstant = time.Minute * 5
+)
+
+// Configurable timing variables for testing
+var (
+	// DefaultControllerRetryAfter is the configurable default retry interval for controller operations that fail
+	// This can be modified in tests to speed up retry behavior
+	DefaultControllerRetryAfter = DefaultControllerRetryAfterConstant
+)
+
 // MCPRegistryReconciler reconciles a MCPRegistry object
 type MCPRegistryReconciler struct {
 	client.Client
@@ -150,7 +163,6 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// 3. Create status manager for batched updates with separation of concerns
 	statusManager := mcpregistrystatus.NewStatusManager(mcpRegistry)
-	statusDeriver := mcpregistrystatus.NewDefaultStatusDeriver()
 
 	// 4. Reconcile sync operation
 	result, syncErr := r.reconcileSync(ctx, mcpRegistry, statusManager)
@@ -192,6 +204,7 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// 7. Derive overall phase and message from sync and API status
+	statusDeriver := mcpregistrystatus.NewDefaultStatusDeriver()
 	r.deriveOverallStatus(ctx, mcpRegistry, statusManager, statusDeriver)
 
 	// 8. Apply all status changes in a single batch update
@@ -210,7 +223,7 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Log reconciliation completion
 	if err != nil {
 		ctxLogger.Error(err, "Reconciliation completed with error",
-			"MCPRegistry.Name", mcpRegistry.Name)
+			"MCPRegistry.Name", mcpRegistry.Name, "requeueAfter", result.RequeueAfter)
 	} else {
 		var syncPhase, apiPhase string
 		if mcpRegistry.Status.SyncStatus != nil {
@@ -253,31 +266,11 @@ func (r *MCPRegistryReconciler) reconcileSync(
 	ctxLogger := log.FromContext(ctx)
 
 	// Check if sync is needed - no need to refresh object here since we just fetched it
-	syncNeeded, syncReason, nextSyncTime, err := r.syncManager.ShouldSync(ctx, mcpRegistry)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to determine if sync is needed")
-		// Proceed with sync on error to be safe
-		syncNeeded = true
-		syncReason = sync.ReasonErrorCheckingSyncNeed
-	}
+	syncNeeded, syncReason, nextSyncTime := r.syncManager.ShouldSync(ctx, mcpRegistry)
 
 	if !syncNeeded {
 		ctxLogger.Info("Sync not needed", "reason", syncReason)
-
-		// Only update sync status if it's not already Idle with the right message
-		currentSyncPhase := mcpv1alpha1.SyncPhaseIdle // default
-		currentMessage := ""
-		if mcpRegistry.Status.SyncStatus != nil {
-			currentSyncPhase = mcpRegistry.Status.SyncStatus.Phase
-			currentMessage = mcpRegistry.Status.SyncStatus.Message
-		}
-
-		// Only set sync status if it needs to change
-		if currentSyncPhase != mcpv1alpha1.SyncPhaseIdle || currentMessage != "No sync required" {
-			// Preserve existing sync data when no sync is needed
-			lastSyncTime, lastSyncHash, serverCount := r.preserveExistingSyncData(mcpRegistry)
-			statusManager.Sync().SetSyncStatus(mcpv1alpha1.SyncPhaseIdle, "No sync required", 0, lastSyncTime, lastSyncHash, serverCount)
-		}
+		// Do not update sync status if sync is not needed: this would cause unnecessary status updates
 
 		// Schedule next reconciliation if we have a sync policy
 		if nextSyncTime != nil {
@@ -328,7 +321,7 @@ func (r *MCPRegistryReconciler) reconcileSync(
 		})
 
 		// Use a shorter retry interval instead of the full sync interval
-		retryAfter := time.Minute * 5 // Default retry interval
+		retryAfter := DefaultControllerRetryAfter // Default retry interval
 		if result.RequeueAfter > 0 {
 			// If PerformSync already set a retry interval, use it
 			retryAfter = result.RequeueAfter

@@ -3,7 +3,7 @@ kind: Test
 metadata:
   name: configmap-mode-mcp-server
 spec:
-  description: Tests TOOLHIVE_USE_CONFIGMAP=true environment variable functionality - verifies operator uses --from-configmap flag instead of individual config flags
+  description: Tests TOOLHIVE_USE_CONFIGMAP=true environment variable functionality - verifies operator uses volume mounting instead of individual config flags
   timeouts:
     apply: 30s
     assert: 60s
@@ -61,7 +61,7 @@ spec:
     - assert:
         file: assert-mcpserver-pod-running.yaml
     - assert:
-        file: assert-deployment-uses-configmap-flag.yaml
+        file: assert-deployment-uses-volume-mounting.yaml
 
   - name: verify-configmap-functionality
     description: Verify ConfigMap is created with proper content and deployment works
@@ -98,16 +98,52 @@ spec:
             echo "✗ runconfig.json missing required fields"
             exit 1
           fi
+
+          # Validate environment variables are properly embedded in runconfig.json
+          echo "Validating environment variables in ConfigMap..."
+          if echo "$CONFIGMAP_JSON" | jq -e '.env_vars.TEST_ENV_VAR == "configmap_test_value"' > /dev/null 2>&1; then
+            echo "✓ TEST_ENV_VAR environment variable found with correct value"
+          else
+            echo "✗ TEST_ENV_VAR environment variable missing or incorrect value"
+            echo "Environment variables in ConfigMap: $(echo "$CONFIGMAP_JSON" | jq '.env_vars // {}')"
+            exit 1
+          fi
+
+          if echo "$CONFIGMAP_JSON" | jq -e '.env_vars.ANOTHER_TEST_VAR == "file_based_env"' > /dev/null 2>&1; then
+            echo "✓ ANOTHER_TEST_VAR environment variable found with correct value"
+          else
+            echo "✗ ANOTHER_TEST_VAR environment variable missing or incorrect value"
+            exit 1
+          fi
+
+          echo "✓ Environment variables properly embedded in ConfigMap runconfig.json"
           
-          # Verify deployment arguments
-          echo "Verifying deployment uses --from-configmap and --k8s-pod-patch flags..."
+          # Verify deployment uses volume mounting for ConfigMap
+          echo "Verifying deployment uses ConfigMap volume mounting..."
           DEPLOYMENT_ARGS=$(kubectl get deployment yardstick -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].args}')
           echo "Deployment args: $DEPLOYMENT_ARGS"
 
-          if echo "$DEPLOYMENT_ARGS" | grep -q -- "--from-configmap=toolhive-system/yardstick-runconfig"; then
-            echo "✓ Deployment uses --from-configmap flag"
+          # Verify ConfigMap volume is mounted
+          echo "Verifying ConfigMap volume is mounted..."
+          VOLUME_MOUNTS=$(kubectl get deployment yardstick -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].volumeMounts}')
+          VOLUMES=$(kubectl get deployment yardstick -n toolhive-system -o jsonpath='{.spec.template.spec.volumes}')
+
+          echo "Volume mounts: $VOLUME_MOUNTS"
+          echo "Volumes: $VOLUMES"
+
+          # Check for runconfig volume mount
+          if echo "$VOLUME_MOUNTS" | jq -e '.[] | select(.name=="runconfig" and .mountPath=="/etc/runconfig" and .readOnly==true)' > /dev/null 2>&1; then
+            echo "✓ runconfig volume mount found at /etc/runconfig"
           else
-            echo "✗ Deployment does not use --from-configmap flag"
+            echo "✗ runconfig volume mount not found or incorrect configuration"
+            exit 1
+          fi
+
+          # Check for ConfigMap volume source
+          if echo "$VOLUMES" | jq -e '.[] | select(.name=="runconfig" and .configMap.name=="yardstick-runconfig")' > /dev/null 2>&1; then
+            echo "✓ ConfigMap volume source found referencing yardstick-runconfig"
+          else
+            echo "✗ ConfigMap volume source not found or incorrect configuration"
             exit 1
           fi
 

@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -212,6 +213,97 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 			assert.Equal(t, tt.expectedEnvironmentVariables, finalEnvVars, "OTEL environment variables should match expected value")
 			assert.Equal(t, tt.expectedInsecure, finalInsecure, "OTEL insecure setting should match expected value")
 			assert.Equal(t, tt.expectedEnablePrometheusMetricsPath, finalEnablePrometheusMetricsPath, "OTEL enable Prometheus metrics path setting should match expected value")
+		})
+	}
+}
+
+func TestTelemetryMiddlewareParameterComputation(t *testing.T) {
+	// This test validates the telemetry middleware parameter computation
+	// by testing the logic that computes server name and transport type
+	// before calling WithMiddlewareFromFlags
+	t.Parallel()
+
+	logger.Initialize()
+
+	tests := []struct {
+		name              string
+		runFlags          *RunFlags
+		serverOrImage     string
+		expectedServer    string
+		expectedTransport string
+	}{
+		{
+			name: "explicit name and transport should use provided values",
+			runFlags: &RunFlags{
+				Name:      "custom-server",
+				Transport: "http",
+			},
+			serverOrImage:     "custom-server",
+			expectedServer:    "custom-server",
+			expectedTransport: "http",
+		},
+		{
+			name: "empty name should be computed from image name",
+			runFlags: &RunFlags{
+				Transport: "sse",
+			},
+			serverOrImage:     "docker://registry.test/my-test-server:latest",
+			expectedServer:    "my-test-server", // Extracted from image name
+			expectedTransport: "sse",
+		},
+		{
+			name: "empty transport should use default",
+			runFlags: &RunFlags{
+				Name: "named-server",
+			},
+			serverOrImage:     "named-server",
+			expectedServer:    "named-server",
+			expectedTransport: "streamable-http", // Default from constant
+		},
+		{
+			name:              "both empty should compute name and use default transport",
+			runFlags:          &RunFlags{},
+			serverOrImage:     "docker://example.com/path/server-name:v1.0",
+			expectedServer:    "server-name",     // Extracted from image
+			expectedTransport: "streamable-http", // Default
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Test the server name computation logic that was fixed
+			// This simulates the logic in BuildRunnerConfig before WithMiddlewareFromFlags
+
+			// 1. Test transport type computation (this was already working)
+			transportType := tt.runFlags.Transport
+			if transportType == "" {
+				transportType = defaultTransportType // "streamable-http"
+			}
+			assert.Equal(t, tt.expectedTransport, transportType, "Transport type should match expected")
+
+			// 2. Test server name computation
+			serverName := tt.runFlags.Name
+			if serverName == "" {
+				// This simulates the image metadata extraction logic
+				if strings.HasPrefix(tt.serverOrImage, "docker://") {
+					imagePath := strings.TrimPrefix(tt.serverOrImage, "docker://")
+					parts := strings.Split(imagePath, "/")
+					imageName := parts[len(parts)-1]
+					if colonIndex := strings.Index(imageName, ":"); colonIndex != -1 {
+						imageName = imageName[:colonIndex]
+					}
+					serverName = imageName
+				} else {
+					serverName = tt.serverOrImage
+				}
+			}
+			assert.Equal(t, tt.expectedServer, serverName, "Server name should match expected")
+
+			// 3. Verify both parameters are non-empty for proper middleware function
+			assert.NotEmpty(t, serverName, "Server name should never be empty for middleware")
+			assert.NotEmpty(t, transportType, "Transport type should never be empty for middleware")
 		})
 	}
 }

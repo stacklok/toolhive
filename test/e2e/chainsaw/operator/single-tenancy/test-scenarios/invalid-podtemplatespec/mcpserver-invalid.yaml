@@ -1,0 +1,13 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: invalid-podtemplate
+  namespace: toolhive-system
+spec:
+  image: ghcr.io/stackloklabs/mcp-fetch:latest
+  transport: stdio
+  port: 8080
+  # Invalid PodTemplateSpec - containers should be an array, not a string
+  podTemplateSpec:
+    spec:
+      containers: "invalid-not-an-array"

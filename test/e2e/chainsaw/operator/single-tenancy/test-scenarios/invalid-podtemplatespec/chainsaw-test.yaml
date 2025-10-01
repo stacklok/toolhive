@@ -1,0 +1,42 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: invalid-podtemplatespec
+spec:
+  description: Tests that MCPServer with invalid PodTemplateSpec blocks deployment creation
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+      
+  - name: deploy-mcpserver-with-invalid-podtemplatespec
+    description: Deploy MCPServer with invalid PodTemplateSpec and verify deployment is blocked
+    try:
+    - apply:
+        file: mcpserver-invalid.yaml
+    - assert:
+        file: mcpserver-invalid.yaml
+    # Add a small sleep to allow the controller to process and update status
+    - sleep:
+        duration: 5s
+    - assert:
+        file: assert-mcpserver-invalid-condition.yaml
+        timeout: 30s
+    - assert:
+        file: assert-no-deployment.yaml
+        
+  - name: cleanup
+    description: Clean up the invalid MCPServer
+    try:
+    - delete:
+        ref:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: MCPServer
+          name: invalid-podtemplate
+          namespace: toolhive-system

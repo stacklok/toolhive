@@ -62,6 +62,8 @@ spec:
         file: assert-mcpserver-pod-running.yaml
     - assert:
         file: assert-deployment-uses-volume-mounting.yaml
+    - assert:
+        file: assert-statefulset-serviceaccount.yaml
 
   - name: verify-configmap-functionality
     description: Verify ConfigMap is created with proper content and deployment works
@@ -208,12 +210,22 @@ spec:
               exit 1
             fi
 
+            # Validate serviceAccountName in pod patch
+            if echo "$POD_PATCH_ARG" | jq -e '.spec.serviceAccountName == "yardstick-custom-sa"' > /dev/null 2>&1; then
+              echo "✓ Pod patch contains correct serviceAccountName"
+            else
+              echo "✗ Pod patch missing or has incorrect serviceAccountName"
+              echo "Expected: yardstick-custom-sa"
+              echo "Actual: $(echo "$POD_PATCH_ARG" | jq -r '.spec.serviceAccountName // "not set"')"
+              exit 1
+            fi
+
           else
             echo "✗ No pod patch argument found"
             exit 1
           fi
 
-          echo "✅ ConfigMap mode functionality with secrets verified successfully!"
+          echo "✅ ConfigMap mode functionality with secrets and serviceAccount verified successfully!"
 
   - name: cleanup-configmap-mode
     description: Disable ConfigMap mode to avoid affecting subsequent tests

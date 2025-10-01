@@ -754,8 +754,15 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	// Check if global ConfigMap mode is enabled via environment variable
 	useConfigMap := os.Getenv("TOOLHIVE_USE_CONFIGMAP") == trueValue
 	if useConfigMap {
-		// Also add pod template patch for secrets (same as regular flags approach)
+		// Also add pod template patch for secrets and service account (same as regular flags approach)
+		// If service account is not specified, use the default MCP server service account
+		serviceAccount := m.Spec.ServiceAccount
+		if serviceAccount == nil {
+			defaultSA := mcpServerServiceAccountName(m.Name)
+			serviceAccount = &defaultSA
+		}
 		finalPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec).
+			WithServiceAccount(serviceAccount).
 			WithSecrets(m.Spec.Secrets).
 			Build()
 		// Add pod template patch if we have one

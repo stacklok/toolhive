@@ -1,3 +1,9 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: yardstick-custom-sa
+  namespace: toolhive-system
+---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
@@ -7,6 +13,7 @@ spec:
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
   transport: stdio
   port: 8080
+  serviceAccount: yardstick-custom-sa
   env:
   - name: TEST_ENV_VAR
     value: "configmap_test_value"

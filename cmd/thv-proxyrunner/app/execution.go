@@ -43,6 +43,7 @@ func runWithFlagsBasedConfig(
 		runner.WithHost(validatedHost),
 		runner.WithTargetHost(transport.LocalhostIPv4),
 		runner.WithProxyMode(types.ProxyMode(runFlags.runProxyMode)),
+		runner.WithTrustProxyHeaders(runFlags.runTrustProxyHeaders),
 		runner.WithVolumes(runFlags.runVolumes),
 		runner.WithSecrets(runFlags.runSecrets),
 		runner.WithAuthzConfigPath(runFlags.runAuthzConfig),

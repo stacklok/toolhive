@@ -52,10 +52,11 @@ type Proxy interface {
 //nolint:revive // Intentionally named HTTPSSEProxy despite package name
 type HTTPSSEProxy struct {
 	// Basic configuration
-	host          string
-	port          int
-	containerName string
-	middlewares   []types.MiddlewareFunction
+	host              string
+	port              int
+	containerName     string
+	middlewares       []types.MiddlewareFunction
+	trustProxyHeaders bool
 
 	// HTTP server
 	server     *http.Server
@@ -84,7 +85,12 @@ type HTTPSSEProxy struct {
 
 // NewHTTPSSEProxy creates a new HTTP SSE proxy for transports.
 func NewHTTPSSEProxy(
-	host string, port int, containerName string, prometheusHandler http.Handler, middlewares ...types.MiddlewareFunction,
+	host string,
+	port int,
+	containerName string,
+	trustProxyHeaders bool,
+	prometheusHandler http.Handler,
+	middlewares ...types.MiddlewareFunction,
 ) *HTTPSSEProxy {
 	// Create a factory for SSE sessions
 	sseFactory := func(id string) session.Session {
@@ -96,6 +102,7 @@ func NewHTTPSSEProxy(
 		host:              host,
 		port:              port,
 		containerName:     containerName,
+		trustProxyHeaders: trustProxyHeaders,
 		shutdownCh:        make(chan struct{}),
 		messageCh:         make(chan jsonrpc2.Message, 100),
 		sessionManager:    session.NewManager(session.DefaultSessionTTL, sseFactory),
@@ -302,20 +309,8 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Get the base URL for the POST endpoint
-	host := r.Host
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if forwardedProto := r.Header.Get("X-Forwarded-Proto"); forwardedProto != "" {
-		scheme = forwardedProto
-	}
-
-	baseURL := fmt.Sprintf("%s://%s", scheme, host)
-
-	// Create and send the endpoint event
-	endpointURL := fmt.Sprintf("%s%s?session_id=%s", baseURL, ssecommon.HTTPMessagesEndpoint, clientID)
+	// Build and send the endpoint event
+	endpointURL := p.buildEndpointURL(r, clientID)
 	endpointMsg := ssecommon.NewSSEMessage("endpoint", endpointURL)
 
 	// Send the initial event
@@ -507,4 +502,57 @@ func (p *HTTPSSEProxy) processPendingMessages(clientID string, messageCh chan<- 
 
 	// Clear the pending messages
 	p.pendingMessages = nil
+}
+
+// buildEndpointURL constructs the endpoint URL from request headers and proxy configuration.
+func (p *HTTPSSEProxy) buildEndpointURL(r *http.Request, clientID string) string {
+	host := r.Host
+	prefix := ""
+
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwardedProto := r.Header.Get("X-Forwarded-Proto"); forwardedProto != "" {
+		scheme = forwardedProto
+	}
+
+	// Handle X-Forwarded headers from reverse proxies only if trusted
+	if p.trustProxyHeaders {
+		if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
+			host = forwardedHost
+			if forwardedPort := r.Header.Get("X-Forwarded-Port"); forwardedPort != "" {
+				// Strip any existing port from host before adding the forwarded port
+				if hostOnly, _, err := net.SplitHostPort(host); err == nil {
+					host = hostOnly
+				}
+				host = net.JoinHostPort(host, forwardedPort)
+			}
+		}
+
+		prefix = r.Header.Get("X-Forwarded-Prefix")
+	}
+
+	baseURL := fmt.Sprintf("%s://%s", scheme, host)
+
+	// Strip the SSE endpoint suffix from prefix if present, since we'll add the full messages path
+	prefix = stripSSEEndpointSuffix(prefix)
+
+	return fmt.Sprintf("%s%s%s?session_id=%s", baseURL, prefix, ssecommon.HTTPMessagesEndpoint, clientID)
+}
+
+// stripSSEEndpointSuffix removes the SSE endpoint suffix from a path prefix if present.
+func stripSSEEndpointSuffix(prefix string) string {
+	sseEndpointLen := len(ssecommon.HTTPSSEEndpoint)
+	if len(prefix) < sseEndpointLen {
+		return prefix
+	}
+
+	// Check if the prefix ends with the SSE endpoint
+	suffixStart := len(prefix) - sseEndpointLen
+	if prefix[suffixStart:] == ssecommon.HTTPSSEEndpoint {
+		return prefix[:suffixStart]
+	}
+
+	return prefix
 }

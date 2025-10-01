@@ -59,6 +59,8 @@ type updateRequest struct {
 	ProxyMode string `json:"proxy_mode"`
 	// Whether network isolation is turned on. This applies the rules in the permission profile.
 	NetworkIsolation bool `json:"network_isolation"`
+	// Whether to trust X-Forwarded-* headers from reverse proxies
+	TrustProxyHeaders bool `json:"trust_proxy_headers"`
 	// Tools filter
 	ToolsFilter []string `json:"tools"`
 	// Tools override
@@ -230,6 +232,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			PermissionProfile: runConfig.PermissionProfile,
 			ProxyMode:         string(runConfig.ProxyMode),
 			NetworkIsolation:  runConfig.IsolateNetwork,
+			TrustProxyHeaders: runConfig.TrustProxyHeaders,
 			ToolsFilter:       runConfig.ToolsFilter,
 			Group:             runConfig.Group,
 			URL:               runConfig.RemoteURL,

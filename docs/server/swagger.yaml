@@ -857,6 +857,10 @@ components:
           - TransportTypeSSE
           - TransportTypeStreamableHTTP
           - TransportTypeInspector
+        trust_proxy_headers:
+          description: TrustProxyHeaders indicates whether to trust X-Forwarded-*
+            headers from reverse proxies
+          type: boolean
         volumes:
           description: |-
             Volumes are the directory mounts to pass to the container
@@ -1195,6 +1199,9 @@ components:
         transport:
           description: Transport configuration
           type: string
+        trust_proxy_headers:
+          description: Whether to trust X-Forwarded-* headers from reverse proxies
+          type: boolean
         url:
           description: Remote server specific fields
           type: string
@@ -1548,6 +1555,9 @@ components:
         transport:
           description: Transport configuration
           type: string
+        trust_proxy_headers:
+          description: Whether to trust X-Forwarded-* headers from reverse proxies
+          type: boolean
         url:
           description: Remote server specific fields
           type: string

@@ -137,7 +137,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 
 			// Verify sync is complete
 			Expect(updatedRegistry.Status.SyncStatus).NotTo(BeNil())
-			Expect(updatedRegistry.Status.SyncStatus.Phase).To(BeElementOf(mcpv1alpha1.SyncPhaseComplete, mcpv1alpha1.SyncPhaseIdle))
+			Expect(updatedRegistry.Status.SyncStatus.Phase).To(Equal(mcpv1alpha1.SyncPhaseComplete))
 			Expect(updatedRegistry.Status.SyncStatus.AttemptCount).To(Equal(0))
 			Expect(updatedRegistry.Status.SyncStatus.ServerCount).To(Equal(numServers))
 
@@ -183,9 +183,9 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 			updatedRegistry, err := registryHelper.GetRegistry(registry.Name)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify sync status is idle or complete
+			// Verify sync status is or complete
 			Expect(updatedRegistry.Status.SyncStatus).NotTo(BeNil())
-			Expect(updatedRegistry.Status.SyncStatus.Phase).To(BeElementOf(mcpv1alpha1.SyncPhaseIdle, mcpv1alpha1.SyncPhaseComplete))
+			Expect(updatedRegistry.Status.SyncStatus.Phase).To(Equal(mcpv1alpha1.SyncPhaseComplete))
 			Expect(updatedRegistry.Status.SyncStatus.ServerCount).To(Equal(1))
 		})
 
@@ -399,7 +399,9 @@ var _ = Describe("MCPRegistry Lifecycle Management", func() {
 			Expect(updatedRegistry.Status.SyncStatus.AttemptCount).To(Equal(1))
 
 			By("verifying API status")
-			Expect(updatedRegistry.Status.APIStatus).To(BeNil())
+			Expect(updatedRegistry.Status.APIStatus).NotTo(BeNil())
+			Expect(updatedRegistry.Status.APIStatus.Phase).To(Equal(mcpv1alpha1.APIPhaseDeploying))
+			Expect(updatedRegistry.Status.APIStatus.Endpoint).To(BeEmpty())
 		})
 	})
 

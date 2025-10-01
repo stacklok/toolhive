@@ -1,13 +1,10 @@
 package v1alpha1
 
 import (
-	"context"
 	"fmt"
-	"reflect"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -423,46 +420,6 @@ func (r *MCPRegistry) DeriveOverallPhase() MCPRegistryPhase {
 
 	// Default to pending for initial states
 	return MCPRegistryPhasePending
-}
-
-// IsEqualTo checks if the current status is equal to the new status
-// This is used to avoid unnecessary status updates
-func (r *MCPRegistryStatus) IsEqualTo(ctx context.Context, newStatus MCPRegistryStatus) bool {
-	// Do not use DeepEqual but checks only the fields that are erlevant for status changes
-	// This is used to avoid unnecessary status updates
-	ctxLogger := log.FromContext(ctx)
-
-	if r.Phase != newStatus.Phase {
-		ctxLogger.V(1).Info("Phase difference", "current", r.Phase, "updated", newStatus.Phase)
-		return false
-	}
-	if r.Message != newStatus.Message {
-		ctxLogger.V(1).Info("Message difference", "current", r.Message, "updated", newStatus.Message)
-		return false
-	}
-	if r.SyncStatus != nil && newStatus.SyncStatus != nil {
-		if r.SyncStatus.Phase != newStatus.SyncStatus.Phase {
-			ctxLogger.V(1).Info("SyncStatus.Phase difference", "current", r.SyncStatus.Phase, "updated", newStatus.SyncStatus.Phase)
-			return false
-		}
-	}
-	if r.APIStatus != nil && newStatus.APIStatus != nil {
-		if r.APIStatus.Phase != newStatus.APIStatus.Phase {
-			ctxLogger.V(1).Info("APIStatus.Phase difference", "current", r.APIStatus.Phase, "updated", newStatus.APIStatus.Phase)
-			return false
-		}
-	}
-
-	if !reflect.DeepEqual(r.StorageRef, newStatus.StorageRef) {
-		ctxLogger.V(1).Info("StorageRef difference", "current", r.StorageRef, "updated", newStatus.StorageRef)
-		return false
-	}
-	if !reflect.DeepEqual(r.Conditions, newStatus.Conditions) {
-		ctxLogger.V(1).Info("Conditions difference", "current", r.Conditions, "updated", newStatus.Conditions)
-		return false
-	}
-
-	return true
 }
 
 func init() {

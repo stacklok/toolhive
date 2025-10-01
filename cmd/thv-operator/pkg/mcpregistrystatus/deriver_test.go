@@ -80,18 +80,6 @@ func TestDeriveOverallStatus(t *testing.T) {
 			description:     "Both components ready should result in ready phase",
 		},
 		{
-			name: "sync idle and API ready",
-			syncStatus: &mcpv1alpha1.SyncStatus{
-				Phase: mcpv1alpha1.SyncPhaseIdle,
-			},
-			apiStatus: &mcpv1alpha1.APIStatus{
-				Phase: mcpv1alpha1.APIPhaseReady,
-			},
-			expectedPhase:   mcpv1alpha1.MCPRegistryPhaseReady,
-			expectedMessage: "Registry is ready and API is serving requests",
-			description:     "Idle sync with ready API should result in ready phase",
-		},
-		{
 			name: "sync complete, API deploying",
 			syncStatus: &mcpv1alpha1.SyncStatus{
 				Phase: mcpv1alpha1.SyncPhaseComplete,
@@ -112,16 +100,6 @@ func TestDeriveOverallStatus(t *testing.T) {
 			expectedPhase:   mcpv1alpha1.MCPRegistryPhasePending,
 			expectedMessage: "Registry data synced, API deployment pending",
 			description:     "Complete sync without API status should be pending",
-		},
-		{
-			name: "sync idle, API status missing",
-			syncStatus: &mcpv1alpha1.SyncStatus{
-				Phase: mcpv1alpha1.SyncPhaseIdle,
-			},
-			apiStatus:       nil,
-			expectedPhase:   mcpv1alpha1.MCPRegistryPhasePending,
-			expectedMessage: "Registry data synced, API deployment pending",
-			description:     "Idle sync without API status should be pending",
 		},
 		{
 			name:            "both statuses nil",

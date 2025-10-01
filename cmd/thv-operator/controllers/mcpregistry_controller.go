@@ -163,7 +163,6 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// 3. Create status manager for batched updates with separation of concerns
 	statusManager := mcpregistrystatus.NewStatusManager(mcpRegistry)
-	statusDeriver := mcpregistrystatus.NewDefaultStatusDeriver()
 
 	// 4. Reconcile sync operation
 	result, syncErr := r.reconcileSync(ctx, mcpRegistry, statusManager)
@@ -242,10 +241,6 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			"requeueAfter", result.RequeueAfter)
 	}
 
-	if result.RequeueAfter > 0 {
-		ctxLogger.Info("Resetting error to nil because of requeue")
-		err = nil
-	}
 	return result, err
 }
 
@@ -309,7 +304,7 @@ func (r *MCPRegistryReconciler) reconcileSync(
 
 	if syncErr != nil {
 		// Sync failed - set sync status to failed
-		ctxLogger.Info("Sync failed, scheduling retry", "error", syncErr.Error())
+		ctxLogger.Error(syncErr, "Sync failed, scheduling retry")
 		// Preserve existing sync data when sync fails
 		lastSyncTime, lastSyncHash, serverCount := r.preserveExistingSyncData(mcpRegistry)
 
@@ -394,8 +389,8 @@ func (*MCPRegistryReconciler) deriveOverallStatus(
 	// Use the StatusDeriver to determine the overall phase and message
 	// based on current sync and API statuses
 	derivedPhase, derivedMessage := statusDeriver.DeriveOverallStatus(
-		statusManager.Sync().Status(),
-		statusManager.API().Status(),
+		mcpRegistry.Status.SyncStatus,
+		mcpRegistry.Status.APIStatus,
 	)
 
 	// Only update phase and message if they've changed

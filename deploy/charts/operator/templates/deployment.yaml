@@ -46,6 +46,10 @@ spec:
           # Always use structured JSON logs in Kubernetes (not configurable)
           - name: UNSTRUCTURED_LOGS
             value: "false"
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
           - name: ENABLE_EXPERIMENTAL_FEATURES
             value: {{ .Values.operator.features.experimental | quote }}
           {{- if eq .Values.operator.rbac.scope "namespace" }}
@@ -56,6 +60,8 @@ spec:
             value: "{{ .Values.operator.toolhiveRunnerImage }}"
           - name: TOOLHIVE_PROXY_HOST
             value: "{{ .Values.operator.proxyHost }}"
+          - name: TOOLHIVE_REGISTRY_API_IMAGE
+            value: "{{ .Values.registryAPI.image }}"
           {{- if .Values.operator.env }}
             {{- toYaml .Values.operator.env | nindent 10 }}
           {{- end }}

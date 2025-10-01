@@ -17,6 +17,12 @@ jobs:
   linting:
     name: Linting
     uses: ./.github/workflows/lint.yml
+  security-scan:
+    name: Security Scan
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/security-scan.yml
   tests:
     name: Tests
     uses: ./.github/workflows/test.yml

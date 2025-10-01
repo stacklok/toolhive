@@ -131,7 +131,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 
 	labelsMap := map[string]string{}
 	labels.AddStandardLabels(labelsMap, "inspector", "inspector", string(types.TransportTypeInspector), inspectorUIPort)
-	labelsMap["toolhive-auxiliary"] = "true"
+	labelsMap[labels.LabelAuxiliary] = labels.LabelToolHiveValue
 	_, err = rt.DeployWorkload(
 		ctx,
 		processedImage,

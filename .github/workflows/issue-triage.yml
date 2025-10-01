@@ -1,11 +1,11 @@
 name: Claude Issue Triage
-description: Run Claude Code for issue triage in GitHub Actions
 on:
   issues:
     types: [opened]
 
 jobs:
   triage-issue:
+    name: Triage Issue
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

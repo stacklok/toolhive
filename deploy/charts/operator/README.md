@@ -1,7 +1,7 @@
 
 # ToolHive Operator Helm Chart
 
-![Version: 0.2.14](https://img.shields.io/badge/Version-0.2.14-informational?style=flat-square)
+![Version: 0.2.19](https://img.shields.io/badge/Version-0.2.19-informational?style=flat-square)
 ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square)
 
 A Helm chart for deploying the ToolHive Operator into Kubernetes.
@@ -53,7 +53,7 @@ The command removes all the Kubernetes components associated with the chart and 
 |-----|-------------|------|---------|
 | fullnameOverride | string | `"toolhive-operator"` | Provide a fully-qualified name override for resources |
 | nameOverride | string | `""` | Override the name of the chart |
-| operator | object | `{"affinity":{},"autoscaling":{"enabled":false,"maxReplicas":100,"minReplicas":1,"targetCPUUtilizationPercentage":80},"containerSecurityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000},"env":{},"features":{"experimental":false},"image":"ghcr.io/stacklok/toolhive/operator:v0.3.0","imagePullPolicy":"IfNotPresent","imagePullSecrets":[],"leaderElectionRole":{"binding":{"name":"toolhive-operator-leader-election-rolebinding"},"name":"toolhive-operator-leader-election-role","rules":[{"apiGroups":[""],"resources":["configmaps"],"verbs":["get","list","watch","create","update","patch","delete"]},{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["get","list","watch","create","update","patch","delete"]},{"apiGroups":[""],"resources":["events"],"verbs":["create","patch"]}]},"livenessProbe":{"httpGet":{"path":"/healthz","port":"health"},"initialDelaySeconds":15,"periodSeconds":20},"nodeSelector":{},"podAnnotations":{},"podLabels":{},"podSecurityContext":{"runAsNonRoot":true},"ports":[{"containerPort":8080,"name":"metrics","protocol":"TCP"},{"containerPort":8081,"name":"health","protocol":"TCP"}],"proxyHost":"0.0.0.0","rbac":{"allowedNamespaces":[],"scope":"cluster"},"readinessProbe":{"httpGet":{"path":"/readyz","port":"health"},"initialDelaySeconds":5,"periodSeconds":10},"replicaCount":1,"resources":{"limits":{"cpu":"500m","memory":"128Mi"},"requests":{"cpu":"10m","memory":"64Mi"}},"serviceAccount":{"annotations":{},"automountServiceAccountToken":true,"create":true,"labels":{},"name":"toolhive-operator"},"tolerations":[],"toolhiveRunnerImage":"ghcr.io/stacklok/toolhive/proxyrunner:v0.3.0","volumeMounts":[],"volumes":[]}` | All values for the operator deployment and associated resources |
+| operator | object | `{"affinity":{},"autoscaling":{"enabled":false,"maxReplicas":100,"minReplicas":1,"targetCPUUtilizationPercentage":80},"containerSecurityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000},"env":{},"features":{"experimental":false},"image":"ghcr.io/stacklok/toolhive/operator:v0.3.5","imagePullPolicy":"IfNotPresent","imagePullSecrets":[],"leaderElectionRole":{"binding":{"name":"toolhive-operator-leader-election-rolebinding"},"name":"toolhive-operator-leader-election-role","rules":[{"apiGroups":[""],"resources":["configmaps"],"verbs":["get","list","watch","create","update","patch","delete"]},{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["get","list","watch","create","update","patch","delete"]},{"apiGroups":[""],"resources":["events"],"verbs":["create","patch"]}]},"livenessProbe":{"httpGet":{"path":"/healthz","port":"health"},"initialDelaySeconds":15,"periodSeconds":20},"nodeSelector":{},"podAnnotations":{},"podLabels":{},"podSecurityContext":{"runAsNonRoot":true},"ports":[{"containerPort":8080,"name":"metrics","protocol":"TCP"},{"containerPort":8081,"name":"health","protocol":"TCP"}],"proxyHost":"0.0.0.0","rbac":{"allowedNamespaces":[],"scope":"cluster"},"readinessProbe":{"httpGet":{"path":"/readyz","port":"health"},"initialDelaySeconds":5,"periodSeconds":10},"replicaCount":1,"resources":{"limits":{"cpu":"500m","memory":"128Mi"},"requests":{"cpu":"10m","memory":"64Mi"}},"serviceAccount":{"annotations":{},"automountServiceAccountToken":true,"create":true,"labels":{},"name":"toolhive-operator"},"tolerations":[],"toolhiveRunnerImage":"ghcr.io/stacklok/toolhive/proxyrunner:v0.3.5","volumeMounts":[],"volumes":[]}` | All values for the operator deployment and associated resources |
 | operator.affinity | object | `{}` | Affinity settings for the operator pod |
 | operator.autoscaling | object | `{"enabled":false,"maxReplicas":100,"minReplicas":1,"targetCPUUtilizationPercentage":80}` | Configuration for horizontal pod autoscaling |
 | operator.autoscaling.enabled | bool | `false` | Enable autoscaling for the operator |
@@ -62,7 +62,7 @@ The command removes all the Kubernetes components associated with the chart and 
 | operator.autoscaling.targetCPUUtilizationPercentage | int | `80` | Target CPU utilization percentage for autoscaling |
 | operator.containerSecurityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000}` | Container security context settings for the operator |
 | operator.env | object | `{}` | Environment variables to set in the operator container |
-| operator.image | string | `"ghcr.io/stacklok/toolhive/operator:v0.3.0"` | Container image for the operator |
+| operator.image | string | `"ghcr.io/stacklok/toolhive/operator:v0.3.5"` | Container image for the operator |
 | operator.imagePullPolicy | string | `"IfNotPresent"` | Image pull policy for the operator container |
 | operator.imagePullSecrets | list | `[]` | List of image pull secrets to use |
 | operator.leaderElectionRole | object | `{"binding":{"name":"toolhive-operator-leader-election-rolebinding"},"name":"toolhive-operator-leader-election-role","rules":[{"apiGroups":[""],"resources":["configmaps"],"verbs":["get","list","watch","create","update","patch","delete"]},{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["get","list","watch","create","update","patch","delete"]},{"apiGroups":[""],"resources":["events"],"verbs":["create","patch"]}]}` | Leader election role configuration |
@@ -89,7 +89,14 @@ The command removes all the Kubernetes components associated with the chart and 
 | operator.serviceAccount.labels | object | `{}` | Labels to add to the service account |
 | operator.serviceAccount.name | string | `"toolhive-operator"` | The name of the service account to use. If not set and create is true, a name is generated. |
 | operator.tolerations | list | `[]` | Tolerations for the operator pod |
-| operator.toolhiveRunnerImage | string | `"ghcr.io/stacklok/toolhive/proxyrunner:v0.3.0"` | Image to use for Toolhive runners |
+| operator.toolhiveRunnerImage | string | `"ghcr.io/stacklok/toolhive/proxyrunner:v0.3.5"` | Image to use for Toolhive runners |
 | operator.volumeMounts | list | `[]` | Additional volume mounts on the operator container |
 | operator.volumes | list | `[]` | Additional volumes to mount on the operator pod |
+| registryAPI | object | `{"image":"ghcr.io/stacklok/toolhive/thv-registry-api:latest","serviceAccount":{"annotations":{},"automountServiceAccountToken":true,"labels":{},"name":"toolhive-registry-api"}}` | All values for the registry API deployment and associated resources NOTE: Registry API ServiceAccount and RBAC resources are only created when operator.features.experimental is enabled |
+| registryAPI.image | string | `"ghcr.io/stacklok/toolhive/thv-registry-api:latest"` | Container image for the registry API |
+| registryAPI.serviceAccount | object | `{"annotations":{},"automountServiceAccountToken":true,"labels":{},"name":"toolhive-registry-api"}` | Service account configuration for the registry API This ServiceAccount is only created when operator.features.experimental is true |
+| registryAPI.serviceAccount.annotations | object | `{}` | Annotations to add to the registry API service account |
+| registryAPI.serviceAccount.automountServiceAccountToken | bool | `true` | Automatically mount a ServiceAccount's API credentials |
+| registryAPI.serviceAccount.labels | object | `{}` | Labels to add to the registry API service account |
+| registryAPI.serviceAccount.name | string | `"toolhive-registry-api"` | The name of the service account to use for the registry API |
 

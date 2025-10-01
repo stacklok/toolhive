@@ -1,8 +1,9 @@
 # Use Alpine Linux 3.22.0 for minimal footprint
 FROM alpine:3.22.1
 
-# Install squid and create necessary directories
-RUN apk add --no-cache squid \
+# Install squid from edge repository and create necessary directories
+RUN echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories \
+    && apk add --no-cache squid \
     && mkdir -p /var/cache/squid /var/log/squid \
     && chown -R squid:squid /var/cache/squid /var/log/squid /var/run/squid \
     && chmod 750 /var/cache/squid /var/log/squid

@@ -16,3 +16,9 @@ tasks:
     desc: Build the registry API image with ko
     cmds:
       - ko build --local -B ./cmd/thv-registry-api
+
+  registry-test:
+    desc: Run registry API tests
+    dir: cmd/thv-registry-api
+    cmds:
+      - go test ./api/v1 -v

@@ -71,6 +71,21 @@ func (mr *MockStatusManagerMockRecorder) GetWorkload(ctx, workloadName any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkload", reflect.TypeOf((*MockStatusManager)(nil).GetWorkload), ctx, workloadName)
 }
 
+// GetWorkloadPID mocks base method.
+func (m *MockStatusManager) GetWorkloadPID(ctx context.Context, workloadName string) (int, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetWorkloadPID", ctx, workloadName)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetWorkloadPID indicates an expected call of GetWorkloadPID.
+func (mr *MockStatusManagerMockRecorder) GetWorkloadPID(ctx, workloadName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkloadPID", reflect.TypeOf((*MockStatusManager)(nil).GetWorkloadPID), ctx, workloadName)
+}
+
 // ListWorkloads mocks base method.
 func (m *MockStatusManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters []string) ([]core.Workload, error) {
 	m.ctrl.T.Helper()

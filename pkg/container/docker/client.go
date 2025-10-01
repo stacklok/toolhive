@@ -759,7 +759,7 @@ func (c *Client) getPermissionConfigFromProfile(
 		NetworkMode: "", // set to blank as podman is not recognizing the "none" value when we attach to other networks
 		CapDrop:     []string{"ALL"},
 		CapAdd:      []string{},
-		SecurityOpt: []string{},
+		SecurityOpt: []string{"label:disable"},
 		Privileged:  profile.Privileged,
 	}
 
@@ -779,7 +779,9 @@ func (c *Client) getPermissionConfigFromProfile(
 }
 
 // findExistingContainer finds a container with the exact name
+// Uses container runtime's name filter for efficiency but then verifies exact match to prevent partial matching
 func (c *Client) findExistingContainer(ctx context.Context, name string) (string, error) {
+	// Use name filter to narrow results, then verify exact match
 	containers, err := c.api.ContainerList(ctx, container.ListOptions{
 		All: true, // Include stopped containers
 		Filters: filters.NewArgs(
@@ -790,7 +792,7 @@ func (c *Client) findExistingContainer(ctx context.Context, name string) (string
 		return "", NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
 	}
 
-	// Find exact name match (filter can return partial matches)
+	// Verify exact name match from the filtered results (name filter does partial matching)
 	for _, cont := range containers {
 		for _, containerName := range cont.Names {
 			// Container names in the API have a leading slash
@@ -1063,15 +1065,19 @@ func (c *Client) createNetwork(
 	internal bool,
 ) error {
 	// Check if the network already exists
+	// Use name filter for efficiency but verify exact match to avoid partial matching
 	networks, err := c.client.NetworkList(ctx, network.ListOptions{
 		Filters: filters.NewArgs(filters.Arg("name", name)),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to list networks: %w", err)
 	}
-	if len(networks) > 0 {
-		// Network already exists, return its ID
-		return nil
+	// Verify exact name match from filtered results
+	for _, n := range networks {
+		if n.Name == name {
+			// Network already exists
+			return nil
+		}
 	}
 
 	networkCreate := network.CreateOptions{
@@ -1089,7 +1095,7 @@ func (c *Client) createNetwork(
 
 // DeleteNetwork deletes a network by name.
 func (c *Client) deleteNetwork(ctx context.Context, name string) error {
-	// find the network by name
+	// find the network by name using filter for efficiency but verify exact match
 	networks, err := c.client.NetworkList(ctx, network.ListOptions{
 		Filters: filters.NewArgs(filters.Arg("name", name)),
 	})
@@ -1097,13 +1103,22 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 		return err
 	}
 
+	// Verify exact name match from filtered results
+	var networkToRemove *network.Summary
+	for _, n := range networks {
+		if n.Name == name {
+			networkToRemove = &n
+			break
+		}
+	}
+
 	// If the network does not exist, there is nothing to do here.
-	if len(networks) == 0 {
+	if networkToRemove == nil {
 		logger.Debugf("network %s not found, nothing to delete", name)
 		return nil
 	}
 
-	if err := c.client.NetworkRemove(ctx, networks[0].ID); err != nil {
+	if err := c.client.NetworkRemove(ctx, networkToRemove.ID); err != nil {
 		return fmt.Errorf("failed to remove network %s: %w", name, err)
 	}
 	return nil
@@ -1330,7 +1345,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 		NetworkMode: container.NetworkMode("bridge"),
 		CapAdd:      nil,
 		CapDrop:     nil,
-		SecurityOpt: nil,
+		SecurityOpt: []string{"label:disable"},
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},
@@ -1633,10 +1648,11 @@ func (c *Client) findContainerByLabel(ctx context.Context, workloadName string) 
 
 // findContainerByExactName finds a container by exact name matching.
 // Returns the container ID if found, empty string otherwise.
+// Uses container runtime's name filter for efficiency but then verifies exact match to prevent partial matching
 func (c *Client) findContainerByExactName(ctx context.Context, workloadName string) (string, error) {
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("label", "toolhive=true")
-	filterArgs.Add("name", workloadName)
+	filterArgs.Add("name", workloadName) // Use name filter for efficiency
 
 	containers, err := c.api.ContainerList(ctx, container.ListOptions{
 		All:     true,
@@ -1650,28 +1666,17 @@ func (c *Client) findContainerByExactName(ctx context.Context, workloadName stri
 		return "", nil
 	}
 
-	// Docker does a prefix match on the name. If we find multiple containers,
-	// we need to filter down to the exact name requested.
-	var containerID string
-	if len(containers) > 1 {
-		// The name in the API has a leading slash, so we need to search for that.
-		prefixedName := "/" + workloadName
-		// The name in the API response is a list of names, so we need to check
-		// if the prefixed name is in the list.
-		// The extra names are used for docker network functionality which is
-		// not relevant for us.
-		idx := slices.IndexFunc(containers, func(c container.Summary) bool {
-			return slices.Contains(c.Names, prefixedName)
-		})
-		if idx == -1 {
-			return "", nil
+	// Verify exact name match from the filtered results (name filter does partial matching)
+	// The name in the API has a leading slash, so we need to search for that.
+	prefixedName := "/" + workloadName
+	for _, cont := range containers {
+		// Check if any of the container names match exactly
+		if slices.Contains(cont.Names, prefixedName) || slices.Contains(cont.Names, workloadName) {
+			return cont.ID, nil
 		}
-		containerID = containers[idx].ID
-	} else {
-		containerID = containers[0].ID
 	}
 
-	return containerID, nil
+	return "", nil
 }
 
 // inspectContainerByName finds a container by the workload name and inspects it.

@@ -18,6 +18,46 @@ Package v1alpha1 contains API Schema definitions for the toolhive v1alpha1 API g
 
 
 
+#### APIPhase
+
+_Underlying type:_ _string_
+
+APIPhase represents the API service state
+
+_Validation:_
+- Enum: [NotStarted Deploying Ready Unhealthy Error]
+
+_Appears in:_
+- [APIStatus](#apistatus)
+
+| Field | Description |
+| --- | --- |
+| `NotStarted` | APIPhaseNotStarted means API deployment has not been created<br /> |
+| `Deploying` | APIPhaseDeploying means API is being deployed<br /> |
+| `Ready` | APIPhaseReady means API is ready to serve requests<br /> |
+| `Unhealthy` | APIPhaseUnhealthy means API is deployed but not healthy<br /> |
+| `Error` | APIPhaseError means API deployment failed<br /> |
+
+
+#### APIStatus
+
+
+
+APIStatus provides detailed information about the API service
+
+
+
+_Appears in:_
+- [MCPRegistryStatus](#mcpregistrystatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `phase` _[APIPhase](#apiphase)_ | Phase represents the current API service phase |  | Enum: [NotStarted Deploying Ready Unhealthy Error] <br /> |
+| `message` _string_ | Message provides additional information about the API status |  |  |
+| `endpoint` _string_ | Endpoint is the URL where the API is accessible |  |  |
+| `readySince` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | ReadySince is the timestamp when the API became ready |  |  |
+
+
 #### AuditConfig
 
 
@@ -119,6 +159,26 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name of the environment variable |  | Required: \{\} <br /> |
 | `value` _string_ | Value of the environment variable |  | Required: \{\} <br /> |
+
+
+#### GitSource
+
+
+
+GitSource defines Git repository source configuration
+
+
+
+_Appears in:_
+- [MCPRegistrySource](#mcpregistrysource)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `repository` _string_ | Repository is the Git repository URL (HTTP/HTTPS/SSH) |  | MinLength: 1 <br />Pattern: `^(https?://\|git@\|ssh://\|git://).*` <br />Required: \{\} <br /> |
+| `branch` _string_ | Branch is the Git branch to use (mutually exclusive with Tag and Commit) |  | MinLength: 1 <br /> |
+| `tag` _string_ | Tag is the Git tag to use (mutually exclusive with Branch and Commit) |  | MinLength: 1 <br /> |
+| `commit` _string_ | Commit is the Git commit SHA to use (mutually exclusive with Branch and Tag) |  | MinLength: 1 <br /> |
+| `path` _string_ | Path is the path to the registry file within the repository | registry.json | Pattern: `^.*\.json$` <br /> |
 
 
 #### InlineAuthzConfig
@@ -261,9 +321,10 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type is the type of source (configmap) | configmap | Enum: [configmap] <br /> |
+| `type` _string_ | Type is the type of source (configmap, git) | configmap | Enum: [configmap git] <br /> |
 | `format` _string_ | Format is the data format (toolhive, upstream) | toolhive | Enum: [toolhive upstream] <br /> |
 | `configmap` _[ConfigMapSource](#configmapsource)_ | ConfigMap defines the ConfigMap source configuration<br />Only used when Type is "configmap" |  |  |
+| `git` _[GitSource](#gitsource)_ | Git defines the Git repository source configuration<br />Only used when Type is "git" |  |  |
 
 
 #### MCPRegistrySpec
@@ -283,6 +344,7 @@ _Appears in:_
 | `source` _[MCPRegistrySource](#mcpregistrysource)_ | Source defines the configuration for the registry data source |  | Required: \{\} <br /> |
 | `syncPolicy` _[SyncPolicy](#syncpolicy)_ | SyncPolicy defines the automatic synchronization behavior for the registry.<br />If specified, enables automatic synchronization at the given interval.<br />Manual synchronization is always supported via annotation-based triggers<br />regardless of this setting. |  |  |
 | `filter` _[RegistryFilter](#registryfilter)_ | Filter defines include/exclude patterns for registry content |  |  |
+| `enforceServers` _boolean_ | EnforceServers indicates whether MCPServers in this namespace must have their images<br />present in at least one registry in the namespace. When any registry in the namespace<br />has this field set to true, enforcement is enabled for the entire namespace.<br />MCPServers with images not found in any registry will be rejected.<br />When false (default), MCPServers can be deployed regardless of registry presence. | false |  |
 
 
 #### MCPRegistryStatus
@@ -298,14 +360,10 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `phase` _[MCPRegistryPhase](#mcpregistryphase)_ | Phase represents the current phase of the MCPRegistry |  | Enum: [Pending Ready Failed Syncing Terminating] <br /> |
+| `phase` _[MCPRegistryPhase](#mcpregistryphase)_ | Phase represents the current overall phase of the MCPRegistry<br />Derived from sync and API status |  | Enum: [Pending Ready Failed Syncing Terminating] <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  |  |
-| `lastSyncTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastSyncTime is the timestamp of the last successful sync |  |  |
-| `lastSyncHash` _string_ | LastSyncHash is the hash of the last successfully synced data<br />Used to detect changes in source data |  |  |
-| `serverCount` _integer_ | ServerCount is the total number of servers in the registry |  | Minimum: 0 <br /> |
-| `deployedServerCount` _integer_ | DeployedServerCount is the number of deployed servers with matching labels |  | Minimum: 0 <br /> |
-| `syncAttempts` _integer_ | SyncAttempts is the number of sync attempts since last success |  | Minimum: 0 <br /> |
-| `apiEndpoint` _string_ | APIEndpoint is the URL of the registry API service |  |  |
+| `syncStatus` _[SyncStatus](#syncstatus)_ | SyncStatus provides detailed information about data synchronization |  |  |
+| `apiStatus` _[APIStatus](#apistatus)_ | APIStatus provides detailed information about the API service |  |  |
 | `storageRef` _[StorageReference](#storagereference)_ | StorageRef is a reference to the internal storage location |  |  |
 | `lastManualSyncTrigger` _string_ | LastManualSyncTrigger tracks the last processed manual sync annotation value<br />Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation |  |  |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRegistry's state |  |  |
@@ -812,6 +870,26 @@ _Appears in:_
 | `configMapRef` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core)_ | ConfigMapRef is a reference to a ConfigMap storage<br />Only used when Type is "configmap" |  |  |
 
 
+#### SyncPhase
+
+_Underlying type:_ _string_
+
+SyncPhase represents the data synchronization state
+
+_Validation:_
+- Enum: [Idle Syncing Complete Failed]
+
+_Appears in:_
+- [SyncStatus](#syncstatus)
+
+| Field | Description |
+| --- | --- |
+| `Idle` | SyncPhaseIdle means no sync is needed or scheduled<br /> |
+| `Syncing` | SyncPhaseSyncing means sync is currently in progress<br /> |
+| `Complete` | SyncPhaseComplete means sync completed successfully<br /> |
+| `Failed` | SyncPhaseFailed means sync failed<br /> |
+
+
 #### SyncPolicy
 
 
@@ -829,6 +907,28 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `interval` _string_ | Interval is the sync interval for automatic synchronization (Go duration format)<br />Examples: "1h", "30m", "24h" |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Required: \{\} <br /> |
+
+
+#### SyncStatus
+
+
+
+SyncStatus provides detailed information about data synchronization
+
+
+
+_Appears in:_
+- [MCPRegistryStatus](#mcpregistrystatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `phase` _[SyncPhase](#syncphase)_ | Phase represents the current synchronization phase |  | Enum: [Idle Syncing Complete Failed] <br /> |
+| `message` _string_ | Message provides additional information about the sync status |  |  |
+| `lastAttempt` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastAttempt is the timestamp of the last sync attempt |  |  |
+| `attemptCount` _integer_ | AttemptCount is the number of sync attempts since last success |  | Minimum: 0 <br /> |
+| `lastSyncTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastSyncTime is the timestamp of the last successful sync |  |  |
+| `lastSyncHash` _string_ | LastSyncHash is the hash of the last successfully synced data<br />Used to detect changes in source data |  |  |
+| `serverCount` _integer_ | ServerCount is the total number of servers in the registry |  | Minimum: 0 <br /> |
 
 
 #### TagFilter

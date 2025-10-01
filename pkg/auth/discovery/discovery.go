@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -252,9 +253,16 @@ func DeriveIssuerFromURL(remoteURL string) string {
 		host = fmt.Sprintf("%s:%s", host, port)
 	}
 
+	// For localhost, preserve the original scheme (HTTP or HTTPS)
+	// This supports local development and testing scenarios
+	scheme := networking.HttpsScheme
+	if networking.IsLocalhost(host) && parsedURL.Scheme != "" {
+		scheme = parsedURL.Scheme
+	}
+
 	// General pattern: use the domain as the issuer
 	// This works for most OAuth providers that use their domain as the issuer
-	issuer := fmt.Sprintf("%s://%s", networking.HttpsScheme, host)
+	issuer := fmt.Sprintf("%s://%s", scheme, host)
 
 	logger.Debugf("Derived issuer from URL - remoteURL: %s, issuer: %s", remoteURL, issuer)
 	return issuer
@@ -327,9 +335,20 @@ func DeriveIssuerFromRealm(realm string) string {
 
 	// RFC 8414: The issuer identifier MUST be a URL using the "https" scheme
 	// with no query or fragment components
-	if parsedURL.Scheme != "https" {
+	if parsedURL.Scheme != "https" && !networking.IsLocalhost(parsedURL.Host) {
 		logger.Debugf("Realm is not using HTTPS scheme: %s", realm)
 		return ""
+	}
+
+	// Normalize the path to prevent path traversal attacks
+	if parsedURL.Path != "" {
+		// Clean the path to resolve . and .. elements
+		cleanPath := path.Clean(parsedURL.Path)
+		// Ensure the path doesn't escape the root
+		if !strings.HasPrefix(cleanPath, "/") {
+			cleanPath = "/" + cleanPath
+		}
+		parsedURL.Path = cleanPath
 	}
 
 	if parsedURL.RawQuery != "" || parsedURL.Fragment != "" {

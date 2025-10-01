@@ -4,8 +4,8 @@ on:
   workflow_call:
 
 jobs:
-  docgen:
-    name: Verify Docgen
+  verify-swagger-docs:
+    name: Verify Swagger Documentation
     runs-on: ubuntu-latest
     permissions:
       contents: read

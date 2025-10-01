@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   update-registry:
+    name: Update Registry
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

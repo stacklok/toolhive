@@ -43,7 +43,7 @@ type ProviderOption func(*Config) error
 func WithServiceName(serviceName string) ProviderOption {
 	return func(config *Config) error {
 		if serviceName == "" {
-			return fmt.Errorf("service cannot be empty")
+			return fmt.Errorf("service name cannot be empty")
 		}
 		config.ServiceName = serviceName
 		return nil
@@ -54,7 +54,7 @@ func WithServiceName(serviceName string) ProviderOption {
 func WithServiceVersion(serviceVersion string) ProviderOption {
 	return func(config *Config) error {
 		if serviceVersion == "" {
-			return fmt.Errorf("service cannot be empty")
+			return fmt.Errorf("service version cannot be empty")
 		}
 		config.ServiceVersion = serviceVersion
 		return nil

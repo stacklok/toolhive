@@ -3,7 +3,8 @@ on:
   workflow_call:
 
 jobs:
-  release:
+  release-helm-charts:
+    name: Release Helm Charts
     runs-on: ubuntu-latest
 
     permissions:
@@ -35,7 +36,7 @@ jobs:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -76,14 +77,14 @@ jobs:
           json_array="${json_array}]"
           echo "published_charts_matrix=${json_array}" >> $GITHUB_OUTPUT
 
-  update-docs-website:
-    name: Trigger Docs Update
-    needs: [ release ]
+  update-docs-website-charts:
+    name: Trigger Docs Update for Charts
+    needs: [ release-helm-charts ]
     permissions: {}
     uses: ./.github/workflows/update-docs-website.yml
     strategy:
       matrix:
-        version: ${{ fromJSON(needs.release.outputs.released_charts) }}
+        version: ${{ fromJSON(needs.release-helm-charts.outputs.released_charts) }}
     with:
       version: ${{ matrix.version }}
     secrets:

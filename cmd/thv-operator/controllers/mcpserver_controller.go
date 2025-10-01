@@ -5,6 +5,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	goerr "errors"
 	"fmt"
 	"maps"
 	"os"
@@ -18,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -30,8 +32,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
-	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // MCPServerReconciler reconciles a MCPServer object
@@ -41,6 +43,7 @@ type MCPServerReconciler struct {
 	platformDetector kubernetes.PlatformDetector
 	detectedPlatform kubernetes.Platform
 	platformOnce     sync.Once
+	ImageValidation  validation.ImageValidation
 }
 
 // defaultRBACRules are the default RBAC rules that the
@@ -194,6 +197,47 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Validate MCPServer image against enforcing registries
+	imageValidator := validation.NewImageValidator(r.Client, mcpServer.Namespace, r.ImageValidation)
+	err = imageValidator.ValidateImage(ctx, mcpServer.Spec.Image, mcpServer.ObjectMeta)
+	if goerr.Is(err, validation.ErrImageNotChecked) {
+		ctxLogger.Info("Image validation skipped - no enforcement configured")
+		// Set condition to indicate validation was skipped
+		setImageValidationCondition(mcpServer, metav1.ConditionTrue,
+			mcpv1alpha1.ConditionReasonImageValidationSkipped,
+			"Image validation was not performed (no enforcement configured)")
+	} else if goerr.Is(err, validation.ErrImageInvalid) {
+		ctxLogger.Error(err, "MCPServer image validation failed", "image", mcpServer.Spec.Image)
+		// Update status to reflect validation failure
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		mcpServer.Status.Message = err.Error() // Gets the specific validation failure reason
+		setImageValidationCondition(mcpServer, metav1.ConditionFalse,
+			mcpv1alpha1.ConditionReasonImageValidationFailed,
+			err.Error()) // This will include the wrapped error context with specific reason
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after validation error")
+		}
+		// Requeue after 5 minutes to retry validation
+		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	} else if err != nil {
+		// Other system/infrastructure errors
+		ctxLogger.Error(err, "MCPServer image validation system error", "image", mcpServer.Spec.Image)
+		setImageValidationCondition(mcpServer, metav1.ConditionFalse,
+			mcpv1alpha1.ConditionReasonImageValidationError,
+			fmt.Sprintf("Error checking image validity: %v", err))
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after validation error")
+		}
+		// Requeue after 5 minutes to retry validation
+		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	} else {
+		// Validation passed
+		ctxLogger.Info("Image validation passed", "image", mcpServer.Spec.Image)
+		setImageValidationCondition(mcpServer, metav1.ConditionTrue,
+			mcpv1alpha1.ConditionReasonImageValidationSuccess,
+			"Image validation passed - image found in enforced registries")
+	}
+
 	// Check if the MCPServer instance is marked to be deleted
 	if mcpServer.GetDeletionTimestamp() != nil {
 		// The object is being deleted
@@ -290,7 +334,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	err = r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: mcpServer.Namespace}, service)
 	if err != nil && errors.IsNotFound(err) {
 		// Define a new service
-		svc := r.serviceForMCPServer(mcpServer)
+		svc := r.serviceForMCPServer(ctx, mcpServer)
 		if svc == nil {
 			ctxLogger.Error(nil, "Failed to create Service object")
 			return ctrl.Result{}, fmt.Errorf("failed to create Service object")
@@ -319,7 +363,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Check if the deployment spec changed
-	if r.deploymentNeedsUpdate(deployment, mcpServer) {
+	if r.deploymentNeedsUpdate(ctx, deployment, mcpServer) {
 		// Update the deployment
 		newDeployment := r.deploymentForMCPServer(ctx, mcpServer)
 		deployment.Spec = newDeployment.Spec
@@ -337,7 +381,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Check if the service spec changed
 	if serviceNeedsUpdate(service, mcpServer) {
 		// Update the service
-		newService := r.serviceForMCPServer(mcpServer)
+		newService := r.serviceForMCPServer(ctx, mcpServer)
 		service.Spec.Ports = newService.Spec.Ports
 		err = r.Update(ctx, service)
 		if err != nil {
@@ -349,6 +393,17 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// setImageValidationCondition is a helper function to set the image validation status condition
+// This reduces code duplication in the image validation logic
+func setImageValidationCondition(mcpServer *mcpv1alpha1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+		Type:    mcpv1alpha1.ConditionImageValidated,
+		Status:  status,
+		Reason:  reason,
+		Message: message,
+	})
 }
 
 // handleRestartAnnotation checks if the restart annotation has been updated and triggers a restart if needed
@@ -523,7 +578,7 @@ func (r *MCPServerReconciler) createRBACResource(
 	ctxLogger := log.FromContext(ctx)
 	desired := createResource()
 	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-		logger.Errorf("Failed to set controller reference for %s: %v", resourceType, err)
+		ctxLogger.Error(err, "Failed to set controller reference", "resourceType", resourceType)
 		return nil
 	}
 
@@ -550,7 +605,7 @@ func (r *MCPServerReconciler) updateRBACResourceIfNeeded(
 	ctxLogger := log.FromContext(ctx)
 	desired := createResource()
 	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-		logger.Errorf("Failed to set controller reference for %s: %v", resourceType, err)
+		ctxLogger.Error(err, "Failed to set controller reference", "resourceType", resourceType)
 		return nil
 	}
 
@@ -692,27 +747,53 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	// Prepare container args
 	args := []string{"run", "--foreground=true"}
 
+	// Prepare container volume mounts
+	volumeMounts := []corev1.VolumeMount{}
+	volumes := []corev1.Volume{}
+
 	// Check if global ConfigMap mode is enabled via environment variable
 	useConfigMap := os.Getenv("TOOLHIVE_USE_CONFIGMAP") == trueValue
 	if useConfigMap {
-		// Use the operator-created ConfigMap (format: {name}-runconfig)
-		configMapName := fmt.Sprintf("%s-runconfig", m.Name)
-		configMapRef := fmt.Sprintf("%s/%s", m.Namespace, configMapName)
-		args = append(args, fmt.Sprintf("--from-configmap=%s", configMapRef))
-
-		// Also add pod template patch for secrets (same as regular flags approach)
+		// Also add pod template patch for secrets and service account (same as regular flags approach)
+		// If service account is not specified, use the default MCP server service account
+		serviceAccount := m.Spec.ServiceAccount
+		if serviceAccount == nil {
+			defaultSA := mcpServerServiceAccountName(m.Name)
+			serviceAccount = &defaultSA
+		}
 		finalPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec).
+			WithServiceAccount(serviceAccount).
 			WithSecrets(m.Spec.Secrets).
 			Build()
 		// Add pod template patch if we have one
 		if finalPodTemplateSpec != nil {
 			podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
 			if err != nil {
-				logger.Errorf("Failed to marshal pod template spec: %v", err)
+				ctxLogger := log.FromContext(ctx)
+				ctxLogger.Error(err, "Failed to marshal pod template spec")
 			} else {
 				args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
 			}
 		}
+
+		// Add volume mount for ConfigMap
+		configMapName := fmt.Sprintf("%s-runconfig", m.Name)
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "runconfig",
+			MountPath: "/etc/runconfig",
+			ReadOnly:  true,
+		})
+
+		volumes = append(volumes, corev1.Volume{
+			Name: "runconfig",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: configMapName,
+					},
+				},
+			},
+		})
 	} else {
 		// Use individual configuration flags (existing behavior)
 		args = append(args, fmt.Sprintf("--proxy-port=%d", m.Spec.Port))
@@ -746,7 +827,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		if finalPodTemplateSpec != nil {
 			podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
 			if err != nil {
-				logger.Errorf("Failed to marshal pod template spec: %v", err)
+				ctxLogger := log.FromContext(ctx)
+				ctxLogger.Error(err, "Failed to marshal pod template spec")
 			} else {
 				args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
 			}
@@ -851,10 +933,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 			})
 		}
 	}
-
-	// Prepare container volume mounts
-	volumeMounts := []corev1.VolumeMount{}
-	volumes := []corev1.Volume{}
 
 	// Add volume mounts for user-defined volumes
 	for _, v := range m.Spec.Volumes {
@@ -966,7 +1044,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	proxyRunnerPodSecurityContext := securityBuilder.BuildPodSecurityContext()
 	proxyRunnerContainerSecurityContext := securityBuilder.BuildContainerSecurityContext()
 
-	env = ensureRequiredEnvVars(env)
+	env = ensureRequiredEnvVars(ctx, env)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1034,15 +1112,17 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 
 	// Set MCPServer instance as the owner and controller
 	if err := controllerutil.SetControllerReference(m, dep, r.Scheme); err != nil {
-		logger.Errorf("Failed to set controller reference for Deployment: %v", err)
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Error(err, "Failed to set controller reference for Deployment")
 		return nil
 	}
 	return dep
 }
 
-func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
+func ensureRequiredEnvVars(ctx context.Context, env []corev1.EnvVar) []corev1.EnvVar {
 	// Check for the existence of the XDG_CONFIG_HOME, HOME, TOOLHIVE_RUNTIME, and UNSTRUCTURED_LOGS environment variables
 	// and set them to defaults if they don't exist
+	ctxLogger := log.FromContext(ctx)
 	xdgConfigHomeFound := false
 	homeFound := false
 	toolhiveRuntimeFound := false
@@ -1062,21 +1142,21 @@ func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
 		}
 	}
 	if !xdgConfigHomeFound {
-		logger.Debugf("XDG_CONFIG_HOME not found, setting to /tmp")
+		ctxLogger.V(1).Info("XDG_CONFIG_HOME not found, setting to /tmp")
 		env = append(env, corev1.EnvVar{
 			Name:  "XDG_CONFIG_HOME",
 			Value: "/tmp",
 		})
 	}
 	if !homeFound {
-		logger.Debugf("HOME not found, setting to /tmp")
+		ctxLogger.V(1).Info("HOME not found, setting to /tmp")
 		env = append(env, corev1.EnvVar{
 			Name:  "HOME",
 			Value: "/tmp",
 		})
 	}
 	if !toolhiveRuntimeFound {
-		logger.Debugf("TOOLHIVE_RUNTIME not found, setting to kubernetes")
+		ctxLogger.V(1).Info("TOOLHIVE_RUNTIME not found, setting to kubernetes")
 		env = append(env, corev1.EnvVar{
 			Name:  "TOOLHIVE_RUNTIME",
 			Value: "kubernetes",
@@ -1084,7 +1164,7 @@ func ensureRequiredEnvVars(env []corev1.EnvVar) []corev1.EnvVar {
 	}
 	// Always use structured JSON logs in Kubernetes (not configurable)
 	if !unstructuredLogsFound {
-		logger.Debugf("UNSTRUCTURED_LOGS not found, setting to false for structured JSON logging")
+		ctxLogger.V(1).Info("UNSTRUCTURED_LOGS not found, setting to false for structured JSON logging")
 		env = append(env, corev1.EnvVar{
 			Name:  "UNSTRUCTURED_LOGS",
 			Value: "false",
@@ -1104,7 +1184,7 @@ func createServiceURL(mcpServerName, namespace string, port int32) string {
 }
 
 // serviceForMCPServer returns a MCPServer Service object
-func (r *MCPServerReconciler) serviceForMCPServer(m *mcpv1alpha1.MCPServer) *corev1.Service {
+func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1alpha1.MCPServer) *corev1.Service {
 	ls := labelsForMCPServer(m.Name)
 
 	// we want to generate a service name that is unique for the proxy service
@@ -1144,7 +1224,8 @@ func (r *MCPServerReconciler) serviceForMCPServer(m *mcpv1alpha1.MCPServer) *cor
 
 	// Set MCPServer instance as the owner and controller
 	if err := controllerutil.SetControllerReference(m, svc, r.Scheme); err != nil {
-		logger.Errorf("Failed to set controller reference for Service: %v", err)
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Error(err, "Failed to set controller reference for Service")
 		return nil
 	}
 	return svc
@@ -1256,7 +1337,11 @@ func (r *MCPServerReconciler) finalizeMCPServer(ctx context.Context, m *mcpv1alp
 // deploymentNeedsUpdate checks if the deployment needs to be updated
 //
 //nolint:gocyclo
-func (r *MCPServerReconciler) deploymentNeedsUpdate(deployment *appsv1.Deployment, mcpServer *mcpv1alpha1.MCPServer) bool {
+func (r *MCPServerReconciler) deploymentNeedsUpdate(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+	mcpServer *mcpv1alpha1.MCPServer,
+) bool {
 	// Check if the container args have changed
 	if len(deployment.Spec.Template.Spec.Containers) > 0 {
 		container := deployment.Spec.Template.Spec.Containers[0]
@@ -1371,7 +1456,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(deployment *appsv1.Deploymen
 			}
 		}
 		// Add default environment variables that are always injected
-		expectedProxyEnv = ensureRequiredEnvVars(expectedProxyEnv)
+		expectedProxyEnv = ensureRequiredEnvVars(ctx, expectedProxyEnv)
 		if !reflect.DeepEqual(container.Env, expectedProxyEnv) {
 			return true
 		}
@@ -1401,7 +1486,8 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(deployment *appsv1.Deploymen
 		if expectedPodTemplateSpec != nil {
 			expectedPatch, err := json.Marshal(expectedPodTemplateSpec)
 			if err != nil {
-				logger.Errorf("Failed to marshal expected pod template spec: %v", err)
+				ctxLogger := log.FromContext(ctx)
+				ctxLogger.Error(err, "Failed to marshal expected pod template spec")
 				return true // Assume change if we can't marshal
 			}
 			expectedPatchString := string(expectedPatch)
@@ -1705,7 +1791,7 @@ func (r *MCPServerReconciler) generateOIDCArgs(ctx context.Context, m *mcpv1alph
 
 	switch m.Spec.OIDCConfig.Type {
 	case mcpv1alpha1.OIDCConfigTypeKubernetes:
-		args = append(args, r.generateKubernetesOIDCArgs(m)...)
+		args = append(args, r.generateKubernetesOIDCArgs(ctx, m)...)
 	case mcpv1alpha1.OIDCConfigTypeConfigMap:
 		args = append(args, r.generateConfigMapOIDCArgs(ctx, m)...)
 	case mcpv1alpha1.OIDCConfigTypeInline:
@@ -1716,13 +1802,14 @@ func (r *MCPServerReconciler) generateOIDCArgs(ctx context.Context, m *mcpv1alph
 }
 
 // generateKubernetesOIDCArgs generates OIDC args for Kubernetes service account token validation
-func (*MCPServerReconciler) generateKubernetesOIDCArgs(m *mcpv1alpha1.MCPServer) []string {
+func (*MCPServerReconciler) generateKubernetesOIDCArgs(ctx context.Context, m *mcpv1alpha1.MCPServer) []string {
 	var args []string
 	config := m.Spec.OIDCConfig.Kubernetes
 
 	// Set defaults if config is nil
 	if config == nil {
-		logger.Infof("Kubernetes OIDCConfig is nil for MCPServer %s, using default configuration", m.Name)
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Info("Kubernetes OIDCConfig is nil, using default configuration", "mcpServer", m.Name)
 		defaultUseClusterAuth := true
 		config = &mcpv1alpha1.KubernetesOIDCConfig{
 			UseClusterAuth: &defaultUseClusterAuth, // Default to true
@@ -1804,7 +1891,8 @@ func (r *MCPServerReconciler) generateConfigMapOIDCArgs( // nolint:gocyclo
 		Namespace: m.Namespace,
 	}, configMap)
 	if err != nil {
-		logger.Errorf("Failed to get ConfigMap %s: %v", config.Name, err)
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Error(err, "Failed to get ConfigMap", "configMapName", config.Name)
 		return args
 	}
 

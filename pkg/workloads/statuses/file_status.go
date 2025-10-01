@@ -19,7 +19,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/state"
-	"github.com/stacklok/toolhive/pkg/transport/proxy"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
@@ -114,6 +113,7 @@ type workloadStatusFile struct {
 
 // GetWorkload retrieves the status of a workload by its name.
 func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string) (core.Workload, error) {
+	var pid int
 	result := core.Workload{Name: workloadName}
 	fileFound := false
 
@@ -152,6 +152,8 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 			}
 		}
 
+		pid = statusFile.ProcessID
+
 		return nil
 	})
 	if err != nil {
@@ -172,7 +174,7 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 
 		// If workload is running, validate against runtime
 		if result.Status == rt.WorkloadStatusRunning {
-			return f.validateRunningWorkload(ctx, workloadName, result)
+			return f.validateRunningWorkload(ctx, workloadName, result, pid)
 		}
 
 		// Return file data
@@ -197,7 +199,7 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 	}
 
 	// Get workloads from files
-	fileWorkloads, err := f.getWorkloadsFromFiles()
+	fileWorkloadsWithPID, err := f.getWorkloadsFromFiles()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get workloads from files: %w", err)
 	}
@@ -205,14 +207,14 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 	// TODO: Fetch the runconfig if present to populate additional fields like package, tool type, group etc.
 	// There's currently an import cycle between this package and the runconfig package
 
-	for _, fileWorkload := range fileWorkloads {
-		if fileWorkload.Remote { // Remote workloads are not managed by the container runtime
-			delete(fileWorkloads, fileWorkload.Name) // Skip remote workloads here, we add them in workload manager
+	for _, fileWorkload := range fileWorkloadsWithPID {
+		if fileWorkload.workload.Remote { // Remote workloads are not managed by the container runtime
+			delete(fileWorkloadsWithPID, fileWorkload.workload.Name) // Skip remote workloads here, we add them in workload manager
 		}
 	}
 
 	// Create a map of runtime workloads by name for easy lookup
-	workloadMap := f.mergeRuntimeAndFileWorkloads(ctx, runtimeContainers, fileWorkloads)
+	workloadMap := f.mergeRuntimeAndFileWorkloads(ctx, runtimeContainers, fileWorkloadsWithPID)
 
 	// Convert map to slice and apply filters
 	var workloads []core.Workload
@@ -368,6 +370,37 @@ func (f *fileStatusManager) SetWorkloadPID(ctx context.Context, workloadName str
 // This method will do nothing if the workload does not exist.
 func (f *fileStatusManager) ResetWorkloadPID(ctx context.Context, workloadName string) error {
 	return f.SetWorkloadPID(ctx, workloadName, 0)
+}
+
+// GetWorkloadPID retrieves the PID of a workload from its status file.
+func (f *fileStatusManager) GetWorkloadPID(ctx context.Context, workloadName string) (int, error) {
+	var pid int
+
+	err := f.withFileReadLock(ctx, workloadName, func(statusFilePath string) error {
+		// Check if file exists
+		if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
+			// File doesn't exist, return 0
+			pid = 0
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("failed to check status file for workload %s: %w", workloadName, err)
+		}
+
+		statusFile, err := f.readStatusFile(statusFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to read status file for workload %s: %w", workloadName, err)
+		}
+
+		pid = statusFile.ProcessID
+		return nil
+	})
+
+	if err != nil {
+		return 0, err
+	}
+
+	logger.Debugf("workload %s PID retrieved: %d", workloadName, pid)
+	return pid, nil
 }
 
 // migratePIDFromFile migrates PID from legacy PID file to status file if needed.
@@ -550,16 +583,17 @@ func (f *fileStatusManager) getWorkloadFromRuntime(ctx context.Context, workload
 		return core.Workload{}, fmt.Errorf("failed to get workload info from runtime: %w", err)
 	}
 
-	// Verify exact name match to prevent Docker prefix matching false positives
-	if info.Name != workloadName {
-		return core.Workload{}, rt.ErrWorkloadNotFound
-	}
-
 	return types.WorkloadFromContainerInfo(&info)
 }
 
+// workloadWithPID holds a workload and its associated PID for internal processing
+type workloadWithPID struct {
+	workload core.Workload
+	pid      int
+}
+
 // getWorkloadsFromFiles retrieves all workloads from status files.
-func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, error) {
+func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]workloadWithPID, error) {
 	// Ensure base directory exists
 	if err := f.ensureBaseDir(); err != nil {
 		return nil, fmt.Errorf("failed to ensure base directory: %w", err)
@@ -571,7 +605,7 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 		return nil, fmt.Errorf("failed to list status files: %w", err)
 	}
 
-	workloads := make(map[string]core.Workload)
+	workloads := make(map[string]workloadWithPID)
 	ctx := context.Background() // Create context for file locking
 
 	for _, file := range files {
@@ -619,6 +653,7 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 			}
 
 			// Check if PID migration is needed
+			pid := statusFile.ProcessID
 			if statusFile.Status == rt.WorkloadStatusRunning && statusFile.ProcessID == 0 {
 				// Try PID migration - the migration function will handle cases
 				// where container info is not available gracefully
@@ -626,6 +661,7 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 					// Update the status file with the migrated PID
 					statusFile.ProcessID = migratedPID
 					statusFile.UpdatedAt = time.Now()
+					pid = migratedPID
 					if err := f.writeStatusFile(statusFilePath, *statusFile); err != nil {
 						logger.Warnf("failed to write migrated PID for workload %s: %v", workloadName, err)
 					} else {
@@ -634,7 +670,10 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 				}
 			}
 
-			workloads[workloadName] = workload
+			workloads[workloadName] = workloadWithPID{
+				workload: workload,
+				pid:      pid,
+			}
 			return nil
 		})
 
@@ -652,7 +691,7 @@ func (f *fileStatusManager) getWorkloadsFromFiles() (map[string]core.Workload, e
 // validateRunningWorkload validates that a workload marked as running in the file
 // is actually running in the runtime and has a healthy proxy process if applicable.
 func (f *fileStatusManager) validateRunningWorkload(
-	ctx context.Context, workloadName string, result core.Workload,
+	ctx context.Context, workloadName string, result core.Workload, pid int,
 ) (core.Workload, error) {
 	// For remote workloads, we don't need to validate against the container runtime
 	// since they don't have containers
@@ -672,7 +711,7 @@ func (f *fileStatusManager) validateRunningWorkload(
 	}
 
 	// Check if proxy process is running when workload is running
-	if unhealthyWorkload, isUnhealthy := f.checkProxyHealth(ctx, workloadName, result, containerInfo); isUnhealthy {
+	if unhealthyWorkload, isUnhealthy := f.isProxyUnhealthy(ctx, workloadName, result, containerInfo, pid); isUnhealthy {
 		return unhealthyWorkload, nil
 	}
 
@@ -727,10 +766,10 @@ func (f *fileStatusManager) handleRuntimeMissing(
 	return fileWorkload, nil
 }
 
-// checkProxyHealth checks if the proxy process is running for the workload.
+// isProxyUnhealthy checks if the proxy process is running for the workload.
 // Returns (unhealthyWorkload, true) if proxy is not running, (emptyWorkload, false) if proxy is healthy or not applicable.
-func (f *fileStatusManager) checkProxyHealth(
-	ctx context.Context, workloadName string, result core.Workload, containerInfo rt.ContainerInfo,
+func (f *fileStatusManager) isProxyUnhealthy(
+	ctx context.Context, workloadName string, result core.Workload, containerInfo rt.ContainerInfo, pid int,
 ) (core.Workload, bool) {
 	// Use original container labels (before filtering) to get base name
 	baseName := labels.GetContainerBaseName(containerInfo.Labels)
@@ -738,8 +777,10 @@ func (f *fileStatusManager) checkProxyHealth(
 		return core.Workload{}, false // No proxy check needed
 	}
 
-	proxyRunning := proxy.IsRunning(baseName)
-	if proxyRunning {
+	proxyRunning, err := process.FindProcess(pid)
+	if err != nil {
+		logger.Warnf("unable to find process %d: %v", pid, err)
+	} else if proxyRunning {
 		return core.Workload{}, false // Proxy is healthy
 	}
 
@@ -780,7 +821,7 @@ func (*fileStatusManager) mergeHealthyWorkloadData(containerInfo rt.ContainerInf
 // validateWorkloadInList validates a workload during list operations, similar to validateRunningWorkload
 // but with different error handling to avoid disrupting the entire list operation.
 func (f *fileStatusManager) validateWorkloadInList(
-	ctx context.Context, workloadName string, fileWorkload core.Workload, containerInfo rt.ContainerInfo,
+	ctx context.Context, workloadName string, fileWorkload core.Workload, containerInfo rt.ContainerInfo, pid int,
 ) (core.Workload, error) {
 	// Only validate if file shows running status
 	if fileWorkload.Status != rt.WorkloadStatusRunning {
@@ -802,7 +843,7 @@ func (f *fileStatusManager) validateWorkloadInList(
 	}
 
 	// Check if proxy process is running when workload is running
-	if unhealthyWorkload, isUnhealthy := f.checkProxyHealth(ctx, workloadName, fileWorkload, containerInfo); isUnhealthy {
+	if unhealthyWorkload, isUnhealthy := f.isProxyUnhealthy(ctx, workloadName, fileWorkload, containerInfo, pid); isUnhealthy {
 		return unhealthyWorkload, nil
 	}
 
@@ -814,7 +855,7 @@ func (f *fileStatusManager) validateWorkloadInList(
 func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 	ctx context.Context,
 	runtimeContainers []rt.ContainerInfo,
-	fileWorkloads map[string]core.Workload,
+	fileWorkloadsWithPID map[string]workloadWithPID,
 ) map[string]core.Workload {
 	runtimeWorkloadMap := make(map[string]rt.ContainerInfo)
 	for _, container := range runtimeContainers {
@@ -845,14 +886,16 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 	}
 
 	// Then, merge with file workloads, validating running workloads
-	for name, fileWorkload := range fileWorkloads {
+	for name, fileWorkloadWithPID := range fileWorkloadsWithPID {
+		fileWorkload := fileWorkloadWithPID.workload
+		pid := fileWorkloadWithPID.pid
 
 		if fileWorkload.Remote { // Remote workloads are not managed by the container runtime
 			continue // Skip remote workloads here, we add them in workload manager
 		}
 		if runtimeContainer, exists := runtimeWorkloadMap[name]; exists {
 			// Validate running workloads similar to GetWorkload
-			validatedWorkload, err := f.validateWorkloadInList(ctx, name, fileWorkload, runtimeContainer)
+			validatedWorkload, err := f.validateWorkloadInList(ctx, name, fileWorkload, runtimeContainer, pid)
 			if err != nil {
 				logger.Warnf("failed to validate workload %s in list: %v", name, err)
 				// Fall back to basic merge without validation
@@ -874,8 +917,9 @@ func (f *fileStatusManager) mergeRuntimeAndFileWorkloads(
 			if err != nil {
 				logger.Warnf("failed to handle missing runtime for workload %s: %v", name, err)
 				workloadMap[name] = fileWorkload
+			} else {
+				workloadMap[name] = updatedWorkload
 			}
-			workloadMap[name] = updatedWorkload
 		}
 	}
 	return workloadMap

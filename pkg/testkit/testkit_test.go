@@ -1,10 +1,7 @@
 package testkit
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,29 +25,19 @@ func TestSSEServerEndpoints(t *testing.T) {
 		require.NoError(t, err)
 		defer server.Close()
 
-		sseBody, err := client.ToolsList()
+		data, err := client.ToolsList()
 		require.NoError(t, err)
-		scanner := bufio.NewScanner(bytes.NewReader([]byte(sseBody)))
 
-		for scanner.Scan() {
-			require.NoError(t, scanner.Err())
+		var result map[string]any
+		err = json.Unmarshal([]byte(data), &result)
+		require.NoError(t, err)
+		assert.Equal(t, "2.0", result["jsonrpc"])
+		assert.Equal(t, float64(1), result["id"])
 
-			// Check that the SSE response contains the tools/list response
-			data, ok := strings.CutPrefix(scanner.Text(), "data:")
-			if ok {
-				var result map[string]any
-				err = json.Unmarshal([]byte(data), &result)
-				require.NoError(t, err)
-				assert.Equal(t, "2.0", result["jsonrpc"])
-				assert.Equal(t, float64(1), result["id"])
-
-				// Check that it's a tools/list response
-				toolCall, ok := result["result"].(map[string]any)
-				require.True(t, ok, "Result should contain result array")
-				assert.Len(t, toolCall["tools"], 1, "Should have one tool")
-				return
-			}
-		}
+		// Check that it's a tools/list response
+		toolCall, ok := result["result"].(map[string]any)
+		require.True(t, ok, "Result should contain result array")
+		assert.Len(t, toolCall["tools"], 1, "Should have one tool")
 	})
 
 	t.Run("sse text/event-stream tools/call", func(t *testing.T) {

@@ -3,7 +3,6 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"testing"
 
@@ -153,9 +152,6 @@ func TestNewListToolsMappingMiddleware_Scenarios(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, response.Result)
 			require.NotNil(t, response.Result.Tools)
-
-			fmt.Println(response.Result.Tools)
-			fmt.Println(tt.expected)
 
 			if tt.expected != nil {
 				for _, expected := range *tt.expected {

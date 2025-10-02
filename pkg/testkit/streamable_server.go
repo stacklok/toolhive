@@ -16,7 +16,6 @@ import (
 
 const (
 	toolsListRequest = `{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}`
-	// toolsCallRequest = `{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "test"}}`
 )
 
 // streamableServer provides a test server with /mcp-json and /mcp-sse endpoints
@@ -125,12 +124,7 @@ func (s *streamableEventStreamClient) ToolsList() ([]byte, error) {
 			}
 
 			if data, ok := bytes.CutPrefix(lineScanner.Bytes(), []byte("data:")); ok {
-				var result map[string]any
-				err := json.Unmarshal([]byte(data), &result)
-				if err != nil {
-					return nil, err
-				}
-				return []byte(data), nil
+				return data, nil
 			}
 		}
 	}

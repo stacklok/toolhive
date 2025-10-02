@@ -134,12 +134,7 @@ func (s *sseEventStreamClient) ToolsCall(name string) ([]byte, error) {
 			}
 
 			if data, ok := bytes.CutPrefix(lineScanner.Bytes(), []byte("data:")); ok {
-				var result map[string]any
-				err := json.Unmarshal([]byte(data), &result)
-				if err != nil {
-					return nil, err
-				}
-				return []byte(data), nil
+				return data, nil
 			}
 		}
 	}

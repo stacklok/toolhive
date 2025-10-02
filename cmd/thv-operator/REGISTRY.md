@@ -464,7 +464,7 @@ spec:
 
 ## See Also
 
-- [MCPServer Documentation](README.md#mcpserver-spec)
+- [MCPServer Documentation](README.md#usage)
 - [Operator Installation](../../docs/kind/deploying-toolhive-operator.md)
 - [Registry Examples](../../examples/operator/mcp-registries/)
 - [Registry Schema](../../pkg/registry/data/schema.json)

@@ -38,7 +38,7 @@ func newVersionCmd() *cobra.Command {
 	// If --json is set, override the format
 	cmd.PreRun = func(_ *cobra.Command, _ []string) {
 		if jsonOutput {
-			outputFormat = "json"
+			outputFormat = FormatJSON
 		}
 	}
 

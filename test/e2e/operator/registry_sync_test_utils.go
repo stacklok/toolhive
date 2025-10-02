@@ -144,6 +144,33 @@ func CreateMCPRegistryManualOnly(name, namespace, displayName, configMapName str
 	}
 }
 
+// CreateMCPRegistryWithGitSource creates an MCPRegistry with Git source and automatic sync policy
+func CreateMCPRegistryWithGitSource(
+	name, namespace, displayName, repository,
+	branch, path, interval string) *mcpv1alpha1.MCPRegistry {
+	return &mcpv1alpha1.MCPRegistry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPRegistrySpec{
+			DisplayName: displayName,
+			Source: mcpv1alpha1.MCPRegistrySource{
+				Type:   mcpv1alpha1.RegistrySourceTypeGit,
+				Format: mcpv1alpha1.RegistryFormatToolHive,
+				Git: &mcpv1alpha1.GitSource{
+					Repository: repository,
+					Branch:     branch,
+					Path:       path,
+				},
+			},
+			SyncPolicy: &mcpv1alpha1.SyncPolicy{
+				Interval: interval,
+			},
+		},
+	}
+}
+
 // AddManualSyncTrigger adds a manual sync trigger annotation to an MCPRegistry
 func AddManualSyncTrigger(mcpRegistry *mcpv1alpha1.MCPRegistry, triggerValue string, syncTriggerAnnotation string) {
 	if mcpRegistry.Annotations == nil {

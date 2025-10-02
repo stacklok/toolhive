@@ -97,6 +97,54 @@ func (rb *RegistryBuilder) WithLabel(key, value string) *RegistryBuilder {
 	return rb
 }
 
+// WithNameIncludeFilter sets name include patterns for filtering
+func (rb *RegistryBuilder) WithNameIncludeFilter(patterns []string) *RegistryBuilder {
+	if rb.registry.Spec.Filter == nil {
+		rb.registry.Spec.Filter = &mcpv1alpha1.RegistryFilter{}
+	}
+	if rb.registry.Spec.Filter.NameFilters == nil {
+		rb.registry.Spec.Filter.NameFilters = &mcpv1alpha1.NameFilter{}
+	}
+	rb.registry.Spec.Filter.NameFilters.Include = patterns
+	return rb
+}
+
+// WithNameExcludeFilter sets name exclude patterns for filtering
+func (rb *RegistryBuilder) WithNameExcludeFilter(patterns []string) *RegistryBuilder {
+	if rb.registry.Spec.Filter == nil {
+		rb.registry.Spec.Filter = &mcpv1alpha1.RegistryFilter{}
+	}
+	if rb.registry.Spec.Filter.NameFilters == nil {
+		rb.registry.Spec.Filter.NameFilters = &mcpv1alpha1.NameFilter{}
+	}
+	rb.registry.Spec.Filter.NameFilters.Exclude = patterns
+	return rb
+}
+
+// WithTagIncludeFilter sets tag include patterns for filtering
+func (rb *RegistryBuilder) WithTagIncludeFilter(tags []string) *RegistryBuilder {
+	if rb.registry.Spec.Filter == nil {
+		rb.registry.Spec.Filter = &mcpv1alpha1.RegistryFilter{}
+	}
+	if rb.registry.Spec.Filter.Tags == nil {
+		rb.registry.Spec.Filter.Tags = &mcpv1alpha1.TagFilter{}
+	}
+	rb.registry.Spec.Filter.Tags.Include = tags
+	return rb
+}
+
+// WithTagExcludeFilter sets tag exclude patterns for filtering
+func (rb *RegistryBuilder) WithTagExcludeFilter(tags []string) *RegistryBuilder {
+	if rb.registry.Spec.Filter == nil {
+		rb.registry.Spec.Filter = &mcpv1alpha1.RegistryFilter{}
+	}
+	if rb.registry.Spec.Filter.Tags == nil {
+		rb.registry.Spec.Filter.Tags = &mcpv1alpha1.TagFilter{}
+	}
+	rb.registry.Spec.Filter.Tags.Exclude = tags
+	return rb
+}
+
 // Build returns the constructed MCPRegistry
 func (rb *RegistryBuilder) Build() *mcpv1alpha1.MCPRegistry {
 	return rb.registry.DeepCopy()

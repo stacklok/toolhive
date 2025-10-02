@@ -20,10 +20,17 @@ Export a workload's run configuration to a file for sharing or backup.
 The exported configuration can be used with 'thv run --from-config <path>' to recreate
 the same workload with identical settings.
 
+You can export in different formats:
+- json: Export as RunConfig JSON (default, can be used with 'thv run --from-config')
+- k8s: Export as Kubernetes MCPServer resource YAML
+
 Examples:
 
-	# Export a workload configuration to a file
+	# Export a workload configuration to a JSON file
 	thv export my-server ./my-server-config.json
+
+	# Export as Kubernetes MCPServer resource
+	thv export my-server ./my-server.yaml --format k8s
 
 	# Export to a specific directory
 	thv export github-mcp /tmp/configs/github-config.json
@@ -35,7 +42,8 @@ thv export <workload name> <path> [flags]
 ### Options
 
 ```
-  -h, --help   help for export
+      --format string   Export format: json or k8s (default "json")
+  -h, --help            help for export
 ```
 
 ### Options inherited from parent commands

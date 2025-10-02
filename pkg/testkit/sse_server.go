@@ -1,7 +1,10 @@
 package testkit
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +21,7 @@ type sseServer struct {
 	middlewares       []func(http.Handler) http.Handler
 	toolsListResponse string
 	tools             map[string]tooldef
+	clientType        clientType
 }
 
 var _ TestMCPServer = (*sseServer)(nil)
@@ -41,11 +45,113 @@ func (s *sseServer) AddTool(tool tooldef) error {
 	return nil
 }
 
+func (s *sseServer) SetClientType(clientType clientType) error {
+	if s.clientType != "" {
+		return fmt.Errorf("client type already set")
+	}
+	s.clientType = clientType
+	return nil
+}
+
+type sseEventStreamClient struct {
+	server         *httptest.Server
+	commandChannel chan []byte
+}
+
+var _ TestMCPClient = (*sseEventStreamClient)(nil)
+
+func (s *sseEventStreamClient) ToolsList() ([]byte, error) {
+	client := s.server.Client()
+
+	resp, err := client.Post(s.server.URL+"/command", "application/json", bytes.NewBufferString(toolsListRequest))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	_, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	body := <-s.commandChannel
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner.Split(NewSplitSSE(LFSep))
+
+	for scanner.Scan() {
+		if scanner.Err() != nil {
+			return nil, scanner.Err()
+		}
+
+		lineScanner := bufio.NewScanner(bytes.NewReader(scanner.Bytes()))
+		for lineScanner.Scan() {
+			if lineScanner.Err() != nil {
+				return nil, lineScanner.Err()
+			}
+
+			if data, ok := bytes.CutPrefix(lineScanner.Bytes(), []byte("data:")); ok {
+				var result map[string]any
+				err := json.Unmarshal([]byte(data), &result)
+				if err != nil {
+					return nil, err
+				}
+				return data, nil
+			}
+		}
+	}
+
+	return nil, errors.New("no data found")
+}
+
+func (s *sseEventStreamClient) ToolsCall(name string) ([]byte, error) {
+	client := s.server.Client()
+
+	toolsCallRequest := fmt.Sprintf(`{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "%s"}}`, name)
+	resp, err := client.Post(s.server.URL+"/command", "application/json", bytes.NewBufferString(toolsCallRequest))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	_, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	body := <-s.commandChannel
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner.Split(NewSplitSSE(LFSep))
+
+	for scanner.Scan() {
+		if scanner.Err() != nil {
+			return nil, scanner.Err()
+		}
+
+		lineScanner := bufio.NewScanner(bytes.NewReader(scanner.Bytes()))
+		for lineScanner.Scan() {
+			if lineScanner.Err() != nil {
+				return nil, lineScanner.Err()
+			}
+
+			if data, ok := bytes.CutPrefix(lineScanner.Bytes(), []byte("data:")); ok {
+				var result map[string]any
+				err := json.Unmarshal([]byte(data), &result)
+				if err != nil {
+					return nil, err
+				}
+				return []byte(data), nil
+			}
+		}
+	}
+
+	return nil, errors.New("no data found")
+}
+
 // NewSSETestServer creates a new SSE server, wraps it
 // in an `httptest.Server`, and returns it.
 func NewSSETestServer(
 	options ...TestMCPServerOption,
-) (*httptest.Server, error) {
+) (*httptest.Server, TestMCPClient, error) {
 	commandChannel := make(chan string, 10)
 
 	server := &sseServer{
@@ -54,7 +160,7 @@ func NewSSETestServer(
 
 	for _, option := range options {
 		if err := option(server); err != nil {
-			return nil, fmt.Errorf("failed to apply option: %w", err)
+			return nil, nil, fmt.Errorf("failed to apply option: %w", err)
 		}
 	}
 
@@ -78,7 +184,40 @@ func NewSSETestServer(
 	router.Post("/command", server.commandHandler)
 	router.Get("/sse", server.sseHandler)
 
-	return httptest.NewServer(router), nil
+	httpServer := httptest.NewServer(router)
+
+	clientCommandChannel := make(chan []byte, 1)
+	go func() {
+		defer close(clientCommandChannel)
+
+		resp, err := httpServer.Client().Get(httpServer.URL + "/sse")
+		if err != nil {
+			return
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return
+		}
+
+		clientCommandChannel <- body
+	}()
+
+	switch server.clientType {
+	case clientTypeJSON:
+		return nil, nil, fmt.Errorf("client type JSON not supported for SSE server")
+	case clientTypeSSE:
+		return httpServer, &sseEventStreamClient{
+			server:         httpServer,
+			commandChannel: clientCommandChannel,
+		}, nil
+	default:
+		return httpServer, &sseEventStreamClient{
+			server:         httpServer,
+			commandChannel: clientCommandChannel,
+		}, nil
+	}
 }
 
 func (s *sseServer) commandHandler(w http.ResponseWriter, r *http.Request) {

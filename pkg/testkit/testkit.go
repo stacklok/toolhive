@@ -21,22 +21,34 @@ import (
 	"net/http"
 )
 
-// Implementation note: this framework is work in progress, and in order to
-// make it easier to write tests using this framework we really need to provide
-// the developer not just with servers, but with clients as well.
-//
-// Ideally, clients would expose high-level functions that reflect protocol
-// operations, like `Initialize()`, `ListTools()`, `CallTool("foo")`, and so on.
-//
-// The reason clients were not added on the first iteration is because
-// SSE transport and Streamable-HTTP transport are very different, and
-// SSE clients need to first issue an HTTP GET on the SSE endpoint _before_
-// issuing the first command, while Streamable-HTTP can just fire off the command.
-
 const (
 	toolsListMethod = "tools/list"
 	toolsCallMethod = "tools/call"
 )
+
+type clientType string
+
+const (
+	clientTypeJSON clientType = "application/json"
+	clientTypeSSE  clientType = "text/event-stream"
+)
+
+// TestMCPClient is the common interface that test MCP clients must implement.
+// Client implementations are expected to abstract the underlying transport so
+// that responses coming from the same TCP stream or from different ones are
+// treated the same.
+type TestMCPClient interface {
+	// ToolsList returns the tools list response for the client.
+	// Client implementations are expected to strip any non-JSON payloads
+	// from the response, i.e. just return the JSON payload after a
+	// `data:` prefix.
+	ToolsList() ([]byte, error)
+	// ToolsCall returns the tool call response for the client.
+	// Client implementations are expected to strip any non-JSON payloads
+	// from the response, i.e. just return the JSON payload after a
+	// `data:` prefix.
+	ToolsCall(name string) ([]byte, error)
+}
 
 // TestMCPServer is the common interface that test MCP servers must implement.
 // This allows having a single set of options for all test MCP servers,
@@ -44,6 +56,7 @@ const (
 type TestMCPServer interface {
 	SetMiddlewares(middlewares ...func(http.Handler) http.Handler) error
 	AddTool(tool tooldef) error
+	SetClientType(clientType clientType) error
 }
 
 // TestMCPServerOption is a function that can be used to configure a test MCP server.
@@ -76,6 +89,22 @@ func WithTool(name string, description string, handler func() string) TestMCPSer
 			Description: description,
 			Handler:     handler,
 		})
+	}
+}
+
+// WithJSONClientType configures the test MCP server to provide a client calling
+// endpoints that return application/json responses.
+func WithJSONClientType() TestMCPServerOption {
+	return func(s TestMCPServer) error {
+		return s.SetClientType(clientTypeJSON)
+	}
+}
+
+// WithSSEClientType configures the test MCP server to provide a client calling
+// endpoints that return text/event-stream responses.
+func WithSSEClientType() TestMCPServerOption {
+	return func(s TestMCPServer) error {
+		return s.SetClientType(clientTypeSSE)
 	}
 }
 

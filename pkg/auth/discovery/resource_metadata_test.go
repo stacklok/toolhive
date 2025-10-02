@@ -11,8 +11,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/auth"
 )
 
 func TestFetchResourceMetadata(t *testing.T) {
@@ -24,11 +22,11 @@ func TestFetchResourceMetadata(t *testing.T) {
 		serverStatus   int
 		contentType    string
 		expectedError  bool
-		validateFunc   func(*testing.T, *auth.RFC9728AuthInfo)
+		validateFunc   func(*testing.T, *RFC9728AuthInfo)
 	}{
 		{
 			name: "valid resource metadata",
-			serverResponse: auth.RFC9728AuthInfo{
+			serverResponse: RFC9728AuthInfo{
 				Resource:               "https://resource.example.com",
 				AuthorizationServers:   []string{"https://auth.example.com"},
 				ScopesSupported:        []string{"read", "write"},
@@ -37,7 +35,7 @@ func TestFetchResourceMetadata(t *testing.T) {
 			serverStatus:  http.StatusOK,
 			contentType:   "application/json",
 			expectedError: false,
-			validateFunc: func(t *testing.T, metadata *auth.RFC9728AuthInfo) {
+			validateFunc: func(t *testing.T, metadata *RFC9728AuthInfo) {
 				t.Helper()
 
 				assert.Equal(t, "https://resource.example.com", metadata.Resource)
@@ -47,7 +45,7 @@ func TestFetchResourceMetadata(t *testing.T) {
 		},
 		{
 			name: "metadata with multiple authorization servers",
-			serverResponse: auth.RFC9728AuthInfo{
+			serverResponse: RFC9728AuthInfo{
 				Resource: "https://resource.example.com",
 				AuthorizationServers: []string{
 					"https://auth1.example.com",
@@ -57,7 +55,7 @@ func TestFetchResourceMetadata(t *testing.T) {
 			serverStatus:  http.StatusOK,
 			contentType:   "application/json",
 			expectedError: false,
-			validateFunc: func(t *testing.T, metadata *auth.RFC9728AuthInfo) {
+			validateFunc: func(t *testing.T, metadata *RFC9728AuthInfo) {
 				t.Helper()
 
 				assert.Len(t, metadata.AuthorizationServers, 2)

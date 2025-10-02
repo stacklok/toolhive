@@ -145,58 +145,51 @@ func TestNewFlow(t *testing.T) {
 
 func TestGeneratePKCEParams(t *testing.T) {
 	t.Parallel()
-	flow := &Flow{}
 
-	err := flow.generatePKCEParams()
+	params1, err := GeneratePKCEParams()
 	require.NoError(t, err)
 
 	// Verify code verifier is generated and valid
-	assert.NotEmpty(t, flow.codeVerifier)
-	decoded, err := base64.RawURLEncoding.DecodeString(flow.codeVerifier)
+	assert.NotEmpty(t, params1.CodeVerifier)
+	decoded, err := base64.RawURLEncoding.DecodeString(params1.CodeVerifier)
 	require.NoError(t, err, "code verifier should be valid base64")
 	assert.Len(t, decoded, 32, "code verifier should be 32 bytes when decoded")
 
 	// Verify code challenge is generated and valid
-	assert.NotEmpty(t, flow.codeChallenge)
-	_, err = base64.RawURLEncoding.DecodeString(flow.codeChallenge)
+	assert.NotEmpty(t, params1.CodeChallenge)
+	_, err = base64.RawURLEncoding.DecodeString(params1.CodeChallenge)
 	require.NoError(t, err, "code challenge should be valid base64")
 
 	// Verify code challenge is correctly computed (S256 method)
-	hash := sha256.Sum256([]byte(flow.codeVerifier))
+	hash := sha256.Sum256([]byte(params1.CodeVerifier))
 	expectedChallenge := base64.RawURLEncoding.EncodeToString(hash[:])
-	assert.Equal(t, expectedChallenge, flow.codeChallenge, "code challenge should be S256 hash of verifier")
+	assert.Equal(t, expectedChallenge, params1.CodeChallenge, "code challenge should be S256 hash of verifier")
 
 	// Test that multiple calls generate different values (security requirement)
-	originalVerifier := flow.codeVerifier
-	originalChallenge := flow.codeChallenge
-
-	err = flow.generatePKCEParams()
+	params2, err := GeneratePKCEParams()
 	require.NoError(t, err)
 
-	assert.NotEqual(t, originalVerifier, flow.codeVerifier, "code verifier should be different on each call")
-	assert.NotEqual(t, originalChallenge, flow.codeChallenge, "code challenge should be different on each call")
+	assert.NotEqual(t, params1.CodeVerifier, params2.CodeVerifier, "code verifier should be different on each call")
+	assert.NotEqual(t, params1.CodeChallenge, params2.CodeChallenge, "code challenge should be different on each call")
 }
 
 func TestGenerateState(t *testing.T) {
 	t.Parallel()
-	flow := &Flow{}
 
-	err := flow.generateState()
+	state1, err := GenerateState()
 	require.NoError(t, err)
 
 	// Verify state is generated and valid
-	assert.NotEmpty(t, flow.state)
-	decoded, err := base64.RawURLEncoding.DecodeString(flow.state)
+	assert.NotEmpty(t, state1)
+	decoded, err := base64.RawURLEncoding.DecodeString(state1)
 	require.NoError(t, err, "state should be valid base64")
 	assert.Len(t, decoded, 16, "state should be 16 bytes when decoded")
 
 	// Test that multiple calls generate different values (security requirement)
-	originalState := flow.state
-
-	err = flow.generateState()
+	state2, err := GenerateState()
 	require.NoError(t, err)
 
-	assert.NotEqual(t, originalState, flow.state, "state should be different on each call")
+	assert.NotEqual(t, state1, state2, "state should be different on each call")
 }
 
 func TestBuildAuthURL(t *testing.T) {
@@ -561,48 +554,46 @@ func TestExtractJWTClaims(t *testing.T) {
 func TestPKCESecurityProperties(t *testing.T) {
 	t.Parallel()
 	// Test that PKCE parameters have sufficient entropy
-	flow := &Flow{}
 
 	// Generate multiple PKCE parameters and ensure they're all different
 	verifiers := make(map[string]bool)
 	challenges := make(map[string]bool)
 
 	for i := 0; i < 100; i++ {
-		err := flow.generatePKCEParams()
+		params, err := GeneratePKCEParams()
 		require.NoError(t, err)
 
 		// Ensure no duplicates (extremely unlikely with proper randomness)
-		assert.False(t, verifiers[flow.codeVerifier], "code verifier should be unique")
-		assert.False(t, challenges[flow.codeChallenge], "code challenge should be unique")
+		assert.False(t, verifiers[params.CodeVerifier], "code verifier should be unique")
+		assert.False(t, challenges[params.CodeChallenge], "code challenge should be unique")
 
-		verifiers[flow.codeVerifier] = true
-		challenges[flow.codeChallenge] = true
+		verifiers[params.CodeVerifier] = true
+		challenges[params.CodeChallenge] = true
 
 		// Verify length requirements (RFC 7636)
-		assert.GreaterOrEqual(t, len(flow.codeVerifier), 43, "code verifier should be at least 43 characters")
-		assert.LessOrEqual(t, len(flow.codeVerifier), 128, "code verifier should be at most 128 characters")
+		assert.GreaterOrEqual(t, len(params.CodeVerifier), 43, "code verifier should be at least 43 characters")
+		assert.LessOrEqual(t, len(params.CodeVerifier), 128, "code verifier should be at most 128 characters")
 	}
 }
 
 func TestStateSecurityProperties(t *testing.T) {
 	t.Parallel()
 	// Test that state parameters have sufficient entropy
-	flow := &Flow{}
 
 	// Generate multiple state parameters and ensure they're all different
 	states := make(map[string]bool)
 
 	for i := 0; i < 100; i++ {
-		err := flow.generateState()
+		state, err := GenerateState()
 		require.NoError(t, err)
 
 		// Ensure no duplicates (extremely unlikely with proper randomness)
-		assert.False(t, states[flow.state], "state should be unique")
-		states[flow.state] = true
+		assert.False(t, states[state], "state should be unique")
+		states[state] = true
 
 		// Verify state is not empty and has reasonable length
-		assert.NotEmpty(t, flow.state)
-		assert.GreaterOrEqual(t, len(flow.state), 16, "state should have sufficient length")
+		assert.NotEmpty(t, state)
+		assert.GreaterOrEqual(t, len(state), 16, "state should have sufficient length")
 	}
 }
 

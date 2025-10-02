@@ -3,186 +3,27 @@ package oauth
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"path"
-	"strings"
-	"time"
 
-	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/auth/oidc"
 )
 
 // UserAgent is the user agent for the ToolHive MCP client
-const UserAgent = "ToolHive/1.0"
+const UserAgent = oidc.UserAgent
 
 // OIDCDiscoveryDocument represents the OIDC discovery document structure
-// This is a simplified wrapper around the Zitadel OIDC discovery
-type OIDCDiscoveryDocument struct {
-	Issuer                        string   `json:"issuer"`
-	AuthorizationEndpoint         string   `json:"authorization_endpoint"`
-	IntrospectionEndpoint         string   `json:"introspection_endpoint,omitempty"`
-	TokenEndpoint                 string   `json:"token_endpoint"`
-	UserinfoEndpoint              string   `json:"userinfo_endpoint"`
-	JWKSURI                       string   `json:"jwks_uri"`
-	RegistrationEndpoint          string   `json:"registration_endpoint,omitempty"`
-	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
-}
-
-// httpClient interface for dependency injection (private for testing)
-type httpClient interface {
-	Do(req *http.Request) (*http.Response, error)
-}
+// This is a simplified wrapper around the OIDC discovery for backward compatibility
+type OIDCDiscoveryDocument = oidc.DiscoveryDocument
 
 // DiscoverOIDCEndpoints discovers OAuth endpoints from an OIDC issuer
+// Deprecated: Use oidc.DiscoverEndpoints instead
 func DiscoverOIDCEndpoints(ctx context.Context, issuer string) (*OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClient(ctx, issuer, nil)
+	return oidc.DiscoverEndpoints(ctx, issuer)
 }
 
 // DiscoverActualIssuer discovers the actual issuer from a URL that might be different from the issuer itself
-// This is useful when the resource metadata points to a URL that hosts the authorization server metadata
-// but the actual issuer identifier is different (e.g., Stripe's case)
+// Deprecated: Use oidc.DiscoverActualIssuer instead
 func DiscoverActualIssuer(ctx context.Context, metadataURL string) (*OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClientAndValidation(ctx, metadataURL, nil, false)
-}
-
-// discoverOIDCEndpointsWithClient discovers OAuth endpoints from an OIDC issuer with a custom HTTP client (private for testing)
-func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client httpClient) (*OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClientAndValidation(ctx, issuer, client, true)
-}
-
-// discoverOIDCEndpointsWithClientAndValidation discovers OAuth endpoints with optional issuer validation
-func discoverOIDCEndpointsWithClientAndValidation(
-	ctx context.Context,
-	issuer string,
-	client httpClient,
-	validateIssuer bool,
-) (*OIDCDiscoveryDocument, error) {
-	// Validate issuer URL
-	issuerURL, err := url.Parse(issuer)
-	if err != nil {
-		return nil, fmt.Errorf("invalid issuer URL: %w", err)
-	}
-
-	// Ensure HTTPS for security (except localhost for development)
-	if issuerURL.Scheme != "https" && !networking.IsLocalhost(issuerURL.Host) {
-		return nil, fmt.Errorf("issuer must use HTTPS: %s", issuer)
-	}
-
-	// Build both well-known URLs (handles tenant/realm paths)
-	base := issuerURL.Scheme + "://" + issuerURL.Host
-	tenant := strings.Trim(issuerURL.EscapedPath(), "/")
-	oidcURL := base + path.Join("/", tenant, ".well-known", "openid-configuration")
-	oauthURL := base + path.Join("/.well-known/oauth-authorization-server", tenant)
-
-	if client == nil {
-		client = &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 10 * time.Second,
-			},
-		}
-	}
-
-	try := func(urlStr string, oidc bool) (*OIDCDiscoveryDocument, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
-		if err != nil {
-			return nil, fmt.Errorf("build request: %w", err)
-		}
-		req.Header.Set("User-Agent", UserAgent)
-		req.Header.Set("Accept", "application/json")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("GET %s: %w", urlStr, err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("%s: HTTP %d", urlStr, resp.StatusCode)
-		}
-		ct := strings.ToLower(resp.Header.Get("Content-Type"))
-		if !strings.Contains(ct, "application/json") {
-			return nil, fmt.Errorf("%s: unexpected content-type %q", urlStr, ct)
-		}
-
-		// Limit response size to prevent DoS
-		const maxResponseSize = 1024 * 1024 // 1MB
-		var doc OIDCDiscoveryDocument
-		if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseSize)).Decode(&doc); err != nil {
-			return nil, fmt.Errorf("%s: unexpected response: %w", urlStr, err)
-		}
-		expectedIssuer := issuer
-		if !validateIssuer && doc.Issuer != "" {
-			// When not validating, use the discovered issuer as the expected one
-			expectedIssuer = doc.Issuer
-		}
-		if err := validateOIDCDocument(&doc, expectedIssuer, oidc); err != nil {
-			return nil, fmt.Errorf("%s: invalid metadata: %w", urlStr, err)
-		}
-		return &doc, nil
-	}
-
-	doc, err := try(oidcURL, true)
-	if err == nil {
-		return doc, nil
-	}
-	oidcErr := err
-	doc, err = try(oauthURL, false)
-	if err == nil {
-		return doc, nil
-	}
-	oauthErr := err
-
-	return nil, fmt.Errorf("unable to discover OIDC endpoints at %q or %q: OIDC error: %v, OAuth error: %v",
-		oidcURL, oauthURL, oidcErr, oauthErr)
-}
-
-// validateOIDCDocument validates the OIDC discovery document
-func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string, oidc bool) error {
-	if doc.Issuer == "" {
-		return fmt.Errorf("missing issuer")
-	}
-
-	if doc.Issuer != expectedIssuer {
-		return fmt.Errorf("issuer mismatch: expected %s, got %s", expectedIssuer, doc.Issuer)
-	}
-
-	if doc.AuthorizationEndpoint == "" {
-		return fmt.Errorf("missing authorization_endpoint")
-	}
-
-	if doc.TokenEndpoint == "" {
-		return fmt.Errorf("missing token_endpoint")
-	}
-
-	// Require jwks_uri for OIDC
-	if oidc && doc.JWKSURI == "" {
-		return fmt.Errorf("missing jwks_uri (OIDC requires it)")
-	}
-
-	// Validate URLs
-	endpoints := map[string]string{
-		"authorization_endpoint": doc.AuthorizationEndpoint,
-		"token_endpoint":         doc.TokenEndpoint,
-		"jwks_uri":               doc.JWKSURI,
-		"introspection_endpoint": doc.IntrospectionEndpoint,
-	}
-
-	if doc.UserinfoEndpoint != "" {
-		endpoints["userinfo_endpoint"] = doc.UserinfoEndpoint
-	}
-	for name, endpoint := range endpoints {
-		if endpoint != "" {
-			if err := networking.ValidateEndpointURL(endpoint); err != nil {
-				return fmt.Errorf("invalid %s: %w", name, err)
-			}
-		}
-	}
-	return nil
+	return oidc.DiscoverActualIssuer(ctx, metadataURL)
 }
 
 // CreateOAuthConfigFromOIDC creates an OAuth config from OIDC discovery
@@ -193,22 +34,10 @@ func CreateOAuthConfigFromOIDC(
 	usePKCE bool,
 	callbackPort int,
 ) (*Config, error) {
-	return createOAuthConfigFromOIDCWithClient(ctx, issuer, clientID, clientSecret, scopes, usePKCE, callbackPort, nil)
-}
-
-// createOAuthConfigFromOIDCWithClient creates an OAuth config from OIDC discovery with a custom HTTP client (private for testing)
-func createOAuthConfigFromOIDCWithClient(
-	ctx context.Context,
-	issuer, clientID, clientSecret string,
-	scopes []string,
-	usePKCE bool,
-	callbackPort int,
-	client httpClient,
-) (*Config, error) {
 	// Discover OIDC endpoints
-	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client)
+	doc, err := oidc.DiscoverEndpoints(ctx, issuer)
 	if err != nil {
-		return nil, fmt.Errorf("failed to discover OIDC endpoints: %w", err)
+		return nil, err
 	}
 
 	// Default scopes for OIDC if none provided

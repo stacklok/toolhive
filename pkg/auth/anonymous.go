@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/stacklok/toolhive/pkg/auth/token"
 )
 
 // AnonymousMiddleware creates an HTTP middleware that sets up anonymous claims.
@@ -33,7 +35,7 @@ func AnonymousMiddleware(next http.Handler) http.Handler {
 
 		// Add the anonymous claims to the request context using the same key
 		// as the JWT middleware for consistency
-		ctx := context.WithValue(r.Context(), ClaimsContextKey{}, claims)
+		ctx := context.WithValue(r.Context(), token.ClaimsContextKey{}, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

@@ -1,5 +1,4 @@
-// Package auth provides authentication and authorization utilities.
-package auth
+package middleware
 
 import (
 	"context"
@@ -7,6 +6,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/stacklok/toolhive/pkg/auth/token"
 )
 
 // LocalUserMiddleware creates an HTTP middleware that sets up local user claims.
@@ -32,7 +33,7 @@ func LocalUserMiddleware(username string) func(http.Handler) http.Handler {
 
 			// Add the local user claims to the request context using the same key
 			// as the JWT middleware for consistency
-			ctx := context.WithValue(r.Context(), ClaimsContextKey{}, claims)
+			ctx := context.WithValue(r.Context(), token.ClaimsContextKey{}, claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

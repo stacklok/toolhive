@@ -7,6 +7,39 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
+// Config contains configuration for OAuth authentication
+type Config struct {
+	// ClientID is the OAuth client ID
+	ClientID string
+
+	// ClientSecret is the OAuth client secret (optional for PKCE flow)
+	ClientSecret string
+
+	// RedirectURL is the redirect URL for the OAuth flow
+	RedirectURL string
+
+	// AuthURL is the authorization endpoint URL
+	AuthURL string
+
+	// TokenURL is the token endpoint URL
+	TokenURL string
+
+	// Scopes are the OAuth scopes to request
+	Scopes []string
+
+	// UsePKCE enables PKCE (Proof Key for Code Exchange) for enhanced security
+	UsePKCE bool
+
+	// CallbackPort is the port for the OAuth callback server (optional, 0 means auto-select)
+	CallbackPort int
+
+	// IntrospectionEndpoint is the optional introspection endpoint for validating tokens
+	IntrospectionEndpoint string
+
+	// OAuthParams are additional parameters to pass to the authorization URL
+	OAuthParams map[string]string
+}
+
 // CreateOAuthConfigManual creates an OAuth config with manually provided endpoints
 func CreateOAuthConfigManual(
 	clientID, clientSecret string,

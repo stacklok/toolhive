@@ -3,9 +3,6 @@ package oauth
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"html"
@@ -22,39 +19,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
-
-// Config contains configuration for OAuth authentication
-type Config struct {
-	// ClientID is the OAuth client ID
-	ClientID string
-
-	// ClientSecret is the OAuth client secret (optional for PKCE flow)
-	ClientSecret string
-
-	// RedirectURL is the redirect URL for the OAuth flow
-	RedirectURL string
-
-	// AuthURL is the authorization endpoint URL
-	AuthURL string
-
-	// TokenURL is the token endpoint URL
-	TokenURL string
-
-	// Scopes are the OAuth scopes to request
-	Scopes []string
-
-	// UsePKCE enables PKCE (Proof Key for Code Exchange) for enhanced security
-	UsePKCE bool
-
-	// CallbackPort is the port for the OAuth callback server (optional, 0 means auto-select)
-	CallbackPort int
-
-	// IntrospectionEndpoint is the optional introspection endpoint for validating tokens
-	IntrospectionEndpoint string
-
-	// OAuthParams are additional parameters to pass to the authorization URL
-	OAuthParams map[string]string
-}
 
 // Flow handles the OAuth authentication flow
 type Flow struct {
@@ -131,43 +95,22 @@ func NewFlow(config *Config) (*Flow, error) {
 
 	// Generate PKCE parameters if enabled
 	if config.UsePKCE {
-		if err := flow.generatePKCEParams(); err != nil {
+		pkceParams, err := GeneratePKCEParams()
+		if err != nil {
 			return nil, fmt.Errorf("failed to generate PKCE parameters: %w", err)
 		}
+		flow.codeVerifier = pkceParams.CodeVerifier
+		flow.codeChallenge = pkceParams.CodeChallenge
 	}
 
 	// Generate state parameter
-	if err := flow.generateState(); err != nil {
+	state, err := GenerateState()
+	if err != nil {
 		return nil, fmt.Errorf("failed to generate state parameter: %w", err)
 	}
+	flow.state = state
 
 	return flow, nil
-}
-
-// generatePKCEParams generates PKCE code verifier and challenge
-func (f *Flow) generatePKCEParams() error {
-	// Generate code verifier (43-128 characters, RFC 7636)
-	verifierBytes := make([]byte, 32)
-	if _, err := rand.Read(verifierBytes); err != nil {
-		return fmt.Errorf("failed to generate code verifier: %w", err)
-	}
-	f.codeVerifier = base64.RawURLEncoding.EncodeToString(verifierBytes)
-
-	// Use S256 method for enhanced security (RFC 7636 recommendation)
-	hash := sha256.Sum256([]byte(f.codeVerifier))
-	f.codeChallenge = base64.RawURLEncoding.EncodeToString(hash[:])
-
-	return nil
-}
-
-// generateState generates a random state parameter
-func (f *Flow) generateState() error {
-	stateBytes := make([]byte, 16)
-	if _, err := rand.Read(stateBytes); err != nil {
-		return fmt.Errorf("failed to generate state: %w", err)
-	}
-	f.state = base64.RawURLEncoding.EncodeToString(stateBytes)
-	return nil
 }
 
 // Start starts the OAuth authentication flow

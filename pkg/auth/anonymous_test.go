@@ -8,13 +8,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/auth/token"
 )
 
 func TestAnonymousMiddleware(t *testing.T) {
 	t.Parallel()
 	// Create a test handler that checks for claims in the context
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := GetClaimsFromContext(r.Context())
+		claims, ok := token.GetClaimsFromContext(r.Context())
 		require.True(t, ok, "Expected claims to be present in context")
 
 		// Verify the anonymous claims

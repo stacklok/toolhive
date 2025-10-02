@@ -1,7 +1,10 @@
 package testkit
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,11 +14,16 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
+const (
+	toolsListRequest = `{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}`
+)
+
 // streamableServer provides a test server with /mcp-json and /mcp-sse endpoints
 type streamableServer struct {
 	middlewares       []func(http.Handler) http.Handler
 	toolsListResponse string
 	tools             map[string]tooldef
+	clientType        clientType
 }
 
 var _ TestMCPServer = (*streamableServer)(nil)
@@ -39,16 +47,139 @@ func (s *streamableServer) AddTool(tool tooldef) error {
 	return nil
 }
 
+func (s *streamableServer) SetClientType(clientType clientType) error {
+	if s.clientType != "" {
+		return fmt.Errorf("client type already set")
+	}
+	s.clientType = clientType
+	return nil
+}
+
+type streamableJSONClient struct {
+	server *httptest.Server
+}
+
+var _ TestMCPClient = (*streamableJSONClient)(nil)
+
+func (s *streamableJSONClient) ToolsList() ([]byte, error) {
+	client := s.server.Client()
+	resp, err := client.Post(s.server.URL+"/mcp-json", "application/json", bytes.NewBufferString(toolsListRequest))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return body, nil
+}
+
+func (s *streamableJSONClient) ToolsCall(name string) ([]byte, error) {
+	client := s.server.Client()
+
+	toolsCallRequest := fmt.Sprintf(`{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "%s"}}`, name)
+	resp, err := client.Post(s.server.URL+"/mcp-json", "application/json", bytes.NewBufferString(toolsCallRequest))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return body, nil
+}
+
+type streamableEventStreamClient struct {
+	server *httptest.Server
+}
+
+var _ TestMCPClient = (*streamableEventStreamClient)(nil)
+
+func (s *streamableEventStreamClient) ToolsList() ([]byte, error) {
+	client := s.server.Client()
+	resp, err := client.Post(s.server.URL+"/mcp-sse", "application/json", bytes.NewBufferString(toolsListRequest))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Split(NewSplitSSE(LFSep))
+
+	for scanner.Scan() {
+		if scanner.Err() != nil {
+			return nil, scanner.Err()
+		}
+
+		lineScanner := bufio.NewScanner(bytes.NewReader(scanner.Bytes()))
+		for lineScanner.Scan() {
+			if lineScanner.Err() != nil {
+				return nil, lineScanner.Err()
+			}
+
+			if data, ok := bytes.CutPrefix(lineScanner.Bytes(), []byte("data:")); ok {
+				return data, nil
+			}
+		}
+	}
+
+	return nil, errors.New("no data found")
+}
+
+func (s *streamableEventStreamClient) ToolsCall(name string) ([]byte, error) {
+	client := s.server.Client()
+
+	toolsCallRequest := fmt.Sprintf(`{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "%s"}}`, name)
+	resp, err := client.Post(s.server.URL+"/mcp-sse", "application/json", bytes.NewBufferString(toolsCallRequest))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Split(NewSplitSSE(LFSep))
+
+	for scanner.Scan() {
+		if scanner.Err() != nil {
+			return nil, scanner.Err()
+		}
+
+		lineScanner := bufio.NewScanner(bytes.NewReader(scanner.Bytes()))
+		for lineScanner.Scan() {
+			if lineScanner.Err() != nil {
+				return nil, lineScanner.Err()
+			}
+
+			if data, ok := bytes.CutPrefix(lineScanner.Bytes(), []byte("data:")); ok {
+				var result map[string]any
+				err := json.Unmarshal([]byte(data), &result)
+				if err != nil {
+					return nil, err
+				}
+				return []byte(data), nil
+			}
+		}
+	}
+
+	return nil, errors.New("no data found")
+}
+
 // NewStreamableTestServer creates a new Streamable-HTTP server,
 // wraps it in an `httptest.Server`, and returns it.
 func NewStreamableTestServer(
 	options ...TestMCPServerOption,
-) (*httptest.Server, error) {
+) (*httptest.Server, TestMCPClient, error) {
 	server := &streamableServer{}
 
 	for _, option := range options {
 		if err := option(server); err != nil {
-			return nil, fmt.Errorf("failed to apply option: %w", err)
+			return nil, nil, fmt.Errorf("failed to apply option: %w", err)
 		}
 	}
 
@@ -70,7 +201,22 @@ func NewStreamableTestServer(
 	router.Post("/mcp-json", server.mcpJSONHandler)
 	router.Post("/mcp-sse", server.mcpEventStreamHandler)
 
-	return httptest.NewServer(router), nil
+	httpServer := httptest.NewServer(router)
+
+	switch server.clientType {
+	case clientTypeJSON:
+		return httpServer, &streamableJSONClient{
+			server: httpServer,
+		}, nil
+	case clientTypeSSE:
+		return httpServer, &streamableEventStreamClient{
+			server: httpServer,
+		}, nil
+	default:
+		return httpServer, &streamableJSONClient{
+			server: httpServer,
+		}, nil
+	}
 }
 
 func (s *streamableServer) mcpJSONHandler(w http.ResponseWriter, r *http.Request) {

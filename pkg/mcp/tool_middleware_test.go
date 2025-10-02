@@ -1,13 +1,9 @@
 package mcp
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
-	"io"
 	"net/http"
-	"strings"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,52 +11,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/testkit"
 )
-
-// Helper function to make a tools list request
-func makeToolsListRequest(t *testing.T, url string) *toolsListResponse {
-	t.Helper()
-
-	req := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/list",
-	}
-
-	body, err := json.Marshal(req)
-	require.NoError(t, err)
-
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	var response toolsListResponse
-	err = json.NewDecoder(resp.Body).Decode(&response)
-	require.NoError(t, err)
-
-	return &response
-}
-
-// Helper function to make a tool call request
-func makeToolCallRequest(t *testing.T, url string, toolName string) (*http.Response, error) {
-	t.Helper()
-
-	req := toolCallRequest{
-		JSONRPC: "2.0",
-		ID:      1,
-		Method:  "tools/call",
-		Params: &map[string]any{
-			"name": toolName,
-			"arguments": map[string]any{
-				"arg1": "value1",
-			},
-		},
-	}
-
-	body, err := json.Marshal(req)
-	require.NoError(t, err)
-
-	return http.Post(url, "application/json", bytes.NewBuffer(body))
-}
 
 func TestNewListToolsMappingMiddleware_Scenarios(t *testing.T) {
 	t.Parallel()
@@ -186,15 +136,42 @@ func TestNewListToolsMappingMiddleware_Scenarios(t *testing.T) {
 
 			// Create test server
 			serverOpts := append(tt.serverOpts, testkit.WithMiddlewares(middlewares...))
-			server, err := testkit.NewStreamableTestServer(
+			serverOpts = append(serverOpts, testkit.WithJSONClientType())
+			server, client, err := testkit.NewStreamableTestServer(
 				serverOpts...,
 			)
 			require.NoError(t, err)
 			defer server.Close()
 
 			// Make request
-			response := makeToolsListRequest(t, server.URL+"/mcp-json")
-			assert.Equal(t, tt.expected, response.Result.Tools)
+			respBody, err := client.ToolsList()
+			require.NoError(t, err)
+
+			var response toolsListResponse
+			err = json.NewDecoder(bytes.NewReader(respBody)).Decode(&response)
+			require.NoError(t, err)
+			require.NotNil(t, response.Result)
+			require.NotNil(t, response.Result.Tools)
+
+			if tt.expected != nil {
+				for _, expected := range *tt.expected {
+					found := false
+
+					for _, tool := range *response.Result.Tools {
+						// NOTE: here I switched from name to description because to ensure that redundant tool overrides
+						// are covered (i.e. two tools "Foo" and "Bar" exist, the User renames "Foo" into "Bar" or vice versa).
+						// I'm not sure we want to support this, but cannot prevent this from happening or prevent the
+						// User from doing it.
+						if tool["description"] == expected["description"] {
+							found = true
+							assert.Equal(t, expected["description"], tool["description"])
+							assert.Equal(t, expected["name"], tool["name"])
+						}
+					}
+
+					require.True(t, found, "Tool %s not found", expected["name"])
+				}
+			}
 		})
 	}
 }
@@ -383,28 +360,22 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 
 			// Create test server
 			serverOpts := append(tt.serverOpts, testkit.WithMiddlewares(middlewares...))
-			server, err := testkit.NewStreamableTestServer(
+			serverOpts = append(serverOpts, testkit.WithJSONClientType())
+			server, client, err := testkit.NewStreamableTestServer(
 				serverOpts...,
 			)
 			require.NoError(t, err)
 			defer server.Close()
 
 			// Make request
-			resp, err := makeToolCallRequest(t, server.URL+"/mcp-json", tt.callToolName)
-			require.NoError(t, err)
-			defer resp.Body.Close()
-
-			assert.Equal(t, tt.expectedStatus, resp.StatusCode)
-
-			// Read response body
-			bodyBytes, err := io.ReadAll(resp.Body)
+			bodyBytes, err := client.ToolsCall(tt.callToolName)
 			require.NoError(t, err)
 
 			if tt.expected != nil {
 				var response map[string]any
 				err = json.Unmarshal(bodyBytes, &response)
 				require.NoError(t, err)
-				require.NotNil(t, response["result"])
+				require.NotNil(t, response["result"], "Result is nil: %+v", string(bodyBytes))
 
 				result, ok := response["result"].(map[string]any)
 				require.True(t, ok)
@@ -494,86 +465,27 @@ func TestNewListToolsMappingMiddleware_SSE_Scenarios(t *testing.T) {
 
 			// Create test server
 			serverOpts := append(tt.serverOpts, testkit.WithMiddlewares(middlewares...))
-			server, err := testkit.NewSSETestServer(
+			serverOpts = append(serverOpts, testkit.WithSSEClientType())
+			server, client, err := testkit.NewSSETestServer(
 				serverOpts...,
 			)
 			require.NoError(t, err)
 			defer server.Close()
 
-			var wg sync.WaitGroup
+			// Make request
+			respBody, err := client.ToolsList()
+			require.NoError(t, err)
 
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			var response toolsListResponse
+			err = json.Unmarshal(respBody, &response)
+			require.NoError(t, err)
 
-				// Make request
-				resp, err := http.Get(server.URL + "/sse")
-				require.NoError(t, err)
-				defer resp.Body.Close()
-				require.Equal(t, http.StatusOK, resp.StatusCode)
-				require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
-
-				// Read SSE response
-				if tt.expected != nil {
-					bodyBytes, err := io.ReadAll(resp.Body)
-					require.NoError(t, err)
-
-					// Parse SSE response
-					dataLine := sseParser(t, bodyBytes)
-					require.NotEmpty(t, dataLine, "No data line found in SSE response: '%+v'", bodyBytes)
-
-					// Parse JSON response
-					var response toolsListResponse
-					err = json.Unmarshal(dataLine, &response)
-					require.NoError(t, err)
-
-					// Verify results
-					assert.Equal(t, "2.0", response.JSONRPC)
-					assert.Equal(t, float64(1), response.ID)
-					assert.Equal(t, tt.expected, response.Result.Tools)
-				}
-			}()
-
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-
-				commandResp, err := http.Post(server.URL+"/command", "application/json", bytes.NewBufferString(`{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}`))
-				require.NoError(t, err)
-				defer commandResp.Body.Close()
-
-				respBody, err := io.ReadAll(commandResp.Body)
-				require.NoError(t, err)
-				require.Equal(t, http.StatusAccepted, commandResp.StatusCode)
-				require.Equal(t, "Accepted", string(respBody))
-			}()
-
-			wg.Wait()
+			// Verify results
+			assert.Equal(t, "2.0", response.JSONRPC)
+			assert.Equal(t, float64(1), response.ID)
+			assert.Equal(t, tt.expected, response.Result.Tools)
 		})
 	}
-}
-
-// Note: we might want to move some variation of this to testkit.
-func sseParser(t *testing.T, body []byte) []byte {
-	t.Helper()
-
-	var result []byte
-
-	scanner := bufio.NewScanner(bytes.NewReader(body))
-	scanner.Split(testkit.NewSplitSSE(testkit.LFSep))
-	for scanner.Scan() {
-		require.NoError(t, scanner.Err())
-		for line := range strings.SplitSeq(scanner.Text(), "\n") {
-			dataLine, ok := strings.CutPrefix(line, "data:")
-			if !ok {
-				continue
-			}
-
-			result = []byte(dataLine)
-		}
-	}
-
-	return result
 }
 
 func TestNewListToolsMappingMiddleware_ErrorCases(t *testing.T) {

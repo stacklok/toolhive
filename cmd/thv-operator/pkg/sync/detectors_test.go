@@ -383,6 +383,7 @@ func TestDefaultAutomaticSyncChecker_IsIntervalSyncNeeded(t *testing.T) {
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
 					SyncStatus: &mcpv1alpha1.SyncStatus{
+						LastAttempt:  &metav1.Time{Time: now.Add(-30 * time.Minute)}, // 30 minutes ago
 						LastSyncTime: &metav1.Time{Time: now.Add(-30 * time.Minute)}, // 30 minutes ago
 					},
 				},

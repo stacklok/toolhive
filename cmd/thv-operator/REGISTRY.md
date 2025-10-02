@@ -1,6 +1,6 @@
 # MCPRegistry Reference
 
-> ⚠️ **Experimental Feature**: MCPRegistry requires `ENABLE_EXPERIMENTAL_FEATURES=true`
+> ⚠️ **Experimental Feature**: MCPRegistry requires enabling experimental features with `--set operator.features.experimental=true` during Helm installation.
 
 ## Overview
 

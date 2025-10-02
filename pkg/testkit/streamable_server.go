@@ -128,8 +128,7 @@ func (s *streamableServer) mcpJSONHandler(w http.ResponseWriter, r *http.Request
 
 func (s *streamableServer) mcpEventStreamHandler(w http.ResponseWriter, r *http.Request) {
 	// Read the request body
-	body := make([]byte, r.ContentLength)
-	_, err := r.Body.Read(body)
+	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Error reading request body", http.StatusInternalServerError)
 		return
@@ -170,7 +169,7 @@ func (s *streamableServer) mcpEventStreamHandler(w http.ResponseWriter, r *http.
 		response = "failed to generate response"
 	}
 
-	if _, err := w.Write([]byte("data: " + response + "\n\n")); err != nil {
+	if _, err := w.Write([]byte("event: random-stuff\ndata: " + response + "\n\n")); err != nil {
 		http.Error(w, "Error writing response", http.StatusInternalServerError)
 		return
 	}

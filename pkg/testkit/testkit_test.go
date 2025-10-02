@@ -50,9 +50,8 @@ func TestSSEServerEndpoints(t *testing.T) {
 			require.Equal(t, http.StatusOK, resp.StatusCode)
 			require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
 
-			splitFunc := NewSplitSSE(LFSep)
 			scanner := bufio.NewScanner(resp.Body)
-			scanner.Split(splitFunc)
+			scanner.Split(NewSplitSSE(LFSep))
 
 			for scanner.Scan() {
 				require.NoError(t, scanner.Err())
@@ -78,21 +77,27 @@ func TestSSEServerEndpoints(t *testing.T) {
 		// Wait for SSE response
 		select {
 		case sseBody := <-sseResponseChan:
-			// Check that the SSE response contains the tools/list response
-			data, ok := strings.CutPrefix(sseBody, "data: ")
-			require.True(t, ok)
+			scanner := bufio.NewScanner(bytes.NewReader([]byte(sseBody)))
 
-			var result map[string]any
-			err = json.Unmarshal([]byte(data), &result)
-			require.NoError(t, err)
-			assert.Equal(t, "2.0", result["jsonrpc"])
-			assert.Equal(t, float64(1), result["id"])
+			for scanner.Scan() {
+				require.NoError(t, scanner.Err())
 
-			// Check that it's a tools/list response
-			toolCall, ok := result["result"].(map[string]any)
-			require.True(t, ok, "Result should contain result array")
-			assert.Len(t, toolCall["tools"], 1, "Should have one tool")
-			return
+				// Check that the SSE response contains the tools/list response
+				data, ok := strings.CutPrefix(scanner.Text(), "data:")
+				if ok {
+					var result map[string]any
+					err = json.Unmarshal([]byte(data), &result)
+					require.NoError(t, err)
+					assert.Equal(t, "2.0", result["jsonrpc"])
+					assert.Equal(t, float64(1), result["id"])
+
+					// Check that it's a tools/list response
+					toolCall, ok := result["result"].(map[string]any)
+					require.True(t, ok, "Result should contain result array")
+					assert.Len(t, toolCall["tools"], 1, "Should have one tool")
+					return
+				}
+			}
 		case <-time.After(1 * time.Second):
 			t.Fatal("Timeout waiting for SSE response")
 		}
@@ -121,9 +126,8 @@ func TestSSEServerEndpoints(t *testing.T) {
 			require.Equal(t, http.StatusOK, resp.StatusCode)
 			require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
 
-			splitFunc := NewSplitSSE(LFSep)
 			scanner := bufio.NewScanner(resp.Body)
-			scanner.Split(splitFunc)
+			scanner.Split(NewSplitSSE(LFSep))
 
 			for scanner.Scan() {
 				require.NoError(t, scanner.Err())
@@ -149,25 +153,30 @@ func TestSSEServerEndpoints(t *testing.T) {
 		// Wait for SSE response
 		select {
 		case sseBody := <-sseResponseChan:
-			// Check that the SSE response contains the tools/call response
-			data, ok := strings.CutPrefix(sseBody, "data: ")
-			require.True(t, ok)
+			scanner := bufio.NewScanner(bytes.NewReader([]byte(sseBody)))
 
-			var result map[string]any
-			err = json.Unmarshal([]byte(data), &result)
-			require.NoError(t, err)
-			assert.Equal(t, "2.0", result["jsonrpc"])
-			assert.Equal(t, float64(1), result["id"])
+			for scanner.Scan() {
+				require.NoError(t, scanner.Err())
 
-			// Check that it's a tools/call response
-			resultData, ok := result["result"].(map[string]any)
-			require.True(t, ok, "Result should contain a result object")
+				// Check that the SSE response contains the tools/call response
+				data, ok := strings.CutPrefix(scanner.Text(), "data:")
+				if ok {
+					var result map[string]any
+					err = json.Unmarshal([]byte(data), &result)
+					require.NoError(t, err)
+					assert.Equal(t, "2.0", result["jsonrpc"])
+					assert.Equal(t, float64(1), result["id"])
 
-			toolCall, ok := resultData["content"].([]any)
-			require.True(t, ok, "Result should contain content array")
-			assert.Len(t, toolCall, 1, "Should have one result")
+					// Check that it's a tools/call response
+					resultData, ok := result["result"].(map[string]any)
+					require.True(t, ok, "Result should contain a result object")
 
-			return
+					toolCall, ok := resultData["content"].([]any)
+					require.True(t, ok, "Result should contain content array")
+					assert.Len(t, toolCall, 1, "Should have one result")
+					return
+				}
+			}
 		case <-time.After(1 * time.Second):
 			t.Fatal("Timeout waiting for SSE response")
 		}
@@ -229,26 +238,34 @@ func TestStreamableServerEndpoints(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
 
-		body, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Split(NewSplitSSE(LFSep))
 
-		// Check that the response is in SSE format
-		data, ok := strings.CutPrefix(string(body), "data: ")
-		require.True(t, ok)
+		for scanner.Scan() {
+			require.NoError(t, scanner.Err())
 
-		var result map[string]any
-		err = json.Unmarshal([]byte(data), &result)
-		require.NoError(t, err)
-		assert.Equal(t, "2.0", result["jsonrpc"])
-		assert.Equal(t, float64(1), result["id"])
+			lineScanner := bufio.NewScanner(bytes.NewReader([]byte(scanner.Text())))
+			for lineScanner.Scan() {
+				require.NoError(t, lineScanner.Err())
 
-		// Check that it's a tools/list response
-		resultData, ok := result["result"].(map[string]any)
-		require.True(t, ok, "Result should contain a result object")
+				if data, ok := strings.CutPrefix(lineScanner.Text(), "data:"); ok {
+					var result map[string]any
+					err = json.Unmarshal([]byte(data), &result)
+					require.NoError(t, err)
+					assert.Equal(t, "2.0", result["jsonrpc"])
+					assert.Equal(t, float64(1), result["id"])
 
-		tools, ok := resultData["tools"].([]any)
-		require.True(t, ok, "Result should contain tools array")
-		assert.Len(t, tools, 1, "Should have one tool")
+					// Check that it's a tools/list response
+					resultData, ok := result["result"].(map[string]any)
+					require.True(t, ok, "Result should contain a result object")
+
+					tools, ok := resultData["tools"].([]any)
+					require.True(t, ok, "Result should contain tools array")
+					assert.Len(t, tools, 1, "Should have one tool")
+					return
+				}
+			}
+		}
 	})
 
 	t.Run("streamable application/json tools/call", func(t *testing.T) {
@@ -299,25 +316,33 @@ func TestStreamableServerEndpoints(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
 
-		body, err := io.ReadAll(resp.Body)
-		require.NoError(t, err)
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Split(NewSplitSSE(LFSep))
 
-		// Check that the response is in SSE format
-		data, ok := strings.CutPrefix(string(body), "data: ")
-		require.True(t, ok)
+		for scanner.Scan() {
+			require.NoError(t, scanner.Err())
 
-		var result map[string]any
-		err = json.Unmarshal([]byte(data), &result)
-		require.NoError(t, err)
-		assert.Equal(t, "2.0", result["jsonrpc"])
-		assert.Equal(t, float64(1), result["id"])
+			lineScanner := bufio.NewScanner(bytes.NewReader([]byte(scanner.Text())))
+			for lineScanner.Scan() {
+				require.NoError(t, lineScanner.Err())
 
-		// Check that it's a tools/call response
-		resultData, ok := result["result"].(map[string]any)
-		require.True(t, ok, "Result should contain a result object")
+				if data, ok := strings.CutPrefix(lineScanner.Text(), "data:"); ok {
+					var result map[string]any
+					err = json.Unmarshal([]byte(data), &result)
+					require.NoError(t, err)
+					assert.Equal(t, "2.0", result["jsonrpc"])
+					assert.Equal(t, float64(1), result["id"])
 
-		toolCall, ok := resultData["content"].([]any)
-		require.True(t, ok, "Result should contain content array")
-		assert.Len(t, toolCall, 1, "Should have one result")
+					// Check that it's a tools/call response
+					resultData, ok := result["result"].(map[string]any)
+					require.True(t, ok, "Result should contain a result object")
+
+					toolCall, ok := resultData["content"].([]any)
+					require.True(t, ok, "Result should contain content array")
+					assert.Len(t, toolCall, 1, "Should have one result")
+					return
+				}
+			}
+		}
 	})
 }

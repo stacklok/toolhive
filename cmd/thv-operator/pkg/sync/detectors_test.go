@@ -48,7 +48,9 @@ func TestDefaultDataChangeDetector_IsDataChanged(t *testing.T) {
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					LastSyncHash: "", // No hash means data changed
+					SyncStatus: &mcpv1alpha1.SyncStatus{
+						LastSyncHash: "", // No hash means data changed
+					},
 				},
 			},
 			configMap: &corev1.ConfigMap{
@@ -81,7 +83,9 @@ func TestDefaultDataChangeDetector_IsDataChanged(t *testing.T) {
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					LastSyncHash: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", // SHA256 of "test"
+					SyncStatus: &mcpv1alpha1.SyncStatus{
+						LastSyncHash: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", // SHA256 of "test"
+					},
 				},
 			},
 			configMap: &corev1.ConfigMap{
@@ -114,7 +118,9 @@ func TestDefaultDataChangeDetector_IsDataChanged(t *testing.T) {
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					LastSyncHash: "old-hash",
+					SyncStatus: &mcpv1alpha1.SyncStatus{
+						LastSyncHash: "old-hash",
+					},
 				},
 			},
 			configMap: &corev1.ConfigMap{
@@ -147,7 +153,9 @@ func TestDefaultDataChangeDetector_IsDataChanged(t *testing.T) {
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					LastSyncHash: "some-hash",
+					SyncStatus: &mcpv1alpha1.SyncStatus{
+						LastSyncHash: "some-hash",
+					},
 				},
 			},
 			configMap:       nil,  // ConfigMap doesn't exist
@@ -329,7 +337,9 @@ func TestDefaultAutomaticSyncChecker_IsIntervalSyncNeeded(t *testing.T) {
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					LastSyncTime: nil,
+					SyncStatus: &mcpv1alpha1.SyncStatus{
+						LastSyncTime: nil,
+					},
 				},
 			},
 			expectedSyncNeeded: true,
@@ -349,7 +359,9 @@ func TestDefaultAutomaticSyncChecker_IsIntervalSyncNeeded(t *testing.T) {
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					LastSyncTime: &metav1.Time{Time: now.Add(-time.Hour)}, // 1 hour ago
+					SyncStatus: &mcpv1alpha1.SyncStatus{
+						LastSyncTime: &metav1.Time{Time: now.Add(-time.Hour)}, // 1 hour ago
+					},
 				},
 			},
 			expectedSyncNeeded: true,
@@ -369,7 +381,9 @@ func TestDefaultAutomaticSyncChecker_IsIntervalSyncNeeded(t *testing.T) {
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					LastSyncTime: &metav1.Time{Time: now.Add(-30 * time.Minute)}, // 30 minutes ago
+					SyncStatus: &mcpv1alpha1.SyncStatus{
+						LastSyncTime: &metav1.Time{Time: now.Add(-30 * time.Minute)}, // 30 minutes ago
+					},
 				},
 			},
 			expectedSyncNeeded: false,
@@ -389,7 +403,9 @@ func TestDefaultAutomaticSyncChecker_IsIntervalSyncNeeded(t *testing.T) {
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
-					LastSyncTime: &metav1.Time{Time: now.Add(-time.Hour)}, // Exactly 1 hour ago
+					SyncStatus: &mcpv1alpha1.SyncStatus{
+						LastSyncTime: &metav1.Time{Time: now.Add(-time.Hour)}, // Exactly 1 hour ago
+					},
 				},
 			},
 			expectedSyncNeeded: true,

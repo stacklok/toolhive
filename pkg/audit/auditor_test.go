@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,7 +27,7 @@ func init() {
 func TestNewAuditor(t *testing.T) {
 	t.Parallel()
 	config := &Config{}
-	auditor, err := NewAuditor(config)
+	auditor, err := NewAuditorWithTransport(config, "sse")
 
 	assert.NoError(t, err)
 	assert.NotNil(t, auditor)
@@ -36,7 +37,7 @@ func TestNewAuditor(t *testing.T) {
 func TestAuditorMiddlewareDisabled(t *testing.T) {
 	t.Parallel()
 	config := &Config{}
-	auditor, err := NewAuditor(config)
+	auditor, err := NewAuditorWithTransport(config, "sse")
 	require.NoError(t, err)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -61,7 +62,7 @@ func TestAuditorMiddlewareWithRequestData(t *testing.T) {
 		IncludeRequestData: true,
 		MaxDataSize:        1024,
 	}
-	auditor, err := NewAuditor(config)
+	auditor, err := NewAuditorWithTransport(config, "sse")
 	require.NoError(t, err)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +92,7 @@ func TestAuditorMiddlewareWithResponseData(t *testing.T) {
 		IncludeResponseData: true,
 		MaxDataSize:         1024,
 	}
-	auditor, err := NewAuditor(config)
+	auditor, err := NewAuditorWithTransport(config, "sse")
 	require.NoError(t, err)
 
 	responseData := `{"result": "success"}`
@@ -112,40 +113,110 @@ func TestAuditorMiddlewareWithResponseData(t *testing.T) {
 	assert.Equal(t, responseData, rr.Body.String())
 }
 
-func TestDetermineEventType(t *testing.T) {
+func TestAuditorMiddlewareWithDifferentSSEPaths(t *testing.T) {
 	t.Parallel()
-	auditor, err := NewAuditor(&Config{})
+	config := &Config{}
+	auditor, err := NewAuditorWithTransport(config, "sse")
 	require.NoError(t, err)
 
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("test response"))
+	})
+
+	middleware := auditor.Middleware(handler)
+
+	// Test different SSE paths to ensure transport type detection works correctly
+	testPaths := []string{
+		"/sse",
+		"/v1/sse",
+		"/api/sse",
+		"/mcp/v2/sse",
+		"/events", // Non-SSE path but SSE transport
+	}
+
+	for _, path := range testPaths {
+		t.Run(fmt.Sprintf("path_%s", strings.ReplaceAll(path, "/", "_")), func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest("GET", path, nil)
+			rr := httptest.NewRecorder()
+
+			middleware.ServeHTTP(rr, req)
+
+			// All requests should succeed regardless of path since transport type is SSE
+			assert.Equal(t, http.StatusOK, rr.Code)
+			assert.Equal(t, "test response", rr.Body.String())
+		})
+	}
+}
+
+func TestDetermineEventType(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
-		name     string
-		path     string
-		method   string
-		expected string
+		name      string
+		path      string
+		method    string
+		transport string
+		expected  string
 	}{
 		{
-			name:     "SSE endpoint",
-			path:     "/sse",
-			method:   "GET",
-			expected: EventTypeMCPInitialize,
+			name:      "SSE endpoint",
+			path:      "/sse",
+			method:    "GET",
+			transport: "sse",
+			expected:  EventTypeSSEConnection,
 		},
 		{
-			name:     "MCP messages endpoint",
-			path:     "/messages",
-			method:   "POST",
-			expected: "mcp_request", // Since extractMCPMethod returns empty
+			name:      "SSE endpoint with version path",
+			path:      "/v1/sse",
+			method:    "GET",
+			transport: "sse",
+			expected:  EventTypeSSEConnection,
 		},
 		{
-			name:     "Regular HTTP request",
-			path:     "/api/health",
-			method:   "GET",
-			expected: "http_request",
+			name:      "SSE endpoint with API prefix",
+			path:      "/api/sse",
+			method:    "GET",
+			transport: "sse",
+			expected:  EventTypeSSEConnection,
+		},
+		{
+			name:      "SSE endpoint with nested path",
+			path:      "/mcp/v2/sse",
+			method:    "GET",
+			transport: "sse",
+			expected:  EventTypeSSEConnection,
+		},
+		{
+			name:      "SSE transport with non-SSE path",
+			path:      "/events",
+			method:    "GET",
+			transport: "sse",
+			expected:  EventTypeSSEConnection,
+		},
+		{
+			name:      "MCP messages endpoint",
+			path:      "/messages",
+			method:    "POST",
+			transport: "streamable-http",
+			expected:  "http_request", // Since extractMCPMethod returns empty
+		},
+		{
+			name:      "Regular HTTP request",
+			path:      "/api/health",
+			method:    "GET",
+			transport: "streamable-http",
+			expected:  "http_request",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			auditor, err := NewAuditorWithTransport(&Config{}, tt.transport)
+			require.NoError(t, err)
+
 			req := httptest.NewRequest(tt.method, tt.path, nil)
 			result := auditor.determineEventType(req)
 			assert.Equal(t, tt.expected, result)
@@ -174,7 +245,7 @@ func TestMapMCPMethodToEventType(t *testing.T) {
 		{"unknown_method", "mcp_request"},
 	}
 
-	auditor, err := NewAuditor(&Config{})
+	auditor, err := NewAuditorWithTransport(&Config{}, "sse")
 	require.NoError(t, err)
 	for _, tt := range tests {
 		t.Run(tt.mcpMethod, func(t *testing.T) {
@@ -187,7 +258,7 @@ func TestMapMCPMethodToEventType(t *testing.T) {
 
 func TestDetermineOutcome(t *testing.T) {
 	t.Parallel()
-	auditor, err := NewAuditor(&Config{})
+	auditor, err := NewAuditorWithTransport(&Config{}, "sse")
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -218,7 +289,7 @@ func TestDetermineOutcome(t *testing.T) {
 
 func TestGetClientIP(t *testing.T) {
 	t.Parallel()
-	auditor, err := NewAuditor(&Config{})
+	auditor, err := NewAuditorWithTransport(&Config{}, "sse")
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -268,7 +339,7 @@ func TestGetClientIP(t *testing.T) {
 
 func TestExtractSubjects(t *testing.T) {
 	t.Parallel()
-	auditor, err := NewAuditor(&Config{})
+	auditor, err := NewAuditorWithTransport(&Config{}, "sse")
 	require.NoError(t, err)
 
 	t.Run("with JWT claims", func(t *testing.T) {
@@ -342,7 +413,7 @@ func TestDetermineComponent(t *testing.T) {
 	t.Run("with configured component", func(t *testing.T) {
 		t.Parallel()
 		config := &Config{Component: "custom-component"}
-		auditor, err := NewAuditor(config)
+		auditor, err := NewAuditorWithTransport(config, "sse")
 		require.NoError(t, err)
 
 		req := httptest.NewRequest("GET", "/test", nil)
@@ -354,7 +425,7 @@ func TestDetermineComponent(t *testing.T) {
 	t.Run("without configured component", func(t *testing.T) {
 		t.Parallel()
 		config := &Config{}
-		auditor, err := NewAuditor(config)
+		auditor, err := NewAuditorWithTransport(config, "sse")
 		require.NoError(t, err)
 
 		req := httptest.NewRequest("GET", "/test", nil)
@@ -366,7 +437,7 @@ func TestDetermineComponent(t *testing.T) {
 
 func TestExtractTarget(t *testing.T) {
 	t.Parallel()
-	auditor, err := NewAuditor(&Config{})
+	auditor, err := NewAuditorWithTransport(&Config{}, "sse")
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -423,18 +494,17 @@ func TestExtractTarget(t *testing.T) {
 
 func TestAddMetadata(t *testing.T) {
 	t.Parallel()
-	auditor, err := NewAuditor(&Config{})
+	auditor, err := NewAuditorWithTransport(&Config{}, "sse")
 	require.NoError(t, err)
 
 	event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
-	req := httptest.NewRequest("GET", "/sse/test", nil)
 	duration := 150 * time.Millisecond
 	rw := &responseWriter{
 		ResponseWriter: httptest.NewRecorder(),
 		body:           bytes.NewBufferString("test response"),
 	}
 
-	auditor.addMetadata(event, req, duration, rw)
+	auditor.addMetadata(event, duration, rw)
 
 	require.NotNil(t, event.Metadata.Extra)
 	assert.Equal(t, int64(150), event.Metadata.Extra[MetadataExtraKeyDuration])
@@ -450,7 +520,7 @@ func TestAddEventData(t *testing.T) {
 			IncludeRequestData:  true,
 			IncludeResponseData: true,
 		}
-		auditor, err := NewAuditor(config)
+		auditor, err := NewAuditorWithTransport(config, "sse")
 		require.NoError(t, err)
 
 		event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
@@ -483,7 +553,7 @@ func TestAddEventData(t *testing.T) {
 			IncludeRequestData:  true,
 			IncludeResponseData: true,
 		}
-		auditor, err := NewAuditor(config)
+		auditor, err := NewAuditorWithTransport(config, "sse")
 		require.NoError(t, err)
 
 		event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
@@ -511,7 +581,7 @@ func TestAddEventData(t *testing.T) {
 			IncludeRequestData:  false,
 			IncludeResponseData: false,
 		}
-		auditor, err := NewAuditor(config)
+		auditor, err := NewAuditorWithTransport(config, "sse")
 		require.NoError(t, err)
 
 		event := NewAuditEvent("test", EventSource{}, OutcomeSuccess, map[string]string{}, "test")
@@ -531,7 +601,7 @@ func TestResponseWriterCapture(t *testing.T) {
 		IncludeResponseData: true,
 		MaxDataSize:         10, // Small limit for testing
 	}
-	auditor, err := NewAuditor(config)
+	auditor, err := NewAuditorWithTransport(config, "sse")
 	require.NoError(t, err)
 
 	rw := &responseWriter{
@@ -568,7 +638,7 @@ func TestResponseWriterStatusCode(t *testing.T) {
 
 func TestExtractSourceWithHeaders(t *testing.T) {
 	t.Parallel()
-	auditor, err := NewAuditor(&Config{})
+	auditor, err := NewAuditorWithTransport(&Config{}, "sse")
 	require.NoError(t, err)
 
 	req := httptest.NewRequest("GET", "/test", nil)

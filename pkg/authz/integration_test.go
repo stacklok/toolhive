@@ -218,10 +218,11 @@ func TestIntegrationListFiltering(t *testing.T) {
 				Result: json.RawMessage(responseData),
 			}
 
-			responseBytes, err := json.Marshal(jsonrpcResponse)
-			require.NoError(t, err, "Failed to marshal JSON-RPC response")
+			responseBytes, err := jsonrpc2.EncodeMessage(jsonrpcResponse)
+			require.NoError(t, err, "Failed to encode JSON-RPC response")
 
 			// Create a mock MCP server that returns the test data
+			// TODO: we should port this to testkit
 			mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
@@ -264,9 +265,12 @@ func TestIntegrationListFiltering(t *testing.T) {
 			assert.Equal(t, http.StatusOK, rr.Code, "Response should be successful")
 
 			// Parse the filtered response
-			var filteredResponse jsonrpc2.Response
-			err = json.Unmarshal(rr.Body.Bytes(), &filteredResponse)
-			require.NoError(t, err, "Failed to unmarshal filtered response")
+			var message jsonrpc2.Message
+			message, err = jsonrpc2.DecodeMessage(rr.Body.Bytes())
+			require.NoError(t, err, "Failed to decode JSON-RPC response")
+
+			filteredResponse, ok := message.(*jsonrpc2.Response)
+			require.True(t, ok, "Response should be a JSON-RPC response")
 
 			// Verify no error in the response
 			assert.Nil(t, filteredResponse.Error, "Response should not have an error")

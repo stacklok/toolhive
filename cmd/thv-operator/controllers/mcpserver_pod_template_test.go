@@ -185,16 +185,18 @@ func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 
 func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 	t.Parallel()
-	// Create a test MCPServer with secrets
+	// Create a test MCPServer with secrets and custom service account
+	customSA := "custom-mcp-sa"
 	mcpServer := &mcpv1alpha1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-mcp-server-secrets",
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			Port:      8080,
+			Image:          "test-image:latest",
+			Transport:      "stdio",
+			Port:           8080,
+			ServiceAccount: &customSA,
 			Secrets: []mcpv1alpha1.SecretRef{
 				{
 					Name:          "github-token",
@@ -242,10 +244,14 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 
 	assert.True(t, podTemplatePatchFound, "Pod template patch should be present in args")
 
-	// Parse and verify the pod template patch contains secret environment variables
+	// Parse and verify the pod template patch contains secret environment variables and service account
 	var podTemplateSpec corev1.PodTemplateSpec
 	err := json.Unmarshal([]byte(podTemplatePatch), &podTemplateSpec)
 	require.NoError(t, err, "Should be able to unmarshal pod template patch")
+
+	// Verify the service account is set in the pod template patch
+	assert.Equal(t, customSA, podTemplateSpec.Spec.ServiceAccountName,
+		"ServiceAccountName should be set in pod template patch")
 
 	// Find the mcp container in the patch
 	var mcpContainer *corev1.Container

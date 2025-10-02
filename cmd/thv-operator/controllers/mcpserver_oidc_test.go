@@ -359,7 +359,7 @@ func TestGenerateKubernetesOIDCArgs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			args := reconciler.generateKubernetesOIDCArgs(tt.mcpServer)
+			args := reconciler.generateKubernetesOIDCArgs(context.Background(), tt.mcpServer)
 			assert.Equal(t, tt.expectedArgs, args)
 		})
 	}

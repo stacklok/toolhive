@@ -26,9 +26,11 @@ builds:
     binary: thv
 # This section defines the release format.
 archives:
-  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - formats: [ 'tar.gz' ]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
+        formats: [ 'zip' ]
 # This section defines how to release to winget.
 winget:
  - name: thv

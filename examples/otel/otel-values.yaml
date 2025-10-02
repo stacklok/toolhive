@@ -33,7 +33,7 @@ config:
   exporters:
     # Jaeger exporter for distributed tracing
     otlp/jaeger:
-      endpoint: http://jaeger-all-in-one-query.monitoring:4317
+      endpoint: http://jaeger-all-in-one-collector.monitoring:4317
       tls:
         insecure: true
       timeout: 30s

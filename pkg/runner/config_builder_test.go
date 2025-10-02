@@ -920,3 +920,48 @@ func TestRunConfigSerialization_WithEnvFileDir(t *testing.T) {
 	assert.Equal(t, config.Name, deserializedConfig.Name, "Name should be correctly deserialized")
 	assert.Equal(t, config.Image, deserializedConfig.Image, "Image should be correctly deserialized")
 }
+
+func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+	mockValidator := &mockEnvVarValidator{}
+
+	tests := []struct {
+		name               string
+		opts               []RunConfigBuilderOption
+		expectedTransport  string
+		checkPort          bool
+		expectedPort       int
+		checkTargetPort    bool
+		expectedTargetPort int
+	}{}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			envVars := make(map[string]string)
+
+			opts := append([]RunConfigBuilderOption{
+				WithImage("test-image"),
+				WithName("test-name"),
+			}, tt.opts...)
+
+			config, err := NewRunConfigBuilder(ctx, nil, envVars, mockValidator, opts...)
+			require.NoError(t, err, "Creating RunConfig should not fail")
+			require.NotNil(t, config, "RunConfig should not be nil")
+
+			assert.Equal(t, tt.expectedTransport, string(config.Transport), "Transport should match expected value")
+
+			if tt.checkPort {
+				assert.Equal(t, tt.expectedPort, config.Port, "Port should match expected value")
+			}
+
+			if tt.checkTargetPort {
+				assert.Equal(t, tt.expectedTargetPort, config.TargetPort, "TargetPort should match expected value")
+			}
+		})
+	}
+}

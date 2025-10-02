@@ -155,7 +155,7 @@ spec:
         content: |
           echo "Verifying proxyrunner reads telemetry config from ConfigMap..."
           
-          # Get the deployment to verify it uses --from-configmap flag
+          # Get the deployment to verify it uses volume mounting
           DEPLOYMENT_ARGS=$(kubectl get deployment telemetry-configmap-test -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null || echo "")
           
           if [ -z "$DEPLOYMENT_ARGS" ]; then
@@ -166,11 +166,25 @@ spec:
           
           echo "Deployment args: $DEPLOYMENT_ARGS"
           
-          # Verify deployment uses --from-configmap flag
-          if echo "$DEPLOYMENT_ARGS" | grep -q -- "--from-configmap=toolhive-system/telemetry-configmap-test-runconfig"; then
-            echo "✓ Deployment uses --from-configmap flag"
+          # Verify deployment uses volume mounting
+          VOLUME_MOUNTS=$(kubectl get deployment telemetry-configmap-test -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].volumeMounts}' 2>/dev/null || echo "")
+          VOLUMES=$(kubectl get deployment telemetry-configmap-test -n toolhive-system -o jsonpath='{.spec.template.spec.volumes}' 2>/dev/null || echo "")
+
+          echo "✓ Using volume mounting for configuration"
+
+          # Verify ConfigMap volume is mounted
+          if echo "$VOLUME_MOUNTS" | jq -e '.[] | select(.name=="runconfig" and .mountPath=="/etc/runconfig" and .readOnly==true)' > /dev/null 2>&1; then
+            echo "✓ runconfig volume mount found at /etc/runconfig"
           else
-            echo "✗ Deployment does not use --from-configmap flag"
+            echo "✗ runconfig volume mount not found"
+            exit 1
+          fi
+
+          # Check for ConfigMap volume source
+          if echo "$VOLUMES" | jq -e '.[] | select(.name=="runconfig" and .configMap.name=="telemetry-configmap-test-runconfig")' > /dev/null 2>&1; then
+            echo "✓ ConfigMap volume source found"
+          else
+            echo "✗ ConfigMap volume source not found"
             exit 1
           fi
           
@@ -211,7 +225,7 @@ spec:
             echo "$POD_LOGS"
             
             # Check for ConfigMap reading indicators in logs
-            if echo "$POD_LOGS" | grep -q "from-configmap\|Loading configuration from ConfigMap\|runconfig.json"; then
+            if echo "$POD_LOGS" | grep -q "Loading configuration from ConfigMap\|runconfig.json"; then
               echo "✓ Pod logs indicate ConfigMap configuration is being read"
             else
               echo "⚠ Pod logs don't show clear ConfigMap reading indicators (may be expected)"

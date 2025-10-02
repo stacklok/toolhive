@@ -112,7 +112,7 @@ func (f *fakeDeployOps) createMcpContainer(
 	return f.errMcp
 }
 
-func (f *fakeDeployOps) createIngressContainer(_ context.Context, _ string, _ int, _ bool, _ map[string]*network.EndpointSettings) (int, error) {
+func (f *fakeDeployOps) createIngressContainer(_ context.Context, _ string, _ int, _ bool, _ map[string]*network.EndpointSettings, _ *permissions.NetworkPermissions) (int, error) {
 	f.ingressCalled = true
 	if f.errIngress != nil {
 		return 0, f.errIngress

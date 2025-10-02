@@ -1,12 +1,15 @@
 package authz
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -19,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/testkit"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
@@ -506,4 +510,228 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to unmarshal authorization middleware parameters")
 	})
+}
+
+// TestMiddlewareToolsListTestkit tests that the middleware doesn't panic with GET requests.
+func TestMiddlewareToolsListTestkit(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name       string
+		teskitOpts []testkit.TestMCPServerOption
+		policies   []string
+		mimeType   string
+		expected   []any
+	}{
+		// application/json tests
+		{
+			name: "application/json - all allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("foo", "A test tool", func() string { return "Foo" }),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			mimeType: "application/json",
+			expected: []any{
+				map[string]any{"name": "foo", "description": "A test tool"},
+			},
+		},
+		{
+			name: "application/json - one allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("foo", "A test tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("bar", "A test tool", func() string { return "Bar" }),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			mimeType: "application/json",
+			expected: []any{
+				map[string]any{"name": "foo", "description": "A test tool"},
+			},
+		},
+		{
+			name: "application/json - none allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("bar", "A test tool", func() string { return "Bar" }),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			mimeType: "application/json",
+			expected: []any{},
+		},
+
+		// text/event-stream tests
+		{
+			name: "text/event-stream - all allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("foo", "A test tool", func() string { return "Foo" }),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			mimeType: "text/event-stream",
+			expected: []any{
+				map[string]any{"name": "foo", "description": "A test tool"},
+			},
+		},
+		{
+			name: "text/event-stream - one allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("foo", "A test tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("bar", "A test tool", func() string { return "Bar" }),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			mimeType: "text/event-stream",
+			expected: []any{
+				map[string]any{"name": "foo", "description": "A test tool"},
+			},
+		},
+		{
+			name: "text/event-stream - none allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("bar", "A test tool", func() string { return "Bar" }),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			mimeType: "text/event-stream",
+			expected: []any{},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create a Cedar authorizer
+			authorizer, err := NewCedarAuthorizer(
+				CedarAuthorizerConfig{
+					Policies:     tc.policies,
+					EntitiesJSON: `[]`,
+				},
+			)
+			require.NoError(t, err, "Failed to create Cedar authorizer")
+
+			claims := jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			}
+
+			opts := tc.teskitOpts
+			opts = append(opts, testkit.WithMiddlewares(
+				func(h http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						r = r.WithContext(context.WithValue(r.Context(), auth.ClaimsContextKey{}, claims))
+						h.ServeHTTP(w, r)
+					})
+				},
+				mcpparser.ParsingMiddleware,
+				authorizer.Middleware,
+			))
+			server, err := testkit.NewStreamableTestServer(opts...)
+			require.NoError(t, err)
+			defer server.Close()
+
+			var path string
+			var parser func(*testing.T, []byte) map[string]any
+			switch tc.mimeType {
+			case "application/json":
+				path = "/mcp-json"
+				parser = jsonParser
+			case "text/event-stream":
+				path = "/mcp-sse"
+				parser = sseParser
+			}
+
+			reqBody := `{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}`
+			req, err := http.NewRequest(http.MethodPost, server.URL+path, bytes.NewBufferString(reqBody))
+			require.NoError(t, err, "Failed to create HTTP request")
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err, "Failed to create HTTP request")
+			defer resp.Body.Close()
+
+			// Check that the handler was called and the response is OK
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			payload := parser(t, body)
+			require.NotNil(t, payload["result"])
+
+			result, ok := payload["result"].(map[string]any)
+			require.True(t, ok)
+
+			tools, ok := result["tools"].([]any)
+			require.True(t, ok)
+			require.Equal(t, len(tc.expected), len(tools), "Tool count should match: '%+v' '%+v'", tc.expected, tools)
+
+			for _, expected := range tc.expected {
+				expected, ok := expected.(map[string]any)
+				require.True(t, ok)
+				found := false
+
+				for _, tool := range tools {
+					tool, ok := tool.(map[string]any)
+					require.True(t, ok)
+
+					if tool["name"] == expected["name"] {
+						found = true
+						assert.Equal(t, expected["description"], tool["description"])
+						assert.Equal(t, expected["name"], tool["name"])
+					}
+				}
+
+				require.True(t, found, "Tool %s not found", expected["name"])
+			}
+		})
+	}
+}
+
+func jsonParser(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+
+	var result map[string]any
+
+	err := json.Unmarshal(body, &result)
+	require.NoError(t, err)
+
+	return result
+}
+
+func sseParser(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+
+	var result map[string]any
+
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner.Split(testkit.NewSplitSSE(testkit.LFSep))
+	for scanner.Scan() {
+		require.NoError(t, scanner.Err())
+		for line := range strings.SplitSeq(scanner.Text(), "\n") {
+			dataLine, ok := strings.CutPrefix(line, "data:")
+			if !ok {
+				continue
+			}
+
+			err := json.Unmarshal([]byte(dataLine), &result)
+			require.NoError(t, err)
+		}
+	}
+
+	return result
 }

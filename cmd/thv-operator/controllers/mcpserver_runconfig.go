@@ -22,7 +22,6 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/authz"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/operator/accessors"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -92,7 +91,7 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *m
 	}
 
 	// Validate the RunConfig before creating the ConfigMap
-	if err := r.validateRunConfig(runConfig); err != nil {
+	if err := r.validateRunConfig(ctx, runConfig); err != nil {
 		return fmt.Errorf("invalid RunConfig: %w", err)
 	}
 
@@ -354,7 +353,7 @@ func labelsForRunConfig(mcpServerName string) map[string]string {
 }
 
 // validateRunConfig validates a RunConfig for operator-managed deployments
-func (r *MCPServerReconciler) validateRunConfig(config *runner.RunConfig) error {
+func (r *MCPServerReconciler) validateRunConfig(ctx context.Context, config *runner.RunConfig) error {
 	if config == nil {
 		return fmt.Errorf("RunConfig cannot be nil")
 	}
@@ -387,7 +386,8 @@ func (r *MCPServerReconciler) validateRunConfig(config *runner.RunConfig) error 
 		return err
 	}
 
-	logger.Debugf("RunConfig validation passed for %s", config.Name)
+	ctxLogger := log.FromContext(ctx)
+	ctxLogger.V(1).Info("RunConfig validation passed", "name", config.Name)
 	return nil
 }
 

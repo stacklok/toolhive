@@ -238,7 +238,9 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 	span.SetAttributes(attribute.String("mcp.server.name", serverName))
 
 	// Determine backend transport type
-	// Note: ToolHive always serves SSE to clients, but backends can be stdio or sse
+	// Note: ToolHive supports multiple transport types including stdio, sse, streamable-http
+	// The transport should never be empty as both CLI and API have fallbacks to "streamable-http"
+	// If transport is still empty, it indicates a configuration issue in middleware construction
 	backendTransport := m.extractBackendTransport(r)
 	span.SetAttributes(attribute.String("mcp.transport", backendTransport))
 
@@ -281,25 +283,31 @@ func (m *HTTPMiddleware) addMethodSpecificAttributes(span trace.Span, parsedMCP 
 	}
 }
 
-// extractServerName extracts the MCP server name from the HTTP request using multiple fallback strategies.
-// It first checks for the X-MCP-Server-Name header, then extracts from URL path segments
-// (skipping common prefixes like "sse", "messages", "api", "v1"), and finally falls back
-// to the middleware's configured server name.
+// extractServerName extracts the MCP server name from the HTTP request.
+// It checks for an explicit X-MCP-Server-Name header first, then falls back to the
+// configured server name. This approach is more reliable than parsing URL paths since
+// the server name is already known during middleware construction.
 func (m *HTTPMiddleware) extractServerName(r *http.Request) string {
+	// Check for explicit server name header (for advanced routing scenarios)
 	if serverName := r.Header.Get("X-MCP-Server-Name"); serverName != "" {
 		return serverName
 	}
-	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	for _, part := range pathParts {
-		if part != "" && part != "sse" && part != "messages" && part != "api" && part != "v1" {
-			return part
-		}
-	}
+
+	// Always use the configured server name - this is the correct server name
+	// that was passed during middleware construction and doesn't depend on URL structure
+	//
+	// NOTE: Previously this function attempted to parse server names from URL paths by
+	// splitting r.URL.Path and filtering out known endpoint segments like "sse", "messages",
+	// "api", "v1", etc. This approach was fundamentally flawed because:
+	// 1. It incorrectly treated endpoint names like "message" as server names
+	// 2. It made assumptions about URL structure that don't always hold
+	// 3. The actual server name is already available via m.serverName
+	// Adding more exclusions (like "message") would just be treating symptoms, not the root cause.
 	return m.serverName
 }
 
 // extractBackendTransport determines the backend transport type.
-// ToolHive always serves SSE to clients, but backends can be stdio or sse.
+// ToolHive supports multiple transport types: stdio, sse, streamable-http.
 func (m *HTTPMiddleware) extractBackendTransport(r *http.Request) string {
 	// Try to get transport info from custom headers (if set by proxy)
 	if transport := r.Header.Get("X-MCP-Transport"); transport != "" {

@@ -33,11 +33,8 @@ func TestGetMCPServer_WithGroup(t *testing.T) {
 		}
 	}
 
-	if testGroupName == "" {
+	if testGroupName == "" || group == nil {
 		t.Skip("No groups found in registry, skipping group tests")
-	}
-	if group == nil {
-		t.Skip("Test group is nil, skipping")
 	}
 
 	// Find a server in the group to test with

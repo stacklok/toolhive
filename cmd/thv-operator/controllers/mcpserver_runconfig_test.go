@@ -1441,7 +1441,7 @@ func TestValidateRunConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			r := &MCPServerReconciler{}
-			err := r.validateRunConfig(tt.config)
+			err := r.validateRunConfig(t.Context(), tt.config)
 
 			if tt.expectErr {
 				assert.Error(t, err)

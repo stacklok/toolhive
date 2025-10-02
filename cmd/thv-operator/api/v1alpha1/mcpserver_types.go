@@ -5,6 +5,23 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// Condition types for MCPServer
+const (
+	// ConditionImageValidated indicates whether this image is fine to be used
+	ConditionImageValidated = "ImageValidated"
+)
+
+const (
+	// ConditionReasonImageValidationFailed indicates image validation failed
+	ConditionReasonImageValidationFailed = "ImageValidationFailed"
+	// ConditionReasonImageValidationSuccess indicates image validation succeeded
+	ConditionReasonImageValidationSuccess = "ImageValidationSuccess"
+	// ConditionReasonImageValidationError indicates an error occurred during validation
+	ConditionReasonImageValidationError = "ImageValidationError"
+	// ConditionReasonImageValidationSkipped indicates image validation was skipped
+	ConditionReasonImageValidationSkipped = "ImageValidationSkipped"
+)
+
 // MCPServerSpec defines the desired state of MCPServer
 type MCPServerSpec struct {
 	// Image is the container image for the MCP server

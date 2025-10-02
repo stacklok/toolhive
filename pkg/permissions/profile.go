@@ -48,6 +48,9 @@ type Profile struct {
 type NetworkPermissions struct {
 	// Outbound defines outbound network permissions
 	Outbound *OutboundNetworkPermissions `json:"outbound,omitempty" yaml:"outbound,omitempty"`
+
+	// Inbound defines inbound network permissions
+	Inbound *InboundNetworkPermissions `json:"inbound,omitempty" yaml:"inbound,omitempty"`
 }
 
 // OutboundNetworkPermissions defines outbound network permissions
@@ -62,6 +65,12 @@ type OutboundNetworkPermissions struct {
 	AllowPort []int `json:"allow_port,omitempty" yaml:"allow_port,omitempty"`
 }
 
+// InboundNetworkPermissions defines inbound network permissions
+type InboundNetworkPermissions struct {
+	// AllowHost is a list of allowed hosts for inbound connections
+	AllowHost []string `json:"allow_host,omitempty" yaml:"allow_host,omitempty"`
+}
+
 // NewProfile creates a new permission profile
 func NewProfile() *Profile {
 	return &Profile{
@@ -73,6 +82,9 @@ func NewProfile() *Profile {
 				InsecureAllowAll: false,
 				AllowHost:        []string{},
 				AllowPort:        []int{},
+			},
+			Inbound: &InboundNetworkPermissions{
+				AllowHost: []string{},
 			},
 		},
 		Privileged: false,
@@ -109,6 +121,9 @@ func BuiltinNoneProfile() *Profile {
 				AllowHost:        []string{},
 				AllowPort:        []int{},
 			},
+			Inbound: &InboundNetworkPermissions{
+				AllowHost: []string{},
+			},
 		},
 		Privileged: false,
 	}
@@ -125,6 +140,9 @@ func BuiltinNetworkProfile() *Profile {
 				InsecureAllowAll: true,
 				AllowHost:        []string{},
 				AllowPort:        []int{},
+			},
+			Inbound: &InboundNetworkPermissions{
+				AllowHost: []string{},
 			},
 		},
 		Privileged: false,

@@ -4,12 +4,16 @@ package authz
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"golang.org/x/exp/jsonrpc2"
 )
+
+var errBug = errors.New("there's a bug")
 
 // ResponseFilteringWriter wraps an http.ResponseWriter to intercept and filter responses
 type ResponseFilteringWriter struct {
@@ -70,24 +74,41 @@ func (rfw *ResponseFilteringWriter) Flush() error {
 		return err
 	}
 
-	// Parse the JSON-RPC response
-	var response jsonrpc2.Response
-	if err := json.Unmarshal(rawResponse, &response); err != nil {
-		// If we can't parse it, just pass it through
+	mimeType := strings.Split(rfw.ResponseWriter.Header().Get("Content-Type"), ";")[0]
+
+	switch mimeType {
+	case "application/json":
+		return rfw.processJSONResponse(rawResponse)
+	case "text/event-stream":
+		return rfw.processSSEResponse(rawResponse)
+	default:
+		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
+		_, err := rfw.ResponseWriter.Write(rawResponse)
+		return err
+	}
+}
+
+func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) error {
+	message, err := jsonrpc2.DecodeMessage(rawResponse)
+	if err != nil {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rawResponse)
 		return err
 	}
 
-	// Filter the response based on authorization
-	filteredResponse, err := rfw.filterListResponse(&response)
+	response, ok := message.(*jsonrpc2.Response)
+	if !ok {
+		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
+		_, err := rfw.ResponseWriter.Write(rawResponse)
+		return err
+	}
+
+	filteredResponse, err := rfw.filterListResponse(response)
 	if err != nil {
-		// If filtering fails, return an error response
 		return rfw.writeErrorResponse(response.ID, err)
 	}
 
-	// Write the filtered response
-	filteredData, err := json.Marshal(filteredResponse)
+	filteredData, err := jsonrpc2.EncodeMessage(filteredResponse)
 	if err != nil {
 		return rfw.writeErrorResponse(response.ID, err)
 	}
@@ -95,6 +116,91 @@ func (rfw *ResponseFilteringWriter) Flush() error {
 	rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 	_, err = rfw.ResponseWriter.Write(filteredData)
 	return err
+}
+
+//nolint:gocyclo
+func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error {
+	// Note: this routine is adapted from the one in pkg/mcp/tool_filter.go.
+	// I don't see an obvious way to factor out the commonalities, so I'm
+	// duplicating it here, but we should refactor response parsing
+	// respecting mime types to a common routine.
+	var linesep []byte
+	if bytes.Contains(rawResponse, []byte("\r\n")) {
+		linesep = []byte("\r\n")
+	} else if bytes.Contains(rawResponse, []byte("\n")) {
+		linesep = []byte("\n")
+	} else if bytes.Contains(rawResponse, []byte("\r")) {
+		linesep = []byte("\r")
+	} else {
+		return fmt.Errorf("unsupported separator: %s", string(rawResponse))
+	}
+
+	var linesepTotal, linesepCount int
+	linesepTotal = bytes.Count(rawResponse, linesep)
+	lines := bytes.Split(rawResponse, linesep)
+	for _, line := range lines {
+		if len(line) == 0 {
+			continue
+		}
+
+		var written bool
+		if data, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+			message, err := jsonrpc2.DecodeMessage(data)
+			if err != nil {
+				rfw.ResponseWriter.WriteHeader(rfw.statusCode)
+				_, err := rfw.ResponseWriter.Write(rawResponse)
+				return err
+			}
+
+			response, ok := message.(*jsonrpc2.Response)
+			if !ok {
+				rfw.ResponseWriter.WriteHeader(rfw.statusCode)
+				_, err := rfw.ResponseWriter.Write(rawResponse)
+				return err
+			}
+
+			filteredResponse, err := rfw.filterListResponse(response)
+			if err != nil {
+				return rfw.writeErrorResponse(response.ID, err)
+			}
+
+			filteredData, err := jsonrpc2.EncodeMessage(filteredResponse)
+			if err != nil {
+				return rfw.writeErrorResponse(response.ID, err)
+			}
+
+			_, err = rfw.ResponseWriter.Write([]byte("data: " + string(filteredData) + "\n"))
+			if err != nil {
+				return fmt.Errorf("%w: %v", errBug, err)
+			}
+
+			written = true
+		}
+
+		if !written {
+			_, err := rfw.ResponseWriter.Write(line)
+			if err != nil {
+				return fmt.Errorf("%w: %v", errBug, err)
+			}
+		}
+
+		_, err := rfw.ResponseWriter.Write(linesep)
+		if err != nil {
+			return fmt.Errorf("%w: %v", errBug, err)
+		}
+		linesepCount++
+	}
+
+	// This ensures we don't send too few line separators, which might break
+	// SSE parsing.
+	if linesepCount < linesepTotal {
+		_, err := rfw.ResponseWriter.Write(linesep)
+		if err != nil {
+			return fmt.Errorf("%w: %v", errBug, err)
+		}
+	}
+
+	return nil
 }
 
 // isListOperation checks if the method is a list operation
@@ -139,8 +245,9 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 		return response, nil
 	}
 
-	var filteredTools []mcp.Tool
-
+	// Note: instantiating the list ensures that no null value is sent over the wire.
+	// This is basically defensive programming, but for clients.
+	filteredTools := []mcp.Tool{}
 	for _, tool := range listResult.Tools {
 		// Check if the user is authorized to call this tool
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
@@ -190,8 +297,9 @@ func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Res
 		return response, nil
 	}
 
-	var filteredPrompts []mcp.Prompt
-
+	// Note: instantiating the list ensures that no null value is sent over the wire.
+	// This is basically defensive programming, but for clients.
+	filteredPrompts := []mcp.Prompt{}
 	for _, prompt := range listResult.Prompts {
 		// Check if the user is authorized to get this prompt
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
@@ -241,8 +349,9 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 		return response, nil
 	}
 
-	var filteredResources []mcp.Resource
-
+	// Note: instantiating the list ensures that no null value is sent over the wire.
+	// This is basically defensive programming, but for clients.
+	filteredResources := []mcp.Resource{}
 	for _, resource := range listResult.Resources {
 		// Check if the user is authorized to read this resource
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(

@@ -107,9 +107,10 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	// Audit middleware (if enabled)
 	if config.AuditConfig != nil {
 		auditParams := audit.MiddlewareParams{
-			ConfigPath: config.AuditConfigPath, // Keep for backwards compatibility
-			ConfigData: config.AuditConfig,     // Use the loaded config data
-			Component:  config.AuditConfig.Component,
+			ConfigPath:    config.AuditConfigPath, // Keep for backwards compatibility
+			ConfigData:    config.AuditConfig,     // Use the loaded config data
+			Component:     config.AuditConfig.Component,
+			TransportType: config.Transport.String(), // Pass the actual transport type
 		}
 		auditConfig, err := types.NewMiddlewareConfig(audit.MiddlewareType, auditParams)
 		if err != nil {

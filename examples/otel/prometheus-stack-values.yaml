@@ -44,7 +44,7 @@ grafana:
     - name: Jaeger
       type: jaeger
       access: proxy
-      url: http://jaeger-all-in-one-jaeger.monitoring:16686
+      url: http://jaeger-all-in-one-query.monitoring:16686
       isDefault: false
       version: 1
       editable: true

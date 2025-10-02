@@ -438,7 +438,9 @@ func TestHTTPMiddleware_FormatRequestID(t *testing.T) {
 func TestHTTPMiddleware_ExtractServerName(t *testing.T) {
 	t.Parallel()
 
-	middleware := &HTTPMiddleware{}
+	middleware := &HTTPMiddleware{
+		serverName: "test-server", // Set a configured server name for testing
+	}
 
 	tests := []struct {
 		name     string
@@ -456,23 +458,23 @@ func TestHTTPMiddleware_ExtractServerName(t *testing.T) {
 		{
 			name:     "from path",
 			path:     "/api/v1/github/messages",
-			expected: "github",
+			expected: "test-server", // Now uses configured server name instead of path parsing
 		},
 		{
 			name:     "from path with sse",
 			path:     "/sse/weather/messages",
-			expected: "weather",
+			expected: "test-server", // Now uses configured server name instead of path parsing
 		},
 		{
 			name:     "fallback to serverName",
 			path:     "/messages",
 			query:    "session_id=abc123",
-			expected: "", // Falls back to m.serverName which is empty in test
+			expected: "test-server", // Uses configured server name
 		},
 		{
 			name:     "unknown",
 			path:     "/health",
-			expected: "health", // "health" is not in the skip list, so it's extracted from path
+			expected: "test-server", // Now uses configured server name instead of path parsing
 		},
 	}
 

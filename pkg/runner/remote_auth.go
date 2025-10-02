@@ -114,9 +114,19 @@ func (h *RemoteAuthHandler) discoverIssuerAndScopes(
 		return h.tryDiscoverFromResourceMetadata(ctx, authInfo.ResourceMetadata)
 	}
 
-	issuer := discovery.DeriveIssuerFromURL(remoteURL)
-	if issuer != "" {
-		return issuer, h.config.Scopes, nil, nil
+	// Priority 4: Try to discover actual issuer from the server's well-known endpoint
+	// This handles cases where the issuer differs from the server URL (e.g., Atlassian)
+	issuer, scopes, authServerInfo, err := h.tryDiscoverFromWellKnown(ctx, remoteURL)
+	if err == nil {
+		return issuer, scopes, authServerInfo, nil
+	}
+	logger.Debugf("Could not discover from well-known endpoint: %v", err)
+
+	// Priority 5: Last resort - derive issuer from URL without discovery
+	derivedIssuer := discovery.DeriveIssuerFromURL(remoteURL)
+	if derivedIssuer != "" {
+		logger.Infof("Using derived issuer from URL: %s", derivedIssuer)
+		return derivedIssuer, h.config.Scopes, nil, nil
 	}
 
 	// No issuer could be determined
@@ -182,4 +192,41 @@ func (*RemoteAuthHandler) findValidAuthServer(
 	}
 
 	return nil, ""
+}
+
+// tryDiscoverFromWellKnown attempts to discover the actual OAuth issuer
+// by probing the server's well-known endpoints without validating issuer match
+// This is useful when the issuer differs from the server URL (e.g., Atlassian case)
+func (h *RemoteAuthHandler) tryDiscoverFromWellKnown(
+	ctx context.Context,
+	remoteURL string,
+) (string, []string, *discovery.AuthServerInfo, error) {
+	// First try to derive a base URL from the remote URL
+	derivedURL := discovery.DeriveIssuerFromURL(remoteURL)
+	if derivedURL == "" {
+		return "", nil, nil, fmt.Errorf("could not derive base URL from %s", remoteURL)
+	}
+
+	// Try to discover the actual issuer without validation
+	// This uses DiscoverActualIssuer which doesn't validate issuer match
+	authServerInfo, err := discovery.ValidateAndDiscoverAuthServer(ctx, derivedURL)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("well-known discovery failed: %w", err)
+	}
+
+	// Successfully discovered the actual issuer
+	if authServerInfo.Issuer != derivedURL {
+		logger.Infof("Discovered actual issuer: %s (differs from server URL: %s)",
+			authServerInfo.Issuer, derivedURL)
+	}
+
+	// Determine scopes - use configured or fall back to defaults
+	scopes := h.config.Scopes
+	if len(scopes) == 0 {
+		// Use some reasonable defaults if no scopes configured
+		scopes = []string{"openid", "profile"}
+		logger.Debugf("No scopes configured, using defaults: %v", scopes)
+	}
+
+	return authServerInfo.Issuer, scopes, authServerInfo, nil
 }

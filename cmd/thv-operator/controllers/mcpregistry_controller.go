@@ -7,7 +7,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -20,6 +20,19 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sync"
+)
+
+// Default timing constants for the controller
+const (
+	// DefaultControllerRetryAfterConstant is the constant default retry interval for controller operations that fail
+	DefaultControllerRetryAfterConstant = time.Minute * 5
+)
+
+// Configurable timing variables for testing
+var (
+	// DefaultControllerRetryAfter is the configurable default retry interval for controller operations that fail
+	// This can be modified in tests to speed up retry behavior
+	DefaultControllerRetryAfter = DefaultControllerRetryAfterConstant
 )
 
 // MCPRegistryReconciler reconciles a MCPRegistry object
@@ -81,7 +94,7 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	mcpRegistry := &mcpv1alpha1.MCPRegistry{}
 	err := r.Get(ctx, req.NamespacedName, mcpRegistry)
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if kerrors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
 			// Return and don't requeue
 			ctxLogger.Info("MCPRegistry resource not found. Ignoring since object must be deleted")
@@ -148,17 +161,37 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	// 3. Create status collector for batched updates
-	statusCollector := mcpregistrystatus.NewCollector(mcpRegistry)
+	// 3. Create status manager for batched updates with separation of concerns
+	statusManager := mcpregistrystatus.NewStatusManager(mcpRegistry)
 
 	// 4. Reconcile sync operation
-	result, syncErr := r.reconcileSync(ctx, mcpRegistry, statusCollector)
+	result, syncErr := r.reconcileSync(ctx, mcpRegistry, statusManager)
 
 	// 5. Reconcile API service (deployment and service, independent of sync status)
 	if syncErr == nil {
-		if apiErr := r.registryAPIManager.ReconcileAPIService(ctx, mcpRegistry, statusCollector); apiErr != nil {
+		if apiErr := r.registryAPIManager.ReconcileAPIService(ctx, mcpRegistry); apiErr != nil {
 			ctxLogger.Error(apiErr, "Failed to reconcile API service")
+			// Set API status with detailed error message from structured error
+			statusManager.API().SetAPIStatus(mcpv1alpha1.APIPhaseError, apiErr.Message, "")
+			statusManager.API().SetAPIReadyCondition(apiErr.ConditionReason, apiErr.Message, metav1.ConditionFalse)
 			err = apiErr
+		} else {
+			// API reconciliation successful - check readiness and set appropriate status
+			isReady := r.registryAPIManager.IsAPIReady(ctx, mcpRegistry)
+			if isReady {
+				// In-cluster endpoint (simplified form works for internal access)
+				endpoint := fmt.Sprintf("http://%s.%s:8080",
+					mcpRegistry.GetAPIResourceName(), mcpRegistry.Namespace)
+				statusManager.API().SetAPIStatus(mcpv1alpha1.APIPhaseReady,
+					"Registry API is ready and serving requests", endpoint)
+				statusManager.API().SetAPIReadyCondition("APIReady",
+					"Registry API is ready and serving requests", metav1.ConditionTrue)
+			} else {
+				statusManager.API().SetAPIStatus(mcpv1alpha1.APIPhaseDeploying,
+					"Registry API deployment is not ready yet", "")
+				statusManager.API().SetAPIReadyCondition("APINotReady",
+					"Registry API deployment is not ready yet", metav1.ConditionFalse)
+			}
 		}
 	}
 
@@ -171,10 +204,11 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// 7. Derive overall phase and message from sync and API status
-	r.deriveOverallStatus(ctx, mcpRegistry, statusCollector)
+	statusDeriver := mcpregistrystatus.NewDefaultStatusDeriver()
+	r.deriveOverallStatus(ctx, mcpRegistry, statusManager, statusDeriver)
 
 	// 8. Apply all status changes in a single batch update
-	if statusUpdateErr := statusCollector.Apply(ctx, r.Client); statusUpdateErr != nil {
+	if statusUpdateErr := statusManager.Apply(ctx, r.Client); statusUpdateErr != nil {
 		ctxLogger.Error(statusUpdateErr, "Failed to apply batched status update")
 		// Return the status update error only if there was no main reconciliation error
 		if syncErr == nil {
@@ -189,7 +223,7 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Log reconciliation completion
 	if err != nil {
 		ctxLogger.Error(err, "Reconciliation completed with error",
-			"MCPRegistry.Name", mcpRegistry.Name)
+			"MCPRegistry.Name", mcpRegistry.Name, "requeueAfter", result.RequeueAfter)
 	} else {
 		var syncPhase, apiPhase string
 		if mcpRegistry.Status.SyncStatus != nil {
@@ -227,36 +261,16 @@ func (*MCPRegistryReconciler) preserveExistingSyncData(mcpRegistry *mcpv1alpha1.
 //
 //nolint:gocyclo // Complex reconciliation logic requires multiple conditions
 func (r *MCPRegistryReconciler) reconcileSync(
-	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, statusCollector mcpregistrystatus.Collector,
+	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, statusManager mcpregistrystatus.StatusManager,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
 	// Check if sync is needed - no need to refresh object here since we just fetched it
-	syncNeeded, syncReason, nextSyncTime, err := r.syncManager.ShouldSync(ctx, mcpRegistry)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to determine if sync is needed")
-		// Proceed with sync on error to be safe
-		syncNeeded = true
-		syncReason = sync.ReasonErrorCheckingSyncNeed
-	}
+	syncNeeded, syncReason, nextSyncTime := r.syncManager.ShouldSync(ctx, mcpRegistry)
 
 	if !syncNeeded {
 		ctxLogger.Info("Sync not needed", "reason", syncReason)
-
-		// Only update sync status if it's not already Idle with the right message
-		currentSyncPhase := mcpv1alpha1.SyncPhaseIdle // default
-		currentMessage := ""
-		if mcpRegistry.Status.SyncStatus != nil {
-			currentSyncPhase = mcpRegistry.Status.SyncStatus.Phase
-			currentMessage = mcpRegistry.Status.SyncStatus.Message
-		}
-
-		// Only set sync status if it needs to change
-		if currentSyncPhase != mcpv1alpha1.SyncPhaseIdle || currentMessage != "No sync required" {
-			// Preserve existing sync data when no sync is needed
-			lastSyncTime, lastSyncHash, serverCount := r.preserveExistingSyncData(mcpRegistry)
-			statusCollector.SetSyncStatus(mcpv1alpha1.SyncPhaseIdle, "No sync required", 0, lastSyncTime, lastSyncHash, serverCount)
-		}
+		// Do not update sync status if sync is not needed: this would cause unnecessary status updates
 
 		// Schedule next reconciliation if we have a sync policy
 		if nextSyncTime != nil {
@@ -273,7 +287,7 @@ func (r *MCPRegistryReconciler) reconcileSync(
 	if syncReason == sync.ReasonManualNoChanges {
 		// Preserve existing sync data for manual sync with no changes
 		lastSyncTime, lastSyncHash, serverCount := r.preserveExistingSyncData(mcpRegistry)
-		statusCollector.SetSyncStatus(
+		statusManager.Sync().SetSyncStatus(
 			mcpv1alpha1.SyncPhaseComplete, "Manual sync completed (no data changes)", 0,
 			lastSyncTime, lastSyncHash, serverCount)
 		return r.syncManager.UpdateManualSyncTriggerOnly(ctx, mcpRegistry)
@@ -281,32 +295,43 @@ func (r *MCPRegistryReconciler) reconcileSync(
 
 	// Set sync status to syncing before starting the operation
 	// Clear sync data when starting sync operation
-	statusCollector.SetSyncStatus(
+	statusManager.Sync().SetSyncStatus(
 		mcpv1alpha1.SyncPhaseSyncing, "Synchronizing registry data",
 		getCurrentAttemptCount(mcpRegistry)+1, nil, "", 0)
 
 	// Perform the sync - the sync manager will handle core registry field updates
-	result, syncResult, err := r.syncManager.PerformSync(ctx, mcpRegistry)
+	result, syncResult, syncErr := r.syncManager.PerformSync(ctx, mcpRegistry)
 
-	if err != nil {
+	if syncErr != nil {
 		// Sync failed - set sync status to failed
-		ctxLogger.Error(err, "Sync failed, scheduling retry")
+		ctxLogger.Error(syncErr, "Sync failed, scheduling retry")
 		// Preserve existing sync data when sync fails
 		lastSyncTime, lastSyncHash, serverCount := r.preserveExistingSyncData(mcpRegistry)
-		statusCollector.SetSyncStatus(mcpv1alpha1.SyncPhaseFailed,
-			fmt.Sprintf("Sync failed: %v", err), getCurrentAttemptCount(mcpRegistry)+1, lastSyncTime, lastSyncHash, serverCount)
+
+		// Set sync status with detailed error message from SyncError
+		statusManager.Sync().SetSyncStatus(mcpv1alpha1.SyncPhaseFailed,
+			syncErr.Message, getCurrentAttemptCount(mcpRegistry)+1, lastSyncTime, lastSyncHash, serverCount)
+		// Set the appropriate condition based on the error type
+		statusManager.Sync().SetSyncCondition(metav1.Condition{
+			Type:               syncErr.ConditionType,
+			Status:             metav1.ConditionFalse,
+			Reason:             syncErr.ConditionReason,
+			Message:            syncErr.Message,
+			LastTransitionTime: metav1.Now(),
+		})
+
 		// Use a shorter retry interval instead of the full sync interval
-		retryAfter := time.Minute * 5 // Default retry interval
+		retryAfter := DefaultControllerRetryAfter // Default retry interval
 		if result.RequeueAfter > 0 {
 			// If PerformSync already set a retry interval, use it
 			retryAfter = result.RequeueAfter
 		}
-		return ctrl.Result{RequeueAfter: retryAfter}, err
+		return ctrl.Result{RequeueAfter: retryAfter}, syncErr
 	}
 
 	// Sync successful - set sync status to complete using data from sync result
 	now := metav1.Now()
-	statusCollector.SetSyncStatus(mcpv1alpha1.SyncPhaseComplete, "Registry data synchronized successfully", 0,
+	statusManager.Sync().SetSyncStatus(mcpv1alpha1.SyncPhaseComplete, "Registry data synchronized successfully", 0,
 		&now, syncResult.Hash, syncResult.ServerCount)
 
 	ctxLogger.Info("Registry data sync completed successfully")
@@ -326,7 +351,7 @@ func (r *MCPRegistryReconciler) reconcileSync(
 		ctxLogger.Info("Sync successful, no automatic sync policy configured")
 	}
 
-	return result, err
+	return result, nil
 }
 
 // finalizeMCPRegistry performs the finalizer logic for the MCPRegistry
@@ -356,61 +381,25 @@ func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registr
 }
 
 // deriveOverallStatus determines the overall MCPRegistry phase and message based on sync and API status
-func (r *MCPRegistryReconciler) deriveOverallStatus(
-	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, statusCollector mcpregistrystatus.Collector) {
+func (*MCPRegistryReconciler) deriveOverallStatus(
+	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
+	statusManager mcpregistrystatus.StatusManager, statusDeriver mcpregistrystatus.StatusDeriver) {
 	ctxLogger := log.FromContext(ctx)
 
-	// Create a temporary copy with current collected status to derive phase
-	tempRegistry := mcpRegistry.DeepCopy()
-
-	// Apply the collected status changes to temp registry for phase calculation
-	// Note: This is a simulation - we can't actually access the collected values directly
-	// Instead, we'll use the DeriveOverallPhase method which works with current status
-	// The controller will need to be smart about when sync/API status get updated
-
-	// For now, let's derive phase based on current MCPRegistry status since
-	// the status collector changes haven't been applied yet
-	derivedPhase := tempRegistry.DeriveOverallPhase()
-	derivedMessage := r.deriveMessage(derivedPhase, tempRegistry)
+	// Use the StatusDeriver to determine the overall phase and message
+	// based on current sync and API statuses
+	derivedPhase, derivedMessage := statusDeriver.DeriveOverallStatus(
+		mcpRegistry.Status.SyncStatus,
+		mcpRegistry.Status.APIStatus,
+	)
 
 	// Only update phase and message if they've changed
-	if mcpRegistry.Status.Phase != derivedPhase {
-		statusCollector.SetPhase(derivedPhase)
-		ctxLogger.Info("Updated overall phase", "oldPhase", mcpRegistry.Status.Phase, "newPhase", derivedPhase)
-	}
-
-	if mcpRegistry.Status.Message != derivedMessage {
-		statusCollector.SetMessage(derivedMessage)
-		ctxLogger.Info("Updated overall message", "message", derivedMessage)
-	}
-}
-
-// deriveMessage creates an appropriate message based on the overall phase and registry state
-func (*MCPRegistryReconciler) deriveMessage(phase mcpv1alpha1.MCPRegistryPhase, mcpRegistry *mcpv1alpha1.MCPRegistry) string {
-	switch phase {
-	case mcpv1alpha1.MCPRegistryPhasePending:
-		if mcpRegistry.Status.SyncStatus != nil && mcpRegistry.Status.SyncStatus.Phase == mcpv1alpha1.SyncPhaseComplete {
-			return "Registry data synced, API deployment in progress"
-		}
-		return "Registry initialization in progress"
-	case mcpv1alpha1.MCPRegistryPhaseReady:
-		return "Registry is ready and API is serving requests"
-	case mcpv1alpha1.MCPRegistryPhaseFailed:
-		// Return more specific error message if available
-		if mcpRegistry.Status.SyncStatus != nil && mcpRegistry.Status.SyncStatus.Phase == mcpv1alpha1.SyncPhaseFailed {
-			return fmt.Sprintf("Sync failed: %s", mcpRegistry.Status.SyncStatus.Message)
-		}
-		if mcpRegistry.Status.APIStatus != nil && mcpRegistry.Status.APIStatus.Phase == mcpv1alpha1.APIPhaseError {
-			return fmt.Sprintf("API deployment failed: %s", mcpRegistry.Status.APIStatus.Message)
-		}
-		return "Registry operation failed"
-	case mcpv1alpha1.MCPRegistryPhaseSyncing:
-		return "Registry data synchronization in progress"
-	case mcpv1alpha1.MCPRegistryPhaseTerminating:
-		return "Registry is being terminated"
-	default:
-		return "Registry status unknown"
-	}
+	statusManager.SetOverallStatus(derivedPhase, derivedMessage)
+	ctxLogger.Info("Updated overall status",
+		"oldPhase", mcpRegistry.Status.Phase,
+		"newPhase", derivedPhase,
+		"oldMessage", mcpRegistry.Status.Message,
+		"newMessage", derivedMessage)
 }
 
 // SetupWithManager sets up the controller with the Manager.

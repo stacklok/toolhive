@@ -82,6 +82,9 @@ type RunFlags struct {
 	// Network isolation
 	IsolateNetwork bool
 
+	// Proxy headers
+	TrustProxyHeaders bool
+
 	// Labels
 	Labels []string
 
@@ -195,6 +198,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 
 	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
+	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
+		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix)")
 	cmd.Flags().StringArrayVarP(&config.Labels, "label", "l", []string{}, "Set labels on the container (format: key=value)")
 	cmd.Flags().BoolVarP(&config.Foreground, "foreground", "f", false, "Run in foreground mode (block until container exits)")
 	cmd.Flags().StringArrayVar(
@@ -404,6 +409,14 @@ func buildRunnerConfig(
 		transportType = serverMetadata.GetTransport()
 	}
 
+	// Determine server name for telemetry (similar to validateConfig logic)
+	// This ensures telemetry middleware gets the correct server name
+	imageMetadata, _ := serverMetadata.(*registry.ImageMetadata)
+	serverName := runFlags.Name
+	if serverName == "" && imageMetadata != nil {
+		serverName = imageMetadata.Name
+	}
+
 	// set default options
 	opts := []runner.RunConfigBuilderOption{
 		runner.WithRuntime(rt),
@@ -420,6 +433,7 @@ func buildRunnerConfig(
 		runner.WithAuditConfigPath(runFlags.AuditConfig),
 		runner.WithPermissionProfileNameOrPath(runFlags.PermissionProfile),
 		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
+		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
 		runner.WithProxyMode(types.ProxyMode(runFlags.ProxyMode)),
 		runner.WithTransportAndPorts(transportType, runFlags.ProxyPort, runFlags.TargetPort),
@@ -443,6 +457,7 @@ func buildRunnerConfig(
 
 	opts = append(opts, runner.WithToolsOverride(toolsOverride))
 	// Configure middleware from flags
+	// Use computed serverName and transportType for correct telemetry labels
 	opts = append(
 		opts,
 		runner.WithMiddlewareFromFlags(
@@ -453,8 +468,8 @@ func buildRunnerConfig(
 			runFlags.AuthzConfig,
 			runFlags.EnableAudit,
 			runFlags.AuditConfig,
-			runFlags.Name,
-			runFlags.Transport,
+			serverName,
+			transportType,
 		),
 	)
 
@@ -490,14 +505,9 @@ func buildRunnerConfig(
 		),
 		runner.WithToolsFilter(runFlags.ToolsFilter))
 
-	imageMetadata, _ := serverMetadata.(*registry.ImageMetadata)
 	// Process environment files
-	var err error
 	if runFlags.EnvFile != "" {
 		opts = append(opts, runner.WithEnvFile(runFlags.EnvFile))
-		if err != nil {
-			return nil, fmt.Errorf("failed to process env file %s: %v", runFlags.EnvFile, err)
-		}
 	}
 	if runFlags.EnvFileDir != "" {
 		opts = append(opts, runner.WithEnvFilesFromDirectory(runFlags.EnvFileDir))

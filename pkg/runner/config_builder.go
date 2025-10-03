@@ -218,6 +218,14 @@ func WithNetworkIsolation(isolate bool) RunConfigBuilderOption {
 	}
 }
 
+// WithTrustProxyHeaders sets whether to trust X-Forwarded-* headers from reverse proxies
+func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.TrustProxyHeaders = trust
+		return nil
+	}
+}
+
 // WithK8sPodPatch sets the Kubernetes pod template patch
 func WithK8sPodPatch(patch string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
@@ -453,7 +461,7 @@ func WithMiddlewareFromFlags(
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
 		middlewareConfigs = addAuthzMiddleware(middlewareConfigs, authzConfigPath)
-		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName)
+		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
 
 		// Set the populated middleware configs
 		b.config.MiddlewareConfigs = middlewareConfigs
@@ -582,15 +590,16 @@ func addAuthzMiddleware(
 func addAuditMiddleware(
 	middlewareConfigs []types.MiddlewareConfig,
 	enableAudit bool,
-	auditConfigPath, serverName string,
+	auditConfigPath, serverName, transportType string,
 ) []types.MiddlewareConfig {
 	if !enableAudit && auditConfigPath == "" {
 		return middlewareConfigs
 	}
 
 	auditParams := audit.MiddlewareParams{
-		ConfigPath: auditConfigPath, // Keep for backwards compatibility
-		Component:  serverName,      // Use server name as component
+		ConfigPath:    auditConfigPath, // Keep for backwards compatibility
+		Component:     serverName,      // Use server name as component
+		TransportType: transportType,   // Pass the actual transport type
 	}
 
 	// Read audit config contents if path is provided

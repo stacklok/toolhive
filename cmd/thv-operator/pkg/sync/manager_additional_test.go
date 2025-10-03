@@ -55,18 +55,6 @@ func TestDefaultSyncManager_isSyncNeededForState(t *testing.T) {
 			description: "Should not need sync when sync phase is complete",
 		},
 		{
-			name: "sync not needed when sync status is idle",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				Status: mcpv1alpha1.MCPRegistryStatus{
-					SyncStatus: &mcpv1alpha1.SyncStatus{
-						Phase: mcpv1alpha1.SyncPhaseIdle,
-					},
-				},
-			},
-			expected:    false,
-			description: "Should not need sync when sync phase is idle",
-		},
-		{
 			name: "sync needed when no sync status and overall phase is failed",
 			mcpRegistry: &mcpv1alpha1.MCPRegistry{
 				Status: mcpv1alpha1.MCPRegistryStatus{
@@ -208,7 +196,7 @@ func TestDefaultSyncManager_isSyncNeededForState_EdgeCases(t *testing.T) {
 			},
 		}
 		result := manager.isSyncNeededForState(registry)
-		// Empty phase is treated as needing sync since it's not complete or idle
+		// Empty phase is treated as needing sync since it's not complete
 		assert.True(t, result, "Should need sync for empty sync phase")
 	})
 }

@@ -120,6 +120,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 	var remoteAuthConfig *runner.RemoteAuthConfig
 	var imageURL string
 	var imageMetadata *registry.ImageMetadata
+	var serverMetadata registry.ServerMetadata
 
 	if req.URL != "" {
 		// Configure remote authentication if OAuth config is provided
@@ -131,7 +132,6 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 			return nil, err
 		}
 	} else {
-		var serverMetadata registry.ServerMetadata
 		// Create a dedicated context with longer timeout for image retrieval
 		imageCtx, cancel := context.WithTimeout(ctx, imageRetrievalTimeout)
 		defer cancel()
@@ -205,6 +205,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		runner.WithAuditConfigPath(""),
 		runner.WithPermissionProfile(req.PermissionProfile),
 		runner.WithNetworkIsolation(req.NetworkIsolation),
+		runner.WithTrustProxyHeaders(req.TrustProxyHeaders),
 		runner.WithK8sPodPatch(""),
 		runner.WithProxyMode(types.ProxyMode(req.ProxyMode)),
 		runner.WithTransportAndPorts(req.Transport, req.ProxyPort, req.TargetPort),
@@ -214,6 +215,14 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		runner.WithToolsFilter(req.ToolsFilter),
 		runner.WithToolsOverride(toolsOverride),
 		runner.WithTelemetryConfig("", false, false, false, "", 0.0, nil, false, nil),
+	}
+
+	// Determine transport type
+	transportType := "streamable-http"
+	if req.Transport != "" {
+		transportType = req.Transport
+	} else if serverMetadata != nil {
+		transportType = serverMetadata.GetTransport()
 	}
 
 	// Configure middleware from flags
@@ -227,7 +236,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 			false,
 			"",
 			req.Name,
-			req.Transport,
+			transportType,
 		),
 	)
 

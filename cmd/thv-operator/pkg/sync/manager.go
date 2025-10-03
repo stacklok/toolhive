@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -14,6 +13,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/filtering"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 )
 
@@ -26,8 +26,9 @@ type Result struct {
 // Sync reason constants
 const (
 	// Registry state related reasons
-	ReasonAlreadyInProgress = "sync-already-in-progress"
-	ReasonRegistryNotReady  = "registry-not-ready"
+	ReasonAlreadyInProgress     = "sync-already-in-progress"
+	ReasonRegistryNotReady      = "registry-not-ready"
+	ReasonRequeueTimeNotElapsed = "requeue-time-not-elapsed"
 
 	// Data change related reasons
 	ReasonSourceDataChanged    = "source-data-changed"
@@ -63,13 +64,26 @@ const (
 	conditionReasonStorageFailed         = "StorageFailed"
 )
 
+// Default timing constants for the sync manager
+const (
+	// DefaultSyncRequeueAfterConstant is the constant default requeue interval for sync operations
+	DefaultSyncRequeueAfterConstant = time.Minute * 5
+)
+
+// Configurable timing variables for testing
+var (
+	// DefaultSyncRequeueAfter is the configurable default requeue interval for sync operations
+	// This can be modified in tests to speed up requeue behavior
+	DefaultSyncRequeueAfter = DefaultSyncRequeueAfterConstant
+)
+
 // Manager manages synchronization operations for MCPRegistry resources
 type Manager interface {
 	// ShouldSync determines if a sync operation is needed
-	ShouldSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, string, *time.Time, error)
+	ShouldSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, string, *time.Time)
 
 	// PerformSync executes the complete sync operation
-	PerformSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, *Result, error)
+	PerformSync(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, *Result, *mcpregistrystatus.Error)
 
 	// UpdateManualSyncTriggerOnly updates manual sync trigger tracking without performing actual sync
 	UpdateManualSyncTriggerOnly(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, error)
@@ -127,21 +141,29 @@ func NewDefaultSyncManager(k8sClient client.Client, scheme *runtime.Scheme,
 // ShouldSync determines if a sync operation is needed and when the next sync should occur
 func (s *DefaultSyncManager) ShouldSync(
 	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, string, *time.Time, error) {
+	mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, string, *time.Time) {
+	ctxLogger := log.FromContext(ctx)
+
 	// If registry is currently syncing, don't start another sync
 	if mcpRegistry.Status.Phase == mcpv1alpha1.MCPRegistryPhaseSyncing {
-		return false, ReasonAlreadyInProgress, nil, nil
+		return false, ReasonAlreadyInProgress, nil
 	}
 
 	// Check if sync is needed based on registry state
 	if syncNeeded := s.isSyncNeededForState(mcpRegistry); syncNeeded {
-		return true, ReasonRegistryNotReady, nil, nil
+		if requeueElapsed := s.isRequeueElapsed(mcpRegistry); requeueElapsed {
+			return true, ReasonRegistryNotReady, nil
+		}
+		ctxLogger.Info("Sync not needed because requeue time not elapsed",
+			"requeueTime", DefaultSyncRequeueAfter, "lastAttempt", mcpRegistry.Status.SyncStatus.LastAttempt)
+		return false, ReasonRequeueTimeNotElapsed, nil
 	}
 
 	// Check if source data has changed by comparing hash
 	dataChanged, err := s.dataChangeDetector.IsDataChanged(ctx, mcpRegistry)
 	if err != nil {
-		return true, ReasonErrorCheckingChanges, nil, err
+		ctxLogger.Error(err, "Failed to determine if data has changed")
+		return true, ReasonErrorCheckingChanges, nil
 	}
 
 	// Check for manual sync trigger first (always update trigger tracking)
@@ -149,29 +171,30 @@ func (s *DefaultSyncManager) ShouldSync(
 	// Manual sync was requested - but only sync if data has actually changed
 	if manualSyncRequested {
 		if dataChanged {
-			return true, ReasonManualWithChanges, nil, nil
+			return true, ReasonManualWithChanges, nil
 		}
 		// Manual sync requested but no data changes - update trigger tracking only
-		return true, ReasonManualNoChanges, nil, nil
+		return true, ReasonManualNoChanges, nil
 	}
 
 	if dataChanged {
-		return true, ReasonSourceDataChanged, nil, nil
+		return true, ReasonSourceDataChanged, nil
 	}
 
 	// Data hasn't changed - check if we need to schedule future checks
 	if mcpRegistry.Spec.SyncPolicy != nil {
 		_, nextSyncTime, err := s.automaticSyncChecker.IsIntervalSyncNeeded(mcpRegistry)
 		if err != nil {
-			return true, ReasonErrorParsingInterval, nil, err
+			ctxLogger.Error(err, "Failed to determine if interval sync is needed")
+			return true, ReasonErrorParsingInterval, nil
 		}
 
 		// No sync needed since data hasn't changed, but schedule next check
-		return false, ReasonUpToDateWithPolicy, &nextSyncTime, nil
+		return false, ReasonUpToDateWithPolicy, &nextSyncTime
 	}
 
 	// No automatic sync policy, registry is up-to-date
-	return false, ReasonUpToDateNoPolicy, nil, nil
+	return false, ReasonUpToDateNoPolicy, nil
 }
 
 // isSyncNeededForState checks if sync is needed based on the registry's current state
@@ -184,7 +207,7 @@ func (*DefaultSyncManager) isSyncNeededForState(mcpRegistry *mcpv1alpha1.MCPRegi
 			return true
 		}
 		// If sync is not complete, sync is needed
-		if syncPhase != mcpv1alpha1.SyncPhaseComplete && syncPhase != mcpv1alpha1.SyncPhaseIdle {
+		if syncPhase != mcpv1alpha1.SyncPhaseComplete {
 			return true
 		}
 		// Sync is complete, no sync needed based on state
@@ -207,20 +230,28 @@ func (*DefaultSyncManager) isSyncNeededForState(mcpRegistry *mcpv1alpha1.MCPRegi
 	return false
 }
 
+// isRequeueElapsed checks if the requeue time has elapsed
+func (*DefaultSyncManager) isRequeueElapsed(mcpRegistry *mcpv1alpha1.MCPRegistry) bool {
+	if mcpRegistry.Status.SyncStatus != nil && mcpRegistry.Status.SyncStatus.LastAttempt != nil {
+		return time.Now().After(mcpRegistry.Status.SyncStatus.LastAttempt.Add(DefaultSyncRequeueAfter))
+	}
+	return true
+}
+
 // PerformSync performs the complete sync operation for the MCPRegistry
 // The controller is responsible for setting sync status via the status collector
 func (s *DefaultSyncManager) PerformSync(
 	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
-) (ctrl.Result, *Result, error) {
+) (ctrl.Result, *Result, *mcpregistrystatus.Error) {
 	// Fetch and process registry data
 	fetchResult, err := s.fetchAndProcessRegistryData(ctx, mcpRegistry)
 	if err != nil {
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil, err
+		return ctrl.Result{RequeueAfter: DefaultSyncRequeueAfter}, nil, err
 	}
 
 	// Store the processed registry data
 	if err := s.storeRegistryData(ctx, mcpRegistry, fetchResult); err != nil {
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil, err
+		return ctrl.Result{RequeueAfter: DefaultSyncRequeueAfter}, nil, err
 	}
 
 	// Update the core registry fields that sync manager owns
@@ -271,64 +302,33 @@ func (s *DefaultSyncManager) Delete(ctx context.Context, mcpRegistry *mcpv1alpha
 	return s.storageManager.Delete(ctx, mcpRegistry)
 }
 
-// updatePhase updates the MCPRegistry phase and message
-func (s *DefaultSyncManager) updatePhase(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
-	phase mcpv1alpha1.MCPRegistryPhase, message string) error {
-	mcpRegistry.Status.Phase = phase
-	mcpRegistry.Status.Message = message
-	return s.client.Status().Update(ctx, mcpRegistry)
-}
-
-// updatePhaseFailedWithCondition updates phase, message and sets a condition
-func (s *DefaultSyncManager) updatePhaseFailedWithCondition(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
-	message string, conditionType string, reason, conditionMessage string) error {
-
-	// Refresh object to get latest resourceVersion
-	if err := s.client.Get(ctx, client.ObjectKeyFromObject(mcpRegistry), mcpRegistry); err != nil {
-		return err
-	}
-
-	mcpRegistry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed
-	mcpRegistry.Status.Message = message
-
-	// Set condition
-	meta.SetStatusCondition(&mcpRegistry.Status.Conditions, metav1.Condition{
-		Type:    conditionType,
-		Status:  metav1.ConditionFalse,
-		Reason:  reason,
-		Message: conditionMessage,
-	})
-
-	return s.client.Status().Update(ctx, mcpRegistry)
-}
-
 // fetchAndProcessRegistryData handles source handler creation, validation, fetch, and filtering
 func (s *DefaultSyncManager) fetchAndProcessRegistryData(
 	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry) (*sources.FetchResult, error) {
+	mcpRegistry *mcpv1alpha1.MCPRegistry) (*sources.FetchResult, *mcpregistrystatus.Error) {
 	ctxLogger := log.FromContext(ctx)
 
 	// Get source handler
 	sourceHandler, err := s.sourceHandlerFactory.CreateHandler(mcpRegistry.Spec.Source.Type)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to create source handler")
-		if updateErr := s.updatePhaseFailedWithCondition(ctx, mcpRegistry,
-			fmt.Sprintf("Failed to create source handler: %v", err),
-			mcpv1alpha1.ConditionSourceAvailable, conditionReasonHandlerCreationFailed, err.Error()); updateErr != nil {
-			ctxLogger.Error(updateErr, "Failed to update status after handler creation failure")
+		return nil, &mcpregistrystatus.Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to create source handler: %v", err),
+			ConditionType:   mcpv1alpha1.ConditionSourceAvailable,
+			ConditionReason: conditionReasonHandlerCreationFailed,
 		}
-		return nil, err
 	}
 
 	// Validate source configuration
 	if err := sourceHandler.Validate(&mcpRegistry.Spec.Source); err != nil {
 		ctxLogger.Error(err, "Source validation failed")
-		if updateErr := s.updatePhaseFailedWithCondition(ctx, mcpRegistry,
-			fmt.Sprintf("Source validation failed: %v", err),
-			mcpv1alpha1.ConditionSourceAvailable, conditionReasonValidationFailed, err.Error()); updateErr != nil {
-			ctxLogger.Error(updateErr, "Failed to update status after validation failure")
+		return nil, &mcpregistrystatus.Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Source validation failed: %v", err),
+			ConditionType:   mcpv1alpha1.ConditionSourceAvailable,
+			ConditionReason: conditionReasonValidationFailed,
 		}
-		return nil, err
 	}
 
 	// Execute fetch operation
@@ -336,12 +336,12 @@ func (s *DefaultSyncManager) fetchAndProcessRegistryData(
 	if err != nil {
 		ctxLogger.Error(err, "Fetch operation failed")
 		// Sync attempt counting is now handled by the controller via status collector
-		if updateErr := s.updatePhaseFailedWithCondition(ctx, mcpRegistry,
-			fmt.Sprintf("Fetch failed: %v", err),
-			mcpv1alpha1.ConditionSyncSuccessful, conditionReasonFetchFailed, err.Error()); updateErr != nil {
-			ctxLogger.Error(updateErr, "Failed to update status after fetch failure")
+		return nil, &mcpregistrystatus.Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Fetch failed: %v", err),
+			ConditionType:   mcpv1alpha1.ConditionSyncSuccessful,
+			ConditionReason: conditionReasonFetchFailed,
 		}
-		return nil, err
 	}
 
 	ctxLogger.Info("Registry data fetched successfully from source",
@@ -361,7 +361,7 @@ func (s *DefaultSyncManager) fetchAndProcessRegistryData(
 func (s *DefaultSyncManager) applyFilteringIfConfigured(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
-	fetchResult *sources.FetchResult) error {
+	fetchResult *sources.FetchResult) *mcpregistrystatus.Error {
 	ctxLogger := log.FromContext(ctx)
 
 	if mcpRegistry.Spec.Filter != nil {
@@ -372,12 +372,12 @@ func (s *DefaultSyncManager) applyFilteringIfConfigured(
 		filteredRegistry, err := s.filterService.ApplyFilters(ctx, fetchResult.Registry, mcpRegistry.Spec.Filter)
 		if err != nil {
 			ctxLogger.Error(err, "Registry filtering failed")
-			if updateErr := s.updatePhaseFailedWithCondition(ctx, mcpRegistry,
-				fmt.Sprintf("Filtering failed: %v", err),
-				mcpv1alpha1.ConditionSyncSuccessful, conditionReasonFetchFailed, err.Error()); updateErr != nil {
-				ctxLogger.Error(updateErr, "Failed to update status after filtering failure")
+			return &mcpregistrystatus.Error{
+				Err:             err,
+				Message:         fmt.Sprintf("Filtering failed: %v", err),
+				ConditionType:   mcpv1alpha1.ConditionSyncSuccessful,
+				ConditionReason: conditionReasonFetchFailed,
 			}
-			return err
 		}
 
 		// Update fetch result with filtered data
@@ -400,17 +400,17 @@ func (s *DefaultSyncManager) applyFilteringIfConfigured(
 func (s *DefaultSyncManager) storeRegistryData(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
-	fetchResult *sources.FetchResult) error {
+	fetchResult *sources.FetchResult) *mcpregistrystatus.Error {
 	ctxLogger := log.FromContext(ctx)
 
 	if err := s.storageManager.Store(ctx, mcpRegistry, fetchResult.Registry); err != nil {
 		ctxLogger.Error(err, "Failed to store registry data")
-		if updateErr := s.updatePhaseFailedWithCondition(ctx, mcpRegistry,
-			fmt.Sprintf("Storage failed: %v", err),
-			mcpv1alpha1.ConditionSyncSuccessful, conditionReasonStorageFailed, err.Error()); updateErr != nil {
-			ctxLogger.Error(updateErr, "Failed to update status after storage failure")
+		return &mcpregistrystatus.Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Storage failed: %v", err),
+			ConditionType:   mcpv1alpha1.ConditionSyncSuccessful,
+			ConditionReason: conditionReasonStorageFailed,
 		}
-		return err
 	}
 
 	ctxLogger.Info("Registry data stored successfully",
@@ -425,13 +425,18 @@ func (s *DefaultSyncManager) storeRegistryData(
 func (s *DefaultSyncManager) updateCoreRegistryFields(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
-	fetchResult *sources.FetchResult) error {
+	fetchResult *sources.FetchResult) *mcpregistrystatus.Error {
 	ctxLogger := log.FromContext(ctx)
 
 	// Refresh the object to get latest resourceVersion before final update
 	if err := s.client.Get(ctx, client.ObjectKeyFromObject(mcpRegistry), mcpRegistry); err != nil {
 		ctxLogger.Error(err, "Failed to refresh MCPRegistry object")
-		return err
+		return &mcpregistrystatus.Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to refresh MCPRegistry object: %v", err),
+			ConditionType:   mcpv1alpha1.ConditionSyncSuccessful,
+			ConditionReason: "ObjectRefreshFailed",
+		}
 	}
 
 	// Get storage reference
@@ -453,7 +458,12 @@ func (s *DefaultSyncManager) updateCoreRegistryFields(
 	// Single final status update
 	if err := s.client.Status().Update(ctx, mcpRegistry); err != nil {
 		ctxLogger.Error(err, "Failed to update core registry fields")
-		return err
+		return &mcpregistrystatus.Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to update core registry fields: %v", err),
+			ConditionType:   mcpv1alpha1.ConditionSyncSuccessful,
+			ConditionReason: "StatusUpdateFailed",
+		}
 	}
 
 	ctxLogger.Info("MCPRegistry sync completed successfully",

@@ -112,7 +112,7 @@ func TestCreateMiddleware(t *testing.T) {
 	t.Parallel()
 	config := &Config{}
 
-	middleware, err := config.CreateMiddleware()
+	middleware, err := config.CreateMiddlewareWithTransport("sse")
 	assert.NoError(t, err)
 	assert.NotNil(t, middleware)
 }
@@ -236,7 +236,7 @@ func TestConfigMinimalJSON(t *testing.T) {
 func TestGetMiddlewareFromFileError(t *testing.T) {
 	t.Parallel()
 	// Test with non-existent file
-	_, err := GetMiddlewareFromFile("/non/existent/file.json")
+	_, err := GetMiddlewareFromFile("/non/existent/file.json", "sse")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to load audit config")
 }

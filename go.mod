@@ -43,7 +43,7 @@ require (
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.27.0
 	golang.ngrok.com/ngrok/v2 v2.1.0
-	golang.org/x/exp/jsonrpc2 v0.0.0-20250911091902-df9299821621
+	golang.org/x/exp/jsonrpc2 v0.0.0-20251002181428-27f1f14c8bb9
 	golang.org/x/mod v0.28.0
 	golang.org/x/oauth2 v0.31.0
 	golang.org/x/sync v0.17.0

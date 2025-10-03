@@ -14,12 +14,19 @@ import (
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
+// SecretMapping represents a secret name and its target environment variable
+type SecretMapping struct {
+	Name   string `json:"name"`
+	Target string `json:"target"`
+}
+
 // runServerArgs holds the arguments for running a server
 type runServerArgs struct {
-	Server string            `json:"server"`
-	Name   string            `json:"name,omitempty"`
-	Host   string            `json:"host,omitempty"`
-	Env    map[string]string `json:"env,omitempty"`
+	Server  string            `json:"server"`
+	Name    string            `json:"name,omitempty"`
+	Host    string            `json:"host,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	Secrets []SecretMapping   `json:"secrets,omitempty"`
 }
 
 // RunServer runs an MCP server
@@ -119,6 +126,12 @@ func buildServerConfig(
 	// Prepare environment variables
 	envVars := prepareEnvironmentVariables(imageMetadata, args.Env)
 
+	// Prepare secrets
+	secrets := prepareSecrets(args.Secrets)
+	if len(secrets) > 0 {
+		opts = append(opts, runner.WithSecrets(secrets))
+	}
+
 	// Build the configuration
 	envVarValidator := &runner.DetachedEnvVarValidator{}
 	return runner.NewRunConfigBuilder(ctx, imageMetadata, envVars, envVarValidator, opts...)
@@ -157,6 +170,21 @@ func prepareEnvironmentVariables(imageMetadata *registry.ImageMetadata, userEnv 
 	}
 
 	return envVarsMap
+}
+
+// prepareSecrets converts SecretMapping array to the string format expected by the runner
+func prepareSecrets(secretMappings []SecretMapping) []string {
+	if len(secretMappings) == 0 {
+		return nil
+	}
+
+	secrets := make([]string, len(secretMappings))
+	for i, mapping := range secretMappings {
+		// Convert to the format expected by runner: "secret_name,target=ENV_VAR_NAME"
+		secrets[i] = fmt.Sprintf("%s,target=%s", mapping.Name, mapping.Target)
+	}
+
+	return secrets
 }
 
 // saveAndRunServer saves the configuration and runs the server

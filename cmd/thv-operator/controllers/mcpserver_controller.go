@@ -807,6 +807,10 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		if m.Spec.ProxyMode != "" {
 			args = append(args, fmt.Sprintf("--proxy-mode=%s", m.Spec.ProxyMode))
 		}
+		// Add trust proxy headers flag if enabled
+		if m.Spec.TrustProxyHeaders {
+			args = append(args, "--trust-proxy-headers")
+		}
 	}
 
 	// Add pod template patch and permission profile only if not using ConfigMap

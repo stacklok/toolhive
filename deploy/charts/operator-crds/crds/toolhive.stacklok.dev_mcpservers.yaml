@@ -8942,6 +8942,13 @@ spec:
                 - streamable-http
                 - sse
                 type: string
+              trustProxyHeaders:
+                default: false
+                description: |-
+                  TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
+                  When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,
+                  and X-Forwarded-Prefix headers to construct endpoint URLs
+                type: boolean
               volumes:
                 description: Volumes are volumes to mount in the MCP server container
                 items:

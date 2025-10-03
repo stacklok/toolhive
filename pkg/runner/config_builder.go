@@ -218,6 +218,14 @@ func WithNetworkIsolation(isolate bool) RunConfigBuilderOption {
 	}
 }
 
+// WithTrustProxyHeaders sets whether to trust X-Forwarded-* headers from reverse proxies
+func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.TrustProxyHeaders = trust
+		return nil
+	}
+}
+
 // WithK8sPodPatch sets the Kubernetes pod template patch
 func WithK8sPodPatch(patch string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

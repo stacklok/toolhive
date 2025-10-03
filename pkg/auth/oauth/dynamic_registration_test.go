@@ -368,6 +368,7 @@ func TestDynamicClientRegistrationResponse_Validation(t *testing.T) {
 
 // TestScopeList_UnmarshalJSON tests that the ScopeList unmarshaling works correctly
 func TestScopeList_UnmarshalJSON(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		jsonIn  string
@@ -424,6 +425,7 @@ func TestScopeList_UnmarshalJSON(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			var s ScopeList
 			err := json.Unmarshal([]byte(tt.jsonIn), &s)
 

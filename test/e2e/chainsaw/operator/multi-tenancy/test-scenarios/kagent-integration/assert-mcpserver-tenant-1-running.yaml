@@ -1,0 +1,44 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: kagent-tenant-1
+  namespace: toolhive-tenant-1
+status:
+  conditions:
+  - type: Ready
+    status: "True"
+    reason: MCPServerReady
+  - type: DeploymentReady
+    status: "True"
+    reason: DeploymentReady
+  - type: ServiceReady
+    status: "True"
+    reason: ServiceReady
+  phase: Running
+---
+# Verify ToolServer (v1alpha1) is created
+apiVersion: kagent.dev/v1alpha1
+kind: ToolServer
+metadata:
+  name: kagent-tenant-1
+  namespace: toolhive-tenant-1
+  ownerReferences:
+  - apiVersion: toolhive.stacklok.dev/v1alpha1
+    kind: MCPServer
+    name: kagent-tenant-1
+    controller: true
+    blockOwnerDeletion: true
+spec:
+  transport: stdio
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  serviceAccount: proxyrunner-sa
+  env:
+  - name: TRANSPORT
+    value: stdio
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"

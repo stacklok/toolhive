@@ -1,0 +1,36 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: kagent-tenant-2
+  namespace: toolhive-tenant-2
+status:
+  conditions:
+  - type: Ready
+    status: "True"
+    reason: MCPServerReady
+  - type: DeploymentReady
+    status: "True"
+    reason: DeploymentReady
+  - type: ServiceReady
+    status: "True"
+    reason: ServiceReady
+  phase: Running
+---
+# Verify RemoteMCPServer (v1alpha2) is created for SSE transport
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
+metadata:
+  name: kagent-tenant-2
+  namespace: toolhive-tenant-2
+  ownerReferences:
+  - apiVersion: toolhive.stacklok.dev/v1alpha1
+    kind: MCPServer
+    name: kagent-tenant-2
+    controller: true
+    blockOwnerDeletion: true
+spec:
+  transport: sse
+  url: http://kagent-tenant-2.toolhive-tenant-2.svc.cluster.local:8080
+  env:
+  - name: TRANSPORT
+    value: sse

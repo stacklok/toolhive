@@ -1,0 +1,266 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: kagent-integration-multi-tenant
+spec:
+  description: Tests Kagent integration in multi-tenant environment
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    exec: 300s
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+      
+  - name: enable-kagent-integration
+    description: Enable Kagent integration in operator
+    try:
+    - script:
+        content: |
+          echo "Enabling Kagent integration in operator..."
+          
+          # Update operator deployment to enable Kagent integration
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='json' -p='[
+            {
+              "op": "replace",
+              "path": "/spec/template/spec/containers/0/env",
+              "value": [
+                {"name": "UNSTRUCTURED_LOGS", "value": "false"},
+                {"name": "ENABLE_EXPERIMENTAL_FEATURES", "value": "false"},
+                {"name": "WATCH_NAMESPACE", "value": "toolhive-tenant-1,toolhive-tenant-2"},
+                {"name": "TOOLHIVE_RUNNER_IMAGE", "value": "ghcr.io/stacklok/toolhive/proxyrunner:v0.3.5"},
+                {"name": "TOOLHIVE_PROXY_HOST", "value": "0.0.0.0"},
+                {"name": "TOOLHIVE_REGISTRY_API_IMAGE", "value": "ghcr.io/stacklok/toolhive/registry-api:v0.3.5"},
+                {"name": "KAGENT_INTEGRATION_ENABLED", "value": "true"},
+                {"name": "KAGENT_API_VERSION", "value": "v1alpha2"}
+              ]
+            }
+          ]'
+          
+          # Wait for operator to restart
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          
+          echo "✓ Kagent integration enabled for multi-tenant setup"
+
+  - name: install-kagent-crds
+    description: Install Kagent CRDs for testing
+    try:
+    - script:
+        content: |
+          echo "Installing Kagent CRDs for testing..."
+          
+          # Create RemoteMCPServer CRD (v1alpha2)
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apiextensions.k8s.io/v1
+          kind: CustomResourceDefinition
+          metadata:
+            name: remotemcpservers.kagent.dev
+          spec:
+            group: kagent.dev
+            versions:
+            - name: v1alpha2
+              served: true
+              storage: true
+              schema:
+                openAPIV3Schema:
+                  type: object
+                  properties:
+                    spec:
+                      type: object
+                      properties:
+                        description:
+                          type: string
+                        url:
+                          type: string
+                        protocol:
+                          type: string
+                          enum: ["SSE", "STREAMABLE_HTTP"]
+                    status:
+                      type: object
+            scope: Namespaced
+            names:
+              plural: remotemcpservers
+              singular: remotemcpserver
+              kind: RemoteMCPServer
+          EOF
+          
+          echo "✓ Kagent CRDs installed"
+
+  - name: test-multi-tenant-kagent-integration
+    description: Test Kagent integration across multiple tenants
+    try:
+    # Deploy MCPServers in different namespaces
+    - apply:
+        file: ../common/proxyrunner-serviceaccount.yaml
+    - assert:
+        file: ../common/proxyrunner-serviceaccount.yaml
+    - apply:
+        file: ../common/proxyrunner-role.yaml
+    - assert:
+        file: ../common/proxyrunner-role.yaml
+    - apply:
+        file: ../common/proxyrunner-rolebinding.yaml
+    - assert:
+        file: ../common/proxyrunner-rolebinding.yaml
+    - apply:
+        file: mcpserver-tenant-1.yaml
+    - apply:
+        file: mcpserver-tenant-2.yaml
+    - assert:
+        file: mcpserver-tenant-1.yaml
+    - assert:
+        file: mcpserver-tenant-2.yaml
+    - assert:
+        file: assert-mcpserver-tenant-1-running.yaml
+    - assert:
+        file: assert-mcpserver-tenant-2-running.yaml
+    - assert:
+        file: assert-mcpserver-tenant-1-pod-running.yaml
+    - assert:
+        file: assert-mcpserver-tenant-2-pod-running.yaml
+    # Verify Kagent resources are created in correct namespaces
+    - script:
+        content: |
+          echo "Verifying multi-tenant Kagent resource creation..."
+          
+          # Wait for RemoteMCPServers to be created
+          for i in $(seq 1 30); do
+            TENANT1_EXISTS=$(kubectl get remotemcpserver toolhive-kagent-tenant-1 -n toolhive-tenant-1 >/dev/null 2>&1 && echo "true" || echo "false")
+            TENANT2_EXISTS=$(kubectl get remotemcpserver toolhive-kagent-tenant-2 -n toolhive-tenant-2 >/dev/null 2>&1 && echo "true" || echo "false")
+            
+            if [ "$TENANT1_EXISTS" = "true" ] && [ "$TENANT2_EXISTS" = "true" ]; then
+              echo "✓ RemoteMCPServers exist in both tenant namespaces"
+              break
+            fi
+            echo "  Waiting for RemoteMCPServers... (attempt $i/30)"
+            sleep 2
+          done
+          
+          # Verify tenant 1 RemoteMCPServer
+          if ! kubectl get remotemcpserver toolhive-kagent-tenant-1 -n toolhive-tenant-1 >/dev/null 2>&1; then
+            echo "✗ RemoteMCPServer was not created in toolhive-tenant-1"
+            exit 1
+          fi
+          
+          # Verify tenant 2 RemoteMCPServer
+          if ! kubectl get remotemcpserver toolhive-kagent-tenant-2 -n toolhive-tenant-2 >/dev/null 2>&1; then
+            echo "✗ RemoteMCPServer was not created in toolhive-tenant-2"
+            exit 1
+          fi
+          
+          # Verify tenant 1 RemoteMCPServer spec
+          TENANT1_SPEC=$(kubectl get remotemcpserver toolhive-kagent-tenant-1 -n toolhive-tenant-1 -o json)
+          TENANT1_URL=$(echo "$TENANT1_SPEC" | jq -r '.spec.url // empty')
+          if [[ "$TENANT1_URL" == *"kagent-tenant-1-service.toolhive-tenant-1.svc.cluster.local:8080"* ]]; then
+            echo "✓ Tenant 1 RemoteMCPServer URL is correct: $TENANT1_URL"
+          else
+            echo "✗ Tenant 1 RemoteMCPServer URL is incorrect: $TENANT1_URL"
+            exit 1
+          fi
+          
+          # Verify tenant 2 RemoteMCPServer spec
+          TENANT2_SPEC=$(kubectl get remotemcpserver toolhive-kagent-tenant-2 -n toolhive-tenant-2 -o json)
+          TENANT2_URL=$(echo "$TENANT2_SPEC" | jq -r '.spec.url // empty')
+          if [[ "$TENANT2_URL" == *"kagent-tenant-2-service.toolhive-tenant-2.svc.cluster.local:8080"* ]]; then
+            echo "✓ Tenant 2 RemoteMCPServer URL is correct: $TENANT2_URL"
+          else
+            echo "✗ Tenant 2 RemoteMCPServer URL is incorrect: $TENANT2_URL"
+            exit 1
+          fi
+          
+          # Verify namespace isolation - tenant 1 resource should not exist in tenant 2 namespace
+          if kubectl get remotemcpserver toolhive-kagent-tenant-1 -n toolhive-tenant-2 >/dev/null 2>&1; then
+            echo "✗ Tenant 1 RemoteMCPServer incorrectly exists in tenant 2 namespace"
+            exit 1
+          else
+            echo "✓ Namespace isolation maintained - tenant 1 resource not in tenant 2 namespace"
+          fi
+          
+          # Verify namespace isolation - tenant 2 resource should not exist in tenant 1 namespace
+          if kubectl get remotemcpserver toolhive-kagent-tenant-2 -n toolhive-tenant-1 >/dev/null 2>&1; then
+            echo "✗ Tenant 2 RemoteMCPServer incorrectly exists in tenant 1 namespace"
+            exit 1
+          else
+            echo "✓ Namespace isolation maintained - tenant 2 resource not in tenant 1 namespace"
+          fi
+          
+          echo "✅ Multi-tenant Kagent integration test passed!"
+
+  - name: test-cross-tenant-cleanup
+    description: Test that Kagent resources are cleaned up correctly per tenant
+    try:
+    - script:
+        content: |
+          echo "Testing cross-tenant cleanup..."
+          
+          # Delete tenant 1 MCPServer
+          kubectl delete mcpserver kagent-tenant-1 -n toolhive-tenant-1 --ignore-not-found=true
+          
+          # Wait for cleanup
+          sleep 10
+          
+          # Verify tenant 1 RemoteMCPServer is cleaned up
+          if kubectl get remotemcpserver toolhive-kagent-tenant-1 -n toolhive-tenant-1 >/dev/null 2>&1; then
+            echo "✗ Tenant 1 RemoteMCPServer should be cleaned up when MCPServer is deleted"
+            exit 1
+          else
+            echo "✓ Tenant 1 RemoteMCPServer cleaned up correctly"
+          fi
+          
+          # Verify tenant 2 RemoteMCPServer still exists
+          if ! kubectl get remotemcpserver toolhive-kagent-tenant-2 -n toolhive-tenant-2 >/dev/null 2>&1; then
+            echo "✗ Tenant 2 RemoteMCPServer should still exist after tenant 1 cleanup"
+            exit 1
+          else
+            echo "✓ Tenant 2 RemoteMCPServer correctly preserved"
+          fi
+          
+          # Clean up tenant 2
+          kubectl delete mcpserver kagent-tenant-2 -n toolhive-tenant-2 --ignore-not-found=true
+          sleep 10
+          
+          # Verify tenant 2 RemoteMCPServer is cleaned up
+          if kubectl get remotemcpserver toolhive-kagent-tenant-2 -n toolhive-tenant-2 >/dev/null 2>&1; then
+            echo "✗ Tenant 2 RemoteMCPServer should be cleaned up when MCPServer is deleted"
+            exit 1
+          else
+            echo "✓ Tenant 2 RemoteMCPServer cleaned up correctly"
+          fi
+          
+          echo "✅ Cross-tenant cleanup test passed!"
+
+  - name: disable-kagent-integration
+    description: Disable Kagent integration and cleanup
+    try:
+    - script:
+        content: |
+          echo "Disabling Kagent integration..."
+          
+          # Restore operator to disabled state
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='json' -p='[
+            {
+              "op": "replace",
+              "path": "/spec/template/spec/containers/0/env",
+              "value": [
+                {"name": "UNSTRUCTURED_LOGS", "value": "false"},
+                {"name": "ENABLE_EXPERIMENTAL_FEATURES", "value": "false"},
+                {"name": "WATCH_NAMESPACE", "value": "toolhive-tenant-1,toolhive-tenant-2"},
+                {"name": "TOOLHIVE_RUNNER_IMAGE", "value": "ghcr.io/stacklok/toolhive/proxyrunner:v0.3.5"},
+                {"name": "TOOLHIVE_PROXY_HOST", "value": "0.0.0.0"},
+                {"name": "TOOLHIVE_REGISTRY_API_IMAGE", "value": "ghcr.io/stacklok/toolhive/registry-api:v0.3.5"},
+                {"name": "KAGENT_INTEGRATION_ENABLED", "value": "false"}
+              ]
+            }
+          ]'
+          
+          # Wait for operator to restart
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          
+          # Clean up Kagent CRDs
+          kubectl delete crd remotemcpservers.kagent.dev --ignore-not-found=true
+          
+          echo "✓ Kagent integration disabled and cleaned up"

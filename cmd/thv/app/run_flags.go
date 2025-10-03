@@ -528,11 +528,7 @@ func extractTelemetryValues(config *telemetry.Config) (string, float64, []string
 
 // getRemoteAuthFromRemoteServerMetadata creates RemoteAuthConfig from RemoteServerMetadata
 func getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata *registry.RemoteServerMetadata) *runner.RemoteAuthConfig {
-	if remoteServerMetadata == nil {
-		return nil
-	}
-
-	if remoteServerMetadata.OAuthConfig != nil {
+	if remoteServerMetadata != nil && remoteServerMetadata.OAuthConfig != nil {
 		if remoteServerMetadata.OAuthConfig.CallbackPort == 0 {
 			remoteServerMetadata.OAuthConfig.CallbackPort = runner.DefaultCallbackPort
 		}
@@ -551,7 +547,7 @@ func getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata *registry.Remote
 			EnvVars:      remoteServerMetadata.EnvVars,
 		}
 	}
-	return nil
+	return getRemoteAuthFromRunFlags(&runFlags)
 }
 
 // getRemoteAuthFromRunFlags creates RemoteAuthConfig from RunFlags

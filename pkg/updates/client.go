@@ -44,7 +44,7 @@ type defaultVersionClient struct {
 const (
 	instanceIDHeader  = "X-Instance-ID"
 	userAgentHeader   = "User-Agent"
-	defaultVersionAPI = "https://updates.codegate.ai/api/v1/version"
+	defaultVersionAPI = "https://updates.stacklok.com/api/v1/version"
 	defaultTimeout    = 3 * time.Second
 
 	buildTypeRelease    = "release"

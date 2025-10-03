@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"path"
 	"strconv"
 	"sync"
 	"time"
@@ -533,12 +535,19 @@ func (p *HTTPSSEProxy) buildEndpointURL(r *http.Request, clientID string) string
 		prefix = r.Header.Get("X-Forwarded-Prefix")
 	}
 
-	baseURL := fmt.Sprintf("%s://%s", scheme, host)
-
 	// Strip the SSE endpoint suffix from prefix if present, since we'll add the full messages path
 	prefix = stripSSEEndpointSuffix(prefix)
 
-	return fmt.Sprintf("%s%s%s?session_id=%s", baseURL, prefix, ssecommon.HTTPMessagesEndpoint, clientID)
+	u := &url.URL{
+		Scheme: scheme,
+		Host:   host,
+		Path:   path.Join(prefix, ssecommon.HTTPMessagesEndpoint),
+	}
+	q := u.Query()
+	q.Set("session_id", clientID)
+	u.RawQuery = q.Encode()
+
+	return u.String()
 }
 
 // stripSSEEndpointSuffix removes the SSE endpoint suffix from a path prefix if present.

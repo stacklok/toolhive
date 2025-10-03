@@ -160,7 +160,7 @@ spec:
                       repository:
                         description: Repository is the Git repository URL (HTTP/HTTPS/SSH)
                         minLength: 1
-                        pattern: ^(https?://|git@|ssh://|git://).*
+                        pattern: ^(file:///|https?://|git@|ssh://|git://).*
                         type: string
                       tag:
                         description: Tag is the Git tag to use (mutually exclusive
@@ -297,6 +297,10 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              lastAppliedFilterHash:
+                description: LastAppliedFilterHash is the hash of the last applied
+                  filter
+                type: string
               lastManualSyncTrigger:
                 description: |-
                   LastManualSyncTrigger tracks the last processed manual sync annotation value

@@ -1,4 +1,4 @@
-package sync
+package mcpregistrystatus
 
 const (
 	// SyncTriggerAnnotation is the annotation key used to trigger registry synchronization

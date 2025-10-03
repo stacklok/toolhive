@@ -2,10 +2,12 @@ package sync
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,6 +31,9 @@ const (
 	ReasonAlreadyInProgress     = "sync-already-in-progress"
 	ReasonRegistryNotReady      = "registry-not-ready"
 	ReasonRequeueTimeNotElapsed = "requeue-time-not-elapsed"
+
+	// Filter change related reasons
+	ReasonFilterChanged = "filter-changed"
 
 	// Data change related reasons
 	ReasonSourceDataChanged    = "source-data-changed"
@@ -139,6 +144,7 @@ func NewDefaultSyncManager(k8sClient client.Client, scheme *runtime.Scheme,
 }
 
 // ShouldSync determines if a sync operation is needed and when the next sync should occur
+// nolint:gocyclo
 func (s *DefaultSyncManager) ShouldSync(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, string, *time.Time) {
@@ -149,52 +155,77 @@ func (s *DefaultSyncManager) ShouldSync(
 		return false, ReasonAlreadyInProgress, nil
 	}
 
+	// Check if requeue time has elapsed and pre-compute next sync time
+	requeueElapsed, nextSyncTime := s.calculateNextSyncTime(ctx, mcpRegistry)
+
 	// Check if sync is needed based on registry state
-	if syncNeeded := s.isSyncNeededForState(mcpRegistry); syncNeeded {
-		if requeueElapsed := s.isRequeueElapsed(mcpRegistry); requeueElapsed {
-			return true, ReasonRegistryNotReady, nil
-		}
-		ctxLogger.Info("Sync not needed because requeue time not elapsed",
-			"requeueTime", DefaultSyncRequeueAfter, "lastAttempt", mcpRegistry.Status.SyncStatus.LastAttempt)
-		return false, ReasonRequeueTimeNotElapsed, nil
-	}
-
-	// Check if source data has changed by comparing hash
-	dataChanged, err := s.dataChangeDetector.IsDataChanged(ctx, mcpRegistry)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to determine if data has changed")
-		return true, ReasonErrorCheckingChanges, nil
-	}
-
+	syncNeededForState := s.isSyncNeededForState(mcpRegistry)
 	// Check for manual sync trigger first (always update trigger tracking)
 	manualSyncRequested, _ := s.manualSyncChecker.IsManualSyncRequested(mcpRegistry)
-	// Manual sync was requested - but only sync if data has actually changed
-	if manualSyncRequested {
-		if dataChanged {
-			return true, ReasonManualWithChanges, nil
+	// Check if filter has changed
+	filterChanged := s.isFilterChanged(ctx, mcpRegistry)
+
+	shouldSync := false
+	reason := ReasonUpToDateNoPolicy
+
+	if syncNeededForState {
+		if !requeueElapsed {
+			ctxLogger.Info("Sync not needed because requeue time not elapsed",
+				"requeueTime", DefaultSyncRequeueAfter, "lastAttempt", mcpRegistry.Status.SyncStatus.LastAttempt)
+			reason = ReasonRequeueTimeNotElapsed
+		} else {
+			shouldSync = true
 		}
-		// Manual sync requested but no data changes - update trigger tracking only
-		return true, ReasonManualNoChanges, nil
 	}
 
-	if dataChanged {
-		return true, ReasonSourceDataChanged, nil
+	if !shouldSync && manualSyncRequested {
+		// Manual sync requested
+		shouldSync = true
+		nextSyncTime = nil
 	}
 
-	// Data hasn't changed - check if we need to schedule future checks
-	if mcpRegistry.Spec.SyncPolicy != nil {
-		_, nextSyncTime, err := s.automaticSyncChecker.IsIntervalSyncNeeded(mcpRegistry)
+	if !shouldSync && filterChanged {
+		// Filter changed
+		shouldSync = true
+		reason = ReasonFilterChanged
+	} else if shouldSync || requeueElapsed {
+		// Check if source data has changed by comparing hash
+		dataChanged, err := s.dataChangeDetector.IsDataChanged(ctx, mcpRegistry)
 		if err != nil {
-			ctxLogger.Error(err, "Failed to determine if interval sync is needed")
-			return true, ReasonErrorParsingInterval, nil
+			ctxLogger.Error(err, "Failed to determine if data has changed")
+			shouldSync = true
+			reason = ReasonErrorCheckingChanges
+		} else {
+			ctxLogger.Info("Checked data changes", "dataChanged", dataChanged)
+			if dataChanged {
+				shouldSync = true
+				if syncNeededForState {
+					reason = ReasonRegistryNotReady
+				} else if manualSyncRequested {
+					reason = ReasonManualWithChanges
+				} else {
+					reason = ReasonSourceDataChanged
+				}
+			} else {
+				shouldSync = false
+				if syncNeededForState {
+					reason = ReasonUpToDateWithPolicy
+				} else {
+					reason = ReasonManualNoChanges
+				}
+			}
 		}
-
-		// No sync needed since data hasn't changed, but schedule next check
-		return false, ReasonUpToDateWithPolicy, &nextSyncTime
 	}
 
-	// No automatic sync policy, registry is up-to-date
-	return false, ReasonUpToDateNoPolicy, nil
+	ctxLogger.Info("ShouldSync", "syncNeededForState", syncNeededForState, "filterChanged", filterChanged,
+		"requeueElapsed", requeueElapsed, "manualSyncRequested", manualSyncRequested, "nextSyncTime",
+		nextSyncTime)
+	ctxLogger.Info("ShouldSync returning", "shouldSync", shouldSync, "reason", reason, "nextSyncTime", nextSyncTime)
+
+	if shouldSync {
+		return shouldSync, reason, nil
+	}
+	return shouldSync, reason, nextSyncTime
 }
 
 // isSyncNeededForState checks if sync is needed based on the registry's current state
@@ -214,28 +245,62 @@ func (*DefaultSyncManager) isSyncNeededForState(mcpRegistry *mcpv1alpha1.MCPRegi
 		return false
 	}
 
-	// Fallback to old behavior when sync status is not available
-	if mcpRegistry.Status.Phase == mcpv1alpha1.MCPRegistryPhaseFailed {
-		return true
-	}
-	// If phase is Pending but we have LastSyncTime, sync was completed before
-	var lastSyncTime *metav1.Time
-	if mcpRegistry.Status.SyncStatus != nil {
-		lastSyncTime = mcpRegistry.Status.SyncStatus.LastSyncTime
-	}
-	if mcpRegistry.Status.Phase == mcpv1alpha1.MCPRegistryPhasePending && lastSyncTime == nil {
-		return true
-	}
-	// For all other cases (Ready, or Pending with LastSyncTime), no sync needed based on state
-	return false
+	// If we don't have sync status, sync is needed
+	return true
 }
 
-// isRequeueElapsed checks if the requeue time has elapsed
-func (*DefaultSyncManager) isRequeueElapsed(mcpRegistry *mcpv1alpha1.MCPRegistry) bool {
-	if mcpRegistry.Status.SyncStatus != nil && mcpRegistry.Status.SyncStatus.LastAttempt != nil {
-		return time.Now().After(mcpRegistry.Status.SyncStatus.LastAttempt.Add(DefaultSyncRequeueAfter))
+// isFilterChanged checks if the filter has changed compared to the last applied configuration
+func (*DefaultSyncManager) isFilterChanged(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) bool {
+	logger := log.FromContext(ctx)
+
+	currentFilter := mcpRegistry.Spec.Filter
+	currentFilterJSON, err := json.Marshal(currentFilter)
+	if err != nil {
+		logger.Error(err, "Failed to marshal current filter")
+		return false
 	}
-	return true
+	currentFilterHash := sha256.Sum256(currentFilterJSON)
+	currentHashStr := hex.EncodeToString(currentFilterHash[:])
+
+	lastHash := mcpRegistry.Status.LastAppliedFilterHash
+	if lastHash == "" {
+		// First time - no change
+		return false
+	}
+
+	logger.V(1).Info("Current filter hash", "currentFilterHash", currentHashStr)
+	logger.V(1).Info("Last applied filter hash", "lastHash", lastHash)
+	return currentHashStr != lastHash
+}
+
+// calculateNextSyncTime checks if the requeue or sync policy time has elapsed and calculates the next requeue time
+func (s *DefaultSyncManager) calculateNextSyncTime(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, *time.Time) {
+	ctxLogger := log.FromContext(ctx)
+
+	// First consider the requeue time
+	requeueElapsed := false
+	var nextSyncTime time.Time
+	if mcpRegistry.Status.SyncStatus != nil {
+		if mcpRegistry.Status.SyncStatus.LastAttempt != nil {
+			nextSyncTime = mcpRegistry.Status.SyncStatus.LastAttempt.Add(DefaultSyncRequeueAfter)
+		}
+	}
+
+	// If we have a sync policy, check if the next automatic sync time is sooner than the next requeue time
+	if mcpRegistry.Spec.SyncPolicy != nil {
+		autoSyncNeeded, nextAutomaticSyncTime, err := s.automaticSyncChecker.IsIntervalSyncNeeded(mcpRegistry)
+		if err != nil {
+			ctxLogger.Error(err, "Failed to determine if interval sync is needed")
+		}
+
+		// Resync at the earlier time between the next sync time and the next automatic sync time
+		if autoSyncNeeded && nextSyncTime.After(nextAutomaticSyncTime) {
+			nextSyncTime = nextAutomaticSyncTime
+		}
+	}
+
+	requeueElapsed = time.Now().After(nextSyncTime)
+	return requeueElapsed, &nextSyncTime
 }
 
 // PerformSync performs the complete sync operation for the MCPRegistry
@@ -281,7 +346,7 @@ func (s *DefaultSyncManager) UpdateManualSyncTriggerOnly(
 
 	// Update manual sync trigger tracking
 	if mcpRegistry.Annotations != nil {
-		if triggerValue := mcpRegistry.Annotations[SyncTriggerAnnotation]; triggerValue != "" {
+		if triggerValue := mcpRegistry.Annotations[mcpregistrystatus.SyncTriggerAnnotation]; triggerValue != "" {
 			mcpRegistry.Status.LastManualSyncTrigger = triggerValue
 			ctxLogger.Info("Manual sync trigger processed (no data changes)", "trigger", triggerValue)
 		}
@@ -449,7 +514,7 @@ func (s *DefaultSyncManager) updateCoreRegistryFields(
 
 	// Update manual sync trigger tracking if annotation exists
 	if mcpRegistry.Annotations != nil {
-		if triggerValue := mcpRegistry.Annotations[SyncTriggerAnnotation]; triggerValue != "" {
+		if triggerValue := mcpRegistry.Annotations[mcpregistrystatus.SyncTriggerAnnotation]; triggerValue != "" {
 			mcpRegistry.Status.LastManualSyncTrigger = triggerValue
 			ctxLogger.Info("Manual sync trigger processed", "trigger", triggerValue)
 		}

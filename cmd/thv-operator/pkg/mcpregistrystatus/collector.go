@@ -3,6 +3,9 @@ package mcpregistrystatus
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -124,9 +127,6 @@ func (s *StatusCollector) SetAPIStatus(phase mcpv1alpha1.APIPhase, message strin
 
 // Apply applies all collected status changes in a single batch update.
 func (s *StatusCollector) Apply(ctx context.Context, k8sClient client.Client) error {
-	if !s.hasChanges {
-		return nil
-	}
 
 	ctxLogger := log.FromContext(ctx)
 
@@ -135,6 +135,27 @@ func (s *StatusCollector) Apply(ctx context.Context, k8sClient client.Client) er
 	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(s.mcpRegistry), latestRegistry); err != nil {
 		ctxLogger.Error(err, "Failed to fetch latest MCPRegistry version for status update")
 		return fmt.Errorf("failed to fetch latest MCPRegistry version: %w", err)
+	}
+
+	// Apply manual sync trigger change
+	if s.mcpRegistry.Annotations != nil {
+		if triggerValue := s.mcpRegistry.Annotations[SyncTriggerAnnotation]; triggerValue != "" {
+			latestRegistry.Status.LastManualSyncTrigger = triggerValue
+			ctxLogger.Info("Manual sync trigger processed (no data changes)", "trigger", triggerValue)
+		}
+	}
+
+	currentFilterJSON, err := json.Marshal(s.mcpRegistry.Spec.Filter)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to marshal current filter")
+		return fmt.Errorf("failed to marshal current filter: %w", err)
+	}
+	currentFilterHash := sha256.Sum256(currentFilterJSON)
+	currentFilterHashStr := hex.EncodeToString(currentFilterHash[:])
+	latestRegistry.Status.LastAppliedFilterHash = currentFilterHashStr
+
+	if !s.hasChanges {
+		return nil
 	}
 
 	// Apply phase change

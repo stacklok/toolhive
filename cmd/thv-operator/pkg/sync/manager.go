@@ -303,14 +303,6 @@ func (s *DefaultSyncManager) calculateNextSyncTime(ctx context.Context, mcpRegis
 	return requeueElapsed, &nextSyncTime
 }
 
-// isRequeueElapsed checks if the requeue time has elapsed
-func (*DefaultSyncManager) isRequeueElapsed(mcpRegistry *mcpv1alpha1.MCPRegistry) bool {
-	if mcpRegistry.Status.SyncStatus != nil && mcpRegistry.Status.SyncStatus.LastAttempt != nil {
-		return time.Now().After(mcpRegistry.Status.SyncStatus.LastAttempt.Add(DefaultSyncRequeueAfter))
-	}
-	return true
-}
-
 // PerformSync performs the complete sync operation for the MCPRegistry
 // The controller is responsible for setting sync status via the status collector
 func (s *DefaultSyncManager) PerformSync(

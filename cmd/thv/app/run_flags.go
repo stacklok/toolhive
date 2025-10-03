@@ -543,7 +543,7 @@ func getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata *registry.Remote
 		return b
 	}
 
-	cfg := &runner.RemoteAuthConfig{
+	authCfg := &runner.RemoteAuthConfig{
 		ClientID:     f.RemoteAuthClientID,
 		ClientSecret: f.RemoteAuthClientSecret,
 		SkipBrowser:  f.RemoteAuthSkipBrowser,
@@ -554,33 +554,33 @@ func getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata *registry.Remote
 
 	// Scopes: CLI overrides if provided
 	if len(f.RemoteAuthScopes) > 0 {
-		cfg.Scopes = f.RemoteAuthScopes
+		authCfg.Scopes = f.RemoteAuthScopes
 	} else {
-		cfg.Scopes = oc.Scopes
+		authCfg.Scopes = oc.Scopes
 	}
 
 	// Heuristic: treat default 8666 as "unset"
 	if f.RemoteAuthCallbackPort > 0 && f.RemoteAuthCallbackPort != runner.DefaultCallbackPort {
-		cfg.CallbackPort = f.RemoteAuthCallbackPort
+		authCfg.CallbackPort = f.RemoteAuthCallbackPort
 	} else if oc.CallbackPort > 0 {
-		cfg.CallbackPort = oc.CallbackPort
+		authCfg.CallbackPort = oc.CallbackPort
 	} else {
-		cfg.CallbackPort = runner.DefaultCallbackPort
+		authCfg.CallbackPort = runner.DefaultCallbackPort
 	}
 
 	// Issuer / URLs: CLI non-empty wins
-	cfg.Issuer = firstNonEmpty(f.RemoteAuthIssuer, oc.Issuer)
-	cfg.AuthorizeURL = firstNonEmpty(f.RemoteAuthAuthorizeURL, oc.AuthorizeURL)
-	cfg.TokenURL = firstNonEmpty(f.RemoteAuthTokenURL, oc.TokenURL)
+	authCfg.Issuer = firstNonEmpty(f.RemoteAuthIssuer, oc.Issuer)
+	authCfg.AuthorizeURL = firstNonEmpty(f.RemoteAuthAuthorizeURL, oc.AuthorizeURL)
+	authCfg.TokenURL = firstNonEmpty(f.RemoteAuthTokenURL, oc.TokenURL)
 
 	// OAuthParams: REPLACE metadata when CLI provides any key/value.
 	if len(runFlags.OAuthParams) > 0 {
-		cfg.OAuthParams = runFlags.OAuthParams
+		authCfg.OAuthParams = runFlags.OAuthParams
 	} else {
-		cfg.OAuthParams = oc.OAuthParams
+		authCfg.OAuthParams = oc.OAuthParams
 	}
 
-	return cfg
+	return authCfg
 }
 
 // getRemoteAuthFromRunFlags creates RemoteAuthConfig from RunFlags

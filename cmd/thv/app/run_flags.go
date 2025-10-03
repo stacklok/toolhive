@@ -565,7 +565,7 @@ func getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata *registry.Remote
 		authCfg.Scopes = oc.Scopes
 	}
 
-	// Heuristic: treat default 8666 as "unset"
+	// Heuristic: treat default runner.DefaultCallbackPort as "unset"
 	if f.RemoteAuthCallbackPort > 0 && f.RemoteAuthCallbackPort != runner.DefaultCallbackPort {
 		authCfg.CallbackPort = f.RemoteAuthCallbackPort
 	} else if oc.CallbackPort > 0 {

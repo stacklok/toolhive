@@ -39,10 +39,11 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 			})
 
 			It("should successfully start and be accessible via Streamable HTTP [Serial]", func() {
-				By("Starting the OSV MCP server with Streamable HTTP transport")
+				By("Starting the OSV MCP server with Streamable HTTP transport and audit enabled")
 				stdout, stderr := e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "streamable-http",
+					"--enable-audit",
 					"osv").ExpectSuccess()
 
 				// The command should indicate success
@@ -60,10 +61,11 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 			})
 
 			It("should be accessible via HTTP Streamable HTTP endpoint [Serial]", func() {
-				By("Starting the OSV MCP server")
+				By("Starting the OSV MCP server with audit enabled")
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "streamable-http",
+					"--enable-audit",
 					"osv").ExpectSuccess()
 
 				By("Waiting for the server to be running")
@@ -87,7 +89,11 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 
 				maxRetries := 5
 				for i := 0; i < maxRetries; i++ {
-					resp, httpErr = client.Get(serverURL)
+					req, err := http.NewRequest("GET", serverURL, nil)
+					Expect(err).ToNot(HaveOccurred())
+					req.Header.Set("Accept", "text/event-stream")
+
+					resp, httpErr = client.Do(req)
 					if httpErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 500 {
 						break
 					}

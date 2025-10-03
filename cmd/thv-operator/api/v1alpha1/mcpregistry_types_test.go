@@ -131,63 +131,6 @@ func TestMCPRegistry_DeriveOverallPhase(t *testing.T) {
 			description:   "Sync complete + API unhealthy should result in Pending",
 		},
 
-		// Sync Idle + API combinations (key test cases for the recent fix)
-		{
-			name: "sync_idle_api_ready",
-			syncStatus: &SyncStatus{
-				Phase: SyncPhaseIdle,
-			},
-			apiStatus: &APIStatus{
-				Phase: APIPhaseReady,
-			},
-			expectedPhase: MCPRegistryPhaseReady,
-			description:   "Sync idle + API ready should result in Ready (fixed behavior)",
-		},
-		{
-			name: "sync_idle_api_error",
-			syncStatus: &SyncStatus{
-				Phase: SyncPhaseIdle,
-			},
-			apiStatus: &APIStatus{
-				Phase: APIPhaseError,
-			},
-			expectedPhase: MCPRegistryPhaseFailed,
-			description:   "Sync idle + API error should result in Failed",
-		},
-		{
-			name: "sync_idle_api_notstarted",
-			syncStatus: &SyncStatus{
-				Phase: SyncPhaseIdle,
-			},
-			apiStatus: &APIStatus{
-				Phase: APIPhaseNotStarted,
-			},
-			expectedPhase: MCPRegistryPhasePending,
-			description:   "Sync idle + API not started should result in Pending",
-		},
-		{
-			name: "sync_idle_api_deploying",
-			syncStatus: &SyncStatus{
-				Phase: SyncPhaseIdle,
-			},
-			apiStatus: &APIStatus{
-				Phase: APIPhaseDeploying,
-			},
-			expectedPhase: MCPRegistryPhasePending,
-			description:   "Sync idle + API deploying should result in Pending",
-		},
-		{
-			name: "sync_idle_api_unhealthy",
-			syncStatus: &SyncStatus{
-				Phase: SyncPhaseIdle,
-			},
-			apiStatus: &APIStatus{
-				Phase: APIPhaseUnhealthy,
-			},
-			expectedPhase: MCPRegistryPhasePending,
-			description:   "Sync idle + API unhealthy should result in Pending",
-		},
-
 		// Partial status combinations (one nil, one set)
 		{
 			name:          "sync_complete_api_nil",
@@ -200,19 +143,8 @@ func TestMCPRegistry_DeriveOverallPhase(t *testing.T) {
 			name:          "sync_nil_api_ready",
 			syncStatus:    nil,
 			apiStatus:     &APIStatus{Phase: APIPhaseReady},
-			expectedPhase: MCPRegistryPhaseReady,
-			description:   "Sync nil + API ready should result in Ready (sync defaults to Idle, which is treated as valid)",
-		},
-
-		// Edge case: sync idle with nil API (common in real scenarios)
-		{
-			name: "sync_idle_api_nil",
-			syncStatus: &SyncStatus{
-				Phase: SyncPhaseIdle,
-			},
-			apiStatus:     nil,
 			expectedPhase: MCPRegistryPhasePending,
-			description:   "Sync idle + API nil should result in Pending (API defaults to NotStarted)",
+			description:   "Sync nil + API ready should result in Pending",
 		},
 	}
 
@@ -247,7 +179,7 @@ func TestMCPRegistry_DeriveOverallPhase(t *testing.T) {
 // Helper function to get sync phase as string for better test output
 func getSyncPhaseString(syncStatus *SyncStatus) string {
 	if syncStatus == nil {
-		return "nil (defaults to Idle)"
+		return "nil"
 	}
 	return string(syncStatus.Phase)
 }
@@ -264,20 +196,20 @@ func getAPIPhaseString(apiStatus *APIStatus) string {
 func TestMCPRegistry_DeriveOverallPhase_EdgeCases(t *testing.T) {
 	t.Parallel()
 
-	t.Run("regression_test_idle_ready_becomes_ready", func(t *testing.T) {
+	t.Run("regression_test_complete_ready_becomes_ready", func(t *testing.T) {
 		t.Parallel()
 		// This is the specific regression test for the bug fix where
-		// syncPhase=Idle + apiPhase=Ready was incorrectly returning Pending
+		// syncPhase=Complete + apiPhase=Ready was incorrectly returning Pending
 		registry := &MCPRegistry{
 			Status: MCPRegistryStatus{
-				SyncStatus: &SyncStatus{Phase: SyncPhaseIdle},
+				SyncStatus: &SyncStatus{Phase: SyncPhaseComplete},
 				APIStatus:  &APIStatus{Phase: APIPhaseReady},
 			},
 		}
 
 		phase := registry.DeriveOverallPhase()
 		assert.Equal(t, MCPRegistryPhaseReady, phase,
-			"The specific case syncPhase=Idle + apiPhase=Ready should result in Ready phase")
+			"The specific case syncPhase=Complete + apiPhase=Ready should result in Ready phase")
 	})
 
 	t.Run("all_api_phases_with_failed_sync", func(t *testing.T) {

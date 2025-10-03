@@ -194,7 +194,7 @@ func TestDefaultSyncManager_ShouldSync(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			syncNeeded, reason, nextSyncTime, err := syncManager.ShouldSync(ctx, tt.mcpRegistry)
+			syncNeeded, reason, nextSyncTime := syncManager.ShouldSync(ctx, tt.mcpRegistry)
 
 			// We expect some errors for ConfigMap not found, but that's okay for this test
 			if tt.expectedSyncNeeded {
@@ -203,7 +203,6 @@ func TestDefaultSyncManager_ShouldSync(t *testing.T) {
 			} else {
 				assert.False(t, syncNeeded, "Expected sync not to be needed")
 				assert.Equal(t, tt.expectedReason, reason, "Expected specific sync reason")
-				assert.NoError(t, err, "Should not have error when sync not needed")
 			}
 
 			if tt.expectedNextTime {
@@ -294,9 +293,9 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 				},
 			},
 			sourceConfigMap:     nil,
-			expectedError:       true, // PerformSync now returns errors for controller to handle
-			expectedPhase:       mcpv1alpha1.MCPRegistryPhaseFailed,
-			expectedServerCount: nil, // Don't validate server count for failed sync
+			expectedError:       true,                                // PerformSync now returns errors for controller to handle
+			expectedPhase:       mcpv1alpha1.MCPRegistryPhasePending, // Phase is not changed by PerformSync, only by controller
+			expectedServerCount: nil,                                 // Don't validate server count for failed sync
 			errorContains:       "",
 			validateConditions:  false,
 		},
@@ -495,15 +494,15 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			result, syncResult, err := syncManager.PerformSync(ctx, tt.mcpRegistry)
+			result, syncResult, syncErr := syncManager.PerformSync(ctx, tt.mcpRegistry)
 
 			if tt.expectedError {
-				assert.Error(t, err)
+				assert.NotNil(t, syncErr)
 				if tt.errorContains != "" {
-					assert.Contains(t, err.Error(), tt.errorContains)
+					assert.Contains(t, syncErr.Error(), tt.errorContains)
 				}
 			} else {
-				assert.NoError(t, err)
+				assert.Nil(t, syncErr)
 			}
 
 			// Verify the result
@@ -713,99 +712,6 @@ func TestDefaultSyncManager_Delete(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestDefaultSyncManager_updatePhase(t *testing.T) {
-	t.Parallel()
-
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-
-	mcpRegistry := &mcpv1alpha1.MCPRegistry{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-registry",
-			Namespace: "test-namespace",
-			UID:       types.UID("test-uid"),
-		},
-		Status: mcpv1alpha1.MCPRegistryStatus{
-			Phase: mcpv1alpha1.MCPRegistryPhasePending,
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithRuntimeObjects(mcpRegistry).
-		WithStatusSubresource(&mcpv1alpha1.MCPRegistry{}).
-		Build()
-
-	sourceHandlerFactory := sources.NewSourceHandlerFactory(fakeClient)
-	storageManager := sources.NewConfigMapStorageManager(fakeClient, scheme)
-	syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory, storageManager)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	err := syncManager.updatePhase(ctx, mcpRegistry, mcpv1alpha1.MCPRegistryPhaseSyncing, "Test message")
-	assert.NoError(t, err)
-
-	// Verify the phase was updated - check the modified object directly
-	// since the method modifies in place
-	assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseSyncing, mcpRegistry.Status.Phase)
-	assert.Equal(t, "Test message", mcpRegistry.Status.Message)
-}
-
-func TestDefaultSyncManager_updatePhaseFailedWithCondition(t *testing.T) {
-	t.Parallel()
-
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-
-	mcpRegistry := &mcpv1alpha1.MCPRegistry{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-registry",
-			Namespace: "test-namespace",
-			UID:       types.UID("test-uid"),
-		},
-		Status: mcpv1alpha1.MCPRegistryStatus{
-			Phase: mcpv1alpha1.MCPRegistryPhasePending,
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithRuntimeObjects(mcpRegistry).
-		WithStatusSubresource(&mcpv1alpha1.MCPRegistry{}).
-		Build()
-
-	sourceHandlerFactory := sources.NewSourceHandlerFactory(fakeClient)
-	storageManager := sources.NewConfigMapStorageManager(fakeClient, scheme)
-	syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory, storageManager)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	err := syncManager.updatePhaseFailedWithCondition(
-		ctx,
-		mcpRegistry,
-		"Test failure message",
-		mcpv1alpha1.ConditionSourceAvailable,
-		"TestFailure",
-		"Test condition message",
-	)
-	assert.NoError(t, err)
-
-	// Verify the phase and condition were updated - check the modified object directly
-	// since the method modifies in place after refreshing from client
-	assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseFailed, mcpRegistry.Status.Phase)
-	assert.Equal(t, "Test failure message", mcpRegistry.Status.Message)
-
-	// Check condition was set
-	require.Len(t, mcpRegistry.Status.Conditions, 1)
-	condition := mcpRegistry.Status.Conditions[0]
-	assert.Equal(t, mcpv1alpha1.ConditionSourceAvailable, condition.Type)
-	assert.Equal(t, metav1.ConditionFalse, condition.Status)
-	assert.Equal(t, "TestFailure", condition.Reason)
-	assert.Equal(t, "Test condition message", condition.Message)
 }
 
 func TestIsManualSync(t *testing.T) {

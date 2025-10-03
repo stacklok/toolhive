@@ -116,6 +116,7 @@ type deployOps interface {
 		upstreamPort int,
 		attachStdio bool,
 		externalEndpointsConfig map[string]*network.EndpointSettings,
+		networkPermissions *permissions.NetworkPermissions,
 	) (int, error)
 }
 
@@ -289,7 +290,8 @@ func (c *Client) DeployWorkload(
 		if err != nil {
 			return 0, err // extractFirstPort already wraps the error with context.
 		}
-		hostPort, err = c.ops.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig)
+		hostPort, err = c.ops.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig,
+			permissionProfile.Network)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create ingress container: %v", err)
 		}
@@ -1452,7 +1454,7 @@ func addEgressEnvVars(envVars map[string]string, egressContainerName string) map
 }
 
 func (c *Client) createIngressContainer(ctx context.Context, containerName string, upstreamPort int, attachStdio bool,
-	externalEndpointsConfig map[string]*network.EndpointSettings) (int, error) {
+	externalEndpointsConfig map[string]*network.EndpointSettings, networkPermissions *permissions.NetworkPermissions) (int, error) {
 	squidPort, err := networking.FindOrUsePort(upstreamPort + 1)
 	if err != nil {
 		return 0, fmt.Errorf("failed to find or use port %d: %v", squidPort, err)
@@ -1480,6 +1482,7 @@ func (c *Client) createIngressContainer(ctx context.Context, containerName strin
 		squidExposedPorts,
 		externalEndpointsConfig,
 		squidPortBindings,
+		networkPermissions,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create ingress container: %v", err)

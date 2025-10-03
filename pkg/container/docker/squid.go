@@ -37,8 +37,9 @@ func createIngressSquidContainer(
 	exposedPorts map[string]struct{},
 	endpointsConfig map[string]*network.EndpointSettings,
 	portBindings map[string][]runtime.PortBinding,
+	networkPermissions *permissions.NetworkPermissions,
 ) (string, error) {
-	squidConfPath, err := createTempIngressSquidConf(containerName, upstreamPort, squidPort)
+	squidConfPath, err := createTempIngressSquidConf(containerName, upstreamPort, squidPort, networkPermissions)
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary squid.conf: %v", err)
 	}
@@ -270,12 +271,13 @@ func createTempIngressSquidConf(
 	serverHostname string,
 	upstreamPort int,
 	squidPort int,
+	networkPermissions *permissions.NetworkPermissions,
 ) (string, error) {
 	var sb strings.Builder
 
 	writeCommonConfig(&sb, serverHostname, proxyIngress)
 
-	writeIngressProxyConfig(&sb, serverHostname, upstreamPort, squidPort)
+	writeIngressProxyConfig(&sb, serverHostname, upstreamPort, squidPort, networkPermissions)
 	sb.WriteString("http_access deny all\n")
 
 	tmpFile, err := os.CreateTemp("", "squid-*.conf")
@@ -296,18 +298,37 @@ func createTempIngressSquidConf(
 	return tmpFile.Name(), nil
 }
 
-func writeIngressProxyConfig(sb *strings.Builder, serverHostname string, upstreamPort int, squidPort int) {
+func writeIngressProxyConfig(
+	sb *strings.Builder,
+	serverHostname string,
+	upstreamPort int,
+	squidPort int,
+	networkPermissions *permissions.NetworkPermissions,
+) {
 	portNum := strconv.Itoa(upstreamPort)
 	squidPortNum := strconv.Itoa(squidPort)
 	sb.WriteString(
 		"\n# Reverse proxy setup for port " + portNum + "\n" +
 			"http_port 0.0.0.0:" + squidPortNum + " accel defaultsite=" + serverHostname + "\n" +
 			"cache_peer " + serverHostname + " parent " + portNum + " 0 no-query originserver name=origin_" +
-			portNum + " connect-timeout=5 connect-fail-limit=5\n" +
-			"acl site_" + portNum + " dstdomain " + serverHostname + "\n" +
+			portNum + " connect-timeout=5 connect-fail-limit=5\n")
+
+	// Check if inbound network permissions are configured
+	if networkPermissions != nil && networkPermissions.Inbound != nil && len(networkPermissions.Inbound.AllowHost) > 0 {
+		// Use only the configured allowed hosts
+		sb.WriteString("acl allowed_hosts dstdomain")
+		for _, host := range networkPermissions.Inbound.AllowHost {
+			sb.WriteString(" " + host)
+		}
+		sb.WriteString("\n")
+		sb.WriteString("http_access allow allowed_hosts\n")
+	} else {
+		// Default: Allow container hostname, localhost, and 127.0.0.1
+		sb.WriteString("acl site_" + portNum + " dstdomain " + serverHostname + "\n" +
 			"acl local_dst dst 127.0.0.1\n" +
 			"acl local_domain dstdomain localhost\n" +
 			"http_access allow site_" + portNum + "\n" +
 			"http_access allow local_dst\n" +
 			"http_access allow local_domain\n")
+	}
 }

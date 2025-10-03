@@ -3,161 +3,32 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/testkit"
 )
-
-// Helper function to create a test server with middlewares
-func createTestServer(t *testing.T, middlewares ...types.MiddlewareFunction) *httptest.Server {
-	t.Helper()
-
-	toolsListHandler := func(w http.ResponseWriter, _ *http.Request) {
-		// Simulate different endpoints
-		// Return a tools list response
-		response := toolsListResponse{
-			JSONRPC: "2.0",
-			ID:      1,
-		}
-		tools := []map[string]any{
-			{"name": "Foo", "description": "Foo tool"},
-			{"name": "Bar", "description": "Bar tool"},
-		}
-		response.Result.Tools = &tools
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
-
-		// Ensure the response is flushed
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-	}
-
-	toolsCallHandler := func(w http.ResponseWriter, r *http.Request) {
-		// Handle tool call requests
-		var req toolCallRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid JSON", http.StatusBadRequest)
-			return
-		}
-
-		// Simulate successful tool call
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		name, ok := (*req.Params)["name"].(string)
-		if !ok {
-			http.Error(w, "Invalid JSON", http.StatusBadRequest)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]any{
-			"jsonrpc": "2.0",
-			"id":      req.ID,
-			"result":  map[string]any{"return_value": name},
-		})
-
-		// Ensure the response is flushed
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-	}
-
-	sseToolsListHandler := func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-
-		// Create SSE response
-		response := toolsListResponse{
-			JSONRPC: "2.0",
-			ID:      1,
-		}
-		tools := []map[string]any{
-			{"name": "Foo", "description": "Foo tool"},
-			{"name": "Bar", "description": "Bar tool"},
-		}
-		response.Result.Tools = &tools
-
-		responseBytes, err := json.Marshal(response)
-		require.NoError(t, err)
-
-		// Write SSE format
-		fmt.Fprintf(w, "data: %s\n\n", string(responseBytes))
-
-		// Ensure the response is flushed
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/tools/list", toolsListHandler)
-	mux.HandleFunc("/tools/call", toolsCallHandler)
-	mux.HandleFunc("/tools/list/sse", sseToolsListHandler)
-
-	var handler http.Handler = mux
-	for _, middleware := range middlewares {
-		handler = middleware(handler)
-	}
-
-	return httptest.NewServer(handler)
-}
-
-// Helper function to make a tools list request
-func makeToolsListRequest(t *testing.T, server *httptest.Server) *toolsListResponse {
-	t.Helper()
-
-	resp, err := http.Get(server.URL + "/tools/list")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	var response toolsListResponse
-	err = json.NewDecoder(resp.Body).Decode(&response)
-	require.NoError(t, err)
-
-	return &response
-}
-
-// Helper function to make a tool call request
-func makeToolCallRequest(t *testing.T, server *httptest.Server, toolName string) (*http.Response, error) {
-	t.Helper()
-
-	req := toolCallRequest{
-		JSONRPC: "2.0",
-		ID:      1,
-		Method:  "tools/call",
-		Params: &map[string]any{
-			"name": toolName,
-			"arguments": map[string]any{
-				"arg1": "value1",
-			},
-		},
-	}
-
-	body, err := json.Marshal(req)
-	require.NoError(t, err)
-
-	return http.Post(server.URL+"/tools/call", "application/json", bytes.NewBuffer(body))
-}
 
 func TestNewListToolsMappingMiddleware_Scenarios(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		opts     *[]ToolMiddlewareOption
-		expected *[]map[string]any
+		name       string
+		serverOpts []testkit.TestMCPServerOption
+		opts       *[]ToolMiddlewareOption
+		expected   *[]map[string]any
 	}{
 		{
 			name: "No filter, No override",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: nil,
 			expected: &[]map[string]any{
 				{"name": "Foo", "description": "Foo tool"},
@@ -166,6 +37,12 @@ func TestNewListToolsMappingMiddleware_Scenarios(t *testing.T) {
 		},
 		{
 			name: "Filter Foo, No override",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsFilter("Foo"),
 			},
@@ -175,6 +52,12 @@ func TestNewListToolsMappingMiddleware_Scenarios(t *testing.T) {
 		},
 		{
 			name: "No filter, Override MyFoo -> Foo",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsOverride("Foo", "MyFoo", "Override description"),
 			},
@@ -185,6 +68,12 @@ func TestNewListToolsMappingMiddleware_Scenarios(t *testing.T) {
 		},
 		{
 			name: "Filter MyFoo, Override MyFoo -> Foo",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsFilter("MyFoo"),
 				WithToolsOverride("Foo", "MyFoo", "Override description"),
@@ -195,6 +84,12 @@ func TestNewListToolsMappingMiddleware_Scenarios(t *testing.T) {
 		},
 		{
 			name: "No filter, Override Bar -> Foo",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsOverride("Bar", "Foo", ""),
 			},
@@ -205,6 +100,12 @@ func TestNewListToolsMappingMiddleware_Scenarios(t *testing.T) {
 		},
 		{
 			name: "Filter MyFoo, Override Foo -> MyFoo",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsFilter("MyFoo"),
 				WithToolsOverride("Foo", "MyFoo", ""),
@@ -218,7 +119,7 @@ func TestNewListToolsMappingMiddleware_Scenarios(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			middlewares := []types.MiddlewareFunction{}
+			middlewares := []func(http.Handler) http.Handler{}
 
 			// Create the middleware
 			if tt.opts != nil {
@@ -234,13 +135,43 @@ func TestNewListToolsMappingMiddleware_Scenarios(t *testing.T) {
 			}
 
 			// Create test server
-			server := createTestServer(t, middlewares...)
+			serverOpts := append(tt.serverOpts, testkit.WithMiddlewares(middlewares...))
+			serverOpts = append(serverOpts, testkit.WithJSONClientType())
+			server, client, err := testkit.NewStreamableTestServer(
+				serverOpts...,
+			)
+			require.NoError(t, err)
 			defer server.Close()
 
 			// Make request
-			response := makeToolsListRequest(t, server)
+			respBody, err := client.ToolsList()
+			require.NoError(t, err)
 
-			assert.Equal(t, tt.expected, response.Result.Tools)
+			var response toolsListResponse
+			err = json.NewDecoder(bytes.NewReader(respBody)).Decode(&response)
+			require.NoError(t, err)
+			require.NotNil(t, response.Result)
+			require.NotNil(t, response.Result.Tools)
+
+			if tt.expected != nil {
+				for _, expected := range *tt.expected {
+					found := false
+
+					for _, tool := range *response.Result.Tools {
+						// NOTE: here I switched from name to description because to ensure that redundant tool overrides
+						// are covered (i.e. two tools "Foo" and "Bar" exist, the User renames "Foo" into "Bar" or vice versa).
+						// I'm not sure we want to support this, but cannot prevent this from happening or prevent the
+						// User from doing it.
+						if tool["description"] == expected["description"] {
+							found = true
+							assert.Equal(t, expected["description"], tool["description"])
+							assert.Equal(t, expected["name"], tool["name"])
+						}
+					}
+
+					require.True(t, found, "Tool %s not found", expected["name"])
+				}
+			}
 		})
 	}
 }
@@ -250,29 +181,48 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 
 	tests := []struct {
 		name           string
+		serverOpts     []testkit.TestMCPServerOption
 		opts           *[]ToolMiddlewareOption
-		expected       *map[string]any
+		expected       any
 		callToolName   string
 		expectedStatus int
 	}{
 		{
-			name:           "No filter, No override - Call Foo",
+			name: "No filter, No override - Call Foo",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts:           nil,
-			expected:       &map[string]any{"return_value": "Foo"},
+			expected:       "Foo",
 			callToolName:   "Foo",
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name: "Filter Foo, No override - Call Foo",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsFilter("Foo"),
 			},
-			expected:       &map[string]any{"return_value": "Foo"},
+			expected:       "Foo",
 			callToolName:   "Foo",
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name: "Filter Foo, No override - Call Bar",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsFilter("Foo"),
 			},
@@ -282,34 +232,58 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 		},
 		{
 			name: "No filter, Override MyFoo -> Foo - Call MyFoo",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsOverride("Foo", "MyFoo", "Override description"),
 			},
-			expected:       &map[string]any{"return_value": "Foo"},
+			expected:       "Foo",
 			callToolName:   "MyFoo",
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name: "No filter, Override MyFoo -> Foo - Call Bar",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsOverride("Foo", "MyFoo", "Override description"),
 			},
-			expected:       &map[string]any{"return_value": "Bar"},
+			expected:       "Bar",
 			callToolName:   "Bar",
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name: "Filter MyFoo, Override MyFoo -> Foo - Call MyFoo",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsFilter("MyFoo"),
 				WithToolsOverride("Foo", "MyFoo", "Override description"),
 			},
-			expected:       &map[string]any{"return_value": "Foo"},
+			expected:       "Foo",
 			callToolName:   "MyFoo",
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name: "Filter MyFoo, Override MyFoo -> Foo - Call Bar",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsFilter("MyFoo"),
 				WithToolsOverride("Foo", "MyFoo", "Override description"),
@@ -320,24 +294,42 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 		},
 		{
 			name: "No filter, Override Bar -> Foo - Call Foo",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsOverride("Bar", "Foo", ""),
 			},
-			expected:       &map[string]any{"return_value": "Bar"},
+			expected:       "Bar",
 			callToolName:   "Foo",
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name: "No filter, Override Bar -> Foo - Call Bar",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsOverride("Foo", "Bar", ""),
 			},
-			expected:       &map[string]any{"return_value": "Foo"},
+			expected:       "Foo",
 			callToolName:   "Bar",
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name: "Filter MyFoo, Override Foo -> MyFoo",
+			serverOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsFilter("Foo"),
 				WithToolsOverride("Foo", "MyFoo", "Override description"),
@@ -351,7 +343,7 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			middlewares := []types.MiddlewareFunction{}
+			middlewares := []func(http.Handler) http.Handler{}
 
 			// Create the middleware
 			if tt.opts != nil {
@@ -367,27 +359,36 @@ func TestNewToolCallMappingMiddleware_Scenarios(t *testing.T) {
 			}
 
 			// Create test server
-			server := createTestServer(t, middlewares...)
+			serverOpts := append(tt.serverOpts, testkit.WithMiddlewares(middlewares...))
+			serverOpts = append(serverOpts, testkit.WithJSONClientType())
+			server, client, err := testkit.NewStreamableTestServer(
+				serverOpts...,
+			)
+			require.NoError(t, err)
 			defer server.Close()
 
 			// Make request
-			resp, err := makeToolCallRequest(t, server, tt.callToolName)
-			require.NoError(t, err)
-			defer resp.Body.Close()
-
-			assert.Equal(t, tt.expectedStatus, resp.StatusCode)
-
-			// Read response body
-			bodyBytes, err := io.ReadAll(resp.Body)
+			bodyBytes, err := client.ToolsCall(tt.callToolName)
 			require.NoError(t, err)
 
 			if tt.expected != nil {
 				var response map[string]any
 				err = json.Unmarshal(bodyBytes, &response)
 				require.NoError(t, err)
+				require.NotNil(t, response["result"], "Result is nil: %+v", string(bodyBytes))
 
-				require.NotNil(t, response["result"])
-				require.Equal(t, *tt.expected, response["result"].(map[string]any))
+				result, ok := response["result"].(map[string]any)
+				require.True(t, ok)
+				require.NotNil(t, result["content"])
+				require.Len(t, result["content"], 1)
+
+				contents, ok := result["content"].([]any)
+				require.True(t, ok)
+
+				content, ok := contents[0].(map[string]any)
+				require.True(t, ok)
+				require.Equal(t, "text", content["type"])
+				require.Equal(t, tt.expected, content["text"])
 			}
 		})
 	}
@@ -398,6 +399,7 @@ func TestNewListToolsMappingMiddleware_SSE_Scenarios(t *testing.T) {
 
 	tests := []struct {
 		name            string
+		serverOpts      []testkit.TestMCPServerOption
 		opts            *[]ToolMiddlewareOption
 		expected        *[]map[string]any
 		expectedFoo     bool
@@ -408,6 +410,10 @@ func TestNewListToolsMappingMiddleware_SSE_Scenarios(t *testing.T) {
 	}{
 		{
 			name: "SSE - Filter Foo, No override",
+			serverOpts: []testkit.TestMCPServerOption{
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsFilter("Foo"),
 			},
@@ -421,6 +427,10 @@ func TestNewListToolsMappingMiddleware_SSE_Scenarios(t *testing.T) {
 		},
 		{
 			name: "SSE - No filter, Override MyFoo -> Foo (Current implementation bug - all tools filtered out)",
+			serverOpts: []testkit.TestMCPServerOption{
+				testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+				testkit.WithTool("Bar", "Bar tool", func() string { return "Bar" }),
+			},
 			opts: &[]ToolMiddlewareOption{
 				WithToolsOverride("Foo", "MyFoo", "Override description"),
 			},
@@ -438,7 +448,7 @@ func TestNewListToolsMappingMiddleware_SSE_Scenarios(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			middlewares := []types.MiddlewareFunction{}
+			middlewares := []func(http.Handler) http.Handler{}
 
 			// Create the middleware
 			if tt.opts != nil {
@@ -454,41 +464,26 @@ func TestNewListToolsMappingMiddleware_SSE_Scenarios(t *testing.T) {
 			}
 
 			// Create test server
-			server := createTestServer(t, middlewares...)
+			serverOpts := append(tt.serverOpts, testkit.WithMiddlewares(middlewares...))
+			serverOpts = append(serverOpts, testkit.WithSSEClientType())
+			server, client, err := testkit.NewSSETestServer(
+				serverOpts...,
+			)
+			require.NoError(t, err)
 			defer server.Close()
 
 			// Make request
-			resp, err := http.Get(server.URL + "/tools/list/sse")
-			require.NoError(t, err)
-			defer resp.Body.Close()
-
-			// Read SSE response
-			body, err := io.ReadAll(resp.Body)
+			respBody, err := client.ToolsList()
 			require.NoError(t, err)
 
-			if tt.expected != nil {
-				// Parse SSE response
-				lines := strings.Split(string(body), "\n")
-				var dataLine string
-				for _, line := range lines {
-					if after, ok := strings.CutPrefix(line, "data: "); ok {
-						dataLine = after
-						break
-					}
-				}
+			var response toolsListResponse
+			err = json.Unmarshal(respBody, &response)
+			require.NoError(t, err)
 
-				require.NotEmpty(t, dataLine, "No data line found in SSE response")
-
-				// Parse JSON response
-				var response toolsListResponse
-				err = json.Unmarshal([]byte(dataLine), &response)
-				require.NoError(t, err)
-
-				// Verify results
-				assert.Equal(t, "2.0", response.JSONRPC)
-				assert.Equal(t, float64(1), response.ID)
-				assert.Equal(t, tt.expected, response.Result.Tools)
-			}
+			// Verify results
+			assert.Equal(t, "2.0", response.JSONRPC)
+			assert.Equal(t, float64(1), response.ID)
+			assert.Equal(t, tt.expected, response.Result.Tools)
 		})
 	}
 }

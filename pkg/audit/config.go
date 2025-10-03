@@ -104,9 +104,9 @@ func (c *Config) ShouldAuditEvent(eventType string) bool {
 	return true
 }
 
-// CreateMiddleware creates an HTTP middleware from the audit configuration.
-func (c *Config) CreateMiddleware() (types.MiddlewareFunction, error) {
-	auditor, err := NewAuditor(c)
+// CreateMiddlewareWithTransport creates an HTTP middleware from the audit configuration with transport information.
+func (c *Config) CreateMiddlewareWithTransport(transportType string) (types.MiddlewareFunction, error) {
+	auditor, err := NewAuditorWithTransport(c, transportType)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auditor: %w", err)
 	}
@@ -114,15 +114,16 @@ func (c *Config) CreateMiddleware() (types.MiddlewareFunction, error) {
 }
 
 // GetMiddlewareFromFile loads the audit configuration from a file and creates an HTTP middleware.
-func GetMiddlewareFromFile(path string) (func(http.Handler) http.Handler, error) {
+// Note: This function requires a transport type to be provided separately.
+func GetMiddlewareFromFile(path string, transportType string) (func(http.Handler) http.Handler, error) {
 	// Load the configuration
 	config, err := LoadFromFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load audit config: %w", err)
 	}
 
-	// Create the middleware
-	return config.CreateMiddleware()
+	// Create the middleware with transport information
+	return config.CreateMiddlewareWithTransport(transportType)
 }
 
 // Validate validates the audit configuration.

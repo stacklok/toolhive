@@ -130,7 +130,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 				Result: json.RawMessage(responseData),
 			}
 
-			responseBytes, err := json.Marshal(jsonrpcResponse)
+			responseBytes, err := jsonrpc2.EncodeMessage(jsonrpcResponse)
 			require.NoError(t, err, "Failed to marshal JSON-RPC response")
 
 			// Create an HTTP request with claims in context
@@ -143,6 +143,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 
 			// Create the response filtering writer
 			filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, tc.method)
+			filteringWriter.ResponseWriter.Header().Set("Content-Type", "application/json")
 
 			// Write the response data
 			_, err = filteringWriter.Write(responseBytes)
@@ -153,9 +154,12 @@ func TestResponseFilteringWriter(t *testing.T) {
 			require.NoError(t, err, "Failed to flush response")
 
 			// Parse the filtered response
-			var filteredResponse jsonrpc2.Response
-			err = json.Unmarshal(rr.Body.Bytes(), &filteredResponse)
+			var message jsonrpc2.Message
+			message, err = jsonrpc2.DecodeMessage(rr.Body.Bytes())
 			require.NoError(t, err, "Failed to unmarshal filtered response")
+
+			filteredResponse, ok := message.(*jsonrpc2.Response)
+			require.True(t, ok, "Response should be a JSON-RPC response")
 
 			// Verify the response was filtered correctly
 			assert.Nil(t, filteredResponse.Error, "Response should not have an error")

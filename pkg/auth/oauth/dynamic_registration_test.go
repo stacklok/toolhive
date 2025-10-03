@@ -364,3 +364,79 @@ func TestDynamicClientRegistrationResponse_Validation(t *testing.T) {
 }
 
 // TestIsLocalhost is already defined in oidc_test.go
+
+// TestScopeList_UnmarshalJSON tests that the ScopeList unmarshaling works correctly.
+func TestScopeList_UnmarshalJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		jsonIn  string
+		want    []string
+		wantErr bool
+	}{
+		{
+			name:   "space-delimited string",
+			jsonIn: `"openid profile email"`,
+			want:   []string{"openid", "profile", "email"},
+		},
+		{
+			name:   "empty string => nil",
+			jsonIn: `""`,
+			want:   nil,
+		},
+		{
+			name:   "string with extra spaces",
+			jsonIn: `"  openid   profile  "`,
+			want:   []string{"openid", "profile"},
+		},
+		{
+			name:   "normal array",
+			jsonIn: `["openid","profile","email"]`,
+			want:   []string{"openid", "profile", "email"},
+		},
+		{
+			name:   "array with whitespace and empties",
+			jsonIn: `["  openid  ",""," profile "]`,
+			want:   []string{"openid", "profile"},
+		},
+		{
+			name:   "all-empty array => nil",
+			jsonIn: `["","  "]`,
+			want:   nil,
+		},
+		{
+			name:   "explicit null => nil",
+			jsonIn: `null`,
+			want:   nil,
+		},
+		{
+			name:    "invalid type (number)",
+			jsonIn:  `123`,
+			wantErr: true,
+		},
+		{
+			name:    "invalid type (object)",
+			jsonIn:  `{"not":"valid"}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt // capture loop variable
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var s ScopeList
+			err := json.Unmarshal([]byte(tt.jsonIn), &s)
+
+			if tt.wantErr {
+				assert.Error(t, err, "expected error but got none")
+				return
+			}
+
+			assert.NoError(t, err, "unexpected unmarshal error")
+			assert.Equal(t, tt.want, []string(s))
+		})
+	}
+}

@@ -57,6 +57,60 @@ func NewDynamicClientRegistrationRequest(scopes []string, callbackPort int) *Dyn
 	return registrationRequest
 }
 
+// ScopeList represents the "scope" field in a dynamic client registration response.
+// Some servers return this as a space-delimited string per RFC 7591, while others
+// return it as a JSON array of strings. This type normalizes both into a []string.
+//
+// Examples of supported inputs:
+//
+//	"openid profile email"        → []string{"openid", "profile", "email"}
+//	["openid","profile","email"]  → []string{"openid", "profile", "email"}
+//	null                          → nil
+//	"" or ["", "  "]              → nil
+type ScopeList []string
+
+// UnmarshalJSON implements custom decoding for ScopeList. It supports both
+// string and array encodings of the "scope" field, trimming whitespace and
+// normalizing empty values to nil for consistent semantics.
+func (s *ScopeList) UnmarshalJSON(data []byte) error {
+	// Handle explicit null
+	if strings.TrimSpace(string(data)) == "null" {
+		*s = nil
+		return nil
+	}
+
+	// Case 1: space-delimited string
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		if strings.TrimSpace(str) == "" {
+			*s = nil
+			return nil
+		}
+		*s = strings.Fields(str)
+		return nil
+	}
+
+	// Case 2: JSON array
+	var arr []string
+	if err := json.Unmarshal(data, &arr); err == nil {
+		cleaned := make([]string, 0, len(arr))
+		for _, v := range arr {
+			if v = strings.TrimSpace(v); v != "" {
+				cleaned = append(cleaned, v)
+			}
+		}
+		// Normalize: treat all-empty/whitespace arrays the same as ""
+		if len(cleaned) == 0 {
+			*s = nil
+		} else {
+			*s = cleaned
+		}
+		return nil
+	}
+
+	return fmt.Errorf("invalid scope format: %s", string(data))
+}
+
 // DynamicClientRegistrationResponse represents the response from dynamic client registration (RFC 7591)
 type DynamicClientRegistrationResponse struct {
 	// Required fields
@@ -70,12 +124,12 @@ type DynamicClientRegistrationResponse struct {
 	RegistrationClientURI   string `json:"registration_client_uri,omitempty"`
 
 	// Echo back the essential request fields
-	ClientName              string   `json:"client_name,omitempty"`
-	RedirectURIs            []string `json:"redirect_uris,omitempty"`
-	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
-	GrantTypes              []string `json:"grant_types,omitempty"`
-	ResponseTypes           []string `json:"response_types,omitempty"`
-	Scopes                  []string `json:"scope,omitempty"`
+	ClientName              string    `json:"client_name,omitempty"`
+	RedirectURIs            []string  `json:"redirect_uris,omitempty"`
+	TokenEndpointAuthMethod string    `json:"token_endpoint_auth_method,omitempty"`
+	GrantTypes              []string  `json:"grant_types,omitempty"`
+	ResponseTypes           []string  `json:"response_types,omitempty"`
+	Scopes                  ScopeList `json:"scope,omitempty"`
 }
 
 // RegisterClientDynamically performs dynamic client registration (RFC 7591)

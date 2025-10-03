@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -366,14 +365,14 @@ func TestDynamicClientRegistrationResponse_Validation(t *testing.T) {
 
 // TestIsLocalhost is already defined in oidc_test.go
 
-// TestScopeList_UnmarshalJSON tests that the ScopeList unmarshaling works correctly
+// TestScopeList_UnmarshalJSON tests that the ScopeList unmarshaling works correctly.
 func TestScopeList_UnmarshalJSON(t *testing.T) {
 	t.Parallel()
+
 	tests := []struct {
 		name    string
 		jsonIn  string
 		want    []string
-		wantNil bool
 		wantErr bool
 	}{
 		{
@@ -382,9 +381,9 @@ func TestScopeList_UnmarshalJSON(t *testing.T) {
 			want:   []string{"openid", "profile", "email"},
 		},
 		{
-			name:    "empty string => nil",
-			jsonIn:  `""`,
-			wantNil: true,
+			name:   "empty string => nil",
+			jsonIn: `""`,
+			want:   nil,
 		},
 		{
 			name:   "string with extra spaces",
@@ -402,14 +401,14 @@ func TestScopeList_UnmarshalJSON(t *testing.T) {
 			want:   []string{"openid", "profile"},
 		},
 		{
-			name:    "all-empty array => nil",
-			jsonIn:  `["","  "]`,
-			wantNil: true,
+			name:   "all-empty array => nil",
+			jsonIn: `["","  "]`,
+			want:   nil,
 		},
 		{
-			name:    "explicit null => nil",
-			jsonIn:  `null`,
-			wantNil: true,
+			name:   "explicit null => nil",
+			jsonIn: `null`,
+			want:   nil,
 		},
 		{
 			name:    "invalid type (number)",
@@ -424,31 +423,20 @@ func TestScopeList_UnmarshalJSON(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // capture loop variable
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
 			var s ScopeList
 			err := json.Unmarshal([]byte(tt.jsonIn), &s)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("expected error but got none (value: %v)", s)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if tt.wantNil {
-				if s != nil {
-					t.Fatalf("expected nil, got %v", []string(s))
-				}
+				assert.Error(t, err, "expected error but got none")
 				return
 			}
 
-			if !reflect.DeepEqual([]string(s), tt.want) {
-				t.Fatalf("got %v, want %v", []string(s), tt.want)
-			}
+			assert.NoError(t, err, "unexpected unmarshal error")
+			assert.Equal(t, tt.want, []string(s))
 		})
 	}
 }

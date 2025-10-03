@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -364,3 +365,88 @@ func TestDynamicClientRegistrationResponse_Validation(t *testing.T) {
 }
 
 // TestIsLocalhost is already defined in oidc_test.go
+
+// TestScopeList_UnmarshalJSON tests that the ScopeList unmarshaling works correctly
+func TestScopeList_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		jsonIn  string
+		want    []string
+		wantNil bool
+		wantErr bool
+	}{
+		{
+			name:   "space-delimited string",
+			jsonIn: `"openid profile email"`,
+			want:   []string{"openid", "profile", "email"},
+		},
+		{
+			name:    "empty string => nil",
+			jsonIn:  `""`,
+			wantNil: true,
+		},
+		{
+			name:   "string with extra spaces",
+			jsonIn: `"  openid   profile  "`,
+			want:   []string{"openid", "profile"},
+		},
+		{
+			name:   "normal array",
+			jsonIn: `["openid","profile","email"]`,
+			want:   []string{"openid", "profile", "email"},
+		},
+		{
+			name:   "array with whitespace and empties",
+			jsonIn: `["  openid  ",""," profile "]`,
+			want:   []string{"openid", "profile"},
+		},
+		{
+			name:    "all-empty array => nil",
+			jsonIn:  `["","  "]`,
+			wantNil: true,
+		},
+		{
+			name:    "explicit null => nil",
+			jsonIn:  `null`,
+			wantNil: true,
+		},
+		{
+			name:    "invalid type (number)",
+			jsonIn:  `123`,
+			wantErr: true,
+		},
+		{
+			name:    "invalid type (object)",
+			jsonIn:  `{"not":"valid"}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var s ScopeList
+			err := json.Unmarshal([]byte(tt.jsonIn), &s)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error but got none (value: %v)", s)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.wantNil {
+				if s != nil {
+					t.Fatalf("expected nil, got %v", []string(s))
+				}
+				return
+			}
+
+			if !reflect.DeepEqual([]string(s), tt.want) {
+				t.Fatalf("got %v, want %v", []string(s), tt.want)
+			}
+		})
+	}
+}

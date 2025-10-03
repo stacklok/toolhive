@@ -26,7 +26,7 @@ func (e *Error) Unwrap() error {
 	return e.Err
 }
 
-//go:generate mockgen -destination=mocks/mock_status.go -package=mocks -source=types.go SyncStatusCollector,APIStatusCollector,StatusDeriver,StatusManager
+//go:generate mockgen -destination=mocks/mock_collector.go -package=mocks -source=types.go SyncStatusCollector,APIStatusCollector,StatusDeriver,StatusManager
 
 // SyncStatusCollector handles sync-related status updates
 type SyncStatusCollector interface {

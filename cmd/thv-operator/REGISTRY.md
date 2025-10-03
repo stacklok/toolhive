@@ -124,10 +124,17 @@ spec:
     type: git
     format: toolhive
     git:
-      url: "https://github.com/org/mcp-registry"
-      ref: "main"
+      repository: "https://github.com/org/mcp-registry"
+      branch: "main"
       path: "registry.json"  # optional, defaults to "registry.json"
 ```
+
+Supported repository URL formats:
+- `https://github.com/org/repo` - HTTPS (recommended)
+- `git@github.com:org/repo.git` - SSH
+- `ssh://git@example.com/repo.git` - SSH with explicit protocol
+- `git://example.com/repo.git` - Git protocol
+- `file:///path/to/local/repo` - Local filesystem (for testing)
 
 ### Registry Formats
 
@@ -191,6 +198,13 @@ filter:
     exclude: ["experimental"]
 # Result: Include database AND production servers, but exclude any experimental ones
 ```
+
+### Automatic Filter Change Detection
+
+The operator automatically detects when filters are modified and triggers a resync:
+- Filter changes are detected using SHA256 hash comparison
+- No manual intervention required when updating filter configuration
+- Changes are tracked in the `status.lastAppliedFilterHash` field
 
 ## Image Validation
 
@@ -324,6 +338,12 @@ status:
     phase: Ready
     endpoint: "http://my-registry-api.toolhive-system.svc.cluster.local:8080"
     readySince: "2025-01-14T10:25:00Z"
+  lastAppliedFilterHash: "def456"
+  storageRef:
+    type: configmap
+    configMapRef:
+      name: "my-registry-registry-storage"
+  lastManualSyncTrigger: "1704110400"
   conditions:
     - type: SyncSuccessful
       status: "True"
@@ -454,8 +474,8 @@ spec:
   source:
     type: git
     git:
-      url: "https://github.com/org/dev-mcp-registry"
-      ref: "develop"
+      repository: "https://github.com/org/dev-mcp-registry"
+      branch: "develop"
   # No sync policy = manual sync only
   filter:
     names:

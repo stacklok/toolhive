@@ -57,6 +57,42 @@ func NewDynamicClientRegistrationRequest(scopes []string, callbackPort int) *Dyn
 	return registrationRequest
 }
 
+type ScopeList []string
+
+func (s *ScopeList) UnmarshalJSON(data []byte) error {
+	// Handle explicit null
+	if string(data) == "null" {
+		*s = nil
+		return nil
+	}
+
+	// Try to decode as string first: "openid profile email"
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		str = strings.TrimSpace(str)
+		if str == "" {
+			*s = nil
+			return nil
+		}
+		*s = strings.Fields(str) // split by spaces
+		return nil
+	}
+
+	// Try to decode as []string: ["openid","profile","email"]
+	var arr []string
+	if err := json.Unmarshal(data, &arr); err == nil {
+		*s = make([]string, 0, len(arr))
+		for _, v := range arr {
+			if v = strings.TrimSpace(v); v != "" {
+				*s = append(*s, v)
+			}
+		}
+		return nil
+	}
+
+	return fmt.Errorf("invalid scope format: %s", string(data))
+}
+
 // DynamicClientRegistrationResponse represents the response from dynamic client registration (RFC 7591)
 type DynamicClientRegistrationResponse struct {
 	// Required fields
@@ -70,12 +106,12 @@ type DynamicClientRegistrationResponse struct {
 	RegistrationClientURI   string `json:"registration_client_uri,omitempty"`
 
 	// Echo back the essential request fields
-	ClientName              string   `json:"client_name,omitempty"`
-	RedirectURIs            []string `json:"redirect_uris,omitempty"`
-	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
-	GrantTypes              []string `json:"grant_types,omitempty"`
-	ResponseTypes           []string `json:"response_types,omitempty"`
-	Scopes                  []string `json:"scope,omitempty"`
+	ClientName              string    `json:"client_name,omitempty"`
+	RedirectURIs            []string  `json:"redirect_uris,omitempty"`
+	TokenEndpointAuthMethod string    `json:"token_endpoint_auth_method,omitempty"`
+	GrantTypes              []string  `json:"grant_types,omitempty"`
+	ResponseTypes           []string  `json:"response_types,omitempty"`
+	Scopes                  ScopeList `json:"scope,omitempty"`
 }
 
 // RegisterClientDynamically performs dynamic client registration (RFC 7591)

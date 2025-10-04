@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -130,6 +131,7 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 			ResponseWriter: w,
 			statusCode:     http.StatusOK,
 			bytesWritten:   0,
+			isToolCall:     mcpparser.GetMCPMethod(ctx) == string(mcp.MethodToolsCall),
 		}
 
 		// Add HTTP attributes
@@ -390,12 +392,27 @@ func (*HTTPMiddleware) finalizeSpan(span trace.Span, rw *responseWriter, duratio
 		attribute.Float64("http.duration_ms", float64(duration.Nanoseconds())/1e6),
 	)
 
-	// Set span status based on HTTP status code
+	// Add MCP tool error indicator if detected
+	if rw.isToolCall {
+		span.SetAttributes(attribute.Bool("mcp.tool.error", rw.hasToolError))
+	}
+
+	// Set span status based on HTTP status code AND MCP tool errors
 	if rw.statusCode >= 400 {
 		span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", rw.statusCode))
+	} else if rw.hasToolError {
+		span.SetStatus(codes.Error, "MCP tool execution error")
 	} else {
 		span.SetStatus(codes.Ok, "")
 	}
+}
+
+// detectMCPToolError performs lightweight detection of MCP tool execution errors
+// Returns true if the response likely contains a tool execution error
+func detectMCPToolError(data []byte) bool {
+	// Quick byte search for common error patterns
+	return bytes.Contains(data, []byte(`"isError":true`)) ||
+		bytes.Contains(data, []byte(`"isError": true`))
 }
 
 // responseWriter wraps http.ResponseWriter to capture response details.
@@ -403,6 +420,8 @@ type responseWriter struct {
 	http.ResponseWriter
 	statusCode   int
 	bytesWritten int64
+	hasToolError bool // tracks if MCP tool execution error is detected
+	isToolCall   bool // tracks if this is a tools/call request
 }
 
 // WriteHeader captures the status code.
@@ -411,10 +430,16 @@ func (rw *responseWriter) WriteHeader(statusCode int) {
 	rw.ResponseWriter.WriteHeader(statusCode)
 }
 
-// Write captures the number of bytes written.
+// Write captures the number of bytes written and detects tool errors.
 func (rw *responseWriter) Write(data []byte) (int, error) {
 	n, err := rw.ResponseWriter.Write(data)
 	rw.bytesWritten += int64(n)
+	
+	// Only check for tool errors if this is a tool call and we haven't found one yet
+	if rw.isToolCall && !rw.hasToolError {
+		rw.hasToolError = detectMCPToolError(data)
+	}
+	
 	return n, err
 }
 
@@ -426,10 +451,12 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 		mcpMethod = "unknown"
 	}
 
-	// Determine status (success/error)
+	// Determine status (success/error/tool_error)
 	status := "success"
 	if rw.statusCode >= 400 {
 		status = "error"
+	} else if rw.hasToolError {
+		status = "tool_error"
 	}
 
 	// Common attributes for all metrics

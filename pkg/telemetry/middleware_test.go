@@ -1491,3 +1491,28 @@ func TestFactoryMiddleware_Integration(t *testing.T) {
 		assert.NoError(t, err)
 	})
 }
+
+func TestDetectMCPToolError(t *testing.T) {
+	assert.False(t, detectMCPToolError([]byte(`{"result":{"isError":false}}`)))
+	assert.True(t, detectMCPToolError([]byte(`{"result":{"isError":true}}`)))
+	assert.False(t, detectMCPToolError([]byte(`{"result":{"content":"test"}}`)))
+}
+
+func TestResponseWriter_ToolErrorDetection(t *testing.T) {
+	rec := httptest.NewRecorder()
+	
+	// Tool call with error
+	rw := &responseWriter{ResponseWriter: rec, isToolCall: true}
+	rw.Write([]byte(`{"result":{"isError":true}}`))
+	assert.True(t, rw.hasToolError)
+	
+	// Tool call without error  
+	rw = &responseWriter{ResponseWriter: rec, isToolCall: true}
+	rw.Write([]byte(`{"result":{"isError":false}}`))
+	assert.False(t, rw.hasToolError)
+	
+	// Non-tool call should not detect errors
+	rw = &responseWriter{ResponseWriter: rec, isToolCall: false}
+	rw.Write([]byte(`{"result":{"isError":true}}`))
+	assert.False(t, rw.hasToolError)
+}

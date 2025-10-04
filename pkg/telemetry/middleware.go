@@ -434,12 +434,12 @@ func (rw *responseWriter) WriteHeader(statusCode int) {
 func (rw *responseWriter) Write(data []byte) (int, error) {
 	n, err := rw.ResponseWriter.Write(data)
 	rw.bytesWritten += int64(n)
-	
+
 	// Only check for tool errors if this is a tool call and we haven't found one yet
 	if rw.isToolCall && !rw.hasToolError {
 		rw.hasToolError = detectMCPToolError(data)
 	}
-	
+
 	return n, err
 }
 

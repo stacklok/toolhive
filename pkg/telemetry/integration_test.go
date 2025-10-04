@@ -485,35 +485,36 @@ func TestTelemetryIntegration_MultipleRequests(t *testing.T) {
 }
 
 func TestTelemetryIntegration_ToolErrorDetection(t *testing.T) {
+	t.Parallel()
 	// Setup test providers
 	exporter := tracetest.NewInMemoryExporter()
 	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	meterProvider := sdkmetric.NewMeterProvider()
-	
+
 	config := Config{ServiceName: "test", ServiceVersion: "1.0.0"}
 	middleware := NewHTTPMiddleware(config, tracerProvider, meterProvider, "test", "stdio")
 
 	// Test tool call with error
-	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte(`{"result":{"isError":true}}`))
 	})
-	
+
 	mcpRequest := &mcp.ParsedMCPRequest{Method: "tools/call", ID: "test", IsRequest: true}
 	req := httptest.NewRequest("POST", "/messages", nil)
 	ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, mcpRequest)
 	req = req.WithContext(ctx)
-	
+
 	rec := httptest.NewRecorder()
 	middleware(testHandler).ServeHTTP(rec, req)
-	
+
 	// Verify span has error attribute
 	tracerProvider.ForceFlush(ctx)
 	spans := exporter.GetSpans()
 	require.Len(t, spans, 1)
-	
+
 	span := spans[0]
 	assert.Equal(t, "mcp.tools/call", span.Name)
-	
+
 	// Check for tool error attribute
 	for _, attr := range span.Attributes {
 		if attr.Key == "mcp.tool.error" {

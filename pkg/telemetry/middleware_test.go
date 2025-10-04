@@ -1497,6 +1497,10 @@ func TestDetectMCPToolError(t *testing.T) {
 	assert.False(t, detectMCPToolError([]byte(`{"result":{"isError":false}}`)))
 	assert.True(t, detectMCPToolError([]byte(`{"result":{"isError":true}}`)))
 	assert.False(t, detectMCPToolError([]byte(`{"result":{"content":"test"}}`)))
+
+	// Test invalid JSON - should return false, not panic
+	assert.False(t, detectMCPToolError([]byte(`invalid json`)))
+	assert.False(t, detectMCPToolError([]byte(`{"malformed": json}`)))
 }
 
 func TestResponseWriter_ToolErrorDetection(t *testing.T) {
@@ -1506,15 +1510,25 @@ func TestResponseWriter_ToolErrorDetection(t *testing.T) {
 	// Tool call with error
 	rw := &responseWriter{ResponseWriter: rec, isToolCall: true}
 	rw.Write([]byte(`{"result":{"isError":true}}`))
+	rw.finalizeToolErrorDetection() // Now we need to explicitly finalize
 	assert.True(t, rw.hasToolError)
 
 	// Tool call without error
 	rw = &responseWriter{ResponseWriter: rec, isToolCall: true}
 	rw.Write([]byte(`{"result":{"isError":false}}`))
+	rw.finalizeToolErrorDetection()
 	assert.False(t, rw.hasToolError)
 
 	// Non-tool call should not detect errors
 	rw = &responseWriter{ResponseWriter: rec, isToolCall: false}
 	rw.Write([]byte(`{"result":{"isError":true}}`))
+	rw.finalizeToolErrorDetection()
 	assert.False(t, rw.hasToolError)
+
+	// Test chunked writes (multiple Write calls)
+	rw = &responseWriter{ResponseWriter: rec, isToolCall: true}
+	rw.Write([]byte(`{"result":{"isError":`))
+	rw.Write([]byte(`true}}`))
+	rw.finalizeToolErrorDetection()
+	assert.True(t, rw.hasToolError, "Should detect error in chunked response")
 }

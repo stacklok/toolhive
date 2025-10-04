@@ -1,7 +1,6 @@
 package telemetry
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -148,6 +147,9 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 
 		// Call the next handler with the instrumented context
 		next.ServeHTTP(rw, r.WithContext(ctx))
+
+		// Finalize tool error detection now that response is complete
+		rw.finalizeToolErrorDetection()
 
 		// Record completion metrics and finalize span
 		duration := time.Since(startTime)
@@ -410,18 +412,26 @@ func (*HTTPMiddleware) finalizeSpan(span trace.Span, rw *responseWriter, duratio
 // detectMCPToolError performs lightweight detection of MCP tool execution errors
 // Returns true if the response likely contains a tool execution error
 func detectMCPToolError(data []byte) bool {
-	// Quick byte search for common error patterns
-	return bytes.Contains(data, []byte(`"isError":true`)) ||
-		bytes.Contains(data, []byte(`"isError": true`))
+	// Attempt to parse JSON and check for isError field
+	var resp struct {
+		Result struct {
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return false
+	}
+	return resp.Result.IsError
 }
 
 // responseWriter wraps http.ResponseWriter to capture response details.
 type responseWriter struct {
 	http.ResponseWriter
-	statusCode   int
-	bytesWritten int64
-	hasToolError bool // tracks if MCP tool execution error is detected
-	isToolCall   bool // tracks if this is a tools/call request
+	statusCode     int
+	bytesWritten   int64
+	hasToolError   bool   // tracks if MCP tool execution error is detected
+	isToolCall     bool   // tracks if this is a tools/call request
+	responseBuffer []byte // buffer to collect response data for tool calls
 }
 
 // WriteHeader captures the status code.
@@ -430,17 +440,27 @@ func (rw *responseWriter) WriteHeader(statusCode int) {
 	rw.ResponseWriter.WriteHeader(statusCode)
 }
 
-// Write captures the number of bytes written and detects tool errors.
+// Write captures the number of bytes written and buffers data for tool calls.
 func (rw *responseWriter) Write(data []byte) (int, error) {
 	n, err := rw.ResponseWriter.Write(data)
 	rw.bytesWritten += int64(n)
 
-	// Only check for tool errors if this is a tool call and we haven't found one yet
+	// Buffer response data for tool calls to enable proper error detection
 	if rw.isToolCall && !rw.hasToolError {
-		rw.hasToolError = detectMCPToolError(data)
+		rw.responseBuffer = append(rw.responseBuffer, data...)
 	}
 
 	return n, err
+}
+
+// finalizeToolErrorDetection performs error detection on the complete buffered response.
+// This should be called after the response is completely written.
+func (rw *responseWriter) finalizeToolErrorDetection() {
+	if rw.isToolCall && !rw.hasToolError && len(rw.responseBuffer) > 0 {
+		rw.hasToolError = detectMCPToolError(rw.responseBuffer)
+		// Clear buffer to free memory
+		rw.responseBuffer = nil
+	}
 }
 
 // recordMetrics records request metrics.

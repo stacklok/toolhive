@@ -1,0 +1,8 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: kagent-test
+  namespace: toolhive-system
+status:
+  phase: Running
+  url: http://kagent-test-service.toolhive-system.svc.cluster.local:8080

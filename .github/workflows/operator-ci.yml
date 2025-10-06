@@ -188,6 +188,10 @@ jobs:
         chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios --config .chainsaw.yaml
         chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup --config .chainsaw.yaml
     
+    - name: Install Ginkgo CLI
+      run: |
+        go install github.com/onsi/ginkgo/v2/ginkgo@latest
+        
     - name: Run Ginkgo tests
       run: |
         go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest

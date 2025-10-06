@@ -14,7 +14,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 )
 
-var _ = Describe("MCPRegistry Manual Sync with ConfigMap", func() {
+var _ = Describe("MCPRegistry Manual Sync with ConfigMap", Label("k8s", "registry"), func() {
 	var (
 		ctx             context.Context
 		registryHelper  *MCPRegistryTestHelper

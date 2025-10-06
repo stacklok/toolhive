@@ -17,7 +17,7 @@ const (
 	registryFinalizerName = "mcpregistry.toolhive.stacklok.dev/finalizer"
 )
 
-var _ = Describe("MCPRegistry Lifecycle Management", func() {
+var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), func() {
 	var (
 		ctx             context.Context
 		registryHelper  *MCPRegistryTestHelper

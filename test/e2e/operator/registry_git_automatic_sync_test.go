@@ -15,7 +15,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sync"
 )
 
-var _ = Describe("MCPRegistry Git Automatic Sync", func() {
+var _ = Describe("MCPRegistry Git Automatic Sync", Label("k8s", "registry"), func() {
 	var (
 		ctx                     context.Context
 		registryHelper          *MCPRegistryTestHelper

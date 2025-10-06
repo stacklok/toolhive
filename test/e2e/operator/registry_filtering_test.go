@@ -10,7 +10,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
-var _ = Describe("MCPRegistry Filtering", func() {
+var _ = Describe("MCPRegistry Filtering", Label("k8s", "registry"), func() {
 	var (
 		ctx             context.Context
 		registryHelper  *MCPRegistryTestHelper

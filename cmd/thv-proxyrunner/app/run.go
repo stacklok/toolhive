@@ -87,6 +87,9 @@ type proxyRunFlags struct {
 	// Network isolation flag
 	runIsolateNetwork bool
 
+	// Trust proxy headers flag
+	runTrustProxyHeaders bool
+
 	// Tools filter
 	runToolsFilter []string
 
@@ -217,6 +220,8 @@ func addRunFlags(runCmd *cobra.Command, runFlags *proxyRunFlags) {
 		"Enable Prometheus-style /metrics endpoint on the main transport port")
 	runCmd.Flags().BoolVar(&runFlags.runIsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
+	runCmd.Flags().BoolVar(&runFlags.runTrustProxyHeaders, "trust-proxy-headers", false,
+		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix)")
 	runCmd.Flags().StringArrayVar(
 		&runFlags.runToolsFilter,
 		"tools",

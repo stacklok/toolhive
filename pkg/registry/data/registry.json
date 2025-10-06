@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-02T00:16:38Z",
+  "last_updated": "2025-10-06T00:17:43Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -472,9 +472,9 @@
         "list_icons"
       ],
       "metadata": {
-        "stars": 6233,
+        "stars": 6584,
         "pulls": 0,
-        "last_updated": "2025-09-07T02:30:48Z"
+        "last_updated": "2025-10-05T02:31:59Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -523,9 +523,9 @@
         "recommend"
       ],
       "metadata": {
-        "stars": 6243,
+        "stars": 6584,
         "pulls": 0,
-        "last_updated": "2025-09-08T02:31:33Z"
+        "last_updated": "2025-10-05T02:32:01Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -711,7 +711,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.8.3",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.8.4",
       "permissions": {
         "network": {
           "outbound": {
@@ -1018,7 +1018,7 @@
         "devops",
         "testing"
       ],
-      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.6.0",
+      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.6.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -1068,9 +1068,9 @@
         "chroma_delete_documents"
       ],
       "metadata": {
-        "stars": 334,
+        "stars": 374,
         "pulls": 0,
-        "last_updated": "2025-09-07T02:30:49Z"
+        "last_updated": "2025-10-05T02:32:00Z"
       },
       "repository_url": "https://github.com/chroma-core/chroma-mcp",
       "tags": [
@@ -1377,9 +1377,9 @@
         "unstage_table"
       ],
       "metadata": {
-        "stars": 3,
+        "stars": 4,
         "pulls": 0,
-        "last_updated": "2025-09-08T02:31:32Z"
+        "last_updated": "2025-10-05T02:32:00Z"
       },
       "repository_url": "https://github.com/dolthub/dolt-mcp",
       "tags": [
@@ -2358,7 +2358,7 @@
         "ingestion",
         "data-connectors"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20250927001",
+      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20250930002",
       "permissions": {
         "network": {
           "outbound": {
@@ -2793,7 +2793,7 @@
         "get",
         "list"
       ],
-      "image": "ghcr.io/stackloklabs/mkp/server:0.2.3",
+      "image": "ghcr.io/stackloklabs/mkp/server:0.2.4",
       "permissions": {
         "network": {
           "outbound": {
@@ -3190,7 +3190,7 @@
         "cloud",
         "management"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-aura-manager:0.4.2",
+      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-aura-manager:0.4.3",
       "permissions": {
         "network": {
           "outbound": {
@@ -3257,7 +3257,7 @@
         "query",
         "graph-database"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-cypher:0.4.0",
+      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-cypher:0.4.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -3334,7 +3334,7 @@
         "knowledge-graph",
         "graph-database"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-memory:0.4.0",
+      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-memory:0.4.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -3487,9 +3487,9 @@
         "find_underused_resource_classes"
       ],
       "metadata": {
-        "stars": 63,
+        "stars": 65,
         "pulls": 0,
-        "last_updated": "2025-09-08T02:31:32Z"
+        "last_updated": "2025-10-05T02:32:01Z"
       },
       "repository_url": "https://github.com/CircleCI-Public/mcp-server-circleci",
       "tags": [
@@ -4195,7 +4195,7 @@
         "evaluation",
         "ai"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.15",
+      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.16",
       "permissions": {
         "network": {
           "outbound": {
@@ -4269,7 +4269,7 @@
         "browser",
         "navigate"
       ],
-      "image": "mcr.microsoft.com/playwright/mcp:v0.0.39",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.41",
       "target_port": 8931,
       "permissions": {
         "network": {
@@ -4973,7 +4973,7 @@
         "gcp",
         "azure"
       ],
-      "image": "docker.io/hashicorp/terraform-mcp-server:0.3.0",
+      "image": "docker.io/hashicorp/terraform-mcp-server:0.3.1",
       "permissions": {
         "network": {
           "outbound": {

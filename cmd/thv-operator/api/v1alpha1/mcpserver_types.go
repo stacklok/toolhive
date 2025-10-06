@@ -119,6 +119,13 @@ type MCPServerSpec struct {
 	// Telemetry defines observability configuration for the MCP server
 	// +optional
 	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
+
+	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
+	// When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,
+	// and X-Forwarded-Prefix headers to construct endpoint URLs
+	// +kubebuilder:default=false
+	// +optional
+	TrustProxyHeaders bool `json:"trustProxyHeaders,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources

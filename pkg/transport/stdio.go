@@ -34,6 +34,7 @@ type StdioTransport struct {
 	debug             bool
 	middlewares       []types.MiddlewareFunction
 	prometheusHandler http.Handler
+	trustProxyHeaders bool
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -60,6 +61,7 @@ func NewStdioTransport(
 	proxyPort int,
 	deployer rt.Deployer,
 	debug bool,
+	trustProxyHeaders bool,
 	prometheusHandler http.Handler,
 	middlewares ...types.MiddlewareFunction,
 ) *StdioTransport {
@@ -68,6 +70,7 @@ func NewStdioTransport(
 		proxyPort:         proxyPort,
 		deployer:          deployer,
 		debug:             debug,
+		trustProxyHeaders: trustProxyHeaders,
 		middlewares:       middlewares,
 		prometheusHandler: prometheusHandler,
 		shutdownCh:        make(chan struct{}),
@@ -170,7 +173,14 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		}
 		logger.Info("Streamable HTTP proxy started, processing messages...")
 	case types.ProxyModeSSE:
-		t.httpProxy = httpsse.NewHTTPSSEProxy(t.host, t.proxyPort, t.containerName, t.prometheusHandler, t.middlewares...)
+		t.httpProxy = httpsse.NewHTTPSSEProxy(
+			t.host,
+			t.proxyPort,
+			t.containerName,
+			t.trustProxyHeaders,
+			t.prometheusHandler,
+			t.middlewares...,
+		)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}

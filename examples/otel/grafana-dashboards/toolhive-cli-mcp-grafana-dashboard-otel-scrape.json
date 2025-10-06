@@ -18,7 +18,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 38,
+  "id": 0,
   "links": [],
   "panels": [
     {
@@ -56,6 +56,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -103,7 +104,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0",
+      "pluginVersion": "12.2.0",
       "targets": [
         {
           "datasource": {
@@ -111,7 +112,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(toolhive_mcp_request_duration_seconds_count{job=\"toolhive-system/mcp-fetch-server\"}[5m])",
+          "expr": "rate(toolhive_mcp_request_duration_seconds_count{exported_job=\"mcp-fetch-server\"}[5m])",
           "legendFormat": "{{mcp_method}} - {{status}} ({{status_code}})",
           "range": true,
           "refId": "A"
@@ -155,206 +156,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 12,
-        "y": 0
-      },
-      "id": 11,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.1.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (k8s_pod_name) (k8s_pod_memory_usage_bytes{k8s_pod_name=~\"fetch.*\", k8s_namespace_name=\"toolhive-system\"})",
-          "instant": false,
-          "legendFormat": "{{k8s_pod_name}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Memory Usage",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "vis": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 0
-      },
-      "id": 12,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.1.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (k8s_pod_name) (k8s_pod_cpu_usage{k8s_pod_name=~\"fetch.*\", k8s_namespace_name=\"toolhive-system\"}) * 100",
-          "instant": false,
-          "legendFormat": "{{k8s_pod_name}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "CPU Usage",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "vis": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -386,7 +188,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 4
+        "y": 0
       },
       "id": 8,
       "options": {
@@ -402,7 +204,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0",
+      "pluginVersion": "12.2.0",
       "targets": [
         {
           "datasource": {
@@ -410,7 +212,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, rate(toolhive_mcp_request_duration_seconds_bucket{job=\"toolhive-system/mcp-fetch-server\"}[5m])) * 1000",
+          "expr": "histogram_quantile(0.95, rate(toolhive_mcp_request_duration_seconds_bucket{exported_job=\"mcp-fetch-server\"}[5m])) * 1000",
           "legendFormat": "95th percentile - {{mcp_method}} - {{status}}",
           "range": true,
           "refId": "A"
@@ -421,7 +223,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, rate(toolhive_mcp_request_duration_seconds_bucket{job=\"toolhive-system/mcp-fetch-server\"}[5m])) * 1000",
+          "expr": "histogram_quantile(0.50, rate(toolhive_mcp_request_duration_seconds_bucket{exported_job=\"mcp-fetch-server\"}[5m])) * 1000",
           "legendFormat": "50th percentile - {{mcp_method}} - {{status}}",
           "range": true,
           "refId": "B"
@@ -483,7 +285,7 @@
         "textMode": "auto",
         "wideLayout": true
       },
-      "pluginVersion": "12.1.0",
+      "pluginVersion": "12.2.0",
       "targets": [
         {
           "datasource": {
@@ -491,7 +293,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(toolhive_mcp_request_duration_seconds_count{job=\"toolhive-system/mcp-fetch-server\"}[5m]))",
+          "expr": "sum(rate(toolhive_mcp_request_duration_seconds_count{exported_job=\"mcp-fetch-server\"}[5m]))",
           "legendFormat": "Total RPS",
           "range": true,
           "refId": "A"
@@ -557,7 +359,7 @@
         "textMode": "auto",
         "wideLayout": true
       },
-      "pluginVersion": "12.1.0",
+      "pluginVersion": "12.2.0",
       "targets": [
         {
           "datasource": {
@@ -565,7 +367,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(toolhive_mcp_request_duration_seconds_count{job=\"toolhive-system/mcp-fetch-server\",status!=\"success\"}[5m])) / sum(rate(toolhive_mcp_request_duration_seconds_count{job=\"toolhive-system/mcp-fetch-server\"}[5m]))",
+          "expr": "sum(rate(toolhive_mcp_request_duration_seconds_count{exported_job=\"mcp-fetch-server\",status!=\"success\"}[5m])) / sum(rate(toolhive_mcp_request_duration_seconds_count{exported_job=\"mcp-fetch-server\"}[5m]))",
           "legendFormat": "Error Rate",
           "range": true,
           "refId": "A"
@@ -609,6 +411,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -637,10 +440,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
+        "h": 5,
         "w": 12,
-        "x": 0,
-        "y": 12
+        "x": 12,
+        "y": 8
       },
       "id": 7,
       "options": {
@@ -656,7 +459,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.1.0",
+      "pluginVersion": "12.2.0",
       "targets": [
         {
           "datasource": {
@@ -664,7 +467,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "toolhive_mcp_active_connections{job=\"toolhive-system/mcp-fetch-server\"}",
+          "expr": "toolhive_mcp_active_connections{exported_job=\"mcp-fetch-server\"}",
           "legendFormat": "{{mcp_method}} - {{status}} ({{transport}})",
           "range": true,
           "refId": "A"
@@ -672,110 +475,11 @@
       ],
       "title": "MCP Active Connections",
       "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "vis": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 12
-      },
-      "id": 9,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.1.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "go_goroutine_count{job=\"toolhive-system/mcp-fetch-server\"}",
-          "legendFormat": "Goroutines - {{instance}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Active Goroutines",
-      "type": "timeseries"
     }
   ],
   "preload": false,
   "refresh": "5s",
-  "schemaVersion": 41,
+  "schemaVersion": 42,
   "tags": [
     "toolhive",
     "mcp",
@@ -790,7 +494,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "ToolHive MCP Server & Proxy Runner Dashboard - Scrape from OTEL (with kubestats)",
-  "uid": "toolhive-mcp-otel-scrape",
-  "version": 9
+  "title": "ToolHive CLI MCP Server Dashboard - Scrape from Prometheus",
+  "uid": "toolhive-cli-mcp-otel-scrape",
+  "version": 1
 }

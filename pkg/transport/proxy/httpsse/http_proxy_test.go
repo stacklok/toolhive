@@ -24,7 +24,7 @@ const testClientID = "test-client"
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestNewHTTPSSEProxy(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 
 	assert.NotNil(t, proxy)
 	assert.Equal(t, "localhost", proxy.host)
@@ -40,7 +40,7 @@ func TestNewHTTPSSEProxy(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestGetMessageChannel(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 
 	ch := proxy.GetMessageChannel()
 	assert.NotNil(t, ch)
@@ -51,7 +51,7 @@ func TestGetMessageChannel(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestSendMessageToDestination(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 
 	// Create a test message
 	msg, err := jsonrpc2.NewCall(jsonrpc2.StringID("test"), "test.method", nil)
@@ -74,7 +74,7 @@ func TestSendMessageToDestination(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestSendMessageToDestination_ChannelFull(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 
 	// Fill the channel
 	for i := 0; i < 100; i++ {
@@ -93,7 +93,7 @@ func TestSendMessageToDestination_ChannelFull(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestRemoveClient(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 
 	// Create a client session
 	clientID := "test-client-1"
@@ -130,7 +130,7 @@ func TestRemoveClient(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestConcurrentClientRemoval(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 
 	// Create multiple client sessions
 	numClients := 100
@@ -178,7 +178,7 @@ func TestConcurrentClientRemoval(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestForwardResponseToClients(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 	ctx := context.Background()
 
 	// Create a client session
@@ -216,7 +216,7 @@ func TestForwardResponseToClients(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestForwardResponseToClients_NoClients(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 	ctx := context.Background()
 
 	// Create a test response
@@ -237,7 +237,7 @@ func TestForwardResponseToClients_NoClients(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestSendSSEEvent_ChannelFull(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 
 	// Create a client session with a small buffer
 	clientID := testClientID
@@ -273,7 +273,7 @@ func TestSendSSEEvent_ChannelFull(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestProcessPendingMessages(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 
 	// Add pending messages
 	for i := 0; i < 5; i++ {
@@ -303,7 +303,7 @@ func TestProcessPendingMessages(t *testing.T) {
 //
 //nolint:paralleltest // Test uses HTTP test server
 func TestHandleSSEConnection(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 
 	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -326,11 +326,83 @@ func TestHandleSSEConnection(t *testing.T) {
 	assert.Equal(t, 1, proxy.sessionManager.Count())
 }
 
+// TestHandleSSEConnection_WithTrustProxyHeaders tests SSE connection with trusted proxy headers
+//
+//nolint:paralleltest // Test uses HTTP test server
+func TestHandleSSEConnection_WithTrustProxyHeaders(t *testing.T) {
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", true, nil)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxy.handleSSEConnection(w, r)
+	}))
+	defer server.Close()
+
+	// Create a request with X-Forwarded headers
+	req, err := http.NewRequest("GET", server.URL, nil)
+	require.NoError(t, err)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "public.example.com")
+	req.Header.Set("X-Forwarded-Port", "443")
+	req.Header.Set("X-Forwarded-Prefix", "/api/v1")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Read the first SSE event (endpoint event)
+	buf := make([]byte, 1024)
+	n, err := resp.Body.Read(buf)
+	require.NoError(t, err)
+
+	endpointEvent := string(buf[:n])
+
+	// Verify the endpoint URL uses the X-Forwarded headers
+	assert.Contains(t, endpointEvent, "event: endpoint")
+	assert.Contains(t, endpointEvent, "https://public.example.com:443/api/v1/messages")
+}
+
+// TestHandleSSEConnection_WithoutTrustProxyHeaders tests SSE connection ignores untrusted proxy headers
+//
+//nolint:paralleltest // Test uses HTTP test server
+func TestHandleSSEConnection_WithoutTrustProxyHeaders(t *testing.T) {
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxy.handleSSEConnection(w, r)
+	}))
+	defer server.Close()
+
+	// Create a request with X-Forwarded headers (should be ignored)
+	req, err := http.NewRequest("GET", server.URL, nil)
+	require.NoError(t, err)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "malicious.example.com")
+	req.Header.Set("X-Forwarded-Port", "9999")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Read the first SSE event (endpoint event)
+	buf := make([]byte, 1024)
+	n, err := resp.Body.Read(buf)
+	require.NoError(t, err)
+
+	endpointEvent := string(buf[:n])
+
+	// Verify the endpoint URL does NOT use the X-Forwarded headers
+	assert.Contains(t, endpointEvent, "event: endpoint")
+	assert.NotContains(t, endpointEvent, "malicious.example.com")
+	assert.NotContains(t, endpointEvent, ":9999")
+}
+
 // TestHandlePostRequest tests handling of POST requests
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestHandlePostRequest(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 
 	// Create a client session
 	sessionID := "test-session"
@@ -374,7 +446,7 @@ func TestHandlePostRequest(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestHandlePostRequest_NoSessionID(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 
 	// Create a test request without session_id
 	req := httptest.NewRequest("POST", "/messages", nil)
@@ -392,7 +464,7 @@ func TestHandlePostRequest_NoSessionID(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestHandlePostRequest_InvalidSession(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 
 	// Create a test request with non-existent session_id
 	req := httptest.NewRequest("POST", "/messages?session_id=invalid", nil)
@@ -410,7 +482,7 @@ func TestHandlePostRequest_InvalidSession(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestRWMutexUsage(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 
 	// Add multiple client sessions
 	for i := 0; i < 10; i++ {
@@ -451,7 +523,7 @@ func TestRWMutexUsage(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestClosedClientsCleanup(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPSSEProxy("localhost", 8080, "test-container", false, nil)
 
 	// Add many closed client sessions to trigger cleanup
 	for i := 0; i < 1100; i++ {
@@ -483,7 +555,7 @@ func TestClosedClientsCleanup(t *testing.T) {
 //
 //nolint:paralleltest // Test starts/stops HTTP server
 func TestStartStop(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 0, "test-container", nil) // Use port 0 for auto-assignment
+	proxy := NewHTTPSSEProxy("localhost", 0, "test-container", false, nil) // Use port 0 for auto-assignment
 	ctx := context.Background()
 
 	// Start the proxy

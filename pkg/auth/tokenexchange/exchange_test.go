@@ -33,6 +33,19 @@ func TestTokenSource_Token_Success(t *testing.T) {
 		assert.Equal(t, http.MethodPost, r.Method)
 		assert.Equal(t, "application/x-www-form-urlencoded", r.Header.Get("Content-Type"))
 
+		// Verify Authorization header contains Basic Auth credentials
+		authHeader := r.Header.Get("Authorization")
+		assert.NotEmpty(t, authHeader, "Authorization header should be present")
+		assert.True(t, strings.HasPrefix(authHeader, "Basic "), "Authorization header should use Basic scheme")
+
+		// Verify client credentials are sent via Basic Auth (URL-encoded per RFC 6749)
+		// Note: BasicAuth() decodes the base64 and extracts the credentials
+		// Since "test-client-id" has no special chars, URL encoding doesn't change it
+		username, password, ok := r.BasicAuth()
+		require.True(t, ok, "Basic Auth credentials should be parseable")
+		assert.Equal(t, "test-client-id", username)
+		assert.Equal(t, "test-client-secret", password)
+
 		// Parse form data
 		err := r.ParseForm()
 		require.NoError(t, err)
@@ -42,10 +55,12 @@ func TestTokenSource_Token_Success(t *testing.T) {
 		assert.Equal(t, testSubjectToken, r.Form.Get("subject_token"))
 		assert.Equal(t, "urn:ietf:params:oauth:token-type:access_token", r.Form.Get("subject_token_type"))
 		assert.Equal(t, "urn:ietf:params:oauth:token-type:access_token", r.Form.Get("requested_token_type"))
-		assert.Equal(t, "test-client-id", r.Form.Get("client_id"))
-		assert.Equal(t, "test-client-secret", r.Form.Get("client_secret"))
 		assert.Equal(t, "https://api.example.com", r.Form.Get("audience"))
 		assert.Equal(t, "read write", r.Form.Get("scope"))
+
+		// Verify client credentials are NOT in the request body (per RFC 6749 recommendation)
+		assert.Empty(t, r.Form.Get("client_id"), "client_id should not be in request body")
+		assert.Empty(t, r.Form.Get("client_secret"), "client_secret should not be in request body")
 
 		// Return successful response
 		resp := response{
@@ -792,10 +807,14 @@ func TestExchangeToken_EmptyClientCredentials(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify no Authorization header is present when credentials are empty
+		authHeader := r.Header.Get("Authorization")
+		assert.Empty(t, authHeader, "Authorization header should not be present for empty credentials")
+
 		err := r.ParseForm()
 		require.NoError(t, err)
 
-		// Verify client credentials are not included
+		// Verify client credentials are not in request body either
 		assert.Empty(t, r.Form.Get("client_id"))
 		assert.Empty(t, r.Form.Get("client_secret"))
 
@@ -813,7 +832,7 @@ func TestExchangeToken_EmptyClientCredentials(t *testing.T) {
 		SubjectToken: "test-token",
 	}
 	auth := clientAuthentication{
-		// Empty ClientID and ClientSecret
+		// Empty ClientID and ClientSecret (public client)
 	}
 
 	ctx := context.Background()
@@ -828,11 +847,16 @@ func TestExchangeToken_OnlyClientID(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify no Authorization header when only ClientID is provided (public client)
+		// Per our implementation, Basic Auth requires both ClientID AND ClientSecret
+		authHeader := r.Header.Get("Authorization")
+		assert.Empty(t, authHeader, "Authorization header should not be present for public clients")
+
 		err := r.ParseForm()
 		require.NoError(t, err)
 
-		// Verify only client_id is present
-		assert.Equal(t, "public-client-id", r.Form.Get("client_id"))
+		// Verify credentials are not in request body
+		assert.Empty(t, r.Form.Get("client_id"))
 		assert.Empty(t, r.Form.Get("client_secret"))
 
 		resp := response{
@@ -1173,8 +1197,12 @@ func TestExchangeToken_URLValues(t *testing.T) {
 	t.Parallel()
 
 	receivedValues := make(url.Values)
+	var receivedAuth string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Store received Authorization header
+		receivedAuth = r.Header.Get("Authorization")
+
 		err := r.ParseForm()
 		require.NoError(t, err)
 
@@ -1209,7 +1237,11 @@ func TestExchangeToken_URLValues(t *testing.T) {
 	_, err := exchangeToken(ctx, server.URL, request, auth, nil)
 	require.NoError(t, err)
 
-	// Verify all expected values were sent
+	// Verify Authorization header is present with Basic Auth
+	assert.NotEmpty(t, receivedAuth, "Authorization header should be present")
+	assert.True(t, strings.HasPrefix(receivedAuth, "Basic "), "Authorization should use Basic scheme")
+
+	// Verify all expected form values were sent (credentials should NOT be in body)
 	assert.Equal(t, "urn:ietf:params:oauth:grant-type:token-exchange", receivedValues.Get("grant_type"))
 	assert.Equal(t, "my-subject-token", receivedValues.Get("subject_token"))
 	assert.Equal(t, "urn:ietf:params:oauth:token-type:access_token", receivedValues.Get("subject_token_type"))
@@ -1217,6 +1249,55 @@ func TestExchangeToken_URLValues(t *testing.T) {
 	assert.Equal(t, "https://api.example.com", receivedValues.Get("audience"))
 	assert.Equal(t, "read write", receivedValues.Get("scope"))
 	assert.Equal(t, "https://resource.example.com", receivedValues.Get("resource"))
-	assert.Equal(t, "my-client-id", receivedValues.Get("client_id"))
-	assert.Equal(t, "my-client-secret", receivedValues.Get("client_secret"))
+
+	// Verify client credentials are NOT in the request body
+	assert.Empty(t, receivedValues.Get("client_id"), "client_id should not be in request body")
+	assert.Empty(t, receivedValues.Get("client_secret"), "client_secret should not be in request body")
+}
+
+// TestExchangeToken_BasicAuthURLEncoding tests that credentials with special characters are properly URL-encoded.
+func TestExchangeToken_BasicAuthURLEncoding(t *testing.T) {
+	t.Parallel()
+
+	// Test with credentials containing special characters that require URL encoding per RFC 6749
+	specialClientID := "client:with@special/chars"
+	specialClientSecret := "secret&with=special%chars"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify Authorization header is present
+		authHeader := r.Header.Get("Authorization")
+		assert.NotEmpty(t, authHeader, "Authorization header should be present")
+		assert.True(t, strings.HasPrefix(authHeader, "Basic "), "Authorization should use Basic scheme")
+
+		// Verify credentials are properly URL-encoded per RFC 6749
+		// BasicAuth() decodes the base64 and extracts username:password
+		// We expect URL-encoded values as that's what we sent
+		username, password, ok := r.BasicAuth()
+		require.True(t, ok, "Basic Auth credentials should be parseable")
+		assert.Equal(t, url.QueryEscape(specialClientID), username, "ClientID should be URL-encoded")
+		assert.Equal(t, url.QueryEscape(specialClientSecret), password, "ClientSecret should be URL-encoded")
+
+		resp := response{
+			AccessToken: "token",
+			TokenType:   "Bearer",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	request := &exchangeRequest{
+		SubjectToken: "test-token",
+	}
+	auth := clientAuthentication{
+		ClientID:     specialClientID,
+		ClientSecret: specialClientSecret,
+	}
+
+	ctx := context.Background()
+	resp, err := exchangeToken(ctx, server.URL, request, auth, nil)
+
+	require.NoError(t, err)
+	assert.NotNil(t, resp)
 }

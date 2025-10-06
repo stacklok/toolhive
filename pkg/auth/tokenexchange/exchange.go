@@ -286,12 +286,12 @@ func exchangeToken(
 	auth clientAuthentication,
 	client *http.Client,
 ) (*response, error) {
-	data, err := buildTokenExchangeFormData(request, auth)
+	data, err := buildTokenExchangeFormData(request)
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := createTokenExchangeRequest(ctx, endpoint, data)
+	req, err := createTokenExchangeRequest(ctx, endpoint, data, auth)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +314,7 @@ func exchangeToken(
 }
 
 // buildTokenExchangeFormData constructs the form data for a token exchange request according to RFC 8693.
-func buildTokenExchangeFormData(request *exchangeRequest, auth clientAuthentication) (url.Values, error) {
+func buildTokenExchangeFormData(request *exchangeRequest) (url.Values, error) {
 	data := url.Values{}
 
 	// Grant type is always token exchange
@@ -342,7 +342,6 @@ func buildTokenExchangeFormData(request *exchangeRequest, auth clientAuthenticat
 	data.Set("requested_token_type", request.RequestedTokenType)
 
 	addOptionalFields(data, request)
-	addClientAuthentication(data, auth)
 
 	return data, nil
 }
@@ -368,18 +367,14 @@ func addOptionalFields(data url.Values, request *exchangeRequest) {
 	}
 }
 
-// addClientAuthentication adds client credentials to the form data per RFC 6749.
-func addClientAuthentication(data url.Values, auth clientAuthentication) {
-	if auth.ClientID != "" {
-		data.Set("client_id", auth.ClientID)
-	}
-	if auth.ClientSecret != "" {
-		data.Set("client_secret", auth.ClientSecret)
-	}
-}
-
 // createTokenExchangeRequest creates an HTTP POST request for token exchange.
-func createTokenExchangeRequest(ctx context.Context, endpoint string, data url.Values) (*http.Request, error) {
+// Client credentials are sent via HTTP Basic Authentication as recommended by RFC 6749 Section 2.3.1.
+func createTokenExchangeRequest(
+	ctx context.Context,
+	endpoint string,
+	data url.Values,
+	auth clientAuthentication,
+) (*http.Request, error) {
 	encodedData := data.Encode()
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(encodedData))
 	if err != nil {
@@ -388,6 +383,13 @@ func createTokenExchangeRequest(ctx context.Context, endpoint string, data url.V
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Content-Length", strconv.Itoa(len(encodedData)))
+
+	// Add client authentication via HTTP Basic Auth per RFC 6749 Section 2.3.1
+	// Per RFC 6749 and Go's SetBasicAuth documentation, credentials must be URL-encoded
+	// before being passed to SetBasicAuth for OAuth2 compatibility
+	if auth.ClientID != "" && auth.ClientSecret != "" {
+		req.SetBasicAuth(url.QueryEscape(auth.ClientID), url.QueryEscape(auth.ClientSecret))
+	}
 
 	return req, nil
 }

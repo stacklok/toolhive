@@ -56,9 +56,6 @@ jobs:
           - title: proxy-mw
             label_filter: 'proxy || middleware || stability'
             artifact: e2e-test-results-proxy-mw
-          - title: k8s-registry
-            label_filter: 'k8s && registry'
-            artifact: e2e-test-results-k8s-registry
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
 

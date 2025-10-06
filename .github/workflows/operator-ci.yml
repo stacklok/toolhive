@@ -187,3 +187,13 @@ jobs:
         chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/setup --config .chainsaw.yaml
         chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios --config .chainsaw.yaml
         chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup --config .chainsaw.yaml
+
+    - name: Install Task
+      uses: arduino/setup-task@v2
+      with:
+        version: 3.44.1
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Run Ginkgo tests
+      run: |
+        task operator-e2e-test-ginkgo

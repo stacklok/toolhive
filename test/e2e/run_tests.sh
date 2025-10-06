@@ -72,7 +72,7 @@ if [ -n "$LABEL_FILTER_EFFECTIVE" ]; then
     GINKGO_CMD="$GINKGO_CMD --label-filter=\"$LABEL_FILTER_EFFECTIVE\""
 fi
 
-GINKGO_CMD="$GINKGO_CMD . ./operator"
+GINKGO_CMD="$GINKGO_CMD ."
 
 if eval "$GINKGO_CMD"; then
     echo ""

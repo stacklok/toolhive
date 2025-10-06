@@ -13,12 +13,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const (
-	// Registry format constants
-	registryFormatToolHive = "toolhive"
-	registryFormatUpstream = "upstream"
-)
-
 // ConfigMapTestHelper provides utilities for ConfigMap testing and validation
 type ConfigMapTestHelper struct {
 	Client    client.Client
@@ -168,26 +162,6 @@ func (h *ConfigMapTestHelper) CreateSampleToolHiveRegistry(name string) (*corev1
 		Create(h), len(servers)
 }
 
-// CreateSampleUpstreamRegistry creates a ConfigMap with sample upstream registry data
-func (h *ConfigMapTestHelper) CreateSampleUpstreamRegistry(name string) (*corev1.ConfigMap, int) {
-	servers := map[string]RegistryServer{
-		"filesystem": {
-			Name:        "filesystem",
-			Description: "File system operations",
-			Tier:        "Community",
-			Status:      "Active",
-			Transport:   "stdio",
-			Tools:       []string{"filesystem_tool"},
-			Image:       "filesystem/server:latest",
-			Tags:        []string{"filesystem"},
-		},
-	}
-
-	return h.NewConfigMapBuilder(name).
-		WithUpstreamRegistry("registry.json", servers).
-		Create(h), len(servers)
-}
-
 // GetConfigMap retrieves a ConfigMap by name
 func (h *ConfigMapTestHelper) GetConfigMap(name string) (*corev1.ConfigMap, error) {
 	cm := &corev1.ConfigMap{}
@@ -212,105 +186,6 @@ func (h *ConfigMapTestHelper) DeleteConfigMap(name string) error {
 		},
 	}
 	return h.Client.Delete(h.Context, cm)
-}
-
-// ValidateRegistryData validates the structure of registry data in a ConfigMap
-func (h *ConfigMapTestHelper) ValidateRegistryData(configMapName, key string, expectedFormat string) error {
-	cm, err := h.GetConfigMap(configMapName)
-	if err != nil {
-		return fmt.Errorf("failed to get ConfigMap: %w", err)
-	}
-
-	data, exists := cm.Data[key]
-	if !exists {
-		return fmt.Errorf("key %s not found in ConfigMap", key)
-	}
-
-	switch expectedFormat {
-	case registryFormatToolHive:
-		var registryData ToolHiveRegistryData
-		if err := json.Unmarshal([]byte(data), &registryData); err != nil {
-			return fmt.Errorf("failed to unmarshal ToolHive registry data: %w", err)
-		}
-		if len(registryData.Servers) == 0 {
-			return fmt.Errorf("no servers found in ToolHive registry data")
-		}
-	case registryFormatUpstream:
-		var registryData UpstreamRegistryData
-		if err := json.Unmarshal([]byte(data), &registryData); err != nil {
-			return fmt.Errorf("failed to unmarshal upstream registry data: %w", err)
-		}
-		if len(registryData.Servers) == 0 {
-			return fmt.Errorf("no servers found in upstream registry data")
-		}
-	default:
-		return fmt.Errorf("unknown registry format: %s", expectedFormat)
-	}
-
-	return nil
-}
-
-// GetServerCount returns the number of servers in a registry ConfigMap
-func (h *ConfigMapTestHelper) GetServerCount(configMapName, key, format string) (int, error) {
-	cm, err := h.GetConfigMap(configMapName)
-	if err != nil {
-		return 0, err
-	}
-
-	data, exists := cm.Data[key]
-	if !exists {
-		return 0, fmt.Errorf("key %s not found in ConfigMap", key)
-	}
-
-	switch format {
-	case registryFormatToolHive:
-		var registryData ToolHiveRegistryData
-		if err := json.Unmarshal([]byte(data), &registryData); err != nil {
-			return 0, err
-		}
-		return len(registryData.Servers), nil
-	case registryFormatUpstream:
-		var registryData UpstreamRegistryData
-		if err := json.Unmarshal([]byte(data), &registryData); err != nil {
-			return 0, err
-		}
-		return len(registryData.Servers), nil
-	default:
-		return 0, fmt.Errorf("unknown registry format: %s", format)
-	}
-}
-
-// ContainsServer checks if a ConfigMap contains a server with the given name
-func (h *ConfigMapTestHelper) ContainsServer(configMapName, key, format, serverName string) (bool, error) {
-	cm, err := h.GetConfigMap(configMapName)
-	if err != nil {
-		return false, err
-	}
-
-	data, exists := cm.Data[key]
-	if !exists {
-		return false, fmt.Errorf("key %s not found in ConfigMap", key)
-	}
-
-	switch format {
-	case registryFormatToolHive:
-		var registryData ToolHiveRegistryData
-		if err := json.Unmarshal([]byte(data), &registryData); err != nil {
-			return false, err
-		}
-		_, exists := registryData.Servers[serverName]
-		return exists, nil
-	case registryFormatUpstream:
-		var registryData UpstreamRegistryData
-		if err := json.Unmarshal([]byte(data), &registryData); err != nil {
-			return false, err
-		}
-		_, exists := registryData.Servers[serverName]
-		return exists, nil
-	default:
-		return false, fmt.Errorf("unknown registry format: %s", format)
-	}
-
 }
 
 // ListConfigMaps returns all ConfigMaps in the namespace

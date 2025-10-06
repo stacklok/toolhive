@@ -2,12 +2,9 @@ package operator_test
 
 import (
 	"context"
-	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -83,52 +80,4 @@ func (h *K8sResourceTestHelper) IsDeploymentReady(name string) bool {
 	}
 
 	return deployment.Status.ReadyReplicas == *deployment.Spec.Replicas
-}
-
-// GetDeploymentOwnerReferences returns the owner references of a deployment
-func (h *K8sResourceTestHelper) GetDeploymentOwnerReferences(name string) ([]metav1.OwnerReference, error) {
-	deployment, err := h.GetDeployment(name)
-	if err != nil {
-		return nil, err
-	}
-	return deployment.OwnerReferences, nil
-}
-
-// GetServiceOwnerReferences returns the owner references of a service
-func (h *K8sResourceTestHelper) GetServiceOwnerReferences(name string) ([]metav1.OwnerReference, error) {
-	service, err := h.GetService(name)
-	if err != nil {
-		return nil, err
-	}
-	return service.OwnerReferences, nil
-}
-
-// GetServiceEndpoint returns the service endpoint (cluster DNS name)
-func (h *K8sResourceTestHelper) GetServiceEndpoint(name string) (string, error) {
-	service, err := h.GetService(name)
-	if err != nil {
-		return "", err
-	}
-
-	// Return cluster-internal endpoint
-	if len(service.Spec.Ports) > 0 {
-		port := service.Spec.Ports[0].Port
-		return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", name, h.namespace, port), nil
-	}
-
-	return "", fmt.Errorf("service has no ports defined")
-}
-
-// WaitForResourceDeletion waits for a resource to be deleted
-func (h *K8sResourceTestHelper) WaitForResourceDeletion(resourceType, name string) bool {
-	switch resourceType {
-	case "deployment":
-		_, err := h.GetDeployment(name)
-		return errors.IsNotFound(err)
-	case "service":
-		_, err := h.GetService(name)
-		return errors.IsNotFound(err)
-	default:
-		return false
-	}
 }

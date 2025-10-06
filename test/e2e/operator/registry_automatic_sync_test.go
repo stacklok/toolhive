@@ -55,10 +55,8 @@ var _ = Describe("MCPRegistry Automatic Sync with ConfigMap", func() {
 		Expect(configMapHelper.CleanupConfigMaps()).To(Succeed())
 		deleteTestNamespace(ctx, testNamespace)
 		// Restore original values when test completes
-		defer func() {
-			sync.DefaultSyncRequeueAfter = originalSyncRequeue
-			controllers.DefaultControllerRetryAfter = originalControllerRetry
-		}()
+		sync.DefaultSyncRequeueAfter = originalSyncRequeue
+		controllers.DefaultControllerRetryAfter = originalControllerRetry
 	})
 
 	Context("Automatic Sync Scenarios", func() {

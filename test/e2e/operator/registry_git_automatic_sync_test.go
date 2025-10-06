@@ -55,10 +55,8 @@ var _ = Describe("MCPRegistry Git Automatic Sync", func() {
 		Expect(gitHelper.CleanupRepositories()).To(Succeed())
 		deleteTestNamespace(ctx, testNamespace)
 		// Restore original values when test completes
-		defer func() {
-			sync.DefaultSyncRequeueAfter = originalSyncRequeue
-			controllers.DefaultControllerRetryAfter = originalControllerRetry
-		}()
+		sync.DefaultSyncRequeueAfter = originalSyncRequeue
+		controllers.DefaultControllerRetryAfter = originalControllerRetry
 	})
 
 	Context("Git Automatic Sync Scenarios", func() {

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-04T00:16:35Z",
+  "last_updated": "2025-10-06T00:17:43Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -472,9 +472,9 @@
         "list_icons"
       ],
       "metadata": {
-        "stars": 6233,
+        "stars": 6584,
         "pulls": 0,
-        "last_updated": "2025-09-07T02:30:48Z"
+        "last_updated": "2025-10-05T02:31:59Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -523,9 +523,9 @@
         "recommend"
       ],
       "metadata": {
-        "stars": 6243,
+        "stars": 6584,
         "pulls": 0,
-        "last_updated": "2025-09-08T02:31:33Z"
+        "last_updated": "2025-10-05T02:32:01Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -1068,9 +1068,9 @@
         "chroma_delete_documents"
       ],
       "metadata": {
-        "stars": 334,
+        "stars": 374,
         "pulls": 0,
-        "last_updated": "2025-09-07T02:30:49Z"
+        "last_updated": "2025-10-05T02:32:00Z"
       },
       "repository_url": "https://github.com/chroma-core/chroma-mcp",
       "tags": [
@@ -1377,9 +1377,9 @@
         "unstage_table"
       ],
       "metadata": {
-        "stars": 3,
+        "stars": 4,
         "pulls": 0,
-        "last_updated": "2025-09-08T02:31:32Z"
+        "last_updated": "2025-10-05T02:32:00Z"
       },
       "repository_url": "https://github.com/dolthub/dolt-mcp",
       "tags": [
@@ -3487,9 +3487,9 @@
         "find_underused_resource_classes"
       ],
       "metadata": {
-        "stars": 63,
+        "stars": 65,
         "pulls": 0,
-        "last_updated": "2025-09-08T02:31:32Z"
+        "last_updated": "2025-10-05T02:32:01Z"
       },
       "repository_url": "https://github.com/CircleCI-Public/mcp-server-circleci",
       "tags": [
@@ -4973,7 +4973,7 @@
         "gcp",
         "azure"
       ],
-      "image": "docker.io/hashicorp/terraform-mcp-server:0.3.0",
+      "image": "docker.io/hashicorp/terraform-mcp-server:0.3.1",
       "permissions": {
         "network": {
           "outbound": {

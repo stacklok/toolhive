@@ -14,7 +14,10 @@ import (
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
-// SecretMapping represents a secret name and its target environment variable
+// SecretMapping represents a secret name and its target environment variable.
+// Note: Description is not included because it's only relevant for listing/discovery
+// (see SecretInfo). When mapping secrets to a running server, only the name and target
+// environment variable are needed.
 type SecretMapping struct {
 	Name   string `json:"name"`
 	Target string `json:"target"`

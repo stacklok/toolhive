@@ -11,7 +11,10 @@ import (
 
 // SecretInfo represents secret information returned by list
 type SecretInfo struct {
-	Key         string `json:"key"`
+	Key string `json:"key"`
+	// Description is populated by secrets providers that support it (e.g., 1Password
+	// provides "Vault :: Item :: Field" descriptions). Will be empty for providers
+	// that don't support descriptions (e.g., encrypted provider).
 	Description string `json:"description,omitempty"`
 }
 
@@ -20,7 +23,9 @@ type ListSecretsResponse struct {
 	Secrets []SecretInfo `json:"secrets"`
 }
 
-// ListSecrets lists all available secrets
+// ListSecrets lists all available secrets.
+// The request parameter is required by the MCP tool handler interface but not used
+// by this handler since list_secrets takes no arguments.
 func (h *Handler) ListSecrets(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Get the configuration to determine the secrets provider
 	cfg := h.configProvider.GetConfig()

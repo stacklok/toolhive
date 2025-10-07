@@ -2,6 +2,9 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -208,7 +211,7 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	r.deriveOverallStatus(ctx, mcpRegistry, statusManager, statusDeriver)
 
 	// 8. Apply all status changes in a single batch update
-	if statusUpdateErr := statusManager.Apply(ctx, r.Client); statusUpdateErr != nil {
+	if statusUpdateErr := r.applyStatusUpdates(ctx, r.Client, mcpRegistry, statusManager); statusUpdateErr != nil {
 		ctxLogger.Error(statusUpdateErr, "Failed to apply batched status update")
 		// Return the status update error only if there was no main reconciliation error
 		if syncErr == nil {
@@ -386,20 +389,23 @@ func (*MCPRegistryReconciler) deriveOverallStatus(
 	statusManager mcpregistrystatus.StatusManager, statusDeriver mcpregistrystatus.StatusDeriver) {
 	ctxLogger := log.FromContext(ctx)
 
+	syncStatus := statusManager.Sync().Status()
+	if syncStatus == nil {
+		syncStatus = mcpRegistry.Status.SyncStatus
+	}
+	apiStatus := statusManager.API().Status()
+	if apiStatus == nil {
+		apiStatus = mcpRegistry.Status.APIStatus
+	}
 	// Use the StatusDeriver to determine the overall phase and message
 	// based on current sync and API statuses
-	derivedPhase, derivedMessage := statusDeriver.DeriveOverallStatus(
-		mcpRegistry.Status.SyncStatus,
-		mcpRegistry.Status.APIStatus,
-	)
+	derivedPhase, derivedMessage := statusDeriver.DeriveOverallStatus(syncStatus, apiStatus)
 
 	// Only update phase and message if they've changed
 	statusManager.SetOverallStatus(derivedPhase, derivedMessage)
-	ctxLogger.Info("Updated overall status",
-		"oldPhase", mcpRegistry.Status.Phase,
-		"newPhase", derivedPhase,
-		"oldMessage", mcpRegistry.Status.Message,
-		"newMessage", derivedMessage)
+	ctxLogger.Info("Updated overall status", "syncStatus", syncStatus, "apiStatus", apiStatus,
+		"oldPhase", mcpRegistry.Status.Phase, "newPhase", derivedPhase,
+		"oldMessage", mcpRegistry.Status.Message, "newMessage", derivedMessage)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -410,4 +416,87 @@ func (r *MCPRegistryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
 		Complete(r)
+}
+
+// Apply applies all collected status changes in a single batch update.
+// Only actual changes are applied to the status to avoid unnecessary reconciliations
+func (r *MCPRegistryReconciler) applyStatusUpdates(
+	ctx context.Context, k8sClient client.Client,
+	mcpRegistry *mcpv1alpha1.MCPRegistry, statusManager mcpregistrystatus.StatusManager) error {
+
+	ctxLogger := log.FromContext(ctx)
+
+	// Refetch the latest version of the resource to avoid conflicts
+	latestRegistry := &mcpv1alpha1.MCPRegistry{}
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(mcpRegistry), latestRegistry); err != nil {
+		ctxLogger.Error(err, "Failed to fetch latest MCPRegistry version for status update")
+		return fmt.Errorf("failed to fetch latest MCPRegistry version: %w", err)
+	}
+	latestRegistryStatus := latestRegistry.Status
+	hasUpdates := false
+
+	// Apply manual sync trigger change if necessary
+	if mcpRegistry.Annotations != nil {
+		if triggerValue := mcpRegistry.Annotations[mcpregistrystatus.SyncTriggerAnnotation]; triggerValue != "" {
+			if latestRegistryStatus.LastManualSyncTrigger != triggerValue {
+				latestRegistryStatus.LastManualSyncTrigger = triggerValue
+				hasUpdates = true
+				ctxLogger.Info("Updated LastManualSyncTrigger", "trigger", triggerValue)
+			}
+		}
+	}
+
+	// Apply filter change if necessary
+	currentFilterJSON, err := json.Marshal(mcpRegistry.Spec.Filter)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to marshal current filter")
+		return fmt.Errorf("failed to marshal current filter: %w", err)
+	}
+	currentFilterHash := sha256.Sum256(currentFilterJSON)
+	currentFilterHashStr := hex.EncodeToString(currentFilterHash[:])
+	if latestRegistryStatus.LastAppliedFilterHash != currentFilterHashStr {
+		latestRegistryStatus.LastAppliedFilterHash = currentFilterHashStr
+		hasUpdates = true
+		ctxLogger.Info("Updated LastAppliedFilterHash", "hash", currentFilterHashStr)
+	}
+
+	// Update storage reference if necessary
+	storageRef := r.storageManager.GetStorageReference(latestRegistry)
+	if storageRef != nil {
+		if latestRegistryStatus.StorageRef == nil || latestRegistryStatus.StorageRef.ConfigMapRef.Name != storageRef.ConfigMapRef.Name {
+			latestRegistryStatus.StorageRef = storageRef
+			hasUpdates = true
+			ctxLogger.Info("Updated StorageRef", "storageRef", storageRef)
+		}
+	}
+
+	// Apply status changes from status manager
+	hasUpdates = statusManager.UpdateStatus(ctx, &latestRegistryStatus) || hasUpdates
+
+	// Single status update using the latest version
+	if hasUpdates {
+		latestRegistry.Status = latestRegistryStatus
+		if err := k8sClient.Status().Update(ctx, latestRegistry); err != nil {
+			ctxLogger.Error(err, "Failed to apply batched status update")
+			return fmt.Errorf("failed to apply batched status update: %w", err)
+		}
+		var syncPhase mcpv1alpha1.SyncPhase
+		if latestRegistryStatus.SyncStatus != nil {
+			syncPhase = latestRegistryStatus.SyncStatus.Phase
+		}
+		var apiPhase string
+		if latestRegistryStatus.APIStatus != nil {
+			apiPhase = string(latestRegistryStatus.APIStatus.Phase)
+		}
+		ctxLogger.V(1).Info("Applied batched status updates",
+			"phase", latestRegistryStatus.Phase,
+			"syncPhase", syncPhase,
+			"apiPhase", apiPhase,
+			"message", latestRegistryStatus.Message,
+			"conditionsCount", len(latestRegistryStatus.Conditions))
+	} else {
+		ctxLogger.V(1).Info("No batched status updates applied")
+	}
+
+	return nil
 }

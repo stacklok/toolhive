@@ -13,7 +13,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 )
 
@@ -237,7 +236,7 @@ func TestDefaultManualSyncChecker_IsManualSyncRequested(t *testing.T) {
 			mcpRegistry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						mcpregistrystatus.SyncTriggerAnnotation: "",
+						SyncTriggerAnnotation: "",
 					},
 				},
 			},
@@ -249,7 +248,7 @@ func TestDefaultManualSyncChecker_IsManualSyncRequested(t *testing.T) {
 			mcpRegistry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						mcpregistrystatus.SyncTriggerAnnotation: "trigger-123",
+						SyncTriggerAnnotation: "trigger-123",
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
@@ -264,7 +263,7 @@ func TestDefaultManualSyncChecker_IsManualSyncRequested(t *testing.T) {
 			mcpRegistry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						mcpregistrystatus.SyncTriggerAnnotation: "trigger-456",
+						SyncTriggerAnnotation: "trigger-456",
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
@@ -279,7 +278,7 @@ func TestDefaultManualSyncChecker_IsManualSyncRequested(t *testing.T) {
 			mcpRegistry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
-						mcpregistrystatus.SyncTriggerAnnotation: "first-trigger",
+						SyncTriggerAnnotation: "first-trigger",
 					},
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
@@ -383,7 +382,6 @@ func TestDefaultAutomaticSyncChecker_IsIntervalSyncNeeded(t *testing.T) {
 				},
 				Status: mcpv1alpha1.MCPRegistryStatus{
 					SyncStatus: &mcpv1alpha1.SyncStatus{
-						LastAttempt:  &metav1.Time{Time: now.Add(-30 * time.Minute)}, // 30 minutes ago
 						LastSyncTime: &metav1.Time{Time: now.Add(-30 * time.Minute)}, // 30 minutes ago
 					},
 				},

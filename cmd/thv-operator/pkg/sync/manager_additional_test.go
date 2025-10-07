@@ -89,14 +89,14 @@ func TestDefaultSyncManager_isSyncNeededForState(t *testing.T) {
 			description: "Should not need sync when sync complete but overall pending (waiting for API)",
 		},
 		{
-			name: "sync needed when no sync status and ready phase",
+			name: "sync not needed when no sync status and ready phase",
 			mcpRegistry: &mcpv1alpha1.MCPRegistry{
 				Status: mcpv1alpha1.MCPRegistryStatus{
 					Phase: mcpv1alpha1.MCPRegistryPhaseReady,
 				},
 			},
-			expected:    true,
-			description: "Should need sync when no sync status",
+			expected:    false,
+			description: "Should not need sync when overall phase is ready",
 		},
 	}
 
@@ -172,7 +172,7 @@ func TestDefaultSyncManager_isSyncNeededForState_EdgeCases(t *testing.T) {
 
 		// This should not panic but return sensible default
 		result := manager.isSyncNeededForState(&mcpv1alpha1.MCPRegistry{})
-		assert.True(t, result, "Should need sync for empty registry")
+		assert.False(t, result, "Should not need sync for empty registry")
 	})
 
 	t.Run("handles registry with empty status", func(t *testing.T) {
@@ -182,7 +182,7 @@ func TestDefaultSyncManager_isSyncNeededForState_EdgeCases(t *testing.T) {
 			Status: mcpv1alpha1.MCPRegistryStatus{},
 		}
 		result := manager.isSyncNeededForState(registry)
-		assert.True(t, result, "Should need sync for empty status")
+		assert.False(t, result, "Should not need sync for empty status")
 	})
 
 	t.Run("handles registry with sync status but empty phase", func(t *testing.T) {

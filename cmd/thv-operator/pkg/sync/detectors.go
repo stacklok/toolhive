@@ -7,7 +7,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 )
 
@@ -55,7 +54,7 @@ func (*DefaultManualSyncChecker) IsManualSyncRequested(mcpRegistry *mcpv1alpha1.
 		return false, ManualSyncReasonNoAnnotations
 	}
 
-	triggerValue := mcpRegistry.Annotations[mcpregistrystatus.SyncTriggerAnnotation]
+	triggerValue := mcpRegistry.Annotations[SyncTriggerAnnotation]
 	if triggerValue == "" {
 		return false, ManualSyncReasonNoTrigger
 	}
@@ -87,7 +86,7 @@ func (*DefaultAutomaticSyncChecker) IsIntervalSyncNeeded(mcpRegistry *mcpv1alpha
 	// Check for last sync time in syncStatus first, then fallback
 	var lastSyncTime *metav1.Time
 	if mcpRegistry.Status.SyncStatus != nil {
-		lastSyncTime = mcpRegistry.Status.SyncStatus.LastAttempt
+		lastSyncTime = mcpRegistry.Status.SyncStatus.LastSyncTime
 	}
 
 	// If we don't have a last sync time, sync is needed

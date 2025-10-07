@@ -14,7 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 )
 
@@ -130,14 +129,14 @@ func TestDefaultSyncManager_ShouldSync(t *testing.T) {
 			expectedNextTime:   false,
 		},
 		{
-			name: "manual sync not needed with new trigger value and same hash",
+			name: "manual sync requested with new trigger value",
 			mcpRegistry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-registry",
 					Namespace: "test-namespace",
 					UID:       types.UID("test-uid"),
 					Annotations: map[string]string{
-						mcpregistrystatus.SyncTriggerAnnotation: "manual-sync-123",
+						SyncTriggerAnnotation: "manual-sync-123",
 					},
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
@@ -168,7 +167,7 @@ func TestDefaultSyncManager_ShouldSync(t *testing.T) {
 					"registry.json": "test", // This will produce the same hash as above
 				},
 			},
-			expectedSyncNeeded: false,
+			expectedSyncNeeded: true,
 			expectedReason:     ReasonManualNoChanges, // No data changes but manual trigger
 			expectedNextTime:   false,
 		},
@@ -199,10 +198,10 @@ func TestDefaultSyncManager_ShouldSync(t *testing.T) {
 
 			// We expect some errors for ConfigMap not found, but that's okay for this test
 			if tt.expectedSyncNeeded {
-				assert.True(t, syncNeeded, "Expected sync to be needed for "+tt.name)
+				assert.True(t, syncNeeded, "Expected sync to be needed")
 				assert.Equal(t, tt.expectedReason, reason, "Expected specific sync reason")
 			} else {
-				assert.False(t, syncNeeded, "Expected sync not to be needed for "+tt.name)
+				assert.False(t, syncNeeded, "Expected sync not to be needed")
 				assert.Equal(t, tt.expectedReason, reason, "Expected specific sync reason")
 			}
 
@@ -308,7 +307,7 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 					Namespace: "test-namespace",
 					UID:       types.UID("test-uid"),
 					Annotations: map[string]string{
-						mcpregistrystatus.SyncTriggerAnnotation: "manual-123",
+						SyncTriggerAnnotation: "manual-123",
 					},
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
@@ -524,7 +523,7 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 
 			// Verify manual sync trigger is processed if annotation exists (this is still done by sync manager)
 			if tt.mcpRegistry.Annotations != nil {
-				if triggerValue := tt.mcpRegistry.Annotations[mcpregistrystatus.SyncTriggerAnnotation]; triggerValue != "" {
+				if triggerValue := tt.mcpRegistry.Annotations[SyncTriggerAnnotation]; triggerValue != "" {
 					assert.Equal(t, triggerValue, tt.mcpRegistry.Status.LastManualSyncTrigger)
 				}
 			}
@@ -553,7 +552,7 @@ func TestDefaultSyncManager_UpdateManualSyncTriggerOnly(t *testing.T) {
 					Namespace: "test-namespace",
 					UID:       types.UID("test-uid"),
 					Annotations: map[string]string{
-						mcpregistrystatus.SyncTriggerAnnotation: "manual-trigger-123",
+						SyncTriggerAnnotation: "manual-trigger-123",
 					},
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{

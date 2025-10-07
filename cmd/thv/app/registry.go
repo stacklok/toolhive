@@ -318,11 +318,7 @@ func printTextServerInfo(name string, server registry.ServerMetadata) {
 
 	// Print example command
 	fmt.Println("\nExample Command:")
-	if server.IsRemote() {
-		fmt.Printf("  thv proxy %s\n", name)
-	} else {
-		fmt.Printf("  thv run %s\n", name)
-	}
+	fmt.Printf("  thv run %s\n", name)
 }
 
 // truncateString truncates a string to the specified length and adds "..." if truncated

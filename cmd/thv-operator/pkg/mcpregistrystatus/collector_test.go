@@ -322,9 +322,8 @@ func TestStatusCollector_Apply(t *testing.T) {
 		t.Parallel()
 		collector := NewStatusManager(registry).(*StatusCollector)
 
-		err := collector.Apply(ctx, k8sClient)
-
-		assert.NoError(t, err)
+		hasUpdates := collector.UpdateStatus(ctx, &registry.Status)
+		assert.False(t, hasUpdates)
 	})
 
 	t.Run("verifies hasChanges behavior", func(t *testing.T) {
@@ -394,7 +393,7 @@ func TestStatusCollector_MultipleConditions(t *testing.T) {
 	assert.Contains(t, collector.conditions, mcpv1alpha1.ConditionAPIReady)
 }
 
-func TestStatusCollector_ApplyErrors(t *testing.T) {
+func TestStatusCollector_NoUpdates(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -406,9 +405,6 @@ func TestStatusCollector_ApplyErrors(t *testing.T) {
 	t.Run("error fetching latest registry", func(t *testing.T) {
 		t.Parallel()
 
-		// Create client that will fail on Get
-		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-
 		// Create collector with registry that doesn't exist in client
 		registry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
@@ -417,12 +413,10 @@ func TestStatusCollector_ApplyErrors(t *testing.T) {
 			},
 		}
 
-		collector := newStatusCollector(registry)
-		collector.SetPhase(mcpv1alpha1.MCPRegistryPhaseReady) // Make some changes
+		collector := newStatusCollector(registry) // No changes
+		hasUpdates := collector.UpdateStatus(ctx, &registry.Status)
+		assert.False(t, hasUpdates)
 
-		err := collector.Apply(ctx, k8sClient)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to fetch latest MCPRegistry version")
 	})
 
 }

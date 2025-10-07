@@ -52,7 +52,7 @@ tasks:
       - go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
       # we have to use ldflags to avoid the LC_DYSYMTAB linker error. 
       # https://github.com/stacklok/toolhive/issues/1687
-      - go test -ldflags=-extldflags=-Wl,-w -v -json -race $(go list ./... | grep -v '/test/e2e') | gotestfmt -hide "all"
+      - go test -ldflags=-extldflags=-Wl,-w -v -json -race $(go list ./... | grep -v '/test/e2e' | grep -v '/cmd/thv-operator/test-integration') | gotestfmt -hide "all"
 
   test-windows:
     desc: Run unit tests (excluding e2e tests) on Windows with race detection

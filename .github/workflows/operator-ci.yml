@@ -181,12 +181,12 @@ jobs:
       run: |
         kind get kubeconfig --name toolhive > kconfig.yaml
         export KUBECONFIG=kconfig.yaml
-        # chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/setup --config .chainsaw.yaml
-        # chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/test-scenarios --config .chainsaw.yaml
-        # chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/cleanup --config .chainsaw.yaml
-        # chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/setup --config .chainsaw.yaml
-        # chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios --config .chainsaw.yaml
-        # chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/setup --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/test-scenarios --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/cleanup --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/setup --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup --config .chainsaw.yaml
     
     - name: Install Ginkgo CLI
       run: |

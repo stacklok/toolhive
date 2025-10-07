@@ -9,6 +9,8 @@
 Package v1alpha1 contains API Schema definitions for the toolhive v1alpha1 API group
 
 ### Resource Types
+- [MCPExternalAuthConfig](#mcpexternalauthconfig)
+- [MCPExternalAuthConfigList](#mcpexternalauthconfiglist)
 - [MCPRegistry](#mcpregistry)
 - [MCPRegistryList](#mcpregistrylist)
 - [MCPServer](#mcpserver)
@@ -161,6 +163,23 @@ _Appears in:_
 | `value` _string_ | Value of the environment variable |  | Required: \{\} <br /> |
 
 
+#### ExternalAuthConfigRef
+
+
+
+ExternalAuthConfigRef defines a reference to a MCPExternalAuthConfig resource.
+The referenced MCPExternalAuthConfig must be in the same namespace as the MCPServer.
+
+
+
+_Appears in:_
+- [MCPServerSpec](#mcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the MCPExternalAuthConfig resource |  | Required: \{\} <br /> |
+
+
 #### GitSource
 
 
@@ -242,6 +261,88 @@ _Appears in:_
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL |  |  |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint<br />If empty, OIDC discovery will be used to automatically determine the introspection URL |  |  |
 | `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication<br />Defaults to true if not specified |  |  |
+
+
+#### MCPExternalAuthConfig
+
+
+
+MCPExternalAuthConfig is the Schema for the mcpexternalauthconfigs API.
+MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
+MCPServer resources within the same namespace. Cross-namespace references
+are not supported for security and isolation reasons.
+
+
+
+_Appears in:_
+- [MCPExternalAuthConfigList](#mcpexternalauthconfiglist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPExternalAuthConfig` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[MCPExternalAuthConfigSpec](#mcpexternalauthconfigspec)_ |  |  |  |
+| `status` _[MCPExternalAuthConfigStatus](#mcpexternalauthconfigstatus)_ |  |  |  |
+
+
+#### MCPExternalAuthConfigList
+
+
+
+MCPExternalAuthConfigList contains a list of MCPExternalAuthConfig
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPExternalAuthConfigList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[MCPExternalAuthConfig](#mcpexternalauthconfig) array_ |  |  |  |
+
+
+#### MCPExternalAuthConfigSpec
+
+
+
+MCPExternalAuthConfigSpec defines the desired state of MCPExternalAuthConfig.
+MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
+MCPServer resources in the same namespace.
+
+
+
+_Appears in:_
+- [MCPExternalAuthConfig](#mcpexternalauthconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _string_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange] <br />Required: \{\} <br /> |
+| `tokenExchange` _[TokenExchangeConfig](#tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  |  |
+
+
+#### MCPExternalAuthConfigStatus
+
+
+
+MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
+
+
+
+_Appears in:_
+- [MCPExternalAuthConfig](#mcpexternalauthconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPExternalAuthConfig.<br />It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server. |  |  |
+| `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  |  |
+| `referencingServers` _string array_ | ReferencingServers is a list of MCPServer resources that reference this MCPExternalAuthConfig<br />This helps track which servers need to be reconciled when this config changes |  |  |
 
 
 #### MCPRegistry
@@ -463,6 +564,7 @@ _Appears in:_
 | `audit` _[AuditConfig](#auditconfig)_ | Audit defines audit logging configuration for the MCP server |  |  |
 | `tools` _string array_ | ToolsFilter is the filter on tools applied to the MCP server<br />Deprecated: Use ToolConfigRef instead |  |  |
 | `toolConfigRef` _[ToolConfigRef](#toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this takes precedence over the inline ToolsFilter field. |  |  |
+| `externalAuthConfigRef` _[ExternalAuthConfigRef](#externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer. |  |  |
 | `telemetry` _[TelemetryConfig](#telemetryconfig)_ | Telemetry defines observability configuration for the MCP server |  |  |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false |  |
 
@@ -482,6 +584,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPServer's state |  |  |
 | `toolConfigHash` _string_ | ToolConfigHash stores the hash of the referenced ToolConfig for change detection |  |  |
+| `externalAuthConfigHash` _string_ | ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec |  |  |
 | `url` _string_ | URL is the URL where the MCP server can be accessed |  |  |
 | `phase` _[MCPServerPhase](#mcpserverphase)_ | Phase is the current phase of the MCPServer |  | Enum: [Pending Running Failed Terminating] <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  |  |
@@ -836,6 +939,23 @@ _Appears in:_
 | `requests` _[ResourceList](#resourcelist)_ | Requests describes the minimum amount of compute resources required |  |  |
 
 
+#### SecretKeyRef
+
+
+
+SecretKeyRef is a reference to a key within a Secret
+
+
+
+_Appears in:_
+- [TokenExchangeConfig](#tokenexchangeconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the secret |  | Required: \{\} <br /> |
+| `key` _string_ | Key is the key within the secret |  | Required: \{\} <br /> |
+
+
 #### SecretRef
 
 
@@ -963,6 +1083,30 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `openTelemetry` _[OpenTelemetryConfig](#opentelemetryconfig)_ | OpenTelemetry defines OpenTelemetry configuration |  |  |
 | `prometheus` _[PrometheusConfig](#prometheusconfig)_ | Prometheus defines Prometheus-specific configuration |  |  |
+
+
+#### TokenExchangeConfig
+
+
+
+TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
+This configuration is used to exchange incoming authentication tokens for tokens
+that can be used with external services.
+The structure matches the tokenexchange.Config from pkg/auth/tokenexchange/middleware.go
+
+
+
+_Appears in:_
+- [MCPExternalAuthConfigSpec](#mcpexternalauthconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `token_url` _string_ | TokenURL is the OAuth 2.0 token endpoint URL for token exchange |  | Required: \{\} <br /> |
+| `client_id` _string_ | ClientID is the OAuth 2.0 client identifier |  | Required: \{\} <br /> |
+| `client_secret_ref` _[SecretKeyRef](#secretkeyref)_ | ClientSecretRef is a reference to a secret containing the OAuth 2.0 client secret |  | Required: \{\} <br /> |
+| `audience` _string_ | Audience is the target audience for the exchanged token |  | Required: \{\} <br /> |
+| `scope` _string_ | Scope is the scope to request for the exchanged token (space-separated string) |  |  |
+| `external_token_header_name` _string_ | ExternalTokenHeaderName is the name of the custom header to use for the exchanged token.<br />If set, the exchanged token will be added to this custom header (e.g., "X-Upstream-Token").<br />If empty or not set, the exchanged token will replace the Authorization header (default behavior). |  |  |
 
 
 #### ToolConfigRef

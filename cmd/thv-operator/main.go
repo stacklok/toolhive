@@ -86,6 +86,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Register MCPToolConfig controller
+	if err = (&controllers.ToolConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MCPToolConfig")
+		os.Exit(1)
+	}
+
+	// Register MCPExternalAuthConfig controller
+	if err = (&controllers.MCPExternalAuthConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MCPExternalAuthConfig")
+		os.Exit(1)
+	}
+
 	// Only register MCPRegistry controller if feature flag is enabled
 	rec.ImageValidation = validation.ImageValidationRegistryEnforcing
 

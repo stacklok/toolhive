@@ -1,0 +1,33 @@
+# Basic MCPExternalAuthConfig example with token exchange
+# This configures external authentication using OAuth2 token exchange
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPExternalAuthConfig
+metadata:
+  name: oauth-token-exchange
+  namespace: default
+spec:
+  # Type of external authentication (currently only "tokenExchange" is supported)
+  type: tokenExchange
+
+  # Token exchange configuration for OAuth2 token exchange flow
+  tokenExchange:
+    # OAuth2 token endpoint URL
+    token_url: https://oauth.example.com/token
+
+    # OAuth2 client ID
+    client_id: my-client-id
+
+    # Reference to Kubernetes Secret containing the client secret
+    client_secret_ref:
+      name: oauth-client-secret
+      key: client-secret
+
+    # Target audience for the exchanged token
+    audience: backend-service
+
+    # Optional: OAuth2 scopes to request
+    scope: "read write"
+
+    # Optional: Custom header name for extracting external token from incoming requests
+    # If not specified, defaults to "Authorization" header
+    # external_token_header_name: "X-Upstream-Token"

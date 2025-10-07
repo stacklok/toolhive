@@ -29,7 +29,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
@@ -142,6 +144,7 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptoolconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch;apply
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
@@ -193,6 +196,17 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPToolConfig error")
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Check if MCPExternalAuthConfig is referenced and handle it
+	if err := r.handleExternalAuthConfig(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
+		// Update status to reflect the error
+		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPExternalAuthConfig error")
 		}
 		return ctrl.Result{}, err
 	}
@@ -669,6 +683,53 @@ func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1alph
 
 	return nil
 }
+
+// handleExternalAuthConfig validates and tracks the hash of the referenced MCPExternalAuthConfig.
+// It updates the MCPServer status when the external auth configuration changes.
+func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+	ctxLogger := log.FromContext(ctx)
+	if m.Spec.ExternalAuthConfigRef == nil {
+		// No MCPExternalAuthConfig referenced, clear any stored hash
+		if m.Status.ExternalAuthConfigHash != "" {
+			m.Status.ExternalAuthConfigHash = ""
+			if err := r.Status().Update(ctx, m); err != nil {
+				return fmt.Errorf("failed to clear MCPExternalAuthConfig hash from status: %w", err)
+			}
+		}
+		return nil
+	}
+
+	// Get the referenced MCPExternalAuthConfig
+	externalAuthConfig, err := GetExternalAuthConfigForMCPServer(ctx, r.Client, m)
+	if err != nil {
+		return err
+	}
+
+	if externalAuthConfig == nil {
+		return fmt.Errorf("MCPExternalAuthConfig %s not found", m.Spec.ExternalAuthConfigRef.Name)
+	}
+
+	// Check if the MCPExternalAuthConfig hash has changed
+	if m.Status.ExternalAuthConfigHash != externalAuthConfig.Status.ConfigHash {
+		ctxLogger.Info("MCPExternalAuthConfig has changed, updating MCPServer",
+			"mcpserver", m.Name,
+			"externalAuthConfig", externalAuthConfig.Name,
+			"oldHash", m.Status.ExternalAuthConfigHash,
+			"newHash", externalAuthConfig.Status.ConfigHash)
+
+		// Update the stored hash
+		m.Status.ExternalAuthConfigHash = externalAuthConfig.Status.ConfigHash
+		if err := r.Status().Update(ctx, m); err != nil {
+			return fmt.Errorf("failed to update MCPExternalAuthConfig hash in status: %w", err)
+		}
+
+		// The change in hash will trigger a reconciliation of the RunConfig
+		// which will pick up the new external auth configuration
+	}
+
+	return nil
+}
+
 func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
 	proxyRunnerNameForRBAC := proxyRunnerServiceAccountName(mcpServer.Name)
 
@@ -926,6 +987,17 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	if m.Spec.Telemetry != nil && m.Spec.Telemetry.OpenTelemetry != nil {
 		otelEnvVars := r.generateOpenTelemetryEnvVars(m)
 		env = append(env, otelEnvVars...)
+	}
+
+	// Add token exchange environment variables
+	if m.Spec.ExternalAuthConfigRef != nil {
+		tokenExchangeEnvVars, err := r.generateTokenExchangeEnvVars(ctx, m)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate token exchange environment variables")
+		} else {
+			env = append(env, tokenExchangeEnvVars...)
+		}
 	}
 
 	// Add user-specified proxy environment variables from ResourceOverrides
@@ -1448,6 +1520,17 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		if mcpServer.Spec.Telemetry != nil && mcpServer.Spec.Telemetry.OpenTelemetry != nil {
 			otelEnvVars := r.generateOpenTelemetryEnvVars(mcpServer)
 			expectedProxyEnv = append(expectedProxyEnv, otelEnvVars...)
+		}
+
+		// Add token exchange environment variables
+		if mcpServer.Spec.ExternalAuthConfigRef != nil {
+			tokenExchangeEnvVars, err := r.generateTokenExchangeEnvVars(ctx, mcpServer)
+			if err != nil {
+				// If we can't generate env vars, consider the deployment needs update
+				// The actual error will be caught during reconciliation
+				return true
+			}
+			expectedProxyEnv = append(expectedProxyEnv, tokenExchangeEnvVars...)
 		}
 
 		// Add user-specified environment variables
@@ -2106,6 +2189,49 @@ func (*MCPServerReconciler) generateOpenTelemetryEnvVars(m *mcpv1alpha1.MCPServe
 	return envVars
 }
 
+// generateTokenExchangeEnvVars generates environment variables for token exchange authentication
+func (r *MCPServerReconciler) generateTokenExchangeEnvVars(
+	ctx context.Context,
+	m *mcpv1alpha1.MCPServer,
+) ([]corev1.EnvVar, error) {
+	var envVars []corev1.EnvVar
+
+	if m.Spec.ExternalAuthConfigRef == nil {
+		return envVars, nil
+	}
+
+	// Fetch the MCPExternalAuthConfig
+	externalAuthConfig, err := GetExternalAuthConfigForMCPServer(ctx, r.Client, m)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
+	}
+
+	// Only token exchange type is supported currently
+	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeTokenExchange {
+		return envVars, nil
+	}
+
+	tokenExchangeSpec := externalAuthConfig.Spec.TokenExchange
+	if tokenExchangeSpec == nil {
+		return envVars, nil
+	}
+
+	// Add environment variable that references the Kubernetes Secret
+	envVars = append(envVars, corev1.EnvVar{
+		Name: "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: tokenExchangeSpec.ClientSecretRef.Name,
+				},
+				Key: tokenExchangeSpec.ClientSecretRef.Key,
+			},
+		},
+	})
+
+	return envVars, nil
+}
+
 // ensureAuthzConfigMap ensures the authorization ConfigMap exists for inline configuration
 func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
@@ -2188,10 +2314,44 @@ func int32Ptr(i int32) *int32 {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Create a handler that maps MCPExternalAuthConfig changes to MCPServer reconciliation requests
+	externalAuthConfigHandler := handler.EnqueueRequestsFromMapFunc(
+		func(ctx context.Context, obj client.Object) []reconcile.Request {
+			externalAuthConfig, ok := obj.(*mcpv1alpha1.MCPExternalAuthConfig)
+			if !ok {
+				return nil
+			}
+
+			// List all MCPServers in the same namespace
+			mcpServerList := &mcpv1alpha1.MCPServerList{}
+			if err := r.List(ctx, mcpServerList, client.InNamespace(externalAuthConfig.Namespace)); err != nil {
+				log.FromContext(ctx).Error(err, "Failed to list MCPServers for MCPExternalAuthConfig watch")
+				return nil
+			}
+
+			// Find MCPServers that reference this MCPExternalAuthConfig
+			var requests []reconcile.Request
+			for _, server := range mcpServerList.Items {
+				if server.Spec.ExternalAuthConfigRef != nil &&
+					server.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name {
+					requests = append(requests, reconcile.Request{
+						NamespacedName: types.NamespacedName{
+							Name:      server.Name,
+							Namespace: server.Namespace,
+						},
+					})
+				}
+			}
+
+			return requests
+		},
+	)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
 		Complete(r)
 }
 

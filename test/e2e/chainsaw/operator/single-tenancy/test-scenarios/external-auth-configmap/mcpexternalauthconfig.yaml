@@ -1,0 +1,16 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPExternalAuthConfig
+metadata:
+  name: test-external-auth
+  namespace: toolhive-system
+spec:
+  type: tokenExchange
+  tokenExchange:
+    token_url: https://oauth.example.com/token
+    client_id: test-client-id
+    client_secret_ref:
+      name: oauth-test-secret
+      key: client-secret
+    audience: mcp-backend
+    scope: "read write"
+    external_token_header_name: "X-Upstream-Token"

@@ -251,6 +251,17 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 		return nil, err
 	}
 
+	// Validate required RFC 8693 response fields
+	if resp.AccessToken == "" {
+		return nil, fmt.Errorf("token exchange: server returned empty access_token")
+	}
+	if resp.TokenType == "" {
+		return nil, fmt.Errorf("token exchange: server returned empty token_type")
+	}
+	if resp.IssuedTokenType == "" {
+		return nil, fmt.Errorf("token exchange: server returned empty issued_token_type (required by RFC 8693)")
+	}
+
 	// Build oauth2.Token
 	token := &oauth2.Token{
 		AccessToken: resp.AccessToken,

@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -209,7 +210,7 @@ func TestLocalStorage(t *testing.T) {
 
 		// Add sessions
 		for i := 0; i < 5; i++ {
-			session := NewProxySession(string(rune('a' + i)))
+			session := NewProxySession(fmt.Sprintf("session-%d", i))
 			err := storage.Store(ctx, session)
 			require.NoError(t, err)
 		}
@@ -218,7 +219,7 @@ func TestLocalStorage(t *testing.T) {
 		assert.Equal(t, 5, storage.Count())
 
 		// Delete one
-		err := storage.Delete(ctx, "a")
+		err := storage.Delete(ctx, "session-0")
 		require.NoError(t, err)
 
 		// Should have 4 sessions
@@ -264,7 +265,7 @@ func TestLocalStorage(t *testing.T) {
 
 		// Add some sessions
 		for i := 0; i < 3; i++ {
-			session := NewProxySession(string(rune('x' + i)))
+			session := NewProxySession(fmt.Sprintf("session-%d", i))
 			err := storage.Store(ctx, session)
 			require.NoError(t, err)
 		}
@@ -393,7 +394,7 @@ func TestManagerWithStorage(t *testing.T) {
 
 		// Add sessions
 		for i := 0; i < 3; i++ {
-			err := manager.AddWithID(string(rune('a' + i)))
+			err := manager.AddWithID(fmt.Sprintf("session-%d", i))
 			require.NoError(t, err)
 		}
 

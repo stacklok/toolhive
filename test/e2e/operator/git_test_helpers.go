@@ -44,8 +44,8 @@ func (g *GitTestHelper) CreateRepository(name string) *GitTestRepository {
 	err := os.MkdirAll(repoPath, 0750)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// Initialize Git repository
-	g.runGitCommand(repoPath, "init")
+	// Initialize Git repository with main branch
+	g.runGitCommand(repoPath, "init", "--initial-branch=main")
 	g.runGitCommand(repoPath, "config", "user.name", "Test User")
 	g.runGitCommand(repoPath, "config", "user.email", "test@example.com")
 

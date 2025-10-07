@@ -319,11 +319,6 @@ func (s *DefaultSyncManager) PerformSync(
 		return ctrl.Result{RequeueAfter: DefaultSyncRequeueAfter}, nil, err
 	}
 
-	// Update the core registry fields that sync manager owns
-	if err := s.updateCoreRegistryFields(ctx, mcpRegistry, fetchResult); err != nil {
-		return ctrl.Result{}, nil, err
-	}
-
 	// Return sync result with data for status collector
 	syncResult := &Result{
 		Hash:        fetchResult.Hash,
@@ -481,59 +476,6 @@ func (s *DefaultSyncManager) storeRegistryData(
 	ctxLogger.Info("Registry data stored successfully",
 		"namespace", mcpRegistry.Namespace,
 		"registryName", mcpRegistry.Name)
-
-	return nil
-}
-
-// updateCoreRegistryFields updates the core registry fields after a successful sync
-// Note: Does not update phase, sync status, or API status - those are handled by the controller operation
-func (s *DefaultSyncManager) updateCoreRegistryFields(
-	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
-	fetchResult *sources.FetchResult) *mcpregistrystatus.Error {
-	ctxLogger := log.FromContext(ctx)
-
-	// Refresh the object to get latest resourceVersion before final update
-	if err := s.client.Get(ctx, client.ObjectKeyFromObject(mcpRegistry), mcpRegistry); err != nil {
-		ctxLogger.Error(err, "Failed to refresh MCPRegistry object")
-		return &mcpregistrystatus.Error{
-			Err:             err,
-			Message:         fmt.Sprintf("Failed to refresh MCPRegistry object: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionSyncSuccessful,
-			ConditionReason: "ObjectRefreshFailed",
-		}
-	}
-
-	// Get storage reference
-	storageRef := s.storageManager.GetStorageReference(mcpRegistry)
-
-	// Update storage reference only - status fields are now handled by status collector
-	if storageRef != nil {
-		mcpRegistry.Status.StorageRef = storageRef
-	}
-
-	// Update manual sync trigger tracking if annotation exists
-	if mcpRegistry.Annotations != nil {
-		if triggerValue := mcpRegistry.Annotations[mcpregistrystatus.SyncTriggerAnnotation]; triggerValue != "" {
-			mcpRegistry.Status.LastManualSyncTrigger = triggerValue
-			ctxLogger.Info("Manual sync trigger processed", "trigger", triggerValue)
-		}
-	}
-
-	// Single final status update
-	if err := s.client.Status().Update(ctx, mcpRegistry); err != nil {
-		ctxLogger.Error(err, "Failed to update core registry fields")
-		return &mcpregistrystatus.Error{
-			Err:             err,
-			Message:         fmt.Sprintf("Failed to update core registry fields: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionSyncSuccessful,
-			ConditionReason: "StatusUpdateFailed",
-		}
-	}
-
-	ctxLogger.Info("MCPRegistry sync completed successfully",
-		"serverCount", fetchResult.ServerCount,
-		"hash", fetchResult.Hash)
 
 	return nil
 }

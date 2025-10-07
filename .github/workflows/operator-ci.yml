@@ -195,4 +195,4 @@ jobs:
     - name: Run Ginkgo tests
       run: |
         go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-        KUBEBUILDER_ASSETS="$(setup-envtest use 1.28.0 -p path)" ginkgo test/e2e/operator
+        KUBEBUILDER_ASSETS="$(setup-envtest use 1.28.0 -p path)" ginkgo --github-output test/e2e/operator

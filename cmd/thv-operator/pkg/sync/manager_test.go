@@ -522,10 +522,10 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 				assert.Len(t, tt.mcpRegistry.Status.Conditions, 0, "Sync manager should not set conditions")
 			}
 
-			// Verify manual sync trigger is processed if annotation exists (this is still done by sync manager)
+			// Verify manual sync trigger is not processed if annotation exists (this is not done by sync manager)
 			if tt.mcpRegistry.Annotations != nil {
 				if triggerValue := tt.mcpRegistry.Annotations[mcpregistrystatus.SyncTriggerAnnotation]; triggerValue != "" {
-					assert.Equal(t, triggerValue, tt.mcpRegistry.Status.LastManualSyncTrigger)
+					assert.NotEqual(t, triggerValue, tt.mcpRegistry.Status.LastManualSyncTrigger)
 				}
 			}
 		})

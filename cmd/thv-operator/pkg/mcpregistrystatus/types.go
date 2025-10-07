@@ -5,7 +5,6 @@ import (
 	"context"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
@@ -30,6 +29,9 @@ func (e *Error) Unwrap() error {
 
 // SyncStatusCollector handles sync-related status updates
 type SyncStatusCollector interface {
+	// Status returns the sync status
+	Status() *mcpv1alpha1.SyncStatus
+
 	// SetSyncStatus sets the detailed sync status
 	SetSyncStatus(phase mcpv1alpha1.SyncPhase, message string, attemptCount int,
 		lastSyncTime *metav1.Time, lastSyncHash string, serverCount int)
@@ -40,6 +42,9 @@ type SyncStatusCollector interface {
 
 // APIStatusCollector handles API-related status updates
 type APIStatusCollector interface {
+	// Status returns the API status
+	Status() *mcpv1alpha1.APIStatus
+
 	// SetAPIStatus sets the detailed API status
 	SetAPIStatus(phase mcpv1alpha1.APIPhase, message string, endpoint string)
 
@@ -67,6 +72,6 @@ type StatusManager interface {
 	// SetCondition sets a general condition
 	SetCondition(conditionType, reason, message string, status metav1.ConditionStatus)
 
-	// Apply applies all collected status changes in a single batch update
-	Apply(ctx context.Context, k8sClient client.Client) error
+	// UpdateStatus updates the status of the MCPRegistry if any change happened
+	UpdateStatus(ctx context.Context, mcpRegistryStatus *mcpv1alpha1.MCPRegistryStatus) bool
 }

@@ -139,7 +139,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			Expect(deployment.Spec.Template.Spec.ServiceAccountName).To(Equal(expectedServiceAccount))
 
 			// Verify there's exactly one container (the toolhive proxy runner)
-			Expect(len(deployment.Spec.Template.Spec.Containers)).To(Equal(1))
+			Expect(deployment.Spec.Template.Spec.Containers).To(HaveLen(1))
 
 			container := deployment.Spec.Template.Spec.Containers[0]
 

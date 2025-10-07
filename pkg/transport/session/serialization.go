@@ -68,28 +68,23 @@ func deserializeSession(data []byte) (Session, error) {
 		// Use existing NewSSESession constructor
 		sseSession := NewSSESession(sd.ID)
 		// Update timestamps to match stored values
-		sseSession.created = sd.CreatedAt
-		sseSession.updated = sd.UpdatedAt
+		sseSession.setTimestamps(sd.CreatedAt, sd.UpdatedAt)
 		// Restore metadata
-		sseSession.metadata = sd.Metadata
-		if sseSession.metadata == nil {
-			sseSession.metadata = make(map[string]string)
-		}
+		sseSession.setMetadataMap(sd.Metadata)
 		// Note: SSE channels and client info will be recreated when reconnected
 		session = sseSession
 
 	case SessionTypeStreamable:
 		// Use existing NewStreamableSession constructor
-		streamSession := NewStreamableSession(sd.ID).(*StreamableSession)
-		// Update timestamps to match stored values
-		streamSession.created = sd.CreatedAt
-		streamSession.updated = sd.UpdatedAt
-		streamSession.sessType = SessionTypeStreamable
-		// Restore metadata
-		streamSession.metadata = sd.Metadata
-		if streamSession.metadata == nil {
-			streamSession.metadata = make(map[string]string)
+		sess := NewStreamableSession(sd.ID)
+		streamSession, ok := sess.(*StreamableSession)
+		if !ok {
+			return nil, fmt.Errorf("failed to create StreamableSession")
 		}
+		// Update timestamps to match stored values
+		streamSession.setTimestamps(sd.CreatedAt, sd.UpdatedAt)
+		// Restore metadata
+		streamSession.setMetadataMap(sd.Metadata)
 		session = streamSession
 
 	case SessionTypeMCP:
@@ -98,13 +93,9 @@ func deserializeSession(data []byte) (Session, error) {
 		// Use existing NewTypedProxySession constructor
 		proxySession := NewTypedProxySession(sd.ID, sd.Type)
 		// Update timestamps to match stored values
-		proxySession.created = sd.CreatedAt
-		proxySession.updated = sd.UpdatedAt
+		proxySession.setTimestamps(sd.CreatedAt, sd.UpdatedAt)
 		// Restore metadata
-		proxySession.metadata = sd.Metadata
-		if proxySession.metadata == nil {
-			proxySession.metadata = make(map[string]string)
-		}
+		proxySession.setMetadataMap(sd.Metadata)
 		session = proxySession
 	}
 

@@ -94,13 +94,18 @@ func (s *LocalStorage) DeleteExpired(ctx context.Context, before time.Time) erro
 	return nil
 }
 
-// Close is a no-op for local storage as there are no resources to clean up.
+// Close clears all sessions from local storage.
 func (s *LocalStorage) Close() error {
-	// Clear all sessions on close
+	// Collect keys first to avoid modifying map during iteration
+	var toDelete []any
 	s.sessions.Range(func(key, _ any) bool {
-		s.sessions.Delete(key)
+		toDelete = append(toDelete, key)
 		return true
 	})
+	// Clear all sessions
+	for _, key := range toDelete {
+		s.sessions.Delete(key)
+	}
 	return nil
 }
 

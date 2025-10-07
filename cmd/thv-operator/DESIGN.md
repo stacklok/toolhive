@@ -1,6 +1,6 @@
 # Design & Decisions
 
-This document captures architectural decisions and design patterns for the ToolHive Operator. For user-facing documentation, see [REGISTRY.md](REGISTRY.md).
+This document captures architectural decisions and design patterns for the ToolHive Operator.
 
 ## Operator Design Principles
 
@@ -109,31 +109,3 @@ Minimal required permissions following principle of least privilege:
 
 #### Network Security
 Optional network policies for registry API access control in security-sensitive environments.
-
-## Testing Architecture
-
-### Current State vs. Future Plans
-
-**Unit Tests (✅ Well Covered)**:
-- 35+ test files covering all major components
-- Mock-based testing for external dependencies
-- Comprehensive StatusCollector and sync logic testing
-
-**Integration Tests (🔄 Partial)**:
-- envtest framework implemented for Kubernetes integration
-- Missing: Real ConfigMap/Git source testing
-
-**E2E Tests (🔄 Missing for MCPRegistry)**:
-- Chainsaw framework ready but no MCPRegistry tests yet
-- MCPServer E2E tests exist as reference
-
-### Testing Strategy Decisions
-
-**Decision**: Prioritize unit tests for complex logic, integration tests for Kubernetes interactions, E2E tests for user workflows.
-
-**Rationale**:
-- Unit tests catch logic errors early and run fast
-- Integration tests validate Kubernetes API interactions
-- E2E tests validate end-user experience
-
-**Next Priority**: MCPRegistry E2E tests in Chainsaw framework to validate complete user workflows.

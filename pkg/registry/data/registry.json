@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-06T00:17:43Z",
+  "last_updated": "2025-10-07T00:17:21Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1608,7 +1608,7 @@
         "curl",
         "modelcontextprotocol"
       ],
-      "image": "ghcr.io/stackloklabs/gofetch/server:0.0.6",
+      "image": "ghcr.io/stackloklabs/gofetch/server:1.0.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -2358,7 +2358,7 @@
         "ingestion",
         "data-connectors"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20250930002",
+      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20251005001",
       "permissions": {
         "network": {
           "outbound": {
@@ -4283,7 +4283,9 @@
       },
       "args": [
         "--port",
-        "8931"
+        "8931",
+        "--allowed-hosts",
+        "*"
       ]
     },
     "plotting": {

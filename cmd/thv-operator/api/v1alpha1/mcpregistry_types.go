@@ -97,7 +97,7 @@ type GitSource struct {
 	// Repository is the Git repository URL (HTTP/HTTPS/SSH)
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:Pattern="^(file:///|https?://|git@|ssh://|git://).*"
+	// +kubebuilder:validation:Pattern="^(https?://|git@|ssh://|git://).*"
 	Repository string `json:"repository"`
 
 	// Branch is the Git branch to use (mutually exclusive with Tag and Commit)
@@ -185,10 +185,6 @@ type MCPRegistryStatus struct {
 	// APIStatus provides detailed information about the API service
 	// +optional
 	APIStatus *APIStatus `json:"apiStatus,omitempty"`
-
-	// LastAppliedFilterHash is the hash of the last applied filter
-	// +optional
-	LastAppliedFilterHash string `json:"lastAppliedFilterHash,omitempty"`
 
 	// StorageRef is a reference to the internal storage location
 	// +optional

@@ -3,6 +3,7 @@ package mcpregistrystatus
 
 import (
 	"context"
+	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -120,17 +121,25 @@ func (s *StatusCollector) SetAPIStatus(phase mcpv1alpha1.APIPhase, message strin
 	s.hasChanges = true
 }
 
-// UpdateStatus applies all collected status changes in a single batch update.
-// Requires the MCPRegistryStatus being the updated version from the cluster
-func (s *StatusCollector) UpdateStatus(ctx context.Context, mcpRegistryStatus *mcpv1alpha1.MCPRegistryStatus) bool {
+// Apply applies all collected status changes in a single batch update.
+func (s *StatusCollector) Apply(ctx context.Context, k8sClient client.Client) error {
+	if !s.hasChanges {
+		return nil
+	}
 
 	ctxLogger := log.FromContext(ctx)
 
-	if s.hasChanges {
-		// Apply phase change
-		if s.phase != nil {
-			mcpRegistryStatus.Phase = *s.phase
-		}
+	// Refetch the latest version of the resource to avoid conflicts
+	latestRegistry := &mcpv1alpha1.MCPRegistry{}
+	if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(s.mcpRegistry), latestRegistry); err != nil {
+		ctxLogger.Error(err, "Failed to fetch latest MCPRegistry version for status update")
+		return fmt.Errorf("failed to fetch latest MCPRegistry version: %w", err)
+	}
+
+	// Apply phase change
+	if s.phase != nil {
+		latestRegistry.Status.Phase = *s.phase
+	}
 
 		// Apply message change
 		if s.message != nil {

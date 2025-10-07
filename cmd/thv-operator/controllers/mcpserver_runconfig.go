@@ -263,6 +263,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		runner.WithTransportAndPorts(m.Spec.Transport, port, int(m.Spec.TargetPort)),
 		runner.WithProxyMode(transporttypes.ProxyMode(proxyMode)),
 		runner.WithHost(proxyHost),
+		runner.WithTrustProxyHeaders(m.Spec.TrustProxyHeaders),
 		runner.WithToolsFilter(toolsFilter),
 		runner.WithEnvVars(envVars),
 		runner.WithVolumes(volumes),

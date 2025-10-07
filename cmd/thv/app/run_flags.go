@@ -82,6 +82,9 @@ type RunFlags struct {
 	// Network isolation
 	IsolateNetwork bool
 
+	// Proxy headers
+	TrustProxyHeaders bool
+
 	// Labels
 	Labels []string
 
@@ -195,6 +198,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 
 	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
+	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
+		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix)")
 	cmd.Flags().StringArrayVarP(&config.Labels, "label", "l", []string{}, "Set labels on the container (format: key=value)")
 	cmd.Flags().BoolVarP(&config.Foreground, "foreground", "f", false, "Run in foreground mode (block until container exits)")
 	cmd.Flags().StringArrayVar(
@@ -428,6 +433,7 @@ func buildRunnerConfig(
 		runner.WithAuditConfigPath(runFlags.AuditConfig),
 		runner.WithPermissionProfileNameOrPath(runFlags.PermissionProfile),
 		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
+		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
 		runner.WithProxyMode(types.ProxyMode(runFlags.ProxyMode)),
 		runner.WithTransportAndPorts(transportType, runFlags.ProxyPort, runFlags.TargetPort),
@@ -526,32 +532,61 @@ func extractTelemetryValues(config *telemetry.Config) (string, float64, []string
 	return config.Endpoint, config.SamplingRate, config.EnvironmentVariables
 }
 
-// getRemoteAuthFromRemoteServerMetadata creates RemoteAuthConfig from RemoteServerMetadata
+// getRemoteAuthFromRemoteServerMetadata creates RemoteAuthConfig from RemoteServerMetadata,
+// giving CLI flags priority. For OAuthParams: if CLI provides any, they REPLACE metadata entirely.
 func getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata *registry.RemoteServerMetadata) *runner.RemoteAuthConfig {
-	if remoteServerMetadata == nil {
-		return nil
+	if remoteServerMetadata == nil || remoteServerMetadata.OAuthConfig == nil {
+		return getRemoteAuthFromRunFlags(&runFlags)
 	}
 
-	if remoteServerMetadata.OAuthConfig != nil {
-		if remoteServerMetadata.OAuthConfig.CallbackPort == 0 {
-			remoteServerMetadata.OAuthConfig.CallbackPort = runner.DefaultCallbackPort
+	oc := remoteServerMetadata.OAuthConfig
+	f := runFlags.RemoteAuthFlags
+
+	firstNonEmpty := func(a, b string) string {
+		if a != "" {
+			return a
 		}
-		return &runner.RemoteAuthConfig{
-			ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
-			ClientSecret: runFlags.RemoteAuthFlags.RemoteAuthClientSecret,
-			Scopes:       remoteServerMetadata.OAuthConfig.Scopes,
-			SkipBrowser:  runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
-			Timeout:      runFlags.RemoteAuthFlags.RemoteAuthTimeout,
-			CallbackPort: remoteServerMetadata.OAuthConfig.CallbackPort,
-			Issuer:       remoteServerMetadata.OAuthConfig.Issuer,
-			AuthorizeURL: remoteServerMetadata.OAuthConfig.AuthorizeURL,
-			TokenURL:     remoteServerMetadata.OAuthConfig.TokenURL,
-			OAuthParams:  remoteServerMetadata.OAuthConfig.OAuthParams,
-			Headers:      remoteServerMetadata.Headers,
-			EnvVars:      remoteServerMetadata.EnvVars,
-		}
+		return b
 	}
-	return nil
+
+	authCfg := &runner.RemoteAuthConfig{
+		ClientID:     f.RemoteAuthClientID,
+		ClientSecret: f.RemoteAuthClientSecret,
+		SkipBrowser:  f.RemoteAuthSkipBrowser,
+		Timeout:      f.RemoteAuthTimeout,
+		Headers:      remoteServerMetadata.Headers,
+		EnvVars:      remoteServerMetadata.EnvVars,
+	}
+
+	// Scopes: CLI overrides if provided
+	if len(f.RemoteAuthScopes) > 0 {
+		authCfg.Scopes = f.RemoteAuthScopes
+	} else {
+		authCfg.Scopes = oc.Scopes
+	}
+
+	// Heuristic: treat default runner.DefaultCallbackPort as "unset"
+	if f.RemoteAuthCallbackPort > 0 && f.RemoteAuthCallbackPort != runner.DefaultCallbackPort {
+		authCfg.CallbackPort = f.RemoteAuthCallbackPort
+	} else if oc.CallbackPort > 0 {
+		authCfg.CallbackPort = oc.CallbackPort
+	} else {
+		authCfg.CallbackPort = runner.DefaultCallbackPort
+	}
+
+	// Issuer / URLs: CLI non-empty wins
+	authCfg.Issuer = firstNonEmpty(f.RemoteAuthIssuer, oc.Issuer)
+	authCfg.AuthorizeURL = firstNonEmpty(f.RemoteAuthAuthorizeURL, oc.AuthorizeURL)
+	authCfg.TokenURL = firstNonEmpty(f.RemoteAuthTokenURL, oc.TokenURL)
+
+	// OAuthParams: REPLACE metadata when CLI provides any key/value.
+	if len(runFlags.OAuthParams) > 0 {
+		authCfg.OAuthParams = runFlags.OAuthParams
+	} else {
+		authCfg.OAuthParams = oc.OAuthParams
+	}
+
+	return authCfg
 }
 
 // getRemoteAuthFromRunFlags creates RemoteAuthConfig from RunFlags

@@ -134,6 +134,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --tools stringArray                       Filter MCP server tools (comma-separated list of tool names)
       --tools-override string                   Path to a JSON file containing overrides for MCP server tools names and descriptions
       --transport string                        Transport mode (sse, streamable-http or stdio)
+      --trust-proxy-headers                     Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix)
   -v, --volume stringArray                      Mount a volume into the container (format: host-path:container-path[:ro])
 ```
 

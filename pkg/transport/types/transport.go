@@ -203,6 +203,9 @@ type Config struct {
 	// If provided, it will be exposed at /.well-known/oauth-protected-resource on the transport's HTTP server.
 	AuthInfoHandler http.Handler
 
+	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
+	TrustProxyHeaders bool
+
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	ProxyMode ProxyMode
 }

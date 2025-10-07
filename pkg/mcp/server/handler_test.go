@@ -31,6 +31,16 @@ func TestParseRunServerArgs(t *testing.T) {
 							"KEY1": "value1",
 							"KEY2": "value2",
 						},
+						"secrets": []interface{}{
+							map[string]interface{}{
+								"name":   "github-token",
+								"target": "GITHUB_TOKEN",
+							},
+							map[string]interface{}{
+								"name":   "api-key",
+								"target": "API_KEY",
+							},
+						},
 					},
 				},
 			},
@@ -41,6 +51,10 @@ func TestParseRunServerArgs(t *testing.T) {
 				Env: map[string]string{
 					"KEY1": "value1",
 					"KEY2": "value2",
+				},
+				Secrets: []SecretMapping{
+					{Name: "github-token", Target: "GITHUB_TOKEN"},
+					{Name: "api-key", Target: "API_KEY"},
 				},
 			},
 			wantErr: false,
@@ -55,10 +69,11 @@ func TestParseRunServerArgs(t *testing.T) {
 				},
 			},
 			expected: &runServerArgs{
-				Server: "test-server",
-				Name:   "test-server", // Should default to server name
-				Host:   "127.0.0.1",   // Should default to 127.0.0.1
-				Env:    nil,
+				Server:  "test-server",
+				Name:    "test-server", // Should default to server name
+				Host:    "127.0.0.1",   // Should default to 127.0.0.1
+				Env:     nil,
+				Secrets: nil,
 			},
 			wantErr: false,
 		},
@@ -73,10 +88,11 @@ func TestParseRunServerArgs(t *testing.T) {
 				},
 			},
 			expected: &runServerArgs{
-				Server: "my-server",
-				Name:   "my-server",
-				Host:   "127.0.0.1",
-				Env:    nil,
+				Server:  "my-server",
+				Name:    "my-server",
+				Host:    "127.0.0.1",
+				Env:     nil,
+				Secrets: nil,
 			},
 			wantErr: false,
 		},
@@ -91,10 +107,11 @@ func TestParseRunServerArgs(t *testing.T) {
 				},
 			},
 			expected: &runServerArgs{
-				Server: "test-server",
-				Name:   "test-server",
-				Host:   "127.0.0.1",
-				Env:    nil,
+				Server:  "test-server",
+				Name:    "test-server",
+				Host:    "127.0.0.1",
+				Env:     nil,
+				Secrets: nil,
 			},
 			wantErr: false,
 		},
@@ -303,6 +320,54 @@ func TestBuildServerConfig(t *testing.T) {
 				assert.NoError(t, err)
 				assert.NotNil(t, runConfig)
 			}
+		})
+	}
+}
+
+func TestPrepareSecrets(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		secrets  []SecretMapping
+		expected []string
+	}{
+		{
+			name:     "nil secrets",
+			secrets:  nil,
+			expected: nil,
+		},
+		{
+			name:     "empty secrets",
+			secrets:  []SecretMapping{},
+			expected: nil,
+		},
+		{
+			name: "single secret",
+			secrets: []SecretMapping{
+				{Name: "github-token", Target: "GITHUB_TOKEN"},
+			},
+			expected: []string{"github-token,target=GITHUB_TOKEN"},
+		},
+		{
+			name: "multiple secrets",
+			secrets: []SecretMapping{
+				{Name: "github-token", Target: "GITHUB_TOKEN"},
+				{Name: "api-key", Target: "API_KEY"},
+				{Name: "db-password", Target: "DATABASE_PASSWORD"},
+			},
+			expected: []string{
+				"github-token,target=GITHUB_TOKEN",
+				"api-key,target=API_KEY",
+				"db-password,target=DATABASE_PASSWORD",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := prepareSecrets(tt.secrets)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }

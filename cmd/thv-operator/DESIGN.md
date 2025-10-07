@@ -1,6 +1,6 @@
 # Design & Decisions
 
-This document captures architectural decisions and design patterns for the ToolHive Operator. For user-facing documentation, see [REGISTRY.md](REGISTRY.md).
+This document captures architectural decisions and design patterns for the ToolHive Operator.
 
 ## Operator Design Principles
 

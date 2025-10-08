@@ -234,6 +234,7 @@ type mockReadCloser struct {
 	readCount int
 }
 
+//nolint:unparam // test helper designed to be flexible
 func newMockReadCloser(data string) *mockReadCloser {
 	return &mockReadCloser{
 		data:     []byte(data),

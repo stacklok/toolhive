@@ -53,6 +53,25 @@ type StdioTransport struct {
 
 	// Container monitor
 	monitor rt.Monitor
+
+	// Retry configuration (for testing)
+	retryConfig *retryConfig
+}
+
+// retryConfig holds configuration for retry behavior
+type retryConfig struct {
+	maxRetries   int
+	initialDelay time.Duration
+	maxDelay     time.Duration
+}
+
+// defaultRetryConfig returns the default retry configuration
+func defaultRetryConfig() *retryConfig {
+	return &retryConfig{
+		maxRetries:   10,
+		initialDelay: 2 * time.Second,
+		maxDelay:     30 * time.Second,
+	}
 }
 
 // NewStdioTransport creates a new stdio transport.
@@ -75,6 +94,7 @@ func NewStdioTransport(
 		prometheusHandler: prometheusHandler,
 		shutdownCh:        make(chan struct{}),
 		proxyMode:         types.ProxyModeSSE, // default to SSE for backward compatibility
+		retryConfig:       defaultRetryConfig(),
 	}
 }
 
@@ -352,15 +372,15 @@ func (t *StdioTransport) processStdout(ctx context.Context, stdout io.ReadCloser
 					// Check if container is still running (might have been restarted by Docker)
 					if t.deployer != nil && t.containerName != "" {
 						// Try multiple times with increasing delay in case Docker is restarting
-						maxRetries := 10
-						initialDelay := 2 * time.Second
+						maxRetries := t.retryConfig.maxRetries
+						initialDelay := t.retryConfig.initialDelay
 
 						for attempt := 0; attempt < maxRetries; attempt++ {
 							if attempt > 0 {
 								// Use exponential backoff: 2s, 4s, 8s, 16s, 30s, 30s...
 								delay := initialDelay * time.Duration(1<<uint(attempt-1))
-								if delay > 30*time.Second {
-									delay = 30 * time.Second
+								if delay > t.retryConfig.maxDelay {
+									delay = t.retryConfig.maxDelay
 								}
 								logger.Infof("Retry attempt %d/%d after %v", attempt+1, maxRetries, delay)
 								time.Sleep(delay)

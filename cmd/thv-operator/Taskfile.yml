@@ -196,7 +196,14 @@ tasks:
     desc: Run tests for the operator
     cmds:
       - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-      - KUBEBUILDER_ASSETS="$(shell setup-envtest use 1.28.0 -p path)" go test ./cmd/thv-operator/... -coverprofile cover.out
+      - KUBEBUILDER_ASSETS="$($(go env GOPATH)/bin/setup-envtest use 1.31.0 -p path)" go test ./cmd/thv-operator/... -coverprofile cover.out
+
+  operator-test-integration:
+    desc: Run integration tests for the operator using envtest
+    cmds:
+      - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+      - go install github.com/onsi/ginkgo/v2/ginkgo@latest
+      - KUBEBUILDER_ASSETS="$($(go env GOPATH)/bin/setup-envtest use 1.31.0 -p path)" $(go env GOPATH)/bin/ginkgo -v ./cmd/thv-operator/test-integration
 
   operator-e2e-test-ginkgo:
     desc: Run E2E tests for the operator with Ginkgo

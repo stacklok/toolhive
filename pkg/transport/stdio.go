@@ -318,7 +318,11 @@ func (t *StdioTransport) processMessages(ctx context.Context, stdin io.WriteClos
 			return
 		case msg := <-messageCh:
 			logger.Info("Process incoming messages and sending message to container")
-			if err := t.sendMessageToContainer(ctx, stdin, msg); err != nil {
+			// Use t.stdin instead of parameter so it uses the current stdin after re-attachment
+			t.mutex.Lock()
+			currentStdin := t.stdin
+			t.mutex.Unlock()
+			if err := t.sendMessageToContainer(ctx, currentStdin, msg); err != nil {
 				logger.Errorf("Error sending message to container: %v", err)
 			}
 			logger.Info("Messages processed")
@@ -394,8 +398,10 @@ func (t *StdioTransport) processStdout(ctx context.Context, stdout io.ReadCloser
 								t.stdout = newStdout
 								t.mutex.Unlock()
 
-								// Restart message processing with new pipes
-								go t.processMessages(ctx, newStdin, newStdout)
+								// Start ONLY the stdout reader, not the full processMessages
+								// The existing processMessages goroutine is still running and handling stdin
+								go t.processStdout(ctx, newStdout)
+								logger.Info("Restarted stdout processing with new pipe")
 								return
 							}
 							logger.Errorf("Failed to re-attach to container (attempt %d/%d): %v", attempt+1, maxRetries, attachErr)
@@ -479,11 +485,13 @@ func sanitizeBinaryString(input string) string {
 }
 
 // isSpace reports whether r is a space character as defined by JSON.
-// These are the valid space characters in this implementation:
+// These are the valid space characters in JSON:
 //   - ' ' (U+0020, SPACE)
+//   - '\t' (U+0009, HORIZONTAL TAB)
 //   - '\n' (U+000A, LINE FEED)
+//   - '\r' (U+000D, CARRIAGE RETURN)
 func isSpace(r rune) bool {
-	return r == ' ' || r == '\n'
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r'
 }
 
 // parseAndForwardJSONRPC parses a JSON-RPC message and forwards it.

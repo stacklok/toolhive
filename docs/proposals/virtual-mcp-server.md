@@ -90,7 +90,7 @@ backend_auth:
 # Composite tools (Phase 2)
 composite_tools:
   - name: "deploy_and_notify"
-    description: "Deploy PR and notify team"
+    description: "Deploy PR with user confirmation and notification"
     parameters:
       pr_number: {type: "integer"}
     steps:
@@ -98,11 +98,91 @@ composite_tools:
         tool: "github.merge_pr"
         arguments: {pr: "{{.params.pr_number}}"}
 
+      # Elicitation step for user confirmation
+      - id: "confirm_deploy"
+        type: "elicitation"
+        message: "PR {{.params.pr_number}} merged successfully. Proceed with deployment?"
+        schema:
+          type: "object"
+          properties:
+            environment:
+              type: "string"
+              enum: ["staging", "production"]
+              enumNames: ["Staging", "Production"]
+              description: "Target deployment environment"
+            notify_team:
+              type: "boolean"
+              default: true
+              description: "Send Slack notification to team"
+          required: ["environment"]
+        depends_on: ["merge"]
+        on_decline:
+          action: "skip_remaining"
+        on_cancel:
+          action: "abort"
+
+      - id: "deploy"
+        tool: "kubernetes.deploy"
+        arguments:
+          pr: "{{.params.pr_number}}"
+          environment: "{{.steps.confirm_deploy.content.environment}}"
+        depends_on: ["confirm_deploy"]
+        condition: "{{.steps.confirm_deploy.action == 'accept'}}"
+
       - id: "notify"
         tool: "slack.send"
-        arguments: {text: "Deployed PR {{.params.pr_number}}"}
-        depends_on: ["merge"]
+        arguments:
+          text: "Deployed PR {{.params.pr_number}} to {{.steps.confirm_deploy.content.environment}}"
+        depends_on: ["deploy"]
+        condition: "{{.steps.confirm_deploy.content.notify_team}}"
+```
 
+#### Example: Incident Investigation Using Multiple Fetch Calls
+
+This composite tool demonstrates calling the same backend tool (`fetch`) multiple times with different static URLs to gather incident data from various monitoring sources:
+
+```yaml
+composite_tools:
+  - name: "investigate_incident"
+    description: "Gather logs and metrics from multiple sources for incident analysis"
+    parameters:
+      incident_id: {type: "string"}
+      time_range: {type: "string", default: "1h"}
+    steps:
+      - id: "fetch_app_logs"
+        tool: "fetch.fetch"
+        arguments:
+          url: "https://logs.company.com/api/query?service=app&time={{.params.time_range}}"
+
+      - id: "fetch_error_metrics"
+        tool: "fetch.fetch"
+        arguments:
+          url: "https://metrics.company.com/api/errors?time={{.params.time_range}}"
+
+      - id: "fetch_trace_data"
+        tool: "fetch.fetch"
+        arguments:
+          url: "https://tracing.company.com/api/traces?time={{.params.time_range}}"
+
+      - id: "fetch_infra_status"
+        tool: "fetch.fetch"
+        arguments:
+          url: "https://monitoring.company.com/api/infrastructure/status"
+
+      - id: "create_report"
+        tool: "jira.create_issue"
+        arguments:
+          title: "Incident {{.params.incident_id}} Analysis"
+          description: |
+            Application Logs: {{.steps.fetch_app_logs.output}}
+            Error Metrics: {{.steps.fetch_error_metrics.output}}
+            Trace Data: {{.steps.fetch_trace_data.output}}
+            Infrastructure: {{.steps.fetch_infra_status.output}}
+```
+
+This pattern allows a single generic `fetch` tool to be reused with different static endpoints, creating a purpose-built incident investigation workflow without needing separate tools for each data source.
+
+```yaml
 # Operational settings
 operational:
   timeouts:
@@ -162,6 +242,23 @@ Routes MCP protocol requests to appropriate backends:
 - Prompt requests handled similarly
 - Load balancing for duplicate capabilities
 
+#### 6. Elicitation Support in Composite Tools
+
+Composite tools can include elicitation steps to request additional information from users during workflow execution, following the [MCP elicitation specification](https://modelcontextprotocol.io/specification/2025-06-18/client/elicitation). This enables:
+
+- **Interactive workflows**: Request user input between steps
+- **Safety confirmations**: Require approval before destructive operations
+- **Dynamic parameters**: Gather context-dependent information
+- **Conditional execution**: Branch workflow based on user responses
+
+Elicitation steps use JSON Schema to define the structure of requested data (limited to flat objects with primitive properties). The Virtual MCP server forwards elicitation requests to the client and captures responses in three forms:
+
+- **accept**: User provided data (accessible via `{{.steps.step_id.content}}`)
+- **decline**: User explicitly rejected the request
+- **cancel**: User dismissed without choosing
+
+Subsequent steps can reference elicitation results through template expansion and use the `condition` field to execute conditionally based on user responses. The `on_decline` and `on_cancel` handlers control workflow behavior for non-acceptance scenarios.
+
 ### CLI Usage
 
 ```bash
@@ -191,6 +288,7 @@ thv virtual --group engineering-team \
 
 **Phase 2**: Advanced features
 - Composite tool execution
+- Elicitation support in composite tools
 - Per-backend authentication strategies
 - Token exchange support
 - Failover and load balancing
@@ -220,6 +318,7 @@ The implementation will maximize reuse of existing ToolHive components:
 3. **Groups**: Use `groups.Manager` for group operations
 4. **Workloads**: Use `workloads.Manager` for workload discovery
 5. **Authentication**: Extend existing auth middleware patterns
+6. **Elicitation**: Implement MCP elicitation protocol for composite tool user interaction
 
 ### Authentication Complexity
 
@@ -230,6 +329,10 @@ Different MCP servers may have vastly different authentication requirements:
 - Third-party APIs may need API keys
 
 The Virtual MCP must handle this complexity transparently, maintaining separate authentication contexts per backend while presenting a unified interface to clients.
+
+### Composite Tool State Persistence
+
+Composite tools with elicitation require state persistence to handle long-running workflows that span multiple user interactions. The Virtual MCP will maintain workflow execution state (current step, completed steps, elicitation responses, and template variables) in memory with a clean storage interface to enable future migration to persistent backends. Each composite tool invocation receives a unique workflow ID, and the server checkpoints state after each step completion and elicitation interaction. Workflows have a default timeout of 30 minutes, after which they are automatically cleaned up and any pending elicitations are treated as cancelled. This approach keeps the implementation simple for Phase 2 while establishing patterns that can scale to distributed persistence later.
 
 ## Alternative Approaches Considered
 

@@ -170,6 +170,16 @@ func CreateTokenExchangeMiddlewareFromClaims(config Config) types.MiddlewareFunc
 		}
 	}
 
+	// Create base exchange config at startup time with all static fields
+	baseExchangeConfig := ExchangeConfig{
+		TokenURL:     config.TokenURL,
+		ClientID:     config.ClientID,
+		ClientSecret: config.ClientSecret,
+		Audience:     config.Audience,
+		Scopes:       config.Scopes,
+		// SubjectTokenProvider will be set per request
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Get claims from the auth middleware
@@ -200,16 +210,10 @@ func CreateTokenExchangeMiddlewareFromClaims(config Config) types.MiddlewareFunc
 				logger.Debugf("Performing token exchange for subject: %v", sub)
 			}
 
-			// Create RFC-8693 token exchange config with subject token provider
-			exchangeConfig := &ExchangeConfig{
-				TokenURL:     config.TokenURL,
-				ClientID:     config.ClientID,
-				ClientSecret: config.ClientSecret,
-				Audience:     config.Audience,
-				Scopes:       config.Scopes,
-				SubjectTokenProvider: func() (string, error) {
-					return subjectToken, nil
-				},
+			// Create a copy of the base config with the request-specific subject token
+			exchangeConfig := baseExchangeConfig
+			exchangeConfig.SubjectTokenProvider = func() (string, error) {
+				return subjectToken, nil
 			}
 
 			// Get token from token source

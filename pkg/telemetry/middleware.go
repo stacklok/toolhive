@@ -1,9 +1,11 @@
 package telemetry
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -130,6 +132,7 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 			ResponseWriter: w,
 			statusCode:     http.StatusOK,
 			bytesWritten:   0,
+			wroteHeader:    false,
 		}
 
 		// Add HTTP attributes
@@ -403,19 +406,42 @@ type responseWriter struct {
 	http.ResponseWriter
 	statusCode   int
 	bytesWritten int64
+	wroteHeader  bool
 }
 
 // WriteHeader captures the status code.
 func (rw *responseWriter) WriteHeader(statusCode int) {
+	if rw.wroteHeader {
+		return // Prevent multiple WriteHeader calls
+	}
 	rw.statusCode = statusCode
+	rw.wroteHeader = true
 	rw.ResponseWriter.WriteHeader(statusCode)
 }
 
 // Write captures the number of bytes written.
 func (rw *responseWriter) Write(data []byte) (int, error) {
+	if !rw.wroteHeader {
+		rw.WriteHeader(http.StatusOK)
+	}
 	n, err := rw.ResponseWriter.Write(data)
 	rw.bytesWritten += int64(n)
 	return n, err
+}
+
+// Flush implements http.Flusher interface
+func (rw *responseWriter) Flush() {
+	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// Hijack implements http.Hijacker interface
+func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hijacker, ok := rw.ResponseWriter.(http.Hijacker); ok {
+		return hijacker.Hijack()
+	}
+	return nil, nil, fmt.Errorf("http.Hijacker not supported")
 }
 
 // recordMetrics records request metrics.

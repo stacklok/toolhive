@@ -516,11 +516,12 @@ func TestCreateMiddleware(t *testing.T) {
 			expectAddMiddleware: true,
 		},
 		{
-			name: "nil config skips middleware creation",
+			name: "nil config returns error",
 			params: MiddlewareParams{
 				TokenExchangeConfig: nil,
 			},
-			expectError:         false,
+			expectError:         true,
+			errorMsg:            "token exchange configuration is required",
 			expectAddMiddleware: false,
 		},
 		{

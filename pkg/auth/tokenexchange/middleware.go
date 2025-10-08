@@ -79,10 +79,9 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		return fmt.Errorf("failed to unmarshal token exchange middleware parameters: %w", err)
 	}
 
-	// If no token exchange config provided, skip middleware
+	// Token exchange config is required when this middleware type is specified
 	if params.TokenExchangeConfig == nil {
-		logger.Debug("No token exchange config provided, skipping token exchange middleware")
-		return nil
+		return fmt.Errorf("token exchange configuration is required but not provided")
 	}
 
 	// Validate configuration

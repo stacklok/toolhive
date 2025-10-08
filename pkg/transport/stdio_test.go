@@ -240,10 +240,10 @@ func newMockReadCloser(data string) *mockReadCloser {
 	}
 }
 
-func newMockReadCloserWithEOF(data string, eofAfter int) *mockReadCloser {
+func newMockReadCloserWithEOF(data string) *mockReadCloser {
 	return &mockReadCloser{
 		data:     []byte(data),
-		eofAfter: eofAfter,
+		eofAfter: 1, // Always EOF after first read for these tests
 	}
 }
 
@@ -309,6 +309,8 @@ func testRetryConfig() *retryConfig {
 }
 
 func TestProcessStdout_EOFWithSuccessfulReattachment(t *testing.T) {
+	t.Parallel()
+
 	// Initialize logger
 	logger.Initialize()
 
@@ -322,7 +324,7 @@ func TestProcessStdout_EOFWithSuccessfulReattachment(t *testing.T) {
 	mockDeployer := mocks.NewMockRuntime(ctrl)
 
 	// Create mock stdout that will return EOF after first read
-	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`, 1)
+	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`)
 
 	// Create new stdio streams for re-attachment
 	newStdin := newMockWriteCloser()
@@ -376,6 +378,8 @@ func TestProcessStdout_EOFWithSuccessfulReattachment(t *testing.T) {
 }
 
 func TestProcessStdout_EOFWithDockerUnavailable(t *testing.T) {
+	t.Parallel()
+
 	// Initialize logger
 	logger.Initialize()
 
@@ -389,13 +393,13 @@ func TestProcessStdout_EOFWithDockerUnavailable(t *testing.T) {
 	mockDeployer := mocks.NewMockRuntime(ctrl)
 
 	// Create mock stdout that will return EOF
-	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`, 1)
+	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`)
 
 	// Simulate Docker being unavailable on first check, then available
 	callCount := 0
 	mockDeployer.EXPECT().
 		IsWorkloadRunning(gomock.Any(), "test-container").
-		DoAndReturn(func(ctx context.Context, s string) (bool, error) {
+		DoAndReturn(func(_ context.Context, s string) (bool, error) {
 			callCount++
 			if callCount == 1 {
 				// First call: Docker socket unavailable
@@ -452,6 +456,8 @@ func TestProcessStdout_EOFWithDockerUnavailable(t *testing.T) {
 }
 
 func TestProcessStdout_EOFWithContainerNotRunning(t *testing.T) {
+	t.Parallel()
+
 	// Initialize logger
 	logger.Initialize()
 
@@ -465,7 +471,7 @@ func TestProcessStdout_EOFWithContainerNotRunning(t *testing.T) {
 	mockDeployer := mocks.NewMockRuntime(ctrl)
 
 	// Create mock stdout that will return EOF
-	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`, 1)
+	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`)
 
 	// Set up expectations - container is not running
 	mockDeployer.EXPECT().
@@ -504,6 +510,8 @@ func TestProcessStdout_EOFWithContainerNotRunning(t *testing.T) {
 }
 
 func TestProcessStdout_EOFWithFailedReattachment(t *testing.T) {
+	t.Parallel()
+
 	// Initialize logger
 	logger.Initialize()
 
@@ -518,13 +526,13 @@ func TestProcessStdout_EOFWithFailedReattachment(t *testing.T) {
 	mockDeployer := mocks.NewMockRuntime(ctrl)
 
 	// Create mock stdout that will return EOF
-	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`, 1)
+	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`)
 
 	retryCount := 0
 	// Set up expectations - container is running but re-attachment fails
 	mockDeployer.EXPECT().
 		IsWorkloadRunning(gomock.Any(), "test-container").
-		DoAndReturn(func(ctx context.Context, s string) (bool, error) {
+		DoAndReturn(func(_ context.Context, s string) (bool, error) {
 			retryCount++
 			return true, nil
 		}).
@@ -577,6 +585,8 @@ func TestProcessStdout_EOFWithFailedReattachment(t *testing.T) {
 }
 
 func TestProcessStdout_EOFWithReattachmentRetryLogic(t *testing.T) {
+	t.Parallel()
+
 	// Initialize logger
 	logger.Initialize()
 
@@ -590,7 +600,7 @@ func TestProcessStdout_EOFWithReattachmentRetryLogic(t *testing.T) {
 	mockDeployer := mocks.NewMockRuntime(ctrl)
 
 	// Create mock stdout that will return EOF
-	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`, 1)
+	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`)
 
 	// Track retry attempts
 	attemptCount := 0
@@ -598,7 +608,7 @@ func TestProcessStdout_EOFWithReattachmentRetryLogic(t *testing.T) {
 	// Set up expectations - fail first 2 attempts, succeed on 3rd
 	mockDeployer.EXPECT().
 		IsWorkloadRunning(gomock.Any(), "test-container").
-		DoAndReturn(func(ctx context.Context, s string) (bool, error) {
+		DoAndReturn(func(_ context.Context, s string) (bool, error) {
 			attemptCount++
 			if attemptCount <= 2 {
 				// First 2 attempts: connection refused (Docker restarting)
@@ -658,6 +668,8 @@ func TestProcessStdout_EOFWithReattachmentRetryLogic(t *testing.T) {
 }
 
 func TestProcessStdout_EOFCheckErrorTypes(t *testing.T) {
+	t.Parallel()
+
 	// Initialize logger
 	logger.Initialize()
 
@@ -689,6 +701,7 @@ func TestProcessStdout_EOFCheckErrorTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
@@ -699,7 +712,7 @@ func TestProcessStdout_EOFCheckErrorTypes(t *testing.T) {
 			mockDeployer := mocks.NewMockRuntime(ctrl)
 
 			// Create mock stdout that will return EOF
-			mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test"}`, 1)
+			mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test"}`)
 
 			// Track how many times IsWorkloadRunning is called
 			callCount := 0
@@ -707,7 +720,7 @@ func TestProcessStdout_EOFCheckErrorTypes(t *testing.T) {
 			// Set up expectations - allow unlimited calls since we're testing retry behavior
 			mockDeployer.EXPECT().
 				IsWorkloadRunning(gomock.Any(), "test-container").
-				DoAndReturn(func(ctx context.Context, s string) (bool, error) {
+				DoAndReturn(func(_ context.Context, s string) (bool, error) {
 					callCount++
 					return false, tt.checkError
 				}).

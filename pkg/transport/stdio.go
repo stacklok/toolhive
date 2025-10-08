@@ -312,7 +312,7 @@ func (t *StdioTransport) IsRunning(_ context.Context) (bool, error) {
 }
 
 // processMessages handles the message exchange between the client and container.
-func (t *StdioTransport) processMessages(ctx context.Context, stdin io.WriteCloser, stdout io.ReadCloser) {
+func (t *StdioTransport) processMessages(ctx context.Context, _ io.WriteCloser, stdout io.ReadCloser) {
 	// Create a context that will be canceled when shutdown is signaled
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -350,6 +350,77 @@ func (t *StdioTransport) processMessages(ctx context.Context, stdin io.WriteClos
 	}
 }
 
+// attemptReattachment tries to re-attach to a container that has lost its stdout connection.
+// Returns true if re-attachment was successful, false otherwise.
+func (t *StdioTransport) attemptReattachment(ctx context.Context, stdout io.ReadCloser) bool {
+	if t.deployer == nil || t.containerName == "" {
+		return false
+	}
+
+	maxRetries := t.retryConfig.maxRetries
+	initialDelay := t.retryConfig.initialDelay
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// Use exponential backoff: 2s, 4s, 8s, 16s, 30s, 30s...
+			// Safe conversion: ensure attempt-1 doesn't overflow
+			shift := uint(attempt - 1)
+			if shift > 30 {
+				shift = 30 // Cap to prevent overflow
+			}
+			delay := initialDelay * time.Duration(1<<shift)
+			if delay > t.retryConfig.maxDelay {
+				delay = t.retryConfig.maxDelay
+			}
+			logger.Infof("Retry attempt %d/%d after %v", attempt+1, maxRetries, delay)
+			time.Sleep(delay)
+		}
+
+		running, checkErr := t.deployer.IsWorkloadRunning(ctx, t.containerName)
+		if checkErr != nil {
+			// Check if error is due to Docker being unavailable
+			if strings.Contains(checkErr.Error(), "EOF") || strings.Contains(checkErr.Error(), "connection refused") {
+				logger.Warnf("Docker socket unavailable (attempt %d/%d), will retry", attempt+1, maxRetries)
+				continue
+			}
+			logger.Warnf("Error checking if container is running (attempt %d/%d): %v", attempt+1, maxRetries, checkErr)
+			continue
+		}
+
+		if !running {
+			logger.Infof("Container not running (attempt %d/%d)", attempt+1, maxRetries)
+			return false
+		}
+
+		logger.Warn("Container is still running after stdout EOF - attempting to re-attach")
+
+		// Try to re-attach to the container
+		newStdin, newStdout, attachErr := t.deployer.AttachToWorkload(ctx, t.containerName)
+		if attachErr == nil {
+			logger.Info("Successfully re-attached to container - restarting message processing")
+
+			// Close old stdout
+			_ = stdout.Close()
+
+			// Update stdio references
+			t.mutex.Lock()
+			t.stdin = newStdin
+			t.stdout = newStdout
+			t.mutex.Unlock()
+
+			// Start ONLY the stdout reader, not the full processMessages
+			// The existing processMessages goroutine is still running and handling stdin
+			go t.processStdout(ctx, newStdout)
+			logger.Info("Restarted stdout processing with new pipe")
+			return true
+		}
+		logger.Errorf("Failed to re-attach to container (attempt %d/%d): %v", attempt+1, maxRetries, attachErr)
+	}
+
+	logger.Warn("Failed to re-attach after all retry attempts")
+	return false
+}
+
 // processStdout reads from the container's stdout and processes JSON-RPC messages.
 func (t *StdioTransport) processStdout(ctx context.Context, stdout io.ReadCloser) {
 	// Create a buffer for accumulating data
@@ -369,65 +440,9 @@ func (t *StdioTransport) processStdout(ctx context.Context, stdout io.ReadCloser
 				if err == io.EOF {
 					logger.Warn("Container stdout closed - checking if container is still running")
 
-					// Check if container is still running (might have been restarted by Docker)
-					if t.deployer != nil && t.containerName != "" {
-						// Try multiple times with increasing delay in case Docker is restarting
-						maxRetries := t.retryConfig.maxRetries
-						initialDelay := t.retryConfig.initialDelay
-
-						for attempt := 0; attempt < maxRetries; attempt++ {
-							if attempt > 0 {
-								// Use exponential backoff: 2s, 4s, 8s, 16s, 30s, 30s...
-								delay := initialDelay * time.Duration(1<<uint(attempt-1))
-								if delay > t.retryConfig.maxDelay {
-									delay = t.retryConfig.maxDelay
-								}
-								logger.Infof("Retry attempt %d/%d after %v", attempt+1, maxRetries, delay)
-								time.Sleep(delay)
-							}
-
-							running, checkErr := t.deployer.IsWorkloadRunning(ctx, t.containerName)
-							if checkErr != nil {
-								// Check if error is due to Docker being unavailable
-								if strings.Contains(checkErr.Error(), "EOF") || strings.Contains(checkErr.Error(), "connection refused") {
-									logger.Warnf("Docker socket unavailable (attempt %d/%d), will retry", attempt+1, maxRetries)
-									continue
-								}
-								logger.Warnf("Error checking if container is running (attempt %d/%d): %v", attempt+1, maxRetries, checkErr)
-								continue
-							}
-
-							if !running {
-								logger.Infof("Container not running (attempt %d/%d)", attempt+1, maxRetries)
-								break
-							}
-
-							logger.Warn("Container is still running after stdout EOF - attempting to re-attach")
-
-							// Try to re-attach to the container
-							newStdin, newStdout, attachErr := t.deployer.AttachToWorkload(ctx, t.containerName)
-							if attachErr == nil {
-								logger.Info("Successfully re-attached to container - restarting message processing")
-
-								// Close old stdout
-								_ = stdout.Close()
-
-								// Update stdio references
-								t.mutex.Lock()
-								t.stdin = newStdin
-								t.stdout = newStdout
-								t.mutex.Unlock()
-
-								// Start ONLY the stdout reader, not the full processMessages
-								// The existing processMessages goroutine is still running and handling stdin
-								go t.processStdout(ctx, newStdout)
-								logger.Info("Restarted stdout processing with new pipe")
-								return
-							}
-							logger.Errorf("Failed to re-attach to container (attempt %d/%d): %v", attempt+1, maxRetries, attachErr)
-						}
-
-						logger.Warn("Failed to re-attach after all retry attempts")
+					// Try to re-attach to the container
+					if t.attemptReattachment(ctx, stdout) {
+						return
 					}
 
 					logger.Info("Container stdout closed - exiting read loop")

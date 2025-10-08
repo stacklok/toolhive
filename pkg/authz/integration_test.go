@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
@@ -62,9 +62,9 @@ func TestIntegrationListFiltering(t *testing.T) {
 		{
 			name:     "Basic user sees filtered tools list",
 			userRole: "user",
-			method:   string(mcp.MethodToolsList),
+			method:   "tools/list",
 			mockResponse: mcp.ListToolsResult{
-				Tools: []mcp.Tool{
+				Tools: []*mcp.Tool{
 					{Name: "weather", Description: "Get weather information"},
 					{Name: "news", Description: "Get latest news"},
 					{Name: "admin_tool", Description: "Admin-only tool"},
@@ -78,9 +78,9 @@ func TestIntegrationListFiltering(t *testing.T) {
 		{
 			name:     "Admin user sees all tools",
 			userRole: "admin",
-			method:   string(mcp.MethodToolsList),
+			method:   "tools/list",
 			mockResponse: mcp.ListToolsResult{
-				Tools: []mcp.Tool{
+				Tools: []*mcp.Tool{
 					{Name: "weather", Description: "Get weather information"},
 					{Name: "news", Description: "Get latest news"},
 					{Name: "admin_tool", Description: "Admin-only tool"},
@@ -94,9 +94,9 @@ func TestIntegrationListFiltering(t *testing.T) {
 		{
 			name:     "Basic user sees filtered prompts list",
 			userRole: "user",
-			method:   string(mcp.MethodPromptsList),
+			method:   "prompts/list",
 			mockResponse: mcp.ListPromptsResult{
-				Prompts: []mcp.Prompt{
+				Prompts: []*mcp.Prompt{
 					{Name: "greeting", Description: "Generate greetings"},
 					{Name: "help", Description: "Generate help text"},
 					{Name: "admin_prompt", Description: "Admin-only prompt"},
@@ -109,9 +109,9 @@ func TestIntegrationListFiltering(t *testing.T) {
 		{
 			name:     "Admin user sees all prompts",
 			userRole: "admin",
-			method:   string(mcp.MethodPromptsList),
+			method:   "prompts/list",
 			mockResponse: mcp.ListPromptsResult{
-				Prompts: []mcp.Prompt{
+				Prompts: []*mcp.Prompt{
 					{Name: "greeting", Description: "Generate greetings"},
 					{Name: "help", Description: "Generate help text"},
 					{Name: "admin_prompt", Description: "Admin-only prompt"},
@@ -124,9 +124,9 @@ func TestIntegrationListFiltering(t *testing.T) {
 		{
 			name:     "Basic user sees filtered resources list",
 			userRole: "user",
-			method:   string(mcp.MethodResourcesList),
+			method:   "resources/list",
 			mockResponse: mcp.ListResourcesResult{
-				Resources: []mcp.Resource{
+				Resources: []*mcp.Resource{
 					{URI: "public_data", Name: "Public Data"},
 					{URI: "private_data", Name: "Private Data"},
 					{URI: "admin_config", Name: "Admin Configuration"},
@@ -139,9 +139,9 @@ func TestIntegrationListFiltering(t *testing.T) {
 		{
 			name:     "Admin user sees all resources",
 			userRole: "admin",
-			method:   string(mcp.MethodResourcesList),
+			method:   "resources/list",
 			mockResponse: mcp.ListResourcesResult{
-				Resources: []mcp.Resource{
+				Resources: []*mcp.Resource{
 					{URI: "public_data", Name: "Public Data"},
 					{URI: "private_data", Name: "Private Data"},
 					{URI: "admin_config", Name: "Admin Configuration"},
@@ -154,9 +154,9 @@ func TestIntegrationListFiltering(t *testing.T) {
 		{
 			name:     "Unknown user with no permissions sees empty tools list",
 			userRole: "guest",
-			method:   string(mcp.MethodToolsList),
+			method:   "tools/list",
 			mockResponse: mcp.ListToolsResult{
-				Tools: []mcp.Tool{
+				Tools: []*mcp.Tool{
 					{Name: "weather", Description: "Get weather information"},
 					{Name: "news", Description: "Get latest news"},
 					{Name: "admin_tool", Description: "Admin-only tool"},
@@ -170,9 +170,9 @@ func TestIntegrationListFiltering(t *testing.T) {
 		{
 			name:     "Unknown user with no permissions sees empty prompts list",
 			userRole: "guest",
-			method:   string(mcp.MethodPromptsList),
+			method:   "prompts/list",
 			mockResponse: mcp.ListPromptsResult{
-				Prompts: []mcp.Prompt{
+				Prompts: []*mcp.Prompt{
 					{Name: "greeting", Description: "Generate greetings"},
 					{Name: "help", Description: "Generate help text"},
 					{Name: "admin_prompt", Description: "Admin-only prompt"},
@@ -185,9 +185,9 @@ func TestIntegrationListFiltering(t *testing.T) {
 		{
 			name:     "Unknown user with no permissions sees empty resources list",
 			userRole: "guest",
-			method:   string(mcp.MethodResourcesList),
+			method:   "resources/list",
 			mockResponse: mcp.ListResourcesResult{
-				Resources: []mcp.Resource{
+				Resources: []*mcp.Resource{
 					{URI: "public_data", Name: "Public Data"},
 					{URI: "private_data", Name: "Private Data"},
 					{URI: "admin_config", Name: "Admin Configuration"},
@@ -278,7 +278,7 @@ func TestIntegrationListFiltering(t *testing.T) {
 
 			// Parse and verify the filtered items based on the method type
 			switch tc.method {
-			case string(mcp.MethodToolsList):
+			case "tools/list":
 				var result mcp.ListToolsResult
 				err = json.Unmarshal(filteredResponse.Result, &result)
 				require.NoError(t, err, "Failed to unmarshal tools result")
@@ -291,7 +291,7 @@ func TestIntegrationListFiltering(t *testing.T) {
 				assert.ElementsMatch(t, tc.expectedItems, actualNames,
 					"Filtered tools should match expected items. %s", tc.description)
 
-			case string(mcp.MethodPromptsList):
+			case "prompts/list":
 				var result mcp.ListPromptsResult
 				err = json.Unmarshal(filteredResponse.Result, &result)
 				require.NoError(t, err, "Failed to unmarshal prompts result")
@@ -304,7 +304,7 @@ func TestIntegrationListFiltering(t *testing.T) {
 				assert.ElementsMatch(t, tc.expectedItems, actualNames,
 					"Filtered prompts should match expected items. %s", tc.description)
 
-			case string(mcp.MethodResourcesList):
+			case "resources/list":
 				var result mcp.ListResourcesResult
 				err = json.Unmarshal(filteredResponse.Result, &result)
 				require.NoError(t, err, "Failed to unmarshal resources result")
@@ -348,7 +348,7 @@ func TestIntegrationNonListOperations(t *testing.T) {
 		{
 			name:          "Basic user can call allowed tool",
 			userRole:      "user",
-			method:        string(mcp.MethodToolsCall),
+			method:        "tools/call",
 			toolName:      "weather",
 			expectAllowed: true,
 			description:   "Basic user should be able to call weather tool",
@@ -356,7 +356,7 @@ func TestIntegrationNonListOperations(t *testing.T) {
 		{
 			name:          "Basic user cannot call restricted tool",
 			userRole:      "user",
-			method:        string(mcp.MethodToolsCall),
+			method:        "tools/call",
 			toolName:      "admin_tool",
 			expectAllowed: false,
 			description:   "Basic user should not be able to call admin tool",
@@ -364,7 +364,7 @@ func TestIntegrationNonListOperations(t *testing.T) {
 		{
 			name:          "Admin user can call any tool",
 			userRole:      "admin",
-			method:        string(mcp.MethodToolsCall),
+			method:        "tools/call",
 			toolName:      "admin_tool",
 			expectAllowed: true,
 			description:   "Admin user should be able to call any tool",
@@ -372,7 +372,7 @@ func TestIntegrationNonListOperations(t *testing.T) {
 		{
 			name:          "Guest user with no permissions cannot call any tool",
 			userRole:      "guest",
-			method:        string(mcp.MethodToolsCall),
+			method:        "tools/call",
 			toolName:      "weather",
 			expectAllowed: false,
 			description:   "Guest user with no defined permissions should not be able to call any tool",

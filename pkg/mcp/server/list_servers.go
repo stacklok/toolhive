@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // WorkloadInfo represents workload information returned by list
@@ -22,11 +22,11 @@ type ListServersResponse struct {
 }
 
 // ListServers lists all running MCP servers
-func (h *Handler) ListServers(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *Handler) ListServers(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// List all workloads (including stopped ones)
 	wklds, err := h.workloadManager.ListWorkloads(ctx, true)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to list workloads: %v", err)), nil
+		return NewToolResultError(fmt.Sprintf("Failed to list workloads: %v", err)), nil
 	}
 
 	// Format results with structured data
@@ -56,5 +56,5 @@ func (h *Handler) ListServers(ctx context.Context, _ mcp.CallToolRequest) (*mcp.
 		Servers: results,
 	}
 
-	return mcp.NewToolResultStructuredOnly(response), nil
+	return NewToolResultStructuredOnly(response), nil
 }

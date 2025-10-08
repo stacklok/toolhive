@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 
@@ -66,10 +66,10 @@ func TestHandler_ListSecrets(t *testing.T) {
 				configProvider:   mockConfigProvider,
 			}
 
-			request := mcp.CallToolRequest{
-				Params: mcp.CallToolParams{
+			request := &mcp.CallToolRequest{
+				Params: &mcp.CallToolParamsRaw{
 					Name:      "list_secrets",
-					Arguments: map[string]interface{}{},
+					Arguments: []byte("{}"),
 				},
 			}
 

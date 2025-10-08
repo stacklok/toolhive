@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -253,7 +252,7 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 // addMethodSpecificAttributes adds attributes specific to certain MCP methods.
 func (m *HTTPMiddleware) addMethodSpecificAttributes(span trace.Span, parsedMCP *mcpparser.ParsedMCPRequest) {
 	switch parsedMCP.Method {
-	case string(mcp.MethodToolsCall):
+	case "tools/call":
 		// For tool calls, the ResourceID is the tool name
 		if parsedMCP.ResourceID != "" {
 			span.SetAttributes(attribute.String("mcp.tool.name", parsedMCP.ResourceID))
@@ -449,7 +448,7 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 	m.requestDuration.Record(ctx, duration.Seconds(), attrs)
 
 	// For tools/call, record tool-specific metrics
-	if mcpMethod == string(mcp.MethodToolsCall) {
+	if mcpMethod == "tools/call" {
 		if parsedMCP := mcpparser.GetParsedMCPRequest(ctx); parsedMCP != nil && parsedMCP.ResourceID != "" {
 			toolAttrs := metric.WithAttributes(
 				attribute.String("server", m.serverName),

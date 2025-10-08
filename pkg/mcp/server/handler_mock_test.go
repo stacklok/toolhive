@@ -2,9 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 	"golang.org/x/sync/errgroup"
@@ -132,12 +133,12 @@ func TestHandler_SearchRegistry_WithMocks(t *testing.T) {
 				registryProvider: mockRegistry,
 			}
 
-			request := mcp.CallToolRequest{
-				Params: mcp.CallToolParams{
+			request := &mcp.CallToolRequest{
+				Params: &mcp.CallToolParamsRaw{
 					Name: "search_registry",
-					Arguments: map[string]interface{}{
-						"query": tt.query,
-					},
+					Arguments: json.RawMessage(`{
+						"query": "` + tt.query + `"
+					}`),
 				},
 			}
 
@@ -260,7 +261,7 @@ func TestHandler_ListServers_WithMocks(t *testing.T) {
 				registryProvider: mockRegistry,
 			}
 
-			result, err := handler.ListServers(context.Background(), mcp.CallToolRequest{})
+			result, err := handler.ListServers(context.Background(), &mcp.CallToolRequest{})
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -335,12 +336,12 @@ func TestHandler_StopServer_WithMocks(t *testing.T) {
 				registryProvider: mockRegistry,
 			}
 
-			request := mcp.CallToolRequest{
-				Params: mcp.CallToolParams{
+			request := &mcp.CallToolRequest{
+				Params: &mcp.CallToolParamsRaw{
 					Name: "stop_server",
-					Arguments: map[string]interface{}{
-						"name": tt.serverName,
-					},
+					Arguments: json.RawMessage(`{
+						"name": "` + tt.serverName + `"
+					}`),
 				},
 			}
 
@@ -419,12 +420,12 @@ func TestHandler_RemoveServer_WithMocks(t *testing.T) {
 				registryProvider: mockRegistry,
 			}
 
-			request := mcp.CallToolRequest{
-				Params: mcp.CallToolParams{
+			request := &mcp.CallToolRequest{
+				Params: &mcp.CallToolParamsRaw{
 					Name: "remove_server",
-					Arguments: map[string]interface{}{
-						"name": tt.serverName,
-					},
+					Arguments: json.RawMessage(`{
+						"name": "` + tt.serverName + `"
+					}`),
 				},
 			}
 
@@ -506,12 +507,12 @@ func TestHandler_GetServerLogs_WithMocks(t *testing.T) {
 				registryProvider: mockRegistry,
 			}
 
-			request := mcp.CallToolRequest{
-				Params: mcp.CallToolParams{
+			request := &mcp.CallToolRequest{
+				Params: &mcp.CallToolParamsRaw{
 					Name: "get_server_logs",
-					Arguments: map[string]interface{}{
-						"name": tt.serverName,
-					},
+					Arguments: json.RawMessage(`{
+						"name": "` + tt.serverName + `"
+					}`),
 				},
 			}
 

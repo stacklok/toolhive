@@ -2,110 +2,132 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck // Standard practice for Ginkgo
 	. "github.com/onsi/gomega"    //nolint:staticcheck // Standard practice for Gomega
 )
 
 // MCPClientHelper provides high-level MCP client operations for e2e tests
 type MCPClientHelper struct {
-	client *client.Client
-	config *TestConfig
+	session *mcp.ClientSession
+	config  *TestConfig
 }
 
 // NewMCPClientForSSE creates a new MCP client for SSE transport
 func NewMCPClientForSSE(config *TestConfig, serverURL string) (*MCPClientHelper, error) {
-	mcpClient, err := client.NewSSEMCPClient(serverURL)
+	// Create the MCP client
+	client := mcp.NewClient(
+		&mcp.Implementation{
+			Name:    "thv-e2e-test",
+			Version: "1.0.0",
+		},
+		&mcp.ClientOptions{},
+	)
+
+	// Create SSE transport
+	transport := &mcp.SSEClientTransport{
+		Endpoint: serverURL,
+	}
+
+	// Connect using the transport
+	session, err := client.Connect(context.Background(), transport, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create SSE MCP client: %w", err)
+		return nil, fmt.Errorf("failed to connect SSE MCP client: %w", err)
 	}
 
 	return &MCPClientHelper{
-		client: mcpClient,
-		config: config,
+		session: session,
+		config:  config,
 	}, nil
 }
 
 // NewMCPClientForStreamableHTTP creates a new MCP client for streamable HTTP transport
 func NewMCPClientForStreamableHTTP(config *TestConfig, serverURL string) (*MCPClientHelper, error) {
-	mcpClient, err := client.NewStreamableHttpClient(serverURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Streamable HTTP MCP client: %w", err)
+	// Create the MCP client
+	client := mcp.NewClient(
+		&mcp.Implementation{
+			Name:    "thv-e2e-test",
+			Version: "1.0.0",
+		},
+		&mcp.ClientOptions{},
+	)
+
+	// Create streamable HTTP transport
+	transport := &mcp.StreamableClientTransport{
+		Endpoint:   serverURL,
+		MaxRetries: 5,
 	}
+
+	// Connect using the transport
+	session, err := client.Connect(context.Background(), transport, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect Streamable HTTP MCP client: %w", err)
+	}
+
 	return &MCPClientHelper{
-		client: mcpClient,
-		config: config,
+		session: session,
+		config:  config,
 	}, nil
 }
 
 // Initialize initializes the MCP connection
 func (h *MCPClientHelper) Initialize(ctx context.Context) error {
-	// Start the transport first
-	err := h.client.Start(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to start MCP transport: %w", err)
+	// Initialization happens during Connect, just verify we're connected
+	if h.session == nil {
+		return fmt.Errorf("session not connected")
 	}
-
-	initRequest := mcp.InitializeRequest{}
-	initRequest.Params.ProtocolVersion = "2024-11-05"
-	initRequest.Params.Capabilities = mcp.ClientCapabilities{
-		// Basic client capabilities
+	result := h.session.InitializeResult()
+	if result == nil {
+		return fmt.Errorf("session not initialized")
 	}
-	initRequest.Params.ClientInfo = mcp.Implementation{
-		Name:    "toolhive-e2e-test",
-		Version: "1.0.0",
-	}
-
-	_, err = h.client.Initialize(ctx, initRequest)
-	if err != nil {
-		return fmt.Errorf("failed to initialize MCP client: %w", err)
-	}
-
 	return nil
 }
 
 // Close closes the MCP client connection
 func (h *MCPClientHelper) Close() error {
-	return h.client.Close()
+	return h.session.Close()
 }
 
 // ListTools lists all available tools from the MCP server
 func (h *MCPClientHelper) ListTools(ctx context.Context) (*mcp.ListToolsResult, error) {
-	request := mcp.ListToolsRequest{}
-	return h.client.ListTools(ctx, request)
+	return h.session.ListTools(ctx, &mcp.ListToolsParams{})
 }
 
 // CallTool calls a specific tool with the given arguments
 func (h *MCPClientHelper) CallTool(
 	ctx context.Context, toolName string, arguments map[string]interface{},
 ) (*mcp.CallToolResult, error) {
-	request := mcp.CallToolRequest{}
-	request.Params.Name = toolName
-	request.Params.Arguments = arguments
-	return h.client.CallTool(ctx, request)
+	// Convert map to json.RawMessage
+	argBytes, err := json.Marshal(arguments)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal arguments: %w", err)
+	}
+	return h.session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      toolName,
+		Arguments: json.RawMessage(argBytes),
+	})
 }
 
 // ListResources lists all available resources from the MCP server
 func (h *MCPClientHelper) ListResources(ctx context.Context) (*mcp.ListResourcesResult, error) {
-	request := mcp.ListResourcesRequest{}
-	return h.client.ListResources(ctx, request)
+	return h.session.ListResources(ctx, &mcp.ListResourcesParams{})
 }
 
 // ReadResource reads a specific resource
 func (h *MCPClientHelper) ReadResource(ctx context.Context, uri string) (*mcp.ReadResourceResult, error) {
-	request := mcp.ReadResourceRequest{}
-	request.Params.URI = uri
-	return h.client.ReadResource(ctx, request)
+	return h.session.ReadResource(ctx, &mcp.ReadResourceParams{
+		URI: uri,
+	})
 }
 
 // Ping sends a ping to test connectivity
 func (h *MCPClientHelper) Ping(ctx context.Context) error {
-	return h.client.Ping(ctx)
+	return h.session.Ping(ctx, &mcp.PingParams{})
 }
 
 // ExpectToolExists verifies that a tool with the given name exists

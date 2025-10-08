@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/versions"
@@ -28,7 +28,7 @@ type Config struct {
 // Server represents the ToolHive MCP server
 type Server struct {
 	config     *Config
-	mcpServer  *server.MCPServer
+	mcpServer  *mcp.Server
 	httpServer *http.Server
 	handler    *Handler
 }
@@ -37,11 +37,14 @@ type Server struct {
 func New(ctx context.Context, config *Config) (*Server, error) {
 	// Create the MCP server
 	versionInfo := versions.GetVersionInfo()
-	mcpServer := server.NewMCPServer(
-		"toolhive-mcp",
-		versionInfo.Version,
-		server.WithToolCapabilities(false),
-		server.WithLogging(),
+	mcpServer := mcp.NewServer(
+		&mcp.Implementation{
+			Name:    "toolhive-mcp",
+			Version: versionInfo.Version,
+		},
+		&mcp.ServerOptions{
+			HasTools: false,
+		},
 	)
 
 	// Create ToolHive handler
@@ -53,20 +56,19 @@ func New(ctx context.Context, config *Config) (*Server, error) {
 	// Register tools
 	registerTools(mcpServer, handler)
 
-	// Create Streamable HTTP server
+	// Create Streamable HTTP handler
 	addr := fmt.Sprintf("%s:%s", config.Host, config.Port)
-	streamableServer := server.NewStreamableHTTPServer(
-		mcpServer,
-		server.WithEndpointPath("/mcp"),
-		server.WithHTTPContextFunc(func(_ context.Context, _ *http.Request) context.Context {
-			return ctx
-		}),
+	streamableHandler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server {
+			return mcpServer
+		},
+		&mcp.StreamableHTTPOptions{},
 	)
 
 	// Create HTTP server with security settings
 	httpServer := &http.Server{
 		Addr:              addr,
-		Handler:           streamableServer,
+		Handler:           streamableHandler,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
 
@@ -99,59 +101,59 @@ func (s *Server) GetAddress() string {
 }
 
 // registerTools registers all MCP tools with the server
-func registerTools(mcpServer *server.MCPServer, handler *Handler) {
-	mcpServer.AddTool(mcp.Tool{
+func registerTools(mcpServer *mcp.Server, handler *Handler) {
+	mcpServer.AddTool(&mcp.Tool{
 		Name:        "search_registry",
 		Description: "Search the ToolHive registry for MCP servers",
-		InputSchema: mcp.ToolInputSchema{
+		InputSchema: &jsonschema.Schema{
 			Type: "object",
-			Properties: map[string]interface{}{
-				"query": map[string]interface{}{
-					"type":        "string",
-					"description": "Search query to find MCP servers",
+			Properties: map[string]*jsonschema.Schema{
+				"query": {
+					Type:        "string",
+					Description: "Search query to find MCP servers",
 				},
 			},
 			Required: []string{"query"},
 		},
 	}, handler.SearchRegistry)
 
-	mcpServer.AddTool(mcp.Tool{
+	mcpServer.AddTool(&mcp.Tool{
 		Name:        "run_server",
 		Description: "Run an MCP server from the ToolHive registry",
-		InputSchema: mcp.ToolInputSchema{
+		InputSchema: &jsonschema.Schema{
 			Type: "object",
-			Properties: map[string]interface{}{
-				"server": map[string]interface{}{
-					"type":        "string",
-					"description": "Name of the server to run (e.g., 'fetch', 'github')",
+			Properties: map[string]*jsonschema.Schema{
+				"server": {
+					Type:        "string",
+					Description: "Name of the server to run (e.g., 'fetch', 'github')",
 				},
-				"name": map[string]interface{}{
-					"type":        "string",
-					"description": "Optional custom name for the server instance",
+				"name": {
+					Type:        "string",
+					Description: "Optional custom name for the server instance",
 				},
-				"env": map[string]interface{}{
-					"type":        "object",
-					"description": "Environment variables to pass to the server",
-					"additionalProperties": map[string]interface{}{
-						"type": "string",
+				"env": {
+					Type:        "object",
+					Description: "Environment variables to pass to the server",
+					AdditionalProperties: &jsonschema.Schema{
+						Type: "string",
 					},
 				},
-				"secrets": map[string]interface{}{
-					"type":        "array",
-					"description": "Secrets to pass to the server as environment variables",
-					"items": map[string]interface{}{
-						"type": "object",
-						"properties": map[string]interface{}{
-							"name": map[string]interface{}{
-								"type":        "string",
-								"description": "Name of the secret in the ToolHive secrets store",
+				"secrets": {
+					Type:        "array",
+					Description: "Secrets to pass to the server as environment variables",
+					Items: &jsonschema.Schema{
+						Type: "object",
+						Properties: map[string]*jsonschema.Schema{
+							"name": {
+								Type:        "string",
+								Description: "Name of the secret in the ToolHive secrets store",
 							},
-							"target": map[string]interface{}{
-								"type":        "string",
-								"description": "Target environment variable name in the server container",
+							"target": {
+								Type:        "string",
+								Description: "Target environment variable name in the server container",
 							},
 						},
-						"required": []string{"name", "target"},
+						Required: []string{"name", "target"},
 					},
 				},
 			},
@@ -159,82 +161,82 @@ func registerTools(mcpServer *server.MCPServer, handler *Handler) {
 		},
 	}, handler.RunServer)
 
-	mcpServer.AddTool(mcp.Tool{
+	mcpServer.AddTool(&mcp.Tool{
 		Name:        "list_servers",
 		Description: "List all running ToolHive MCP servers",
-		InputSchema: mcp.ToolInputSchema{
+		InputSchema: &jsonschema.Schema{
 			Type:       "object",
-			Properties: map[string]interface{}{},
+			Properties: map[string]*jsonschema.Schema{},
 		},
 	}, handler.ListServers)
 
-	mcpServer.AddTool(mcp.Tool{
+	mcpServer.AddTool(&mcp.Tool{
 		Name:        "stop_server",
 		Description: "Stop a running MCP server",
-		InputSchema: mcp.ToolInputSchema{
+		InputSchema: &jsonschema.Schema{
 			Type: "object",
-			Properties: map[string]interface{}{
-				"name": map[string]interface{}{
-					"type":        "string",
-					"description": "Name of the server to stop",
+			Properties: map[string]*jsonschema.Schema{
+				"name": {
+					Type:        "string",
+					Description: "Name of the server to stop",
 				},
 			},
 			Required: []string{"name"},
 		},
 	}, handler.StopServer)
 
-	mcpServer.AddTool(mcp.Tool{
+	mcpServer.AddTool(&mcp.Tool{
 		Name:        "remove_server",
 		Description: "Remove a stopped MCP server",
-		InputSchema: mcp.ToolInputSchema{
+		InputSchema: &jsonschema.Schema{
 			Type: "object",
-			Properties: map[string]interface{}{
-				"name": map[string]interface{}{
-					"type":        "string",
-					"description": "Name of the server to remove",
+			Properties: map[string]*jsonschema.Schema{
+				"name": {
+					Type:        "string",
+					Description: "Name of the server to remove",
 				},
 			},
 			Required: []string{"name"},
 		},
 	}, handler.RemoveServer)
 
-	mcpServer.AddTool(mcp.Tool{
+	mcpServer.AddTool(&mcp.Tool{
 		Name:        "get_server_logs",
 		Description: "Get logs from a running MCP server",
-		InputSchema: mcp.ToolInputSchema{
+		InputSchema: &jsonschema.Schema{
 			Type: "object",
-			Properties: map[string]interface{}{
-				"name": map[string]interface{}{
-					"type":        "string",
-					"description": "Name of the server to get logs from",
+			Properties: map[string]*jsonschema.Schema{
+				"name": {
+					Type:        "string",
+					Description: "Name of the server to get logs from",
 				},
 			},
 			Required: []string{"name"},
 		},
 	}, handler.GetServerLogs)
 
-	mcpServer.AddTool(mcp.Tool{
+	mcpServer.AddTool(&mcp.Tool{
 		Name:        "list_secrets",
 		Description: "List all available secrets in the ToolHive secrets store",
-		InputSchema: mcp.ToolInputSchema{
+		InputSchema: &jsonschema.Schema{
 			Type:       "object",
-			Properties: map[string]interface{}{},
+			Properties: map[string]*jsonschema.Schema{},
 		},
 	}, handler.ListSecrets)
 
-	mcpServer.AddTool(mcp.Tool{
+	mcpServer.AddTool(&mcp.Tool{
 		Name:        "set_secret",
 		Description: "Set a secret by reading its value from a file",
-		InputSchema: mcp.ToolInputSchema{
+		InputSchema: &jsonschema.Schema{
 			Type: "object",
-			Properties: map[string]interface{}{
-				"name": map[string]interface{}{
-					"type":        "string",
-					"description": "Name of the secret to set",
+			Properties: map[string]*jsonschema.Schema{
+				"name": {
+					Type:        "string",
+					Description: "Name of the secret to set",
 				},
-				"file_path": map[string]interface{}{
-					"type":        "string",
-					"description": "Path to the file containing the secret value",
+				"file_path": {
+					Type:        "string",
+					Description: "Path to the file containing the secret value",
 				},
 			},
 			Required: []string{"name", "file_path"},

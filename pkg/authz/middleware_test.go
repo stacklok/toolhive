@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -172,7 +171,7 @@ func TestMiddleware(t *testing.T) {
 		},
 		{
 			name:   "Tools list is always allowed but filtered",
-			method: string(mcp.MethodToolsList),
+			method: "tools/list",
 			params: map[string]interface{}{},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
@@ -183,7 +182,7 @@ func TestMiddleware(t *testing.T) {
 		},
 		{
 			name:   "Prompts list is always allowed but filtered",
-			method: string(mcp.MethodPromptsList),
+			method: "prompts/list",
 			params: map[string]interface{}{},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
@@ -194,7 +193,7 @@ func TestMiddleware(t *testing.T) {
 		},
 		{
 			name:   "Resources list is always allowed but filtered",
-			method: string(mcp.MethodResourcesList),
+			method: "resources/list",
 			params: map[string]interface{}{},
 			claims: jwt.MapClaims{
 				"sub":  "user123",

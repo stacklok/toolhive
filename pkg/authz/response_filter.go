@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/exp/jsonrpc2"
 )
 
@@ -205,9 +205,9 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 
 // isListOperation checks if the method is a list operation
 func isListOperation(method string) bool {
-	return method == string(mcp.MethodToolsList) ||
-		method == string(mcp.MethodPromptsList) ||
-		method == string(mcp.MethodResourcesList)
+	return method == "tools/list" ||
+		method == "prompts/list" ||
+		method == "resources/list"
 }
 
 // filterListResponse filters the list response based on authorization policies
@@ -224,11 +224,11 @@ func (rfw *ResponseFilteringWriter) filterListResponse(response *jsonrpc2.Respon
 
 	// Filter based on the method
 	switch rfw.method {
-	case string(mcp.MethodToolsList):
+	case "tools/list":
 		return rfw.filterToolsResponse(response)
-	case string(mcp.MethodPromptsList):
+	case "prompts/list":
 		return rfw.filterPromptsResponse(response)
-	case string(mcp.MethodResourcesList):
+	case "resources/list":
 		return rfw.filterResourcesResponse(response)
 	default:
 		// Unknown list method, just return as-is
@@ -247,7 +247,7 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 
 	// Note: instantiating the list ensures that no null value is sent over the wire.
 	// This is basically defensive programming, but for clients.
-	filteredTools := []mcp.Tool{}
+	filteredTools := []*mcp.Tool{}
 	for _, tool := range listResult.Tools {
 		// Check if the user is authorized to call this tool
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
@@ -269,8 +269,8 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 
 	// Create a new result with filtered tools
 	filteredResult := mcp.ListToolsResult{
-		PaginatedResult: listResult.PaginatedResult,
-		Tools:           filteredTools,
+		NextCursor: listResult.NextCursor,
+		Tools:      filteredTools,
 	}
 
 	// Marshal the filtered result back
@@ -299,7 +299,7 @@ func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Res
 
 	// Note: instantiating the list ensures that no null value is sent over the wire.
 	// This is basically defensive programming, but for clients.
-	filteredPrompts := []mcp.Prompt{}
+	filteredPrompts := []*mcp.Prompt{}
 	for _, prompt := range listResult.Prompts {
 		// Check if the user is authorized to get this prompt
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
@@ -321,8 +321,8 @@ func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Res
 
 	// Create a new result with filtered prompts
 	filteredResult := mcp.ListPromptsResult{
-		PaginatedResult: listResult.PaginatedResult,
-		Prompts:         filteredPrompts,
+		NextCursor: listResult.NextCursor,
+		Prompts:    filteredPrompts,
 	}
 
 	// Marshal the filtered result back
@@ -351,7 +351,7 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 
 	// Note: instantiating the list ensures that no null value is sent over the wire.
 	// This is basically defensive programming, but for clients.
-	filteredResources := []mcp.Resource{}
+	filteredResources := []*mcp.Resource{}
 	for _, resource := range listResult.Resources {
 		// Check if the user is authorized to read this resource
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
@@ -373,8 +373,8 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 
 	// Create a new result with filtered resources
 	filteredResult := mcp.ListResourcesResult{
-		PaginatedResult: listResult.PaginatedResult,
-		Resources:       filteredResources,
+		NextCursor: listResult.NextCursor,
+		Resources:  filteredResources,
 	}
 
 	// Marshal the filtered result back

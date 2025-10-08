@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -33,18 +33,18 @@ type runServerArgs struct {
 }
 
 // RunServer runs an MCP server
-func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *Handler) RunServer(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Parse and validate arguments
 	args, err := parseRunServerArgs(request)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to parse arguments: %v", err)), nil
+		return NewToolResultError(fmt.Sprintf("Failed to parse arguments: %v", err)), nil
 	}
 
 	// Use retriever to properly fetch and prepare the MCP server
 	// TODO: make this configurable so we could warn or even fail
 	imageURL, serverMetadata, err := retriever.GetMCPServer(ctx, args.Server, "", "disabled", "")
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get MCP server: %v", err)), nil
+		return NewToolResultError(fmt.Sprintf("Failed to get MCP server: %v", err)), nil
 	}
 
 	// Build run configuration
@@ -52,18 +52,18 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 
 	runConfig, err := buildServerConfig(ctx, args, imageURL, imageMetadata)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to build run configuration: %v", err)), nil
+		return NewToolResultError(fmt.Sprintf("Failed to build run configuration: %v", err)), nil
 	}
 
 	// Save and run the server
 	if err := h.saveAndRunServer(ctx, runConfig, args.Name); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to run server: %v", err)), nil
+		return NewToolResultError(fmt.Sprintf("Failed to run server: %v", err)), nil
 	}
 
 	// Get the actual workload status
 	workload, err := h.workloadManager.GetWorkload(ctx, args.Name)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get server status: %v", err)), nil
+		return NewToolResultError(fmt.Sprintf("Failed to get server status: %v", err)), nil
 	}
 
 	// Build result with actual status
@@ -79,13 +79,13 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 		result["url"] = fmt.Sprintf("http://localhost:%d", workload.Port)
 	}
 
-	return mcp.NewToolResultStructuredOnly(result), nil
+	return NewToolResultStructuredOnly(result), nil
 }
 
 // parseRunServerArgs parses and validates the arguments for runServer
-func parseRunServerArgs(request mcp.CallToolRequest) (*runServerArgs, error) {
+func parseRunServerArgs(request *mcp.CallToolRequest) (*runServerArgs, error) {
 	args := &runServerArgs{}
-	if err := request.BindArguments(args); err != nil {
+	if err := BindArguments(request, args); err != nil {
 		return nil, err
 	}
 

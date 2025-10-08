@@ -45,7 +45,7 @@ require (
 	golang.ngrok.com/ngrok/v2 v2.1.0
 	golang.org/x/exp/jsonrpc2 v0.0.0-20251002181428-27f1f14c8bb9
 	golang.org/x/mod v0.28.0
-	golang.org/x/oauth2 v0.31.0
+	golang.org/x/oauth2 v0.32.0
 	golang.org/x/sync v0.17.0
 	golang.org/x/term v0.35.0
 	gopkg.in/yaml.v3 v3.0.1

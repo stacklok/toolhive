@@ -3,6 +3,7 @@ package tokenexchange
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -181,7 +182,26 @@ func TestInjectToken(t *testing.T) {
 				req.Header.Set("Authorization", tt.originalAuthHeader)
 			}
 
-			err := injectToken(req, tt.newToken, tt.config)
+			// Create the injector function based on the strategy (mimics CreateTokenExchangeMiddlewareFromClaims)
+			strategy := tt.config.HeaderStrategy
+			if strategy == "" {
+				strategy = HeaderStrategyReplace
+			}
+
+			var injectToken injectionFunc
+			switch strategy {
+			case HeaderStrategyReplace:
+				injectToken = createReplaceInjector()
+			case HeaderStrategyCustom:
+				injectToken = createCustomInjector(tt.config.ExternalTokenHeaderName)
+			default:
+				injectToken = func(_ *http.Request, _ string) error {
+					return fmt.Errorf("unsupported header_strategy: %s (valid values: '%s', '%s')",
+						strategy, HeaderStrategyReplace, HeaderStrategyCustom)
+				}
+			}
+
+			err := injectToken(req, tt.newToken)
 
 			if tt.expectError {
 				require.Error(t, err)

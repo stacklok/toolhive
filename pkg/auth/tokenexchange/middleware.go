@@ -118,30 +118,31 @@ func validateTokenExchangeConfig(config *Config) error {
 	return nil
 }
 
-// injectToken handles token injection based on the configured strategy
-func injectToken(r *http.Request, token string, config Config) error {
-	strategy := config.HeaderStrategy
-	if strategy == "" {
-		strategy = HeaderStrategyReplace // Default to replace for backwards compatibility
-	}
+// injectionFunc is a function that injects a token into an HTTP request
+type injectionFunc func(*http.Request, string) error
 
-	switch strategy {
-	case HeaderStrategyReplace:
+// createReplaceInjector creates an injection function that replaces the Authorization header
+func createReplaceInjector() injectionFunc {
+	return func(r *http.Request, token string) error {
 		logger.Debugf("Token exchange successful, replacing Authorization header")
 		r.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 		return nil
+	}
+}
 
-	case HeaderStrategyCustom:
-		if config.ExternalTokenHeaderName == "" {
+// createCustomInjector creates an injection function that adds the token to a custom header
+func createCustomInjector(headerName string) injectionFunc {
+	// Validate header name at creation time
+	if headerName == "" {
+		return func(_ *http.Request, _ string) error {
 			return fmt.Errorf("external_token_header_name must be specified when header_strategy is '%s'", HeaderStrategyCustom)
 		}
-		logger.Debugf("Token exchange successful, adding token to custom header: %s", config.ExternalTokenHeaderName)
-		r.Header.Set(config.ExternalTokenHeaderName, fmt.Sprintf("Bearer %s", token))
-		return nil
+	}
 
-	default:
-		return fmt.Errorf("unsupported header_strategy: %s (valid values: '%s', '%s')",
-			strategy, HeaderStrategyReplace, HeaderStrategyCustom)
+	return func(r *http.Request, token string) error {
+		logger.Debugf("Token exchange successful, adding token to custom header: %s", headerName)
+		r.Header.Set(headerName, fmt.Sprintf("Bearer %s", token))
+		return nil
 	}
 }
 
@@ -149,6 +150,26 @@ func injectToken(r *http.Request, token string, config Config) error {
 // from the auth middleware to perform token exchange.
 // This is a public function for direct usage in proxy commands.
 func CreateTokenExchangeMiddlewareFromClaims(config Config) types.MiddlewareFunction {
+	// Determine injection strategy at startup time
+	strategy := config.HeaderStrategy
+	if strategy == "" {
+		strategy = HeaderStrategyReplace // Default to replace for backwards compatibility
+	}
+
+	var injectToken injectionFunc
+	switch strategy {
+	case HeaderStrategyReplace:
+		injectToken = createReplaceInjector()
+	case HeaderStrategyCustom:
+		injectToken = createCustomInjector(config.ExternalTokenHeaderName)
+	default:
+		// For invalid strategies, create a function that returns an error
+		injectToken = func(_ *http.Request, _ string) error {
+			return fmt.Errorf("unsupported header_strategy: %s (valid values: '%s', '%s')",
+				strategy, HeaderStrategyReplace, HeaderStrategyCustom)
+		}
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Get claims from the auth middleware
@@ -200,8 +221,8 @@ func CreateTokenExchangeMiddlewareFromClaims(config Config) types.MiddlewareFunc
 				return
 			}
 
-			// Inject the exchanged token into the request
-			if err := injectToken(r, exchangedToken.AccessToken, config); err != nil {
+			// Inject the exchanged token into the request using the pre-selected strategy
+			if err := injectToken(r, exchangedToken.AccessToken); err != nil {
 				logger.Warnf("Failed to inject token: %v", err)
 				http.Error(w, "Token injection failed", http.StatusInternalServerError)
 				return

@@ -3,14 +3,17 @@ package transport
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
 
+	"github.com/cenkalti/backoff/v5"
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/container"
@@ -18,10 +21,28 @@ import (
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/transport/errors"
+	transporterrors "github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/httpsse"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/streamable"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+)
+
+const (
+	// Retry configuration constants
+	// defaultMaxRetries is the maximum number of re-attachment attempts after a connection loss.
+	// Set to 10 to allow sufficient time for Docker/Rancher Desktop to restart (~5 minutes with backoff).
+	defaultMaxRetries = 10
+
+	// defaultInitialRetryDelay is the starting delay for exponential backoff.
+	// Starts at 2 seconds to quickly recover from transient issues without overwhelming the system.
+	defaultInitialRetryDelay = 2 * time.Second
+
+	// defaultMaxRetryDelay caps the maximum delay between retry attempts.
+	// Set to 30 seconds to balance between responsiveness and resource usage during extended outages.
+	defaultMaxRetryDelay = 30 * time.Second
+
+	// shutdownTimeout is the maximum time to wait for graceful shutdown operations.
+	shutdownTimeout = 30 * time.Second
 )
 
 // StdioTransport implements the Transport interface using standard input/output.
@@ -68,9 +89,9 @@ type retryConfig struct {
 // defaultRetryConfig returns the default retry configuration
 func defaultRetryConfig() *retryConfig {
 	return &retryConfig{
-		maxRetries:   10,
-		initialDelay: 2 * time.Second,
-		maxDelay:     30 * time.Second,
+		maxRetries:   defaultMaxRetries,
+		initialDelay: defaultInitialRetryDelay,
+		maxDelay:     defaultMaxRetryDelay,
 	}
 }
 
@@ -170,7 +191,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	defer t.mutex.Unlock()
 
 	if t.containerName == "" {
-		return errors.ErrContainerNameNotSet
+		return transporterrors.ErrContainerNameNotSet
 	}
 
 	if t.deployer == nil {
@@ -311,6 +332,32 @@ func (t *StdioTransport) IsRunning(_ context.Context) (bool, error) {
 	}
 }
 
+// isDockerSocketError checks if an error indicates Docker socket unavailability using typed error detection
+func isDockerSocketError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check for EOF errors
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+
+	// Check for network-related errors
+	var netErr *net.OpError
+	if errors.As(err, &netErr) {
+		// Connection refused typically indicates Docker daemon is not running
+		return true
+	}
+
+	// Fallback to string matching for errors that don't implement standard interfaces
+	// This handles Docker SDK errors that may not wrap standard error types
+	errStr := err.Error()
+	return strings.Contains(errStr, "EOF") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "Cannot connect to the Docker daemon")
+}
+
 // processMessages handles the message exchange between the client and container.
 func (t *StdioTransport) processMessages(ctx context.Context, _ io.WriteCloser, stdout io.ReadCloser) {
 	// Create a context that will be canceled when shutdown is signaled
@@ -337,7 +384,7 @@ func (t *StdioTransport) processMessages(ctx context.Context, _ io.WriteCloser, 
 		case <-ctx.Done():
 			return
 		case msg := <-messageCh:
-			logger.Info("Process incoming messages and sending message to container")
+			logger.Debug("Processing incoming message and sending to container")
 			// Use t.stdin instead of parameter so it uses the current stdin after re-attachment
 			t.mutex.Lock()
 			currentStdin := t.stdin
@@ -345,7 +392,7 @@ func (t *StdioTransport) processMessages(ctx context.Context, _ io.WriteCloser, 
 			if err := t.sendMessageToContainer(ctx, currentStdin, msg); err != nil {
 				logger.Errorf("Error sending message to container: %v", err)
 			}
-			logger.Info("Messages processed")
+			logger.Debug("Message processed")
 		}
 	}
 }
@@ -357,73 +404,90 @@ func (t *StdioTransport) attemptReattachment(ctx context.Context, stdout io.Read
 		return false
 	}
 
-	maxRetries := t.retryConfig.maxRetries
-	initialDelay := t.retryConfig.initialDelay
+	// Create an exponential backoff with the configured parameters
+	expBackoff := backoff.NewExponentialBackOff()
+	expBackoff.InitialInterval = t.retryConfig.initialDelay
+	expBackoff.MaxInterval = t.retryConfig.maxDelay
+	// Reset to allow unlimited elapsed time - we control retries via MaxTries
+	expBackoff.Reset()
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			// Use exponential backoff: 2s, 4s, 8s, 16s, 30s, 30s...
-			// Calculate shift amount safely to prevent overflow
-			var shiftAmount uint
-			if attempt <= 1 {
-				shiftAmount = 0
-			} else if attempt-1 <= 30 {
-				// Safe: we've verified attempt-1 is within bounds for uint
-				shiftAmount = uint(attempt - 1) // #nosec G115
-			} else {
-				shiftAmount = 30 // Cap to prevent overflow
-			}
-			delay := initialDelay * time.Duration(1<<shiftAmount)
-			if delay > t.retryConfig.maxDelay {
-				delay = t.retryConfig.maxDelay
-			}
-			logger.Infof("Retry attempt %d/%d after %v", attempt+1, maxRetries, delay)
-			time.Sleep(delay)
+	var attemptCount int
+	maxRetries := t.retryConfig.maxRetries
+
+	operation := func() (any, error) {
+		attemptCount++
+
+		// Check if context is cancelled
+		select {
+		case <-ctx.Done():
+			return nil, backoff.Permanent(ctx.Err())
+		default:
 		}
 
 		running, checkErr := t.deployer.IsWorkloadRunning(ctx, t.containerName)
 		if checkErr != nil {
 			// Check if error is due to Docker being unavailable
-			if strings.Contains(checkErr.Error(), "EOF") || strings.Contains(checkErr.Error(), "connection refused") {
-				logger.Warnf("Docker socket unavailable (attempt %d/%d), will retry", attempt+1, maxRetries)
-				continue
+			if isDockerSocketError(checkErr) {
+				logger.Warnf("Docker socket unavailable (attempt %d/%d), will retry: %v", attemptCount, maxRetries, checkErr)
+				return nil, checkErr // Retry
 			}
-			logger.Warnf("Error checking if container is running (attempt %d/%d): %v", attempt+1, maxRetries, checkErr)
-			continue
+			logger.Warnf("Error checking if container is running (attempt %d/%d): %v", attemptCount, maxRetries, checkErr)
+			return nil, checkErr // Retry
 		}
 
 		if !running {
-			logger.Infof("Container not running (attempt %d/%d)", attempt+1, maxRetries)
-			return false
+			logger.Infof("Container not running (attempt %d/%d)", attemptCount, maxRetries)
+			return nil, backoff.Permanent(fmt.Errorf("container not running"))
 		}
 
 		logger.Warn("Container is still running after stdout EOF - attempting to re-attach")
 
 		// Try to re-attach to the container
 		newStdin, newStdout, attachErr := t.deployer.AttachToWorkload(ctx, t.containerName)
-		if attachErr == nil {
-			logger.Info("Successfully re-attached to container - restarting message processing")
-
-			// Close old stdout
-			_ = stdout.Close()
-
-			// Update stdio references
-			t.mutex.Lock()
-			t.stdin = newStdin
-			t.stdout = newStdout
-			t.mutex.Unlock()
-
-			// Start ONLY the stdout reader, not the full processMessages
-			// The existing processMessages goroutine is still running and handling stdin
-			go t.processStdout(ctx, newStdout)
-			logger.Info("Restarted stdout processing with new pipe")
-			return true
+		if attachErr != nil {
+			logger.Errorf("Failed to re-attach to container (attempt %d/%d): %v", attemptCount, maxRetries, attachErr)
+			return nil, attachErr // Retry
 		}
-		logger.Errorf("Failed to re-attach to container (attempt %d/%d): %v", attempt+1, maxRetries, attachErr)
+
+		logger.Info("Successfully re-attached to container - restarting message processing")
+
+		// Close old stdout and log any errors
+		if closeErr := stdout.Close(); closeErr != nil {
+			logger.Warnf("Error closing old stdout during re-attachment: %v", closeErr)
+		}
+
+		// Update stdio references with proper synchronization
+		t.mutex.Lock()
+		t.stdin = newStdin
+		t.stdout = newStdout
+		t.mutex.Unlock()
+
+		// Start ONLY the stdout reader, not the full processMessages
+		// The existing processMessages goroutine is still running and handling stdin
+		go t.processStdout(ctx, newStdout)
+		logger.Info("Restarted stdout processing with new pipe")
+		return nil, nil // Success
 	}
 
-	logger.Warn("Failed to re-attach after all retry attempts")
-	return false
+	// Execute the operation with retry
+	_, err := backoff.Retry(ctx, operation,
+		backoff.WithBackOff(expBackoff),
+		backoff.WithMaxTries(uint(maxRetries)),
+		backoff.WithNotify(func(err error, duration time.Duration) {
+			logger.Infof("Retry attempt %d/%d after %v", attemptCount+1, maxRetries, duration)
+		}),
+	)
+
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			logger.Warnf("Re-attachment cancelled or timed out: %v", err)
+		} else {
+			logger.Warn("Failed to re-attach after all retry attempts")
+		}
+		return false
+	}
+
+	return true
 }
 
 // processStdout reads from the container's stdout and processes JSON-RPC messages.
@@ -608,7 +672,7 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 		default:
 			// Transport is still running, stop it
 			// Create a context with timeout for stopping the transport
-			stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			stopCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 			defer cancel()
 
 			if stopErr := t.Stop(stopCtx); stopErr != nil {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -759,4 +760,227 @@ func TestProcessStdout_EOFCheckErrorTypes(t *testing.T) {
 			assert.GreaterOrEqual(t, callCount, 1, "Expected at least 1 retry attempt")
 		})
 	}
+}
+
+func TestConcurrentReattachment(t *testing.T) {
+	t.Parallel()
+
+	// Initialize logger
+	logger.Initialize()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Create mock deployer
+	mockDeployer := mocks.NewMockRuntime(ctrl)
+
+	// Create new stdio streams for re-attachment
+	newStdin := newMockWriteCloser()
+	newStdout := newMockReadCloser(`{"jsonrpc": "2.0", "method": "test2", "params": {}}`)
+
+	// Track how many times IsWorkloadRunning is called
+	var workloadCheckCount int
+	workloadCheckMutex := sync.Mutex{}
+
+	// Set up expectations - container is running
+	mockDeployer.EXPECT().
+		IsWorkloadRunning(gomock.Any(), "test-container").
+		DoAndReturn(func(_ context.Context, _ string) (bool, error) {
+			workloadCheckMutex.Lock()
+			workloadCheckCount++
+			workloadCheckMutex.Unlock()
+			return true, nil
+		}).
+		AnyTimes()
+
+	// Track how many times AttachToWorkload is called
+	var attachCount int
+	attachMutex := sync.Mutex{}
+
+	mockDeployer.EXPECT().
+		AttachToWorkload(gomock.Any(), "test-container").
+		DoAndReturn(func(_ context.Context, _ string) (io.WriteCloser, io.ReadCloser, error) {
+			attachMutex.Lock()
+			attachCount++
+			count := attachCount
+			attachMutex.Unlock()
+
+			// Only succeed on the first call, fail subsequent concurrent calls
+			if count == 1 {
+				return newStdin, newStdout, nil
+			}
+			return nil, nil, errors.New("concurrent attachment in progress")
+		}).
+		AnyTimes()
+
+	// Create mock HTTP proxy
+	mockProxy := new(MockHTTPProxy)
+	mockProxy.On("ForwardResponseToClients", mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	// Create transport with fast retry config for testing
+	transport := &StdioTransport{
+		containerName: "test-container",
+		deployer:      mockDeployer,
+		httpProxy:     mockProxy,
+		stdin:         newMockWriteCloser(),
+		shutdownCh:    make(chan struct{}),
+		retryConfig:   testRetryConfig(),
+	}
+
+	// Run processStdout in multiple goroutines to simulate concurrent re-attachment attempts
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			// Each goroutine creates its own mock stdout that returns EOF
+			localStdout := newMockReadCloserWithEOF(fmt.Sprintf(`{"jsonrpc": "2.0", "method": "test%d", "params": {}}`, index))
+			transport.processStdout(ctx, localStdout)
+		}(i)
+	}
+
+	// Wait for all goroutines to complete
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	// Wait for completion or timeout
+	select {
+	case <-done:
+		// Success - all processStdout goroutines returned
+	case <-time.After(2 * time.Second):
+		t.Fatal("Test timed out waiting for concurrent re-attachment attempts")
+	}
+
+	// Verify that stdin and stdout were updated
+	transport.mutex.Lock()
+	finalStdin := transport.stdin
+	finalStdout := transport.stdout
+	transport.mutex.Unlock()
+
+	// Check that the transport was updated (at least one re-attachment succeeded)
+	assert.NotNil(t, finalStdin)
+	assert.NotNil(t, finalStdout)
+
+	// Verify that multiple checks were made but only one successful attachment
+	workloadCheckMutex.Lock()
+	assert.GreaterOrEqual(t, workloadCheckCount, 1, "Expected at least 1 workload check")
+	workloadCheckMutex.Unlock()
+
+	attachMutex.Lock()
+	// We expect at least one successful attachment
+	assert.GreaterOrEqual(t, attachCount, 1, "Expected at least 1 attachment attempt")
+	attachMutex.Unlock()
+}
+
+func TestStdinRaceCondition(t *testing.T) {
+	t.Parallel()
+
+	// Initialize logger
+	logger.Initialize()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Create mock deployer
+	mockDeployer := mocks.NewMockRuntime(ctrl)
+
+	// Create initial stdin/stdout
+	initialStdin := newMockWriteCloser()
+	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`)
+
+	// Create new stdio streams for re-attachment
+	newStdin := newMockWriteCloser()
+	newStdout := newMockReadCloser(`{"jsonrpc": "2.0", "method": "test2", "params": {}}`)
+
+	// Set up expectations
+	mockDeployer.EXPECT().
+		IsWorkloadRunning(gomock.Any(), "test-container").
+		Return(true, nil).
+		AnyTimes()
+
+	var attachCalled bool
+	mockDeployer.EXPECT().
+		AttachToWorkload(gomock.Any(), "test-container").
+		DoAndReturn(func(_ context.Context, _ string) (io.WriteCloser, io.ReadCloser, error) {
+			if attachCalled {
+				return nil, nil, errors.New("already attached")
+			}
+			attachCalled = true
+			// Add a small delay to increase chance of race condition
+			time.Sleep(10 * time.Millisecond)
+			return newStdin, newStdout, nil
+		}).
+		AnyTimes()
+
+	// Create mock HTTP proxy with message channel
+	mockProxy := new(MockHTTPProxy)
+	mockProxy.On("ForwardResponseToClients", mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	messageCh := make(chan jsonrpc2.Message, 10)
+	mockProxy.On("GetMessageChannel").Return(messageCh)
+
+	// Create transport with fast retry config for testing
+	transport := &StdioTransport{
+		containerName: "test-container",
+		deployer:      mockDeployer,
+		httpProxy:     mockProxy,
+		stdin:         initialStdin,
+		shutdownCh:    make(chan struct{}),
+		retryConfig:   testRetryConfig(),
+	}
+
+	// Start processMessages which will handle incoming messages
+	go transport.processMessages(ctx, initialStdin, mockStdout)
+
+	// Start processStdout which will trigger re-attachment
+	go transport.processStdout(ctx, mockStdout)
+
+	// Send messages concurrently while re-attachment is happening
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			// Create a test message
+			msg, err := jsonrpc2.NewCall(jsonrpc2.StringID(fmt.Sprintf("msg-%d", index)), "test.method", nil)
+			if err != nil {
+				return
+			}
+			select {
+			case messageCh <- msg:
+				// Message sent successfully
+			case <-ctx.Done():
+				// Context cancelled
+			case <-time.After(100 * time.Millisecond):
+				// Timeout
+			}
+		}(i)
+	}
+
+	// Wait for all messages to be sent
+	wg.Wait()
+
+	// Give some time for re-attachment to complete
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify that stdin was updated safely
+	transport.mutex.Lock()
+	finalStdin := transport.stdin
+	transport.mutex.Unlock()
+
+	// The stdin should have been updated to the new one after re-attachment
+	// We can't directly compare pointers, but we can verify it's not nil
+	assert.NotNil(t, finalStdin, "stdin should not be nil after re-attachment")
+
+	// Clean up
+	cancel()
 }

@@ -45,8 +45,8 @@ type Config struct {
 	// Audience is the target audience for the exchanged token
 	Audience string `json:"audience"`
 
-	// Scope is the scope to request for the exchanged token
-	Scope string `json:"scope,omitempty"`
+	// Scopes is the list of scopes to request for the exchanged token
+	Scopes []string `json:"scopes,omitempty"`
 
 	// HeaderStrategy determines how to inject the token
 	// Valid values: HeaderStrategyReplace (default), HeaderStrategyCustom
@@ -179,19 +179,13 @@ func CreateTokenExchangeMiddlewareFromClaims(config Config) types.MiddlewareFunc
 				logger.Debugf("Performing token exchange for subject: %v", sub)
 			}
 
-			// Build scopes array
-			scopes := []string{}
-			if config.Scope != "" {
-				scopes = strings.Split(config.Scope, " ")
-			}
-
 			// Create RFC-8693 token exchange config with subject token provider
 			exchangeConfig := &ExchangeConfig{
 				TokenURL:     config.TokenURL,
 				ClientID:     config.ClientID,
 				ClientSecret: config.ClientSecret,
 				Audience:     config.Audience,
-				Scopes:       scopes,
+				Scopes:       config.Scopes,
 				SubjectTokenProvider: func() (string, error) {
 					return subjectToken, nil
 				},

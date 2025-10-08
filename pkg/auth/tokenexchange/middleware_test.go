@@ -205,7 +205,7 @@ func TestCreateTokenExchangeMiddlewareFromClaims_Success(t *testing.T) {
 		name                   string
 		headerStrategy         string
 		customHeaderName       string
-		scopes                 string
+		scopes                 []string
 		expectedAuthHeader     string
 		expectedCustomHeader   string
 		expectedScopesReceived string
@@ -213,6 +213,7 @@ func TestCreateTokenExchangeMiddlewareFromClaims_Success(t *testing.T) {
 		{
 			name:                   "replace strategy",
 			headerStrategy:         HeaderStrategyReplace,
+			scopes:                 nil,
 			expectedAuthHeader:     "Bearer exchanged-token",
 			expectedScopesReceived: "",
 		},
@@ -220,6 +221,7 @@ func TestCreateTokenExchangeMiddlewareFromClaims_Success(t *testing.T) {
 			name:                   "custom strategy",
 			headerStrategy:         HeaderStrategyCustom,
 			customHeaderName:       "X-Upstream-Token",
+			scopes:                 nil,
 			expectedAuthHeader:     "Bearer original-token",
 			expectedCustomHeader:   "Bearer exchanged-token",
 			expectedScopesReceived: "",
@@ -227,7 +229,7 @@ func TestCreateTokenExchangeMiddlewareFromClaims_Success(t *testing.T) {
 		{
 			name:                   "with scopes",
 			headerStrategy:         HeaderStrategyReplace,
-			scopes:                 "read write admin",
+			scopes:                 []string{"read", "write", "admin"},
 			expectedAuthHeader:     "Bearer exchanged-token",
 			expectedScopesReceived: "read write admin",
 		},
@@ -263,7 +265,7 @@ func TestCreateTokenExchangeMiddlewareFromClaims_Success(t *testing.T) {
 				ClientID:                "test-client-id",
 				ClientSecret:            "test-client-secret",
 				Audience:                "https://api.example.com",
-				Scope:                   tt.scopes,
+				Scopes:                  tt.scopes,
 				HeaderStrategy:          tt.headerStrategy,
 				ExternalTokenHeaderName: tt.customHeaderName,
 			}

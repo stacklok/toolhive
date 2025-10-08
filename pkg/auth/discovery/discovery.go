@@ -414,8 +414,10 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		// For pre-registered clients, use strict port checking
 		// The user likely configured this port in their IdP/app
 		if !networking.IsAvailable(config.CallbackPort) {
-			return nil, fmt.Errorf(`specified auth callback port %d is not available
-			- please choose a different port or ensure it's not in use`, config.CallbackPort)
+			return nil, fmt.Errorf(
+				"specified auth callback port %d is not available - please choose a different port or ensure it's not in use",
+				config.CallbackPort,
+			)
 		}
 	}
 

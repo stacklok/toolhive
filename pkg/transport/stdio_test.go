@@ -399,7 +399,7 @@ func TestProcessStdout_EOFWithDockerUnavailable(t *testing.T) {
 	callCount := 0
 	mockDeployer.EXPECT().
 		IsWorkloadRunning(gomock.Any(), "test-container").
-		DoAndReturn(func(_ context.Context, s string) (bool, error) {
+		DoAndReturn(func(_ context.Context, _ string) (bool, error) {
 			callCount++
 			if callCount == 1 {
 				// First call: Docker socket unavailable
@@ -532,7 +532,7 @@ func TestProcessStdout_EOFWithFailedReattachment(t *testing.T) {
 	// Set up expectations - container is running but re-attachment fails
 	mockDeployer.EXPECT().
 		IsWorkloadRunning(gomock.Any(), "test-container").
-		DoAndReturn(func(_ context.Context, s string) (bool, error) {
+		DoAndReturn(func(_ context.Context, _ string) (bool, error) {
 			retryCount++
 			return true, nil
 		}).
@@ -608,7 +608,7 @@ func TestProcessStdout_EOFWithReattachmentRetryLogic(t *testing.T) {
 	// Set up expectations - fail first 2 attempts, succeed on 3rd
 	mockDeployer.EXPECT().
 		IsWorkloadRunning(gomock.Any(), "test-container").
-		DoAndReturn(func(_ context.Context, s string) (bool, error) {
+		DoAndReturn(func(_ context.Context, _ string) (bool, error) {
 			attemptCount++
 			if attemptCount <= 2 {
 				// First 2 attempts: connection refused (Docker restarting)
@@ -720,7 +720,7 @@ func TestProcessStdout_EOFCheckErrorTypes(t *testing.T) {
 			// Set up expectations - allow unlimited calls since we're testing retry behavior
 			mockDeployer.EXPECT().
 				IsWorkloadRunning(gomock.Any(), "test-container").
-				DoAndReturn(func(_ context.Context, s string) (bool, error) {
+				DoAndReturn(func(_ context.Context, _ string) (bool, error) {
 					callCount++
 					return false, tt.checkError
 				}).

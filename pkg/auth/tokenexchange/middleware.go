@@ -2,6 +2,7 @@ package tokenexchange
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -25,6 +26,8 @@ const (
 	// HeaderStrategyCustom adds the exchanged token to a custom header
 	HeaderStrategyCustom = "custom"
 )
+
+var errUnknownStrategy = errors.New("unknown token injection strategy")
 
 // MiddlewareParams represents the parameters for token exchange middleware
 type MiddlewareParams struct {
@@ -89,7 +92,10 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		return fmt.Errorf("invalid token exchange configuration: %w", err)
 	}
 
-	middleware := CreateTokenExchangeMiddlewareFromClaims(*params.TokenExchangeConfig)
+	middleware, err := CreateTokenExchangeMiddlewareFromClaims(*params.TokenExchangeConfig)
+	if err != nil {
+		return fmt.Errorf("invalid token exchange middleware config: %w", err)
+	}
 
 	tokenExchangeMw := &Middleware{
 		middleware: middleware,
@@ -148,7 +154,7 @@ func createCustomInjector(headerName string) injectionFunc {
 // CreateTokenExchangeMiddlewareFromClaims creates a middleware that uses token claims
 // from the auth middleware to perform token exchange.
 // This is a public function for direct usage in proxy commands.
-func CreateTokenExchangeMiddlewareFromClaims(config Config) types.MiddlewareFunction {
+func CreateTokenExchangeMiddlewareFromClaims(config Config) (types.MiddlewareFunction, error) {
 	// Determine injection strategy at startup time
 	strategy := config.HeaderStrategy
 	if strategy == "" {
@@ -162,11 +168,7 @@ func CreateTokenExchangeMiddlewareFromClaims(config Config) types.MiddlewareFunc
 	case HeaderStrategyCustom:
 		injectToken = createCustomInjector(config.ExternalTokenHeaderName)
 	default:
-		// For invalid strategies, create a function that returns an error
-		injectToken = func(_ *http.Request, _ string) error {
-			return fmt.Errorf("unsupported header_strategy: %s (valid values: '%s', '%s')",
-				strategy, HeaderStrategyReplace, HeaderStrategyCustom)
-		}
+		return nil, fmt.Errorf("%w: invalid header injection strategy %s", errUnknownStrategy, strategy)
 	}
 
 	// Create base exchange config at startup time with all static fields
@@ -233,5 +235,5 @@ func CreateTokenExchangeMiddlewareFromClaims(config Config) types.MiddlewareFunc
 
 			next.ServeHTTP(w, r)
 		})
-	}
+	}, nil
 }

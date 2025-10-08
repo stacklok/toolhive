@@ -290,7 +290,8 @@ func TestCreateTokenExchangeMiddlewareFromClaims_Success(t *testing.T) {
 				ExternalTokenHeaderName: tt.customHeaderName,
 			}
 
-			middleware := CreateTokenExchangeMiddlewareFromClaims(config)
+			middleware, err := CreateTokenExchangeMiddlewareFromClaims(config)
+			require.NoError(t, err)
 
 			// Test handler verifies token injection
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -382,7 +383,8 @@ func TestCreateTokenExchangeMiddlewareFromClaims_PassThrough(t *testing.T) {
 				ClientSecret: "test-client-secret",
 			}
 
-			middleware := CreateTokenExchangeMiddlewareFromClaims(config)
+			middleware, err := CreateTokenExchangeMiddlewareFromClaims(config)
+			require.NoError(t, err)
 
 			handlerCalled := false
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -469,7 +471,8 @@ func TestCreateTokenExchangeMiddlewareFromClaims_Failures(t *testing.T) {
 				ExternalTokenHeaderName: tt.customHeaderName,
 			}
 
-			middleware := CreateTokenExchangeMiddlewareFromClaims(config)
+			middleware, err := CreateTokenExchangeMiddlewareFromClaims(config)
+			require.NoError(t, err)
 
 			testHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 				t.Fatal("handler should not be called on failure")

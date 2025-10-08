@@ -188,16 +188,16 @@ func TestIsSpace(t *testing.T) {
 			input:    '\n',
 			expected: true,
 		},
-	{
-		name:     "tab character",
-		input:    '\t',
-		expected: true,
-	},
-	{
-		name:     "carriage return",
-		input:    '\r',
-		expected: true,
-	},
+		{
+			name:     "tab character",
+			input:    '\t',
+			expected: true,
+		},
+		{
+			name:     "carriage return",
+			input:    '\r',
+			expected: true,
+		},
 		{
 			name:     "regular character",
 			input:    'a',

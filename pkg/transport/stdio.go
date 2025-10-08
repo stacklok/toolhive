@@ -343,7 +343,68 @@ func (t *StdioTransport) processStdout(ctx context.Context, stdout io.ReadCloser
 			n, err := stdout.Read(readBuffer)
 			if err != nil {
 				if err == io.EOF {
-					logger.Info("Container stdout closed")
+					logger.Warn("Container stdout closed - checking if container is still running")
+
+					// Check if container is still running (might have been restarted by Docker)
+					if t.deployer != nil && t.containerName != "" {
+						// Try multiple times with increasing delay in case Docker is restarting
+						maxRetries := 10
+						initialDelay := 2 * time.Second
+
+						for attempt := 0; attempt < maxRetries; attempt++ {
+							if attempt > 0 {
+								// Use exponential backoff: 2s, 4s, 8s, 16s, 30s, 30s...
+								delay := initialDelay * time.Duration(1<<uint(attempt-1))
+								if delay > 30*time.Second {
+									delay = 30 * time.Second
+								}
+								logger.Infof("Retry attempt %d/%d after %v", attempt+1, maxRetries, delay)
+								time.Sleep(delay)
+							}
+
+							running, checkErr := t.deployer.IsWorkloadRunning(ctx, t.containerName)
+							if checkErr != nil {
+								// Check if error is due to Docker being unavailable
+								if strings.Contains(checkErr.Error(), "EOF") || strings.Contains(checkErr.Error(), "connection refused") {
+									logger.Warnf("Docker socket unavailable (attempt %d/%d), will retry", attempt+1, maxRetries)
+									continue
+								}
+								logger.Warnf("Error checking if container is running (attempt %d/%d): %v", attempt+1, maxRetries, checkErr)
+								continue
+							}
+
+							if !running {
+								logger.Infof("Container not running (attempt %d/%d)", attempt+1, maxRetries)
+								break
+							}
+
+							logger.Warn("Container is still running after stdout EOF - attempting to re-attach")
+
+							// Try to re-attach to the container
+							newStdin, newStdout, attachErr := t.deployer.AttachToWorkload(ctx, t.containerName)
+							if attachErr == nil {
+								logger.Info("Successfully re-attached to container - restarting message processing")
+
+								// Close old stdout
+								_ = stdout.Close()
+
+								// Update stdio references
+								t.mutex.Lock()
+								t.stdin = newStdin
+								t.stdout = newStdout
+								t.mutex.Unlock()
+
+								// Restart message processing with new pipes
+								go t.processMessages(ctx, newStdin, newStdout)
+								return
+							}
+							logger.Errorf("Failed to re-attach to container (attempt %d/%d): %v", attempt+1, maxRetries, attachErr)
+						}
+
+						logger.Warn("Failed to re-attach after all retry attempts")
+					}
+
+					logger.Info("Container stdout closed - exiting read loop")
 				} else {
 					logger.Errorf("Error reading from container stdout: %v", err)
 				}

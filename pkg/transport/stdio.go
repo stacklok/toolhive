@@ -1,3 +1,6 @@
+// Package transport provides utilities for handling different transport modes
+// for communication between the client and MCP server, including stdio transport
+// with automatic re-attachment on Docker/container restarts.
 package transport
 
 import (
@@ -470,10 +473,11 @@ func (t *StdioTransport) attemptReattachment(ctx context.Context, stdout io.Read
 	}
 
 	// Execute the operation with retry
+	// Safe conversion: maxRetries is constrained by defaultMaxRetries constant (10)
 	_, err := backoff.Retry(ctx, operation,
 		backoff.WithBackOff(expBackoff),
-		backoff.WithMaxTries(uint(maxRetries)),
-		backoff.WithNotify(func(err error, duration time.Duration) {
+		backoff.WithMaxTries(uint(maxRetries)), // #nosec G115
+		backoff.WithNotify(func(_ error, duration time.Duration) {
 			logger.Infof("Retry attempt %d/%d after %v", attemptCount+1, maxRetries, duration)
 		}),
 	)

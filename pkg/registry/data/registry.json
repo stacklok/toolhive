@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-07T00:17:21Z",
+  "last_updated": "2025-10-08T00:17:09Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -130,9 +130,9 @@
         "example_GetAstronautsCurrentlyInSpace"
       ],
       "metadata": {
-        "stars": 188,
+        "stars": 210,
         "pulls": 0,
-        "last_updated": "2025-09-09T02:30:39Z"
+        "last_updated": "2025-10-07T02:28:19Z"
       },
       "repository_url": "https://github.com/apollographql/apollo-mcp-server",
       "tags": [
@@ -142,7 +142,7 @@
         "apollo",
         "mcp"
       ],
-      "image": "ghcr.io/apollographql/apollo-mcp-server:v0.8.0",
+      "image": "ghcr.io/apollographql/apollo-mcp-server:v1.0.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -1962,7 +1962,7 @@
         "update",
         "issues"
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.15.0",
+      "image": "ghcr.io/github/github-mcp-server:v0.17.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -2103,9 +2103,9 @@
         "download_attachment"
       ],
       "metadata": {
-        "stars": 545,
-        "pulls": 12971,
-        "last_updated": "2025-09-09T02:30:41Z"
+        "stars": 628,
+        "pulls": 18834,
+        "last_updated": "2025-10-07T02:28:19Z"
       },
       "repository_url": "https://github.com/zereight/gitlab-mcp",
       "tags": [
@@ -2118,7 +2118,7 @@
         "milestones",
         "pipelines"
       ],
-      "image": "iwakitakuma/gitlab-mcp:2.0.5",
+      "image": "iwakitakuma/gitlab-mcp:2.0.6",
       "target_port": 3002,
       "permissions": {
         "network": {
@@ -3746,7 +3746,7 @@
         "data",
         "query"
       ],
-      "image": "docker.io/mongodb/mongodb-mcp-server:1.0.1",
+      "image": "docker.io/mongodb/mongodb-mcp-server:1.0.2",
       "permissions": {
         "network": {
           "outbound": {
@@ -3909,16 +3909,16 @@
         "API-create-a-comment"
       ],
       "metadata": {
-        "stars": 3145,
-        "pulls": 29402,
-        "last_updated": "2025-09-09T02:30:40Z"
+        "stars": 3277,
+        "pulls": 40073,
+        "last_updated": "2025-10-07T02:28:19Z"
       },
       "repository_url": "https://github.com/makenotion/notion-mcp-server",
       "tags": [
         "notion",
         "notes"
       ],
-      "image": "mcp/notion:latest",
+      "image": "ghcr.io/stacklok/dockyard/npx/notion:1.9.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -3933,9 +3933,15 @@
       },
       "env_vars": [
         {
-          "name": "OPENAPI_MCP_HEADERS",
-          "description": "HTTP headers for Notion API requests in JSON format. Example: {\"Authorization\":\"Bearer ntn_****\",\"Notion-Version\":\"2022-06-28\"}",
+          "name": "NOTION_TOKEN",
+          "description": "Notion integration token (ntn_****).",
           "required": true,
+          "secret": true
+        },
+        {
+          "name": "OPENAPI_MCP_HEADERS",
+          "description": "HTTP headers for Notion API requests in JSON format (advanced use cases). Example: {\"Authorization\":\"Bearer ntn_****\",\"Notion-Version\":\"2022-06-28\"}",
+          "required": false,
           "secret": true
         }
       ]
@@ -4024,9 +4030,9 @@
         "get_block_info"
       ],
       "metadata": {
-        "stars": 64,
+        "stars": 67,
         "pulls": 0,
-        "last_updated": "2025-09-08T02:31:33Z"
+        "last_updated": "2025-10-07T02:28:18Z"
       },
       "repository_url": "https://github.com/Bankless/onchain-mcp",
       "tags": [
@@ -4182,9 +4188,9 @@
         "share-traces"
       ],
       "metadata": {
-        "stars": 6888,
+        "stars": 7169,
         "pulls": 0,
-        "last_updated": "2025-09-08T02:31:33Z"
+        "last_updated": "2025-10-07T02:28:18Z"
       },
       "repository_url": "https://github.com/Arize-ai/phoenix",
       "tags": [
@@ -4569,7 +4575,7 @@
         "ast",
         "code-analysis"
       ],
-      "image": "ghcr.io/semgrep/mcp:0.8.1",
+      "image": "ghcr.io/semgrep/mcp:0.9.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -5495,24 +5501,25 @@
       "status": "Active",
       "transport": "streamable-http",
       "tools": [
-        "search",
-        "fetch",
-        "create-pages",
-        "update-page",
-        "move-pages",
-        "duplicate-page",
-        "create-database",
-        "update-database",
-        "create-comment",
-        "get-comments",
-        "get-users",
-        "get-user",
-        "get-self"
+        "notion-search",
+        "notion-fetch",
+        "notion-create-pages",
+        "notion-update-page",
+        "notion-move-pages",
+        "notion-duplicate-page",
+        "notion-create-database",
+        "notion-update-database",
+        "notion-create-comment",
+        "notion-get-comments",
+        "notion-get-teams",
+        "notion-get-users",
+        "notion-get-user",
+        "notion-get-self"
       ],
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-11T02:29:32Z"
+        "last_updated": "2025-10-07T15:14:32Z"
       },
       "tags": [
         "remote",

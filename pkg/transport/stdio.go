@@ -363,12 +363,17 @@ func (t *StdioTransport) attemptReattachment(ctx context.Context, stdout io.Read
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
 			// Use exponential backoff: 2s, 4s, 8s, 16s, 30s, 30s...
-			// Safe conversion: clamp before converting to uint to prevent overflow
-			shiftAmount := attempt - 1
-			if shiftAmount > 30 {
+			// Calculate shift amount safely to prevent overflow
+			var shiftAmount uint
+			if attempt <= 1 {
+				shiftAmount = 0
+			} else if attempt-1 <= 30 {
+				// Safe: we've verified attempt-1 is within bounds for uint
+				shiftAmount = uint(attempt - 1) // #nosec G115
+			} else {
 				shiftAmount = 30 // Cap to prevent overflow
 			}
-			delay := initialDelay * time.Duration(1<<uint(shiftAmount))
+			delay := initialDelay * time.Duration(1<<shiftAmount)
 			if delay > t.retryConfig.maxDelay {
 				delay = t.retryConfig.maxDelay
 			}

@@ -15,8 +15,9 @@ type Storage interface {
 	Store(ctx context.Context, session Session) error
 
 	// Load retrieves a session by ID from the storage backend.
-	// It automatically touches the session to update its timestamp.
 	// Returns ErrSessionNotFound if the session doesn't exist.
+	// Note: This does not automatically touch the session. Callers should
+	// explicitly call Touch() on the returned session if they want to update its timestamp.
 	Load(ctx context.Context, id string) (Session, error)
 
 	// Delete removes a session from the storage backend.
@@ -28,6 +29,6 @@ type Storage interface {
 	DeleteExpired(ctx context.Context, before time.Time) error
 
 	// Close performs cleanup of the storage backend.
-	// For local storage, this is a no-op. For remote storage, it closes connections.
+	// For local storage, this clears all sessions. For remote storage, it closes connections.
 	Close() error
 }

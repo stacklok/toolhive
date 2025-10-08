@@ -32,7 +32,7 @@ func (s *LocalStorage) Store(_ context.Context, session Session) error {
 	return nil
 }
 
-// Load retrieves a session from local storage and automatically touches it.
+// Load retrieves a session from local storage.
 func (s *LocalStorage) Load(_ context.Context, id string) (Session, error) {
 	if id == "" {
 		return nil, fmt.Errorf("cannot load session with empty ID")
@@ -48,8 +48,6 @@ func (s *LocalStorage) Load(_ context.Context, id string) (Session, error) {
 		return nil, fmt.Errorf("invalid session type in storage")
 	}
 
-	// Auto-touch on load to update the timestamp
-	session.Touch()
 	return session, nil
 }
 

@@ -174,7 +174,7 @@ func TestLocalStorage(t *testing.T) {
 		assert.NotNil(t, loaded)
 	})
 
-	t.Run("Auto-touch on Load", func(t *testing.T) {
+	t.Run("Load does not auto-touch", func(t *testing.T) {
 		t.Parallel()
 		storage := NewLocalStorage()
 		defer storage.Close()
@@ -190,11 +190,15 @@ func TestLocalStorage(t *testing.T) {
 		// Wait a bit to ensure time difference
 		time.Sleep(10 * time.Millisecond)
 
-		// Load the session (should auto-touch)
+		// Load the session (should NOT auto-touch)
 		loaded, err := storage.Load(ctx, "test-id-3")
 		require.NoError(t, err)
 
-		// Updated time should be newer
+		// Updated time should be the same (not auto-touched)
+		assert.Equal(t, originalUpdated, loaded.UpdatedAt())
+
+		// But manual Touch should update the time
+		loaded.Touch()
 		assert.True(t, loaded.UpdatedAt().After(originalUpdated))
 	})
 

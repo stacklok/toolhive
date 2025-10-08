@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // Session interface defines the contract for all session types
@@ -110,7 +112,9 @@ func (m *Manager) cleanupRoutine() {
 		case <-ticker.C:
 			cutoff := time.Now().Add(-m.ttl)
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_ = m.storage.DeleteExpired(ctx, cutoff)
+			if err := m.storage.DeleteExpired(ctx, cutoff); err != nil {
+				logger.Errorf("Failed to delete expired sessions: %v", err)
+			}
 			cancel()
 		case <-m.stopCh:
 			return
@@ -125,7 +129,9 @@ func (m *Manager) AddWithID(id string) error {
 		return fmt.Errorf("session ID cannot be empty")
 	}
 	// Check if session already exists
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	if _, err := m.storage.Load(ctx, id); err == nil {
 		return fmt.Errorf("session ID %q already exists", id)
 	}
@@ -146,7 +152,9 @@ func (m *Manager) AddSession(session Session) error {
 	}
 
 	// Check if session already exists
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	if _, err := m.storage.Load(ctx, session.ID()); err == nil {
 		return fmt.Errorf("session ID %q already exists", session.ID())
 	}
@@ -157,31 +165,46 @@ func (m *Manager) AddSession(session Session) error {
 // Get retrieves a session by ID. Returns (session, true) if found,
 // and also updates its UpdatedAt timestamp.
 func (m *Manager) Get(id string) (Session, bool) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	sess, err := m.storage.Load(ctx, id)
 	if err != nil {
 		return nil, false
 	}
+	// Touch the session to update its timestamp
+	sess.Touch()
 	return sess, true
 }
 
 // Delete removes a session by ID.
-func (m *Manager) Delete(id string) {
-	ctx := context.Background()
-	_ = m.storage.Delete(ctx, id)
+// Returns an error if the deletion fails.
+func (m *Manager) Delete(id string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return m.storage.Delete(ctx, id)
 }
 
 // Stop stops the cleanup worker and closes the storage backend.
-func (m *Manager) Stop() {
+// Returns an error if closing the storage backend fails.
+func (m *Manager) Stop() error {
 	close(m.stopCh)
 	if m.storage != nil {
-		_ = m.storage.Close()
+		return m.storage.Close()
 	}
+	return nil
 }
 
 // Range calls f sequentially for each key and value present in the map.
 // If f returns false, range stops the iteration.
-// Note: This only works with LocalStorage backend.
+//
+// Note: This method only works with LocalStorage backend. It will silently
+// do nothing with other storage backends. Range is not part of the Storage
+// interface because it's not feasible for distributed storage backends like
+// Redis where iterating all keys can be prohibitively expensive or impractical.
+//
+// For distributed storage, consider using more targeted queries or maintaining
+// a separate index of session IDs.
 func (m *Manager) Range(f func(key, value interface{}) bool) {
 	if localStorage, ok := m.storage.(*LocalStorage); ok {
 		localStorage.Range(f)
@@ -189,7 +212,14 @@ func (m *Manager) Range(f func(key, value interface{}) bool) {
 }
 
 // Count returns the number of active sessions.
-// Note: This only works with LocalStorage backend.
+//
+// Note: This method only works with LocalStorage backend and returns 0 for
+// other storage backends. Count is not part of the Storage interface because
+// it's not feasible for distributed storage backends like Redis where counting
+// all keys can be prohibitively expensive.
+//
+// For distributed storage, consider maintaining a counter or using approximate
+// count mechanisms provided by the storage backend.
 func (m *Manager) Count() int {
 	if localStorage, ok := m.storage.(*LocalStorage); ok {
 		return localStorage.Count()
@@ -197,8 +227,9 @@ func (m *Manager) Count() int {
 	return 0
 }
 
-func (m *Manager) cleanupExpiredOnce() {
+func (m *Manager) cleanupExpiredOnce() error {
 	cutoff := time.Now().Add(-m.ttl)
-	ctx := context.Background()
-	_ = m.storage.DeleteExpired(ctx, cutoff)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return m.storage.DeleteExpired(ctx, cutoff)
 }

@@ -1,4 +1,4 @@
-FROM python:3.13-slim AS builder
+FROM python:3.14-slim AS builder
 
 {{if .CACertContent}}
 # Add custom CA certificate BEFORE any network operations
@@ -56,7 +56,7 @@ RUN package="{{.MCPPackage}}"; \
 {{end}}
 
 # Final stage - runtime image with pre-installed packages
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 {{if .CACertContent}}
 # Add custom CA certificate for runtime

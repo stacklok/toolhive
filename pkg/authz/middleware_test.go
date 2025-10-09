@@ -19,9 +19,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
-	"github.com/stacklok/toolhive/pkg/testkit"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
+	"github.com/stacklok/toolhive/test/testkit"
 )
 
 func TestMiddleware(t *testing.T) {

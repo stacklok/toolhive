@@ -1,17 +1,33 @@
 # ToolHive Kubernetes Operator
 
-The ToolHive Kubernetes Operator manages MCP (Model Context Protocol) servers in Kubernetes clusters. It allows you to define MCP servers as Kubernetes resources and automates their deployment and management.
+The ToolHive Kubernetes Operator manages MCP (Model Context Protocol) servers and registries in Kubernetes clusters. It allows you to define MCP servers and registries as Kubernetes resources and automates their deployment and management.
 
 This operator is built using [Kubebuilder](https://book.kubebuilder.io/), a framework for building Kubernetes APIs using Custom Resource Definitions (CRDs).
 
 ## Overview
 
-The operator introduces a new Custom Resource Definition (CRD) called `MCPServer` that represents an MCP server in Kubernetes. When you create an `MCPServer` resource, the operator automatically:
+The operator introduces two main Custom Resource Definitions (CRDs):
+
+### MCPServer
+Represents an MCP server in Kubernetes. When you create an `MCPServer` resource, the operator automatically:
 
 1. Creates a Deployment to run the MCP server
 2. Sets up a Service to expose the MCP server
 3. Configures the appropriate permissions and settings
 4. Manages the lifecycle of the MCP server
+
+### MCPRegistry (Experimental)
+
+> ⚠️ **Experimental Feature**: MCPRegistry requires `ENABLE_EXPERIMENTAL_FEATURES=true`
+
+Represents an MCP server registry in Kubernetes. When you create an `MCPRegistry` resource, the operator automatically:
+
+1. Synchronizes registry data from various sources (ConfigMap, Git)
+2. Deploys a Registry API service for server discovery
+3. Provides content filtering and image validation
+4. Manages automatic and manual synchronization policies
+
+For detailed MCPRegistry documentation, see [REGISTRY.md](REGISTRY.md).
 
 ```mermaid
 ---
@@ -107,7 +123,11 @@ helm upgrade -i toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-
 2. Install the operator:
 
 ```bash
+# Standard installation
 helm upgrade -i <release_name> oci://ghcr.io/stacklok/toolhive/toolhive-operator --version=<version> -n toolhive-system --create-namespace
+
+# OR with experimental features (for MCPRegistry support)
+helm upgrade -i <release_name> oci://ghcr.io/stacklok/toolhive/toolhive-operator --version=<version> -n toolhive-system --create-namespace --set operator.features.experimental=true
 ```
 
 ## Usage
@@ -236,9 +256,49 @@ permissionProfile:
 
 The ConfigMap should contain a JSON permission profile.
 
+### Creating an MCP Registry (Experimental)
+
+> ⚠️ **Requires**: `operator.features.experimental=true`
+
+First, create a ConfigMap containing ToolHive registry data. The ConfigMap must be user-defined and is not managed by the operator:
+
+```bash
+# Create ConfigMap from existing registry data
+kubectl create configmap my-registry-data --from-file registry.json=pkg/registry/data/registry.json -n toolhive-system
+
+# Or create from your own registry file
+kubectl create configmap my-registry-data --from-file registry.json=/path/to/your/registry.json -n toolhive-system
+```
+
+Then create the MCPRegistry resource that references the ConfigMap:
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: my-registry
+  namespace: toolhive-system
+spec:
+  displayName: "My MCP Registry"
+  source:
+    type: configmap
+    configmap:
+      name: my-registry-data    # References the user-created ConfigMap
+      key: registry.json        # Key in ConfigMap (default: "registry.json")
+  syncPolicy:
+    interval: "1h"
+  filter:
+    tags:
+      include: ["production"]
+      exclude: ["experimental"]
+```
+
+For complete MCPRegistry examples and documentation, see [REGISTRY.md](REGISTRY.md).
+
 ## Examples
 
-See the `examples/operator/mcp-servers/` directory for example MCPServer resources.
+- **MCPServer examples**: `examples/operator/mcp-servers/` directory
+- **MCPRegistry examples**: `examples/operator/mcp-registries/` directory
 
 ## Development
 

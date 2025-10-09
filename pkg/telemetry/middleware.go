@@ -412,6 +412,7 @@ type responseWriter struct {
 // WriteHeader captures the status code.
 func (rw *responseWriter) WriteHeader(statusCode int) {
 	if rw.wroteHeader {
+		logger.Infof("WriteHeader called multiple times: attempted status %d, already wrote status %d", statusCode, rw.statusCode)
 		return // Prevent multiple WriteHeader calls
 	}
 	rw.statusCode = statusCode
@@ -441,7 +442,7 @@ func (rw *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if hijacker, ok := rw.ResponseWriter.(http.Hijacker); ok {
 		return hijacker.Hijack()
 	}
-	return nil, nil, fmt.Errorf("http.Hijacker not supported")
+	return nil, nil, fmt.Errorf("underlying http.ResponseWriter does not implement http.Hijacker")
 }
 
 // recordMetrics records request metrics.

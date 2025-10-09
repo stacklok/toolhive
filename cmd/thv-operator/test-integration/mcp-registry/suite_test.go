@@ -44,11 +44,6 @@ var _ = BeforeSuite(func() {
 
 	ctx, cancel = context.WithCancel(context.TODO())
 
-	// Enable experimental features for MCPRegistry controller
-	By("enabling experimental features")
-	err := os.Setenv("ENABLE_EXPERIMENTAL_FEATURES", "true")
-	Expect(err).NotTo(HaveOccurred())
-
 	By("bootstrapping test environment")
 
 	// Check if we should use an existing cluster (for CI/CD)
@@ -73,7 +68,7 @@ var _ = BeforeSuite(func() {
 		BinaryAssetsDirectory: kubebuilderAssets,
 	}
 
-	cfg, err = testEnv.Start()
+	cfg, err := testEnv.Start()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(cfg).NotTo(BeNil())
 

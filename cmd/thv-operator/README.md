@@ -16,9 +16,7 @@ Represents an MCP server in Kubernetes. When you create an `MCPServer` resource,
 3. Configures the appropriate permissions and settings
 4. Manages the lifecycle of the MCP server
 
-### MCPRegistry (Experimental)
-
-> ⚠️ **Experimental Feature**: MCPRegistry requires `ENABLE_EXPERIMENTAL_FEATURES=true`
+### MCPRegistry
 
 Represents an MCP server registry in Kubernetes. When you create an `MCPRegistry` resource, the operator automatically:
 
@@ -125,10 +123,6 @@ helm upgrade -i toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-
 ```bash
 # Standard installation
 helm upgrade -i <release_name> oci://ghcr.io/stacklok/toolhive/toolhive-operator --version=<version> -n toolhive-system --create-namespace
-
-# OR with experimental features (for MCPRegistry support)
-helm upgrade -i <release_name> oci://ghcr.io/stacklok/toolhive/toolhive-operator --version=<version> -n toolhive-system --create-namespace --set operator.features.experimental=true
-```
 
 ## Usage
 
@@ -291,9 +285,7 @@ spec:
 
 For complete MCPRegistry examples and documentation, see [REGISTRY.md](REGISTRY.md).
 
-### Creating an MCP Registry (Experimental)
-
-> ⚠️ **Requires**: `operator.features.experimental=true`
+### Creating an MCP Registry
 
 First, create a ConfigMap containing ToolHive registry data. The ConfigMap must be user-defined and is not managed by the operator:
 

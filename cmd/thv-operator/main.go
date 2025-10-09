@@ -86,14 +86,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Only register MCPRegistry controller if feature flag is enabled
-	if os.Getenv("ENABLE_EXPERIMENTAL_FEATURES") == "true" {
-		rec.ImageValidation = validation.ImageValidationRegistryEnforcing
+	rec.ImageValidation = validation.ImageValidationRegistryEnforcing
 
-		if err = (controllers.NewMCPRegistryReconciler(mgr.GetClient(), mgr.GetScheme())).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "MCPRegistry")
-			os.Exit(1)
-		}
+	if err = (controllers.NewMCPRegistryReconciler(mgr.GetClient(), mgr.GetScheme())).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MCPRegistry")
+		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder
 

@@ -38,9 +38,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: |-
-          MCPRegistry is the Schema for the mcpregistries API
-          ⚠️ Experimental API (v1alpha1) — subject to change.
+        description: MCPRegistry is the Schema for the mcpregistries API
         properties:
           apiVersion:
             description: |-

@@ -136,28 +136,20 @@ tasks:
       TOOLHIVE_IMAGE:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-proxyrunner | tail -n 1
       REGISTRY_API_IMAGE:
-        sh: |
-          if [ "{{.ENABLE_EXPERIMENTAL_FEATURES}}" = "true" ]; then
-            KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-registry-api | tail -n 1
-          else
-            echo ""
-          fi
+        sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-registry-api | tail -n 1
     cmds:
       - echo "Loading toolhive operator image {{.OPERATOR_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.OPERATOR_IMAGE}}
       - echo "Loading toolhive image {{.TOOLHIVE_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.TOOLHIVE_IMAGE}}
-      - |
-        if [ "{{.ENABLE_EXPERIMENTAL_FEATURES}}" = "true" ]; then
-          echo "Loading registry API image {{.REGISTRY_API_IMAGE}} into kind..."
-          kind load docker-image --name toolhive {{.REGISTRY_API_IMAGE}}
-        fi
+      - echo "Loading registry API image {{.REGISTRY_API_IMAGE}} into kind..."
+      - kind load docker-image --name toolhive {{.REGISTRY_API_IMAGE}}
       - |
         helm upgrade --install toolhive-operator deploy/charts/operator \
         --set operator.image={{.OPERATOR_IMAGE}} \
         --set operator.toolhiveRunnerImage={{.TOOLHIVE_IMAGE}} \
+        --set registryAPI.image={{.REGISTRY_API_IMAGE}} \
         --set operator.features.experimental={{.ENABLE_EXPERIMENTAL_FEATURES}} \
-        {{if eq .ENABLE_EXPERIMENTAL_FEATURES "true"}}--set registryAPI.image={{.REGISTRY_API_IMAGE}}{{end}} \
         --namespace toolhive-system \
         --create-namespace \
         --kubeconfig kconfig.yaml \

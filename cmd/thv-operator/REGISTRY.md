@@ -1,7 +1,5 @@
 # MCPRegistry Reference
 
-> ⚠️ **Experimental Feature**: MCPRegistry requires enabling experimental features with `--set operator.features.experimental=true` during Helm installation.
-
 ## Overview
 
 MCPRegistry is a Kubernetes Custom Resource that manages MCP (Model Context Protocol) server registries. It provides centralized server discovery, automated synchronization, content filtering, and image validation for MCP servers in your cluster.

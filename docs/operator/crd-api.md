@@ -249,7 +249,6 @@ _Appears in:_
 
 
 MCPRegistry is the Schema for the mcpregistries API
-⚠️ Experimental API (v1alpha1) — subject to change.
 
 
 

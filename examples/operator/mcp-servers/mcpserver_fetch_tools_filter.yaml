@@ -10,9 +10,6 @@ spec:
     - fetch
   port: 8080
   targetPort: 8080
-  permissionProfile:
-    type: builtin
-    name: network
   resources:
     limits:
       cpu: "100m"

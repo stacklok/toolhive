@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-08T00:17:09Z",
+  "last_updated": "2025-10-09T00:16:54Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -711,7 +711,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.8.4",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.8.5",
       "permissions": {
         "network": {
           "outbound": {
@@ -1189,7 +1189,7 @@
     },
     "context7": {
       "description": "Context7 MCP pulls version-specific docs and code examples directly into your prompt",
-      "tier": "Community",
+      "tier": "Official",
       "status": "Active",
       "transport": "stdio",
       "tools": [
@@ -1197,26 +1197,36 @@
         "get-library-docs"
       ],
       "metadata": {
-        "stars": 31260,
+        "stars": 32836,
         "pulls": 313,
-        "last_updated": "2025-09-24T02:28:46Z"
+        "last_updated": "2025-10-07T20:17:57Z"
       },
       "repository_url": "https://github.com/upstash/context7",
       "tags": [
         "documentation",
-        "modelcontextprotocol"
+        "code-examples"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.20",
+      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.21",
       "permissions": {
         "network": {
           "outbound": {
-            "insecure_allow_all": true,
+            "allow_host": [
+              "context7.com"
+            ],
             "allow_port": [
               443
             ]
           }
         }
       },
+      "env_vars": [
+        {
+          "name": "CONTEXT7_API_KEY",
+          "description": "API key for higher rate limits",
+          "required": false,
+          "secret": true
+        }
+      ],
       "provenance": {
         "sigstore_url": "tuf-repo-cdn.sigstore.dev",
         "repository_uri": "https://github.com/stacklok/dockyard",
@@ -5065,7 +5075,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-10T02:27:19Z"
+        "last_updated": "2025-10-08T02:28:06Z"
       },
       "tags": [
         "remote",
@@ -5113,7 +5123,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-10T02:27:19Z"
+        "last_updated": "2025-10-08T02:28:06Z"
       },
       "tags": [
         "remote",
@@ -5132,6 +5142,31 @@
         "homepage": "https://www.canva.dev/docs/connect/canva-mcp-server-setup/"
       },
       "url": "https://mcp.canva.com/mcp"
+    },
+    "context7-remote": {
+      "description": "Remote Context7 MCP server pulls version-specific docs and code examples directly into your prompt",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "resolve-library-id",
+        "get-library-docs"
+      ],
+      "metadata": {
+        "stars": 31260,
+        "pulls": 313,
+        "last_updated": "2025-09-24T02:28:46Z"
+      },
+      "repository_url": "https://github.com/upstash/context7",
+      "tags": [
+        "documentation",
+        "code-examples"
+      ],
+      "custom_metadata": {
+        "author": "Upstash",
+        "homepage": "https://context7.com/"
+      },
+      "url": "https://mcp.context7.com/mcp"
     },
     "github-remote": {
       "description": "GitHub's official MCP server for repositories, issues, PRs, actions, and security with OAuth",
@@ -5232,9 +5267,9 @@
         "update_pull_request_branch"
       ],
       "metadata": {
-        "stars": 22439,
+        "stars": 23322,
         "pulls": 0,
-        "last_updated": "2025-09-10T02:27:19Z"
+        "last_updated": "2025-10-08T02:28:06Z"
       },
       "repository_url": "https://github.com/github/github-mcp-server",
       "tags": [
@@ -5284,7 +5319,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-10T02:27:19Z"
+        "last_updated": "2025-10-08T02:28:06Z"
       },
       "tags": [
         "remote",
@@ -5319,7 +5354,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-10T02:27:19Z"
+        "last_updated": "2025-10-08T02:28:06Z"
       },
       "tags": [
         "remote",

@@ -7,9 +7,6 @@ spec:
   image: docker.io/mcp/fetch
   transport: stdio
   port: 8080
-  permissionProfile:
-    type: builtin
-    name: network
   oidcConfig:
     type: inline
     inline:

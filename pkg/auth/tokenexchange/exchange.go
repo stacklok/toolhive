@@ -158,8 +158,8 @@ func (c clientAuthentication) String() string {
 		c.ClientID, clientSecret)
 }
 
-// Config holds the configuration for token exchange.
-type Config struct {
+// ExchangeConfig holds the configuration for token exchange.
+type ExchangeConfig struct {
 	// TokenURL is the OAuth 2.0 token endpoint URL
 	TokenURL string
 
@@ -185,8 +185,8 @@ type Config struct {
 	HTTPClient *http.Client
 }
 
-// Validate checks if the Config contains all required fields.
-func (c *Config) Validate() error {
+// Validate checks if the ExchangeConfig contains all required fields.
+func (c *ExchangeConfig) Validate() error {
 	if c.TokenURL == "" {
 		return fmt.Errorf("TokenURL is required")
 	}
@@ -211,7 +211,7 @@ func (c *Config) Validate() error {
 // tokenSource implements oauth2.TokenSource for token exchange.
 type tokenSource struct {
 	ctx  context.Context
-	conf *Config
+	conf *ExchangeConfig
 }
 
 // Token implements oauth2.TokenSource interface.
@@ -281,7 +281,7 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 }
 
 // TokenSource returns an oauth2.TokenSource that performs token exchange.
-func (c *Config) TokenSource(ctx context.Context) oauth2.TokenSource {
+func (c *ExchangeConfig) TokenSource(ctx context.Context) oauth2.TokenSource {
 	return &tokenSource{
 		ctx:  ctx,
 		conf: c,

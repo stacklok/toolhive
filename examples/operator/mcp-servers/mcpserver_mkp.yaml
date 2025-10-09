@@ -11,9 +11,6 @@ spec:
   args:
     # Change to true for read-write access.
     - --read-write=false
-  permissionProfile:
-    type: builtin
-    name: network
   # We create this service account below with the desired permissions.
   serviceAccount: mkp-sa
   resources:

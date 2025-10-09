@@ -7,9 +7,6 @@ spec:
   image: ghcr.io/github/github-mcp-server:latest
   transport: stdio
   port: 9095
-  permissionProfile:
-    type: builtin
-    name: network
   resources:
     limits:
       cpu: '100m'

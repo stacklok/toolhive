@@ -231,20 +231,8 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	middlewares = append(middlewares, authMiddleware)
 
 	// Add OAuth token injection or token exchange middleware for outgoing requests
-	if remoteAuthFlags.TokenExchangeURL != "" {
-		// Use token exchange middleware when token exchange is configured
-		tokenExchangeConfig := createTokenExchangeConfig()
-		if tokenExchangeConfig != nil {
-			tokenExchangeMiddleware, teMwErr := tokenexchange.CreateTokenExchangeMiddlewareFromClaims(*tokenExchangeConfig)
-			if teMwErr != nil {
-				return fmt.Errorf("failed to create token exchange middleware: %v", teMwErr)
-			}
-			middlewares = append(middlewares, tokenExchangeMiddleware)
-		}
-	} else if tokenSource != nil {
-		// Fallback to direct token injection when no token exchange is configured
-		tokenMiddleware := createTokenInjectionMiddleware(tokenSource)
-		middlewares = append(middlewares, tokenMiddleware)
+	if err := addExternalTokenMiddleware(&middlewares, tokenSource); err != nil {
+		return err
 	}
 
 	// Create the transparent proxy
@@ -438,6 +426,26 @@ func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.Middl
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// addExternalTokenMiddleware adds token exchange or token injection middleware to the middleware chain
+func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSource *oauth2.TokenSource) error {
+	if remoteAuthFlags.TokenExchangeURL != "" {
+		// Use token exchange middleware when token exchange is configured
+		tokenExchangeConfig := createTokenExchangeConfig()
+		if tokenExchangeConfig != nil {
+			tokenExchangeMiddleware, err := tokenexchange.CreateTokenExchangeMiddlewareFromClaims(*tokenExchangeConfig)
+			if err != nil {
+				return fmt.Errorf("failed to create token exchange middleware: %v", err)
+			}
+			*middlewares = append(*middlewares, tokenExchangeMiddleware)
+		}
+	} else if tokenSource != nil {
+		// Fallback to direct token injection when no token exchange is configured
+		tokenMiddleware := createTokenInjectionMiddleware(tokenSource)
+		*middlewares = append(*middlewares, tokenMiddleware)
+	}
+	return nil
 }
 
 // validateProxyTargetURI validates that the target URI for the proxy is valid and does not contain a path

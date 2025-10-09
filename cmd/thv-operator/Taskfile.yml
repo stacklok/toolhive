@@ -205,11 +205,6 @@ tasks:
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
       - KUBEBUILDER_ASSETS="$($(go env GOPATH)/bin/setup-envtest use 1.31.0 -p path)" $(go env GOPATH)/bin/ginkgo -v ./cmd/thv-operator/test-integration
 
-  operator-e2e-test-ginkgo:
-    desc: Run E2E tests for the operator with Ginkgo
-    cmds:
-      - KUBEBUILDER_ASSETS="$(setup-envtest use 1.28.0 -p path)" ginkgo -v test/e2e/operator
-
   # Backwards compatibility
   operator-e2e-test:
     deps: [operator-e2e-test-chainsaw]

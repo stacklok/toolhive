@@ -381,6 +381,7 @@ type OAuthFlowConfig struct {
 type OAuthFlowResult struct {
 	TokenSource *oauth2.TokenSource
 	Config      *oauth.Config
+	IDToken     string // OIDC ID token (JWT), if present
 }
 
 func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
@@ -525,6 +526,7 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 	return &OAuthFlowResult{
 		TokenSource: &source,
 		Config:      oauthConfig,
+		IDToken:     tokenResult.IDToken,
 	}, nil
 }
 

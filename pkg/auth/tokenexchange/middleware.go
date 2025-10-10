@@ -51,6 +51,13 @@ type Config struct {
 	// Scopes is the list of scopes to request for the exchanged token
 	Scopes []string `json:"scopes,omitempty"`
 
+	// SubjectTokenType specifies the type of the subject token being exchanged
+	// Common values:
+	//   - "urn:ietf:params:oauth:token-type:access_token" (default)
+	//   - "urn:ietf:params:oauth:token-type:id_token" (for OIDC ID tokens, required by Google STS)
+	//   - "urn:ietf:params:oauth:token-type:jwt"
+	SubjectTokenType string `json:"subject_token_type,omitempty"`
+
 	// HeaderStrategy determines how to inject the token
 	// Valid values: HeaderStrategyReplace (default), HeaderStrategyCustom
 	HeaderStrategy string `json:"header_strategy,omitempty"`
@@ -92,7 +99,7 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		return fmt.Errorf("invalid token exchange configuration: %w", err)
 	}
 
-	middleware, err := CreateTokenExchangeMiddlewareFromClaims(*params.TokenExchangeConfig)
+	middleware, err := CreateTokenExchangeMiddlewareFromClaims(*params.TokenExchangeConfig, nil)
 	if err != nil {
 		return fmt.Errorf("invalid token exchange middleware config: %w", err)
 	}
@@ -151,10 +158,18 @@ func createCustomInjector(headerName string) injectionFunc {
 	}
 }
 
-// CreateTokenExchangeMiddlewareFromClaims creates a middleware that uses token claims
-// from the auth middleware to perform token exchange.
+// SubjectTokenProvider is a function that provides the subject token for exchange.
+// This is used when the token comes from an external source (e.g., OAuth flow)
+// rather than from incoming request headers.
+type SubjectTokenProvider func() (string, error)
+
+// CreateTokenExchangeMiddlewareFromClaims creates a middleware that performs token exchange.
+// It supports two modes:
+//  1. Header-based (subjectTokenProvider=nil): Extracts token from Authorization header (for OIDC validation)
+//  2. Provider-based (subjectTokenProvider!=nil): Uses provided token source (for remote auth/OAuth flow)
+//
 // This is a public function for direct usage in proxy commands.
-func CreateTokenExchangeMiddlewareFromClaims(config Config) (types.MiddlewareFunction, error) {
+func CreateTokenExchangeMiddlewareFromClaims(config Config, subjectTokenProvider SubjectTokenProvider) (types.MiddlewareFunction, error) {
 	// Determine injection strategy at startup time
 	strategy := config.HeaderStrategy
 	if strategy == "" {
@@ -173,11 +188,12 @@ func CreateTokenExchangeMiddlewareFromClaims(config Config) (types.MiddlewareFun
 
 	// Create base exchange config at startup time with all static fields
 	baseExchangeConfig := ExchangeConfig{
-		TokenURL:     config.TokenURL,
-		ClientID:     config.ClientID,
-		ClientSecret: config.ClientSecret,
-		Audience:     config.Audience,
-		Scopes:       config.Scopes,
+		TokenURL:         config.TokenURL,
+		ClientID:         config.ClientID,
+		ClientSecret:     config.ClientSecret,
+		Audience:         config.Audience,
+		Scopes:           config.Scopes,
+		SubjectTokenType: config.SubjectTokenType,
 		// SubjectTokenProvider will be set per request
 	}
 
@@ -191,19 +207,32 @@ func CreateTokenExchangeMiddlewareFromClaims(config Config) (types.MiddlewareFun
 				return
 			}
 
-			// Extract the original token from the Authorization header
-			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-				logger.Debug("No valid Bearer token found, proceeding without token exchange")
-				next.ServeHTTP(w, r)
-				return
-			}
+			var tokenProvider SubjectTokenProvider
 
-			subjectToken := strings.TrimPrefix(authHeader, "Bearer ")
-			if subjectToken == "" {
-				logger.Debug("Empty Bearer token, proceeding without token exchange")
-				next.ServeHTTP(w, r)
-				return
+			// Determine token source based on whether external provider was given
+			if subjectTokenProvider != nil {
+				// Mode 2: Use provided token source (e.g., from OAuth flow during startup)
+				logger.Debug("Using provided token source for token exchange")
+				tokenProvider = subjectTokenProvider
+			} else {
+				// Mode 1: Extract token from Authorization header (OIDC validation scenario)
+				authHeader := r.Header.Get("Authorization")
+				if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+					logger.Debug("No valid Bearer token found, proceeding without token exchange")
+					next.ServeHTTP(w, r)
+					return
+				}
+
+				subjectToken := strings.TrimPrefix(authHeader, "Bearer ")
+				if subjectToken == "" {
+					logger.Debug("Empty Bearer token, proceeding without token exchange")
+					next.ServeHTTP(w, r)
+					return
+				}
+
+				tokenProvider = func() (string, error) {
+					return subjectToken, nil
+				}
 			}
 
 			// Log some claim information for debugging
@@ -213,9 +242,7 @@ func CreateTokenExchangeMiddlewareFromClaims(config Config) (types.MiddlewareFun
 
 			// Create a copy of the base config with the request-specific subject token
 			exchangeConfig := baseExchangeConfig
-			exchangeConfig.SubjectTokenProvider = func() (string, error) {
-				return subjectToken, nil
-			}
+			exchangeConfig.SubjectTokenProvider = tokenProvider
 
 			// Get token from token source
 			tokenSource := exchangeConfig.TokenSource(r.Context())

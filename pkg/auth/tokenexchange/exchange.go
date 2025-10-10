@@ -175,6 +175,14 @@ type ExchangeConfig struct {
 	// Scopes is the list of scopes to request (optional per RFC 8693)
 	Scopes []string
 
+	// SubjectTokenType specifies the type of the subject token being exchanged
+	// Common values:
+	//   - "urn:ietf:params:oauth:token-type:access_token" (default)
+	//   - "urn:ietf:params:oauth:token-type:id_token" (for OIDC ID tokens, required by Google STS)
+	//   - "urn:ietf:params:oauth:token-type:jwt"
+	// If empty, defaults to access_token
+	SubjectTokenType string
+
 	// SubjectTokenProvider is a function that returns the subject token to exchange
 	// we use a function to allow dynamic retrieval of the token (e.g. from request context)
 	// and also to lazy-load the token only when needed, load from dynamic sources, etc.
@@ -195,9 +203,9 @@ func (c *ExchangeConfig) Validate() error {
 		return fmt.Errorf("SubjectTokenProvider is required")
 	}
 
-	if c.ClientID == "" {
-		return fmt.Errorf("ClientID is required")
-	}
+	// ClientID is optional - some token exchange endpoints (like Google STS)
+	// don't require client credentials and rely on the trust relationship
+	// configured in the identity provider (e.g., Workload Identity Federation)
 
 	// Validate URL format
 	_, err := url.Parse(c.TokenURL)
@@ -230,6 +238,12 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 		return nil, fmt.Errorf("failed to get subject token: %w", err)
 	}
 
+	// Determine subject token type (default to access_token if not specified)
+	subjectTokenType := conf.SubjectTokenType
+	if subjectTokenType == "" {
+		subjectTokenType = tokenTypeAccessToken
+	}
+
 	// Build the token exchange request
 	request := &exchangeRequest{
 		GrantType:          grantTypeTokenExchange,
@@ -237,7 +251,7 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 		Scope:              conf.Scopes,
 		RequestedTokenType: tokenTypeAccessToken,
 		SubjectToken:       subjectToken,
-		SubjectTokenType:   tokenTypeAccessToken,
+		SubjectTokenType:   subjectTokenType,
 	}
 
 	clientAuth := clientAuthentication{

@@ -183,16 +183,24 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	// Handle OAuth authentication to the remote server if needed
 	var tokenSource *oauth2.TokenSource
 	var oauthConfig *oauth.Config
+	var idToken string
 	var introspectionURL string
 
 	if remoteAuthFlags.EnableRemoteAuth || shouldDetectAuth() {
-		tokenSource, oauthConfig, err = handleOutgoingAuthentication(ctx)
+		var result *discovery.OAuthFlowResult
+		result, err = handleOutgoingAuthentication(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to authenticate to remote server: %w", err)
 		}
-		if oauthConfig != nil {
-			introspectionURL = oauthConfig.IntrospectionEndpoint
-			logger.Infof("Using OAuth config with introspection URL: %s", introspectionURL)
+		if result != nil {
+			tokenSource = result.TokenSource
+			oauthConfig = result.Config
+			idToken = result.IDToken
+
+			if oauthConfig != nil {
+				introspectionURL = oauthConfig.IntrospectionEndpoint
+				logger.Infof("Using OAuth config with introspection URL: %s", introspectionURL)
+			}
 		} else {
 			logger.Info("No OAuth configuration available, proceeding without outgoing authentication")
 		}
@@ -231,7 +239,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	middlewares = append(middlewares, authMiddleware)
 
 	// Add OAuth token injection or token exchange middleware for outgoing requests
-	if err := addExternalTokenMiddleware(&middlewares, tokenSource); err != nil {
+	if err := addExternalTokenMiddleware(&middlewares, tokenSource, idToken); err != nil {
 		return err
 	}
 
@@ -274,11 +282,11 @@ func shouldDetectAuth() bool {
 }
 
 // handleOutgoingAuthentication handles authentication to the remote MCP server
-func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oauth.Config, error) {
+func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResult, error) {
 	// Resolve client secret from multiple sources
 	clientSecret, err := resolveClientSecret()
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to resolve client secret: %w", err)
+		return nil, fmt.Errorf("failed to resolve client secret: %w", err)
 	}
 
 	if remoteAuthFlags.EnableRemoteAuth {
@@ -288,12 +296,12 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 		hasManualConfig := remoteAuthFlags.RemoteAuthAuthorizeURL != "" && remoteAuthFlags.RemoteAuthTokenURL != ""
 
 		if !hasOIDCConfig && !hasManualConfig {
-			return nil, nil, fmt.Errorf("either --remote-auth-issuer (for OIDC) or both --remote-auth-authorize-url " +
+			return nil, fmt.Errorf("either --remote-auth-issuer (for OIDC) or both --remote-auth-authorize-url " +
 				"and --remote-auth-token-url (for OAuth) are required")
 		}
 
 		if hasOIDCConfig && hasManualConfig {
-			return nil, nil, fmt.Errorf("cannot specify both OIDC issuer and manual OAuth endpoints - choose one approach")
+			return nil, fmt.Errorf("cannot specify both OIDC issuer and manual OAuth endpoints - choose one approach")
 		}
 
 		flowConfig := &discovery.OAuthFlowConfig{
@@ -309,17 +317,17 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 
 		result, err := discovery.PerformOAuthFlow(ctx, remoteAuthFlags.RemoteAuthIssuer, flowConfig)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
-		return result.TokenSource, result.Config, nil
+		return result, nil
 	}
 
 	// Try to detect authentication requirements from WWW-Authenticate header
 	authInfo, err := discovery.DetectAuthenticationFromServer(ctx, proxyTargetURI, nil)
 	if err != nil {
 		logger.Debugf("Could not detect authentication from server: %v", err)
-		return nil, nil, nil // Not an error, just no auth detected
+		return nil, nil // Not an error, just no auth detected
 	}
 
 	if authInfo != nil {
@@ -339,13 +347,13 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 
 		result, err := discovery.PerformOAuthFlow(ctx, authInfo.Realm, flowConfig)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
-		return result.TokenSource, result.Config, nil
+		return result, nil
 	}
 
-	return nil, nil, nil // No authentication required
+	return nil, nil // No authentication required
 }
 
 // resolveSecretFromSources resolves a secret from multiple sources with priority ordering
@@ -429,12 +437,35 @@ func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.Middl
 }
 
 // addExternalTokenMiddleware adds token exchange or token injection middleware to the middleware chain
-func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSource *oauth2.TokenSource) error {
+func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSource *oauth2.TokenSource, idToken string) error {
 	if remoteAuthFlags.TokenExchangeURL != "" {
 		// Use token exchange middleware when token exchange is configured
 		tokenExchangeConfig := createTokenExchangeConfig()
 		if tokenExchangeConfig != nil {
-			tokenExchangeMiddleware, err := tokenexchange.CreateTokenExchangeMiddlewareFromClaims(*tokenExchangeConfig)
+			// Create subject token provider from tokenSource or idToken based on subject token type
+			var subjectTokenProvider tokenexchange.SubjectTokenProvider
+
+			// Check if we should use ID token instead of access token
+			useIDToken := tokenExchangeConfig.SubjectTokenType == "urn:ietf:params:oauth:token-type:id_token" ||
+				tokenExchangeConfig.SubjectTokenType == "urn:ietf:params:oauth:token-type:jwt"
+
+			if useIDToken && idToken != "" {
+				// Use the ID token from OAuth flow
+				subjectTokenProvider = func() (string, error) {
+					return idToken, nil
+				}
+			} else if tokenSource != nil {
+				// Use access token from token source
+				subjectTokenProvider = func() (string, error) {
+					token, err := (*tokenSource).Token()
+					if err != nil {
+						return "", fmt.Errorf("failed to get token from source: %w", err)
+					}
+					return token.AccessToken, nil
+				}
+			}
+
+			tokenExchangeMiddleware, err := tokenexchange.CreateTokenExchangeMiddlewareFromClaims(*tokenExchangeConfig, subjectTokenProvider)
 			if err != nil {
 				return fmt.Errorf("failed to create token exchange middleware: %v", err)
 			}

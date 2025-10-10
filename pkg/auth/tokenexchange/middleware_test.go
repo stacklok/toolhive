@@ -290,7 +290,7 @@ func TestCreateTokenExchangeMiddlewareFromClaims_Success(t *testing.T) {
 				ExternalTokenHeaderName: tt.customHeaderName,
 			}
 
-			middleware, err := CreateTokenExchangeMiddlewareFromClaims(config)
+			middleware, err := CreateTokenExchangeMiddlewareFromClaims(config, nil)
 			require.NoError(t, err)
 
 			// Test handler verifies token injection
@@ -383,7 +383,7 @@ func TestCreateTokenExchangeMiddlewareFromClaims_PassThrough(t *testing.T) {
 				ClientSecret: "test-client-secret",
 			}
 
-			middleware, err := CreateTokenExchangeMiddlewareFromClaims(config)
+			middleware, err := CreateTokenExchangeMiddlewareFromClaims(config, nil)
 			require.NoError(t, err)
 
 			handlerCalled := false
@@ -471,7 +471,7 @@ func TestCreateTokenExchangeMiddlewareFromClaims_Failures(t *testing.T) {
 				ExternalTokenHeaderName: tt.customHeaderName,
 			}
 
-			middleware, err := CreateTokenExchangeMiddlewareFromClaims(config)
+			middleware, err := CreateTokenExchangeMiddlewareFromClaims(config, nil)
 			require.NoError(t, err)
 
 			testHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {

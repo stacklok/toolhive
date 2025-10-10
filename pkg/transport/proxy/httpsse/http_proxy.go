@@ -206,7 +206,9 @@ func (p *HTTPSSEProxy) Stop(ctx context.Context) error {
 
 	// Stop the session manager cleanup routine
 	if p.sessionManager != nil {
-		p.sessionManager.Stop()
+		if err := p.sessionManager.Stop(); err != nil {
+			logger.Errorf("Failed to stop session manager: %v", err)
+		}
 	}
 
 	// Disconnect all active sessions
@@ -466,7 +468,9 @@ func (p *HTTPSSEProxy) removeClient(clientID string) {
 	}
 
 	// Remove the session from the manager
-	p.sessionManager.Delete(clientID)
+	if err := p.sessionManager.Delete(clientID); err != nil {
+		logger.Debugf("Failed to delete session %s: %v", clientID, err)
+	}
 
 	// Clean up closed clients map periodically (prevent memory leak)
 	p.closedClientsMutex.Lock()

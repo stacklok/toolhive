@@ -134,3 +134,24 @@ func (s *ProxySession) DeleteMetadata(key string) {
 	defer s.mu.Unlock()
 	delete(s.metadata, key)
 }
+
+// setTimestamps updates the created and updated timestamps.
+// This is used internally for deserialization to restore session state.
+func (s *ProxySession) setTimestamps(created, updated time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.created = created
+	s.updated = updated
+}
+
+// setMetadataMap replaces the entire metadata map.
+// This is used internally for deserialization to restore session state.
+func (s *ProxySession) setMetadataMap(metadata map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if metadata == nil {
+		s.metadata = make(map[string]string)
+	} else {
+		s.metadata = metadata
+	}
+}

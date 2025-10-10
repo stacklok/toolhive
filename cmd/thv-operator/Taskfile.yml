@@ -203,7 +203,7 @@ tasks:
     cmds:
       - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
-      - KUBEBUILDER_ASSETS="$($(go env GOPATH)/bin/setup-envtest use 1.31.0 -p path)" $(go env GOPATH)/bin/ginkgo -v ./cmd/thv-operator/test-integration
+      - KUBEBUILDER_ASSETS="$($(go env GOPATH)/bin/setup-envtest use 1.31.0 -p path)" $(go env GOPATH)/bin/ginkgo -v ./cmd/thv-operator/test-integration/...
 
   # Backwards compatibility
   operator-e2e-test:

@@ -67,6 +67,11 @@ type Config struct {
 	// Scopes is the list of scopes to request for the exchanged token
 	Scopes []string `json:"scopes,omitempty"`
 
+	// SubjectTokenType specifies the type of the subject token being exchanged.
+	// Common values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.
+	// If empty, defaults to tokenTypeAccessToken.
+	SubjectTokenType string `json:"subject_token_type,omitempty"`
+
 	// HeaderStrategy determines how to inject the token
 	// Valid values: HeaderStrategyReplace (default), HeaderStrategyCustom
 	HeaderStrategy string `json:"header_strategy,omitempty"`
@@ -205,11 +210,12 @@ func createTokenExchangeMiddlewareFromClaims(config Config, getEnv envGetter) (t
 
 	// Create base exchange config at startup time with all static fields
 	baseExchangeConfig := ExchangeConfig{
-		TokenURL:     config.TokenURL,
-		ClientID:     config.ClientID,
-		ClientSecret: clientSecret,
-		Audience:     config.Audience,
-		Scopes:       config.Scopes,
+		TokenURL:         config.TokenURL,
+		ClientID:         config.ClientID,
+		ClientSecret:     clientSecret,
+		Audience:         config.Audience,
+		Scopes:           config.Scopes,
+		SubjectTokenType: config.SubjectTokenType,
 		// SubjectTokenProvider will be set per request
 	}
 

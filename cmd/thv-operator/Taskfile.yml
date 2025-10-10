@@ -148,8 +148,8 @@ tasks:
         helm upgrade --install toolhive-operator deploy/charts/operator \
         --set operator.image={{.OPERATOR_IMAGE}} \
         --set operator.toolhiveRunnerImage={{.TOOLHIVE_IMAGE}} \
-        --set registryAPI.image={{.REGISTRY_API_IMAGE}} \
         --set operator.features.experimental={{.ENABLE_EXPERIMENTAL_FEATURES}} \
+        --set registryAPI.image={{.REGISTRY_API_IMAGE}} \
         --namespace toolhive-system \
         --create-namespace \
         --kubeconfig kconfig.yaml \

@@ -123,6 +123,7 @@ helm upgrade -i toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-
 ```bash
 # Standard installation
 helm upgrade -i <release_name> oci://ghcr.io/stacklok/toolhive/toolhive-operator --version=<version> -n toolhive-system --create-namespace
+```
 
 ## Usage
 
@@ -245,45 +246,6 @@ permissionProfile:
 
 The ConfigMap should contain a JSON permission profile.
 -->
-
-### Creating an MCP Registry (Experimental)
-
-> ⚠️ **Requires**: `operator.features.experimental=true`
-
-First, create a ConfigMap containing ToolHive registry data. The ConfigMap must be user-defined and is not managed by the operator:
-
-```bash
-# Create ConfigMap from existing registry data
-kubectl create configmap my-registry-data --from-file registry.json=pkg/registry/data/registry.json -n toolhive-system
-
-# Or create from your own registry file
-kubectl create configmap my-registry-data --from-file registry.json=/path/to/your/registry.json -n toolhive-system
-```
-
-Then create the MCPRegistry resource that references the ConfigMap:
-
-```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPRegistry
-metadata:
-  name: my-registry
-  namespace: toolhive-system
-spec:
-  displayName: "My MCP Registry"
-  source:
-    type: configmap
-    configmap:
-      name: my-registry-data    # References the user-created ConfigMap
-      key: registry.json        # Key in ConfigMap (default: "registry.json")
-  syncPolicy:
-    interval: "1h"
-  filter:
-    tags:
-      include: ["production"]
-      exclude: ["experimental"]
-```
-
-For complete MCPRegistry examples and documentation, see [REGISTRY.md](REGISTRY.md).
 
 ### Creating an MCP Registry
 

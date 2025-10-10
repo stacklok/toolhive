@@ -21,7 +21,6 @@ When building operators, the decision of when to use a `podTemplateSpec` and whe
 - **Things a cluster admin would typically configure**
 
 #### Quick Decision Test:
-#### Quick Decision Test:
 1. **"Does this affect my operator's reconciliation logic?"** -> Dedicated attribute
 2. **"Is this standard Kubernetes pod configuration?"** -> PodTemplateSpec
 3. **"Do I need to validate this beyond basic Kubernetes validation?"** -> Dedicated attribute

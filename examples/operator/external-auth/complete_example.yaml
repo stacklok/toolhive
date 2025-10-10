@@ -1,0 +1,73 @@
+# Complete external authentication example
+# This file contains all resources needed for external authentication:
+# 1. Secret containing OAuth client credentials
+# 2. MCPExternalAuthConfig for token exchange configuration
+# 3. MCPServer that uses the external auth configuration
+
+---
+# Secret containing OAuth2 client credentials
+# Note: In production, manage secrets using a secret management solution
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oauth-client-secret
+  namespace: default
+type: Opaque
+stringData:
+  # OAuth2 client secret (replace with your actual secret)
+  client-secret: "your-client-secret-here"
+
+---
+# External authentication configuration
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPExternalAuthConfig
+metadata:
+  name: keycloak-token-exchange
+  namespace: default
+spec:
+  type: tokenExchange
+  tokenExchange:
+    # Keycloak token endpoint
+    token_url: https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token
+
+    # OAuth2 client credentials
+    client_id: toolhive-client
+    client_secret_ref:
+      name: oauth-client-secret
+      key: client-secret
+
+    # Target audience for the exchanged token
+    audience: mcp-backend
+
+    # OAuth2 scopes
+    scope: "openid profile"
+
+    # Extract external token from custom header
+    external_token_header_name: "X-Upstream-Authorization"
+
+---
+# MCP Server with external authentication
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: authenticated-fetch
+  namespace: default
+spec:
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  tools:
+    - fetch
+  port: 8080
+  targetPort: 8080
+
+  # Reference to external auth configuration
+  externalAuthConfigRef:
+    name: keycloak-token-exchange
+
+  resources:
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"

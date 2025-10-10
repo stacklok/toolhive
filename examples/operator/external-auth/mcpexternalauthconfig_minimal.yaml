@@ -1,0 +1,16 @@
+# Minimal MCPExternalAuthConfig example
+# This shows the minimum required fields for token exchange configuration
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPExternalAuthConfig
+metadata:
+  name: minimal-oauth
+  namespace: default
+spec:
+  type: tokenExchange
+  tokenExchange:
+    token_url: https://oauth.example.com/token
+    client_id: my-client
+    client_secret_ref:
+      name: oauth-secret
+      key: client-secret
+    audience: my-audience

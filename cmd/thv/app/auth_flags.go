@@ -52,6 +52,7 @@ type RemoteAuthFlags struct {
 	TokenExchangeClientSecretFile string
 	TokenExchangeAudience         string
 	TokenExchangeScopes           []string
+	TokenExchangeSubjectTokenType string
 	TokenExchangeHeaderName       string
 }
 
@@ -97,6 +98,7 @@ func (f *RemoteAuthFlags) BuildTokenExchangeConfig() (*tokenexchange.Config, err
 		ClientSecret:            clientSecret,
 		Audience:                f.TokenExchangeAudience,
 		Scopes:                  f.TokenExchangeScopes,
+		SubjectTokenType:        f.TokenExchangeSubjectTokenType,
 		HeaderStrategy:          headerStrategy,
 		ExternalTokenHeaderName: externalTokenHeaderName,
 	}, nil
@@ -140,6 +142,8 @@ func AddRemoteAuthFlags(cmd *cobra.Command, config *RemoteAuthFlags) {
 		"Target audience for exchanged tokens")
 	cmd.Flags().StringSliceVar(&config.TokenExchangeScopes, "token-exchange-scopes", []string{},
 		"Scopes to request for exchanged tokens")
+	cmd.Flags().StringVar(&config.TokenExchangeSubjectTokenType, "token-exchange-subject-token-type", "",
+		"Type of subject token to exchange (default: urn:ietf:params:oauth:token-type:access_token, Google STS requires: urn:ietf:params:oauth:token-type:id_token)")
 	cmd.Flags().StringVar(&config.TokenExchangeHeaderName, "token-exchange-header-name", "",
 		"Custom header name for injecting exchanged token (default: replaces Authorization header)")
 }

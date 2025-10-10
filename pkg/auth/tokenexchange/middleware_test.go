@@ -619,3 +619,116 @@ func TestMiddleware_Methods(t *testing.T) {
 	err := mw.Close()
 	assert.NoError(t, err)
 }
+
+// TestCreateTokenExchangeMiddlewareFromClaims_EnvironmentVariable tests client secret from environment variable.
+func TestCreateTokenExchangeMiddlewareFromClaims_EnvironmentVariable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		configClientSecret   string
+		envClientSecret      string
+		expectedClientSecret string
+		description          string
+	}{
+		{
+			name:                 "config secret takes precedence over env var",
+			configClientSecret:   "config-secret",
+			envClientSecret:      "env-secret",
+			expectedClientSecret: "config-secret",
+			description:          "should use client secret from config when provided",
+		},
+		{
+			name:                 "env var used when config secret is empty",
+			configClientSecret:   "",
+			envClientSecret:      "env-secret",
+			expectedClientSecret: "env-secret",
+			description:          "should fallback to environment variable when config is empty",
+		},
+		{
+			name:                 "empty when both are empty",
+			configClientSecret:   "",
+			envClientSecret:      "",
+			expectedClientSecret: "",
+			description:          "should be empty when neither config nor env var is set",
+		},
+		{
+			name:                 "config secret used when env var is empty",
+			configClientSecret:   "config-secret",
+			envClientSecret:      "",
+			expectedClientSecret: "config-secret",
+			description:          "should use config secret when env var is empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Track which client secret was actually used in the request
+			var receivedClientSecret string
+
+			// Create mock OAuth server that captures the client secret
+			exchangeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Extract client secret from Basic Auth header
+				_, password, ok := r.BasicAuth()
+				if ok {
+					receivedClientSecret = password
+				}
+
+				resp := response{
+					AccessToken:     "exchanged-token",
+					TokenType:       "Bearer",
+					IssuedTokenType: "urn:ietf:params:oauth:token-type:access_token",
+					ExpiresIn:       3600,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			}))
+			defer exchangeServer.Close()
+
+			// Mock environment getter
+			mockEnvGetter := func(key string) string {
+				if key == EnvClientSecret {
+					return tt.envClientSecret
+				}
+				return ""
+			}
+
+			config := Config{
+				TokenURL:     exchangeServer.URL,
+				ClientID:     "test-client-id",
+				ClientSecret: tt.configClientSecret,
+				Audience:     "https://api.example.com",
+			}
+
+			// Use the internal function with mock env getter
+			middleware, err := createTokenExchangeMiddlewareFromClaims(config, mockEnvGetter)
+			require.NoError(t, err)
+
+			// Test handler
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+
+			// Create request with claims and token
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			req.Header.Set("Authorization", "Bearer original-token")
+			claims := jwt.MapClaims{
+				"sub": "user123",
+				"aud": "test-audience",
+			}
+			ctx := context.WithValue(req.Context(), auth.ClaimsContextKey{}, claims)
+			req = req.WithContext(ctx)
+
+			// Execute middleware
+			rec := httptest.NewRecorder()
+			handler := middleware(testHandler)
+			handler.ServeHTTP(rec, req)
+
+			assert.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, tt.expectedClientSecret, receivedClientSecret, tt.description)
+		})
+	}
+}

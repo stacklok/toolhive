@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -27,7 +28,22 @@ const (
 	HeaderStrategyCustom = "custom"
 )
 
+// Environment variable names
+const (
+	// EnvClientSecret is the environment variable name for the OAuth client secret
+	// This corresponds to the "client_secret" field in the token exchange configuration
+	//nolint:gosec // G101: This is an environment variable name, not a credential
+	EnvClientSecret = "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET"
+)
+
 var errUnknownStrategy = errors.New("unknown token injection strategy")
+
+// envGetter is a function that retrieves environment variables
+// This can be overridden for testing
+type envGetter func(string) string
+
+// defaultEnvGetter is the default environment variable getter using os.Getenv
+var defaultEnvGetter envGetter = os.Getenv
 
 // MiddlewareParams represents the parameters for token exchange middleware
 type MiddlewareParams struct {
@@ -155,6 +171,12 @@ func createCustomInjector(headerName string) injectionFunc {
 // from the auth middleware to perform token exchange.
 // This is a public function for direct usage in proxy commands.
 func CreateTokenExchangeMiddlewareFromClaims(config Config) (types.MiddlewareFunction, error) {
+	return createTokenExchangeMiddlewareFromClaims(config, defaultEnvGetter)
+}
+
+// createTokenExchangeMiddlewareFromClaims is the internal implementation that accepts an envGetter
+// This allows for dependency injection in tests
+func createTokenExchangeMiddlewareFromClaims(config Config, getEnv envGetter) (types.MiddlewareFunction, error) {
 	// Determine injection strategy at startup time
 	strategy := config.HeaderStrategy
 	if strategy == "" {
@@ -171,11 +193,21 @@ func CreateTokenExchangeMiddlewareFromClaims(config Config) (types.MiddlewareFun
 		return nil, fmt.Errorf("%w: invalid header injection strategy %s", errUnknownStrategy, strategy)
 	}
 
+	// Resolve client secret from config or environment variable
+	clientSecret := config.ClientSecret
+	if clientSecret == "" {
+		// If not provided in config, try to read from environment variable
+		if envSecret := getEnv(EnvClientSecret); envSecret != "" {
+			clientSecret = envSecret
+			logger.Debug("Using client secret from environment variable")
+		}
+	}
+
 	// Create base exchange config at startup time with all static fields
 	baseExchangeConfig := ExchangeConfig{
 		TokenURL:     config.TokenURL,
 		ClientID:     config.ClientID,
-		ClientSecret: config.ClientSecret,
+		ClientSecret: clientSecret,
 		Audience:     config.Audience,
 		Scopes:       config.Scopes,
 		// SubjectTokenProvider will be set per request

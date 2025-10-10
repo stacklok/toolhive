@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -121,6 +122,8 @@ var (
 const (
 	// #nosec G101 - this is an environment variable name, not a credential
 	envOAuthClientSecret = "TOOLHIVE_REMOTE_OAUTH_CLIENT_SECRET"
+	// #nosec G101 - this is an environment variable name, not a credential
+	envTokenExchangeClientSecret = "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET"
 )
 
 func init() {
@@ -227,10 +230,9 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 	middlewares = append(middlewares, authMiddleware)
 
-	// Add OAuth token injection middleware for outgoing requests if we have an access token
-	if tokenSource != nil {
-		tokenMiddleware := createTokenInjectionMiddleware(tokenSource)
-		middlewares = append(middlewares, tokenMiddleware)
+	// Add OAuth token injection or token exchange middleware for outgoing requests
+	if err := addExternalTokenMiddleware(&middlewares, tokenSource); err != nil {
+		return err
 	}
 
 	// Create the transparent proxy
@@ -346,41 +348,68 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 	return nil, nil, nil // No authentication required
 }
 
-// resolveClientSecret resolves the OAuth client secret from multiple sources
-// Priority: 1. Flag value, 2. File, 3. Environment variable
-func resolveClientSecret() (string, error) {
+// resolveSecretFromSources resolves a secret from multiple sources with priority ordering
+// Priority: 1. Direct value (flag), 2. File path, 3. Environment variable
+// Returns empty string if no source provides a value (not an error)
+func resolveSecretFromSources(directValue, filePath, envVarName, secretType string) (string, error) {
 	// 1. Check if provided directly via flag
-	if remoteAuthFlags.RemoteAuthClientSecret != "" {
-		logger.Debug("Using client secret from command-line flag")
-		return remoteAuthFlags.RemoteAuthClientSecret, nil
+	if directValue != "" {
+		logger.Debugf("Using %s from command-line flag", secretType)
+		return directValue, nil
 	}
 
 	// 2. Check if provided via file
-	if remoteAuthFlags.RemoteAuthClientSecretFile != "" {
+	if filePath != "" {
 		// Clean the file path to prevent path traversal
-		cleanPath := filepath.Clean(remoteAuthFlags.RemoteAuthClientSecretFile)
-		logger.Debugf("Reading client secret from file: %s", cleanPath)
+		cleanPath := filepath.Clean(filePath)
+		logger.Debugf("Reading %s from file: %s", secretType, cleanPath)
 		// #nosec G304 - file path is cleaned above
 		secretBytes, err := os.ReadFile(cleanPath)
 		if err != nil {
-			return "", fmt.Errorf("failed to read client secret file %s: %w", cleanPath, err)
+			return "", fmt.Errorf("failed to read %s file %s: %w", secretType, cleanPath, err)
 		}
 		secret := strings.TrimSpace(string(secretBytes))
 		if secret == "" {
-			return "", fmt.Errorf("client secret file %s is empty", cleanPath)
+			return "", fmt.Errorf("%s file %s is empty", secretType, cleanPath)
 		}
 		return secret, nil
 	}
 
 	// 3. Check environment variable
-	if secret := os.Getenv(envOAuthClientSecret); secret != "" {
-		logger.Debugf("Using client secret from %s environment variable", envOAuthClientSecret)
-		return secret, nil
+	if envVarName != "" {
+		if secret := os.Getenv(envVarName); secret != "" {
+			logger.Debugf("Using %s from %s environment variable", secretType, envVarName)
+			return secret, nil
+		}
 	}
 
-	// No client secret found - this is acceptable for PKCE flows
-	logger.Debug("No client secret provided - using PKCE flow")
+	// No secret found - return empty string (caller decides if this is an error)
+	logger.Debugf("No %s provided", secretType)
 	return "", nil
+}
+
+// resolveClientSecret resolves the OAuth client secret from multiple sources
+// Priority: 1. Flag value, 2. File, 3. Environment variable
+func resolveClientSecret() (string, error) {
+	secret, err := resolveSecretFromSources(
+		remoteAuthFlags.RemoteAuthClientSecret,
+		remoteAuthFlags.RemoteAuthClientSecretFile,
+		envOAuthClientSecret,
+		"client secret",
+	)
+	if err != nil {
+		return "", err
+	}
+	if secret == "" {
+		// No client secret found - this is acceptable for PKCE flows
+		logger.Debug("No client secret provided - using PKCE flow")
+	}
+	return secret, nil
+}
+
+// createTokenExchangeConfig creates a TokenExchangeConfig from remoteAuthFlags
+func createTokenExchangeConfig() *tokenexchange.Config {
+	return remoteAuthFlags.BuildTokenExchangeConfig()
 }
 
 // createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests
@@ -397,6 +426,26 @@ func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.Middl
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// addExternalTokenMiddleware adds token exchange or token injection middleware to the middleware chain
+func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSource *oauth2.TokenSource) error {
+	if remoteAuthFlags.TokenExchangeURL != "" {
+		// Use token exchange middleware when token exchange is configured
+		tokenExchangeConfig := createTokenExchangeConfig()
+		if tokenExchangeConfig != nil {
+			tokenExchangeMiddleware, err := tokenexchange.CreateTokenExchangeMiddlewareFromClaims(*tokenExchangeConfig)
+			if err != nil {
+				return fmt.Errorf("failed to create token exchange middleware: %v", err)
+			}
+			*middlewares = append(*middlewares, tokenExchangeMiddleware)
+		}
+	} else if tokenSource != nil {
+		// Fallback to direct token injection when no token exchange is configured
+		tokenMiddleware := createTokenInjectionMiddleware(tokenSource)
+		*middlewares = append(*middlewares, tokenMiddleware)
+	}
+	return nil
 }
 
 // validateProxyTargetURI validates that the target URI for the proxy is valid and does not contain a path

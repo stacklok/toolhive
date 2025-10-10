@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/cli"
 	cfg "github.com/stacklok/toolhive/pkg/config"
@@ -458,10 +459,12 @@ func buildRunnerConfig(
 	opts = append(opts, runner.WithToolsOverride(toolsOverride))
 	// Configure middleware from flags
 	// Use computed serverName and transportType for correct telemetry labels
+	tokenExchangeConfig := getTokenExchangeConfigFromRunFlags(runFlags)
 	opts = append(
 		opts,
 		runner.WithMiddlewareFromFlags(
 			oidcConfig,
+			tokenExchangeConfig,
 			runFlags.ToolsFilter,
 			toolsOverride,
 			telemetryConfig,
@@ -603,6 +606,11 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) *runner.RemoteAuthConfig {
 		TokenURL:     runFlags.RemoteAuthFlags.RemoteAuthTokenURL,
 		OAuthParams:  runFlags.OAuthParams,
 	}
+}
+
+// getTokenExchangeConfigFromRunFlags creates TokenExchangeConfig from RunFlags
+func getTokenExchangeConfigFromRunFlags(runFlags *RunFlags) *tokenexchange.Config {
+	return runFlags.RemoteAuthFlags.BuildTokenExchangeConfig()
 }
 
 // getOidcFromFlags extracts OIDC configuration from command flags

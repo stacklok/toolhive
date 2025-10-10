@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -182,7 +183,7 @@ func TestInjectToken(t *testing.T) {
 				req.Header.Set("Authorization", tt.originalAuthHeader)
 			}
 
-			// Create the injector function based on the strategy (mimics CreateTokenExchangeMiddlewareFromClaims)
+			// Create the injector function based on the strategy (mimics createTokenExchangeMiddleware)
 			strategy := tt.config.HeaderStrategy
 			if strategy == "" {
 				strategy = HeaderStrategyReplace
@@ -217,8 +218,8 @@ func TestInjectToken(t *testing.T) {
 	}
 }
 
-// TestCreateTokenExchangeMiddlewareFromClaims_Success tests successful token exchange flow.
-func TestCreateTokenExchangeMiddlewareFromClaims_Success(t *testing.T) {
+// TestCreateTokenExchangeMiddleware_Success tests successful token exchange flow.
+func TestCreateTokenExchangeMiddleware_Success(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -290,7 +291,7 @@ func TestCreateTokenExchangeMiddlewareFromClaims_Success(t *testing.T) {
 				ExternalTokenHeaderName: tt.customHeaderName,
 			}
 
-			middleware, err := CreateTokenExchangeMiddlewareFromClaims(config)
+			middleware, err := createTokenExchangeMiddleware(config, nil, defaultEnvGetter)
 			require.NoError(t, err)
 
 			// Test handler verifies token injection
@@ -325,8 +326,8 @@ func TestCreateTokenExchangeMiddlewareFromClaims_Success(t *testing.T) {
 	}
 }
 
-// TestCreateTokenExchangeMiddlewareFromClaims_PassThrough tests cases where middleware passes through.
-func TestCreateTokenExchangeMiddlewareFromClaims_PassThrough(t *testing.T) {
+// TestCreateTokenExchangeMiddleware_PassThrough tests cases where middleware passes through.
+func TestCreateTokenExchangeMiddleware_PassThrough(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -383,7 +384,7 @@ func TestCreateTokenExchangeMiddlewareFromClaims_PassThrough(t *testing.T) {
 				ClientSecret: "test-client-secret",
 			}
 
-			middleware, err := CreateTokenExchangeMiddlewareFromClaims(config)
+			middleware, err := createTokenExchangeMiddleware(config, nil, defaultEnvGetter)
 			require.NoError(t, err)
 
 			handlerCalled := false
@@ -405,8 +406,8 @@ func TestCreateTokenExchangeMiddlewareFromClaims_PassThrough(t *testing.T) {
 	}
 }
 
-// TestCreateTokenExchangeMiddlewareFromClaims_Failures tests error scenarios.
-func TestCreateTokenExchangeMiddlewareFromClaims_Failures(t *testing.T) {
+// TestCreateTokenExchangeMiddleware_Failures tests error scenarios.
+func TestCreateTokenExchangeMiddleware_Failures(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -471,7 +472,7 @@ func TestCreateTokenExchangeMiddlewareFromClaims_Failures(t *testing.T) {
 				ExternalTokenHeaderName: tt.customHeaderName,
 			}
 
-			middleware, err := CreateTokenExchangeMiddlewareFromClaims(config)
+			middleware, err := createTokenExchangeMiddleware(config, nil, defaultEnvGetter)
 			require.NoError(t, err)
 
 			testHandler := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -620,8 +621,8 @@ func TestMiddleware_Methods(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestCreateTokenExchangeMiddlewareFromClaims_EnvironmentVariable tests client secret from environment variable.
-func TestCreateTokenExchangeMiddlewareFromClaims_EnvironmentVariable(t *testing.T) {
+// TestCreateTokenExchangeMiddleware_EnvironmentVariable tests client secret from environment variable.
+func TestCreateTokenExchangeMiddleware_EnvironmentVariable(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -704,7 +705,7 @@ func TestCreateTokenExchangeMiddlewareFromClaims_EnvironmentVariable(t *testing.
 			}
 
 			// Use the internal function with mock env getter
-			middleware, err := createTokenExchangeMiddlewareFromClaims(config, mockEnvGetter)
+			middleware, err := createTokenExchangeMiddleware(config, nil, mockEnvGetter)
 			require.NoError(t, err)
 
 			// Test handler
@@ -731,4 +732,179 @@ func TestCreateTokenExchangeMiddlewareFromClaims_EnvironmentVariable(t *testing.
 			assert.Equal(t, tt.expectedClientSecret, receivedClientSecret, tt.description)
 		})
 	}
+}
+
+func TestCreateMiddlewareFromTokenSource(t *testing.T) {
+	tests := []struct {
+		name               string
+		subjectTokenType   string
+		tokenSourceFactory func() oauth2.TokenSource
+		expectedToken      string
+		expectError        bool
+		errorContains      string
+	}{
+		{
+			name:             "access token (default)",
+			subjectTokenType: "",
+			tokenSourceFactory: func() oauth2.TokenSource {
+				return oauth2.StaticTokenSource(&oauth2.Token{
+					AccessToken: "test-access-token",
+				})
+			},
+			expectedToken: "test-access-token",
+			expectError:   false,
+		},
+		{
+			name:             "access token (explicit)",
+			subjectTokenType: "urn:ietf:params:oauth:token-type:access_token",
+			tokenSourceFactory: func() oauth2.TokenSource {
+				return oauth2.StaticTokenSource(&oauth2.Token{
+					AccessToken: "test-access-token-explicit",
+				})
+			},
+			expectedToken: "test-access-token-explicit",
+			expectError:   false,
+		},
+		{
+			name:             "ID token",
+			subjectTokenType: "urn:ietf:params:oauth:token-type:id_token",
+			tokenSourceFactory: func() oauth2.TokenSource {
+				token := &oauth2.Token{
+					AccessToken: "test-access-token",
+				}
+				// Simulate ID token in Extra field
+				token = token.WithExtra(map[string]interface{}{
+					"id_token": "test-id-token-jwt",
+				})
+				return oauth2.StaticTokenSource(token)
+			},
+			expectedToken: "test-id-token-jwt",
+			expectError:   false,
+		},
+		{
+			name:             "JWT token type",
+			subjectTokenType: "urn:ietf:params:oauth:token-type:jwt",
+			tokenSourceFactory: func() oauth2.TokenSource {
+				token := &oauth2.Token{
+					AccessToken: "test-access-token",
+				}
+				token = token.WithExtra(map[string]interface{}{
+					"id_token": "test-jwt-token",
+				})
+				return oauth2.StaticTokenSource(token)
+			},
+			expectedToken: "test-jwt-token",
+			expectError:   false,
+		},
+		{
+			name:             "ID token not available",
+			subjectTokenType: "urn:ietf:params:oauth:token-type:id_token",
+			tokenSourceFactory: func() oauth2.TokenSource {
+				// Token without ID token in Extra
+				return oauth2.StaticTokenSource(&oauth2.Token{
+					AccessToken: "test-access-token",
+				})
+			},
+			expectError:   true,
+			errorContains: "Token exchange failed",
+		},
+		{
+			name:             "unsupported token type",
+			subjectTokenType: "urn:ietf:params:oauth:token-type:saml2",
+			tokenSourceFactory: func() oauth2.TokenSource {
+				return oauth2.StaticTokenSource(&oauth2.Token{
+					AccessToken: "test-access-token",
+				})
+			},
+			expectError:   true,
+			errorContains: "invalid SubjectTokenType",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set up mock token exchange server
+			var receivedSubjectToken string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				err := r.ParseForm()
+				require.NoError(t, err)
+
+				receivedSubjectToken = r.FormValue("subject_token")
+
+				resp := map[string]interface{}{
+					"access_token":      "exchanged-token",
+					"issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+					"token_type":        "Bearer",
+					"expires_in":        3600,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
+			}))
+			defer server.Close()
+
+			// Create config
+			config := Config{
+				TokenURL:         server.URL,
+				ClientID:         "test-client-id",
+				ClientSecret:     "test-client-secret",
+				Audience:         "https://api.example.com",
+				SubjectTokenType: tt.subjectTokenType,
+			}
+
+			// Create token source
+			tokenSource := tt.tokenSourceFactory()
+
+			// Create middleware
+			middleware, err := CreateMiddlewareFromTokenSource(config, tokenSource)
+
+			if tt.expectError && tt.errorContains == "invalid SubjectTokenType" {
+				// Error expected at middleware creation time
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorContains)
+				return
+			}
+
+			require.NoError(t, err)
+
+			// Create test request with claims
+			req := httptest.NewRequest("GET", "/test", nil)
+			claims := jwt.MapClaims{
+				"sub": "test-user",
+				"aud": "test-audience",
+			}
+			ctx := context.WithValue(req.Context(), auth.ClaimsContextKey{}, claims)
+			req = req.WithContext(ctx)
+
+			// Execute middleware
+			rec := httptest.NewRecorder()
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+			handler := middleware(testHandler)
+			handler.ServeHTTP(rec, req)
+
+			if tt.expectError {
+				// Middleware should return an error status
+				assert.NotEqual(t, http.StatusOK, rec.Code)
+				assert.Contains(t, rec.Body.String(), tt.errorContains)
+			} else {
+				// Middleware should succeed
+				assert.Equal(t, http.StatusOK, rec.Code)
+				// Verify the correct token was sent to exchange endpoint
+				assert.Equal(t, tt.expectedToken, receivedSubjectToken)
+			}
+		})
+	}
+}
+
+func TestCreateMiddlewareFromTokenSource_NilTokenSource(t *testing.T) {
+	config := Config{
+		TokenURL:     "https://sts.example.com/token",
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+	}
+
+	_, err := CreateMiddlewareFromTokenSource(config, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tokenSource cannot be nil")
 }

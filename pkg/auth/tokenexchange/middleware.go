@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -113,7 +114,7 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		return fmt.Errorf("invalid token exchange configuration: %w", err)
 	}
 
-	middleware, err := CreateTokenExchangeMiddlewareFromClaims(*params.TokenExchangeConfig)
+	middleware, err := createTokenExchangeMiddleware(*params.TokenExchangeConfig, nil, defaultEnvGetter)
 	if err != nil {
 		return fmt.Errorf("invalid token exchange middleware config: %w", err)
 	}
@@ -172,16 +173,76 @@ func createCustomInjector(headerName string) injectionFunc {
 	}
 }
 
-// CreateTokenExchangeMiddlewareFromClaims creates a middleware that uses token claims
-// from the auth middleware to perform token exchange.
-// This is a public function for direct usage in proxy commands.
-func CreateTokenExchangeMiddlewareFromClaims(config Config) (types.MiddlewareFunction, error) {
-	return createTokenExchangeMiddlewareFromClaims(config, defaultEnvGetter)
+// SubjectTokenProvider is a function that provides the subject token for exchange.
+// This is used when the token comes from an external source (e.g., OAuth flow)
+// rather than from incoming request headers.
+type SubjectTokenProvider func() (string, error)
+
+// CreateMiddlewareFromTokenSource creates token exchange middleware using an oauth2.TokenSource.
+// This is the recommended approach for external authentication flows (OAuth/OIDC).
+//
+// The middleware will automatically select the appropriate token based on config.SubjectTokenType:
+//   - tokenTypeAccessToken: Uses token.AccessToken
+//   - tokenTypeIDToken or tokenTypeJWT: Uses token.Extra("id_token")
+//
+// This moves the token selection logic into the middleware where it belongs,
+// keeping the command layer focused on configuration.
+func CreateMiddlewareFromTokenSource(
+	config Config,
+	tokenSource oauth2.TokenSource,
+) (types.MiddlewareFunction, error) {
+	if tokenSource == nil {
+		return nil, fmt.Errorf("tokenSource cannot be nil")
+	}
+
+	// Validate SubjectTokenType early to catch configuration errors at startup
+	if config.SubjectTokenType != "" &&
+		config.SubjectTokenType != tokenTypeAccessToken &&
+		config.SubjectTokenType != tokenTypeIDToken &&
+		config.SubjectTokenType != tokenTypeJWT {
+		return nil, fmt.Errorf("invalid SubjectTokenType: %s (must be one of: %s, %s, %s)",
+			config.SubjectTokenType, tokenTypeAccessToken, tokenTypeIDToken, tokenTypeJWT)
+	}
+
+	// Create a SubjectTokenProvider that handles token selection based on config
+	subjectTokenProvider := func() (string, error) {
+		token, err := tokenSource.Token()
+		if err != nil {
+			return "", fmt.Errorf("failed to get token: %w", err)
+		}
+
+		// Select appropriate token based on configured type
+		switch config.SubjectTokenType {
+		case tokenTypeIDToken, tokenTypeJWT:
+			// Extract ID token from Extra field (standard OIDC approach)
+			idToken, ok := token.Extra("id_token").(string)
+			if !ok || idToken == "" {
+				logger.Error("ID token not available in token response")
+				return "", errors.New("required token not available")
+			}
+			return idToken, nil
+
+		case "", tokenTypeAccessToken:
+			// Use access token (default)
+			if token.AccessToken == "" {
+				logger.Error("Access token not available")
+				return "", errors.New("required token not available")
+			}
+			return token.AccessToken, nil
+
+		default:
+			// This should never happen due to early validation, but handle defensively
+			logger.Errorf("Invalid subject token type: %s", config.SubjectTokenType)
+			return "", errors.New("invalid token configuration")
+		}
+	}
+
+	return createTokenExchangeMiddleware(config, subjectTokenProvider, defaultEnvGetter)
 }
 
-// createTokenExchangeMiddlewareFromClaims is the internal implementation that accepts an envGetter
+// createTokenExchangeMiddleware is the internal implementation that accepts an envGetter
 // This allows for dependency injection in tests
-func createTokenExchangeMiddlewareFromClaims(config Config, getEnv envGetter) (types.MiddlewareFunction, error) {
+func createTokenExchangeMiddleware(config Config, subjectTokenProvider SubjectTokenProvider, getEnv envGetter) (types.MiddlewareFunction, error) {
 	// Determine injection strategy at startup time
 	strategy := config.HeaderStrategy
 	if strategy == "" {
@@ -229,19 +290,32 @@ func createTokenExchangeMiddlewareFromClaims(config Config, getEnv envGetter) (t
 				return
 			}
 
-			// Extract the original token from the Authorization header
-			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-				logger.Debug("No valid Bearer token found, proceeding without token exchange")
-				next.ServeHTTP(w, r)
-				return
-			}
+			var tokenProvider SubjectTokenProvider
 
-			subjectToken := strings.TrimPrefix(authHeader, "Bearer ")
-			if subjectToken == "" {
-				logger.Debug("Empty Bearer token, proceeding without token exchange")
-				next.ServeHTTP(w, r)
-				return
+			// Determine token source based on whether external provider was given
+			if subjectTokenProvider != nil {
+				// Mode 2: Use provided token source (e.g., from OAuth flow during startup)
+				logger.Debug("Using provided token source for token exchange")
+				tokenProvider = subjectTokenProvider
+			} else {
+				// Mode 1: Extract token from Authorization header (OIDC validation scenario)
+				authHeader := r.Header.Get("Authorization")
+				if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+					logger.Debug("No valid Bearer token found, proceeding without token exchange")
+					next.ServeHTTP(w, r)
+					return
+				}
+
+				subjectToken := strings.TrimPrefix(authHeader, "Bearer ")
+				if subjectToken == "" {
+					logger.Debug("Empty Bearer token, proceeding without token exchange")
+					next.ServeHTTP(w, r)
+					return
+				}
+
+				tokenProvider = func() (string, error) {
+					return subjectToken, nil
+				}
 			}
 
 			// Log some claim information for debugging
@@ -251,9 +325,7 @@ func createTokenExchangeMiddlewareFromClaims(config Config, getEnv envGetter) (t
 
 			// Create a copy of the base config with the request-specific subject token
 			exchangeConfig := baseExchangeConfig
-			exchangeConfig.SubjectTokenProvider = func() (string, error) {
-				return subjectToken, nil
-			}
+			exchangeConfig.SubjectTokenProvider = tokenProvider
 
 			// Get token from token source
 			tokenSource := exchangeConfig.TokenSource(r.Context())

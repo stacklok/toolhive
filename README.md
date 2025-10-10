@@ -66,7 +66,7 @@ ToolHive includes a Kubernetes Operator for enterprise and production deployment
 ### Features
 
 - **MCPServer CRD**: Deploy and manage MCP servers as Kubernetes resources
-- **MCPRegistry CRD** *(Experimental)*: Centralized registry management with automated sync
+- **MCPRegistry CRD** Centralized registry management with automated sync
 - **Secure isolation**: Container-based server execution with permission profiles
 - **Protocol proxying**: Stdio servers exposed via HTTP/SSE networking protocols
 - **Service discovery**: Automatic service creation and DNS integration
@@ -74,7 +74,7 @@ ToolHive includes a Kubernetes Operator for enterprise and production deployment
 ### Documentation
 
 - [Operator Guide](cmd/thv-operator/README.md) - Complete operator documentation
-- [MCPRegistry Reference](cmd/thv-operator/REGISTRY.md) - Registry management (experimental)
+- [MCPRegistry Reference](cmd/thv-operator/REGISTRY.md) - Registry management
 - [CRD API Reference](docs/operator/crd-api.md) - Auto-generated API documentation
 - [Deployment Guide](docs/kind/deploying-toolhive-operator.md) - Step-by-step installation
 - [Examples](examples/operator/) - Sample configurations

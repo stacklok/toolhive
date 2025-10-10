@@ -13,9 +13,9 @@ After modifying the CRDs, the following needs to be run:
 
 When committing a change that changes CRDs, it is important to bump the chart version as described in the [CLAUDE.md](../../deploy/charts/operator-crds/CLAUDE.md#bumping-crd-chart) doc for the CRD Helm Chart.
 
-## MCPRegistry CRD (Experimental)
+## MCPRegistry CRD
 
-The MCPRegistry CRD enables centralized management of MCP server registries. Requires `operator.features.experimental=true`.
+The MCPRegistry CRD enables centralized management of MCP server registries.
 
 ### Key Components
 

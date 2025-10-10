@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-09T00:16:54Z",
+  "last_updated": "2025-10-10T00:17:26Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -2307,53 +2307,77 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "query_contents",
-        "query_collections",
-        "query_feeds",
-        "query_conversations",
-        "retrieve_relevant_sources",
-        "retrieve_similar_images",
-        "visually_describe_image",
-        "prompt_llm_conversation",
-        "extract_structured_json_from_text",
-        "publish_as_audio",
-        "publish_as_image",
-        "ingest_files",
-        "ingest_web_pages",
-        "ingest_messages",
-        "ingest_posts",
-        "ingest_emails",
-        "ingest_issues",
-        "ingest_text",
-        "ingest_memory",
-        "web_crawling",
-        "web_search",
-        "web_mapping",
-        "screenshot_page",
-        "configure_project",
-        "create_collection",
-        "add_contents_to_collection",
-        "remove_contents_from_collection",
-        "delete_collections",
-        "delete_feeds",
-        "delete_contents",
-        "delete_conversations",
-        "is_feed_done",
-        "is_content_done",
-        "list_slack_channels",
-        "list_microsoft_teams_teams",
-        "list_microsoft_teams_channels",
-        "list_sharepoint_libraries",
-        "list_sharepoint_folders",
-        "list_linear_projects",
-        "list_notion_databases",
-        "list_notion_pages",
-        "list_dropbox_folders",
-        "list_box_folders",
-        "list_discord_guilds",
-        "list_discord_channels",
-        "list_google_calendars",
-        "list_microsoft_calendars"
+        "addContentsToCollection",
+        "askGraphlit",
+        "configureProject",
+        "createCollection",
+        "deleteCollection",
+        "deleteCollections",
+        "deleteContent",
+        "deleteContents",
+        "deleteConversation",
+        "deleteConversations",
+        "deleteFeed",
+        "deleteFeeds",
+        "describeImageContent",
+        "describeImageUrl",
+        "extractText",
+        "ingestBoxFiles",
+        "ingestDiscordMessages",
+        "ingestDropboxFiles",
+        "ingestFile",
+        "ingestGitHubFiles",
+        "ingestGitHubIssues",
+        "ingestGoogleDriveFiles",
+        "ingestGoogleEmail",
+        "ingestJiraIssues",
+        "ingestLinearIssues",
+        "ingestMemory",
+        "ingestMicrosoftEmail",
+        "ingestMicrosoftTeamsMessages",
+        "ingestNotionPages",
+        "ingestOneDriveFiles",
+        "ingestRSS",
+        "ingestRedditPosts",
+        "ingestSharePointFiles",
+        "ingestSlackMessages",
+        "ingestText",
+        "ingestTwitterPosts",
+        "ingestTwitterSearch",
+        "ingestUrl",
+        "isContentDone",
+        "isFeedDone",
+        "listBoxFolders",
+        "listDiscordChannels",
+        "listDiscordGuilds",
+        "listDropboxFolders",
+        "listGoogleCalendars",
+        "listLinearProjects",
+        "listMicrosoftCalendars",
+        "listNotionDatabases",
+        "listNotionPages",
+        "listSharePointFolders",
+        "listSharePointLibraries",
+        "listSlackChannels",
+        "promptConversation",
+        "publishAudio",
+        "publishImage",
+        "queryCollections",
+        "queryContents",
+        "queryConversations",
+        "queryFeeds",
+        "queryProjectUsage",
+        "removeContentsFromCollection",
+        "retrieveImages",
+        "retrieveSources",
+        "screenshotPage",
+        "sendEmailNotification",
+        "sendSlackNotification",
+        "sendTwitterNotification",
+        "sendWebHookNotification",
+        "webCrawl",
+        "webMap",
+        "webSearch"
       ],
       "metadata": {
         "stars": 358,
@@ -2368,7 +2392,7 @@
         "ingestion",
         "data-connectors"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20251005001",
+      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20251007001",
       "permissions": {
         "network": {
           "outbound": {
@@ -5402,6 +5426,58 @@
       },
       "url": "https://mcp.kiwi.com"
     },
+    "linear": {
+      "description": "Linear's official remote MCP server to manage issues, projects, and comments",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "list_comments",
+        "create_comment",
+        "list_cycles",
+        "get_document",
+        "list_documents",
+        "get_issue",
+        "list_issues",
+        "create_issue",
+        "update_issue",
+        "list_issue_statuses",
+        "get_issue_status",
+        "list_issue_labels",
+        "create_issue_label",
+        "list_projects",
+        "get_project",
+        "create_project",
+        "update_project",
+        "list_project_labels",
+        "list_teams",
+        "get_team",
+        "list_users",
+        "get_user",
+        "search_documentation"
+      ],
+      "metadata": {
+        "stars": 0,
+        "pulls": 0,
+        "last_updated": "2025-10-08T20:03:59Z"
+      },
+      "tags": [
+        "issue-tracking",
+        "project-management",
+        "linear",
+        "remote",
+        "task-management",
+        "productivity",
+        "software-development",
+        "bug-tracking",
+        "team-collaboration"
+      ],
+      "custom_metadata": {
+        "author": "Linear",
+        "homepage": "https://linear.app/docs/mcp"
+      },
+      "url": "https://mcp.linear.app/mcp"
+    },
     "mcp-spec": {
       "description": "Official MCP server for the Model Context Protocol specification",
       "tier": "Official",
@@ -5413,7 +5489,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-11T02:29:32Z"
+        "last_updated": "2025-10-09T02:29:14Z"
       },
       "tags": [
         "remote",
@@ -5455,9 +5531,9 @@
         "all_widgets_schema"
       ],
       "metadata": {
-        "stars": 304,
+        "stars": 313,
         "pulls": 0,
-        "last_updated": "2025-09-11T02:29:32Z"
+        "last_updated": "2025-10-09T02:29:15Z"
       },
       "repository_url": "https://github.com/mondaycom/mcp",
       "tags": [
@@ -5511,7 +5587,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-11T02:29:32Z"
+        "last_updated": "2025-10-09T02:29:15Z"
       },
       "tags": [
         "remote",
@@ -5614,7 +5690,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-11T02:29:32Z"
+        "last_updated": "2025-10-09T02:29:15Z"
       },
       "tags": [
         "remote",
@@ -5668,7 +5744,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-12T02:26:56Z"
+        "last_updated": "2025-10-09T02:29:15Z"
       },
       "tags": [
         "remote",

@@ -7,9 +7,6 @@ spec:
   image: ghcr.io/github/github-mcp-server
   transport: stdio
   port: 8080
-  permissionProfile:
-    type: builtin
-    name: network
   secrets:
     - name: github-token
       key: token

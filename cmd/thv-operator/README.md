@@ -145,9 +145,6 @@ spec:
   image: docker.io/mcp/fetch
   transport: stdio
   port: 8080
-  permissionProfile:
-    type: builtin
-    name: network
   resources:
     limits:
       cpu: "100m"
@@ -177,9 +174,6 @@ spec:
   image: ghcr.io/github/github-mcp-server
   transport: stdio
   port: 8080
-  permissionProfile:
-    type: builtin
-    name: network
   secrets:
     - name: github-token
       key: token
@@ -219,20 +213,21 @@ kubectl describe mcpserver <name>
 
 ### MCPServer Spec
 
-| Field               | Description                                      | Required | Default |
-|---------------------|--------------------------------------------------|----------|---------|
-| `image`             | Container image for the MCP server               | Yes      | -       |
-| `transport`         | Transport method (stdio, streamable-http or sse) | No       | stdio   |
-| `port`              | Port to expose the MCP server on                 | No       | 8080    |
-| `targetPort`        | Port that MCP server listens to                  | No       | -       |
-| `args`              | Additional arguments to pass to the MCP server   | No       | -       |
-| `env`               | Environment variables to set in the container    | No       | -       |
-| `volumes`           | Volumes to mount in the container                | No       | -       |
-| `resources`         | Resource requirements for the container          | No       | -       |
-| `secrets`           | References to secrets to mount in the container  | No       | -       |
-| `permissionProfile` | Permission profile configuration                 | No       | -       |
-| `tools`             | Allow-list filter on the list of tools           | No       | -       |
+| Field               | Description                                        | Required | Default |
+|---------------------|----------------------------------------------------|----------|---------|
+| `image`             | Container image for the MCP server                 | Yes      | -       |
+| `transport`         | Transport method (stdio, streamable-http or sse)   | No       | stdio   |
+| `port`              | Port to expose the MCP server on                   | No       | 8080    |
+| `targetPort`        | Port that MCP server listens to                    | No       | -       |
+| `args`              | Additional arguments to pass to the MCP server     | No       | -       |
+| `env`               | Environment variables to set in the container      | No       | -       |
+| `volumes`           | Volumes to mount in the container                  | No       | -       |
+| `resources`         | Resource requirements for the container            | No       | -       |
+| `secrets`           | References to secrets to mount in the container    | No       | -       |
+| `permissionProfile` | Permission profile configuration (not implemented) | No       | -       |
+| `tools`             | Allow-list filter on the list of tools             | No       | -       |
 
+<!-- not implemented; commenting out until a decision is made on removal
 ### Permission Profiles
 
 Permission profiles can be configured in two ways:
@@ -255,6 +250,7 @@ permissionProfile:
 ```
 
 The ConfigMap should contain a JSON permission profile.
+-->
 
 ### Creating an MCP Registry (Experimental)
 

@@ -27,6 +27,14 @@ const (
 	//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
 	tokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
 
+	// tokenTypeIDToken indicates an OpenID Connect ID Token (required by Google STS)
+	//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
+	tokenTypeIDToken = "urn:ietf:params:oauth:token-type:id_token"
+
+	// tokenTypeJWT indicates a JSON Web Token
+	//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
+	tokenTypeJWT = "urn:ietf:params:oauth:token-type:jwt"
+
 	// defaultHTTPTimeout is the timeout for HTTP requests
 	defaultHTTPTimeout = 30 * time.Second
 
@@ -175,6 +183,11 @@ type ExchangeConfig struct {
 	// Scopes is the list of scopes to request (optional per RFC 8693)
 	Scopes []string
 
+	// SubjectTokenType specifies the type of the subject token being exchanged.
+	// Common values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.
+	// If empty, defaults to tokenTypeAccessToken.
+	SubjectTokenType string
+
 	// SubjectTokenProvider is a function that returns the subject token to exchange
 	// we use a function to allow dynamic retrieval of the token (e.g. from request context)
 	// and also to lazy-load the token only when needed, load from dynamic sources, etc.
@@ -198,6 +211,21 @@ func (c *ExchangeConfig) Validate() error {
 	// ClientID is optional - some token exchange endpoints (like Google STS)
 	// don't require client credentials and rely on the trust relationship
 	// configured in the identity provider (e.g., Workload Identity Federation)
+
+	// Validate SubjectTokenType if provided
+	if c.SubjectTokenType != "" {
+		validTypes := []string{tokenTypeAccessToken, tokenTypeIDToken, tokenTypeJWT}
+		isValid := false
+		for _, validType := range validTypes {
+			if c.SubjectTokenType == validType {
+				isValid = true
+				break
+			}
+		}
+		if !isValid {
+			return fmt.Errorf("invalid SubjectTokenType %q: must be one of %v", c.SubjectTokenType, validTypes)
+		}
+	}
 
 	// Validate URL format
 	_, err := url.Parse(c.TokenURL)
@@ -230,6 +258,12 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 		return nil, fmt.Errorf("failed to get subject token: %w", err)
 	}
 
+	// Determine subject token type (default to access_token if not specified)
+	subjectTokenType := conf.SubjectTokenType
+	if subjectTokenType == "" {
+		subjectTokenType = tokenTypeAccessToken
+	}
+
 	// Build the token exchange request
 	request := &exchangeRequest{
 		GrantType:          grantTypeTokenExchange,
@@ -237,7 +271,7 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 		Scope:              conf.Scopes,
 		RequestedTokenType: tokenTypeAccessToken,
 		SubjectToken:       subjectToken,
-		SubjectTokenType:   tokenTypeAccessToken,
+		SubjectTokenType:   subjectTokenType,
 	}
 
 	clientAuth := clientAuthentication{

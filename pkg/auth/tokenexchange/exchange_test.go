@@ -1306,3 +1306,59 @@ func TestExchangeToken_BasicAuthURLEncoding(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, resp)
 }
+
+func TestExchangeConfig_Validate_SubjectTokenType(t *testing.T) {
+	tests := []struct {
+		name             string
+		subjectTokenType string
+		wantErr          bool
+	}{
+		{
+			name:             "valid access_token",
+			subjectTokenType: tokenTypeAccessToken,
+			wantErr:          false,
+		},
+		{
+			name:             "valid id_token",
+			subjectTokenType: tokenTypeIDToken,
+			wantErr:          false,
+		},
+		{
+			name:             "valid jwt",
+			subjectTokenType: tokenTypeJWT,
+			wantErr:          false,
+		},
+		{
+			name:             "empty (uses default)",
+			subjectTokenType: "",
+			wantErr:          false,
+		},
+		{
+			name:             "invalid token type",
+			subjectTokenType: "urn:ietf:params:oauth:token-type:invalid",
+			wantErr:          true,
+		},
+		{
+			name:             "random string",
+			subjectTokenType: "not-a-valid-urn",
+			wantErr:          true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &ExchangeConfig{
+				TokenURL: "https://sts.example.com/token",
+				SubjectTokenProvider: func() (string, error) {
+					return "test-token", nil
+				},
+				SubjectTokenType: tt.subjectTokenType,
+			}
+
+			err := config.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}

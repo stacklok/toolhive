@@ -475,10 +475,22 @@ func buildRunnerConfig(
 
 	if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
 		remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata)
+
+		// Validate OAuth callback port availability upfront for better user experience
+		if err := networking.ValidateCallbackPort(remoteAuthConfig.CallbackPort, remoteAuthConfig.ClientID); err != nil {
+			return nil, err
+		}
+
 		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig), runner.WithRemoteURL(remoteServerMetadata.URL))
 	}
 	if runFlags.RemoteURL != "" {
 		remoteAuthConfig := getRemoteAuthFromRunFlags(runFlags)
+
+		// Validate OAuth callback port availability upfront for better user experience
+		if err := networking.ValidateCallbackPort(remoteAuthConfig.CallbackPort, remoteAuthConfig.ClientID); err != nil {
+			return nil, err
+		}
+
 		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig))
 	}
 

@@ -180,13 +180,10 @@ operator:
   affinity: {}
 
 # -- All values for the registry API deployment and associated resources
-# NOTE: Registry API ServiceAccount and RBAC resources are only created when
-# operator.features.experimental is enabled
 registryAPI:
   # -- Container image for the registry API
   image: "ghcr.io/stacklok/toolhive/thv-registry-api:latest"
   # -- Service account configuration for the registry API
-  # This ServiceAccount is only created when operator.features.experimental is true
   serviceAccount:
     # -- Automatically mount a ServiceAccount's API credentials
     automountServiceAccountToken: true

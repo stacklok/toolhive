@@ -13,7 +13,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -26,7 +25,6 @@ import (
 )
 
 var (
-	cfg       *rest.Config
 	k8sClient client.Client
 	testEnv   *envtest.Environment
 	testMgr   ctrl.Manager
@@ -43,11 +41,6 @@ var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
 	ctx, cancel = context.WithCancel(context.TODO())
-
-	// Enable experimental features for MCPRegistry controller
-	By("enabling experimental features")
-	err := os.Setenv("ENABLE_EXPERIMENTAL_FEATURES", "true")
-	Expect(err).NotTo(HaveOccurred())
 
 	By("bootstrapping test environment")
 
@@ -73,7 +66,7 @@ var _ = BeforeSuite(func() {
 		BinaryAssetsDirectory: kubebuilderAssets,
 	}
 
-	cfg, err = testEnv.Start()
+	cfg, err := testEnv.Start()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(cfg).NotTo(BeNil())
 

@@ -356,7 +356,6 @@ const (
 //+kubebuilder:validation:XValidation:rule="self.spec.source.type == 'configmap' ? has(self.spec.source.configmap) : (self.spec.source.type == 'git' ? has(self.spec.source.git) : true)",message="configMap field is required when source type is 'configmap', git field is required when source type is 'git'"
 
 // MCPRegistry is the Schema for the mcpregistries API
-// ⚠️ Experimental API (v1alpha1) — subject to change.
 type MCPRegistry struct {
 	metav1.TypeMeta   `json:",inline"` // nolint:revive
 	metav1.ObjectMeta `json:"metadata,omitempty"`

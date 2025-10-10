@@ -195,9 +195,9 @@ func (c *ExchangeConfig) Validate() error {
 		return fmt.Errorf("SubjectTokenProvider is required")
 	}
 
-	if c.ClientID == "" {
-		return fmt.Errorf("ClientID is required")
-	}
+	// ClientID is optional - some token exchange endpoints (like Google STS)
+	// don't require client credentials and rely on the trust relationship
+	// configured in the identity provider (e.g., Workload Identity Federation)
 
 	// Validate URL format
 	_, err := url.Parse(c.TokenURL)

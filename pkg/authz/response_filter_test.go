@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
@@ -43,9 +43,9 @@ func TestResponseFilteringWriter(t *testing.T) {
 	}{
 		{
 			name:   "Filter tools list - user can access weather tool only",
-			method: string(mcp.MethodToolsList),
+			method: "tools/list",
 			responseData: mcp.ListToolsResult{
-				Tools: []mcp.Tool{
+				Tools: []*mcp.Tool{
 					{Name: "weather", Description: "Get weather information"},
 					{Name: "calculator", Description: "Perform calculations"},
 					{Name: "translator", Description: "Translate text"},
@@ -56,16 +56,16 @@ func TestResponseFilteringWriter(t *testing.T) {
 				"name": "John Doe",
 			},
 			expectedResult: mcp.ListToolsResult{
-				Tools: []mcp.Tool{
+				Tools: []*mcp.Tool{
 					{Name: "weather", Description: "Get weather information"},
 				},
 			},
 		},
 		{
 			name:   "Filter prompts list - user can access greeting prompt only",
-			method: string(mcp.MethodPromptsList),
+			method: "prompts/list",
 			responseData: mcp.ListPromptsResult{
-				Prompts: []mcp.Prompt{
+				Prompts: []*mcp.Prompt{
 					{Name: "greeting", Description: "Generate greetings"},
 					{Name: "farewell", Description: "Generate farewells"},
 				},
@@ -75,16 +75,16 @@ func TestResponseFilteringWriter(t *testing.T) {
 				"name": "John Doe",
 			},
 			expectedResult: mcp.ListPromptsResult{
-				Prompts: []mcp.Prompt{
+				Prompts: []*mcp.Prompt{
 					{Name: "greeting", Description: "Generate greetings"},
 				},
 			},
 		},
 		{
 			name:   "Filter resources list - user can access data resource only",
-			method: string(mcp.MethodResourcesList),
+			method: "resources/list",
 			responseData: mcp.ListResourcesResult{
-				Resources: []mcp.Resource{
+				Resources: []*mcp.Resource{
 					{URI: "data", Name: "Data Resource"},
 					{URI: "secret", Name: "Secret Resource"},
 				},
@@ -94,16 +94,16 @@ func TestResponseFilteringWriter(t *testing.T) {
 				"name": "John Doe",
 			},
 			expectedResult: mcp.ListResourcesResult{
-				Resources: []mcp.Resource{
+				Resources: []*mcp.Resource{
 					{URI: "data", Name: "Data Resource"},
 				},
 			},
 		},
 		{
 			name:   "Empty tools list when user has no permissions",
-			method: string(mcp.MethodToolsList),
+			method: "tools/list",
 			responseData: mcp.ListToolsResult{
-				Tools: []mcp.Tool{
+				Tools: []*mcp.Tool{
 					{Name: "calculator", Description: "Perform calculations"},
 					{Name: "translator", Description: "Translate text"},
 				},
@@ -113,7 +113,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 				"name": "John Doe",
 			},
 			expectedResult: mcp.ListToolsResult{
-				Tools: []mcp.Tool{}, // Empty list since user can't access any of these tools
+				Tools: []*mcp.Tool{}, // Empty list since user can't access any of these tools
 			},
 		},
 	}
@@ -167,7 +167,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 
 			// Parse the result based on the method type
 			switch tc.method {
-			case string(mcp.MethodToolsList):
+			case "tools/list":
 				var actualResult mcp.ListToolsResult
 				err = json.Unmarshal(filteredResponse.Result, &actualResult)
 				require.NoError(t, err, "Failed to unmarshal tools result")
@@ -181,7 +181,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 					}
 				}
 
-			case string(mcp.MethodPromptsList):
+			case "prompts/list":
 				var actualResult mcp.ListPromptsResult
 				err = json.Unmarshal(filteredResponse.Result, &actualResult)
 				require.NoError(t, err, "Failed to unmarshal prompts result")
@@ -195,7 +195,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 					}
 				}
 
-			case string(mcp.MethodResourcesList):
+			case "resources/list":
 				var actualResult mcp.ListResourcesResult
 				err = json.Unmarshal(filteredResponse.Result, &actualResult)
 				require.NoError(t, err, "Failed to unmarshal resources result")

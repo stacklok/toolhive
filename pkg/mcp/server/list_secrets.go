@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -26,32 +26,32 @@ type ListSecretsResponse struct {
 // ListSecrets lists all available secrets.
 // The request parameter is required by the MCP tool handler interface but not used
 // by this handler since list_secrets takes no arguments.
-func (h *Handler) ListSecrets(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *Handler) ListSecrets(ctx context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Get the configuration to determine the secrets provider
 	cfg := h.configProvider.GetConfig()
 
 	// Check if secrets setup has been completed
 	if !cfg.Secrets.SetupCompleted {
-		return mcp.NewToolResultError(
+		return NewToolResultError(
 			"Secrets provider not configured. Please run 'thv secret setup' to configure a secrets provider first"), nil
 	}
 
 	// Get the provider type
 	providerType, err := cfg.Secrets.GetProviderType()
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get secrets provider type: %v", err)), nil
+		return NewToolResultError(fmt.Sprintf("Failed to get secrets provider type: %v", err)), nil
 	}
 
 	// Create the secrets provider
 	secretsProvider, err := secrets.CreateSecretProvider(providerType)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to create secrets provider: %v", err)), nil
+		return NewToolResultError(fmt.Sprintf("Failed to create secrets provider: %v", err)), nil
 	}
 
 	// List all secrets
 	secretDescriptions, err := secretsProvider.ListSecrets(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to list secrets: %v", err)), nil
+		return NewToolResultError(fmt.Sprintf("Failed to list secrets: %v", err)), nil
 	}
 
 	// Format results with structured data
@@ -69,5 +69,5 @@ func (h *Handler) ListSecrets(ctx context.Context, _ mcp.CallToolRequest) (*mcp.
 		Secrets: results,
 	}
 
-	return mcp.NewToolResultStructuredOnly(response), nil
+	return NewToolResultStructuredOnly(response), nil
 }

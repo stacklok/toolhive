@@ -93,6 +93,13 @@ func NewHTTPMiddleware(
 // to leverage the parsed MCP data.
 func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Ultimate safety net - telemetry must NEVER crash the service
+		defer func() {
+			if rec := recover(); rec != nil {
+				logger.Errorf("Telemetry middleware panic (non-fatal): %v", rec)
+			}
+		}()
+
 		ctx := r.Context()
 
 		// Handle SSE endpoints specially - they are long-lived connections
@@ -123,7 +130,15 @@ func (m *HTTPMiddleware) Handler(next http.Handler) http.Handler {
 		// Create span name based on MCP method if available, otherwise use HTTP method + path
 		spanName := m.createSpanName(ctx, r)
 		ctx, span := m.tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindServer))
-		defer span.End()
+		// End span with error handling - this is where OTLP export happens
+		defer func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					logger.Debugf("Telemetry span.End() panic (non-fatal): %v", rec)
+				}
+			}()
+			span.End()
+		}()
 
 		// Create a response writer wrapper to capture response details
 		rw := &responseWriter{
@@ -405,9 +420,16 @@ type responseWriter struct {
 	bytesWritten int64
 }
 
-// WriteHeader captures the status code.
+// WriteHeader captures the status code with panic protection.
 func (rw *responseWriter) WriteHeader(statusCode int) {
 	rw.statusCode = statusCode
+
+	// Wrap the actual WriteHeader call to catch any panics (including duplicate calls)
+	defer func() {
+		if rec := recover(); rec != nil {
+			logger.Debugf("WriteHeader panic recovered (non-fatal): %v", rec)
+		}
+	}()
 	rw.ResponseWriter.WriteHeader(statusCode)
 }
 
@@ -416,6 +438,13 @@ func (rw *responseWriter) Write(data []byte) (int, error) {
 	n, err := rw.ResponseWriter.Write(data)
 	rw.bytesWritten += int64(n)
 	return n, err
+}
+
+// Flush implements http.Flusher if the underlying ResponseWriter supports it.
+func (rw *responseWriter) Flush() {
+	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 // recordMetrics records request metrics.

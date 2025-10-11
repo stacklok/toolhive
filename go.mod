@@ -14,7 +14,7 @@ require (
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/go-git/go-git/v5 v5.16.3
 	github.com/go-logr/zapr v1.3.0
-	github.com/gofrs/flock v0.12.1
+	github.com/gofrs/flock v0.13.0
 	github.com/google/go-containerregistry v0.20.6
 	github.com/google/uuid v1.6.0
 	github.com/lestrrat-go/httprc/v3 v3.0.1

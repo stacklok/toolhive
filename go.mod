@@ -43,7 +43,7 @@ require (
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.27.0
 	golang.ngrok.com/ngrok/v2 v2.1.0
-	golang.org/x/exp/jsonrpc2 v0.0.0-20251002181428-27f1f14c8bb9
+	golang.org/x/exp/jsonrpc2 v0.0.0-20251009144603-d2f985daa21b
 	golang.org/x/mod v0.29.0
 	golang.org/x/oauth2 v0.32.0
 	golang.org/x/sync v0.17.0
@@ -262,7 +262,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
-	golang.org/x/exp/event v0.0.0-20250819193227-8b4c13bb791b // indirect
+	golang.org/x/exp/event v0.0.0-20251002181428-27f1f14c8bb9 // indirect
 	golang.org/x/net v0.44.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
 	golang.org/x/time v0.12.0 // indirect

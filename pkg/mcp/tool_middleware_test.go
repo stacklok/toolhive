@@ -483,7 +483,12 @@ func TestNewListToolsMappingMiddleware_SSE_Scenarios(t *testing.T) {
 			// Verify results
 			assert.Equal(t, "2.0", response.JSONRPC)
 			assert.Equal(t, float64(1), response.ID)
-			assert.Equal(t, tt.expected, response.Result.Tools)
+			// Use ElementsMatch for order-independent comparison of tools
+			if tt.expected != nil && response.Result.Tools != nil {
+				assert.ElementsMatch(t, *tt.expected, *response.Result.Tools, "Tools should match regardless of order")
+			} else {
+				assert.Equal(t, tt.expected, response.Result.Tools)
+			}
 		})
 	}
 }

@@ -175,7 +175,7 @@ Both components must be in place for the features to work correctly, as they ens
 - `FilterTools`: List of tool names to expose to clients
 - `ToolsOverride`: Map of tool name overrides and description changes
 
-**Note**: When either filtering or override is configured, both middleware components are automatically enabled with the same configuration to ensure consistent behavior.
+**Note**: When either filtering or override is configured, both middleware components are automatically enabled and configured with the same parameters to ensure consistent behavior, however it is an explicit design choice to avoid sharing any state between the two middleware components.
 
 ### 5. Telemetry Middleware
 

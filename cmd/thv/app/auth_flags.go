@@ -15,20 +15,46 @@ import (
 )
 
 // readSecretFromFile reads a secret from a file, cleaning the path and trimming whitespace
-func readSecretFromFile(filePath, secretType string) (string, error) {
+func readSecretFromFile(filePath string) (string, error) {
 	// Clean the file path to prevent path traversal
 	cleanPath := filepath.Clean(filePath)
-	logger.Debugf("Reading %s from file: %s", secretType, cleanPath)
+	logger.Debugf("Reading secret from file: %s", cleanPath)
 	// #nosec G304 - file path is cleaned above
 	secretBytes, err := os.ReadFile(cleanPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read %s file %s: %w", secretType, cleanPath, err)
+		return "", fmt.Errorf("failed to read secret file %s: %w", cleanPath, err)
 	}
 	secret := strings.TrimSpace(string(secretBytes))
 	if secret == "" {
-		return "", fmt.Errorf("%s file %s is empty", secretType, cleanPath)
+		return "", fmt.Errorf("secret file %s is empty", cleanPath)
 	}
 	return secret, nil
+}
+
+// resolveSecret resolves a secret from multiple sources following a standard priority order.
+// Priority: 1. Flag value, 2. File, 3. Environment variable
+// Returns empty string (not an error) if no secret is found - this is acceptable for public client/PKCE flows.
+func resolveSecret(flagValue, filePath, envVarName string) (string, error) {
+	// 1. Check if provided directly via flag
+	if flagValue != "" {
+		logger.Debug("Using secret from command-line flag")
+		return flagValue, nil
+	}
+
+	// 2. Check if provided via file
+	if filePath != "" {
+		return readSecretFromFile(filePath)
+	}
+
+	// 3. Check environment variable
+	if secret := os.Getenv(envVarName); secret != "" {
+		logger.Debugf("Using secret from %s environment variable", envVarName)
+		return secret, nil
+	}
+
+	// No secret found - this is acceptable for PKCE flows
+	logger.Debug("No secret provided - using public client mode")
+	return "", nil
 }
 
 // RemoteAuthFlags holds the common remote authentication configuration
@@ -65,21 +91,14 @@ func (f *RemoteAuthFlags) BuildTokenExchangeConfig() (*tokenexchange.Config, err
 		return nil, nil
 	}
 
-	// Resolve token exchange client secret from flag or file only
-	// Environment variable is handled by the middleware for Kubernetes deployments
-	var clientSecret string
-	if f.TokenExchangeClientSecret != "" {
-		clientSecret = f.TokenExchangeClientSecret
-		logger.Debug("Using token exchange client secret from command-line flag")
-	} else if f.TokenExchangeClientSecretFile != "" {
-		var err error
-		clientSecret, err = readSecretFromFile(f.TokenExchangeClientSecretFile, "token exchange client secret")
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		// Empty client secret is acceptable for public client mode
-		logger.Debug("No token exchange client secret provided - using public client mode")
+	// Resolve token exchange client secret using the same mechanism as remote-auth-client-secret
+	clientSecret, err := resolveSecret(
+		f.TokenExchangeClientSecret,
+		f.TokenExchangeClientSecretFile,
+		"TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	// Determine header strategy based on whether custom header name is provided

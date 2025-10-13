@@ -2,11 +2,12 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -164,10 +165,13 @@ func TestHandler_SetSecret(t *testing.T) {
 				configProvider:   mockConfigProvider,
 			}
 
-			request := mcp.CallToolRequest{
-				Params: mcp.CallToolParams{
+			// Marshal arguments to JSON
+			argsJSON, _ := json.Marshal(tt.args)
+
+			request := &mcp.CallToolRequest{
+				Params: &mcp.CallToolParamsRaw{
 					Name:      "set_secret",
-					Arguments: tt.args,
+					Arguments: argsJSON,
 				},
 			}
 

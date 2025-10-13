@@ -2,14 +2,14 @@ package streamable
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
@@ -109,34 +109,35 @@ func TestMCPGoClientInitializeAndPing(t *testing.T) {
 
 	// Create real MCP client for Streamable HTTP and exercise Initialize + Ping
 	serverURL := "http://127.0.0.1:8096" + StreamableHTTPEndpoint
-	cl, err := client.NewStreamableHttpClient(serverURL)
-	require.NoError(t, err, "create mcp-go streamable http client")
-	t.Cleanup(func() { _ = cl.Close() })
 
+	// Create MCP client using the new SDK pattern
+	mcpClient := mcp.NewClient(
+		&mcp.Implementation{
+			Name:    "toolhive-streamable-proxy-integration-test",
+			Version: "1.0.0",
+		},
+		&mcp.ClientOptions{},
+	)
+
+	// Create streamable transport
+	transport := &mcp.StreamableClientTransport{
+		Endpoint: serverURL,
+	}
+
+	// Connect using the transport
 	startCtx, startCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer startCancel()
-	require.NoError(t, cl.Start(startCtx), "start mcp transport")
 
-	// Build an initialize request with minimal fields
-	initCtx, initCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer initCancel()
+	session, err := mcpClient.Connect(startCtx, transport, nil)
+	require.NoError(t, err, "connect mcp client over streamable http")
+	t.Cleanup(func() { session.Close() })
 
-	initRequest := mcp.InitializeRequest{}
-	initRequest.Params.ProtocolVersion = protoVersion
-	initRequest.Params.ClientInfo = mcp.Implementation{
-		Name:    "toolhive-streamable-proxy-integration-test",
-		Version: "1.0.0",
-	}
-	initRequest.Params.Capabilities = mcp.ClientCapabilities{}
-
-	_, err = cl.Initialize(initCtx, initRequest)
-	require.NoError(t, err, "initialize over streamable http")
+	// Client is automatically initialized during Connect, no need for explicit Initialize
 
 	// List tools and ensure server returns expected tool
 	ltCtx, ltCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer ltCancel()
-	ltReq := mcp.ListToolsRequest{}
-	ltRes, err := cl.ListTools(ltCtx, ltReq)
+	ltRes, err := session.ListTools(ltCtx, &mcp.ListToolsParams{})
 	require.NoError(t, err, "list tools over streamable http")
 	require.NotNil(t, ltRes)
 	require.GreaterOrEqual(t, len(ltRes.Tools), 1)
@@ -145,10 +146,15 @@ func TestMCPGoClientInitializeAndPing(t *testing.T) {
 	// Call a tool and verify content
 	ctCtx, ctCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer ctCancel()
-	ctReq := mcp.CallToolRequest{}
-	ctReq.Params.Name = toolEcho
-	ctReq.Params.Arguments = map[string]any{"input": "hello"}
-	ctRes, err := cl.CallTool(ctCtx, ctReq)
+
+	// Convert arguments to JSON
+	argJSON, err := json.Marshal(map[string]any{"input": "hello"})
+	require.NoError(t, err)
+
+	ctRes, err := session.CallTool(ctCtx, &mcp.CallToolParams{
+		Name:      toolEcho,
+		Arguments: json.RawMessage(argJSON),
+	})
 	require.NoError(t, err, "call tool over streamable http")
 	require.NotNil(t, ctRes)
 	require.GreaterOrEqual(t, len(ctRes.Content), 1)
@@ -227,67 +233,58 @@ func TestMCPGoConcurrentClientsAndPings(t *testing.T) {
 	const clientCount = 5
 	const pingsPerClient = 5
 
-	clients := make([]*client.Client, 0, clientCount)
+	sessions := make([]*mcp.ClientSession, 0, clientCount)
 	for i := 0; i < clientCount; i++ {
-		cl, err := client.NewStreamableHttpClient(serverURL)
-		require.NoError(t, err, "create client %d", i)
-		clients = append(clients, cl)
+		// Create MCP client using the new SDK pattern
+		mcpClient := mcp.NewClient(
+			&mcp.Implementation{
+				Name:    fmt.Sprintf("client-%d", i),
+				Version: "test",
+			},
+			&mcp.ClientOptions{},
+		)
+
+		// Create streamable transport
+		transport := &mcp.StreamableClientTransport{
+			Endpoint: serverURL,
+		}
+
+		// Connect using the transport
+		connectCtx, connectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		session, err := mcpClient.Connect(connectCtx, transport, nil)
+		connectCancel()
+		require.NoError(t, err, "connect client %d", i)
+		sessions = append(sessions, session)
 	}
 
-	// Start and initialize each client concurrently, then wait for readiness
-	var initWG sync.WaitGroup
-	initWG.Add(len(clients))
-	initErrCh := make(chan error, len(clients))
-
-	for i, cl := range clients {
-		i, cl := i, cl
-		go func() {
-			defer initWG.Done()
-
-			startCtx, startCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer startCancel()
-			if err := cl.Start(startCtx); err != nil {
-				initErrCh <- fmt.Errorf("start client %d: %w", i, err)
-				return
-			}
-
-			initCtx, initCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer initCancel()
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = protoVersion
-			initRequest.Params.ClientInfo = mcp.Implementation{Name: "client", Version: "test"}
-			initRequest.Params.Capabilities = mcp.ClientCapabilities{}
-			if _, err := cl.Initialize(initCtx, initRequest); err != nil {
-				initErrCh <- fmt.Errorf("init client %d: %w", i, err)
-				return
-			}
-		}()
-	}
-
-	initWG.Wait()
-	close(initErrCh)
-	for err := range initErrCh {
-		require.NoError(t, err, "client initialization should succeed")
-	}
+	// Clients are now initialized during Connect, no need for separate initialization
 
 	// Concurrent pings for all clients
 	var wg sync.WaitGroup
 	errCh := make(chan error, clientCount*pingsPerClient)
 
-	for i, cl := range clients {
+	for i, session := range sessions {
 		for j := 0; j < pingsPerClient; j++ {
 			wg.Add(1)
-			go func(_, _ int, c *client.Client) {
+			go func(clientID, pingID int, s *mcp.ClientSession) {
 				defer wg.Done()
 				callCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				ctReq := mcp.CallToolRequest{}
-				ctReq.Params.Name = toolEcho
-				ctReq.Params.Arguments = map[string]any{"input": "ok"}
-				if _, err := c.CallTool(callCtx, ctReq); err != nil {
+
+				// Convert arguments to JSON
+				argJSON, err := json.Marshal(map[string]any{"input": "ok"})
+				if err != nil {
+					errCh <- err
+					return
+				}
+
+				if _, err := s.CallTool(callCtx, &mcp.CallToolParams{
+					Name:      toolEcho,
+					Arguments: json.RawMessage(argJSON),
+				}); err != nil {
 					errCh <- err
 				}
-			}(i, j, cl)
+			}(i, j, session)
 		}
 	}
 
@@ -298,9 +295,9 @@ func TestMCPGoConcurrentClientsAndPings(t *testing.T) {
 		require.NoError(t, err, "concurrent pings should succeed")
 	}
 
-	// Close all clients
-	for _, cl := range clients {
-		_ = cl.Close()
+	// Close all sessions
+	for _, session := range sessions {
+		session.Close()
 	}
 }
 
@@ -373,30 +370,40 @@ func TestMCPGoManySequentialPingsSingleClient(t *testing.T) {
 
 	serverURL := "http://127.0.0.1:8098" + StreamableHTTPEndpoint
 
-	cl, err := client.NewStreamableHttpClient(serverURL)
-	require.NoError(t, err, "create client")
-	t.Cleanup(func() { _ = cl.Close() })
+	// Create MCP client using the new SDK pattern
+	mcpClient := mcp.NewClient(
+		&mcp.Implementation{
+			Name:    "single-client",
+			Version: "test",
+		},
+		&mcp.ClientOptions{},
+	)
 
-	startCtx, startCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer startCancel()
-	require.NoError(t, cl.Start(startCtx), "start client")
+	// Create streamable transport
+	transport := &mcp.StreamableClientTransport{
+		Endpoint: serverURL,
+	}
 
-	initCtx, initCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer initCancel()
-	initRequest := mcp.InitializeRequest{}
-	initRequest.Params.ProtocolVersion = protoVersion
-	initRequest.Params.ClientInfo = mcp.Implementation{Name: "single-client", Version: "test"}
-	initRequest.Params.Capabilities = mcp.ClientCapabilities{}
-	_, err = cl.Initialize(initCtx, initRequest)
-	require.NoError(t, err, "initialize")
+	// Connect using the transport
+	connectCtx, connectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer connectCancel()
+
+	session, err := mcpClient.Connect(connectCtx, transport, nil)
+	require.NoError(t, err, "connect client")
+	t.Cleanup(func() { session.Close() })
 
 	const iterations = 100
 	for i := 0; i < iterations; i++ {
 		callCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		ctReq := mcp.CallToolRequest{}
-		ctReq.Params.Name = toolEcho
-		ctReq.Params.Arguments = map[string]any{"input": "ok"}
-		_, err := cl.CallTool(callCtx, ctReq)
+
+		// Convert arguments to JSON
+		argJSON, err := json.Marshal(map[string]any{"input": "ok"})
+		require.NoError(t, err, "marshal arguments")
+
+		_, err = session.CallTool(callCtx, &mcp.CallToolParams{
+			Name:      toolEcho,
+			Arguments: json.RawMessage(argJSON),
+		})
 		cancel()
 		require.NoErrorf(t, err, "call-tool %d should succeed", i)
 	}

@@ -10,8 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -119,7 +118,7 @@ func mcpListCmdFunc(cmd *cobra.Command, _ []string) error {
 	data := make(map[string]interface{})
 
 	// List tools
-	if tools, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{}); err != nil {
+	if tools, err := mcpClient.ListTools(ctx, &mcp.ListToolsParams{}); err != nil {
 		logger.Warnf("Failed to list tools: %v", err)
 		data["tools"] = []mcp.Tool{}
 	} else {
@@ -127,7 +126,7 @@ func mcpListCmdFunc(cmd *cobra.Command, _ []string) error {
 	}
 
 	// List resources
-	if resources, err := mcpClient.ListResources(ctx, mcp.ListResourcesRequest{}); err != nil {
+	if resources, err := mcpClient.ListResources(ctx, &mcp.ListResourcesParams{}); err != nil {
 		logger.Warnf("Failed to list resources: %v", err)
 		data["resources"] = []mcp.Resource{}
 	} else {
@@ -135,7 +134,7 @@ func mcpListCmdFunc(cmd *cobra.Command, _ []string) error {
 	}
 
 	// List prompts
-	if prompts, err := mcpClient.ListPrompts(ctx, mcp.ListPromptsRequest{}); err != nil {
+	if prompts, err := mcpClient.ListPrompts(ctx, &mcp.ListPromptsParams{}); err != nil {
 		logger.Warnf("Failed to list prompts: %v", err)
 		data["prompts"] = []mcp.Prompt{}
 	} else {
@@ -166,7 +165,7 @@ func mcpListToolsCmdFunc(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	result, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
+	result, err := mcpClient.ListTools(ctx, &mcp.ListToolsParams{})
 	if err != nil {
 		return fmt.Errorf("failed to list tools: %w", err)
 	}
@@ -195,7 +194,7 @@ func mcpListResourcesCmdFunc(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	result, err := mcpClient.ListResources(ctx, mcp.ListResourcesRequest{})
+	result, err := mcpClient.ListResources(ctx, &mcp.ListResourcesParams{})
 	if err != nil {
 		return fmt.Errorf("failed to list resources: %w", err)
 	}
@@ -224,7 +223,7 @@ func mcpListPromptsCmdFunc(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	result, err := mcpClient.ListPrompts(ctx, mcp.ListPromptsRequest{})
+	result, err := mcpClient.ListPrompts(ctx, &mcp.ListPromptsParams{})
 	if err != nil {
 		return fmt.Errorf("failed to list prompts: %w", err)
 	}
@@ -262,22 +261,30 @@ func resolveServerURL(ctx context.Context, serverInput string) (string, error) {
 }
 
 // createMCPClient creates an MCP client based on the server URL and transport type
-func createMCPClient(serverURL string) (*client.Client, error) {
+func createMCPClient(serverURL string) (*mcp.ClientSession, error) {
 	transportType := determineTransportType(serverURL, mcpTransport)
+
+	// Create the MCP client
+	client := mcp.NewClient(
+		&mcp.Implementation{
+			Name:    "thv-mcp-cli",
+			Version: versions.Version,
+		},
+		&mcp.ClientOptions{},
+	)
+
+	var transport mcp.Transport
 
 	switch transportType {
 	case types.TransportTypeSSE:
-		mcpClient, err := client.NewSSEMCPClient(serverURL)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create SSE MCP client: %w", err)
+		transport = &mcp.SSEClientTransport{
+			Endpoint: serverURL,
 		}
-		return mcpClient, nil
 	case types.TransportTypeStreamableHTTP:
-		mcpClient, err := client.NewStreamableHttpClient(serverURL)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create Streamable HTTP MCP client: %w", err)
+		transport = &mcp.StreamableClientTransport{
+			Endpoint:   serverURL,
+			MaxRetries: 5,
 		}
-		return mcpClient, nil
 	case types.TransportTypeStdio:
 		return nil, fmt.Errorf("stdio transport is not supported for MCP client connections")
 	case types.TransportTypeInspector:
@@ -285,6 +292,14 @@ func createMCPClient(serverURL string) (*client.Client, error) {
 	default:
 		return nil, fmt.Errorf("unsupported transport type: %s", transportType)
 	}
+
+	// Connect using the transport
+	session, err := client.Connect(context.Background(), transport, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to MCP server: %w", err)
+	}
+
+	return session, nil
 }
 
 // determineTransportType determines the transport type based on URL path and user preference
@@ -325,29 +340,15 @@ func determineTransportType(serverURL, transportFlag string) types.TransportType
 }
 
 // initializeMCPClient initializes the MCP client connection
-func initializeMCPClient(ctx context.Context, mcpClient *client.Client) error {
-	// Start the transport
-	if err := mcpClient.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start MCP transport: %w", err)
+func initializeMCPClient(ctx context.Context, mcpClient *mcp.ClientSession) error {
+	// Initialization happens during Connect, just verify we're connected
+	if mcpClient == nil {
+		return fmt.Errorf("client session not connected")
 	}
-
-	// Initialize the connection
-	initRequest := mcp.InitializeRequest{}
-	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initRequest.Params.Capabilities = mcp.ClientCapabilities{
-		// Basic client capabilities for listing
+	result := mcpClient.InitializeResult()
+	if result == nil {
+		return fmt.Errorf("client session not initialized")
 	}
-	versionInfo := versions.GetVersionInfo()
-	initRequest.Params.ClientInfo = mcp.Implementation{
-		Name:    "toolhive-cli",
-		Version: versionInfo.Version,
-	}
-
-	_, err := mcpClient.Initialize(ctx, initRequest)
-	if err != nil {
-		return fmt.Errorf("failed to initialize MCP client: %w", err)
-	}
-
 	return nil
 }
 
@@ -438,7 +439,7 @@ func outputMCPPrompts(w *tabwriter.Writer, data map[string]interface{}) bool {
 }
 
 // formatPromptArguments formats the prompt arguments for display
-func formatPromptArguments(arguments []mcp.PromptArgument) string {
+func formatPromptArguments(arguments []*mcp.PromptArgument) string {
 	argCount := len(arguments)
 	if argCount == 0 {
 		return "0"

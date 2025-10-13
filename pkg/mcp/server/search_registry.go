@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/stacklok/toolhive/pkg/registry"
 )
@@ -31,17 +31,17 @@ type SearchRegistryResponse struct {
 }
 
 // SearchRegistry searches the ToolHive registry
-func (h *Handler) SearchRegistry(_ context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *Handler) SearchRegistry(_ context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Parse arguments using BindArguments
 	args := &searchRegistryArgs{}
-	if err := request.BindArguments(args); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to parse arguments: %v", err)), nil
+	if err := BindArguments(request, args); err != nil {
+		return NewToolResultError(fmt.Sprintf("Failed to parse arguments: %v", err)), nil
 	}
 
 	// Search the registry
 	servers, err := h.registryProvider.SearchServers(args.Query)
 	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to search registry: %v", err)), nil
+		return NewToolResultError(fmt.Sprintf("Failed to search registry: %v", err)), nil
 	}
 
 	// Format results with all available information
@@ -69,5 +69,5 @@ func (h *Handler) SearchRegistry(_ context.Context, request mcp.CallToolRequest)
 		Servers: results,
 	}
 
-	return mcp.NewToolResultStructuredOnly(response), nil
+	return NewToolResultStructuredOnly(response), nil
 }

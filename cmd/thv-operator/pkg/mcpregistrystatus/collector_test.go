@@ -14,6 +14,7 @@ import (
 )
 
 func TestNewStatusManager(t *testing.T) {
+	t.Parallel()
 
 	registry := &mcpv1alpha1.MCPRegistry{
 		ObjectMeta: metav1.ObjectMeta{

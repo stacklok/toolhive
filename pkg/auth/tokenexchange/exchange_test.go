@@ -71,6 +71,95 @@ func (b *responseBuilder) build() response {
 	return b.resp
 }
 
+// TestNormalizeTokenType tests the NormalizeTokenType function.
+func TestNormalizeTokenType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		input     string
+		want      string
+		wantError bool
+	}{
+		{
+			name:      "empty string returns empty",
+			input:     "",
+			want:      "",
+			wantError: false,
+		},
+		{
+			name:      "short form access_token",
+			input:     "access_token",
+			want:      tokenTypeAccessToken,
+			wantError: false,
+		},
+		{
+			name:      "short form id_token",
+			input:     "id_token",
+			want:      tokenTypeIDToken,
+			wantError: false,
+		},
+		{
+			name:      "short form jwt",
+			input:     "jwt",
+			want:      tokenTypeJWT,
+			wantError: false,
+		},
+		{
+			name:      "full URN access_token",
+			input:     tokenTypeAccessToken,
+			want:      tokenTypeAccessToken,
+			wantError: false,
+		},
+		{
+			name:      "full URN id_token",
+			input:     tokenTypeIDToken,
+			want:      tokenTypeIDToken,
+			wantError: false,
+		},
+		{
+			name:      "full URN jwt",
+			input:     tokenTypeJWT,
+			want:      tokenTypeJWT,
+			wantError: false,
+		},
+		{
+			name:      "invalid token type",
+			input:     "invalid",
+			want:      "",
+			wantError: true,
+		},
+		{
+			name:      "invalid URN",
+			input:     "urn:ietf:params:oauth:token-type:unknown",
+			want:      "",
+			wantError: true,
+		},
+		{
+			name:      "random string",
+			input:     "random-value",
+			want:      "",
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := NormalizeTokenType(tt.input)
+
+			if tt.wantError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "invalid token type")
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, got)
+			}
+		})
+	}
+}
+
 // TestTokenSource_Token_Success tests the happy path of token exchange.
 func TestTokenSource_Token_Success(t *testing.T) {
 	t.Parallel()

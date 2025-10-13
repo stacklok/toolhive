@@ -92,13 +92,23 @@ func (f *RemoteAuthFlags) BuildTokenExchangeConfig() (*tokenexchange.Config, err
 		headerStrategy = tokenexchange.HeaderStrategyReplace
 	}
 
+	// Normalize token type from user input (allows short forms like "access_token")
+	normalizedTokenType := f.TokenExchangeSubjectTokenType
+	if normalizedTokenType != "" {
+		var err error
+		normalizedTokenType, err = tokenexchange.NormalizeTokenType(normalizedTokenType)
+		if err != nil {
+			return nil, fmt.Errorf("invalid subject token type: %w", err)
+		}
+	}
+
 	return &tokenexchange.Config{
 		TokenURL:                f.TokenExchangeURL,
 		ClientID:                f.TokenExchangeClientID,
 		ClientSecret:            clientSecret,
 		Audience:                f.TokenExchangeAudience,
 		Scopes:                  f.TokenExchangeScopes,
-		SubjectTokenType:        f.TokenExchangeSubjectTokenType,
+		SubjectTokenType:        normalizedTokenType,
 		HeaderStrategy:          headerStrategy,
 		ExternalTokenHeaderName: externalTokenHeaderName,
 	}, nil
@@ -143,8 +153,7 @@ func AddRemoteAuthFlags(cmd *cobra.Command, config *RemoteAuthFlags) {
 	cmd.Flags().StringSliceVar(&config.TokenExchangeScopes, "token-exchange-scopes", []string{},
 		"Scopes to request for exchanged tokens")
 	cmd.Flags().StringVar(&config.TokenExchangeSubjectTokenType, "token-exchange-subject-token-type", "",
-		"Type of subject token to exchange (default: urn:ietf:params:oauth:token-type:access_token, "+
-			"Google STS requires: urn:ietf:params:oauth:token-type:id_token)")
+		"Type of subject token to exchange. Accepts: access_token (default), id_token (required for Google STS), jwt")
 	cmd.Flags().StringVar(&config.TokenExchangeHeaderName, "token-exchange-header-name", "",
 		"Custom header name for injecting exchanged token (default: replaces Authorization header)")
 }

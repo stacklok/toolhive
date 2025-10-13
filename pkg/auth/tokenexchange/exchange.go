@@ -48,6 +48,37 @@ const (
 	emptyPlaceholder = "<empty>"
 )
 
+// NormalizeTokenType converts a short token type name to its full URN.
+// Accepts both short forms ("access_token", "id_token", "jwt") and full URNs.
+// Returns the full URN or an error if the token type is invalid.
+//
+// This is primarily intended for CLI/user input processing. Internal APIs
+// should use full URNs directly.
+func NormalizeTokenType(tokenType string) (string, error) {
+	// Empty string is valid (will use default)
+	if tokenType == "" {
+		return "", nil
+	}
+
+	// Check if already a full URN (backward compatibility)
+	switch tokenType {
+	case tokenTypeAccessToken, tokenTypeIDToken, tokenTypeJWT:
+		return tokenType, nil
+	}
+
+	// Convert short form to full URN
+	switch tokenType {
+	case "access_token":
+		return tokenTypeAccessToken, nil
+	case "id_token":
+		return tokenTypeIDToken, nil
+	case "jwt":
+		return tokenTypeJWT, nil
+	default:
+		return "", fmt.Errorf("invalid token type %q: must be one of: access_token, id_token, jwt", tokenType)
+	}
+}
+
 // oAuthError represents an OAuth 2.0 error response as defined in RFC 6749 Section 5.2.
 type oAuthError struct {
 	Error            string `json:"error"`

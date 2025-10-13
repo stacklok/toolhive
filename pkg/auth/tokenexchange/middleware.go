@@ -298,11 +298,11 @@ func createTokenExchangeMiddleware(
 
 			// Determine token source based on whether external provider was given
 			if subjectTokenProvider != nil {
-				// Mode 2: Use provided token source (e.g., from OAuth flow during startup)
+				// if the subjectTokenProvider is provided, use it, e.g. for passing in id_tokens
 				logger.Debug("Using provided token source for token exchange")
 				tokenProvider = subjectTokenProvider
 			} else {
-				// Mode 1: Extract token from Authorization header (OIDC validation scenario)
+				// otherwise, extract token from incoming request's Authorization header
 				authHeader := r.Header.Get("Authorization")
 				if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
 					logger.Debug("No valid Bearer token found, proceeding without token exchange")

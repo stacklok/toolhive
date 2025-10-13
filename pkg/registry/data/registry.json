@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-10T00:17:26Z",
+  "last_updated": "2025-10-13T00:18:49Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -180,9 +180,9 @@
         "read_paper"
       ],
       "metadata": {
-        "stars": 1685,
+        "stars": 1758,
         "pulls": 77,
-        "last_updated": "2025-09-14T02:30:37Z"
+        "last_updated": "2025-10-11T02:26:19Z"
       },
       "repository_url": "https://github.com/blazickjp/arxiv-mcp-server",
       "tags": [
@@ -711,7 +711,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.8.5",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.8.6",
       "permissions": {
         "network": {
           "outbound": {
@@ -834,9 +834,9 @@
         "browser_close_session"
       ],
       "metadata": {
-        "stars": 1293,
+        "stars": 1438,
         "pulls": 65,
-        "last_updated": "2025-09-14T02:30:37Z"
+        "last_updated": "2025-10-12T02:30:54Z"
       },
       "repository_url": "https://github.com/brightdata/brightdata-mcp",
       "tags": [
@@ -977,30 +977,34 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "get_cluster",
-        "list_clusters",
-        "get_cluster_queue",
-        "list_cluster_queues",
-        "get_pipeline",
-        "list_pipelines",
-        "create_pipeline",
-        "update_pipeline",
-        "list_builds",
-        "get_build",
-        "create_build",
-        "get_build_test_engine_runs",
-        "get_jobs",
-        "get_job_logs",
-        "list_artifacts",
-        "get_artifact",
-        "list_annotations",
-        "list_test_runs",
-        "get_test_run",
-        "get_failed_executions",
-        "get_test",
         "access_token",
+        "create_build",
+        "create_pipeline",
         "current_user",
-        "user_token_organization"
+        "get_artifact",
+        "get_build",
+        "get_build_test_engine_runs",
+        "get_cluster",
+        "get_cluster_queue",
+        "get_failed_executions",
+        "get_logs_info",
+        "get_pipeline",
+        "get_test",
+        "get_test_run",
+        "list_annotations",
+        "list_artifacts",
+        "list_builds",
+        "list_cluster_queues",
+        "list_clusters",
+        "list_pipelines",
+        "list_test_runs",
+        "read_logs",
+        "search_logs",
+        "tail_logs",
+        "unblock_job",
+        "update_pipeline",
+        "user_token_organization",
+        "wait_for_build"
       ],
       "metadata": {
         "stars": 36,
@@ -1018,7 +1022,7 @@
         "devops",
         "testing"
       ],
-      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.6.1",
+      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.7.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -1127,9 +1131,9 @@
         "create_project"
       ],
       "metadata": {
-        "stars": 368,
+        "stars": 407,
         "pulls": 273,
-        "last_updated": "2025-09-13T02:22:46Z"
+        "last_updated": "2025-10-10T02:29:32Z"
       },
       "repository_url": "https://github.com/GoogleCloudPlatform/cloud-run-mcp",
       "tags": [
@@ -1804,7 +1808,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.16.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.17.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -1866,10 +1870,8 @@
         "add_issue_comment",
         "add_sub_issue",
         "assign_copilot_to_issue",
-        "cancel_workflow_run",
         "create_and_submit_pull_request_review",
         "create_branch",
-        "create_gist",
         "create_issue",
         "create_or_update_file",
         "create_pending_pull_request_review",
@@ -1877,78 +1879,39 @@
         "create_repository",
         "delete_file",
         "delete_pending_pull_request_review",
-        "delete_workflow_run_logs",
-        "dismiss_notification",
-        "download_workflow_run_artifact",
         "fork_repository",
-        "get_code_scanning_alert",
         "get_commit",
-        "get_dependabot_alert",
-        "get_discussion",
-        "get_discussion_comments",
         "get_file_contents",
-        "get_global_security_advisory",
         "get_issue",
         "get_issue_comments",
-        "get_job_logs",
+        "get_label",
         "get_latest_release",
         "get_me",
-        "get_notification_details",
-        "get_pull_request",
-        "get_pull_request_comments",
-        "get_pull_request_diff",
-        "get_pull_request_files",
-        "get_pull_request_reviews",
-        "get_pull_request_status",
         "get_release_by_tag",
-        "get_secret_scanning_alert",
         "get_tag",
         "get_team_members",
         "get_teams",
-        "get_workflow_run",
-        "get_workflow_run_logs",
-        "get_workflow_run_usage",
         "list_branches",
-        "list_code_scanning_alerts",
         "list_commits",
-        "list_dependabot_alerts",
-        "list_discussion_categories",
-        "list_discussions",
-        "list_gists",
-        "list_global_security_advisories",
         "list_issue_types",
         "list_issues",
-        "list_notifications",
-        "list_org_repository_security_advisories",
+        "list_label",
         "list_pull_requests",
         "list_releases",
-        "list_repository_security_advisories",
-        "list_secret_scanning_alerts",
         "list_sub_issues",
         "list_tags",
-        "list_workflow_jobs",
-        "list_workflow_run_artifacts",
-        "list_workflow_runs",
-        "list_workflows",
-        "manage_notification_subscription",
-        "manage_repository_notification_subscription",
-        "mark_all_notifications_read",
         "merge_pull_request",
+        "pull_request_read",
         "push_files",
         "remove_sub_issue",
         "reprioritize_sub_issue",
         "request_copilot_review",
-        "rerun_failed_jobs",
-        "rerun_workflow_run",
-        "run_workflow",
         "search_code",
         "search_issues",
-        "search_orgs",
         "search_pull_requests",
         "search_repositories",
         "search_users",
         "submit_pending_pull_request_review",
-        "update_gist",
         "update_issue",
         "update_pull_request",
         "update_pull_request_branch"
@@ -1972,7 +1935,7 @@
         "update",
         "issues"
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.17.1",
+      "image": "ghcr.io/github/github-mcp-server:v0.18.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -2128,7 +2091,7 @@
         "milestones",
         "pipelines"
       ],
-      "image": "iwakitakuma/gitlab-mcp:2.0.6",
+      "image": "iwakitakuma/gitlab-mcp:2.0.7",
       "target_port": 3002,
       "permissions": {
         "network": {
@@ -2679,9 +2642,9 @@
         "pg_upgrade"
       ],
       "metadata": {
-        "stars": 64,
+        "stars": 69,
         "pulls": 0,
-        "last_updated": "2025-09-13T02:22:46Z"
+        "last_updated": "2025-10-11T02:26:18Z"
       },
       "repository_url": "https://github.com/heroku/heroku-mcp-server",
       "tags": [
@@ -2771,9 +2734,9 @@
         "dbg_enable_breakpoint"
       ],
       "metadata": {
-        "stars": 3598,
+        "stars": 3851,
         "pulls": 99,
-        "last_updated": "2025-09-14T02:30:37Z"
+        "last_updated": "2025-10-12T02:30:54Z"
       },
       "repository_url": "https://github.com/mrexodia/ida-pro-mcp",
       "tags": [
@@ -3004,9 +2967,9 @@
         "refine_ui"
       ],
       "metadata": {
-        "stars": 3628,
+        "stars": 3791,
         "pulls": 128,
-        "last_updated": "2025-09-14T02:30:37Z"
+        "last_updated": "2025-10-12T02:30:54Z"
       },
       "repository_url": "https://github.com/21st-dev/magic-mcp",
       "tags": [
@@ -3152,7 +3115,7 @@
       "metadata": {
         "stars": 925,
         "pulls": 77,
-        "last_updated": "2025-09-14T02:30:38Z"
+        "last_updated": "2025-10-12T02:30:55Z"
       },
       "repository_url": "https://github.com/JetBrains/mcp-jetbrains",
       "tags": [
@@ -3212,9 +3175,9 @@
         "enable_features"
       ],
       "metadata": {
-        "stars": 691,
+        "stars": 740,
         "pulls": 141,
-        "last_updated": "2025-09-15T02:32:00Z"
+        "last_updated": "2025-10-12T02:30:55Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -4204,22 +4167,25 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "get-spans",
+        "add-dataset-examples",
+        "add-prompt-version-tag",
+        "get-dataset-examples",
+        "get-dataset-experiments",
+        "get-experiment-by-id",
+        "get-latest-prompt",
+        "get-prompt-by-identifier",
+        "get-prompt-version",
+        "get-prompt-version-by-tag",
         "get-span-annotations",
-        "list-projects",
-        "get-project",
+        "get-spans",
         "list-datasets",
-        "get-dataset",
-        "create-dataset",
-        "add-examples-to-dataset",
-        "list-experiments",
-        "get-experiment",
-        "get-experiment-runs",
+        "list-experiments-for-dataset",
+        "list-projects",
+        "list-prompt-version-tags",
+        "list-prompt-versions",
         "list-prompts",
-        "get-prompt",
-        "create-prompt",
-        "update-prompt",
-        "share-traces"
+        "phoenix-support",
+        "upsert-prompt"
       ],
       "metadata": {
         "stars": 7169,
@@ -4235,7 +4201,7 @@
         "evaluation",
         "ai"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.16",
+      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.17",
       "permissions": {
         "network": {
           "outbound": {
@@ -4309,7 +4275,7 @@
         "browser",
         "navigate"
       ],
-      "image": "mcr.microsoft.com/playwright/mcp:v0.0.41",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.42",
       "target_port": 8931,
       "permissions": {
         "network": {
@@ -5407,9 +5373,9 @@
         "search-flight"
       ],
       "metadata": {
-        "stars": 2,
+        "stars": 3,
         "pulls": 0,
-        "last_updated": "2025-09-13T02:22:46Z"
+        "last_updated": "2025-10-11T02:26:18Z"
       },
       "repository_url": "https://github.com/alpic-ai/kiwi-mcp-server-public",
       "tags": [
@@ -5778,9 +5744,9 @@
         "get_abstract_syntax_tree"
       ],
       "metadata": {
-        "stars": 545,
+        "stars": 585,
         "pulls": 0,
-        "last_updated": "2025-09-12T02:26:56Z"
+        "last_updated": "2025-10-10T02:29:32Z"
       },
       "repository_url": "https://github.com/semgrep/mcp",
       "tags": [
@@ -5823,7 +5789,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-12T02:26:56Z"
+        "last_updated": "2025-10-10T02:29:32Z"
       },
       "tags": [
         "remote",
@@ -5854,9 +5820,9 @@
         "get_service_info"
       ],
       "metadata": {
-        "stars": 77,
+        "stars": 82,
         "pulls": 0,
-        "last_updated": "2025-09-12T02:26:56Z"
+        "last_updated": "2025-10-10T02:29:32Z"
       },
       "repository_url": "https://github.com/square/square-mcp-server",
       "tags": [
@@ -5912,7 +5878,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-12T02:26:56Z"
+        "last_updated": "2025-10-10T02:29:32Z"
       },
       "tags": [
         "remote",
@@ -5949,7 +5915,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-13T02:22:46Z"
+        "last_updated": "2025-10-11T02:26:18Z"
       },
       "tags": [
         "remote",
@@ -5991,7 +5957,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-13T02:22:46Z"
+        "last_updated": "2025-10-11T02:26:18Z"
       },
       "tags": [
         "remote",

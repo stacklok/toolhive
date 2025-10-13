@@ -1,0 +1,14 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: toolhive-api-registry
+  namespace: default
+spec:
+  displayName: "ToolHive Registry via API"
+  source:
+    type: api
+    api:
+      # Base API URL - controller will append /v0/servers
+      endpoint: "http://my-registry-api.default.svc.cluster.local"
+  syncPolicy:
+    interval: "1h"

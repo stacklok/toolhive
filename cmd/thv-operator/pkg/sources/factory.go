@@ -27,6 +27,8 @@ func (f *DefaultSourceHandlerFactory) CreateHandler(sourceType string) (SourceHa
 		return NewConfigMapSourceHandler(f.client), nil
 	case mcpv1alpha1.RegistrySourceTypeGit:
 		return NewGitSourceHandler(), nil
+	case mcpv1alpha1.RegistrySourceTypeAPI:
+		return NewAPISourceHandler(), nil
 	default:
 		return nil, fmt.Errorf("unsupported source type: %s", sourceType)
 	}

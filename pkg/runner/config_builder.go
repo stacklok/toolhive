@@ -541,6 +541,8 @@ func addCoreMiddlewares(
 		}
 		if tokenExchangeMwConfig, err := types.NewMiddlewareConfig(tokenexchange.MiddlewareType, tokenExchangeParams); err == nil {
 			middlewareConfigs = append(middlewareConfigs, *tokenExchangeMwConfig)
+		} else {
+			logger.Warnf("Failed to create token exchange middleware config: %v", err)
 		}
 	}
 

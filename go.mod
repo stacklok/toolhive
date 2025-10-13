@@ -14,7 +14,7 @@ require (
 	github.com/go-chi/chi/v5 v5.2.3
 	github.com/go-git/go-git/v5 v5.16.3
 	github.com/go-logr/zapr v1.3.0
-	github.com/gofrs/flock v0.12.1
+	github.com/gofrs/flock v0.13.0
 	github.com/google/go-containerregistry v0.20.6
 	github.com/google/uuid v1.6.0
 	github.com/lestrrat-go/httprc/v3 v3.0.1
@@ -27,6 +27,7 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/prometheus/client_golang v1.23.2
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/sigstore/protobuf-specs v0.5.0
 	github.com/sigstore/sigstore-go v1.1.3
 	github.com/spf13/viper v1.21.0
@@ -43,7 +44,7 @@ require (
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.27.0
 	golang.ngrok.com/ngrok/v2 v2.1.0
-	golang.org/x/exp/jsonrpc2 v0.0.0-20251002181428-27f1f14c8bb9
+	golang.org/x/exp/jsonrpc2 v0.0.0-20251009144603-d2f985daa21b
 	golang.org/x/mod v0.29.0
 	golang.org/x/oauth2 v0.32.0
 	golang.org/x/sync v0.17.0
@@ -52,7 +53,7 @@ require (
 	k8s.io/api v0.34.1
 	k8s.io/apimachinery v0.34.1
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4
-	sigs.k8s.io/controller-runtime v0.22.2
+	sigs.k8s.io/controller-runtime v0.22.3
 	sigs.k8s.io/yaml v1.6.0
 )
 
@@ -262,7 +263,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
-	golang.org/x/exp/event v0.0.0-20250819193227-8b4c13bb791b // indirect
+	golang.org/x/exp/event v0.0.0-20251002181428-27f1f14c8bb9 // indirect
 	golang.org/x/net v0.44.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
 	golang.org/x/time v0.12.0 // indirect

@@ -14,6 +14,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
+const (
+	// #nosec G101 - this is an environment variable name, not a credential
+	envTokenExchangeClientSecret = "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET"
+)
+
 // readSecretFromFile reads a secret from a file, cleaning the path and trimming whitespace
 func readSecretFromFile(filePath string) (string, error) {
 	// Clean the file path to prevent path traversal
@@ -95,7 +100,7 @@ func (f *RemoteAuthFlags) BuildTokenExchangeConfig() (*tokenexchange.Config, err
 	clientSecret, err := resolveSecret(
 		f.TokenExchangeClientSecret,
 		f.TokenExchangeClientSecretFile,
-		"TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+		envTokenExchangeClientSecret,
 	)
 	if err != nil {
 		return nil, err

@@ -242,7 +242,11 @@ func CreateMiddlewareFromTokenSource(
 
 // createTokenExchangeMiddleware is the internal implementation that accepts an envGetter
 // This allows for dependency injection in tests
-func createTokenExchangeMiddleware(config Config, subjectTokenProvider SubjectTokenProvider, getEnv envGetter) (types.MiddlewareFunction, error) {
+func createTokenExchangeMiddleware(
+	config Config,
+	subjectTokenProvider SubjectTokenProvider,
+	getEnv envGetter,
+) (types.MiddlewareFunction, error) {
 	// Determine injection strategy at startup time
 	strategy := config.HeaderStrategy
 	if strategy == "" {

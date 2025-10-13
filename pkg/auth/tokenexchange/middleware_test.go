@@ -735,6 +735,7 @@ func TestCreateTokenExchangeMiddleware_EnvironmentVariable(t *testing.T) {
 }
 
 func TestCreateMiddlewareFromTokenSource(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name               string
 		subjectTokenType   string
@@ -823,6 +824,7 @@ func TestCreateMiddlewareFromTokenSource(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Set up mock token exchange server
 			var receivedSubjectToken string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -877,7 +879,7 @@ func TestCreateMiddlewareFromTokenSource(t *testing.T) {
 
 			// Execute middleware
 			rec := httptest.NewRecorder()
-			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusOK)
 			})
 			handler := middleware(testHandler)
@@ -898,6 +900,7 @@ func TestCreateMiddlewareFromTokenSource(t *testing.T) {
 }
 
 func TestCreateMiddlewareFromTokenSource_NilTokenSource(t *testing.T) {
+	t.Parallel()
 	config := Config{
 		TokenURL:     "https://sts.example.com/token",
 		ClientID:     "test-client-id",

@@ -11,11 +11,10 @@ The middleware chain consists of the following components:
 1. **Authentication Middleware**: Validates JWT tokens and extracts client identity
 2. **Token Exchange Middleware**: Exchanges JWT tokens for external service tokens (optional)
 3. **MCP Parsing Middleware**: Parses JSON-RPC MCP requests and extracts structured data
-4. **Tool Filter Middleware**: Filters and overrides available MCP tools (optional)
-5. **Tool Call Filter Middleware**: Filters tool call requests (optional)
-6. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
-7. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
-8. **Audit Middleware**: Logs request events for compliance and monitoring (optional)
+4. **Tool Mapping Middleware**: Enables tool filtering and override capabilities through two complementary middleware components that process outgoing `tools/list` responses and incoming `tools/call` requests (optional)
+5. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
+6. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
+7. **Audit Middleware**: Logs request events for compliance and monitoring (optional)
 
 ## Architecture Diagram
 
@@ -151,41 +150,34 @@ sequenceDiagram
 - Requires JWT claims from Authentication middleware
 - Requires parsed MCP data from MCP Parsing middleware
 
-### 4. Tool Filter Middleware
+### 4. Tool Mapping Middleware
 
-**Purpose**: Filters and overrides available MCP tools in list responses.
+**Purpose**: Provides tool filtering and override capabilities for MCP tools.
 
-**Location**: `pkg/mcp/middleware.go`
+**Location**: `pkg/mcp/middleware.go` and `pkg/mcp/tool_filter.go`
 
-**Responsibilities**:
-- Filter which tools are visible to clients
-- Override tool names and descriptions
-- Modify `tools/list` responses based on configuration
+**Features Provided**:
 
-**Context Data Used**:
-- Tool filter configuration
-- Tool override mappings
+This middleware enables two key features for controlling tool visibility and presentation:
+
+1. **Tool Filtering**: Restricts which tools are available to clients, allowing administrators to expose only a subset of tools provided by the MCP server
+2. **Tool Override**: Allows renaming tools and modifying their descriptions as presented to clients, while maintaining correct routing to the actual underlying tools
+
+**Implementation Notes**:
+
+These features are implemented through two complementary middleware components that process traffic in different directions:
+- One component handles outgoing responses containing tool lists
+- Another component handles incoming requests to execute tools
+
+Both components must be in place for the features to work correctly, as they ensure consistency between tool discovery and tool execution.
 
 **Configuration**:
-- `FilterTools`: List of tool names to expose
+- `FilterTools`: List of tool names to expose to clients
 - `ToolsOverride`: Map of tool name overrides and description changes
 
-### 5. Tool Call Filter Middleware
+**Note**: When either filtering or override is configured, both middleware components are automatically enabled with the same configuration to ensure consistent behavior.
 
-**Purpose**: Filters tool call requests to enforce tool access policies.
-
-**Location**: `pkg/mcp/middleware.go`
-
-**Responsibilities**:
-- Validate `tools/call` requests against configured filters
-- Apply tool name overrides to incoming tool call requests
-- Reject unauthorized tool calls
-
-**Context Data Used**:
-- Tool filter configuration
-- Parsed MCP request data
-
-### 6. Telemetry Middleware
+### 5. Telemetry Middleware
 
 **Purpose**: Instruments HTTP requests with OpenTelemetry tracing and metrics.
 
@@ -205,7 +197,7 @@ sequenceDiagram
 - Sampling rate
 - Custom headers
 
-### 7. Token Exchange Middleware
+### 6. Token Exchange Middleware
 
 **Purpose**: Exchanges incoming JWT tokens for external service tokens using OAuth 2.0 Token Exchange.
 
@@ -229,7 +221,7 @@ sequenceDiagram
 
 **Note**: This middleware is currently implemented but not registered in the supported middleware factories (`pkg/runner/middleware.go:15`). It can be used directly via the proxy command but is not available through the standard middleware configuration system.
 
-### 8. Authorization Middleware
+### 7. Authorization Middleware
 
 **Purpose**: Evaluates Cedar policies to determine if requests are authorized.
 
@@ -246,7 +238,7 @@ sequenceDiagram
 - Requires JWT claims from Authentication middleware
 - Requires parsed MCP data from MCP Parsing middleware
 
-### 9. Audit Middleware
+### 8. Audit Middleware
 
 **Purpose**: Logs request events for compliance, monitoring, and debugging.
 

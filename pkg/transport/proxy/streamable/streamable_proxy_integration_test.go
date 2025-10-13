@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -13,12 +15,23 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 )
 
+// getFreePort returns a free port by binding to port 0 and getting the assigned port
+func getFreePort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listener.Close()
+	return listener.Addr().(*net.TCPAddr).Port
+}
+
 // TestHTTPRequestIgnoresNotifications tests that HTTP requests ignore notifications
 // and only return the actual response. This addresses the fix for issue #1568.
 //
 //nolint:paralleltest // Test starts HTTP server
 func TestHTTPRequestIgnoresNotifications(t *testing.T) {
-	proxy := NewHTTPProxy("localhost", 8091, "test-container", nil)
+	// Get an available port dynamically
+	port := getFreePort(t)
+	proxy := NewHTTPProxy("localhost", port, "test-container", nil)
 	ctx := context.Background()
 
 	// Start the proxy server
@@ -51,7 +64,7 @@ func TestHTTPRequestIgnoresNotifications(t *testing.T) {
 		}
 	}()
 
-	proxyURL := "http://localhost:8091" + StreamableHTTPEndpoint
+	proxyURL := fmt.Sprintf("http://localhost:%d%s", port, StreamableHTTPEndpoint)
 
 	// Test single request
 	requestJSON := `{"jsonrpc": "2.0", "method": "test.method", "id": "req-123"}`

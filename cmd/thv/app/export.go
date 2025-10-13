@@ -83,6 +83,13 @@ func exportCmdFunc(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Printf("Successfully exported run configuration for '%s' to '%s'\n", workloadName, outputPath)
 	case "k8s":
+		// Check for secrets and warn the user
+		if len(runConfig.Secrets) > 0 {
+			fmt.Fprintf(os.Stderr, "Warning: This server uses secrets that cannot be exported to Kubernetes manifests.\n")
+			fmt.Fprintf(os.Stderr, "You will need to create Kubernetes secrets separately before applying this manifest.\n")
+			fmt.Fprintf(os.Stderr, "Secrets used: %v\n", runConfig.Secrets)
+		}
+
 		if err := export.WriteK8sManifest(runConfig, outputFile); err != nil {
 			return fmt.Errorf("failed to write Kubernetes manifest: %w", err)
 		}

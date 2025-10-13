@@ -101,7 +101,7 @@ var _ = Describe("Export Command", Label("core", "export", "e2e"), func() {
 				Expect(err).ToNot(HaveOccurred(), "Exported file should be valid YAML")
 
 				By("Verifying the exported MCPServer has correct structure")
-				Expect(mcpServer.APIVersion).To(Equal("toolhive.stacklok.com/v1alpha1"))
+				Expect(mcpServer.APIVersion).To(Equal("toolhive.stacklok.dev/v1alpha1"))
 				Expect(mcpServer.Kind).To(Equal("MCPServer"))
 				Expect(mcpServer.Name).ToNot(BeEmpty(), "Name should be set")
 				Expect(mcpServer.Spec.Image).ToNot(BeEmpty(), "Image should be set")

@@ -42,7 +42,7 @@ func TestWriteK8sManifest(t *testing.T) {
 			},
 			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
 				t.Helper()
-				assert.Equal(t, "toolhive.stacklok.com/v1alpha1", mcpServer.APIVersion)
+				assert.Equal(t, "toolhive.stacklok.dev/v1alpha1", mcpServer.APIVersion)
 				assert.Equal(t, "MCPServer", mcpServer.Kind)
 				assert.Equal(t, "github", mcpServer.Name)
 				assert.Equal(t, "ghcr.io/stacklok/mcp-server-github:latest", mcpServer.Spec.Image)
@@ -268,6 +268,27 @@ func TestWriteK8sManifest(t *testing.T) {
 				Volumes: []string{
 					"invalid",
 				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "remote server should fail",
+			config: &runner.RunConfig{
+				Image:     "",
+				Name:      "remote-server",
+				BaseName:  "remote-server",
+				Transport: types.TransportTypeSSE,
+				RemoteURL: "https://remote-mcp.example.com",
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing image should fail",
+			config: &runner.RunConfig{
+				Image:     "",
+				Name:      "test",
+				BaseName:  "test",
+				Transport: types.TransportTypeStdio,
 			},
 			wantErr: true,
 		},

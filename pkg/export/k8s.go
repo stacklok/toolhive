@@ -33,6 +33,16 @@ func WriteK8sManifest(config *runner.RunConfig, w io.Writer) error {
 // runConfigToMCPServer converts a RunConfig to a Kubernetes MCPServer resource
 // nolint:gocyclo // Complexity due to mapping multiple config fields to K8s resource
 func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error) {
+	// Check if this is a remote server - not supported in Kubernetes
+	if config.RemoteURL != "" {
+		return nil, fmt.Errorf("remote MCP servers are not supported in Kubernetes deployments")
+	}
+
+	// Verify we have an image - required for Kubernetes
+	if config.Image == "" {
+		return nil, fmt.Errorf("image is required for Kubernetes export")
+	}
+
 	// Use the base name or container name for the Kubernetes resource name
 	name := config.BaseName
 	if name == "" {
@@ -47,7 +57,7 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 
 	mcpServer := &v1alpha1.MCPServer{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "toolhive.stacklok.com/v1alpha1",
+			APIVersion: "toolhive.stacklok.dev/v1alpha1",
 			Kind:       "MCPServer",
 		},
 		ObjectMeta: metav1.ObjectMeta{

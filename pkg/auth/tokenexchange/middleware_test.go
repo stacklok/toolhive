@@ -783,21 +783,6 @@ func TestCreateMiddlewareFromTokenSource(t *testing.T) {
 			expectError:   false,
 		},
 		{
-			name:             "JWT token type",
-			subjectTokenType: "urn:ietf:params:oauth:token-type:jwt",
-			tokenSourceFactory: func() oauth2.TokenSource {
-				token := &oauth2.Token{
-					AccessToken: "test-access-token",
-				}
-				token = token.WithExtra(map[string]interface{}{
-					"id_token": "test-jwt-token",
-				})
-				return oauth2.StaticTokenSource(token)
-			},
-			expectedToken: "test-jwt-token",
-			expectError:   false,
-		},
-		{
 			name:             "ID token not available",
 			subjectTokenType: "urn:ietf:params:oauth:token-type:id_token",
 			tokenSourceFactory: func() oauth2.TokenSource {

@@ -153,7 +153,7 @@ func AddRemoteAuthFlags(cmd *cobra.Command, config *RemoteAuthFlags) {
 	cmd.Flags().StringSliceVar(&config.TokenExchangeScopes, "token-exchange-scopes", []string{},
 		"Scopes to request for exchanged tokens")
 	cmd.Flags().StringVar(&config.TokenExchangeSubjectTokenType, "token-exchange-subject-token-type", "",
-		"Type of subject token to exchange. Accepts: access_token (default), id_token (required for Google STS), jwt")
+		"Type of subject token to exchange. Accepts: access_token (default), id_token (required for Google STS)")
 	cmd.Flags().StringVar(&config.TokenExchangeHeaderName, "token-exchange-header-name", "",
 		"Custom header name for injecting exchanged token (default: replaces Authorization header)")
 }

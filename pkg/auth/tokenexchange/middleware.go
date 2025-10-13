@@ -213,7 +213,7 @@ func CreateMiddlewareFromTokenSource(
 
 		// Select appropriate token based on configured type
 		switch config.SubjectTokenType {
-		case tokenTypeIDToken, tokenTypeJWT:
+		case tokenTypeIDToken:
 			// Extract ID token from Extra field (standard OIDC approach)
 			idToken, ok := token.Extra("id_token").(string)
 			if !ok || idToken == "" {

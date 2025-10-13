@@ -1308,6 +1308,7 @@ func TestExchangeToken_BasicAuthURLEncoding(t *testing.T) {
 }
 
 func TestExchangeConfig_Validate_SubjectTokenType(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name             string
 		subjectTokenType string
@@ -1347,6 +1348,7 @@ func TestExchangeConfig_Validate_SubjectTokenType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			config := &ExchangeConfig{
 				TokenURL: "https://sts.example.com/token",
 				SubjectTokenProvider: func() (string, error) {

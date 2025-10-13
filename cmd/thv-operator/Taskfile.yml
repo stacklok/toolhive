@@ -187,15 +187,18 @@ tasks:
   operator-test:
     desc: Run tests for the operator
     cmds:
-      # We pin to the latest commit not requiring Go 1.25
-      - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@b9bccfd419149d26d14130887a5e5819e4a3b2be
-      - KUBEBUILDER_ASSETS="$($(go env GOPATH)/bin/setup-envtest use 1.31.0 -p path)" go test ./cmd/thv-operator/... -coverprofile cover.out
+      - go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
+      # we have to use ldflags to avoid the LC_DYSYMTAB linker error. 
+      # https://github.com/stacklok/toolhive/issues/1687
+      # - go test -ldflags=-extldflags=-Wl,-w -v -json -race $(go list ./... | grep -v '/test/e2e' | grep -v '/cmd/thv-operator/test-integration') | gotestfmt -hide "all"
+      - go test -ldflags=-extldflags=-Wl,-w -v -json -race $(go list ./cmd/thv-operator/... | grep -v '/test-integration') | gotestfmt -hide "all"
+
+      # - KUBEBUILDER_ASSETS="$($(go env GOPATH)/bin/setup-envtest use 1.31.0 -p path)" go test ./cmd/thv-operator/... -coverprofile cover.out
 
   operator-test-integration:
     desc: Run integration tests for the operator using envtest
     cmds:
-      # We pin to the latest commit not requiring Go 1.25
-      - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@b9bccfd419149d26d14130887a5e5819e4a3b2be
+      - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.22
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
       - KUBEBUILDER_ASSETS="$($(go env GOPATH)/bin/setup-envtest use 1.31.0 -p path)" $(go env GOPATH)/bin/ginkgo -v ./cmd/thv-operator/test-integration/...
 

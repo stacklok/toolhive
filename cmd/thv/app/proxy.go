@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -353,26 +352,11 @@ func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResu
 // resolveClientSecret resolves the OAuth client secret from multiple sources
 // Priority: 1. Flag value, 2. File, 3. Environment variable
 func resolveClientSecret() (string, error) {
-	// 1. Check if provided directly via flag
-	if remoteAuthFlags.RemoteAuthClientSecret != "" {
-		logger.Debug("Using client secret from command-line flag")
-		return remoteAuthFlags.RemoteAuthClientSecret, nil
-	}
-
-	// 2. Check if provided via file
-	if remoteAuthFlags.RemoteAuthClientSecretFile != "" {
-		return readSecretFromFile(remoteAuthFlags.RemoteAuthClientSecretFile, "client secret")
-	}
-
-	// 3. Check environment variable
-	if secret := os.Getenv(envOAuthClientSecret); secret != "" {
-		logger.Debugf("Using client secret from %s environment variable", envOAuthClientSecret)
-		return secret, nil
-	}
-
-	// No client secret found - this is acceptable for PKCE flows
-	logger.Debug("No client secret provided - using PKCE flow")
-	return "", nil
+	return resolveSecret(
+		remoteAuthFlags.RemoteAuthClientSecret,
+		remoteAuthFlags.RemoteAuthClientSecretFile,
+		envOAuthClientSecret,
+	)
 }
 
 // createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests

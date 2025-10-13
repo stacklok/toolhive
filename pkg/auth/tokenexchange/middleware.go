@@ -178,6 +178,16 @@ func createCustomInjector(headerName string) injectionFunc {
 // rather than from incoming request headers.
 type SubjectTokenProvider func() (string, error)
 
+// CreateMiddlewareFromHeader creates token exchange middleware that extracts
+// the subject token from the incoming request's Authorization header.
+// This is the recommended approach when the proxy receives authenticated requests
+// and needs to exchange those tokens for backend access.
+//
+// For external authentication flows (OAuth/OIDC), use CreateMiddlewareFromTokenSource instead.
+func CreateMiddlewareFromHeader(config Config) (types.MiddlewareFunction, error) {
+	return createTokenExchangeMiddleware(config, nil, defaultEnvGetter)
+}
+
 // CreateMiddlewareFromTokenSource creates token exchange middleware using an oauth2.TokenSource.
 // This is the recommended approach for external authentication flows (OAuth/OIDC).
 //

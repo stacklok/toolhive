@@ -383,14 +383,26 @@ func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSo
 		if err != nil {
 			return fmt.Errorf("invalid token exchange configuration: %w", err)
 		}
-		if tokenExchangeConfig != nil && tokenSource != nil {
+		if tokenExchangeConfig == nil {
+			logger.Warn("Token exchange URL provided but configuration could not be built")
+			return nil
+		}
+
+		var tokenExchangeMiddleware types.MiddlewareFunction
+		if tokenSource != nil {
 			// Create middleware using TokenSource - middleware handles token selection
-			tokenExchangeMiddleware, err := tokenexchange.CreateMiddlewareFromTokenSource(*tokenExchangeConfig, *tokenSource)
+			tokenExchangeMiddleware, err = tokenexchange.CreateMiddlewareFromTokenSource(*tokenExchangeConfig, *tokenSource)
 			if err != nil {
 				return fmt.Errorf("failed to create token exchange middleware: %v", err)
 			}
-			*middlewares = append(*middlewares, tokenExchangeMiddleware)
+		} else {
+			// Create middleware that extracts token from Authorization header
+			tokenExchangeMiddleware, err = tokenexchange.CreateMiddlewareFromHeader(*tokenExchangeConfig)
+			if err != nil {
+				return fmt.Errorf("failed to create token exchange middleware: %v", err)
+			}
 		}
+		*middlewares = append(*middlewares, tokenExchangeMiddleware)
 	} else if tokenSource != nil {
 		// Fallback to direct token injection when no token exchange is configured
 		tokenMiddleware := createTokenInjectionMiddleware(tokenSource)

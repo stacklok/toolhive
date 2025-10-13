@@ -3,11 +3,10 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -179,25 +178,14 @@ func CreateTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 
 func TestFindClientConfigs(t *testing.T) {
 	t.Parallel()
-	logger.Initialize()
-
 	// Setup a temporary home directory for testing
 	tempHome := t.TempDir()
 
 	t.Run("InvalidConfigFileFormat", func(t *testing.T) {
-		t.Parallel() // Now we can use parallel since we don't modify global state
-		// Set up environment for unstructured logs and capture stderr before initializing logger
-		originalUnstructuredLogs := os.Getenv("UNSTRUCTURED_LOGS")
-		os.Setenv("UNSTRUCTURED_LOGS", "true")
-		defer os.Setenv("UNSTRUCTURED_LOGS", originalUnstructuredLogs)
+		t.Parallel()
 
-		// Capture log output to verify error logging
-		originalStderr := os.Stderr
-		r, w, _ := os.Pipe()
-		os.Stderr = w
-
-		// Re-initialize logger to use the captured stderr
-		logger.Initialize()
+		// Initialize in-memory test logger
+		observerLogs := logger.InitializeTest()
 
 		// Create an invalid JSON file
 		invalidPath := filepath.Join(tempHome, ".cursor", "invalid.json")
@@ -257,13 +245,13 @@ func TestFindClientConfigs(t *testing.T) {
 		// We expect 1 config (VSCode) since cursor with invalid JSON should be skipped
 		assert.Len(t, configs, 1, "Should find configs for valid clients only, skipping invalid ones")
 
-		// Restore stderr and capture log output
-		w.Close()
-		os.Stderr = originalStderr
+		// Read all log entries
+		var sb strings.Builder
+		for _, entry := range observerLogs.All() {
+			sb.WriteString(entry.Message)
+		}
 
-		var capturedOutput bytes.Buffer
-		io.Copy(&capturedOutput, r)
-		logOutput := capturedOutput.String()
+		logOutput := sb.String()
 
 		// Verify that the error was logged
 		assert.Contains(t, logOutput, "Unable to process client config for cursor", "Should log warning about cursor client config")

@@ -137,7 +137,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --token-exchange-client-secret-file string   Path to file containing OAuth client secret for token exchange (alternative to --token-exchange-client-secret)
       --token-exchange-header-name string          Custom header name for injecting exchanged token (default: replaces Authorization header)
       --token-exchange-scopes strings              Scopes to request for exchanged tokens
-      --token-exchange-subject-token-type string   Type of subject token to exchange (default: urn:ietf:params:oauth:token-type:access_token, Google STS requires: urn:ietf:params:oauth:token-type:id_token)
+      --token-exchange-subject-token-type string   Type of subject token to exchange. Accepts: access_token (default), id_token (required for Google STS), jwt
       --token-exchange-url string                  OAuth 2.0 token exchange endpoint URL (enables token exchange when provided)
       --tools stringArray                          Filter MCP server tools (comma-separated list of tool names)
       --tools-override string                      Path to a JSON file containing overrides for MCP server tools names and descriptions

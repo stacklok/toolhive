@@ -424,17 +424,17 @@ func TestStatusCollector_NoUpdates(t *testing.T) {
 func TestStatusCollector_InterfaceMethods(t *testing.T) {
 	t.Parallel()
 
-	registry := &mcpv1alpha1.MCPRegistry{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-registry",
-			Namespace: "default",
-		},
-	}
-
-	collector := newStatusCollector(registry)
-
 	t.Run("Sync method returns sync collector", func(t *testing.T) {
 		t.Parallel()
+
+		registry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-registry",
+				Namespace: "default",
+			},
+		}
+		collector := newStatusCollector(registry)
+
 		syncCollector := collector.Sync()
 		assert.NotNil(t, syncCollector)
 		assert.IsType(t, &syncStatusCollector{}, syncCollector)
@@ -442,6 +442,15 @@ func TestStatusCollector_InterfaceMethods(t *testing.T) {
 
 	t.Run("API method returns API collector", func(t *testing.T) {
 		t.Parallel()
+
+		registry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-registry",
+				Namespace: "default",
+			},
+		}
+		collector := newStatusCollector(registry)
+
 		apiCollector := collector.API()
 		assert.NotNil(t, apiCollector)
 		assert.IsType(t, &apiStatusCollector{}, apiCollector)
@@ -449,6 +458,15 @@ func TestStatusCollector_InterfaceMethods(t *testing.T) {
 
 	t.Run("SetOverallStatus delegates correctly", func(t *testing.T) {
 		t.Parallel()
+
+		registry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-registry",
+				Namespace: "default",
+			},
+		}
+		collector := newStatusCollector(registry)
+
 		collector.SetOverallStatus(mcpv1alpha1.MCPRegistryPhaseReady, "Test message")
 
 		assert.True(t, collector.hasChanges)
@@ -460,18 +478,18 @@ func TestStatusCollector_InterfaceMethods(t *testing.T) {
 func TestSyncStatusCollector_Methods(t *testing.T) {
 	t.Parallel()
 
-	registry := &mcpv1alpha1.MCPRegistry{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-registry",
-			Namespace: "default",
-		},
-	}
-
-	collector := newStatusCollector(registry)
-	syncCollector := collector.Sync()
-
 	t.Run("SetSyncCondition delegates correctly", func(t *testing.T) {
 		t.Parallel()
+
+		registry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-registry",
+				Namespace: "default",
+			},
+		}
+		collector := newStatusCollector(registry)
+		syncCollector := collector.Sync()
+
 		condition := metav1.Condition{
 			Type:    "TestCondition",
 			Status:  metav1.ConditionTrue,
@@ -488,6 +506,16 @@ func TestSyncStatusCollector_Methods(t *testing.T) {
 
 	t.Run("SetSyncStatus delegates correctly", func(t *testing.T) {
 		t.Parallel()
+
+		registry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-registry",
+				Namespace: "default",
+			},
+		}
+		collector := newStatusCollector(registry)
+		syncCollector := collector.Sync()
+
 		now := metav1.Now()
 		syncCollector.SetSyncStatus(
 			mcpv1alpha1.SyncPhaseComplete,
@@ -512,18 +540,18 @@ func TestSyncStatusCollector_Methods(t *testing.T) {
 func TestAPIStatusCollector_Methods(t *testing.T) {
 	t.Parallel()
 
-	registry := &mcpv1alpha1.MCPRegistry{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-registry",
-			Namespace: "default",
-		},
-	}
-
-	collector := newStatusCollector(registry)
-	apiCollector := collector.API()
-
 	t.Run("SetAPIStatus delegates correctly", func(t *testing.T) {
 		t.Parallel()
+
+		registry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-registry",
+				Namespace: "default",
+			},
+		}
+		collector := newStatusCollector(registry)
+		apiCollector := collector.API()
+
 		apiCollector.SetAPIStatus(
 			mcpv1alpha1.APIPhaseReady,
 			"API is ready",
@@ -539,6 +567,16 @@ func TestAPIStatusCollector_Methods(t *testing.T) {
 
 	t.Run("SetAPIReadyCondition delegates correctly", func(t *testing.T) {
 		t.Parallel()
+
+		registry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-registry",
+				Namespace: "default",
+			},
+		}
+		collector := newStatusCollector(registry)
+		apiCollector := collector.API()
+
 		apiCollector.SetAPIReadyCondition("APIReady", "API is ready", metav1.ConditionTrue)
 
 		assert.True(t, collector.hasChanges)

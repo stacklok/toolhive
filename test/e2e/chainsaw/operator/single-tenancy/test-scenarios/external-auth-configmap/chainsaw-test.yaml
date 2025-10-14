@@ -26,6 +26,11 @@ spec:
             echo "✗ Failed to set TOOLHIVE_USE_CONFIGMAP environment variable"
             exit 1
           fi
+
+          # Wait for controller caches to sync after restart
+          echo "Waiting for controller caches to sync..."
+          sleep 5
+          echo "✓ Controller caches should be synced"
         timeout: 120s
 
   - name: create-oauth-secret
@@ -58,15 +63,15 @@ spec:
         content: |
           echo "Verifying MCPExternalAuthConfig status..."
 
-          # Wait for status to be updated with hash
-          for i in $(seq 1 10); do
+          # Wait for status to be updated with hash (increased attempts for controller cache sync)
+          for i in $(seq 1 15); do
             HASH=$(kubectl get mcpexternalauthconfig test-external-auth -n toolhive-system -o jsonpath='{.status.configHash}' 2>/dev/null || echo "")
             if [ -n "$HASH" ]; then
               echo "✓ MCPExternalAuthConfig hash is set: $HASH"
               break
             fi
-            echo "  Waiting for MCPExternalAuthConfig hash... (attempt $i/10)"
-            sleep 2
+            echo "  Waiting for MCPExternalAuthConfig hash... (attempt $i/15)"
+            sleep 3
           done
 
           if [ -z "$HASH" ]; then

@@ -300,11 +300,16 @@ type ExternalAuthConfigRef struct {
 }
 
 type MCPRemoteProxyStatus struct {
-    Phase       MCPRemoteProxyPhase `json:"phase,omitempty"`
-    URL         string              `json:"url,omitempty"`
-    ExternalURL string              `json:"externalURL,omitempty"`
-    Conditions  []metav1.Condition  `json:"conditions,omitempty"`
+    Phase              MCPRemoteProxyPhase `json:"phase,omitempty"`
+    URL                string              `json:"url,omitempty"`
+    ExternalURL        string              `json:"externalURL,omitempty"`
+    ObservedGeneration int64               `json:"observedGeneration,omitempty"`
+    Conditions         []metav1.Condition  `json:"conditions,omitempty"`
 }
+
+// Recommended condition types:
+// - "Ready": Overall readiness of the proxy (includes auth configuration, JWKS availability, deployment ready)
+// - "RemoteAvailable": Whether the remote MCP server is reachable
 ```
 
 ### Client Usage
@@ -359,6 +364,31 @@ when {
 
 ## Implementation Requirements
 
+### Authentication Model
+
+The Kubernetes proxy differs from the CLI's `thv run <remote-url>` command in how it handles authentication:
+
+| Mode | User Authentication | Token Handling |
+|------|---------------------|----------------|
+| CLI (`thv run`) | Interactive OAuth flow (browser spawning) | CLI acquires and manages user tokens |
+| K8s Proxy | Client authenticates independently | Proxy validates tokens from incoming requests |
+
+The proxy supports two token handling modes:
+
+**Direct Mode (base case):**
+- Validates incoming token using JWKS or introspection
+- Forwards the same token unchanged to remote MCP
+- No token acquisition needed
+
+**Token Exchange Mode (optional):**
+- Validates incoming token (user authentication)
+- Exchanges validated token for remote service token via RFC 8693
+- Forwards exchanged token to remote MCP
+- Server-to-server exchange only (no user interaction)
+- May cache exchanged tokens using `oauth2.ReuseTokenSource`
+
+Both modes remain stateless (no token storage between requests) and never perform interactive/user-facing OAuth flows.
+
 ### Authentication Middleware Integration
 
 **Package**: `pkg/auth/middleware.go` (already exists)
@@ -401,22 +431,30 @@ Integrate existing token exchange middleware:
 - Run `task operator-manifests` to generate CRD YAML
 - Run `task crdref-gen` from `cmd/thv-operator` to update documentation
 
+### ProxyRunner Implementation
+
+**Package**: `cmd/thv-proxyrunner/app/run.go`, `pkg/runner/runner.go`
+
+The `thv-proxyrunner` must differentiate between CLI mode (with `RemoteAuthConfig` for interactive OAuth) and proxy mode (with `OIDCConfig` for token validation).
+
+**Implementation approach:**
+- When `RemoteAuthConfig` is set, the runner performs interactive OAuth (CLI mode)
+- When only `OIDCConfig` is set, the runner validates incoming tokens without performing OAuth flows (proxy mode)
+- The controller builds `RunConfig` with `OIDCConfig` only, ensuring the proxy never attempts interactive authentication
+
+**Middleware ordering:**
+1. Authentication middleware (validates incoming tokens)
+2. Token exchange middleware (optional, if configured)
+3. Authorization middleware (applies Cedar policies)
+4. Audit middleware (logs requests)
+5. Tool filtering middleware (filters/overrides tools)
+6. Transparent proxy (forwards to remote MCP)
+
 ### CLI Enhancement
 
 **Package**: `pkg/runner/remote_auth.go`
 
-Enhance CLI to support remote proxy endpoints:
-- Detect proxy vs direct remote MCP
-- Handle OAuth flows appropriately
-- Forward tokens correctly
-
-### Testing
-
-- Unit tests for OIDC configuration with remote IDPs
-- Integration tests with token exchange and JWT validation
-- E2E tests using Chainsaw framework
-- Mock remote MCP server and IDP for testing
-- Test JWKS endpoint handling and refresh
+**No changes needed** - This package is only for CLI active authentication mode. The K8s proxy never uses it.
 
 ## Security Considerations
 
@@ -456,6 +494,19 @@ Enhance CLI to support remote proxy endpoints:
 ### Multi-Tenancy
 
 The stateless architecture naturally supports multiple users sharing a single proxy deployment. Tenant isolation is achieved through token-based identity validation (each request independently verified), per-request authorization evaluation, and audit log segregation. No user data is shared between requests; only infrastructure components (JWKS cache, policy ConfigMaps, token exchange credentials) are shared across tenants
+
+## Implementation Notes
+
+### OIDC Configuration Context
+
+The `oidcConfig` field validates different token issuers depending on the deployment mode:
+
+- **Direct authentication** (no `externalAuthConfigRef`): Validates tokens from the remote MCP's IDP
+- **Token exchange** (with `externalAuthConfigRef`): Validates tokens from the company's IDP before exchanging them
+
+### Cross-Namespace References
+
+The `externalAuthConfigRef` must reference resources in the same namespace only. Cross-namespace references are not supported for security and isolation.
 
 ## Relationship to Token Exchange Middleware
 
@@ -614,4 +665,4 @@ if spec.AuthMode == "anonymous" && spec.Namespace == "production" {
 **Best Practices:**
 1. Always prefer introspection when available
 2. Use token exchange for enterprise federation
-5. Implement defense in depth with authorization policies
+3. Implement defense in depth with authorization policies

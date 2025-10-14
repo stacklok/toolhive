@@ -300,203 +300,138 @@ Service for creating public URLs to locally running MCP servers (e.g., via ngrok
 The following Mermaid diagram visualizes the relationships between these concepts:
 
 ```mermaid
-graph TB
-    subgraph "Core MCP Concepts"
-        MCP[MCP Protocol]
-        MCPServer[MCP Server]
-        Feature[MCP Feature]
-        Tool[Tool]
-        Prompt[Prompt]
-        Resource[Resource]
-        Operation[Operation]
+graph TD
+    %% Top Level - Core MCP
+    MCP[MCP Protocol]
+    MCPServer[MCP Server]
 
-        MCP --> MCPServer
-        MCPServer --> Feature
-        Feature --> Tool
-        Feature --> Prompt
-        Feature --> Resource
-        Operation -.-> Tool
-        Operation -.-> Prompt
-        Operation -.-> Resource
-    end
+    MCP --> MCPServer
 
-    subgraph "Registry & Discovery"
-        Registry[Registry]
-        ImageMetadata[Image Metadata]
-        RemoteServerMetadata[Remote Server Metadata]
-        Group[Group]
-        Provenance[Provenance]
+    %% MCP Server Features
+    MCPServer --> Feature[MCP Feature]
+    Feature --> Tool[Tool]
+    Feature --> Prompt[Prompt]
+    Feature --> Resource[Resource]
 
-        Registry --> ImageMetadata
-        Registry --> RemoteServerMetadata
-        Registry --> Group
-        Group --> ImageMetadata
-        Group --> RemoteServerMetadata
-        ImageMetadata --> Provenance
-    end
+    %% Registry Layer
+    Registry[Registry]
+    Registry --> ImageMeta[Image Metadata]
+    Registry --> RemoteMeta[Remote Server Metadata]
+    Registry --> Group[Group]
 
-    subgraph "Deployment & Runtime"
-        Workload[Workload]
-        Runtime[Runtime]
-        Docker[Docker]
-        Podman[Podman]
-        Colima[Colima]
-        K8s[Kubernetes]
-        Sidecar[Sidecar]
-        EgressProxy[Egress Proxy]
-        ContainerMonitor[Container Monitor]
+    ImageMeta --> Provenance[Provenance]
+    MCPServer -.-> ImageMeta
+    MCPServer -.-> RemoteMeta
 
-        Workload --> Runtime
-        Runtime --> Docker
-        Runtime --> Podman
-        Runtime --> Colima
-        Runtime --> K8s
-        Workload --> Sidecar
-        Sidecar --> EgressProxy
-        Runtime --> ContainerMonitor
-    end
-
-    subgraph "Transport & Communication"
-        Transport[Transport]
-        Stdio[stdio]
-        SSE[SSE]
-        StreamableHTTP[streamable-http]
-        HTTP[HTTP]
-        ProxyMode[Proxy Mode]
-        Session[Session]
-
-        Transport --> Stdio
-        Transport --> SSE
-        Transport --> StreamableHTTP
-        Transport --> HTTP
-        Stdio --> ProxyMode
-        Transport --> Session
-    end
-
-    subgraph "Client Integration"
-        Client[Client]
-        VSCode[VS Code]
-        Cursor[Cursor]
-        ClaudeCode[Claude Code]
-        Cline[Cline]
-        Windsurf[Windsurf]
-        Discovery[Discovery]
-
-        Client --> VSCode
-        Client --> Cursor
-        Client --> ClaudeCode
-        Client --> Cline
-        Client --> Windsurf
-        Discovery --> Client
-    end
-
-    subgraph "Security & Permissions"
-        PermissionProfile[Permission Profile]
-        NetworkPermissions[Network Permissions]
-        Secret[Secret]
-        Authz[Authorization Cedar]
-        Auth[Authentication OIDC/OAuth]
-        IgnoreConfig[Ignore Config]
-
-        PermissionProfile --> NetworkPermissions
-        PermissionProfile --> Secret
-        Authz --> Auth
-    end
-
-    subgraph "Configuration & State"
-        RunConfig[Run Config]
-        EnvVar[Environment Variable]
-        PortBinding[Port Binding]
-        ResourceRequirements[Resource Requirements]
-        ToolFilter[Tool Filter]
-
-        RunConfig --> EnvVar
-        RunConfig --> PortBinding
-        Workload --> ResourceRequirements
-    end
-
-    subgraph "Kubernetes Resources (Operator)"
-        MCPServerCRD[MCPServer CRD]
-        MCPRegistryCRD[MCPRegistry CRD]
-        MCPToolConfigCRD[MCPToolConfig CRD]
-        StatusCollector[Status Collector]
-
-        MCPServerCRD --> MCPToolConfigCRD
-        MCPRegistryCRD --> StatusCollector
-        MCPServerCRD --> StatusCollector
-    end
-
-    subgraph "Observability"
-        AuditEvent[Audit Event]
-        Telemetry[Telemetry]
-        OTLP[OpenTelemetry OTLP]
-        Prometheus[Prometheus]
-
-        Telemetry --> OTLP
-        Telemetry --> Prometheus
-    end
-
-    subgraph "Additional Services"
-        TunnelProvider[Tunnel Provider]
-    end
-
-    %% Cross-cutting relationships
-    MCPServer --> Transport
-    MCPServer --> ImageMetadata
-    MCPServer --> RemoteServerMetadata
-
-    Client --> Session
-    Session --> MCPServer
-    Session --> Transport
-
+    %% Workload and Runtime
+    Workload[Workload]
     Workload --> MCPServer
-    Workload --> PermissionProfile
-    Workload --> Transport
-    Workload --> PortBinding
-    Workload --> EnvVar
-    Workload --> Secret
+    Workload --> PermProfile[Permission Profile]
+    Workload --> Transport[Transport]
 
-    Registry --> MCPServer
+    PermProfile --> NetPerms[Network Permissions]
+    PermProfile --> Secret[Secret]
+    PermProfile -.-> Ignore[Ignore Config]
 
-    MCPServerCRD --> Workload
-    MCPServerCRD --> PermissionProfile
-    MCPServerCRD --> Auth
-    MCPServerCRD --> Authz
-    MCPServerCRD --> Telemetry
-    MCPServerCRD --> AuditEvent
+    Runtime[Runtime]
+    Workload --> Runtime
+    Runtime --> Docker[Docker]
+    Runtime --> Podman[Podman]
+    Runtime --> Colima[Colima]
+    Runtime --> K8s[Kubernetes]
 
-    MCPRegistryCRD --> Registry
+    %% Transport Types
+    Transport --> Stdio[stdio]
+    Transport --> SSE[SSE]
+    Transport --> StreamHTTP[streamable-http]
+    Transport --> HTTP[HTTP]
 
-    ToolFilter --> Tool
-    MCPToolConfigCRD --> ToolFilter
+    Stdio --> Proxy[Proxy Mode]
 
-    EgressProxy --> NetworkPermissions
+    %% Client Layer
+    Client[Client]
+    Client --> Session[Session]
+    Session --> Transport
+    Session --> MCPServer
 
-    IgnoreConfig --> PermissionProfile
-
-    Authz --> Operation
-    Authz --> Feature
-
-    TunnelProvider --> Session
-
-    RunConfig --> Group
-    RunConfig --> ProxyMode
-
+    Discovery[Discovery]
     Discovery -.-> Client
 
-    style MCP fill:#e1f5ff
-    style MCPServer fill:#e1f5ff
-    style Registry fill:#fff4e6
-    style Workload fill:#f3e5f5
-    style Runtime fill:#f3e5f5
-    style Transport fill:#e8f5e9
-    style Client fill:#fce4ec
-    style PermissionProfile fill:#ffebee
-    style Authz fill:#ffebee
-    style MCPServerCRD fill:#e3f2fd
-    style MCPRegistryCRD fill:#e3f2fd
-    style AuditEvent fill:#f1f8e9
-    style Telemetry fill:#f1f8e9
+    %% Security
+    Auth[Authentication<br/>OIDC/OAuth]
+    Authz[Authorization<br/>Cedar]
+
+    Auth --> Authz
+    Authz --> Op[Operation]
+    Op -.-> Tool
+    Op -.-> Prompt
+    Op -.-> Resource
+
+    %% Kubernetes CRDs
+    MCRD[MCPServer CRD]
+    RegCRD[MCPRegistry CRD]
+    ToolCRD[MCPToolConfig CRD]
+
+    MCRD --> Workload
+    MCRD --> PermProfile
+    MCRD --> Auth
+    MCRD --> Authz
+    MCRD --> Telem[Telemetry]
+    MCRD --> Audit[Audit Event]
+    MCRD --> ToolCRD
+
+    RegCRD --> Registry
+
+    ToolCRD --> Filter[Tool Filter]
+    Filter --> Tool
+
+    %% Observability
+    Telem --> OTLP[OpenTelemetry]
+    Telem --> Prom[Prometheus]
+
+    %% Configuration
+    RunCfg[Run Config]
+    RunCfg --> EnvVar[Env Variables]
+    RunCfg --> PortBind[Port Binding]
+    RunCfg --> Group
+    RunCfg --> Proxy
+
+    Workload --> RunCfg
+
+    %% Sidecars
+    Workload --> Sidecar[Sidecar]
+    Sidecar --> Egress[Egress Proxy]
+    Egress --> NetPerms
+
+    %% Monitoring
+    Runtime --> Monitor[Container Monitor]
+
+    %% Additional
+    Tunnel[Tunnel Provider]
+    Tunnel -.-> Session
+
+    Status[Status Collector]
+    MCRD -.-> Status
+    RegCRD -.-> Status
+
+    %% Styling
+    classDef mcp fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    classDef reg fill:#fff4e6,stroke:#e65100,stroke-width:2px
+    classDef wl fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef trans fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    classDef cli fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    classDef sec fill:#ffebee,stroke:#b71c1c,stroke-width:2px
+    classDef k8s fill:#e3f2fd,stroke:#0d47a1,stroke-width:2px
+    classDef obs fill:#f1f8e9,stroke:#33691e,stroke-width:2px
+
+    class MCP,MCPServer,Feature,Tool,Prompt,Resource mcp
+    class Registry,ImageMeta,RemoteMeta,Group,Provenance reg
+    class Workload,Runtime,Docker,Podman,Colima,K8s,Sidecar,Egress,Monitor wl
+    class Transport,Stdio,SSE,StreamHTTP,HTTP,Proxy,Session trans
+    class Client,Discovery cli
+    class PermProfile,NetPerms,Secret,Auth,Authz,Ignore,Op sec
+    class MCRD,RegCRD,ToolCRD,Status k8s
+    class Audit,Telem,OTLP,Prom obs
 ```
 
 ## Key Relationships

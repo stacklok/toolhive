@@ -455,6 +455,29 @@ func buildRunnerConfig(
 		toolsOverride = *loadedToolsOverride
 	}
 
+	// Configure middleware and additional options
+	additionalOpts, err := configureMiddlewareAndOptions(runFlags, serverMetadata, toolsOverride, oidcConfig,
+		telemetryConfig, serverName, transportType)
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, additionalOpts...)
+
+	return runner.NewRunConfigBuilder(ctx, imageMetadata, envVars, envVarValidator, opts...)
+}
+
+// configureMiddlewareAndOptions configures middleware and additional runner options
+func configureMiddlewareAndOptions(
+	runFlags *RunFlags,
+	serverMetadata registry.ServerMetadata,
+	toolsOverride map[string]runner.ToolOverride,
+	oidcConfig *auth.TokenValidatorConfig,
+	telemetryConfig *telemetry.Config,
+	serverName string,
+	transportType string,
+) ([]runner.RunConfigBuilderOption, error) {
+	var opts []runner.RunConfigBuilderOption
+
 	// Configure middleware from flags
 	tokenExchangeConfig, err := runFlags.RemoteAuthFlags.BuildTokenExchangeConfig()
 	if err != nil {
@@ -479,26 +502,12 @@ func buildRunnerConfig(
 		),
 	)
 
-	if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
-		remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata)
-
-		// Validate OAuth callback port availability upfront for better user experience
-		if err := networking.ValidateCallbackPort(remoteAuthConfig.CallbackPort, remoteAuthConfig.ClientID); err != nil {
-			return nil, err
-		}
-
-		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig), runner.WithRemoteURL(remoteServerMetadata.URL))
+	// Configure remote authentication if applicable
+	remoteAuthOpts, err := configureRemoteAuth(runFlags, serverMetadata)
+	if err != nil {
+		return nil, err
 	}
-	if runFlags.RemoteURL != "" {
-		remoteAuthConfig := getRemoteAuthFromRunFlags(runFlags)
-
-		// Validate OAuth callback port availability upfront for better user experience
-		if err := networking.ValidateCallbackPort(remoteAuthConfig.CallbackPort, remoteAuthConfig.ClientID); err != nil {
-			return nil, err
-		}
-
-		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig))
-	}
+	opts = append(opts, remoteAuthOpts...)
 
 	// Load authz config if path is provided
 	if runFlags.AuthzConfig != "" {
@@ -531,7 +540,36 @@ func buildRunnerConfig(
 		opts = append(opts, runner.WithEnvFilesFromDirectory(runFlags.EnvFileDir))
 	}
 
-	return runner.NewRunConfigBuilder(ctx, imageMetadata, envVars, envVarValidator, opts...)
+	return opts, nil
+}
+
+// configureRemoteAuth configures remote authentication options if applicable
+func configureRemoteAuth(runFlags *RunFlags, serverMetadata registry.ServerMetadata) ([]runner.RunConfigBuilderOption, error) {
+	var opts []runner.RunConfigBuilderOption
+
+	if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
+		remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata)
+
+		// Validate OAuth callback port availability upfront for better user experience
+		if err := networking.ValidateCallbackPort(remoteAuthConfig.CallbackPort, remoteAuthConfig.ClientID); err != nil {
+			return nil, err
+		}
+
+		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig), runner.WithRemoteURL(remoteServerMetadata.URL))
+	}
+
+	if runFlags.RemoteURL != "" {
+		remoteAuthConfig := getRemoteAuthFromRunFlags(runFlags)
+
+		// Validate OAuth callback port availability upfront for better user experience
+		if err := networking.ValidateCallbackPort(remoteAuthConfig.CallbackPort, remoteAuthConfig.ClientID); err != nil {
+			return nil, err
+		}
+
+		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig))
+	}
+
+	return opts, nil
 }
 
 // extractOIDCValues extracts OIDC values from the OIDC config for legacy configuration

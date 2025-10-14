@@ -207,6 +207,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			TokenURL:     runConfig.RemoteAuthConfig.TokenURL,
 			ClientID:     runConfig.RemoteAuthConfig.ClientID,
 			Scopes:       runConfig.RemoteAuthConfig.Scopes,
+			UsePKCE:      runConfig.RemoteAuthConfig.UsePKCE,
 			OAuthParams:  runConfig.RemoteAuthConfig.OAuthParams,
 			CallbackPort: runConfig.RemoteAuthConfig.CallbackPort,
 			SkipBrowser:  runConfig.RemoteAuthConfig.SkipBrowser,

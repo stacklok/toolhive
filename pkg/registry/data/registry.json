@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-13T00:18:49Z",
+  "last_updated": "2025-10-14T00:17:11Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -2343,9 +2343,9 @@
         "webSearch"
       ],
       "metadata": {
-        "stars": 358,
+        "stars": 365,
         "pulls": 109,
-        "last_updated": "2025-09-15T02:32:02Z"
+        "last_updated": "2025-10-13T02:32:37Z"
       },
       "repository_url": "https://github.com/graphlit/graphlit-mcp-server",
       "tags": [
@@ -3023,9 +3023,9 @@
         "run_chdb_select_query"
       ],
       "metadata": {
-        "stars": 522,
+        "stars": 556,
         "pulls": 81,
-        "last_updated": "2025-09-15T02:32:01Z"
+        "last_updated": "2025-10-13T02:32:36Z"
       },
       "repository_url": "https://github.com/ClickHouse/mcp-clickhouse",
       "tags": [
@@ -3242,9 +3242,9 @@
         "write_neo4j_cypher"
       ],
       "metadata": {
-        "stars": 691,
+        "stars": 742,
         "pulls": 91,
-        "last_updated": "2025-09-15T02:32:01Z"
+        "last_updated": "2025-10-13T02:32:36Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -3319,9 +3319,9 @@
         "list_memories"
       ],
       "metadata": {
-        "stars": 691,
+        "stars": 742,
         "pulls": 105,
-        "last_updated": "2025-09-15T02:32:01Z"
+        "last_updated": "2025-10-13T02:32:37Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -3678,7 +3678,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-15T08:11:53Z"
+        "last_updated": "2025-10-13T02:32:37Z"
       },
       "repository_url": "https://github.com/StacklokLabs/meta-mcp",
       "tags": [

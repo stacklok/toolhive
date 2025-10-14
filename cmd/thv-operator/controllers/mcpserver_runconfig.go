@@ -307,7 +307,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	}
 
 	// Add OIDC authentication configuration if specified
-	addOIDCConfigOptions(&options, m.Spec.OIDCConfig)
+	r.addOIDCConfigOptions(ctx, &options, m.Spec.OIDCConfig, m)
 
 	// Add audit configuration if specified
 	addAuditConfigOptions(&options, m.Spec.Audit)

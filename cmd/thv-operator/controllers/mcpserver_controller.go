@@ -84,9 +84,6 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 // mcpContainerName is the name of the mcp container used in pod templates
 const mcpContainerName = "mcp"
 
-// trueValue is the string value "true" used for environment variable comparisons
-const trueValue = "true"
-
 // Restart annotation keys for triggering pod restart
 const (
 	RestartedAtAnnotationKey          = "mcpserver.toolhive.stacklok.dev/restarted-at"

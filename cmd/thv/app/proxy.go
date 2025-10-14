@@ -168,6 +168,14 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid target URI: %w", err)
 	}
 
+	// Validate OAuth callback port availability
+	if err := networking.ValidateCallbackPort(
+		remoteAuthFlags.RemoteAuthCallbackPort,
+		remoteAuthFlags.RemoteAuthClientID,
+	); err != nil {
+		return err
+	}
+
 	// Select a port for the HTTP proxy (host port)
 	port, err := networking.FindOrUsePort(proxyPort)
 	if err != nil {

@@ -158,6 +158,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 				TokenURL:     "https://oauth.example.com/token",
 				ClientID:     "test-client",
 				Scopes:       []string{"read", "write"},
+				UsePKCE:      true,
 				OAuthParams:  map[string]string{"custom": "param"},
 				CallbackPort: 8081,
 			},
@@ -172,6 +173,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.Equal(t, "https://oauth.example.com/token", result.OAuthConfig.TokenURL)
 		assert.Equal(t, "test-client", result.OAuthConfig.ClientID)
 		assert.Equal(t, []string{"read", "write"}, result.OAuthConfig.Scopes)
+		assert.True(t, result.OAuthConfig.UsePKCE)
 		assert.Equal(t, map[string]string{"custom": "param"}, result.OAuthConfig.OAuthParams)
 		assert.Equal(t, 8081, result.OAuthConfig.CallbackPort)
 	})

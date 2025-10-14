@@ -438,27 +438,28 @@ func LoadState(ctx context.Context, name string) (*RunConfig, error) {
 
 // RemoteAuthConfig holds configuration for remote authentication
 type RemoteAuthConfig struct {
-	ClientID         string
-	ClientSecret     string
-	ClientSecretFile string
-	Scopes           []string
-	SkipBrowser      bool
-	Timeout          time.Duration `swaggertype:"string" example:"5m"`
-	CallbackPort     int
+	ClientID         string        `json:"client_id,omitempty" yaml:"client_id,omitempty"`
+	ClientSecret     string        `json:"client_secret,omitempty" yaml:"client_secret,omitempty"`
+	ClientSecretFile string        `json:"client_secret_file,omitempty" yaml:"client_secret_file,omitempty"`
+	Scopes           []string      `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+	SkipBrowser      bool          `json:"skip_browser,omitempty" yaml:"skip_browser,omitempty"`
+	Timeout          time.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty" swaggertype:"string" example:"5m"`
+	CallbackPort     int           `json:"callback_port,omitempty" yaml:"callback_port,omitempty"`
+	UsePKCE          bool          `json:"use_pkce" yaml:"use_pkce"`
 
 	// OAuth endpoint configuration (from registry)
-	Issuer       string
-	AuthorizeURL string
-	TokenURL     string
+	Issuer       string `json:"issuer,omitempty" yaml:"issuer,omitempty"`
+	AuthorizeURL string `json:"authorize_url,omitempty" yaml:"authorize_url,omitempty"`
+	TokenURL     string `json:"token_url,omitempty" yaml:"token_url,omitempty"`
 
 	// Headers for HTTP requests
-	Headers []*registry.Header
+	Headers []*registry.Header `json:"headers,omitempty" yaml:"headers,omitempty"`
 
 	// Environment variables for the client
-	EnvVars []*registry.EnvVar
+	EnvVars []*registry.EnvVar `json:"env_vars,omitempty" yaml:"env_vars,omitempty"`
 
 	// OAuth parameters for server-specific customization
-	OAuthParams map[string]string
+	OAuthParams map[string]string `json:"oauth_params,omitempty" yaml:"oauth_params,omitempty"`
 }
 
 // ToolOverride represents a tool override.

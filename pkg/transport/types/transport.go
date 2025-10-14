@@ -2,7 +2,7 @@
 // used in communication between the client and MCP server.
 package types
 
-//go:generate go run go.uber.org/mock/mockgen -package mocks -destination=mocks/transport.go -source=transport.go MiddlewareRunner,RunnerConfig
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination=mocks/mock_transport.go -source=transport.go MiddlewareRunner,RunnerConfig
 
 import (
 	"context"

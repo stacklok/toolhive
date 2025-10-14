@@ -145,7 +145,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 			foundRunconfigVolume := false
 			for _, v := range templateSpec.Volumes {
-				if v.Name == "runconfig" && v.ConfigMap != nil && v.ConfigMap.LocalObjectReference.Name == (mcpServerName+"-runconfig") {
+				if v.Name == "runconfig" && v.ConfigMap != nil && v.ConfigMap.Name == (mcpServerName+"-runconfig") {
 					foundRunconfigVolume = true
 					break
 				}

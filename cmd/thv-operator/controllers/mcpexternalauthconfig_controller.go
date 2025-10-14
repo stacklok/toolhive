@@ -3,13 +3,11 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"hash/fnv"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/dump"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -131,18 +129,7 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 
 // calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities
 func (*MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPExternalAuthConfigSpec) string {
-	// Use k8s.io/apimachinery/pkg/util/dump.ForHash which is designed for
-	// generating consistent string representations for hashing in Kubernetes
-	hashString := dump.ForHash(spec)
-
-	// Use FNV-1a hash which is commonly used in Kubernetes for fast hashing
-	// See: https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/controller_utils.go
-	hasher := fnv.New32a()
-	// Write returns an error only if the underlying writer returns an error,
-	// which never happens for hash.Hash implementations
-	//nolint:errcheck
-	_, _ = hasher.Write([]byte(hashString))
-	return fmt.Sprintf("%x", hasher.Sum32())
+	return CalculateConfigHash(spec)
 }
 
 // handleDeletion handles the deletion of a MCPExternalAuthConfig
@@ -197,22 +184,13 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 	ctx context.Context,
 	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
 ) ([]mcpv1alpha1.MCPServer, error) {
-	// List all MCPServers in the same namespace
-	mcpServerList := &mcpv1alpha1.MCPServerList{}
-	if err := r.List(ctx, mcpServerList, client.InNamespace(externalAuthConfig.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
-	}
-
-	// Filter MCPServers that reference this MCPExternalAuthConfig
-	var referencingServers []mcpv1alpha1.MCPServer
-	for _, server := range mcpServerList.Items {
-		if server.Spec.ExternalAuthConfigRef != nil &&
-			server.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name {
-			referencingServers = append(referencingServers, server)
-		}
-	}
-
-	return referencingServers, nil
+	return FindReferencingMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
+		func(server *mcpv1alpha1.MCPServer) *string {
+			if server.Spec.ExternalAuthConfigRef != nil {
+				return &server.Spec.ExternalAuthConfigRef.Name
+			}
+			return nil
+		})
 }
 
 // SetupWithManager sets up the controller with the Manager.

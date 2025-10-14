@@ -822,11 +822,8 @@ func (r *MCPServerReconciler) addExternalAuthConfigOptions(
 			m.Namespace, tokenExchangeSpec.ClientSecretRef.Name, tokenExchangeSpec.ClientSecretRef.Key)
 	}
 
-	// Convert scope string to slice
-	var scopes []string
-	if tokenExchangeSpec.Scope != "" {
-		scopes = strings.Fields(tokenExchangeSpec.Scope)
-	}
+	// Use scopes array directly from spec (already matches middleware.Config format)
+	scopes := tokenExchangeSpec.Scopes
 
 	// Determine header strategy based on ExternalTokenHeaderName
 	headerStrategy := "replace" // Default strategy

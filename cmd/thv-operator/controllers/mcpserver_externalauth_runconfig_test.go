@@ -90,7 +90,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 							Key:  "client-secret",
 						},
 						Audience:                "backend-service",
-						Scope:                   "read write admin",
+						Scopes:                  []string{"read", "write", "admin"},
 						ExternalTokenHeaderName: "X-Original-Authorization",
 					},
 				},
@@ -336,7 +336,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 							Key:  "key",
 						},
 						Audience: "api",
-						Scope:    "", // Empty scope
+						Scopes:   []string{}, // Empty scopes
 					},
 				},
 			},
@@ -443,7 +443,7 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 							Key:  "client-secret",
 						},
 						Audience: "backend-api",
-						Scope:    "read write",
+						Scopes:   []string{"read", "write"},
 					},
 				},
 			},

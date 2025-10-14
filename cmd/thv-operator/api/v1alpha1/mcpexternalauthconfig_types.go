@@ -32,29 +32,29 @@ type MCPExternalAuthConfigSpec struct {
 type TokenExchangeConfig struct {
 	// TokenURL is the OAuth 2.0 token endpoint URL for token exchange
 	// +kubebuilder:validation:Required
-	TokenURL string `json:"token_url"`
+	TokenURL string `json:"tokenUrl"`
 
 	// ClientID is the OAuth 2.0 client identifier
 	// +kubebuilder:validation:Required
-	ClientID string `json:"client_id"`
+	ClientID string `json:"clientId"`
 
 	// ClientSecretRef is a reference to a secret containing the OAuth 2.0 client secret
 	// +kubebuilder:validation:Required
-	ClientSecretRef SecretKeyRef `json:"client_secret_ref"`
+	ClientSecretRef SecretKeyRef `json:"clientSecretRef"`
 
 	// Audience is the target audience for the exchanged token
 	// +kubebuilder:validation:Required
 	Audience string `json:"audience"`
 
-	// Scope is the scope to request for the exchanged token (space-separated string)
+	// Scopes is a list of OAuth 2.0 scopes to request for the exchanged token
 	// +optional
-	Scope string `json:"scope,omitempty"`
+	Scopes []string `json:"scopes,omitempty"`
 
 	// ExternalTokenHeaderName is the name of the custom header to use for the exchanged token.
 	// If set, the exchanged token will be added to this custom header (e.g., "X-Upstream-Token").
 	// If empty or not set, the exchanged token will replace the Authorization header (default behavior).
 	// +optional
-	ExternalTokenHeaderName string `json:"external_token_header_name,omitempty"`
+	ExternalTokenHeaderName string `json:"externalTokenHeaderName,omitempty"`
 }
 
 // SecretKeyRef is a reference to a key within a Secret

@@ -117,7 +117,9 @@ func (p *HTTPProxy) Stop(ctx context.Context) error {
 
 		// Stop session manager cleanup and disconnect sessions
 		if p.sessionManager != nil {
-			p.sessionManager.Stop()
+			if err := p.sessionManager.Stop(); err != nil {
+				logger.Errorf("Failed to stop session manager: %v", err)
+			}
 			p.sessionManager.Range(func(_, value interface{}) bool {
 				if ss, ok := value.(*session.StreamableSession); ok {
 					ss.Disconnect()
@@ -202,7 +204,9 @@ func (p *HTTPProxy) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusNotFound, "session not found")
 		return
 	}
-	p.sessionManager.Delete(sessID)
+	if err := p.sessionManager.Delete(sessID); err != nil {
+		logger.Debugf("Failed to delete session %s: %v", sessID, err)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

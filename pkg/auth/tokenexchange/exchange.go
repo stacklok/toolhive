@@ -27,6 +27,14 @@ const (
 	//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
 	tokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
 
+	// tokenTypeIDToken indicates an OpenID Connect ID Token (required by Google STS)
+	//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
+	tokenTypeIDToken = "urn:ietf:params:oauth:token-type:id_token"
+
+	// tokenTypeJWT indicates a JSON Web Token
+	//nolint:gosec // G101: False positive - these are OAuth2 URN identifiers, not credentials
+	tokenTypeJWT = "urn:ietf:params:oauth:token-type:jwt"
+
 	// defaultHTTPTimeout is the timeout for HTTP requests
 	defaultHTTPTimeout = 30 * time.Second
 
@@ -39,6 +47,37 @@ const (
 	// emptyPlaceholder is used to indicate empty/missing values in string representations
 	emptyPlaceholder = "<empty>"
 )
+
+// NormalizeTokenType converts a short token type name to its full URN.
+// Accepts both short forms ("access_token", "id_token", "jwt") and full URNs.
+// Returns the full URN or an error if the token type is invalid.
+//
+// This is primarily intended for CLI/user input processing. Internal APIs
+// should use full URNs directly.
+func NormalizeTokenType(tokenType string) (string, error) {
+	// Empty string is valid (will use default)
+	if tokenType == "" {
+		return "", nil
+	}
+
+	// Check if already a full URN (backward compatibility)
+	switch tokenType {
+	case tokenTypeAccessToken, tokenTypeIDToken, tokenTypeJWT:
+		return tokenType, nil
+	}
+
+	// Convert short form to full URN
+	switch tokenType {
+	case "access_token":
+		return tokenTypeAccessToken, nil
+	case "id_token":
+		return tokenTypeIDToken, nil
+	case "jwt":
+		return tokenTypeJWT, nil
+	default:
+		return "", fmt.Errorf("invalid token type %q: must be one of: access_token, id_token, jwt", tokenType)
+	}
+}
 
 // oAuthError represents an OAuth 2.0 error response as defined in RFC 6749 Section 5.2.
 type oAuthError struct {
@@ -175,6 +214,11 @@ type ExchangeConfig struct {
 	// Scopes is the list of scopes to request (optional per RFC 8693)
 	Scopes []string
 
+	// SubjectTokenType specifies the type of the subject token being exchanged.
+	// Common values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.
+	// If empty, defaults to tokenTypeAccessToken.
+	SubjectTokenType string
+
 	// SubjectTokenProvider is a function that returns the subject token to exchange
 	// we use a function to allow dynamic retrieval of the token (e.g. from request context)
 	// and also to lazy-load the token only when needed, load from dynamic sources, etc.
@@ -195,8 +239,23 @@ func (c *ExchangeConfig) Validate() error {
 		return fmt.Errorf("SubjectTokenProvider is required")
 	}
 
-	if c.ClientID == "" {
-		return fmt.Errorf("ClientID is required")
+	// ClientID is optional - some token exchange endpoints (like Google STS)
+	// don't require client credentials and rely on the trust relationship
+	// configured in the identity provider (e.g., Workload Identity Federation)
+
+	// Validate SubjectTokenType if provided
+	if c.SubjectTokenType != "" {
+		validTypes := []string{tokenTypeAccessToken, tokenTypeIDToken, tokenTypeJWT}
+		isValid := false
+		for _, validType := range validTypes {
+			if c.SubjectTokenType == validType {
+				isValid = true
+				break
+			}
+		}
+		if !isValid {
+			return fmt.Errorf("invalid SubjectTokenType %q: must be one of %v", c.SubjectTokenType, validTypes)
+		}
 	}
 
 	// Validate URL format
@@ -230,6 +289,12 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 		return nil, fmt.Errorf("failed to get subject token: %w", err)
 	}
 
+	// Determine subject token type (default to access_token if not specified)
+	subjectTokenType := conf.SubjectTokenType
+	if subjectTokenType == "" {
+		subjectTokenType = tokenTypeAccessToken
+	}
+
 	// Build the token exchange request
 	request := &exchangeRequest{
 		GrantType:          grantTypeTokenExchange,
@@ -237,7 +302,7 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 		Scope:              conf.Scopes,
 		RequestedTokenType: tokenTypeAccessToken,
 		SubjectToken:       subjectToken,
-		SubjectTokenType:   tokenTypeAccessToken,
+		SubjectTokenType:   subjectTokenType,
 	}
 
 	clientAuth := clientAuthentication{

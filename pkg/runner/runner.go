@@ -176,7 +176,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Set the token source on the HTTP transport
-		if httpTransport, ok := transportHandler.(interface{ SetTokenSource(*oauth2.TokenSource) }); ok {
+		if httpTransport, ok := transportHandler.(interface{ SetTokenSource(oauth2.TokenSource) }); ok {
 			httpTransport.SetTokenSource(tokenSource)
 		}
 
@@ -328,7 +328,7 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 // handleRemoteAuthentication handles authentication for remote MCP servers
-func (r *Runner) handleRemoteAuthentication(ctx context.Context) (*oauth2.TokenSource, error) {
+func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSource, error) {
 	if r.Config.RemoteAuthConfig == nil {
 		return nil, nil
 	}

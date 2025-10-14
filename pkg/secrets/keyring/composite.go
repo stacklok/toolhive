@@ -19,6 +19,8 @@ type compositeProvider struct {
 
 // NewCompositeProvider creates a new composite keyring provider that combines multiple backends.
 // It uses zalando/go-keyring as the primary provider and keyctl as a fallback on Linux.
+//
+//nolint:staticcheck
 func NewCompositeProvider() Provider {
 	var providers []Provider
 

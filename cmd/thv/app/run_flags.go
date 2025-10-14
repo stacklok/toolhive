@@ -455,13 +455,19 @@ func buildRunnerConfig(
 		toolsOverride = *loadedToolsOverride
 	}
 
-	opts = append(opts, runner.WithToolsOverride(toolsOverride))
 	// Configure middleware from flags
+	tokenExchangeConfig, err := runFlags.RemoteAuthFlags.BuildTokenExchangeConfig()
+	if err != nil {
+		return nil, fmt.Errorf("invalid token exchange configuration: %w", err)
+	}
+
 	// Use computed serverName and transportType for correct telemetry labels
+	opts = append(opts, runner.WithToolsOverride(toolsOverride))
 	opts = append(
 		opts,
 		runner.WithMiddlewareFromFlags(
 			oidcConfig,
+			tokenExchangeConfig,
 			runFlags.ToolsFilter,
 			toolsOverride,
 			telemetryConfig,
@@ -475,10 +481,22 @@ func buildRunnerConfig(
 
 	if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
 		remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata)
+
+		// Validate OAuth callback port availability upfront for better user experience
+		if err := networking.ValidateCallbackPort(remoteAuthConfig.CallbackPort, remoteAuthConfig.ClientID); err != nil {
+			return nil, err
+		}
+
 		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig), runner.WithRemoteURL(remoteServerMetadata.URL))
 	}
 	if runFlags.RemoteURL != "" {
 		remoteAuthConfig := getRemoteAuthFromRunFlags(runFlags)
+
+		// Validate OAuth callback port availability upfront for better user experience
+		if err := networking.ValidateCallbackPort(remoteAuthConfig.CallbackPort, remoteAuthConfig.ClientID); err != nil {
+			return nil, err
+		}
+
 		opts = append(opts, runner.WithRemoteAuth(remoteAuthConfig))
 	}
 

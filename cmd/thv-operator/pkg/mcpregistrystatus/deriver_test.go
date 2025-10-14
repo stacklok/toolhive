@@ -19,8 +19,6 @@ func TestNewDefaultStatusDeriver(t *testing.T) {
 func TestDeriveOverallStatus(t *testing.T) {
 	t.Parallel()
 
-	deriver := &DefaultStatusDeriver{}
-
 	tests := []struct {
 		name            string
 		syncStatus      *mcpv1alpha1.SyncStatus
@@ -149,6 +147,7 @@ func TestDeriveOverallStatus(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			deriver := &DefaultStatusDeriver{}
 			phase, message := deriver.DeriveOverallStatus(tt.syncStatus, tt.apiStatus)
 
 			assert.Equal(t, tt.expectedPhase, phase, tt.description)
@@ -160,8 +159,6 @@ func TestDeriveOverallStatus(t *testing.T) {
 func TestDeriveOverallStatus_PriorityOrdering(t *testing.T) {
 	t.Parallel()
 
-	deriver := &DefaultStatusDeriver{}
-
 	// Test that sync failures take precedence over API errors
 	syncStatus := &mcpv1alpha1.SyncStatus{
 		Phase:   mcpv1alpha1.SyncPhaseFailed,
@@ -172,6 +169,7 @@ func TestDeriveOverallStatus_PriorityOrdering(t *testing.T) {
 		Message: "api failed",
 	}
 
+	deriver := &DefaultStatusDeriver{}
 	phase, message := deriver.DeriveOverallStatus(syncStatus, apiStatus)
 
 	assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseFailed, phase)
@@ -182,8 +180,6 @@ func TestDeriveOverallStatus_PriorityOrdering(t *testing.T) {
 func TestDeriveOverallStatus_SyncingTakesPrecedence(t *testing.T) {
 	t.Parallel()
 
-	deriver := &DefaultStatusDeriver{}
-
 	// Test that syncing takes precedence over API ready state
 	syncStatus := &mcpv1alpha1.SyncStatus{
 		Phase: mcpv1alpha1.SyncPhaseSyncing,
@@ -192,6 +188,7 @@ func TestDeriveOverallStatus_SyncingTakesPrecedence(t *testing.T) {
 		Phase: mcpv1alpha1.APIPhaseReady,
 	}
 
+	deriver := &DefaultStatusDeriver{}
 	phase, message := deriver.DeriveOverallStatus(syncStatus, apiStatus)
 
 	assert.Equal(t, mcpv1alpha1.MCPRegistryPhaseSyncing, phase)
@@ -200,8 +197,6 @@ func TestDeriveOverallStatus_SyncingTakesPrecedence(t *testing.T) {
 
 func TestDeriveOverallStatus_EdgeCases(t *testing.T) {
 	t.Parallel()
-
-	deriver := &DefaultStatusDeriver{}
 
 	tests := []struct {
 		name        string
@@ -235,6 +230,7 @@ func TestDeriveOverallStatus_EdgeCases(t *testing.T) {
 			t.Parallel()
 
 			// Should not panic and should return valid phase/message
+			deriver := &DefaultStatusDeriver{}
 			phase, message := deriver.DeriveOverallStatus(tt.syncStatus, tt.apiStatus)
 
 			assert.NotEmpty(t, phase, tt.description)

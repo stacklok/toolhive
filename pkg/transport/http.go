@@ -44,7 +44,7 @@ type HTTPTransport struct {
 	remoteURL string
 
 	// tokenSource is the OAuth token source for remote authentication
-	tokenSource *oauth2.TokenSource
+	tokenSource oauth2.TokenSource
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -103,7 +103,7 @@ func (t *HTTPTransport) SetRemoteURL(remoteURL string) {
 }
 
 // SetTokenSource sets the OAuth token source for remote authentication
-func (t *HTTPTransport) SetTokenSource(tokenSource *oauth2.TokenSource) {
+func (t *HTTPTransport) SetTokenSource(tokenSource oauth2.TokenSource) {
 	t.tokenSource = tokenSource
 }
 
@@ -112,7 +112,7 @@ func (t *HTTPTransport) createTokenInjectionMiddleware() types.MiddlewareFunctio
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if t.tokenSource != nil {
-				token, err := (*t.tokenSource).Token()
+				token, err := t.tokenSource.Token()
 				if err != nil {
 					logger.Warnf("Unable to retrieve OAuth token: %v", err)
 					// Continue without token rather than failing

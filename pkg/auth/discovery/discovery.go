@@ -379,7 +379,7 @@ type OAuthFlowConfig struct {
 
 // OAuthFlowResult contains the result of an OAuth flow
 type OAuthFlowResult struct {
-	TokenSource *oauth2.TokenSource
+	TokenSource oauth2.TokenSource
 	Config      *oauth.Config
 }
 
@@ -393,6 +393,32 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 
 	if config == nil {
 		return nil, fmt.Errorf("OAuth flow config cannot be nil")
+	}
+
+	// Resolve port availability BEFORE dynamic registration
+	// This ensures we register the OAuth client with the same port we'll actually use
+
+	if shouldDynamicallyRegisterClient(config) {
+		// For dynamic registration, we can allow fallback to alternative ports
+		// since we can register the client with the actual port we'll use
+		port, err := networking.FindOrUsePort(config.CallbackPort)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find available port: %w", err)
+		}
+
+		if port != config.CallbackPort {
+			logger.Warnf("Specified auth callback port %d is unavailable, using port %d instead", config.CallbackPort, port)
+		}
+		config.CallbackPort = port
+	} else {
+		// For pre-registered clients, use strict port checking
+		// The user likely configured this port in their IdP/app
+		if !networking.IsAvailable(config.CallbackPort) {
+			return nil, fmt.Errorf(
+				"specified auth callback port %d is not available - please choose a different port or ensure it's not in use",
+				config.CallbackPort,
+			)
+		}
 	}
 
 	// Handle dynamic client registration if needed
@@ -523,7 +549,7 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 
 	source := flow.TokenSource()
 	return &OAuthFlowResult{
-		TokenSource: &source,
+		TokenSource: source,
 		Config:      oauthConfig,
 	}, nil
 }

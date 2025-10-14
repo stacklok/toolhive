@@ -229,6 +229,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 	options = append(options,
 		runner.WithMiddlewareFromFlags(
 			nil,
+			nil, // tokenExchangeConfig - not supported via API yet
 			req.ToolsFilter,
 			toolsOverride,
 			nil,

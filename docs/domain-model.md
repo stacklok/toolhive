@@ -18,6 +18,22 @@ Three main types of capabilities MCP servers provide:
 - **Prompts**: Templates for LLM interactions that provide structured guidance
 - **Resources**: Data providing context to the LLM (e.g., file contents, API responses)
 
+#### **Tool**
+A callable function exposed by an MCP server that enables LLMs to perform actions in external systems. Tools are the primary way MCP servers extend LLM capabilities beyond text generation. Each tool has:
+- **Name**: Unique identifier for the tool
+- **Description**: Human and LLM-readable explanation of what the tool does
+- **Input Schema**: JSON Schema defining the parameters the tool accepts
+- **Handler**: Server-side implementation that executes when the tool is called
+
+Common tool examples:
+- File system operations (read, write, list directories)
+- API calls to external services (search, data retrieval)
+- Code execution and compilation
+- Database queries
+- Web scraping and content fetching
+
+Tools are invoked via the MCP `tools/call` method, where the client sends the tool name and arguments, and the server executes the function and returns results. Authorization policies can control which clients can call which tools.
+
 #### **Operation** (MCP Operation)
 Actions performed on features:
 - **list**: Get a list of available items (tools, prompts, resources)
@@ -311,6 +327,12 @@ graph TD
     Feature --> Tool[Tool]
     Feature --> Prompt[Prompt]
     Feature --> Resource[Resource]
+
+    %% Tool details
+    Tool --> ToolName[Tool Name]
+    Tool --> ToolDesc[Tool Description]
+    Tool --> ToolSchema[Input Schema]
+    Tool --> ToolHandler[Handler Implementation]
 
     %% Registry Layer
     Registry[Registry]

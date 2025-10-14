@@ -99,7 +99,6 @@ Communication protocol for MCP servers. Different transports suit different depl
 - **stdio**: Standard input/output communication, suitable for local CLI tools
 - **SSE**: Server-Sent Events for streaming, works over HTTP with unidirectional server-to-client streaming
 - **streamable-http**: Custom HTTP streaming protocol with bidirectional capabilities
-- **HTTP**: Traditional request/response for stateless interactions
 
 #### **Proxy Mode**
 For stdio transport, the proxy mode determines how the proxy communicates with clients (sse or streamable-http). Direct transports (sse, streamable-http) use their native protocol. This enables stdio-based MCP servers to be accessed over the network.
@@ -344,7 +343,6 @@ graph TD
     Transport --> Stdio[stdio]
     Transport --> SSE[SSE]
     Transport --> StreamHTTP[streamable-http]
-    Transport --> HTTP[HTTP]
 
     Stdio --> Proxy[Proxy Mode]
 
@@ -427,7 +425,7 @@ graph TD
     class MCP,MCPServer,Feature,Tool,Prompt,Resource mcp
     class Registry,ImageMeta,RemoteMeta,Group,Provenance reg
     class Workload,Runtime,Docker,Podman,Colima,K8s,Sidecar,Egress,Monitor wl
-    class Transport,Stdio,SSE,StreamHTTP,HTTP,Proxy,Session trans
+    class Transport,Stdio,SSE,StreamHTTP,Proxy,Session trans
     class Client,Discovery cli
     class PermProfile,NetPerms,Secret,Auth,Authz,Ignore,Op sec
     class MCRD,RegCRD,ToolCRD,Status k8s

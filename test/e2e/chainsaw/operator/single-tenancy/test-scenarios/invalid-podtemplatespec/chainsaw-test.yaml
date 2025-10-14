@@ -28,8 +28,16 @@ spec:
     - assert:
         file: assert-mcpserver-invalid-condition.yaml
         timeout: 30s
-    - assert:
-        file: assert-no-deployment.yaml
+    - script:
+        content: |
+          #!/bin/bash
+          set -e
+          # Verify that no deployment was created for the invalid MCPServer
+          if kubectl get deployment invalid-podtemplate -n toolhive-system 2>/dev/null; then
+            echo "ERROR: Deployment should not exist for invalid MCPServer"
+            exit 1
+          fi
+          echo "SUCCESS: No deployment exists as expected"
         
   - name: cleanup
     description: Clean up the invalid MCPServer

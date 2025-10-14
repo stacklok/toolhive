@@ -1,3 +1,5 @@
+// Package oidc provides utilities for resolving OIDC configuration from various sources
+// including Kubernetes service accounts, ConfigMaps, and inline configurations.
 package oidc
 
 import (
@@ -6,10 +8,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -18,24 +20,10 @@ const (
 	defaultK8sTokenPath    = "/var/run/secrets/kubernetes.io/serviceaccount/token" //nolint:gosec
 	defaultK8sIssuer       = "https://kubernetes.default.svc"
 	defaultK8sAudience     = "toolhive"
-
-	// ConfigMap keys for OIDC configuration
-	configKeyIssuer             = "issuer"
-	configKeyAudience           = "audience"
-	configKeyJWKSURL            = "jwksUrl"
-	configKeyIntrospectionURL   = "introspectionUrl"
-	configKeyClientID           = "clientId"
-	configKeyClientSecret       = "clientSecret"
-	configKeyThvCABundlePath    = "thvCABundlePath"
-	configKeyJWKSAuthTokenPath  = "jwksAuthTokenPath"
-	configKeyJWKSAllowPrivateIP = "jwksAllowPrivateIP"
-
-	// trueValue is the string representation of true for ConfigMap values
-	trueValue = "true"
 )
 
 // OIDCConfig represents the resolved OIDC configuration values
-type OIDCConfig struct {
+type OIDCConfig struct { //nolint:revive // Keeping OIDCConfig name for backward compatibility
 	Issuer             string
 	Audience           string
 	JWKSURL            string
@@ -56,9 +44,9 @@ type Resolver interface {
 
 // NewResolver creates a new OIDC configuration resolver
 // It accepts an optional Kubernetes client for ConfigMap resolution
-func NewResolver(client client.Client) Resolver {
+func NewResolver(k8sClient client.Client) Resolver {
 	return &resolver{
-		client: client,
+		client: k8sClient,
 	}
 }
 
@@ -94,7 +82,7 @@ func (r *resolver) Resolve(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer
 }
 
 // resolveKubernetesConfig resolves OIDC configuration for Kubernetes type
-func (r *resolver) resolveKubernetesConfig(
+func (*resolver) resolveKubernetesConfig(
 	ctx context.Context,
 	config *mcpv1alpha1.KubernetesOIDCConfig,
 	resourceURL string,
@@ -172,12 +160,31 @@ func (r *resolver) resolveConfigMapConfig(
 			mcpServer.Namespace, configRef.Name, err)
 	}
 
-	// Extract OIDC configuration from ConfigMap data
-	return extractConfigFromMap(configMap.Data, resourceURL), nil
+	config := &OIDCConfig{
+		ResourceURL: resourceURL,
+	}
+
+	// Extract string values
+	config.Issuer = getMapValue(configMap.Data, "issuer")
+	config.Audience = getMapValue(configMap.Data, "audience")
+	config.JWKSURL = getMapValue(configMap.Data, "jwksUrl")
+	config.IntrospectionURL = getMapValue(configMap.Data, "introspectionUrl")
+	config.ClientID = getMapValue(configMap.Data, "clientId")
+	config.ClientSecret = getMapValue(configMap.Data, "clientSecret")
+	config.ThvCABundlePath = getMapValue(configMap.Data, "thvCABundlePath")
+	//nolint:gosec // This is just a config key name, not a credential
+	config.JWKSAuthTokenPath = getMapValue(configMap.Data, "jwksAuthTokenPath")
+
+	// Handle boolean value
+	if v, exists := configMap.Data["jwksAllowPrivateIP"]; exists && v == "true" {
+		config.JWKSAllowPrivateIP = true
+	}
+
+	return config, nil
 }
 
 // resolveInlineConfig resolves inline OIDC configuration
-func (r *resolver) resolveInlineConfig(
+func (*resolver) resolveInlineConfig(
 	config *mcpv1alpha1.InlineOIDCConfig,
 	resourceURL string,
 ) (*OIDCConfig, error) {
@@ -197,30 +204,6 @@ func (r *resolver) resolveInlineConfig(
 		ResourceURL:        resourceURL,
 		JWKSAllowPrivateIP: config.JWKSAllowPrivateIP,
 	}, nil
-}
-
-// extractConfigFromMap extracts OIDC configuration from a map of key-value pairs
-func extractConfigFromMap(data map[string]string, resourceURL string) *OIDCConfig {
-	config := &OIDCConfig{
-		ResourceURL: resourceURL,
-	}
-
-	// Extract string values
-	config.Issuer = getMapValue(data, configKeyIssuer)
-	config.Audience = getMapValue(data, configKeyAudience)
-	config.JWKSURL = getMapValue(data, configKeyJWKSURL)
-	config.IntrospectionURL = getMapValue(data, configKeyIntrospectionURL)
-	config.ClientID = getMapValue(data, configKeyClientID)
-	config.ClientSecret = getMapValue(data, configKeyClientSecret)
-	config.ThvCABundlePath = getMapValue(data, configKeyThvCABundlePath)
-	config.JWKSAuthTokenPath = getMapValue(data, configKeyJWKSAuthTokenPath)
-
-	// Handle boolean value
-	if v, exists := data[configKeyJWKSAllowPrivateIP]; exists && v == trueValue {
-		config.JWKSAllowPrivateIP = true
-	}
-
-	return config
 }
 
 // getMapValue is a helper to extract string values from a map

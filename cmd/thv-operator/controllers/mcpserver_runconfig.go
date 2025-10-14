@@ -296,7 +296,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	}
 
 	// Add telemetry configuration if specified
-	addTelemetryConfigOptions(&options, m.Spec.Telemetry, m.Name)
+	addTelemetryConfigOptions(&options, m.Spec.Telemetry, m.Name, m.Namespace)
 
 	// Add authorization configuration if specified
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
@@ -570,6 +570,7 @@ func addTelemetryConfigOptions(
 	options *[]runner.RunConfigBuilderOption,
 	telemetryConfig *mcpv1alpha1.TelemetryConfig,
 	mcpServerName string,
+	mcpServerNamespace string,
 ) {
 	if telemetryConfig == nil {
 		return
@@ -623,6 +624,11 @@ func addTelemetryConfigOptions(
 	if telemetryConfig.Prometheus != nil {
 		otelEnablePrometheusMetricsPath = telemetryConfig.Prometheus.Enabled
 	}
+
+	otelEnvironmentVariables = append(
+		otelEnvironmentVariables,
+		fmt.Sprintf("OTEL_RESOURCE_ATTRIBUTES=service.name=%s,service.namespace=%s", otelServiceName, mcpServerNamespace),
+	)
 
 	// Add telemetry config to options
 	*options = append(*options, runner.WithTelemetryConfig(
@@ -732,34 +738,167 @@ func (r *MCPServerReconciler) addAuthzConfigOptions(
 }
 
 // addOIDCConfigOptions adds OIDC authentication configuration options to the builder options
-func addOIDCConfigOptions(
+func (r *MCPServerReconciler) addOIDCConfigOptions(
+	ctx context.Context,
 	options *[]runner.RunConfigBuilderOption,
 	oidcConfig *mcpv1alpha1.OIDCConfigRef,
+	m *mcpv1alpha1.MCPServer,
 ) {
 	if oidcConfig == nil {
 		return
 	}
 
-	// Handle inline OIDC configuration
-	if oidcConfig.Type == mcpv1alpha1.OIDCConfigTypeInline && oidcConfig.Inline != nil {
-		inline := oidcConfig.Inline
-
-		// Add OIDC config to options
-		*options = append(*options, runner.WithOIDCConfig(
-			inline.Issuer,
-			inline.Audience,
-			inline.JWKSURL,
-			inline.IntrospectionURL,
-			inline.ClientID,
-			inline.ClientSecret,
-			inline.ThvCABundlePath,
-			inline.JWKSAuthTokenPath,
-			"", // resourceURL - not available in InlineOIDCConfig
-			inline.JWKSAllowPrivateIP,
-		))
+	// Add OAuth discovery resource URL for RFC 9728 compliance
+	resourceURL := oidcConfig.ResourceURL
+	if resourceURL == "" {
+		resourceURL = createServiceURL(m.Name, m.Namespace, m.Spec.Port)
 	}
 
-	// ConfigMap and Kubernetes types are not currently supported for OIDC configuration
+	switch oidcConfig.Type {
+	case mcpv1alpha1.OIDCConfigTypeKubernetes:
+		config := oidcConfig.Kubernetes
+
+		// Set defaults if config is nil
+		if config == nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Info("Kubernetes OIDCConfig is nil, using default configuration", "mcpServer", m.Name)
+			defaultUseClusterAuth := true
+			config = &mcpv1alpha1.KubernetesOIDCConfig{
+				UseClusterAuth: &defaultUseClusterAuth, // Default to true
+			}
+		}
+
+		// Handle UseClusterAuth with default of true if nil
+		useClusterAuth := true // default value
+		if config.UseClusterAuth != nil {
+			useClusterAuth = *config.UseClusterAuth
+		}
+
+		if oidcConfig.Kubernetes != nil {
+			config := oidcConfig.Kubernetes
+			issuer := config.Issuer
+			if issuer == "" {
+				issuer = "https://kubernetes.default.svc"
+			}
+
+			audience := config.Audience
+			if audience == "" {
+				audience = "toolhive"
+			}
+
+			thvCABundlePath := ""
+			jwksAuthTokenPath := ""
+			jwksAllowPrivateIP := false
+
+			if useClusterAuth {
+				thvCABundlePath = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+				jwksAuthTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+				jwksAllowPrivateIP = true
+			}
+
+			// Add OIDC config to options
+			*options = append(*options, runner.WithOIDCConfig(
+				issuer,
+				audience,
+				config.JWKSURL,
+				config.IntrospectionURL,
+				"",
+				"",
+				thvCABundlePath,
+				jwksAuthTokenPath,
+				resourceURL,
+				jwksAllowPrivateIP,
+			))
+		}
+	case mcpv1alpha1.OIDCConfigTypeConfigMap:
+
+		if oidcConfig.ConfigMap == nil {
+			return
+		}
+
+		config := oidcConfig.ConfigMap
+
+		// Read the ConfigMap and extract OIDC configuration from documented keys
+		configMap := &corev1.ConfigMap{}
+		err := r.Get(ctx, types.NamespacedName{
+			Name:      config.Name,
+			Namespace: m.Namespace,
+		}, configMap)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to get ConfigMap", "configMapName", config.Name)
+			return
+		}
+
+		// Extract OIDC configuration from well-known keys
+		issuer := ""
+		if i, exists := configMap.Data["issuer"]; exists && i != "" {
+			issuer = i
+		}
+		audience := ""
+		if a, exists := configMap.Data["audience"]; exists && a != "" {
+			audience = a
+		}
+		jwksURL := ""
+		if j, exists := configMap.Data["jwksUrl"]; exists && j != "" {
+			jwksURL = j
+		}
+		introspectionURL := ""
+		if i, exists := configMap.Data["introspectionUrl"]; exists && i != "" {
+			introspectionURL = i
+		}
+		clientID := ""
+		if c, exists := configMap.Data["clientId"]; exists && c != "" {
+			clientID = c
+		}
+		clientSecret := ""
+		if c, exists := configMap.Data["clientSecret"]; exists && c != "" {
+			clientSecret = c
+		}
+		thvCABundlePath := ""
+		if thvCABundlePath, exists := configMap.Data["thvCABundlePath"]; exists && thvCABundlePath != "" {
+			thvCABundlePath = thvCABundlePath
+		}
+		jwksAuthTokenPath := ""
+		if j, exists := configMap.Data["jwksAuthTokenPath"]; exists && j != "" {
+			jwksAuthTokenPath = j
+		}
+		jwksAllowPrivateIP := false
+		if jwksAllowPrivateIP, exists := configMap.Data["jwksAllowPrivateIP"]; exists && jwksAllowPrivateIP == "true" {
+			jwksAllowPrivateIP = "true"
+		}
+
+		*options = append(*options, runner.WithOIDCConfig(
+			issuer,
+			audience,
+			jwksURL,
+			introspectionURL,
+			clientID,
+			clientSecret,
+			thvCABundlePath,
+			jwksAuthTokenPath,
+			resourceURL,
+			jwksAllowPrivateIP,
+		))
+	case mcpv1alpha1.OIDCConfigTypeInline:
+		if oidcConfig.Inline != nil {
+			inline := oidcConfig.Inline
+
+			// Add OIDC config to options
+			*options = append(*options, runner.WithOIDCConfig(
+				inline.Issuer,
+				inline.Audience,
+				inline.JWKSURL,
+				inline.IntrospectionURL,
+				inline.ClientID,
+				inline.ClientSecret,
+				inline.ThvCABundlePath,
+				inline.JWKSAuthTokenPath,
+				resourceURL,
+				inline.JWKSAllowPrivateIP,
+			))
+		}
+	}
 }
 
 // addAuditConfigOptions adds audit configuration options to the builder options

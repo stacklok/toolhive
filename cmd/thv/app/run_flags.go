@@ -548,7 +548,7 @@ func configureRemoteAuth(runFlags *RunFlags, serverMetadata registry.ServerMetad
 	var opts []runner.RunConfigBuilderOption
 
 	if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
-		remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata)
+		remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata, runFlags)
 
 		// Validate OAuth callback port availability upfront for better user experience
 		if err := networking.ValidateCallbackPort(remoteAuthConfig.CallbackPort, remoteAuthConfig.ClientID); err != nil {
@@ -590,9 +590,12 @@ func extractTelemetryValues(config *telemetry.Config) (string, float64, []string
 
 // getRemoteAuthFromRemoteServerMetadata creates RemoteAuthConfig from RemoteServerMetadata,
 // giving CLI flags priority. For OAuthParams: if CLI provides any, they REPLACE metadata entirely.
-func getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata *registry.RemoteServerMetadata) *runner.RemoteAuthConfig {
+func getRemoteAuthFromRemoteServerMetadata(
+	remoteServerMetadata *registry.RemoteServerMetadata,
+	runFlags *RunFlags,
+) *runner.RemoteAuthConfig {
 	if remoteServerMetadata == nil || remoteServerMetadata.OAuthConfig == nil {
-		return getRemoteAuthFromRunFlags(&runFlags)
+		return getRemoteAuthFromRunFlags(runFlags)
 	}
 
 	oc := remoteServerMetadata.OAuthConfig

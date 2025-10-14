@@ -184,7 +184,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	logger.Infof("Using host port: %d", port)
 
 	// Handle OAuth authentication to the remote server if needed
-	var tokenSource *oauth2.TokenSource
+	var tokenSource oauth2.TokenSource
 	var oauthConfig *oauth.Config
 	var introspectionURL string
 
@@ -368,10 +368,10 @@ func resolveClientSecret() (string, error) {
 }
 
 // createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests
-func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.MiddlewareFunction {
+func createTokenInjectionMiddleware(tokenSource oauth2.TokenSource) types.MiddlewareFunction {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token, err := (*tokenSource).Token()
+			token, err := tokenSource.Token()
 			if err != nil {
 				http.Error(w, "Unable to retrieve OAuth token", http.StatusUnauthorized)
 				return
@@ -384,7 +384,7 @@ func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.Middl
 }
 
 // addExternalTokenMiddleware adds token exchange or token injection middleware to the middleware chain
-func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSource *oauth2.TokenSource) error {
+func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSource oauth2.TokenSource) error {
 	if remoteAuthFlags.TokenExchangeURL != "" {
 		// Use token exchange middleware when token exchange is configured
 		tokenExchangeConfig, err := remoteAuthFlags.BuildTokenExchangeConfig()
@@ -399,7 +399,7 @@ func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSo
 		var tokenExchangeMiddleware types.MiddlewareFunction
 		if tokenSource != nil {
 			// Create middleware using TokenSource - middleware handles token selection
-			tokenExchangeMiddleware, err = tokenexchange.CreateMiddlewareFromTokenSource(*tokenExchangeConfig, *tokenSource)
+			tokenExchangeMiddleware, err = tokenexchange.CreateMiddlewareFromTokenSource(*tokenExchangeConfig, tokenSource)
 			if err != nil {
 				return fmt.Errorf("failed to create token exchange middleware: %v", err)
 			}

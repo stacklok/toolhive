@@ -24,7 +24,7 @@ func NewRemoteAuthHandler(config *RemoteAuthConfig) *RemoteAuthHandler {
 }
 
 // Authenticate is the main entry point for remote MCP server authentication
-func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) (*oauth2.TokenSource, error) {
+func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
 
 	// First, try to detect if authentication is required
 	authInfo, err := discovery.DetectAuthenticationFromServer(ctx, remoteURL, nil)

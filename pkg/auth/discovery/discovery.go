@@ -379,7 +379,7 @@ type OAuthFlowConfig struct {
 
 // OAuthFlowResult contains the result of an OAuth flow
 type OAuthFlowResult struct {
-	TokenSource *oauth2.TokenSource
+	TokenSource oauth2.TokenSource
 	Config      *oauth.Config
 }
 
@@ -549,7 +549,7 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 
 	source := flow.TokenSource()
 	return &OAuthFlowResult{
-		TokenSource: &source,
+		TokenSource: source,
 		Config:      oauthConfig,
 	}, nil
 }

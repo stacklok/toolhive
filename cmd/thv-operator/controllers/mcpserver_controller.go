@@ -752,7 +752,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	volumes := []corev1.Volume{}
 
 	// Check if global ConfigMap mode is enabled via environment variable
-	useConfigMap := os.Getenv("TOOLHIVE_USE_CONFIGMAP") == trueValue
+	useConfigMap := true
 	if useConfigMap {
 		// Also add pod template patch for secrets and service account (same as regular flags approach)
 		// If service account is not specified, use the default MCP server service account

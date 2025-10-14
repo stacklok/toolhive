@@ -14,4 +14,8 @@ coverage:
     - "**/mock_*.go"
     - "**/zz_generated.deepcopy.go"
   status:
+    project:
+      default:
+        target: auto
+        threshold: 2%
     patch: false

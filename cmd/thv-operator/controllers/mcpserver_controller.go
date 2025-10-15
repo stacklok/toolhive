@@ -791,6 +791,11 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		},
 	})
 
+	// Always add the image as it's required by proxy runner command signature
+	// When using ConfigMap, the image from ConfigMap takes precedence, but we still need
+	// to provide this as a positional argument to satisfy the command requirements
+	args = append(args, m.Spec.Image)
+
 	// Prepare container env vars for the proxy container
 	env := []corev1.EnvVar{}
 

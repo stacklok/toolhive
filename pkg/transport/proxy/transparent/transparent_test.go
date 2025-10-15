@@ -148,7 +148,7 @@ func TestTracePropagationHeaders(t *testing.T) {
 	defer downstream.Close()
 
 	// Create transparent proxy pointing to mock server
-	proxy := NewTransparentProxy("localhost", 0, "test-server", downstream.URL, nil, nil, false, false, "", nil)
+	proxy := NewTransparentProxy("localhost", 0, "test-server", downstream.URL, nil, nil, false, false, "")
 
 	// Parse downstream URL
 	targetURL, err := url.Parse(downstream.URL)

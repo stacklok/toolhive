@@ -36,7 +36,7 @@ type HTTPProxy struct {
 	containerName     string
 	shutdownCh        chan struct{}
 	prometheusHandler http.Handler
-	middlewares       []types.MiddlewareFunction
+	middlewares       []types.NamedMiddleware
 
 	// Message channel for sending JSON-RPC to the container (from HTTP -> runner)
 	messageCh chan jsonrpc2.Message
@@ -61,7 +61,7 @@ func NewHTTPProxy(
 	port int,
 	containerName string,
 	prometheusHandler http.Handler,
-	middlewares ...types.MiddlewareFunction,
+	middlewares ...types.NamedMiddleware,
 ) *HTTPProxy {
 	// Use typed Streamable sessions
 	sFactory := func(id string) session.Session { return session.NewStreamableSession(id) }
@@ -543,7 +543,7 @@ func (p *HTTPProxy) doRequest(ctx context.Context, sessID string, req *jsonrpc2.
 
 func (p *HTTPProxy) applyMiddlewares(handler http.Handler) http.Handler {
 	for i := len(p.middlewares) - 1; i >= 0; i-- {
-		handler = p.middlewares[i](handler)
+		handler = p.middlewares[i].Function(handler)
 	}
 	return handler
 }

@@ -552,7 +552,7 @@ func TestCreateMiddleware(t *testing.T) {
 			mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
 
 			if tt.expectAddMiddleware {
-				mockRunner.EXPECT().AddMiddleware(gomock.Any()).Do(func(mw types.Middleware) {
+				mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Do(func(_ string, mw types.Middleware) {
 					_, ok := mw.(*Middleware)
 					assert.True(t, ok, "Expected middleware to be of type *tokenexchange.Middleware")
 				})

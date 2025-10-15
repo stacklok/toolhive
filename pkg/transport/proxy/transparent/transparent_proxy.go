@@ -46,7 +46,7 @@ type TransparentProxy struct {
 	server *http.Server
 
 	// Middleware chain
-	middlewares []types.MiddlewareFunction
+	middlewares []types.NamedMiddleware
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -90,7 +90,7 @@ func NewTransparentProxy(
 	enableHealthCheck bool,
 	isRemote bool,
 	transportType string,
-	middlewares ...types.MiddlewareFunction,
+	middlewares ...types.NamedMiddleware,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
 		host:              host,
@@ -327,9 +327,8 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// Apply middleware chain in reverse order (last middleware is applied first)
 	var finalHandler http.Handler = handler
 	for i := len(p.middlewares) - 1; i >= 0; i-- {
-		finalHandler = p.middlewares[i](finalHandler)
-		// TODO: we should really log the middleware name here
-		logger.Infof("Applied middleware %d", i+1)
+		finalHandler = p.middlewares[i].Function(finalHandler)
+		logger.Infof("Applied middleware: %s", p.middlewares[i].Name)
 	}
 
 	// Add the proxy handler for all paths except /health

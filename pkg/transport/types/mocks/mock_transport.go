@@ -99,15 +99,15 @@ func (m *MockMiddlewareRunner) EXPECT() *MockMiddlewareRunnerMockRecorder {
 }
 
 // AddMiddleware mocks base method.
-func (m *MockMiddlewareRunner) AddMiddleware(middleware types.Middleware) {
+func (m *MockMiddlewareRunner) AddMiddleware(name string, middleware types.Middleware) {
 	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "AddMiddleware", middleware)
+	m.ctrl.Call(m, "AddMiddleware", name, middleware)
 }
 
 // AddMiddleware indicates an expected call of AddMiddleware.
-func (mr *MockMiddlewareRunnerMockRecorder) AddMiddleware(middleware any) *gomock.Call {
+func (mr *MockMiddlewareRunnerMockRecorder) AddMiddleware(name, middleware any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddMiddleware", reflect.TypeOf((*MockMiddlewareRunner)(nil).AddMiddleware), middleware)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddMiddleware", reflect.TypeOf((*MockMiddlewareRunner)(nil).AddMiddleware), name, middleware)
 }
 
 // GetConfig mocks base method.

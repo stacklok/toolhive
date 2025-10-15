@@ -104,10 +104,11 @@ func TestCreateMiddleware_WithoutOIDCConfig(t *testing.T) {
 	mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
 
 	// Expect AddMiddleware to be called with a middleware instance
-	mockRunner.EXPECT().AddMiddleware(gomock.Any()).Do(func(mw types.Middleware) {
+	mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Do(func(name string, mw types.Middleware) {
 		// Verify it's our auth middleware
 		_, ok := mw.(*Middleware)
 		assert.True(t, ok, "Expected middleware to be of type *auth.Middleware")
+		assert.Equal(t, MiddlewareType, name, "Expected middleware name to be 'auth'")
 	})
 
 	// Create parameters without OIDC config (local auth)
@@ -214,7 +215,7 @@ func TestCreateMiddleware_EmptyParameters(t *testing.T) {
 	mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
 
 	// Expect AddMiddleware to be called
-	mockRunner.EXPECT().AddMiddleware(gomock.Any())
+	mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any())
 
 	// Create config with empty JSON parameters
 	config := &types.MiddlewareConfig{

@@ -32,7 +32,7 @@ type StdioTransport struct {
 	containerName     string
 	deployer          rt.Deployer
 	debug             bool
-	middlewares       []types.MiddlewareFunction
+	middlewares       []types.NamedMiddleware
 	prometheusHandler http.Handler
 	trustProxyHeaders bool
 
@@ -63,7 +63,7 @@ func NewStdioTransport(
 	debug bool,
 	trustProxyHeaders bool,
 	prometheusHandler http.Handler,
-	middlewares ...types.MiddlewareFunction,
+	middlewares ...types.NamedMiddleware,
 ) *StdioTransport {
 	return &StdioTransport{
 		host:              host,

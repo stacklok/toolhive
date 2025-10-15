@@ -36,7 +36,7 @@ type HTTPTransport struct {
 	containerName     string
 	deployer          rt.Deployer
 	debug             bool
-	middlewares       []types.MiddlewareFunction
+	middlewares       []types.NamedMiddleware
 	prometheusHandler http.Handler
 	authInfoHandler   http.Handler
 
@@ -71,7 +71,7 @@ func NewHTTPTransport(
 	targetHost string,
 	authInfoHandler http.Handler,
 	prometheusHandler http.Handler,
-	middlewares ...types.MiddlewareFunction,
+	middlewares ...types.NamedMiddleware,
 ) *HTTPTransport {
 	if host == "" {
 		host = LocalhostIPv4
@@ -305,7 +305,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	}
 
 	// Create middlewares slice
-	var middlewares []types.MiddlewareFunction
+	var middlewares []types.NamedMiddleware
 
 	// Add the transport's existing middlewares
 	middlewares = append(middlewares, t.middlewares...)
@@ -313,7 +313,10 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	// Add OAuth token injection middleware for remote authentication if we have a token source
 	if t.remoteURL != "" && t.tokenSource != nil {
 		tokenMiddleware := t.createTokenInjectionMiddleware()
-		middlewares = append(middlewares, tokenMiddleware)
+		middlewares = append(middlewares, types.NamedMiddleware{
+			Name:     "oauth-token-injection",
+			Function: tokenMiddleware,
+		})
 	}
 
 	// Create the transparent proxy

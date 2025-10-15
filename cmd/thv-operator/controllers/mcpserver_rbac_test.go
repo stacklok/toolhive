@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/rbac"
 )
 
 type testContext struct {
@@ -31,12 +32,19 @@ func setupTest(name, namespace string) *testContext {
 	testScheme := createTestScheme()
 	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
 	proxyRunnerNameForRBAC := fmt.Sprintf("%s-proxy-runner", name)
+	rbacManager := rbac.NewManager(rbac.Config{
+		Client:           fakeClient,
+		Scheme:           testScheme,
+		DefaultRBACRules: nil, // Use default rules
+	})
+
 	return &testContext{
 		mcpServer: mcpServer,
 		client:    fakeClient,
 		reconciler: &MCPServerReconciler{
-			Client: fakeClient,
-			Scheme: testScheme,
+			Client:      fakeClient,
+			Scheme:      testScheme,
+			RBACManager: rbacManager,
 		},
 		proxyRunnerNameForRBAC: proxyRunnerNameForRBAC,
 	}
@@ -68,7 +76,7 @@ func (tc *testContext) assertRoleExists(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, tc.proxyRunnerNameForRBAC, role.Name)
 	assert.Equal(t, tc.mcpServer.Namespace, role.Namespace)
-	assert.Equal(t, defaultRBACRules, role.Rules)
+	assert.Equal(t, rbac.GetDefaultRBACRules(), role.Rules)
 }
 
 func (tc *testContext) assertRoleBindingExists(t *testing.T) {
@@ -276,7 +284,7 @@ func TestEnsureRBACResources_NoChangesNeeded(t *testing.T) {
 			Name:      tc.proxyRunnerNameForRBAC,
 			Namespace: tc.mcpServer.Namespace,
 		},
-		Rules: defaultRBACRules,
+		Rules: rbac.GetDefaultRBACRules(),
 	}
 	err = tc.client.Create(context.TODO(), role)
 	require.NoError(t, err)

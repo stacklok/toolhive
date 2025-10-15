@@ -5,10 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -170,6 +168,14 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid target URI: %w", err)
 	}
 
+	// Validate OAuth callback port availability
+	if err := networking.ValidateCallbackPort(
+		remoteAuthFlags.RemoteAuthCallbackPort,
+		remoteAuthFlags.RemoteAuthClientID,
+	); err != nil {
+		return err
+	}
+
 	// Select a port for the HTTP proxy (host port)
 	port, err := networking.FindOrUsePort(proxyPort)
 	if err != nil {
@@ -178,18 +184,24 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	logger.Infof("Using host port: %d", port)
 
 	// Handle OAuth authentication to the remote server if needed
-	var tokenSource *oauth2.TokenSource
+	var tokenSource oauth2.TokenSource
 	var oauthConfig *oauth.Config
 	var introspectionURL string
 
 	if remoteAuthFlags.EnableRemoteAuth || shouldDetectAuth() {
-		tokenSource, oauthConfig, err = handleOutgoingAuthentication(ctx)
+		var result *discovery.OAuthFlowResult
+		result, err = handleOutgoingAuthentication(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to authenticate to remote server: %w", err)
 		}
-		if oauthConfig != nil {
-			introspectionURL = oauthConfig.IntrospectionEndpoint
-			logger.Infof("Using OAuth config with introspection URL: %s", introspectionURL)
+		if result != nil {
+			tokenSource = result.TokenSource
+			oauthConfig = result.Config
+
+			if oauthConfig != nil {
+				introspectionURL = oauthConfig.IntrospectionEndpoint
+				logger.Infof("Using OAuth config with introspection URL: %s", introspectionURL)
+			}
 		} else {
 			logger.Info("No OAuth configuration available, proceeding without outgoing authentication")
 		}
@@ -227,10 +239,9 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 	middlewares = append(middlewares, authMiddleware)
 
-	// Add OAuth token injection middleware for outgoing requests if we have an access token
-	if tokenSource != nil {
-		tokenMiddleware := createTokenInjectionMiddleware(tokenSource)
-		middlewares = append(middlewares, tokenMiddleware)
+	// Add OAuth token injection or token exchange middleware for outgoing requests
+	if err := addExternalTokenMiddleware(&middlewares, tokenSource); err != nil {
+		return err
 	}
 
 	// Create the transparent proxy
@@ -272,11 +283,11 @@ func shouldDetectAuth() bool {
 }
 
 // handleOutgoingAuthentication handles authentication to the remote MCP server
-func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oauth.Config, error) {
+func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResult, error) {
 	// Resolve client secret from multiple sources
 	clientSecret, err := resolveClientSecret()
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to resolve client secret: %w", err)
+		return nil, fmt.Errorf("failed to resolve client secret: %w", err)
 	}
 
 	if remoteAuthFlags.EnableRemoteAuth {
@@ -286,12 +297,12 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 		hasManualConfig := remoteAuthFlags.RemoteAuthAuthorizeURL != "" && remoteAuthFlags.RemoteAuthTokenURL != ""
 
 		if !hasOIDCConfig && !hasManualConfig {
-			return nil, nil, fmt.Errorf("either --remote-auth-issuer (for OIDC) or both --remote-auth-authorize-url " +
+			return nil, fmt.Errorf("either --remote-auth-issuer (for OIDC) or both --remote-auth-authorize-url " +
 				"and --remote-auth-token-url (for OAuth) are required")
 		}
 
 		if hasOIDCConfig && hasManualConfig {
-			return nil, nil, fmt.Errorf("cannot specify both OIDC issuer and manual OAuth endpoints - choose one approach")
+			return nil, fmt.Errorf("cannot specify both OIDC issuer and manual OAuth endpoints - choose one approach")
 		}
 
 		flowConfig := &discovery.OAuthFlowConfig{
@@ -307,17 +318,17 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 
 		result, err := discovery.PerformOAuthFlow(ctx, remoteAuthFlags.RemoteAuthIssuer, flowConfig)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
-		return result.TokenSource, result.Config, nil
+		return result, nil
 	}
 
 	// Try to detect authentication requirements from WWW-Authenticate header
 	authInfo, err := discovery.DetectAuthenticationFromServer(ctx, proxyTargetURI, nil)
 	if err != nil {
 		logger.Debugf("Could not detect authentication from server: %v", err)
-		return nil, nil, nil // Not an error, just no auth detected
+		return nil, nil // Not an error, just no auth detected
 	}
 
 	if authInfo != nil {
@@ -337,57 +348,30 @@ func handleOutgoingAuthentication(ctx context.Context) (*oauth2.TokenSource, *oa
 
 		result, err := discovery.PerformOAuthFlow(ctx, authInfo.Realm, flowConfig)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
-		return result.TokenSource, result.Config, nil
+		return result, nil
 	}
 
-	return nil, nil, nil // No authentication required
+	return nil, nil // No authentication required
 }
 
 // resolveClientSecret resolves the OAuth client secret from multiple sources
 // Priority: 1. Flag value, 2. File, 3. Environment variable
 func resolveClientSecret() (string, error) {
-	// 1. Check if provided directly via flag
-	if remoteAuthFlags.RemoteAuthClientSecret != "" {
-		logger.Debug("Using client secret from command-line flag")
-		return remoteAuthFlags.RemoteAuthClientSecret, nil
-	}
-
-	// 2. Check if provided via file
-	if remoteAuthFlags.RemoteAuthClientSecretFile != "" {
-		// Clean the file path to prevent path traversal
-		cleanPath := filepath.Clean(remoteAuthFlags.RemoteAuthClientSecretFile)
-		logger.Debugf("Reading client secret from file: %s", cleanPath)
-		// #nosec G304 - file path is cleaned above
-		secretBytes, err := os.ReadFile(cleanPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to read client secret file %s: %w", cleanPath, err)
-		}
-		secret := strings.TrimSpace(string(secretBytes))
-		if secret == "" {
-			return "", fmt.Errorf("client secret file %s is empty", cleanPath)
-		}
-		return secret, nil
-	}
-
-	// 3. Check environment variable
-	if secret := os.Getenv(envOAuthClientSecret); secret != "" {
-		logger.Debugf("Using client secret from %s environment variable", envOAuthClientSecret)
-		return secret, nil
-	}
-
-	// No client secret found - this is acceptable for PKCE flows
-	logger.Debug("No client secret provided - using PKCE flow")
-	return "", nil
+	return resolveSecret(
+		remoteAuthFlags.RemoteAuthClientSecret,
+		remoteAuthFlags.RemoteAuthClientSecretFile,
+		envOAuthClientSecret,
+	)
 }
 
 // createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests
-func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.MiddlewareFunction {
+func createTokenInjectionMiddleware(tokenSource oauth2.TokenSource) types.MiddlewareFunction {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token, err := (*tokenSource).Token()
+			token, err := tokenSource.Token()
 			if err != nil {
 				http.Error(w, "Unable to retrieve OAuth token", http.StatusUnauthorized)
 				return
@@ -397,6 +381,42 @@ func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.Middl
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// addExternalTokenMiddleware adds token exchange or token injection middleware to the middleware chain
+func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSource oauth2.TokenSource) error {
+	if remoteAuthFlags.TokenExchangeURL != "" {
+		// Use token exchange middleware when token exchange is configured
+		tokenExchangeConfig, err := remoteAuthFlags.BuildTokenExchangeConfig()
+		if err != nil {
+			return fmt.Errorf("invalid token exchange configuration: %w", err)
+		}
+		if tokenExchangeConfig == nil {
+			logger.Warn("Token exchange URL provided but configuration could not be built")
+			return nil
+		}
+
+		var tokenExchangeMiddleware types.MiddlewareFunction
+		if tokenSource != nil {
+			// Create middleware using TokenSource - middleware handles token selection
+			tokenExchangeMiddleware, err = tokenexchange.CreateMiddlewareFromTokenSource(*tokenExchangeConfig, tokenSource)
+			if err != nil {
+				return fmt.Errorf("failed to create token exchange middleware: %v", err)
+			}
+		} else {
+			// Create middleware that extracts token from Authorization header
+			tokenExchangeMiddleware, err = tokenexchange.CreateMiddlewareFromHeader(*tokenExchangeConfig)
+			if err != nil {
+				return fmt.Errorf("failed to create token exchange middleware: %v", err)
+			}
+		}
+		*middlewares = append(*middlewares, tokenExchangeMiddleware)
+	} else if tokenSource != nil {
+		// Fallback to direct token injection when no token exchange is configured
+		tokenMiddleware := createTokenInjectionMiddleware(tokenSource)
+		*middlewares = append(*middlewares, tokenMiddleware)
+	}
+	return nil
 }
 
 // validateProxyTargetURI validates that the target URI for the proxy is valid and does not contain a path

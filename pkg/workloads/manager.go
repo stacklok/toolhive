@@ -333,7 +333,11 @@ func (d *defaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 
 func (d *defaultManager) validateSecretParameters(ctx context.Context, runConfig *runner.RunConfig) error {
 	// If there are run secrets, validate them
-	if len(runConfig.Secrets) > 0 {
+
+	hasRegularSecrets := len(runConfig.Secrets) > 0
+	hasRemoteAuthSecret := runConfig.RemoteAuthConfig != nil && runConfig.RemoteAuthConfig.ClientSecret != ""
+
+	if hasRegularSecrets || hasRemoteAuthSecret {
 		cfg := d.configProvider.GetConfig()
 
 		providerType, err := cfg.Secrets.GetProviderType()

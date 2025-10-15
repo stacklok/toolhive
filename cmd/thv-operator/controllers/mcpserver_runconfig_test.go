@@ -527,34 +527,6 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			},
 		},
 		{
-			name: "with configmap OIDC authentication configuration",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "oidc-configmap-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					Port:      8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
-							Name: "test-oidc-config",
-							Key:  "oidc.json",
-						},
-					},
-				},
-			},
-			//nolint:thelper // We want to see the error at the specific line
-			expected: func(t *testing.T, config *runner.RunConfig) {
-				assert.Equal(t, "oidc-configmap-server", config.Name)
-				// For ConfigMap type, OIDC config should not be set directly in RunConfig
-				// since it will be handled by proxyrunner when reading from ConfigMap
-				assert.Nil(t, config.OIDCConfig)
-			},
-		},
-		{
 			name: "with audit configuration enabled",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-13T00:18:49Z",
+  "last_updated": "2025-10-15T00:18:07Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -484,7 +484,7 @@
         "architecture",
         "visualization"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/aws-diagram:1.0.9",
+      "image": "ghcr.io/stacklok/dockyard/uvx/aws-diagram:1.0.10",
       "permissions": {
         "network": {
           "outbound": {}
@@ -534,7 +534,7 @@
         "cloud",
         "reference"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/aws-documentation:1.1.8",
+      "image": "ghcr.io/stacklok/dockyard/uvx/aws-documentation:1.1.9",
       "permissions": {
         "network": {
           "outbound": {
@@ -906,27 +906,28 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "createSession",
-        "listSessions",
-        "closeSession",
-        "navigateWithSession",
-        "actWithSession",
-        "extractWithSession",
-        "observeWithSession",
-        "getUrlWithSession",
-        "getAllUrlsWithSession",
-        "closeAllSessions",
-        "navigate",
-        "act",
-        "extract",
-        "observe",
-        "screenshot",
-        "getUrl"
+        "browserbase_screenshot",
+        "browserbase_session_close",
+        "browserbase_session_create",
+        "browserbase_stagehand_act",
+        "browserbase_stagehand_extract",
+        "browserbase_stagehand_get_all_urls",
+        "browserbase_stagehand_get_url",
+        "browserbase_stagehand_navigate",
+        "browserbase_stagehand_observe",
+        "multi_browserbase_stagehand_act_session",
+        "multi_browserbase_stagehand_extract_session",
+        "multi_browserbase_stagehand_get_url_session",
+        "multi_browserbase_stagehand_navigate_session",
+        "multi_browserbase_stagehand_observe_session",
+        "multi_browserbase_stagehand_session_close",
+        "multi_browserbase_stagehand_session_create",
+        "multi_browserbase_stagehand_session_list"
       ],
       "metadata": {
-        "stars": 2584,
+        "stars": 2712,
         "pulls": 133,
-        "last_updated": "2025-09-16T02:27:53Z"
+        "last_updated": "2025-10-14T02:29:23Z"
       },
       "repository_url": "https://github.com/browserbase/mcp-server-browserbase",
       "tags": [
@@ -936,7 +937,7 @@
         "testing",
         "stagehand"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/browserbase-mcp-server:2.1.2",
+      "image": "ghcr.io/stacklok/dockyard/npx/browserbase-mcp-server:2.1.3",
       "permissions": {
         "network": {
           "outbound": {
@@ -1349,6 +1350,7 @@
       "transport": "streamable-http",
       "tools": [
         "add_dolt_remote",
+        "add_dolt_test",
         "alter_table",
         "clone_database",
         "create_database",
@@ -1362,9 +1364,8 @@
         "dolt_fetch_branch",
         "dolt_pull_branch",
         "dolt_push_branch",
-        "dolt_reset_all_tables_soft",
         "dolt_reset_hard",
-        "dolt_reset_table_soft",
+        "dolt_reset_soft",
         "drop_database",
         "drop_table",
         "exec",
@@ -1381,6 +1382,8 @@
         "move_dolt_branch",
         "query",
         "remove_dolt_remote",
+        "remove_dolt_test",
+        "run_dolt_tests",
         "select_active_branch",
         "select_version",
         "show_create_table",
@@ -1408,7 +1411,7 @@
         "merging",
         "reproducibility"
       ],
-      "image": "docker.io/dolthub/dolt-mcp:0.2.1",
+      "image": "docker.io/dolthub/dolt-mcp:0.2.2",
       "permissions": {
         "network": {
           "outbound": {
@@ -1788,9 +1791,9 @@
         "set_during_runtime"
       ],
       "metadata": {
-        "stars": 10380,
+        "stars": 10919,
         "pulls": 2408,
-        "last_updated": "2025-09-16T02:27:53Z"
+        "last_updated": "2025-10-14T02:29:24Z"
       },
       "repository_url": "https://github.com/googleapis/genai-toolbox",
       "tags": [
@@ -2343,9 +2346,9 @@
         "webSearch"
       ],
       "metadata": {
-        "stars": 358,
+        "stars": 365,
         "pulls": 109,
-        "last_updated": "2025-09-15T02:32:02Z"
+        "last_updated": "2025-10-13T02:32:37Z"
       },
       "repository_url": "https://github.com/graphlit/graphlit-mcp-server",
       "tags": [
@@ -3023,9 +3026,9 @@
         "run_chdb_select_query"
       ],
       "metadata": {
-        "stars": 522,
+        "stars": 556,
         "pulls": 81,
-        "last_updated": "2025-09-15T02:32:01Z"
+        "last_updated": "2025-10-13T02:32:36Z"
       },
       "repository_url": "https://github.com/ClickHouse/mcp-clickhouse",
       "tags": [
@@ -3242,9 +3245,9 @@
         "write_neo4j_cypher"
       ],
       "metadata": {
-        "stars": 691,
+        "stars": 742,
         "pulls": 91,
-        "last_updated": "2025-09-15T02:32:01Z"
+        "last_updated": "2025-10-13T02:32:36Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -3319,9 +3322,9 @@
         "list_memories"
       ],
       "metadata": {
-        "stars": 691,
+        "stars": 742,
         "pulls": 105,
-        "last_updated": "2025-09-15T02:32:01Z"
+        "last_updated": "2025-10-13T02:32:37Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -3420,9 +3423,9 @@
         "box_metadata_template_create_tool"
       ],
       "metadata": {
-        "stars": 51,
+        "stars": 81,
         "pulls": 52,
-        "last_updated": "2025-09-16T02:27:53Z"
+        "last_updated": "2025-10-14T02:29:24Z"
       },
       "repository_url": "https://github.com/box-community/mcp-server-box",
       "tags": [
@@ -3571,9 +3574,9 @@
         "provision_neon_auth"
       ],
       "metadata": {
-        "stars": 460,
+        "stars": 485,
         "pulls": 55,
-        "last_updated": "2025-09-16T02:27:52Z"
+        "last_updated": "2025-10-14T02:29:22Z"
       },
       "repository_url": "https://github.com/neondatabase-labs/mcp-server-neon",
       "tags": [
@@ -3678,7 +3681,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-09-15T08:11:53Z"
+        "last_updated": "2025-10-13T02:32:37Z"
       },
       "repository_url": "https://github.com/StacklokLabs/meta-mcp",
       "tags": [
@@ -4900,9 +4903,9 @@
         "tavily-map"
       ],
       "metadata": {
-        "stars": 754,
+        "stars": 829,
         "pulls": 80,
-        "last_updated": "2025-09-16T02:27:52Z"
+        "last_updated": "2025-10-14T02:29:23Z"
       },
       "repository_url": "https://github.com/tavily-ai/tavily-mcp",
       "tags": [

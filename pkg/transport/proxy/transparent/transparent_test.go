@@ -199,3 +199,155 @@ func TestTracePropagationHeaders(t *testing.T) {
 	// Verify the request still works normally
 	assert.Equal(t, http.StatusOK, recorder.Code)
 }
+
+func TestWellKnownPathPrefixMatching(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		requestPath        string
+		expectedStatusCode int
+		shouldCallHandler  bool
+		description        string
+	}{
+		{
+			name:               "base path without resource component",
+			requestPath:        "/.well-known/oauth-protected-resource",
+			expectedStatusCode: http.StatusOK,
+			shouldCallHandler:  true,
+			description:        "RFC 9728 base path should route to authInfoHandler",
+		},
+		{
+			name:               "path with single resource component",
+			requestPath:        "/.well-known/oauth-protected-resource/mcp",
+			expectedStatusCode: http.StatusOK,
+			shouldCallHandler:  true,
+			description:        "Path with /mcp resource component should route to authInfoHandler",
+		},
+		{
+			name:               "path with multiple resource components",
+			requestPath:        "/.well-known/oauth-protected-resource/api/v1/service",
+			expectedStatusCode: http.StatusOK,
+			shouldCallHandler:  true,
+			description:        "Path with multiple resource components should route to authInfoHandler",
+		},
+		{
+			name:               "path with different resource name",
+			requestPath:        "/.well-known/oauth-protected-resource/resource1",
+			expectedStatusCode: http.StatusOK,
+			shouldCallHandler:  true,
+			description:        "Path with arbitrary resource component should route to authInfoHandler",
+		},
+		{
+			name:               "non-matching well-known path",
+			requestPath:        "/.well-known/other-endpoint",
+			expectedStatusCode: http.StatusNotFound,
+			shouldCallHandler:  false,
+			description:        "Different well-known endpoint should return 404",
+		},
+		{
+			name:               "path without leading dot",
+			requestPath:        "/well-known/oauth-protected-resource",
+			expectedStatusCode: http.StatusNotFound,
+			shouldCallHandler:  false,
+			description:        "Path without leading dot should return 404",
+		},
+		{
+			name:               "similar but non-matching path with suffix",
+			requestPath:        "/.well-known/oauth-protected-resource-other",
+			expectedStatusCode: http.StatusOK,
+			shouldCallHandler:  true,
+			description:        "Per RFC 9728, prefix matching means this should match",
+		},
+		{
+			name:               "path with trailing slash",
+			requestPath:        "/.well-known/oauth-protected-resource/",
+			expectedStatusCode: http.StatusOK,
+			shouldCallHandler:  true,
+			description:        "Path with trailing slash should route to authInfoHandler",
+		},
+		{
+			name:               "path with query parameters",
+			requestPath:        "/.well-known/oauth-protected-resource?param=value",
+			expectedStatusCode: http.StatusOK,
+			shouldCallHandler:  true,
+			description:        "Path with query parameters should route to authInfoHandler",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt // capture range variable
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Track whether the auth info handler was called
+			handlerCalled := false
+			authHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{"authorized": true}`))
+			})
+
+			// Create the well-known handler directly (same logic as in transparent_proxy.go)
+			wellKnownHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Per RFC 9728, match /.well-known/oauth-protected-resource and any subpaths
+				// e.g., /.well-known/oauth-protected-resource/mcp
+				if strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource") {
+					authHandler.ServeHTTP(w, r)
+				} else {
+					http.NotFound(w, r)
+				}
+			})
+
+			// Create a mux and register the well-known handler (same as in transparent_proxy.go)
+			mux := http.NewServeMux()
+			mux.Handle("/.well-known/", wellKnownHandler)
+
+			// Create a test request
+			req := httptest.NewRequest("GET", tt.requestPath, nil)
+			recorder := httptest.NewRecorder()
+
+			// Serve the request through the mux
+			mux.ServeHTTP(recorder, req)
+
+			// Verify status code
+			assert.Equal(t, tt.expectedStatusCode, recorder.Code,
+				"%s: expected status %d but got %d", tt.description, tt.expectedStatusCode, recorder.Code)
+
+			// Verify whether handler was called
+			assert.Equal(t, tt.shouldCallHandler, handlerCalled,
+				"%s: handler call mismatch (expected=%v, actual=%v)", tt.description, tt.shouldCallHandler, handlerCalled)
+
+			// For successful cases, verify response body
+			if tt.shouldCallHandler && recorder.Code == http.StatusOK {
+				assert.Contains(t, recorder.Body.String(), "authorized",
+					"%s: expected response body to contain auth info", tt.description)
+			}
+		})
+	}
+}
+
+func TestWellKnownPathWithoutAuthHandler(t *testing.T) {
+	t.Parallel()
+
+	// Test that when authInfoHandler is nil, the well-known route is not registered
+	// Create a mux without registering the well-known handler (simulating authInfoHandler == nil case)
+	mux := http.NewServeMux()
+
+	// Only register a default handler that returns 404 for everything
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+
+	// Create a test request to well-known path
+	req := httptest.NewRequest("GET", "/.well-known/oauth-protected-resource", nil)
+	recorder := httptest.NewRecorder()
+
+	// Serve the request
+	mux.ServeHTTP(recorder, req)
+
+	// When no auth handler is provided, the well-known route should not be registered
+	// The request should fall through to the default handler which returns 404
+	assert.Equal(t, http.StatusNotFound, recorder.Code,
+		"Without auth handler, well-known path should return 404")
+}

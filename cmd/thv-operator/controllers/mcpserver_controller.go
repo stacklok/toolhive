@@ -748,6 +748,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	volumeMounts := []corev1.VolumeMount{}
 	volumes := []corev1.Volume{}
 
+	// Check if global ConfigMap mode is enabled via environment variable
+	useConfigMap := true
 	// Also add pod template patch for secrets and service account (same as regular flags approach)
 	// If service account is not specified, use the default MCP server service account
 	serviceAccount := m.Spec.ServiceAccount
@@ -767,6 +769,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 			ctxLogger.Error(err, "Failed to marshal pod template spec")
 		} else {
 			args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
+		}
+	}
 
 	// Add volume mount for ConfigMap
 	configMapName := fmt.Sprintf("%s-runconfig", m.Name)
@@ -1622,15 +1626,6 @@ func hasVaultAgentInjection(annotations map[string]string) bool {
 	// Check if vault.hashicorp.com/agent-inject annotation is present and set to "true"
 	value, exists := annotations["vault.hashicorp.com/agent-inject"]
 	return exists && value == "true"
-}
-
-// getProxyHost returns the host to bind the proxy to
-func getProxyHost() string {
-	host := os.Getenv("TOOLHIVE_PROXY_HOST")
-	if host == "" {
-		host = defaultProxyHost
-	}
-	return host
 }
 
 // getToolhiveRunnerImage returns the image to use for the toolhive runner container

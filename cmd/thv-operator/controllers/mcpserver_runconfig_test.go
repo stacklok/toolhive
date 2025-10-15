@@ -700,15 +700,15 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 		}
 
 		// Compute and add checksum
-		checksum := computeConfigMapChecksum(configMap)
+		configMapChecksum := checksum.NewRunConfigConfigMapChecksum().ComputeConfigMapChecksum(configMap)
 		configMap.Annotations = map[string]string{
-			"toolhive.stacklok.dev/content-checksum": checksum,
+			"toolhive.stacklok.dev/content-checksum": configMapChecksum,
 		}
 
 		// Store results
 		runConfigs = append(runConfigs, runConfig)
 		configMaps = append(configMaps, configMap)
-		checksums = append(checksums, checksum)
+		checksums = append(checksums, configMapChecksum)
 	}
 
 	// Verify all RunConfigs are identical

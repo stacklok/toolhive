@@ -5,9 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
-	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -19,6 +16,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+)
+
+const (
+	testExistingUID = "existing-uid"
 )
 
 // Mock checksum implementation for testing
@@ -26,11 +30,11 @@ type mockChecksum struct {
 	hasChanged bool
 }
 
-func (m *mockChecksum) ComputeConfigMapChecksum(cm *corev1.ConfigMap) string {
+func (*mockChecksum) ComputeConfigMapChecksum(_ *corev1.ConfigMap) string {
 	return "mock-checksum"
 }
 
-func (m *mockChecksum) ConfigMapChecksumHasChanged(current, desired *corev1.ConfigMap) bool {
+func (m *mockChecksum) ConfigMapChecksumHasChanged(_, _ *corev1.ConfigMap) bool {
 	return m.hasChanged
 }
 
@@ -189,14 +193,14 @@ func TestUpsertRunConfigMap_Create(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithInterceptorFuncs(interceptor.Funcs{
-				Get: func(ctx context.Context, client client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				Get: func(_ context.Context, _ client.WithWatch, key client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
 					// Return NotFound for Get
 					return apierrors.NewNotFound(schema.GroupResource{
 						Group:    "v1",
 						Resource: "configmaps",
 					}, key.Name)
 				},
-				Create: func(ctx context.Context, client client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				Create: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
 					// Simulate Create failure
 					return createError
 				},
@@ -227,7 +231,7 @@ func TestUpsertRunConfigMap_Create(t *testing.T) {
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithInterceptorFuncs(interceptor.Funcs{
-				Get: func(ctx context.Context, client client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
 					// Return a non-NotFound error
 					return getError
 				},
@@ -371,7 +375,7 @@ func TestUpsertRunConfigMap_Update(t *testing.T) {
 		mcpServer := createTestMCPServer()
 		existingConfigMap := createTestConfigMapWithChecksum("old-checksum")
 		existingConfigMap.ResourceVersion = "1"
-		existingConfigMap.UID = "existing-uid"
+		existingConfigMap.UID = testExistingUID
 		desiredConfigMap := createTestConfigMapWithChecksum("new-checksum")
 
 		// Create a scheme without MCPServer registered to cause SetControllerReference to fail
@@ -403,7 +407,7 @@ func TestUpsertRunConfigMap_Update(t *testing.T) {
 		mcpServer := createTestMCPServer()
 		existingConfigMap := createTestConfigMapWithChecksum("old-checksum")
 		existingConfigMap.ResourceVersion = "1"
-		existingConfigMap.UID = "existing-uid"
+		existingConfigMap.UID = testExistingUID
 		desiredConfigMap := createTestConfigMapWithChecksum("new-checksum")
 		scheme := createTestScheme()
 
@@ -413,7 +417,7 @@ func TestUpsertRunConfigMap_Update(t *testing.T) {
 			WithScheme(scheme).
 			WithObjects(existingConfigMap).
 			WithInterceptorFuncs(interceptor.Funcs{
-				Update: func(ctx context.Context, client client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				Update: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.UpdateOption) error {
 					// Simulate Update failure
 					return updateError
 				},
@@ -439,7 +443,7 @@ func TestUpsertRunConfigMap_Update(t *testing.T) {
 		mcpServer := createTestMCPServer()
 		existingConfigMap := createTestConfigMapWithChecksum("old-checksum")
 		existingConfigMap.ResourceVersion = "1"
-		existingConfigMap.UID = "existing-uid"
+		existingConfigMap.UID = testExistingUID
 
 		desiredConfigMap := createTestConfigMapWithChecksum("new-checksum")
 		desiredConfigMap.Data = map[string]string{
@@ -483,7 +487,7 @@ func TestUpsertRunConfigMap_Update(t *testing.T) {
 		assert.Equal(t, "new-checksum", result.Annotations[checksum.ContentChecksumAnnotation])
 
 		// Verify UID was preserved (ResourceVersion will be incremented by k8s)
-		assert.Equal(t, types.UID("existing-uid"), result.UID)
+		assert.Equal(t, types.UID(testExistingUID), result.UID)
 		// ResourceVersion should have been updated (not the same as original)
 		assert.NotEqual(t, "1", result.ResourceVersion)
 	})

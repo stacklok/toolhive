@@ -1,11 +1,10 @@
+// Package configmap provides management for RunConfig ConfigMaps
 package configmap
 
 import (
 	"context"
 	"fmt"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -13,23 +12,38 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
-type ConfigMapManager interface {
+// Manager defines the interface for managing RunConfig ConfigMaps
+type Manager interface {
 	UpsertRunConfigMap(ctx context.Context, configMap *corev1.ConfigMap) error
 }
 
+// RunConfigConfigMap manages RunConfig ConfigMaps with checksum-based change detection
 type RunConfigConfigMap struct {
 	client   client.Client
 	scheme   *runtime.Scheme
 	checksum checksum.RunConfigConfigMapChecksum
 }
 
-func NewRunConfigConfigMap(client client.Client, scheme *runtime.Scheme, checksum checksum.RunConfigConfigMapChecksum) RunConfigConfigMap {
-	return RunConfigConfigMap{client: client, scheme: scheme, checksum: checksum}
+// NewRunConfigConfigMap creates a new RunConfigConfigMap instance
+func NewRunConfigConfigMap(
+	k8sClient client.Client,
+	scheme *runtime.Scheme,
+	checksumManager checksum.RunConfigConfigMapChecksum,
+) RunConfigConfigMap {
+	return RunConfigConfigMap{client: k8sClient, scheme: scheme, checksum: checksumManager}
 }
 
-func (r *RunConfigConfigMap) UpsertRunConfigMap(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer, desired *corev1.ConfigMap) error {
+// UpsertRunConfigMap creates or updates a RunConfig ConfigMap based on checksum changes
+func (r *RunConfigConfigMap) UpsertRunConfigMap(
+	ctx context.Context,
+	mcpServer *mcpv1alpha1.MCPServer,
+	desired *corev1.ConfigMap,
+) error {
 	ctxLogger := log.FromContext(ctx)
 
 	if mcpServer == nil {
@@ -82,13 +96,4 @@ func (r *RunConfigConfigMap) UpsertRunConfigMap(ctx context.Context, mcpServer *
 	}
 
 	return nil
-}
-
-// labelsForRunConfig returns labels for run config ConfigMap
-func labelsForRunConfig(mcpServerName string) map[string]string {
-	return map[string]string{
-		"toolhive.stacklok.io/component":  "run-config",
-		"toolhive.stacklok.io/mcp-server": mcpServerName,
-		"toolhive.stacklok.io/managed-by": "toolhive-operator",
-	}
 }

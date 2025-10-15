@@ -2,12 +2,9 @@ package controllers
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -36,51 +33,6 @@ const defaultAPITimeout = 15 * time.Second
 
 // defaultAuthzKey is the default key in the ConfigMap for authorization configuration
 const defaultAuthzKey = "authz.json"
-
-// computeConfigMapChecksum computes a SHA256 checksum of the ConfigMap content for change detection
-func computeConfigMapChecksum(cm *corev1.ConfigMap) string {
-	h := sha256.New()
-
-	// Include data content in checksum
-	var dataKeys []string
-	for key := range cm.Data {
-		dataKeys = append(dataKeys, key)
-	}
-	sort.Strings(dataKeys)
-
-	for _, key := range dataKeys {
-		h.Write([]byte(key))
-		h.Write([]byte(cm.Data[key]))
-	}
-
-	// Include labels in checksum (excluding checksum annotation itself)
-	var labelKeys []string
-	for key := range cm.Labels {
-		labelKeys = append(labelKeys, key)
-	}
-	sort.Strings(labelKeys)
-
-	for _, key := range labelKeys {
-		h.Write([]byte(key))
-		h.Write([]byte(cm.Labels[key]))
-	}
-
-	// Include relevant annotations in checksum (excluding checksum annotation itself)
-	var annotationKeys []string
-	for key := range cm.Annotations {
-		if key != "toolhive.stacklok.dev/content-checksum" {
-			annotationKeys = append(annotationKeys, key)
-		}
-	}
-	sort.Strings(annotationKeys)
-
-	for _, key := range annotationKeys {
-		h.Write([]byte(key))
-		h.Write([]byte(cm.Annotations[key]))
-	}
-
-	return hex.EncodeToString(h.Sum(nil))
-}
 
 // ensureRunConfigConfigMap ensures the RunConfig ConfigMap exists and is up to date
 func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
@@ -111,13 +63,14 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *m
 		},
 	}
 
+	checksum := configMapChecksum.NewRunConfigConfigMapChecksum()
 	// Compute and add content checksum annotation
-	checksum := computeConfigMapChecksum(configMap)
+	cs := checksum.ComputeConfigMapChecksum(configMap)
 	configMap.Annotations = map[string]string{
-		"toolhive.stacklok.dev/content-checksum": checksum,
+		"toolhive.stacklok.dev/content-checksum": cs,
 	}
 
-	runConfigConfigMap := configmap.NewRunConfigConfigMap(r.Client, r.Scheme, configMapChecksum.NewRunConfigConfigMapChecksum())
+	runConfigConfigMap := configmap.NewRunConfigConfigMap(r.Client, r.Scheme, checksum)
 	err = runConfigConfigMap.UpsertRunConfigMap(ctx, m, configMap)
 	if err != nil {
 		return fmt.Errorf("failed to upsert RunConfig ConfigMap: %w", err)

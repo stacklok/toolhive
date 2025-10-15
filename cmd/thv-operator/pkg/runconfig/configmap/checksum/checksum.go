@@ -1,3 +1,4 @@
+// Package checksum provides checksum computation and comparison for ConfigMaps
 package checksum
 
 import (
@@ -9,9 +10,11 @@ import (
 )
 
 const (
+	// ContentChecksumAnnotation is the annotation key used to store the ConfigMap content checksum
 	ContentChecksumAnnotation = "toolhive.stacklok.dev/content-checksum"
 )
 
+// RunConfigConfigMapChecksum provides methods for computing and comparing ConfigMap checksums
 type RunConfigConfigMapChecksum interface {
 	ComputeConfigMapChecksum(cm *corev1.ConfigMap) string
 	ConfigMapChecksumHasChanged(current, desired *corev1.ConfigMap) bool
@@ -24,8 +27,8 @@ func NewRunConfigConfigMapChecksum() RunConfigConfigMapChecksum {
 
 type runConfigConfigMapChecksum struct{}
 
-// computeConfigMapChecksum computes a SHA256 checksum of the ConfigMap content for change detection
-func (r *runConfigConfigMapChecksum) ComputeConfigMapChecksum(cm *corev1.ConfigMap) string {
+// ComputeConfigMapChecksum computes a SHA256 checksum of the ConfigMap content for change detection
+func (*runConfigConfigMapChecksum) ComputeConfigMapChecksum(cm *corev1.ConfigMap) string {
 	h := sha256.New()
 
 	// Include data content in checksum

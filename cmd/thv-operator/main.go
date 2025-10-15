@@ -115,6 +115,14 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "MCPRegistry")
 		os.Exit(1)
 	}
+
+	// Set up MCPGroup controller
+	if err = (&controllers.MCPGroupReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MCPGroup")
+		os.Exit(1)
+	}
 	//+kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

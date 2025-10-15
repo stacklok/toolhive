@@ -101,6 +101,7 @@ rules:
   - toolhive.stacklok.dev
   resources:
   - mcpexternalauthconfigs
+  - mcpgroups
   - mcpregistries
   - mcpservers
   - mcptoolconfigs
@@ -116,6 +117,7 @@ rules:
   - toolhive.stacklok.dev
   resources:
   - mcpexternalauthconfigs/finalizers
+  - mcpgroups/finalizers
   - mcpregistries/finalizers
   - mcpservers/finalizers
   - mcptoolconfigs/finalizers
@@ -125,6 +127,7 @@ rules:
   - toolhive.stacklok.dev
   resources:
   - mcpexternalauthconfigs/status
+  - mcpgroups/status
   - mcpregistries/status
   - mcpservers/status
   - mcptoolconfigs/status

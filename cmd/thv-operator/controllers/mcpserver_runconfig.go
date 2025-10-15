@@ -297,7 +297,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	}
 
 	// Add telemetry configuration if specified
-	addTelemetryConfigOptions(&options, m.Spec.Telemetry, m.Name)
+	addTelemetryConfigOptions(&options, m.Spec.Telemetry, m.Name, m.Namespace)
 
 	// Add authorization configuration if specified
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
@@ -572,6 +572,7 @@ func addTelemetryConfigOptions(
 	options *[]runner.RunConfigBuilderOption,
 	telemetryConfig *mcpv1alpha1.TelemetryConfig,
 	mcpServerName string,
+	mcpServerNamespace string,
 ) {
 	if telemetryConfig == nil {
 		return
@@ -625,6 +626,11 @@ func addTelemetryConfigOptions(
 	if telemetryConfig.Prometheus != nil {
 		otelEnablePrometheusMetricsPath = telemetryConfig.Prometheus.Enabled
 	}
+
+	otelEnvironmentVariables = append(
+		otelEnvironmentVariables,
+		fmt.Sprintf("OTEL_RESOURCE_ATTRIBUTES=service.name=%s,service.namespace=%s", otelServiceName, mcpServerNamespace),
+	)
 
 	// Add telemetry config to options
 	*options = append(*options, runner.WithTelemetryConfig(

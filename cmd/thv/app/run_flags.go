@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -15,11 +16,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -548,7 +551,10 @@ func configureRemoteAuth(runFlags *RunFlags, serverMetadata registry.ServerMetad
 	var opts []runner.RunConfigBuilderOption
 
 	if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
-		remoteAuthConfig := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata, runFlags)
+		remoteAuthConfig, err := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata, runFlags)
+		if err != nil {
+			return nil, err
+		}
 
 		// Validate OAuth callback port availability upfront for better user experience
 		if err := networking.ValidateCallbackPort(remoteAuthConfig.CallbackPort, remoteAuthConfig.ClientID); err != nil {
@@ -559,7 +565,10 @@ func configureRemoteAuth(runFlags *RunFlags, serverMetadata registry.ServerMetad
 	}
 
 	if runFlags.RemoteURL != "" {
-		remoteAuthConfig := getRemoteAuthFromRunFlags(runFlags)
+		remoteAuthConfig, err := getRemoteAuthFromRunFlags(runFlags)
+		if err != nil {
+			return nil, err
+		}
 
 		// Validate OAuth callback port availability upfront for better user experience
 		if err := networking.ValidateCallbackPort(remoteAuthConfig.CallbackPort, remoteAuthConfig.ClientID); err != nil {
@@ -593,7 +602,7 @@ func extractTelemetryValues(config *telemetry.Config) (string, float64, []string
 func getRemoteAuthFromRemoteServerMetadata(
 	remoteServerMetadata *registry.RemoteServerMetadata,
 	runFlags *RunFlags,
-) *runner.RemoteAuthConfig {
+) (*runner.RemoteAuthConfig, error) {
 	if remoteServerMetadata == nil || remoteServerMetadata.OAuthConfig == nil {
 		return getRemoteAuthFromRunFlags(runFlags)
 	}
@@ -608,9 +617,26 @@ func getRemoteAuthFromRemoteServerMetadata(
 		return b
 	}
 
+	// Resolve OAuth client secret from multiple sources (flag, file, environment variable)
+	// This follows the same priority as resolveSecret: flag → file → environment variable
+	resolvedClientSecret, err := resolveSecret(
+		f.RemoteAuthClientSecret,
+		f.RemoteAuthClientSecretFile,
+		"", // No specific environment variable for OAuth client secret
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve OAuth client secret: %w", err)
+	}
+
+	// Process the resolved client secret (convert plain text to secret reference if needed)
+	clientSecret, err := processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+	}
+
 	authCfg := &runner.RemoteAuthConfig{
 		ClientID:     f.RemoteAuthClientID,
-		ClientSecret: f.RemoteAuthClientSecret,
+		ClientSecret: clientSecret,
 		SkipBrowser:  f.RemoteAuthSkipBrowser,
 		Timeout:      f.RemoteAuthTimeout,
 		Headers:      remoteServerMetadata.Headers,
@@ -645,14 +671,31 @@ func getRemoteAuthFromRemoteServerMetadata(
 		authCfg.OAuthParams = oc.OAuthParams
 	}
 
-	return authCfg
+	return authCfg, nil
 }
 
 // getRemoteAuthFromRunFlags creates RemoteAuthConfig from RunFlags
-func getRemoteAuthFromRunFlags(runFlags *RunFlags) *runner.RemoteAuthConfig {
+func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*runner.RemoteAuthConfig, error) {
+	// Resolve OAuth client secret from multiple sources (flag, file, environment variable)
+	// This follows the same priority as resolveSecret: flag → file → environment variable
+	resolvedClientSecret, err := resolveSecret(
+		runFlags.RemoteAuthFlags.RemoteAuthClientSecret,
+		runFlags.RemoteAuthFlags.RemoteAuthClientSecretFile,
+		"", // No specific environment variable for OAuth client secret
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve OAuth client secret: %w", err)
+	}
+
+	// Process the resolved client secret (convert plain text to secret reference if needed)
+	clientSecret, err := processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+	}
+
 	return &runner.RemoteAuthConfig{
 		ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
-		ClientSecret: runFlags.RemoteAuthFlags.RemoteAuthClientSecret,
+		ClientSecret: clientSecret,
 		Scopes:       runFlags.RemoteAuthFlags.RemoteAuthScopes,
 		SkipBrowser:  runFlags.RemoteAuthFlags.RemoteAuthSkipBrowser,
 		Timeout:      runFlags.RemoteAuthFlags.RemoteAuthTimeout,
@@ -661,7 +704,7 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) *runner.RemoteAuthConfig {
 		AuthorizeURL: runFlags.RemoteAuthFlags.RemoteAuthAuthorizeURL,
 		TokenURL:     runFlags.RemoteAuthFlags.RemoteAuthTokenURL,
 		OAuthParams:  runFlags.OAuthParams,
-	}
+	}, nil
 }
 
 // getOidcFromFlags extracts OIDC configuration from command flags
@@ -777,4 +820,88 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 		EnvironmentVariables:        processedEnvVars,
 	}
+}
+
+// processOAuthClientSecret processes an OAuth client secret, converting plain text to secret reference if needed
+func processOAuthClientSecret(clientSecret, workloadName string) (string, error) {
+	if clientSecret == "" {
+		return "", nil
+	}
+
+	// Check if it's already in CLI format (contains ",target=")
+	if _, err := secrets.ParseSecretParameter(clientSecret); err == nil {
+		// Already in CLI format, use as-is
+		return clientSecret, nil
+	}
+
+	// It's plain text, we must convert to secret reference
+	uniqueSecretName, err := findUniqueSecretName(workloadName)
+	if err != nil {
+		logger.Errorf("Failed to find unique secret name: %v", err)
+		return "", err
+	}
+
+	if err := storeSecretInManager(uniqueSecretName, clientSecret); err != nil {
+		logger.Errorf("Failed to store OAuth client secret: %v", err)
+		// This is a critical error - we cannot proceed without storing the secret
+		return "", err
+	}
+
+	// Return CLI format reference to the stored secret
+	return secrets.SecretParameter{Name: uniqueSecretName, Target: "oauth_secret"}.ToCLIString(), nil
+}
+
+// generateOAuthClientSecretName generates a base secret name for an OAuth client secret
+func generateOAuthClientSecretName(workloadName string) string {
+	return fmt.Sprintf("OAUTH_CLIENT_SECRET_%s", workloadName)
+}
+
+// findUniqueSecretName finds a unique secret name, handling conflicts by appending timestamps
+func findUniqueSecretName(workloadName string) (string, error) {
+	baseName := generateOAuthClientSecretName(workloadName)
+
+	// Get the secrets manager to check for existing secrets
+	secretManager, err := getSecretsManager()
+	if err != nil {
+		return "", fmt.Errorf("failed to get secrets manager: %w", err)
+	}
+
+	// Check if the base name is available
+	ctx := context.Background()
+	_, err = secretManager.GetSecret(ctx, baseName)
+	if err != nil {
+		// Secret doesn't exist, we can use the base name
+		return baseName, nil
+	}
+
+	// Secret exists, generate a unique name with timestamp
+	timestamp := time.Now().Unix()
+	uniqueName := fmt.Sprintf("%s-%d", baseName, timestamp)
+	return uniqueName, nil
+}
+
+// storeSecretInManager stores a secret in the configured secret manager
+func storeSecretInManager(secretName, secretValue string) error {
+	// Use existing getSecretsManager function from secret.go
+	secretManager, err := getSecretsManager()
+	if err != nil {
+		return fmt.Errorf("failed to get secrets manager: %w", err)
+	}
+
+	// Check if the provider supports writing secrets
+	if !secretManager.Capabilities().CanWrite {
+		configProvider := cfg.NewDefaultProvider()
+		config := configProvider.GetConfig()
+		providerType, _ := config.Secrets.GetProviderType()
+		return fmt.Errorf("secrets provider %s does not support writing secrets (read-only)", providerType)
+	}
+
+	// Store the secret
+	ctx := context.Background()
+	if err := secretManager.SetSecret(ctx, secretName, secretValue); err != nil {
+		return fmt.Errorf("failed to store secret %s: %w", secretName, err)
+	}
+
+	logger.Debugf("Stored secret: %s", secretName)
+	return nil
 }

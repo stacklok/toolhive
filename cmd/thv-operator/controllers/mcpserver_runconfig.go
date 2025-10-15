@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/operator/accessors"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -306,8 +307,9 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
-	// Add OIDC authentication configuration if specified
-	addOIDCConfigOptions(&options, m.Spec.OIDCConfig)
+	if err := r.addOIDCConfigOptions(ctx, &options, m); err != nil {
+		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
+	}
 
 	// Add audit configuration if specified
 	addAuditConfigOptions(&options, m.Spec.Audit)
@@ -732,34 +734,38 @@ func (r *MCPServerReconciler) addAuthzConfigOptions(
 }
 
 // addOIDCConfigOptions adds OIDC authentication configuration options to the builder options
-func addOIDCConfigOptions(
+func (r *MCPServerReconciler) addOIDCConfigOptions(
+	ctx context.Context,
 	options *[]runner.RunConfigBuilderOption,
-	oidcConfig *mcpv1alpha1.OIDCConfigRef,
-) {
+	m *mcpv1alpha1.MCPServer,
+) error {
+
+	// Use the OIDC resolver to get configuration
+	resolver := oidc.NewResolver(r.Client)
+	oidcConfig, err := resolver.Resolve(ctx, m)
+	if err != nil {
+		return fmt.Errorf("failed to resolve OIDC configuration: %w", err)
+	}
+
 	if oidcConfig == nil {
-		return
+		return nil
 	}
 
-	// Handle inline OIDC configuration
-	if oidcConfig.Type == mcpv1alpha1.OIDCConfigTypeInline && oidcConfig.Inline != nil {
-		inline := oidcConfig.Inline
+	// Add OIDC config to options
+	*options = append(*options, runner.WithOIDCConfig(
+		oidcConfig.Issuer,
+		oidcConfig.Audience,
+		oidcConfig.JWKSURL,
+		oidcConfig.IntrospectionURL,
+		oidcConfig.ClientID,
+		oidcConfig.ClientSecret,
+		oidcConfig.ThvCABundlePath,
+		oidcConfig.JWKSAuthTokenPath,
+		oidcConfig.ResourceURL,
+		oidcConfig.JWKSAllowPrivateIP,
+	))
 
-		// Add OIDC config to options
-		*options = append(*options, runner.WithOIDCConfig(
-			inline.Issuer,
-			inline.Audience,
-			inline.JWKSURL,
-			inline.IntrospectionURL,
-			inline.ClientID,
-			inline.ClientSecret,
-			inline.ThvCABundlePath,
-			inline.JWKSAuthTokenPath,
-			"", // resourceURL - not available in InlineOIDCConfig
-			inline.JWKSAllowPrivateIP,
-		))
-	}
-
-	// ConfigMap and Kubernetes types are not currently supported for OIDC configuration
+	return nil
 }
 
 // addAuditConfigOptions adds audit configuration options to the builder options

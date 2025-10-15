@@ -362,15 +362,18 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	if p.authInfoHandler != nil {
 		// Create a handler that routes .well-known requests
 		wellKnownHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/.well-known/oauth-protected-resource":
+			// Per RFC 9728, match /.well-known/oauth-protected-resource and any subpaths
+			// e.g., /.well-known/oauth-protected-resource/mcp
+			if strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource") {
 				p.authInfoHandler.ServeHTTP(w, r)
-			default:
+			} else {
 				http.NotFound(w, r)
 			}
 		})
 		mux.Handle("/.well-known/", wellKnownHandler)
 		logger.Info("Well-known discovery endpoints enabled at /.well-known/ (no middlewares)")
+	} else {
+		logger.Info("No auth info handler provided; skipping /.well-known/ endpoint")
 	}
 
 	// Create the server

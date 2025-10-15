@@ -332,10 +332,6 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		}
 	}
 
-	if vaultDetected {
-		options = append(options, runner.WithEnvFileDir("/vault/secrets"))
-	}
-
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	return runner.NewOperatorRunConfigBuilder(
 		context.Background(),

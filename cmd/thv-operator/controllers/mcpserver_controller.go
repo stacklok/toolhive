@@ -84,9 +84,6 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 // mcpContainerName is the name of the mcp container used in pod templates
 const mcpContainerName = "mcp"
 
-// trueValue is the string value "true" used for environment variable comparisons
-const trueValue = "true"
-
 // Restart annotation keys for triggering pod restart
 const (
 	RestartedAtAnnotationKey          = "mcpserver.toolhive.stacklok.dev/restarted-at"
@@ -752,7 +749,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	volumes := []corev1.Volume{}
 
 	// Check if global ConfigMap mode is enabled via environment variable
-	useConfigMap := os.Getenv("TOOLHIVE_USE_CONFIGMAP") == trueValue
+	useConfigMap := true
 	if useConfigMap {
 		// Also add pod template patch for secrets and service account (same as regular flags approach)
 		// If service account is not specified, use the default MCP server service account

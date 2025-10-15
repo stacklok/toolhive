@@ -1,0 +1,28 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: invalid-groupref-test
+spec:
+  description: Test MCPServer with GroupRef pointing to non-existent group
+  timeouts:
+    apply: 30s
+    assert: 30s
+  steps:
+    - name: verify-operator
+      description: Ensure operator is ready before testing
+      try:
+      - assert:
+          file: ../../../setup/assert-operator-ready.yaml
+    - name: Create MCPServer with non-existent GroupRef
+      try:
+      - apply:
+          file: mcpserver.yaml
+      - assert:
+          file: assert-mcpserver-groupref-not-validated.yaml
+    - name: Cleanup
+      try:
+      - delete:
+          ref:
+            apiVersion: toolhive.stacklok.dev/v1alpha1
+            kind: MCPServer
+            name: test-server

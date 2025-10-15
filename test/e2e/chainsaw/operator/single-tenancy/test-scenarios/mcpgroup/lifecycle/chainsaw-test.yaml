@@ -1,0 +1,35 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: mcpgroup-lifecycle-test
+spec:
+  description: Test basic MCPGroup creation, update, and status
+  timeouts:
+    apply: 30s
+    assert: 30s
+    cleanup: 30s
+    exec: 300s
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../../setup/assert-operator-ready.yaml
+  - name: create-mcpgroup
+    description: Create an MCPGroup and verify it's created
+    try:
+    - apply:
+        file: mcpgroup.yaml
+    - assert:
+        file: mcpgroup.yaml
+    - assert:
+        file: assert-mcpgroup-empty.yaml
+  - name: add-mcpserver
+    description: Create an MCPServer that references the MCPGroup and verify status update
+    try:
+    - apply:
+        file: mcpserver-1.yaml
+    - assert:
+        file: mcpserver-1.yaml
+    - assert:
+        file: assert-mcpgroup-with-server.yaml

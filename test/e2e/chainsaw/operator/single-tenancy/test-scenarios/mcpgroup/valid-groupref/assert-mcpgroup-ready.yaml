@@ -1,0 +1,7 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: test-group
+  namespace: toolhive-system
+status:
+  phase: Ready

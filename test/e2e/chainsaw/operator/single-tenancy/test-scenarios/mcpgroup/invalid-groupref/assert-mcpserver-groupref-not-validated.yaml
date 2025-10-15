@@ -1,0 +1,8 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: test-server
+  namespace: toolhive-system
+status:
+  (conditions[?type == 'GroupRefValidated'] | [0].status): "False"
+  (conditions[?type == 'GroupRefValidated'] | [0].reason): "GroupRefNotFound"

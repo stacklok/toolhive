@@ -131,6 +131,11 @@ spec:
                   - value
                   type: object
                 type: array
+              groupRef:
+                description: |-
+                  GroupRef is the name of the MCPGroup this server belongs to
+                  Must reference an existing MCPGroup in the same namespace
+                type: string
               image:
                 description: Image is the container image for the MCP server
                 type: string

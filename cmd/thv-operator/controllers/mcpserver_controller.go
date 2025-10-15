@@ -767,8 +767,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 			ctxLogger.Error(err, "Failed to marshal pod template spec")
 		} else {
 			args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
-		}
-	}
 
 	// Add volume mount for ConfigMap
 	configMapName := fmt.Sprintf("%s-runconfig", m.Name)

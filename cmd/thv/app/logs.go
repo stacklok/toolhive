@@ -80,7 +80,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return fmt.Errorf("Failed to create workload manager: %v", err)
+		return fmt.Errorf("failed to create workload manager: %v", err)
 	}
 
 	if proxy {
@@ -103,7 +103,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 			logger.Infof("Workload %s not found", workloadName)
 			return nil
 		}
-		return fmt.Errorf("Failed to get logs for workload %s: %v", workloadName, err)
+		return fmt.Errorf("failed to get logs for workload %s: %v", workloadName, err)
 	}
 
 	fmt.Print(logs)

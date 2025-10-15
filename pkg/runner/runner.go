@@ -139,8 +139,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to create transport: %v", err)
 	}
 
-	// Process secrets if provided
-	if len(r.Config.Secrets) > 0 {
+	// Process secrets if provided (regular secrets or RemoteAuthConfig.ClientSecret in CLI format)
+	hasRegularSecrets := len(r.Config.Secrets) > 0
+	hasRemoteAuthSecret := r.Config.RemoteAuthConfig != nil && r.Config.RemoteAuthConfig.ClientSecret != ""
+
+	logger.Debugf("Secret processing check: hasRegularSecrets=%v, hasRemoteAuthSecret=%v", hasRegularSecrets, hasRemoteAuthSecret)
+	if hasRemoteAuthSecret {
+		logger.Debugf("RemoteAuthConfig.ClientSecret: %s", r.Config.RemoteAuthConfig.ClientSecret)
+	}
+
+	if hasRegularSecrets || hasRemoteAuthSecret {
+		logger.Debugf("Calling WithSecrets to process secrets")
 		cfgprovider := config.NewDefaultProvider()
 		cfg := cfgprovider.GetConfig()
 
@@ -154,7 +163,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("error instantiating secret manager %v", err)
 		}
 
-		// Process secrets
+		// Process secrets (including RemoteAuthConfig.ClientSecret resolution)
 		if _, err = r.Config.WithSecrets(ctx, secretManager); err != nil {
 			return err
 		}

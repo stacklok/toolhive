@@ -190,7 +190,6 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !r.validateAndUpdatePodTemplateStatus(ctx, mcpServer) {
 		// Invalid PodTemplateSpec - return without error to avoid infinite retries
 		// The user must fix the spec and the next reconciliation will retry
-		ctxLogger.Info("Skipping reconciliation due to invalid PodTemplateSpec")
 		return ctrl.Result{}, nil
 	}
 
@@ -476,7 +475,6 @@ func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Con
 		ctxLogger.Error(statusErr, "Failed to update MCPServer status with PodTemplateSpec validation")
 	}
 
-	ctxLogger.V(1).Info("PodTemplateSpec validation completed successfully")
 	return true
 }
 

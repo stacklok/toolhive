@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 
+	"github.com/adrg/xdg"
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -68,6 +71,7 @@ func WorkloadRouter(
 	r.Post("/{name}/restart", routes.restartWorkload)
 	r.Get("/{name}/status", routes.getWorkloadStatus)
 	r.Get("/{name}/logs", routes.getLogsForWorkload)
+	r.Get("/{name}/proxy-logs", routes.getProxyLogsForWorkload)
 	r.Get("/{name}/export", routes.exportWorkload)
 	r.Delete("/{name}", routes.deleteWorkload)
 
@@ -541,6 +545,53 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		logger.Errorf("Failed to write logs response: %v", err)
 		http.Error(w, "Failed to write logs response", http.StatusInternalServerError)
+		return
+	}
+}
+
+// getProxyLogsForWorkload
+//
+// @Summary      Get proxy logs for a specific workload
+// @Description  Retrieve proxy logs for a specific workload by name from the file system.
+// @Tags         logs
+// @Produce      text/plain
+// @Param        name  path      string  true  "Workload name"
+// @Success      200   {string}  string  "Proxy logs for the specified workload"
+// @Failure      404   {string}  string  "Proxy logs not found for workload"
+// @Router       /api/v1beta/workloads/{name}/proxy-logs [get]
+func (s *WorkloadRoutes) getProxyLogsForWorkload(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+
+	// Get the proxy log file path
+	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", name))
+	if err != nil {
+		logger.Errorf("Failed to get proxy log file path for workload %s: %v", name, err)
+		http.Error(w, "Failed to get proxy log file path", http.StatusInternalServerError)
+		return
+	}
+
+	// Clean the file path to prevent path traversal
+	cleanLogFilePath := filepath.Clean(logFilePath)
+
+	// Check if the log file exists
+	if _, err := os.Stat(cleanLogFilePath); os.IsNotExist(err) {
+		http.Error(w, "Workload not found", http.StatusNotFound)
+		return
+	}
+
+	// Read and display the entire log file
+	content, err := os.ReadFile(cleanLogFilePath)
+	if err != nil {
+		logger.Errorf("Failed to read proxy log %s: %v", cleanLogFilePath, err)
+		http.Error(w, "Failed to read proxy logs", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	_, err = w.Write(content)
+	if err != nil {
+		logger.Errorf("Failed to write proxy logs response: %v", err)
+		http.Error(w, "Failed to write proxy logs response", http.StatusInternalServerError)
 		return
 	}
 }

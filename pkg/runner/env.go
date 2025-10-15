@@ -114,13 +114,18 @@ func (v *CLIEnvVarValidator) Validate(
 			if envVar.Required {
 
 				if envVar.Secret {
-					value, err := secretsManager.GetSecret(ctx, envVar.Name)
-					if err != nil {
-						logger.Warnf("Unable to find secret %s in the secrets manager: %v", envVar.Name, err)
-					} else {
-						addNewVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList)
-						continue
+					// Only use secrets manager if it's available
+					if secretsManager != nil {
+						value, err := secretsManager.GetSecret(ctx, envVar.Name)
+						if err != nil {
+							logger.Warnf("Unable to find secret %s in the secrets manager: %v", envVar.Name, err)
+						} else {
+							addNewVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList)
+							continue
+						}
 					}
+					
+					// If secrets manager unavailable or secret not found, fall through to prompt
 				}
 
 				value, err := promptForEnvironmentVariable(envVar)

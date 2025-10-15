@@ -792,75 +792,10 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		},
 	})
 
-	// Add OIDC configuration args only if not using ConfigMap
-	// When using ConfigMap, OIDC configuration is included in the runconfig.json
-	if !useConfigMap && m.Spec.OIDCConfig != nil {
-		// Create a context with timeout for OIDC configuration operations
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		oidcArgs := r.generateOIDCArgs(ctx, m)
-		args = append(args, oidcArgs...)
-
-		// Add OAuth discovery resource URL for RFC 9728 compliance
-		resourceURL := m.Spec.OIDCConfig.ResourceURL
-		if resourceURL == "" {
-			resourceURL = createServiceURL(m.Name, m.Namespace, m.Spec.Port)
-		}
-		args = append(args, fmt.Sprintf("--resource-url=%s", resourceURL))
-	}
-
-	// Add authorization configuration args only if not using ConfigMap
-	// When using ConfigMap, authorization configuration is included in the runconfig.json
-	if !useConfigMap && m.Spec.AuthzConfig != nil {
-		authzArgs := r.generateAuthzArgs(m)
-		args = append(args, authzArgs...)
-	}
-
-	// Add audit configuration args only if not using ConfigMap
-	// When using ConfigMap, audit configuration is included in the runconfig.json
-	if !useConfigMap && m.Spec.Audit != nil && m.Spec.Audit.Enabled {
-		args = append(args, "--enable-audit")
-	}
-
-	// Add environment variables and tools filter only if not using ConfigMap
-	if !useConfigMap {
-		// Add environment variables as --env flags for the MCP server
-		for _, e := range m.Spec.Env {
-			args = append(args, fmt.Sprintf("--env=%s=%s", e.Name, e.Value))
-		}
-
-		// Add tools filter args
-		if len(m.Spec.ToolsFilter) > 0 {
-			slices.Sort(m.Spec.ToolsFilter)
-			args = append(args, fmt.Sprintf("--tools=%s", strings.Join(m.Spec.ToolsFilter, ",")))
-		}
-	}
-
-	// Add OpenTelemetry configuration args only if not using ConfigMap
-	// When using ConfigMap, telemetry configuration is included in the runconfig.json
-	if !useConfigMap && m.Spec.Telemetry != nil {
-		if m.Spec.Telemetry.OpenTelemetry != nil {
-			otelArgs := r.generateOpenTelemetryArgs(m)
-			args = append(args, otelArgs...)
-		}
-
-		if m.Spec.Telemetry.Prometheus != nil {
-			prometheusArgs := r.generatePrometheusArgs(m)
-			args = append(args, prometheusArgs...)
-		}
-	}
-
 	// Always add the image as it's required by proxy runner command signature
 	// When using ConfigMap, the image from ConfigMap takes precedence, but we still need
 	// to provide this as a positional argument to satisfy the command requirements
 	args = append(args, m.Spec.Image)
-
-	// Add additional args only if not using ConfigMap
-	if !useConfigMap && len(m.Spec.Args) > 0 {
-		args = append(args, "--")
-		args = append(args, m.Spec.Args...)
-	}
 
 	// Prepare container env vars for the proxy container
 	env := []corev1.EnvVar{}

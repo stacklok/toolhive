@@ -14,6 +14,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -135,9 +136,9 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 
 			// Verify ConfigMap labels
 			expectedLabels := map[string]string{
-				"toolhive.stacklok.dev/component":  "run-config",
-				"toolhive.stacklok.dev/mcp-server": mcpServerName,
-				"toolhive.stacklok.dev/managed-by": "toolhive-operator",
+				"toolhive.stacklok.io/component":  "run-config",
+				"toolhive.stacklok.io/mcp-server": mcpServerName,
+				"toolhive.stacklok.io/managed-by": "toolhive-operator",
 			}
 			for key, value := range expectedLabels {
 				Expect(configMap.Labels).To(HaveKeyWithValue(key, value))
@@ -429,7 +430,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			// Verify authorization configuration
 			Expect(runConfig.AuthzConfig).NotTo(BeNil())
 			Expect(runConfig.AuthzConfig.Version).To(Equal("v1"))
-			Expect(runConfig.AuthzConfig.Type).To(Equal("cedarv1"))
+			Expect(runConfig.AuthzConfig.Type).To(Equal(authz.ConfigTypeCedarV1))
 			Expect(runConfig.AuthzConfig.Cedar).NotTo(BeNil())
 			Expect(runConfig.AuthzConfig.Cedar.Policies).To(HaveLen(2))
 			Expect(runConfig.AuthzConfig.Cedar.Policies[0]).To(ContainSubstring("call_tool"))

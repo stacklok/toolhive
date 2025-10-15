@@ -17,7 +17,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -32,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -44,42 +44,9 @@ type MCPServerReconciler struct {
 	detectedPlatform kubernetes.Platform
 	platformOnce     sync.Once
 	ImageValidation  validation.ImageValidation
+	RBACManager      rbac.Manager
 }
 
-// defaultRBACRules are the default RBAC rules that the
-// ToolHive ProxyRunner and/or MCP server needs to have in order to run.
-var defaultRBACRules = []rbacv1.PolicyRule{
-	{
-		APIGroups: []string{"apps"},
-		Resources: []string{"statefulsets"},
-		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete", "apply"},
-	},
-	{
-		APIGroups: []string{""},
-		Resources: []string{"services"},
-		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete", "apply"},
-	},
-	{
-		APIGroups: []string{""},
-		Resources: []string{"pods"},
-		Verbs:     []string{"get", "list", "watch"},
-	},
-	{
-		APIGroups: []string{""},
-		Resources: []string{"pods/log"},
-		Verbs:     []string{"get"},
-	},
-	{
-		APIGroups: []string{""},
-		Resources: []string{"pods/attach"},
-		Verbs:     []string{"create", "get"},
-	},
-	{
-		APIGroups: []string{""},
-		Resources: []string{"configmaps"},
-		Verbs:     []string{"get", "list", "watch"},
-	},
-}
 
 // mcpContainerName is the name of the mcp container used in pod templates
 const mcpContainerName = "mcp"
@@ -545,82 +512,6 @@ func (r *MCPServerReconciler) performImmediateRestart(ctx context.Context, mcpSe
 	return nil
 }
 
-// ensureRBACResource is a generic helper function to ensure a Kubernetes resource exists and is up to date
-func (r *MCPServerReconciler) ensureRBACResource(
-	ctx context.Context,
-	mcpServer *mcpv1alpha1.MCPServer,
-	resourceType string,
-	createResource func() client.Object,
-) error {
-	current := createResource()
-	objectKey := types.NamespacedName{Name: current.GetName(), Namespace: current.GetNamespace()}
-	err := r.Get(ctx, objectKey, current)
-
-	if errors.IsNotFound(err) {
-		return r.createRBACResource(ctx, mcpServer, resourceType, createResource)
-	} else if err != nil {
-		return fmt.Errorf("failed to get %s: %w", resourceType, err)
-	}
-
-	return r.updateRBACResourceIfNeeded(ctx, mcpServer, resourceType, createResource, current)
-}
-
-// createRBACResource creates a new RBAC resource
-func (r *MCPServerReconciler) createRBACResource(
-	ctx context.Context,
-	mcpServer *mcpv1alpha1.MCPServer,
-	resourceType string,
-	createResource func() client.Object,
-) error {
-	ctxLogger := log.FromContext(ctx)
-	desired := createResource()
-	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-		ctxLogger.Error(err, "Failed to set controller reference", "resourceType", resourceType)
-		return nil
-	}
-
-	ctxLogger.Info(
-		fmt.Sprintf("%s does not exist, creating %s", resourceType, resourceType),
-		fmt.Sprintf("%s.Name", resourceType),
-		desired.GetName(),
-	)
-	if err := r.Create(ctx, desired); err != nil {
-		return fmt.Errorf("failed to create %s: %w", resourceType, err)
-	}
-	ctxLogger.Info(fmt.Sprintf("%s created", resourceType), fmt.Sprintf("%s.Name", resourceType), desired.GetName())
-	return nil
-}
-
-// updateRBACResourceIfNeeded updates an RBAC resource if changes are detected
-func (r *MCPServerReconciler) updateRBACResourceIfNeeded(
-	ctx context.Context,
-	mcpServer *mcpv1alpha1.MCPServer,
-	resourceType string,
-	createResource func() client.Object,
-	current client.Object,
-) error {
-	ctxLogger := log.FromContext(ctx)
-	desired := createResource()
-	if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-		ctxLogger.Error(err, "Failed to set controller reference", "resourceType", resourceType)
-		return nil
-	}
-
-	if !reflect.DeepEqual(current, desired) {
-		ctxLogger.Info(
-			fmt.Sprintf("%s exists, updating %s", resourceType, resourceType),
-			fmt.Sprintf("%s.Name", resourceType),
-			desired.GetName(),
-		)
-		if err := r.Update(ctx, desired); err != nil {
-			return fmt.Errorf("failed to update %s: %w", resourceType, err)
-		}
-		ctxLogger.Info(fmt.Sprintf("%s updated", resourceType), fmt.Sprintf("%s.Name", resourceType), desired.GetName())
-	}
-	return nil
-}
-
-// ensureRBACResources ensures that the RBAC resources are in place for the MCP server
 
 // handleToolConfig handles MCPToolConfig reference for an MCPServer
 func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
@@ -667,71 +558,16 @@ func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1alph
 	return nil
 }
 func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
-	proxyRunnerNameForRBAC := proxyRunnerServiceAccountName(mcpServer.Name)
-
-	// Ensure Role
-	if err := r.ensureRBACResource(ctx, mcpServer, "Role", func() client.Object {
-		return &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: mcpServer.Namespace,
-			},
-			Rules: defaultRBACRules,
-		}
-	}); err != nil {
-		return err
+	// Initialize RBACManager if not already initialized
+	if r.RBACManager == nil {
+		r.RBACManager = rbac.NewManager(rbac.Config{
+			Client:           r.Client,
+			Scheme:           r.Scheme,
+			DefaultRBACRules: nil, // Use default rules from the package
+		})
 	}
 
-	// Ensure ServiceAccount
-	if err := r.ensureRBACResource(ctx, mcpServer, "ServiceAccount", func() client.Object {
-		return &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: mcpServer.Namespace,
-			},
-		}
-	}); err != nil {
-		return err
-	}
-
-	if err := r.ensureRBACResource(ctx, mcpServer, "RoleBinding", func() client.Object {
-		return &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: mcpServer.Namespace,
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     proxyRunnerNameForRBAC,
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      proxyRunnerNameForRBAC,
-					Namespace: mcpServer.Namespace,
-				},
-			},
-		}
-	}); err != nil {
-		return err
-	}
-
-	// If a service account is specified, we don't need to create one
-	if mcpServer.Spec.ServiceAccount != nil {
-		return nil
-	}
-
-	// otherwise, create a service account for the MCP server
-	mcpServerServiceAccountName := mcpServerServiceAccountName(mcpServer.Name)
-	return r.ensureRBACResource(ctx, mcpServer, "ServiceAccount", func() client.Object {
-		return &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      mcpServerServiceAccountName,
-				Namespace: mcpServer.Namespace,
-			},
-		}
-	})
+	return r.RBACManager.EnsureRBACResources(ctx, mcpServer)
 }
 
 // deploymentForMCPServer returns a MCPServer Deployment object
@@ -755,7 +591,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		// If service account is not specified, use the default MCP server service account
 		serviceAccount := m.Spec.ServiceAccount
 		if serviceAccount == nil {
-			defaultSA := mcpServerServiceAccountName(m.Name)
+			defaultSA := r.mcpServerServiceAccountName(m.Name)
 			serviceAccount = &defaultSA
 		}
 		finalPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec).
@@ -817,7 +653,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		// If service account is not specified, use the default MCP server service account
 		serviceAccount := m.Spec.ServiceAccount
 		if serviceAccount == nil {
-			defaultSA := mcpServerServiceAccountName(m.Name)
+			defaultSA := r.mcpServerServiceAccountName(m.Name)
 			serviceAccount = &defaultSA
 		}
 		finalPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec).
@@ -1065,7 +901,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 					Annotations: deploymentTemplateAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: proxyRunnerServiceAccountName(m.Name),
+					ServiceAccountName: r.proxyRunnerServiceAccountName(m.Name),
 					Containers: []corev1.Container{{
 						Image:        getToolhiveRunnerImage(),
 						Name:         "toolhive",
@@ -1466,7 +1302,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		// If service account is not specified, use the default MCP server service account
 		serviceAccount := mcpServer.Spec.ServiceAccount
 		if serviceAccount == nil {
-			defaultSA := mcpServerServiceAccountName(mcpServer.Name)
+			defaultSA := r.mcpServerServiceAccountName(mcpServer.Name)
 			serviceAccount = &defaultSA
 		}
 		expectedPodTemplateSpec := NewMCPServerPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec).
@@ -1540,7 +1376,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 	// Check if the service account name has changed
 	// ServiceAccountName: treat empty (not yet set) as equal to the expected default
-	expectedServiceAccountName := proxyRunnerServiceAccountName(mcpServer.Name)
+	expectedServiceAccountName := r.proxyRunnerServiceAccountName(mcpServer.Name)
 	currentServiceAccountName := deployment.Spec.Template.Spec.ServiceAccountName
 	if currentServiceAccountName != "" && currentServiceAccountName != expectedServiceAccountName {
 		return true
@@ -1626,12 +1462,20 @@ func resourceRequirementsForMCPServer(m *mcpv1alpha1.MCPServer) corev1.ResourceR
 }
 
 // proxyRunnerServiceAccountName returns the service account name for the proxy runner
-func proxyRunnerServiceAccountName(mcpServerName string) string {
+func (r *MCPServerReconciler) proxyRunnerServiceAccountName(mcpServerName string) string {
+	if r.RBACManager != nil {
+		return r.RBACManager.GetProxyRunnerServiceAccountName(mcpServerName)
+	}
+	// Fallback for cases where RBACManager is not initialized yet
 	return fmt.Sprintf("%s-proxy-runner", mcpServerName)
 }
 
 // mcpServerServiceAccountName returns the service account name for the mcp server
-func mcpServerServiceAccountName(mcpServerName string) string {
+func (r *MCPServerReconciler) mcpServerServiceAccountName(mcpServerName string) string {
+	if r.RBACManager != nil {
+		return r.RBACManager.GetMCPServerServiceAccountName(mcpServerName)
+	}
+	// Fallback for cases where RBACManager is not initialized yet
 	return fmt.Sprintf("%s-sa", mcpServerName)
 }
 

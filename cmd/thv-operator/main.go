@@ -22,6 +22,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
@@ -75,10 +76,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize RBAC Manager
+	rbacManager := rbac.NewManager(rbac.Config{
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		DefaultRBACRules: nil, // Use default rules from the package
+	})
+
 	rec := &controllers.MCPServerReconciler{
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),
 		ImageValidation: validation.ImageValidationAlwaysAllow,
+		RBACManager:     rbacManager,
 	}
 
 	if err = rec.SetupWithManager(mgr); err != nil {

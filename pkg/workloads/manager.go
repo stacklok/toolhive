@@ -470,11 +470,11 @@ func (d *defaultManager) GetLogs(ctx context.Context, workloadName string, follo
 }
 
 // GetProxyLogs retrieves proxy logs from the filesystem
-func (d *defaultManager) GetProxyLogs(ctx context.Context, workloadName string) (string, error) {
+func (*defaultManager) GetProxyLogs(_ context.Context, workloadName string) (string, error) {
 	// Get the proxy log file path
 	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", workloadName))
 	if err != nil {
-		return "", fmt.Errorf("Failed to get proxy log file path for workload %s: %v", workloadName, err)
+		return "", fmt.Errorf("failed to get proxy log file path for workload %s: %w", workloadName, err)
 	}
 
 	// Clean the file path to prevent path traversal
@@ -482,13 +482,13 @@ func (d *defaultManager) GetProxyLogs(ctx context.Context, workloadName string) 
 
 	// Check if the log file exists
 	if _, err := os.Stat(cleanLogFilePath); os.IsNotExist(err) {
-		return "", fmt.Errorf("Workload not found %s", workloadName)
+		return "", fmt.Errorf("proxy logs not found for workload %s", workloadName)
 	}
 
 	// Read and return the entire log file
 	content, err := os.ReadFile(cleanLogFilePath)
 	if err != nil {
-		return "", fmt.Errorf("Failed to read proxy log for workload %s: %v", cleanLogFilePath, err)
+		return "", fmt.Errorf("failed to read proxy log for workload %s: %w", workloadName, err)
 	}
 
 	return string(content), nil

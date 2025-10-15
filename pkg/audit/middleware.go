@@ -74,6 +74,6 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	}
 
 	auditMw := &Middleware{middleware: middleware}
-	runner.AddMiddleware(auditMw)
+	runner.AddMiddleware(config.Type, auditMw)
 	return nil
 }

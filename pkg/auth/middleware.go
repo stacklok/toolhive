@@ -60,7 +60,7 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	}
 
 	// Add middleware to runner
-	runner.AddMiddleware(authMw)
+	runner.AddMiddleware(config.Type, authMw)
 
 	// Set auth info handler if present
 	if authInfoHandler != nil {

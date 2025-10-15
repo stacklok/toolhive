@@ -263,6 +263,6 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	}
 
 	authzMw := &FactoryMiddleware{middleware: middleware}
-	runner.AddMiddleware(authzMw)
+	runner.AddMiddleware(config.Type, authzMw)
 	return nil
 }

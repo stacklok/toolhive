@@ -39,8 +39,8 @@ type Runner struct {
 	// middlewares is a slice of created middleware instances for cleanup
 	middlewares []types.Middleware
 
-	// middlewareFunctions is a slice of middleware functions to apply to the transport
-	middlewareFunctions []types.MiddlewareFunction
+	// namedMiddlewares is a slice of named middleware to apply to the transport
+	namedMiddlewares []types.NamedMiddleware
 
 	// authInfoHandler is the authentication info handler set by auth middleware
 	authInfoHandler http.Handler
@@ -60,10 +60,13 @@ func NewRunner(runConfig *RunConfig, statusManager statuses.StatusManager) *Runn
 	}
 }
 
-// AddMiddleware adds a middleware instance and its function to the runner
-func (r *Runner) AddMiddleware(middleware types.Middleware) {
+// AddMiddleware adds a middleware instance and its function to the runner with a name
+func (r *Runner) AddMiddleware(name string, middleware types.Middleware) {
 	r.middlewares = append(r.middlewares, middleware)
-	r.middlewareFunctions = append(r.middlewareFunctions, middleware.Handler())
+	r.namedMiddlewares = append(r.namedMiddlewares, types.NamedMiddleware{
+		Name:     name,
+		Function: middleware.Handler(),
+	})
 }
 
 // SetAuthInfoHandler sets the authentication info handler
@@ -126,8 +129,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
-	// Set all middleware functions and handlers on transport config
-	transportConfig.Middlewares = r.middlewareFunctions
+	// Set all named middleware and handlers on transport config
+	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
 	transportConfig.PrometheusHandler = r.prometheusHandler
 

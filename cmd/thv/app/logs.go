@@ -78,22 +78,32 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 	follow := viper.GetBool("follow")
 	proxy := viper.GetBool("proxy")
 
-	if proxy {
-		return getProxyLogs(workloadName, follow)
-	}
-
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %v", err)
+		return fmt.Errorf("Failed to create workload manager: %v", err)
+	}
+
+	if proxy {
+		if follow {
+			return getProxyLogs(workloadName, follow)
+		}
+		// Use the shared manager method for non-follow proxy logs
+		logs, err := manager.GetProxyLogs(ctx, workloadName)
+		if err != nil {
+			logger.Infof("Proxy logs not found for workload %s", workloadName)
+			return nil
+		}
+		fmt.Print(logs)
+		return nil
 	}
 
 	logs, err := manager.GetLogs(ctx, workloadName, follow)
 	if err != nil {
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
-			logger.Infof("workload %s not found", workloadName)
+			logger.Infof("Workload %s not found", workloadName)
 			return nil
 		}
-		return fmt.Errorf("failed to get logs for workload %s: %v", workloadName, err)
+		return fmt.Errorf("Failed to get logs for workload %s: %v", workloadName, err)
 	}
 
 	fmt.Print(logs)
@@ -217,8 +227,12 @@ func reportPruneResults(prunedFiles, errs []string) {
 	}
 }
 
-// getProxyLogs reads and displays the proxy logs for a given workload
+// getProxyLogs reads and displays the proxy logs for a given workload (follow mode only)
 func getProxyLogs(workloadName string, follow bool) error {
+	if !follow {
+		return fmt.Errorf("getProxyLogs should only be called with follow=true")
+	}
+
 	// Get the proxy log file path
 	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", workloadName))
 	if err != nil {
@@ -228,24 +242,7 @@ func getProxyLogs(workloadName string, follow bool) error {
 	// Clean the file path to prevent path traversal
 	cleanLogFilePath := filepath.Clean(logFilePath)
 
-	// Check if the log file exists
-	if _, err := os.Stat(cleanLogFilePath); os.IsNotExist(err) {
-		logger.Infof("proxy log not found for workload %s", workloadName)
-		return nil
-	}
-
-	if follow {
-		return followProxyLogFile(cleanLogFilePath)
-	}
-
-	// Read and display the entire log file
-	content, err := os.ReadFile(cleanLogFilePath)
-	if err != nil {
-		return fmt.Errorf("failed to read proxy log %s: %v", cleanLogFilePath, err)
-	}
-
-	fmt.Print(string(content))
-	return nil
+	return followProxyLogFile(cleanLogFilePath)
 }
 
 // followProxyLogFile implements tail -f functionality for proxy logs

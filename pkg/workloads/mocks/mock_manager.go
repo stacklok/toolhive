@@ -88,6 +88,21 @@ func (mr *MockManagerMockRecorder) GetLogs(ctx, containerName, follow any) *gomo
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLogs", reflect.TypeOf((*MockManager)(nil).GetLogs), ctx, containerName, follow)
 }
 
+// GetProxyLogs mocks base method.
+func (m *MockManager) GetProxyLogs(ctx context.Context, workloadName string) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetProxyLogs", ctx, workloadName)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetProxyLogs indicates an expected call of GetProxyLogs.
+func (mr *MockManagerMockRecorder) GetProxyLogs(ctx, workloadName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetProxyLogs", reflect.TypeOf((*MockManager)(nil).GetProxyLogs), ctx, workloadName)
+}
+
 // GetWorkload mocks base method.
 func (m *MockManager) GetWorkload(ctx context.Context, workloadName string) (core.Workload, error) {
 	m.ctrl.T.Helper()

@@ -5,10 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 
-	"github.com/adrg/xdg"
 	"github.com/go-chi/chi/v5"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -524,11 +521,18 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 // @Produce      text/plain
 // @Param        name  path      string  true  "Workload name"
 // @Success      200   {string}  string  "Logs for the specified workload"
+// @Failure      400   {string}  string  "Invalid workload name"
 // @Failure      404   {string}  string  "Not Found"
 // @Router       /api/v1beta/workloads/{name}/logs [get]
 func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
+
+	// Validate workload name to prevent path traversal
+	if err := wt.ValidateWorkloadName(name); err != nil {
+		http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	logs, err := s.workloadManager.GetLogs(ctx, name, false)
 	if err != nil {
@@ -557,38 +561,28 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 // @Produce      text/plain
 // @Param        name  path      string  true  "Workload name"
 // @Success      200   {string}  string  "Proxy logs for the specified workload"
+// @Failure      400   {string}  string  "Invalid workload name"
 // @Failure      404   {string}  string  "Proxy logs not found for workload"
 // @Router       /api/v1beta/workloads/{name}/proxy-logs [get]
 func (s *WorkloadRoutes) getProxyLogsForWorkload(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
-	// Get the proxy log file path
-	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", name))
-	if err != nil {
-		logger.Errorf("Failed to get proxy log file path for workload %s: %v", name, err)
-		http.Error(w, "Failed to get proxy log file path", http.StatusInternalServerError)
+	// Validate workload name to prevent path traversal
+	if err := wt.ValidateWorkloadName(name); err != nil {
+		http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Clean the file path to prevent path traversal
-	cleanLogFilePath := filepath.Clean(logFilePath)
-
-	// Check if the log file exists
-	if _, err := os.Stat(cleanLogFilePath); os.IsNotExist(err) {
-		http.Error(w, "Workload not found", http.StatusNotFound)
-		return
-	}
-
-	// Read and display the entire log file
-	content, err := os.ReadFile(cleanLogFilePath)
+	logs, err := s.workloadManager.GetProxyLogs(ctx, name)
 	if err != nil {
-		logger.Errorf("Failed to read proxy log %s: %v", cleanLogFilePath, err)
-		http.Error(w, "Failed to read proxy logs", http.StatusInternalServerError)
+		logger.Errorf("Failed to get proxy logs: %v", err)
+		http.Error(w, "Proxy logs not found for workload", http.StatusNotFound)
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/plain")
-	_, err = w.Write(content)
+	_, err = w.Write([]byte(logs))
 	if err != nil {
 		logger.Errorf("Failed to write proxy logs response: %v", err)
 		http.Error(w, "Failed to write proxy logs response", http.StatusInternalServerError)

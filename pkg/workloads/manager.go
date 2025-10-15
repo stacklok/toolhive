@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -60,6 +61,8 @@ type Manager interface {
 	UpdateWorkload(ctx context.Context, workloadName string, newConfig *runner.RunConfig) (*errgroup.Group, error)
 	// GetLogs retrieves the logs of a container.
 	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
+	// GetProxyLogs retrieves the proxy logs from the filesystem.
+	GetProxyLogs(ctx context.Context, workloadName string) (string, error)
 	// MoveToGroup moves the specified workloads from one group to another by updating their runconfig.
 	MoveToGroup(ctx context.Context, workloadNames []string, groupFrom string, groupTo string) error
 	// ListWorkloadsInGroup returns all workload names that belong to the specified group, including stopped workloads.
@@ -464,6 +467,31 @@ func (d *defaultManager) GetLogs(ctx context.Context, workloadName string, follo
 	}
 
 	return logs, nil
+}
+
+// GetProxyLogs retrieves proxy logs from the filesystem
+func (d *defaultManager) GetProxyLogs(ctx context.Context, workloadName string) (string, error) {
+	// Get the proxy log file path
+	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", workloadName))
+	if err != nil {
+		return "", fmt.Errorf("Failed to get proxy log file path for workload %s: %v", workloadName, err)
+	}
+
+	// Clean the file path to prevent path traversal
+	cleanLogFilePath := filepath.Clean(logFilePath)
+
+	// Check if the log file exists
+	if _, err := os.Stat(cleanLogFilePath); os.IsNotExist(err) {
+		return "", fmt.Errorf("Workload not found %s", workloadName)
+	}
+
+	// Read and return the entire log file
+	content, err := os.ReadFile(cleanLogFilePath)
+	if err != nil {
+		return "", fmt.Errorf("Failed to read proxy log for workload %s: %v", cleanLogFilePath, err)
+	}
+
+	return string(content), nil
 }
 
 // deleteWorkload handles deletion of a single workload

@@ -305,13 +305,17 @@ func (c *RunConfig) WithEnvironmentVariables(envVars map[string]string) (*RunCon
 
 // ValidateSecrets checks if the secrets can be parsed and are valid
 func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.Provider) error {
-	if len(c.Secrets) == 0 {
-		return nil // No secrets to validate
+	if len(c.Secrets) > 0 {
+		_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+		if err != nil {
+			return fmt.Errorf("failed to get secrets: %w", err)
+		}
 	}
-
-	_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
-	if err != nil {
-		return fmt.Errorf("failed to get secrets: %w", err)
+	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.ClientSecret != "" {
+		_, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.ClientSecret)
+		if err != nil {
+			return fmt.Errorf("failed to get secrets: %w", err)
+		}
 	}
 
 	return nil
@@ -319,23 +323,37 @@ func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.P
 
 // WithSecrets processes secrets and adds them to environment variables
 func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provider) (*RunConfig, error) {
-	if len(c.Secrets) == 0 {
-		return c, nil // No secrets to process
+	// Process regular secrets if provided
+	if len(c.Secrets) > 0 {
+		secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+		if err != nil {
+			return c, fmt.Errorf("failed to get secrets: %v", err)
+		}
+
+		// Initialize EnvVars if it's nil
+		if c.EnvVars == nil {
+			c.EnvVars = make(map[string]string)
+		}
+
+		// Add secret variables to environment variables
+		for key, value := range secretVariables {
+			c.EnvVars[key] = value
+		}
 	}
 
-	secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
-	if err != nil {
-		return c, fmt.Errorf("failed to get secrets: %v", err)
-	}
-
-	// Initialize EnvVars if it's nil
-	if c.EnvVars == nil {
-		c.EnvVars = make(map[string]string)
-	}
-
-	// Add secret variables to environment variables
-	for key, value := range secretVariables {
-		c.EnvVars[key] = value
+	// Process RemoteAuthConfig.ClientSecret if it's in CLI format
+	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.ClientSecret != "" {
+		// Check if it's in CLI format (contains ",target=")
+		if secretParam, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.ClientSecret); err == nil {
+			// It's in CLI format, resolve the actual secret value
+			actualSecret, err := secretManager.GetSecret(ctx, secretParam.Name)
+			if err != nil {
+				return c, fmt.Errorf("failed to resolve OAuth client secret '%s': %w", secretParam.Name, err)
+			}
+			// Replace the CLI format string with the actual secret value
+			c.RemoteAuthConfig.ClientSecret = actualSecret
+		}
+		// If it's not in CLI format (plain text), leave it as is
 	}
 
 	return c, nil

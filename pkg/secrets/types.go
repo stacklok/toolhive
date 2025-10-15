@@ -84,12 +84,17 @@ func ParseSecretParameter(parameter string) (SecretParameter, error) {
 	}, nil
 }
 
+// ToCLIString converts a SecretParameter to CLI format string
+func (sp SecretParameter) ToCLIString() string {
+	return fmt.Sprintf("%s,target=%s", sp.Name, sp.Target)
+}
+
 // SecretParametersToCLI does the reverse of `ParseSecretParameter`
 // TODO: It may be possible to get rid of this with refactoring.
 func SecretParametersToCLI(params []SecretParameter) []string {
 	result := make([]string, len(params))
 	for i, p := range params {
-		result[i] = fmt.Sprintf("%s,target=%s", p.Name, p.Target)
+		result[i] = p.ToCLIString()
 	}
 	return result
 }

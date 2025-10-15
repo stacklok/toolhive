@@ -227,6 +227,7 @@ func TestIsSpace(t *testing.T) {
 
 // mockReadCloser is a mock implementation of io.ReadCloser for testing
 type mockReadCloser struct {
+	mu        sync.Mutex
 	data      []byte
 	readIndex int
 	closed    bool
@@ -250,6 +251,9 @@ func newMockReadCloserWithEOF(data string) *mockReadCloser {
 }
 
 func (m *mockReadCloser) Read(p []byte) (n int, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.readCount++
 	if m.eofAfter >= 0 && m.readCount > m.eofAfter {
 		return 0, io.EOF
@@ -265,7 +269,9 @@ func (m *mockReadCloser) Read(p []byte) (n int, err error) {
 			return 0, io.EOF
 		}
 		// Otherwise, block until closed
+		m.mu.Unlock()
 		time.Sleep(10 * time.Millisecond)
+		m.mu.Lock()
 		return 0, nil
 	}
 
@@ -275,12 +281,15 @@ func (m *mockReadCloser) Read(p []byte) (n int, err error) {
 }
 
 func (m *mockReadCloser) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.closed = true
 	return nil
 }
 
 // mockWriteCloser is a mock implementation of io.WriteCloser for testing
 type mockWriteCloser struct {
+	mu     sync.Mutex
 	buffer bytes.Buffer
 	closed bool
 }
@@ -290,6 +299,8 @@ func newMockWriteCloser() *mockWriteCloser {
 }
 
 func (m *mockWriteCloser) Write(p []byte) (n int, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.closed {
 		return 0, errors.New("write to closed writer")
 	}
@@ -297,6 +308,8 @@ func (m *mockWriteCloser) Write(p []byte) (n int, err error) {
 }
 
 func (m *mockWriteCloser) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.closed = true
 	return nil
 }
@@ -398,10 +411,13 @@ func TestProcessStdout_EOFWithDockerUnavailable(t *testing.T) {
 	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`)
 
 	// Simulate Docker being unavailable on first check, then available
-	callCount := 0
+	var callCount int
+	var callCountMutex sync.Mutex
 	mockDeployer.EXPECT().
 		IsWorkloadRunning(gomock.Any(), "test-container").
 		DoAndReturn(func(_ context.Context, _ string) (bool, error) {
+			callCountMutex.Lock()
+			defer callCountMutex.Unlock()
 			callCount++
 			if callCount == 1 {
 				// First call: Docker socket unavailable
@@ -530,11 +546,14 @@ func TestProcessStdout_EOFWithFailedReattachment(t *testing.T) {
 	// Create mock stdout that will return EOF
 	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`)
 
-	retryCount := 0
+	var retryCount int
+	var retryCountMutex sync.Mutex
 	// Set up expectations - container is running but re-attachment fails
 	mockDeployer.EXPECT().
 		IsWorkloadRunning(gomock.Any(), "test-container").
 		DoAndReturn(func(_ context.Context, _ string) (bool, error) {
+			retryCountMutex.Lock()
+			defer retryCountMutex.Unlock()
 			retryCount++
 			return true, nil
 		}).
@@ -605,12 +624,15 @@ func TestProcessStdout_EOFWithReattachmentRetryLogic(t *testing.T) {
 	mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test", "params": {}}`)
 
 	// Track retry attempts
-	attemptCount := 0
+	var attemptCount int
+	var attemptCountMutex sync.Mutex
 
 	// Set up expectations - fail first 2 attempts, succeed on 3rd
 	mockDeployer.EXPECT().
 		IsWorkloadRunning(gomock.Any(), "test-container").
 		DoAndReturn(func(_ context.Context, _ string) (bool, error) {
+			attemptCountMutex.Lock()
+			defer attemptCountMutex.Unlock()
 			attemptCount++
 			if attemptCount <= 2 {
 				// First 2 attempts: connection refused (Docker restarting)
@@ -717,12 +739,15 @@ func TestProcessStdout_EOFCheckErrorTypes(t *testing.T) {
 			mockStdout := newMockReadCloserWithEOF(`{"jsonrpc": "2.0", "method": "test"}`)
 
 			// Track how many times IsWorkloadRunning is called
-			callCount := 0
+			var callCount int
+			var callCountMutex sync.Mutex
 
 			// Set up expectations - allow unlimited calls since we're testing retry behavior
 			mockDeployer.EXPECT().
 				IsWorkloadRunning(gomock.Any(), "test-container").
 				DoAndReturn(func(_ context.Context, _ string) (bool, error) {
+					callCountMutex.Lock()
+					defer callCountMutex.Unlock()
 					callCount++
 					return false, tt.checkError
 				}).
@@ -909,9 +934,12 @@ func TestStdinRaceCondition(t *testing.T) {
 		AnyTimes()
 
 	var attachCalled bool
+	var attachMutex sync.Mutex
 	mockDeployer.EXPECT().
 		AttachToWorkload(gomock.Any(), "test-container").
 		DoAndReturn(func(_ context.Context, _ string) (io.WriteCloser, io.ReadCloser, error) {
+			attachMutex.Lock()
+			defer attachMutex.Unlock()
 			if attachCalled {
 				return nil, nil, errors.New("already attached")
 			}

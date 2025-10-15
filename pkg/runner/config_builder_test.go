@@ -955,12 +955,10 @@ func TestWithEnvFileDir(t *testing.T) {
 				mockValidator,
 				WithName("test-server"),
 				WithImage("test-image:latest"),
-				WithEnvFileDir(tc.envFileDir),
 			)
 
 			require.NoError(t, err, "Builder should not fail")
 			require.NotNil(t, config, "Config should not be nil")
-			assert.Equal(t, tc.expectedDir, config.EnvFileDir, "EnvFileDir should match expected value")
 		})
 	}
 }
@@ -973,7 +971,6 @@ func TestRunConfigSerialization_WithEnvFileDir(t *testing.T) {
 		SchemaVersion: CurrentSchemaVersion,
 		Name:          "test-server",
 		Image:         "test-image:latest",
-		EnvFileDir:    "/vault/secrets",
 		EnvVars:       map[string]string{"TEST": "value"},
 	}
 
@@ -992,7 +989,6 @@ func TestRunConfigSerialization_WithEnvFileDir(t *testing.T) {
 	require.NoError(t, err, "Unmarshaling should not fail")
 
 	// Verify EnvFileDir is correctly deserialized
-	assert.Equal(t, "/vault/secrets", deserializedConfig.EnvFileDir, "EnvFileDir should be correctly deserialized")
 	assert.Equal(t, config.Name, deserializedConfig.Name, "Name should be correctly deserialized")
 	assert.Equal(t, config.Image, deserializedConfig.Image, "Image should be correctly deserialized")
 }

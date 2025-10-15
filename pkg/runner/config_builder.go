@@ -1073,14 +1073,6 @@ func WithEnvFilesFromDirectory(dirPath string) RunConfigBuilderOption {
 	}
 }
 
-// WithEnvFileDir sets the directory path for loading environment files (for ConfigMap serialization)
-func WithEnvFileDir(dirPath string) RunConfigBuilderOption {
-	return func(b *runConfigBuilder) error {
-		b.config.EnvFileDir = dirPath
-		return nil
-	}
-}
-
 // WithHeaderForward adds plaintext header forward entries for remote MCP servers.
 // The headers parameter contains literal header values (non-sensitive, stored as-is in RunConfig).
 // Multiple calls are additive; later values for the same header name overwrite earlier ones.

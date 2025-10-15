@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/operator/accessors"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -306,8 +307,9 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
-	// Add OIDC authentication configuration if specified
-	r.addOIDCConfigOptions(ctx, &options, m.Spec.OIDCConfig, m)
+	if err := r.addOIDCConfigOptions(ctx, &options, m); err != nil {
+		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
+	}
 
 	// Add audit configuration if specified
 	addAuditConfigOptions(&options, m.Spec.Audit)
@@ -741,164 +743,35 @@ func (r *MCPServerReconciler) addAuthzConfigOptions(
 func (r *MCPServerReconciler) addOIDCConfigOptions(
 	ctx context.Context,
 	options *[]runner.RunConfigBuilderOption,
-	oidcConfig *mcpv1alpha1.OIDCConfigRef,
 	m *mcpv1alpha1.MCPServer,
-) {
+) error {
+
+	// Use the OIDC resolver to get configuration
+	resolver := oidc.NewResolver(r.Client)
+	oidcConfig, err := resolver.Resolve(ctx, m)
+	if err != nil {
+		return fmt.Errorf("failed to resolve OIDC configuration: %w", err)
+	}
+
 	if oidcConfig == nil {
-		return
+		return nil
 	}
 
-	// Add OAuth discovery resource URL for RFC 9728 compliance
-	resourceURL := oidcConfig.ResourceURL
-	if resourceURL == "" {
-		resourceURL = createServiceURL(m.Name, m.Namespace, m.Spec.Port)
-	}
+	// Add OIDC config to options
+	*options = append(*options, runner.WithOIDCConfig(
+		oidcConfig.Issuer,
+		oidcConfig.Audience,
+		oidcConfig.JWKSURL,
+		oidcConfig.IntrospectionURL,
+		oidcConfig.ClientID,
+		oidcConfig.ClientSecret,
+		oidcConfig.ThvCABundlePath,
+		oidcConfig.JWKSAuthTokenPath,
+		oidcConfig.ResourceURL,
+		oidcConfig.JWKSAllowPrivateIP,
+	))
 
-	switch oidcConfig.Type {
-	case mcpv1alpha1.OIDCConfigTypeKubernetes:
-		config := oidcConfig.Kubernetes
-
-		// Set defaults if config is nil
-		if config == nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Info("Kubernetes OIDCConfig is nil, using default configuration", "mcpServer", m.Name)
-			defaultUseClusterAuth := true
-			config = &mcpv1alpha1.KubernetesOIDCConfig{
-				UseClusterAuth: &defaultUseClusterAuth, // Default to true
-			}
-		}
-
-		// Handle UseClusterAuth with default of true if nil
-		useClusterAuth := true // default value
-		if config.UseClusterAuth != nil {
-			useClusterAuth = *config.UseClusterAuth
-		}
-
-		if oidcConfig.Kubernetes != nil {
-			config := oidcConfig.Kubernetes
-			issuer := config.Issuer
-			if issuer == "" {
-				issuer = "https://kubernetes.default.svc"
-			}
-
-			audience := config.Audience
-			if audience == "" {
-				audience = "toolhive"
-			}
-
-			thvCABundlePath := ""
-			jwksAuthTokenPath := ""
-			jwksAllowPrivateIP := false
-
-			if useClusterAuth {
-				thvCABundlePath = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-				jwksAuthTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-				jwksAllowPrivateIP = true
-			}
-
-			// Add OIDC config to options
-			*options = append(*options, runner.WithOIDCConfig(
-				issuer,
-				audience,
-				config.JWKSURL,
-				config.IntrospectionURL,
-				"",
-				"",
-				thvCABundlePath,
-				jwksAuthTokenPath,
-				resourceURL,
-				jwksAllowPrivateIP,
-			))
-		}
-	case mcpv1alpha1.OIDCConfigTypeConfigMap:
-
-		if oidcConfig.ConfigMap == nil {
-			return
-		}
-
-		config := oidcConfig.ConfigMap
-
-		// Read the ConfigMap and extract OIDC configuration from documented keys
-		configMap := &corev1.ConfigMap{}
-		err := r.Get(ctx, types.NamespacedName{
-			Name:      config.Name,
-			Namespace: m.Namespace,
-		}, configMap)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to get ConfigMap", "configMapName", config.Name)
-			return
-		}
-
-		// Extract OIDC configuration from well-known keys
-		issuer := ""
-		if i, exists := configMap.Data["issuer"]; exists && i != "" {
-			issuer = i
-		}
-		audience := ""
-		if a, exists := configMap.Data["audience"]; exists && a != "" {
-			audience = a
-		}
-		jwksURL := ""
-		if j, exists := configMap.Data["jwksUrl"]; exists && j != "" {
-			jwksURL = j
-		}
-		introspectionURL := ""
-		if i, exists := configMap.Data["introspectionUrl"]; exists && i != "" {
-			introspectionURL = i
-		}
-		clientID := ""
-		if c, exists := configMap.Data["clientId"]; exists && c != "" {
-			clientID = c
-		}
-		clientSecret := ""
-		if c, exists := configMap.Data["clientSecret"]; exists && c != "" {
-			clientSecret = c
-		}
-		thvCABundlePath := ""
-		if thvCABundlePath, exists := configMap.Data["thvCABundlePath"]; exists && thvCABundlePath != "" {
-			thvCABundlePath = thvCABundlePath
-		}
-		jwksAuthTokenPath := ""
-		if j, exists := configMap.Data["jwksAuthTokenPath"]; exists && j != "" {
-			jwksAuthTokenPath = j
-		}
-		jwksAllowPrivateIP := false
-		if jwksAllowPrivateIP, exists := configMap.Data["jwksAllowPrivateIP"]; exists && jwksAllowPrivateIP == "true" {
-			jwksAllowPrivateIP = "true"
-		}
-
-		*options = append(*options, runner.WithOIDCConfig(
-			issuer,
-			audience,
-			jwksURL,
-			introspectionURL,
-			clientID,
-			clientSecret,
-			thvCABundlePath,
-			jwksAuthTokenPath,
-			resourceURL,
-			jwksAllowPrivateIP,
-		))
-	case mcpv1alpha1.OIDCConfigTypeInline:
-		if oidcConfig.Inline != nil {
-			inline := oidcConfig.Inline
-
-			// Add OIDC config to options
-			*options = append(*options, runner.WithOIDCConfig(
-				inline.Issuer,
-				inline.Audience,
-				inline.JWKSURL,
-				inline.IntrospectionURL,
-				inline.ClientID,
-				inline.ClientSecret,
-				inline.ThvCABundlePath,
-				inline.JWKSAuthTokenPath,
-				resourceURL,
-				inline.JWKSAllowPrivateIP,
-			))
-		}
-	}
+	return nil
 }
 
 // addAuditConfigOptions adds audit configuration options to the builder options

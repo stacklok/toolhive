@@ -2547,6 +2547,12 @@ paths:
               schema:
                 type: string
           description: Logs for the specified workload
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid workload name
         "404":
           content:
             application/json:
@@ -2577,6 +2583,12 @@ paths:
               schema:
                 type: string
           description: Proxy logs for the specified workload
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid workload name
         "404":
           content:
             application/json:

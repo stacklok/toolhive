@@ -226,7 +226,7 @@ func TestDeploymentArgsWithInvalidPodTemplateSpec(t *testing.T) {
 	}
 
 	// The deployment should still have the basic required arguments
+	// Note: In configmap mode (default), args are minimal - the full configuration is in the ConfigMap
+	assert.Contains(t, container.Args, "run")
 	assert.Contains(t, container.Args, "test-image:latest")
-	assert.Contains(t, container.Args, "--proxy-port=8080")
-	assert.Contains(t, container.Args, "--transport=stdio")
 }

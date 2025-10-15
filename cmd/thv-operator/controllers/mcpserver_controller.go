@@ -435,8 +435,10 @@ func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Con
 	_, err := NewMCPServerPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec)
 	if err != nil {
 		// Record event for invalid PodTemplateSpec
-		r.Recorder.Eventf(mcpServer, corev1.EventTypeWarning, "InvalidPodTemplateSpec",
-			"Failed to parse PodTemplateSpec: %v. Deployment blocked until PodTemplateSpec is fixed.", err)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(mcpServer, corev1.EventTypeWarning, "InvalidPodTemplateSpec",
+				"Failed to parse PodTemplateSpec: %v. Deployment blocked until PodTemplateSpec is fixed.", err)
+		}
 
 		// Set phase and message
 		mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed

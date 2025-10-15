@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -854,7 +855,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				}
 
 				// Compute the actual checksum for this content
-				checksum := computeConfigMapChecksum(configMap)
+				checksum := checksum.NewRunConfigConfigMapChecksum().ComputeConfigMapChecksum(configMap)
 				configMap.Annotations = map[string]string{
 					"toolhive.stacklok.dev/content-checksum": checksum,
 				}
@@ -1212,115 +1213,6 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 	})
 }
 
-// TestRunConfigContentEquals tests the content comparison logic
-func TestRunConfigContentEquals(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name     string
-		current  *corev1.ConfigMap
-		desired  *corev1.ConfigMap
-		expected bool
-	}{
-		{
-			name: "identical content with same checksum",
-			current: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"key": "value"},
-					Annotations: map[string]string{
-						"other":                                  "annotation",
-						"toolhive.stacklok.dev/content-checksum": "samechecksum123",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			desired: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"key": "value"},
-					Annotations: map[string]string{
-						"other":                                  "annotation",
-						"toolhive.stacklok.dev/content-checksum": "samechecksum123",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			expected: true,
-		},
-		{
-			name: "different data content",
-			current: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"toolhive.stacklok.dev/content-checksum": "oldchecksum123",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "old-content"},
-			},
-			desired: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"toolhive.stacklok.dev/content-checksum": "newchecksum456",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "new-content"},
-			},
-			expected: false,
-		},
-		{
-			name: "different labels",
-			current: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"key": "old-value"},
-					Annotations: map[string]string{
-						"toolhive.stacklok.dev/content-checksum": "oldchecksum123",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			desired: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"key": "new-value"},
-					Annotations: map[string]string{
-						"toolhive.stacklok.dev/content-checksum": "newchecksum456",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			expected: false,
-		},
-		{
-			name: "different non-checksum annotations",
-			current: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"other":                                  "old-annotation",
-						"toolhive.stacklok.dev/content-checksum": "oldchecksum123",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			desired: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"other":                                  "new-annotation",
-						"toolhive.stacklok.dev/content-checksum": "newchecksum456",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			r := &MCPServerReconciler{}
-			result := r.runConfigContentEquals(tt.current, tt.desired)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
 // TestValidateRunConfig tests the validation logic
 func TestValidateRunConfig(t *testing.T) {
 	t.Parallel()
@@ -1438,101 +1330,6 @@ func TestLabelsForRunConfig(t *testing.T) {
 
 	result := labelsForRunConfig("test-server")
 	assert.Equal(t, expected, result)
-}
-
-// TestComputeConfigMapChecksum tests the checksum computation
-func TestComputeConfigMapChecksum(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name               string
-		cm1                *corev1.ConfigMap
-		cm2                *corev1.ConfigMap
-		sameShouldChecksum bool
-	}{
-		{
-			name: "identical configmaps have same checksum",
-			cm1: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:      map[string]string{"key": "value"},
-					Annotations: map[string]string{"other": "annotation"},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			cm2: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:      map[string]string{"key": "value"},
-					Annotations: map[string]string{"other": "annotation"},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			sameShouldChecksum: true,
-		},
-		{
-			name: "different data content produces different checksum",
-			cm1: &corev1.ConfigMap{
-				Data: map[string]string{"runconfig.json": "content1"},
-			},
-			cm2: &corev1.ConfigMap{
-				Data: map[string]string{"runconfig.json": "content2"},
-			},
-			sameShouldChecksum: false,
-		},
-		{
-			name: "different labels produce different checksum",
-			cm1: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"key": "value1"},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			cm2: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"key": "value2"},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			sameShouldChecksum: false,
-		},
-		{
-			name: "checksum annotation is ignored in computation",
-			cm1: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"other":                                  "annotation",
-						"toolhive.stacklok.dev/content-checksum": "checksum1",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			cm2: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"other":                                  "annotation",
-						"toolhive.stacklok.dev/content-checksum": "checksum2",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			sameShouldChecksum: true, // Should be same because checksum annotation is ignored
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			checksum1 := computeConfigMapChecksum(tt.cm1)
-			checksum2 := computeConfigMapChecksum(tt.cm2)
-
-			assert.NotEmpty(t, checksum1)
-			assert.NotEmpty(t, checksum2)
-
-			if tt.sameShouldChecksum {
-				assert.Equal(t, checksum1, checksum2)
-			} else {
-				assert.NotEqual(t, checksum1, checksum2)
-			}
-		})
-	}
 }
 
 // TestEnsureRunConfigConfigMapCompleteFlow tests the complete flow from MCPServer changes to ConfigMap updates

@@ -659,6 +659,26 @@ type MCPServerList struct {
 	Items           []MCPServer `json:"items"`
 }
 
+// GetName returns the name of the MCPServer
+func (m *MCPServer) GetName() string {
+	return m.Name
+}
+
+// GetNamespace returns the namespace of the MCPServer
+func (m *MCPServer) GetNamespace() string {
+	return m.Namespace
+}
+
+// GetOIDCConfig returns the OIDC configuration reference
+func (m *MCPServer) GetOIDCConfig() *OIDCConfigRef {
+	return m.Spec.OIDCConfig
+}
+
+// GetPort returns the port of the MCPServer
+func (m *MCPServer) GetPort() int32 {
+	return m.Spec.Port
+}
+
 func init() {
 	SchemeBuilder.Register(&MCPServer{}, &MCPServerList{})
 }

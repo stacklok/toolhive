@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauth"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -203,7 +204,43 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 		config.SchemaVersion = CurrentSchemaVersion
 	}
 
+	// Migrate plain text OAuth client secrets to CLI format
+	if err := migrateOAuthClientSecret(&config); err != nil {
+		logger.Warnf("Failed to migrate OAuth client secret for workload %s: %v", config.Name, err)
+		// Don't fail the load - just log the warning and continue
+	}
+
 	return &config, nil
+}
+
+// migrateOAuthClientSecret migrates plain text OAuth client secrets to CLI format
+// This handles the transition from storing plain text secrets to CLI format references
+func migrateOAuthClientSecret(config *RunConfig) error {
+	if config.RemoteAuthConfig == nil || config.RemoteAuthConfig.ClientSecret == "" {
+		return nil // No OAuth config or no client secret to migrate
+	}
+
+	// Check if the client secret is already in CLI format
+	if _, err := secrets.ParseSecretParameter(config.RemoteAuthConfig.ClientSecret); err == nil {
+		return nil // Already in CLI format, no migration needed
+	}
+
+	// The client secret is in plain text format - migrate it
+	cliFormatSecret, err := oauth.ProcessOAuthClientSecret(config.Name, config.RemoteAuthConfig.ClientSecret)
+	if err != nil {
+		return fmt.Errorf("failed to process OAuth client secret: %w", err)
+	}
+
+	// Update the RunConfig to use the CLI format reference
+	config.RemoteAuthConfig.ClientSecret = cliFormatSecret
+
+	// Save the migrated RunConfig back to disk so migration only happens once
+	if err := config.SaveState(context.Background()); err != nil {
+		logger.Warnf("Failed to save migrated RunConfig for workload %s: %v", config.Name, err)
+		// Don't fail the migration - the secret is already stored and the config is updated in memory
+	}
+
+	return nil
 }
 
 // NewRunConfig creates a new RunConfig with default values
@@ -478,6 +515,63 @@ type RemoteAuthConfig struct {
 
 	// OAuth parameters for server-specific customization
 	OAuthParams map[string]string `json:"oauth_params,omitempty" yaml:"oauth_params,omitempty"`
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for backward compatibility
+// This handles both the old PascalCase format and the new snake_case format
+func (r *RemoteAuthConfig) UnmarshalJSON(data []byte) error {
+	// Parse the JSON to check which format is being used
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	// Check if this is the old PascalCase format by looking for old field name
+	if _, isOld := raw["ClientID"]; isOld {
+		// Unmarshal using old PascalCase format
+		var oldFormat struct {
+			ClientID         string             `json:"ClientID,omitempty"`
+			ClientSecret     string             `json:"ClientSecret,omitempty"`
+			ClientSecretFile string             `json:"ClientSecretFile,omitempty"`
+			Scopes           []string           `json:"Scopes,omitempty"`
+			SkipBrowser      bool               `json:"SkipBrowser,omitempty"`
+			Timeout          time.Duration      `json:"Timeout,omitempty"`
+			CallbackPort     int                `json:"CallbackPort,omitempty"`
+			UsePKCE          bool               `json:"UsePKCE,omitempty"`
+			Issuer           string             `json:"Issuer,omitempty"`
+			AuthorizeURL     string             `json:"AuthorizeURL,omitempty"`
+			TokenURL         string             `json:"TokenURL,omitempty"`
+			Headers          []*registry.Header `json:"Headers,omitempty"`
+			EnvVars          []*registry.EnvVar `json:"EnvVars,omitempty"`
+			OAuthParams      map[string]string  `json:"OAuthParams,omitempty"`
+		}
+
+		if err := json.Unmarshal(data, &oldFormat); err != nil {
+			return fmt.Errorf("failed to unmarshal RemoteAuthConfig in old format: %w", err)
+		}
+
+		// Copy from old format to new format
+		r.ClientID = oldFormat.ClientID
+		r.ClientSecret = oldFormat.ClientSecret
+		r.ClientSecretFile = oldFormat.ClientSecretFile
+		r.Scopes = oldFormat.Scopes
+		r.SkipBrowser = oldFormat.SkipBrowser
+		r.Timeout = oldFormat.Timeout
+		r.CallbackPort = oldFormat.CallbackPort
+		r.UsePKCE = oldFormat.UsePKCE
+		r.Issuer = oldFormat.Issuer
+		r.AuthorizeURL = oldFormat.AuthorizeURL
+		r.TokenURL = oldFormat.TokenURL
+		r.Headers = oldFormat.Headers
+		r.EnvVars = oldFormat.EnvVars
+		r.OAuthParams = oldFormat.OAuthParams
+		return nil
+	}
+
+	// Use the new snake_case format
+	type Alias RemoteAuthConfig
+	alias := (*Alias)(r)
+	return json.Unmarshal(data, alias)
 }
 
 // ToolOverride represents a tool override.

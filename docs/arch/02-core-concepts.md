@@ -196,10 +196,10 @@ A **group** is a logical collection of MCP servers that share a common purpose o
 - Client configuration (configure clients to use groups)
 
 **Operations:**
-- Create group by adding workloads with `--group` flag or `thv group create`
+- Create group: `thv group create <name>` or add workloads with `--group` flag
 - List all groups: `thv group list`
-- List workloads in group: `thv group list <name>`
-- Delete group: `thv group rm <name>`
+- List workloads in group: `thv list --group <name>`
+- Remove group: `thv group rm <name>`
 
 **Implementation:**
 - Group management: `pkg/groups/`
@@ -486,8 +486,8 @@ Cedar policies use:
 **Example policy:**
 ```cedar
 permit(
-  principal == User::"user@example.com",
-  action == Action::"tools/call",
+  principal == Client::"user@example.com",
+  action == Action::call_tool,
   resource == Tool::"web-search"
 );
 ```
@@ -540,8 +540,9 @@ permit(
 - Middleware configuration included
 
 **Commands:**
-- `thv export <workload>` - Export to stdout
-- `thv export <workload> > config.json` - Export to file
+- `thv export <workload> <path>` - Export to file
+
+**Example:** `thv export my-server ./my-server-config.json`
 
 **Implementation:**
 - CLI: `cmd/thv/app/export.go`

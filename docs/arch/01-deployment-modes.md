@@ -87,17 +87,21 @@ graph TB
 The CLI automatically detects container runtimes in this order:
 
 1. **Podman** - Checks for Podman socket at:
-   - `$TOOLHIVE_PODMAN_SOCKET`
+   - `$TOOLHIVE_PODMAN_SOCKET` (if set)
+   - `/var/run/podman/podman.sock`
    - `$XDG_RUNTIME_DIR/podman/podman.sock`
-   - `/run/podman/podman.sock`
+   - `~/.local/share/containers/podman/machine/podman.sock` (Podman Machine on macOS)
+   - `$TMPDIR/podman/*-api.sock` (Podman Machine API on macOS)
 
 2. **Colima** - Checks for Colima socket at:
-   - `$TOOLHIVE_COLIMA_SOCKET`
+   - `$TOOLHIVE_COLIMA_SOCKET` (if set)
    - `~/.colima/default/docker.sock`
 
 3. **Docker** - Checks for Docker socket at:
-   - `$TOOLHIVE_DOCKER_SOCKET`
+   - `$TOOLHIVE_DOCKER_SOCKET` (if set)
    - `/var/run/docker.sock`
+   - `~/.docker/run/docker.sock` (Docker Desktop on macOS)
+   - `~/.rd/docker.sock` (Rancher Desktop on macOS)
 
 ### Detached Process Model
 
@@ -131,10 +135,10 @@ sequenceDiagram
 
 | Purpose | Path (Linux) | Path (macOS) |
 |---------|--------------|--------------|
-| State files | `~/.local/state/toolhive/` | `~/Library/Application Support/toolhive/` |
+| State files (RunConfig) | `~/.local/state/toolhive/` | `~/Library/Application Support/toolhive/` |
+| Data files (logs, PIDs, secrets, statuses) | `~/.local/share/toolhive/` | `~/Library/Application Support/toolhive/` |
 | Config files | `~/.config/toolhive/` | `~/Library/Application Support/toolhive/` |
 | Cache files | `~/.cache/toolhive/` | `~/Library/Caches/toolhive/` |
-| Log files | `~/.local/state/toolhive/logs/` | `~/Library/Application Support/toolhive/logs/` |
 
 **Implementation**: Uses `adrg/xdg` package for XDG Base Directory compliance.
 

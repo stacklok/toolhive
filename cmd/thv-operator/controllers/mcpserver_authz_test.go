@@ -379,9 +379,7 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			reconciler := &MCPServerReconciler{}
-
-			volumeMount, volume := reconciler.generateAuthzVolumeConfig(tt.mcpServer)
+			volumeMount, volume := GenerateAuthzVolumeConfig(tt.mcpServer.Spec.AuthzConfig, tt.mcpServer.Name)
 
 			if tt.expectVolumeMount {
 				require.NotNil(t, volumeMount, "Expected volume mount to be created")

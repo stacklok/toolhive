@@ -215,9 +215,6 @@ func TestOpenTelemetryEnvVars(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client := fake.NewClientBuilder().WithScheme(scheme).Build()
-			r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
-
 			mcpServer := &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
@@ -236,7 +233,7 @@ func TestOpenTelemetryEnvVars(t *testing.T) {
 				},
 			}
 
-			envVars := r.generateOpenTelemetryEnvVars(mcpServer)
+			envVars := GenerateOpenTelemetryEnvVars(mcpServer.Spec.Telemetry, mcpServer.Name, mcpServer.Namespace)
 			assert.Equal(t, tt.expectedEnv, envVars)
 		})
 	}
@@ -381,9 +378,6 @@ func TestServiceNameDefaulting(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client := fake.NewClientBuilder().WithScheme(scheme).Build()
-			r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
-
 			mcpServer := &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      tt.serverName,
@@ -402,7 +396,7 @@ func TestServiceNameDefaulting(t *testing.T) {
 				},
 			}
 
-			envVars := r.generateOpenTelemetryEnvVars(mcpServer)
+			envVars := GenerateOpenTelemetryEnvVars(mcpServer.Spec.Telemetry, mcpServer.Name, mcpServer.Namespace)
 
 			// Check OTEL_RESOURCE_ATTRIBUTES contains correct service name and namespace
 			var resourceAttrs string

@@ -700,7 +700,7 @@ func TestGenerateTokenExchangeEnvVars(t *testing.T) {
 			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
 			ctx := t.Context()
-			envVars, err := reconciler.generateTokenExchangeEnvVars(ctx, tt.mcpServer)
+			envVars, err := GenerateTokenExchangeEnvVars(ctx, reconciler.Client, tt.mcpServer.Namespace, tt.mcpServer.Spec.ExternalAuthConfigRef, GetExternalAuthConfigByName)
 
 			if tt.expectError {
 				assert.Error(t, err)

@@ -1,3 +1,4 @@
+// Package oauth contains the OAuth management logic for ToolHive.
 package oauth
 
 import (
@@ -35,11 +36,16 @@ func ProcessOAuthClientSecret(workloadName, clientSecret string) (string, error)
 	return secrets.SecretParameter{Name: secretName, Target: "oauth_secret"}.ToCLIString(), nil
 }
 
+// generateOAuthClientSecretName generates a base secret name for an OAuth client secret
+func generateOAuthClientSecretName(workloadName string) string {
+	return fmt.Sprintf("OAUTH_CLIENT_SECRET_%s", workloadName)
+}
+
 // GenerateUniqueSecretName generates a unique secret name for an OAuth client secret
 // It handles both name generation and uniqueness checking in a single function
 func GenerateUniqueSecretName(workloadName string) (string, error) {
 	// Generate base name
-	baseName := fmt.Sprintf("OAUTH_CLIENT_SECRET_%s", workloadName)
+	baseName := generateOAuthClientSecretName(workloadName)
 
 	// Get the secrets manager to check for existing secrets
 	secretManager, err := getSecretsManager()
@@ -71,8 +77,8 @@ func StoreSecretInManager(ctx context.Context, secretName, secretValue string) e
 	// Check if the provider supports writing secrets
 	if !secretManager.Capabilities().CanWrite {
 		configProvider := config.NewDefaultProvider()
-		config := configProvider.GetConfig()
-		providerType, _ := config.Secrets.GetProviderType()
+		cfg := configProvider.GetConfig()
+		providerType, _ := cfg.Secrets.GetProviderType()
 		return fmt.Errorf("secrets provider %s does not support writing secrets", providerType)
 	}
 

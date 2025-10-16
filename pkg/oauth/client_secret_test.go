@@ -1,4 +1,4 @@
-package app
+package oauth
 
 import (
 	"testing"

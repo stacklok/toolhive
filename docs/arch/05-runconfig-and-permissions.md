@@ -20,72 +20,21 @@ This document describes ToolHive's configuration format (RunConfig) and security
 
 ### Core Fields
 
-```go
-type RunConfig struct {
-    // Schema version for format evolution
-    SchemaVersion string `json:"schema_version"`
+The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 
-    // What to run (container or remote)
-    Image     string `json:"image,omitempty"`
-    RemoteURL string `json:"remote_url,omitempty"`
+**Key field categories:**
+- **Identity**: `name`, `containerName`, `baseName` - Workload identifiers
+- **What to run**: `image` or `remoteURL` - Container image or remote endpoint
+- **Transport**: `transport`, `host`, `port`, `targetPort`, `proxyMode` - Communication configuration
+- **Execution**: `cmdArgs`, `envVars` - Runtime parameters
+- **Security**: `permissionProfile`, `isolateNetwork` - Permission boundaries
+- **Middleware**: `oidcConfig`, `authzConfig`, `auditConfig`, `middlewareConfigs` - Request processing
+- **Tool filtering**: `toolsFilter`, `toolsOverride` - Tool control
+- **Storage**: `volumes`, `secrets` - Data and credentials
+- **Grouping**: `group` - Logical organization
+- **Platform-specific**: `k8sPodTemplatePatch`, `containerLabels` - Runtime-specific options
 
-    // Identity
-    Name          string `json:"name"`
-    ContainerName string `json:"container_name,omitempty"`
-    BaseName      string `json:"base_name,omitempty"`
-
-    // Transport configuration
-    Transport  types.TransportType `json:"transport"`
-    Host       string              `json:"host"`
-    Port       int                 `json:"port"`
-    TargetPort int                 `json:"target_port,omitempty"`
-    TargetHost string              `json:"target_host,omitempty"`
-    ProxyMode  types.ProxyMode     `json:"proxy_mode,omitempty"`
-
-    // Execution
-    CmdArgs []string          `json:"cmd_args,omitempty"`
-    EnvVars map[string]string `json:"env_vars,omitempty"`
-
-    // Security
-    PermissionProfile           *permissions.Profile `json:"permission_profile"`
-    PermissionProfileNameOrPath string               `json:"permission_profile_name_or_path,omitempty"`
-    IsolateNetwork              bool                 `json:"isolate_network,omitempty"`
-
-    // Middleware and policies
-    OIDCConfig      *auth.TokenValidatorConfig `json:"oidc_config,omitempty"`
-    AuthzConfig     *authz.Config              `json:"authz_config,omitempty"`
-    AuditConfig     *audit.Config              `json:"audit_config,omitempty"`
-    TelemetryConfig *telemetry.Config          `json:"telemetry_config,omitempty"`
-    MiddlewareConfigs []types.MiddlewareConfig `json:"middleware_configs,omitempty"`
-
-    // Tool filtering
-    ToolsFilter   []string                 `json:"tools_filter,omitempty"`
-    ToolsOverride map[string]ToolOverride  `json:"tools_override,omitempty"`
-
-    // Storage
-    Volumes      []string `json:"volumes,omitempty"`
-    EnvFileDir   string   `json:"env_file_dir,omitempty"`
-    IgnoreConfig *ignore.Config `json:"ignore_config,omitempty"`
-
-    // Secrets
-    Secrets []string `json:"secrets,omitempty"`
-
-    // Grouping
-    Group string `json:"group,omitempty"`
-
-    // Platform-specific
-    K8sPodTemplatePatch string            `json:"k8s_pod_template_patch,omitempty"`
-    ContainerLabels     map[string]string `json:"container_labels,omitempty"`
-
-    // Other
-    Debug             bool   `json:"debug,omitempty"`
-    TrustProxyHeaders bool   `json:"trust_proxy_headers,omitempty"`
-    ThvCABundle       string `json:"thv_ca_bundle,omitempty"`
-    JWKSAuthTokenFile string `json:"jwks_auth_token_file,omitempty"`
-}
-```
-
-### Field Categories
+### Field Category Details
 
 #### Identity Fields
 

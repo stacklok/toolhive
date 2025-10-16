@@ -191,6 +191,11 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
 	}
 
+	// Add external auth configuration if specified
+	if err := r.addExternalAuthConfigOptions(ctx, m, &options); err != nil {
+		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
+	}
+
 	// Add audit configuration if specified
 	addAuditConfigOptions(&options, m.Spec.Audit)
 
@@ -659,4 +664,99 @@ func addAuditConfigOptions(
 
 	// Add audit config to options with default config (no custom config path for now)
 	*options = append(*options, runner.WithAuditEnabled(auditConfig.Enabled, ""))
+}
+
+// addExternalAuthConfigOptions adds external authentication configuration options to the builder options
+// This creates middleware configuration for token exchange
+func (r *MCPServerReconciler) addExternalAuthConfigOptions(
+	ctx context.Context,
+	m *mcpv1alpha1.MCPServer,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	if m.Spec.ExternalAuthConfigRef == nil {
+		return nil
+	}
+
+	// Fetch the MCPExternalAuthConfig
+	externalAuthConfig, err := GetExternalAuthConfigForMCPServer(ctx, r.Client, m)
+	if err != nil {
+		return fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
+	}
+
+	// Only token exchange type is supported currently
+	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeTokenExchange {
+		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
+	}
+
+	tokenExchangeSpec := externalAuthConfig.Spec.TokenExchange
+	if tokenExchangeSpec == nil {
+		return fmt.Errorf("token exchange configuration is nil for type tokenExchange")
+	}
+
+	// Validate that the referenced Kubernetes secret exists
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: m.Namespace,
+		Name:      tokenExchangeSpec.ClientSecretRef.Name,
+	}, &secret); err != nil {
+		return fmt.Errorf("failed to get client secret %s/%s: %w",
+			m.Namespace, tokenExchangeSpec.ClientSecretRef.Name, err)
+	}
+
+	if _, ok := secret.Data[tokenExchangeSpec.ClientSecretRef.Key]; !ok {
+		return fmt.Errorf("client secret %s/%s is missing key %q",
+			m.Namespace, tokenExchangeSpec.ClientSecretRef.Name, tokenExchangeSpec.ClientSecretRef.Key)
+	}
+
+	// Use scopes array directly from spec (already matches middleware.Config format)
+	scopes := tokenExchangeSpec.Scopes
+
+	// Determine header strategy based on ExternalTokenHeaderName
+	headerStrategy := "replace" // Default strategy
+	if tokenExchangeSpec.ExternalTokenHeaderName != "" {
+		headerStrategy = "custom"
+	}
+
+	// Build token exchange middleware configuration
+	// Client secret is provided via TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET environment variable
+	// to avoid embedding plaintext secrets in the ConfigMap
+	tokenExchangeConfig := map[string]interface{}{
+		"token_url": tokenExchangeSpec.TokenURL,
+		"client_id": tokenExchangeSpec.ClientID,
+		"audience":  tokenExchangeSpec.Audience,
+	}
+
+	if len(scopes) > 0 {
+		tokenExchangeConfig["scopes"] = scopes
+	}
+
+	if headerStrategy != "" {
+		tokenExchangeConfig["header_strategy"] = headerStrategy
+	}
+
+	if tokenExchangeSpec.ExternalTokenHeaderName != "" {
+		tokenExchangeConfig["external_token_header_name"] = tokenExchangeSpec.ExternalTokenHeaderName
+	}
+
+	// Create middleware parameters
+	middlewareParams := map[string]interface{}{
+		"token_exchange_config": tokenExchangeConfig,
+	}
+
+	// Marshal parameters to JSON
+	paramsJSON, err := json.Marshal(middlewareParams)
+	if err != nil {
+		return fmt.Errorf("failed to marshal token exchange middleware parameters: %w", err)
+	}
+
+	// Create middleware config
+	middlewareConfig := transporttypes.MiddlewareConfig{
+		Type:       "tokenexchange",
+		Parameters: json.RawMessage(paramsJSON),
+	}
+
+	// Add to options using the WithMiddlewareConfig builder option
+	*options = append(*options, runner.WithMiddlewareConfig([]transporttypes.MiddlewareConfig{middlewareConfig}))
+
+	return nil
 }

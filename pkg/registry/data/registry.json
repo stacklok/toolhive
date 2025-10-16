@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-15T00:18:07Z",
+  "last_updated": "2025-10-16T00:18:19Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -601,7 +601,7 @@
         "aws-costs",
         "aws-pricing"
       ],
-      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:1.0.13",
+      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:1.0.14",
       "permissions": {
         "network": {
           "outbound": {
@@ -696,9 +696,9 @@
         "workbooks"
       ],
       "metadata": {
-        "stars": 1155,
+        "stars": 1166,
         "pulls": 1809,
-        "last_updated": "2025-09-17T02:27:40Z"
+        "last_updated": "2025-10-15T02:30:46Z"
       },
       "repository_url": "https://github.com/Azure/azure-mcp",
       "tags": [
@@ -711,7 +711,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.8.6",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.9.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -1023,7 +1023,7 @@
         "devops",
         "testing"
       ],
-      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.7.0",
+      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.7.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -2557,9 +2557,9 @@
         "pg_upgrade"
       ],
       "metadata": {
-        "stars": 64,
+        "stars": 69,
         "pulls": 104,
-        "last_updated": "2025-09-17T02:27:41Z"
+        "last_updated": "2025-10-15T02:30:47Z"
       },
       "repository_url": "https://github.com/heroku/heroku-mcp-server",
       "tags": [
@@ -3733,9 +3733,9 @@
         "update-many"
       ],
       "metadata": {
-        "stars": 627,
+        "stars": 677,
         "pulls": 5060,
-        "last_updated": "2025-09-17T02:27:41Z"
+        "last_updated": "2025-10-15T02:30:47Z"
       },
       "repository_url": "https://github.com/mongodb-js/mongodb-mcp-server",
       "tags": [
@@ -4631,9 +4631,9 @@
         "search_issues"
       ],
       "metadata": {
-        "stars": 346,
+        "stars": 384,
         "pulls": 127,
-        "last_updated": "2025-09-17T02:27:40Z"
+        "last_updated": "2025-10-15T02:30:47Z"
       },
       "repository_url": "https://github.com/getsentry/sentry-mcp",
       "tags": [
@@ -4731,9 +4731,9 @@
         "describe_table"
       ],
       "metadata": {
-        "stars": 10,
+        "stars": 11,
         "pulls": 4212,
-        "last_updated": "2025-09-17T02:27:42Z"
+        "last_updated": "2025-10-15T02:30:48Z"
       },
       "repository_url": "https://github.com/StacklokLabs/sqlite-mcp",
       "tags": [

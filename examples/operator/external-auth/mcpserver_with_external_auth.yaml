@@ -1,0 +1,35 @@
+# MCPServer with external authentication configuration
+# This example shows how to configure an MCP server to use external authentication
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch-with-auth
+  namespace: default
+spec:
+  # Container image for the MCP server
+  image: ghcr.io/stackloklabs/gofetch/server
+
+  # Transport protocol (streamable-http, stdio, or sse)
+  transport: streamable-http
+
+  # Tools exposed by this server
+  tools:
+    - fetch
+
+  # Port configuration
+  port: 8080
+  targetPort: 8080
+
+  # Reference to external authentication configuration
+  # The MCPExternalAuthConfig must be in the same namespace
+  externalAuthConfigRef:
+    name: oauth-token-exchange
+
+  # Resource limits and requests
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"

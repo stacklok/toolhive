@@ -116,6 +116,11 @@ type MCPServerSpec struct {
 	// +optional
 	ToolConfigRef *ToolConfigRef `json:"toolConfigRef,omitempty"`
 
+	// ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.
+	// The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer.
+	// +optional
+	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
+
 	// Telemetry defines observability configuration for the MCP server
 	// +optional
 	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
@@ -480,6 +485,14 @@ type ToolConfigRef struct {
 	Name string `json:"name"`
 }
 
+// ExternalAuthConfigRef defines a reference to a MCPExternalAuthConfig resource.
+// The referenced MCPExternalAuthConfig must be in the same namespace as the MCPServer.
+type ExternalAuthConfigRef struct {
+	// Name is the name of the MCPExternalAuthConfig resource
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+}
+
 // InlineAuthzConfig contains direct authorization configuration
 type InlineAuthzConfig struct {
 	// Policies is a list of Cedar policy strings
@@ -586,6 +599,10 @@ type MCPServerStatus struct {
 	// ToolConfigHash stores the hash of the referenced ToolConfig for change detection
 	// +optional
 	ToolConfigHash string `json:"toolConfigHash,omitempty"`
+
+	// ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec
+	// +optional
+	ExternalAuthConfigHash string `json:"externalAuthConfigHash,omitempty"`
 
 	// URL is the URL where the MCP server can be accessed
 	// +optional

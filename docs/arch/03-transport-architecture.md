@@ -57,6 +57,8 @@ sequenceDiagram
 
 ### 2. SSE (Server-Sent Events) Transport
 
+> **Note**: SSE transport is deprecated in the MCP specification in favor of streamable-http. ToolHive will continue to support SSE but may transition away from it in future releases.
+
 **Use case**: Container runs HTTP server with SSE endpoints
 
 **How it works:**

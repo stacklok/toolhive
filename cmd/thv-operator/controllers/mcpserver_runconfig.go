@@ -2,26 +2,23 @@ package controllers
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap"
+	configMapChecksum "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/operator/accessors"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -36,53 +33,6 @@ const defaultAPITimeout = 15 * time.Second
 
 // defaultAuthzKey is the default key in the ConfigMap for authorization configuration
 const defaultAuthzKey = "authz.json"
-
-// RunConfig management methods
-
-// computeConfigMapChecksum computes a SHA256 checksum of the ConfigMap content for change detection
-func computeConfigMapChecksum(cm *corev1.ConfigMap) string {
-	h := sha256.New()
-
-	// Include data content in checksum
-	var dataKeys []string
-	for key := range cm.Data {
-		dataKeys = append(dataKeys, key)
-	}
-	sort.Strings(dataKeys)
-
-	for _, key := range dataKeys {
-		h.Write([]byte(key))
-		h.Write([]byte(cm.Data[key]))
-	}
-
-	// Include labels in checksum (excluding checksum annotation itself)
-	var labelKeys []string
-	for key := range cm.Labels {
-		labelKeys = append(labelKeys, key)
-	}
-	sort.Strings(labelKeys)
-
-	for _, key := range labelKeys {
-		h.Write([]byte(key))
-		h.Write([]byte(cm.Labels[key]))
-	}
-
-	// Include relevant annotations in checksum (excluding checksum annotation itself)
-	var annotationKeys []string
-	for key := range cm.Annotations {
-		if key != "toolhive.stacklok.dev/content-checksum" {
-			annotationKeys = append(annotationKeys, key)
-		}
-	}
-	sort.Strings(annotationKeys)
-
-	for _, key := range annotationKeys {
-		h.Write([]byte(key))
-		h.Write([]byte(cm.Annotations[key]))
-	}
-
-	return hex.EncodeToString(h.Sum(nil))
-}
 
 // ensureRunConfigConfigMap ensures the RunConfig ConfigMap exists and is up to date
 func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
@@ -113,89 +63,19 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *m
 		},
 	}
 
+	checksum := configMapChecksum.NewRunConfigConfigMapChecksum()
 	// Compute and add content checksum annotation
-	checksum := computeConfigMapChecksum(configMap)
+	cs := checksum.ComputeConfigMapChecksum(configMap)
 	configMap.Annotations = map[string]string{
-		"toolhive.stacklok.dev/content-checksum": checksum,
+		"toolhive.stacklok.dev/content-checksum": cs,
 	}
 
-	return r.ensureRunConfigConfigMapResource(ctx, m, configMap)
-}
-
-// ensureRunConfigConfigMapResource ensures the RunConfig ConfigMap exists and is up to date
-// This method handles content changes by comparing checksums
-func (r *MCPServerReconciler) ensureRunConfigConfigMapResource(
-	ctx context.Context,
-	mcpServer *mcpv1alpha1.MCPServer,
-	desired *corev1.ConfigMap,
-) error {
-	ctxLogger := log.FromContext(ctx)
-	current := &corev1.ConfigMap{}
-	objectKey := types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}
-	err := r.Get(ctx, objectKey, current)
-
-	if errors.IsNotFound(err) {
-		// ConfigMap doesn't exist, create it
-		if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-			return fmt.Errorf("failed to set controller reference for RunConfig ConfigMap: %w", err)
-		}
-
-		ctxLogger.Info("RunConfig ConfigMap does not exist, creating", "ConfigMap.Name", desired.Name)
-		if err := r.Create(ctx, desired); err != nil {
-			return fmt.Errorf("failed to create RunConfig ConfigMap: %w", err)
-		}
-		ctxLogger.Info("RunConfig ConfigMap created", "ConfigMap.Name", desired.Name)
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("failed to get RunConfig ConfigMap: %w", err)
+	runConfigConfigMap := configmap.NewRunConfigConfigMap(r.Client, r.Scheme, checksum)
+	err = runConfigConfigMap.UpsertRunConfigMap(ctx, m, configMap)
+	if err != nil {
+		return fmt.Errorf("failed to upsert RunConfig ConfigMap: %w", err)
 	}
-
-	// ConfigMap exists, check if content has changed by comparing checksums
-	currentChecksum := current.Annotations["toolhive.stacklok.dev/content-checksum"]
-	desiredChecksum := desired.Annotations["toolhive.stacklok.dev/content-checksum"]
-
-	if currentChecksum != desiredChecksum {
-		// Content changed, update the ConfigMap with new checksum
-		// Copy resource version and other metadata for update
-		desired.ResourceVersion = current.ResourceVersion
-		desired.UID = current.UID
-
-		if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-			return fmt.Errorf("failed to set controller reference for RunConfig ConfigMap: %w", err)
-		}
-
-		ctxLogger.Info("RunConfig ConfigMap content changed, updating",
-			"ConfigMap.Name", desired.Name,
-			"oldChecksum", currentChecksum,
-			"newChecksum", desiredChecksum)
-		if err := r.Update(ctx, desired); err != nil {
-			return fmt.Errorf("failed to update RunConfig ConfigMap: %w", err)
-		}
-		ctxLogger.Info("RunConfig ConfigMap updated", "ConfigMap.Name", desired.Name)
-	}
-
 	return nil
-}
-
-// runConfigContentEquals compares the actual content of RunConfig ConfigMaps using checksums
-func (*MCPServerReconciler) runConfigContentEquals(current, desired *corev1.ConfigMap) bool {
-	// Compare checksums - if both have checksums, use them for comparison
-	currentChecksum := current.Annotations["toolhive.stacklok.dev/content-checksum"]
-	desiredChecksum := desired.Annotations["toolhive.stacklok.dev/content-checksum"]
-
-	if currentChecksum != "" && desiredChecksum != "" {
-		return currentChecksum == desiredChecksum
-	}
-
-	// Fallback to compute checksums if they don't exist (for backward compatibility)
-	if currentChecksum == "" {
-		currentChecksum = computeConfigMapChecksum(current)
-	}
-	if desiredChecksum == "" {
-		desiredChecksum = computeConfigMapChecksum(desired)
-	}
-
-	return currentChecksum == desiredChecksum
 }
 
 // createRunConfigFromMCPServer converts MCPServer spec to RunConfig using the builder pattern

@@ -400,7 +400,7 @@ ToolHive can automatically configure clients to use MCP servers:
 **Attach process:**
 1. Container must be running
 2. Request attach from runtime
-3. Receive stdin (WriteCloser) and stdout (ReadCloser)
+3. Receive stdin (`WriteCloser`) and stdout (`ReadCloser`)
 4. Start message processing goroutines
 5. Read JSON-RPC from stdout
 6. Write JSON-RPC to stdin

@@ -51,11 +51,12 @@ func TestMCPServerReconciler_DetectPlatform_Success(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			mockDetector := &mockPlatformDetector{
+				platform: tt.platform,
+				err:      nil,
+			}
 			reconciler := &MCPServerReconciler{
-				platformDetector: &mockPlatformDetector{
-					platform: tt.platform,
-					err:      nil,
-				},
+				PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
 			}
 
 			ctx := context.Background()
@@ -77,11 +78,12 @@ func TestMCPServerReconciler_DetectPlatform_Error(t *testing.T) {
 
 	t.Parallel()
 
+	mockDetector := &mockPlatformDetector{
+		platform: kubernetes.PlatformKubernetes,
+		err:      assert.AnError,
+	}
 	reconciler := &MCPServerReconciler{
-		platformDetector: &mockPlatformDetector{
-			platform: kubernetes.PlatformKubernetes,
-			err:      assert.AnError,
-		},
+		PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
 	}
 
 	ctx := context.Background()
@@ -112,17 +114,14 @@ func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 	// Create reconciler with mock platform detector for Kubernetes
 	scheme := runtime.NewScheme()
 	_ = mcpv1alpha1.AddToScheme(scheme)
-	reconciler := &MCPServerReconciler{
-		Scheme: scheme,
-		platformDetector: &mockPlatformDetector{
-			platform: kubernetes.PlatformKubernetes,
-			err:      nil,
-		},
-		// Pre-set the detected platform to avoid calling detectPlatform which requires in-cluster config
-		detectedPlatform: kubernetes.PlatformKubernetes,
+	mockDetector := &mockPlatformDetector{
+		platform: kubernetes.PlatformKubernetes,
+		err:      nil,
 	}
-	// Simulate that platform detection has already been called
-	reconciler.platformOnce.Do(func() {})
+	reconciler := &MCPServerReconciler{
+		Scheme:           scheme,
+		PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
+	}
 
 	ctx := context.Background()
 	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer)
@@ -187,17 +186,14 @@ func TestMCPServerReconciler_DeploymentForMCPServer_OpenShift(t *testing.T) {
 	// Create reconciler with mock platform detector for OpenShift
 	scheme := runtime.NewScheme()
 	_ = mcpv1alpha1.AddToScheme(scheme)
-	reconciler := &MCPServerReconciler{
-		Scheme: scheme,
-		platformDetector: &mockPlatformDetector{
-			platform: kubernetes.PlatformOpenShift,
-			err:      nil,
-		},
-		// Pre-set the detected platform to avoid calling detectPlatform which requires in-cluster config
-		detectedPlatform: kubernetes.PlatformOpenShift,
+	mockDetector := &mockPlatformDetector{
+		platform: kubernetes.PlatformOpenShift,
+		err:      nil,
 	}
-	// Simulate that platform detection has already been called
-	reconciler.platformOnce.Do(func() {})
+	reconciler := &MCPServerReconciler{
+		Scheme:           scheme,
+		PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
+	}
 
 	ctx := context.Background()
 	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer)
@@ -268,13 +264,13 @@ func TestMCPServerReconciler_DeploymentForMCPServer_PlatformDetectionError(t *te
 	// Create reconciler with mock platform detector that returns error
 	scheme := runtime.NewScheme()
 	_ = mcpv1alpha1.AddToScheme(scheme)
+	mockDetector := &mockPlatformDetector{
+		platform: kubernetes.PlatformKubernetes,
+		err:      assert.AnError,
+	}
 	reconciler := &MCPServerReconciler{
-		Scheme: scheme,
-		platformDetector: &mockPlatformDetector{
-			platform: kubernetes.PlatformKubernetes,
-			err:      assert.AnError,
-		},
-		// Don't pre-set the platform so it will try to detect and fall back to Kubernetes
+		Scheme:           scheme,
+		PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
 	}
 
 	ctx := context.Background()

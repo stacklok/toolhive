@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
 func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
@@ -83,9 +84,7 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
 	// Create a reconciler with the scheme
-	r := &MCPServerReconciler{
-		Scheme: s,
-	}
+	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)
 
 	// Call deploymentForMCPServer
 	ctx := context.Background()
@@ -173,9 +172,7 @@ func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
 	// Create a reconciler with the scheme
-	r := &MCPServerReconciler{
-		Scheme: s,
-	}
+	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)
 
 	// Call deploymentForMCPServer
 	ctx := context.Background()
@@ -219,9 +216,7 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
 	// Create a reconciler with the scheme
-	r := &MCPServerReconciler{
-		Scheme: s,
-	}
+	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)
 
 	// Call deploymentForMCPServer
 	ctx := context.Background()
@@ -317,9 +312,7 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
 	// Create a reconciler with the scheme
-	r := &MCPServerReconciler{
-		Scheme: s,
-	}
+	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)
 
 	// Generate the deployment
 	ctx := context.Background()
@@ -366,9 +359,7 @@ func TestProxyRunnerStructuredLogsEnvVar(t *testing.T) {
 	s.AddKnownTypes(mcpv1alpha1.GroupVersion, &mcpv1alpha1.MCPServerList{})
 
 	// Create a reconciler with the scheme
-	r := &MCPServerReconciler{
-		Scheme: s,
-	}
+	r := newTestMCPServerReconciler(nil, s, kubernetes.PlatformKubernetes)
 
 	// Create the deployment
 	ctx := context.Background()

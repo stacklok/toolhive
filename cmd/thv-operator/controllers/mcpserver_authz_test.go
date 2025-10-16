@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
 func TestGenerateAuthzArgs(t *testing.T) {
@@ -157,10 +158,7 @@ func TestGenerateAuthzArgs(t *testing.T) {
 				WithRuntimeObjects(objects...).
 				Build()
 
-			reconciler := &MCPServerReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
 			args := reconciler.generateAuthzArgs(tt.mcpServer)
 			assert.Equal(t, tt.expectedArgs, args)
@@ -270,10 +268,7 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 				WithRuntimeObjects(tt.mcpServer).
 				Build()
 
-			reconciler := &MCPServerReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()

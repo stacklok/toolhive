@@ -75,10 +75,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create a shared platform detector for all controllers
+	sharedPlatformDetector := controllers.NewSharedPlatformDetector()
+
 	rec := &controllers.MCPServerReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		ImageValidation: validation.ImageValidationAlwaysAllow,
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		PlatformDetector: sharedPlatformDetector,
+		ImageValidation:  validation.ImageValidationAlwaysAllow,
 	}
 
 	if err = rec.SetupWithManager(mgr); err != nil {

@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
 func TestResourceOverrides(t *testing.T) {
@@ -300,10 +301,7 @@ func TestResourceOverrides(t *testing.T) {
 			t.Parallel()
 
 			client := fake.NewClientBuilder().WithScheme(scheme).Build()
-			r := &MCPServerReconciler{
-				Client: client,
-				Scheme: scheme,
-			}
+			r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
 
 			// Test deployment creation
 			ctx := context.Background()
@@ -412,10 +410,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
-	r := &MCPServerReconciler{
-		Client: client,
-		Scheme: scheme,
-	}
+	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
 
 	tests := []struct {
 		name            string

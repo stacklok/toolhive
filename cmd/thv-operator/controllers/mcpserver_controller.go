@@ -12,7 +12,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -25,7 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -42,9 +40,7 @@ import (
 type MCPServerReconciler struct {
 	client.Client
 	Scheme           *runtime.Scheme
-	platformDetector kubernetes.PlatformDetector
-	detectedPlatform kubernetes.Platform
-	platformOnce     sync.Once
+	PlatformDetector *SharedPlatformDetector
 	ImageValidation  validation.ImageValidation
 }
 
@@ -109,32 +105,9 @@ const (
 )
 
 // detectPlatform detects the Kubernetes platform type (Kubernetes vs OpenShift)
-// It uses sync.Once to ensure the detection is only performed once and cached
+// It uses the shared platform detector to ensure detection is only performed once and cached
 func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Platform, error) {
-	var err error
-	r.platformOnce.Do(func() {
-		// Initialize platform detector if not already done
-		if r.platformDetector == nil {
-			r.platformDetector = kubernetes.NewDefaultPlatformDetector()
-		}
-
-		cfg, configErr := rest.InClusterConfig()
-		if configErr != nil {
-			err = fmt.Errorf("failed to get in-cluster config for platform detection: %w", configErr)
-			return
-		}
-
-		r.detectedPlatform, err = r.platformDetector.DetectPlatform(cfg)
-		if err != nil {
-			err = fmt.Errorf("failed to detect platform: %w", err)
-			return
-		}
-
-		ctxLogger := log.FromContext(ctx)
-		ctxLogger.Info("Platform detected for MCPServer controller", "platform", r.detectedPlatform.String())
-	})
-
-	return r.detectedPlatform, err
+	return r.PlatformDetector.DetectPlatform(ctx)
 }
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch;create;update;patch;delete
@@ -987,14 +960,15 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	}
 
 	// Detect platform and prepare ProxyRunner's pod and container security context
-	_, err := r.detectPlatform(ctx)
+	detectedPlatform, err := r.detectPlatform(ctx)
 	if err != nil {
 		ctxLogger := log.FromContext(ctx)
 		ctxLogger.Error(err, "Failed to detect platform, defaulting to Kubernetes", "mcpserver", m.Name)
+		detectedPlatform = kubernetes.PlatformKubernetes // Default to Kubernetes on error
 	}
 
 	// Use SecurityContextBuilder for platform-aware security context
-	securityBuilder := kubernetes.NewSecurityContextBuilder(r.detectedPlatform)
+	securityBuilder := kubernetes.NewSecurityContextBuilder(detectedPlatform)
 	proxyRunnerPodSecurityContext := securityBuilder.BuildPodSecurityContext()
 	proxyRunnerContainerSecurityContext := securityBuilder.BuildContainerSecurityContext()
 

@@ -18,6 +18,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -618,12 +619,9 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					WithRuntimeObjects(cm).
 					Build()
 
-				r = &MCPServerReconciler{
-					Client: fakeClient,
-					Scheme: scheme,
-				}
+				r = newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 			} else {
-				r = &MCPServerReconciler{}
+				r = newTestMCPServerReconciler(nil, nil, kubernetes.PlatformKubernetes)
 			}
 
 			result, err := r.createRunConfigFromMCPServer(tt.mcpServer)
@@ -669,7 +667,7 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 		},
 	}
 
-	reconciler := &MCPServerReconciler{}
+	reconciler := newTestMCPServerReconciler(nil, nil, kubernetes.PlatformKubernetes)
 
 	// Generate RunConfig and ConfigMap 10 times
 	var configMaps []*corev1.ConfigMap
@@ -835,7 +833,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			mcpServer: createTestMCPServerWithConfig("same-server", "default", "test:v1", nil),
 			existingCM: func() *corev1.ConfigMap {
 				// Create a ConfigMap with the same content that would be generated
-				r := &MCPServerReconciler{}
+				r := newTestMCPServerReconciler(nil, nil, kubernetes.PlatformKubernetes)
 				mcpServer := createTestMCPServerWithConfig("same-server", "default", "test:v1", nil)
 				runConfig, err := r.createRunConfigFromMCPServer(mcpServer)
 				if err != nil {
@@ -1089,10 +1087,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			}
 			fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithRuntimeObjects(objects...).Build()
 
-			reconciler := &MCPServerReconciler{
-				Client: fakeClient,
-				Scheme: testScheme,
-			}
+			reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
 
 			// Execute the method under test
 			err := reconciler.ensureRunConfigConfigMap(context.TODO(), tt.mcpServer)
@@ -1180,10 +1175,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			WithRuntimeObjects(mcpServer, authzCM).
 			Build()
 
-		reconciler := &MCPServerReconciler{
-			Client: fakeClient,
-			Scheme: testScheme,
-		}
+		reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
 
 		err := reconciler.ensureRunConfigConfigMap(context.TODO(), mcpServer)
 		require.NoError(t, err)
@@ -1304,7 +1296,7 @@ func TestValidateRunConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			r := &MCPServerReconciler{}
+			r := newTestMCPServerReconciler(nil, nil, kubernetes.PlatformKubernetes)
 			err := r.validateRunConfig(t.Context(), tt.config)
 
 			if tt.expectErr {
@@ -1533,10 +1525,7 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 			testScheme := createRunConfigTestScheme()
 
 			fakeClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
-			reconciler := &MCPServerReconciler{
-				Client: fakeClient,
-				Scheme: testScheme,
-			}
+			reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
 
 			// Create initial MCPServer and ConfigMap
 			mcpServer := tt.initialServer()
@@ -1680,10 +1669,7 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 				WithRuntimeObjects(tc.mcpServer).
 				Build()
 
-			reconciler := &MCPServerReconciler{
-				Client: fakeClient,
-				Scheme: testScheme,
-			}
+			reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
 
 			// Execute the method under test
 			err := reconciler.ensureRunConfigConfigMap(context.TODO(), tc.mcpServer)

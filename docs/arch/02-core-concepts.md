@@ -96,7 +96,7 @@ A **proxy** is the component that sits between MCP clients and MCP servers, forw
 - Handle sessions
 - Forward requests/responses
 - Health checking (for containers)
-- Metrics and auth info endpoints
+- Expose telemetry and auth info endpoints
 
 **Implementation:**
 - Interface: `pkg/transport/types/transport.go`
@@ -247,9 +247,10 @@ A **session** tracks state for MCP client connections, particularly for transpor
 **Session types:**
 
 1. **SSE Session**: For stdio transport with SSE proxy mode
-   - Tracks connected SSE clients
+   - Tracks connected SSE clients (multiple clients can connect, but share single stdio connection to container)
    - Message queue per client
    - Endpoint URL generation
+   - Note: stdio transport has single connection/session to container
 
 2. **Streamable Session**: For stdio transport with streamable proxy mode
    - Tracks `Mcp-Session-Id` header
@@ -447,11 +448,13 @@ ToolHive can automatically configure clients to use MCP servers:
    - Whitelist specific tools
    - Override tool names/descriptions
    - Applied to list responses
+   - **Why**: Prevents tools from appearing in AI context, reducing token usage
 
 2. **Tool Call Filter**: Controls `tools/call` requests
    - Validate tool calls against whitelist
    - Apply name overrides to calls
    - Reject unauthorized calls
+   - **Why**: Context optimization - ensures only relevant tool calls are processed
 
 **Configuration:**
 - `toolsFilter` - List of allowed tools

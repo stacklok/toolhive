@@ -345,104 +345,16 @@ thv run custom-registry/server-name
 
 ## Registry API Server
 
-Self-hosted registry server for organizations.
+> **Note**: The registry API server is being moved to a separate project and will be maintained independently.
 
-**Binary**: `thv-registry-api` (`cmd/thv-registry-api/`)
+ToolHive includes a registry API server (`thv-registry-api`) for hosting custom MCP server registries.
 
-### Features
+**Key capabilities:**
+- HTTP API for serving registry data
+- File or Kubernetes ConfigMap storage
+- Used by `MCPRegistry` CRD in Kubernetes deployments
 
-- **HTTP API** for registry management
-- **Storage backends**: File or Kubernetes ConfigMap
-- **Authentication**: Optional (configurable)
-- **Format support**: ToolHive format (current), upstream MCP format (planned)
-
-### Deployment
-
-**Standalone:**
-```bash
-thv-registry-api serve \
-  --storage-type file \
-  --storage-path /data/registry.json \
-  --port 8080
-```
-
-**Kubernetes:**
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: registry-api
-spec:
-  template:
-    spec:
-      containers:
-      - name: registry-api
-        image: ghcr.io/stacklok/thv-registry-api:latest
-        args:
-        - serve
-        - --storage-type=k8s
-        - --port=8080
-```
-
-**Implementation**: `cmd/thv-registry-api/app/serve.go`
-
-### API Endpoints
-
-**Get full registry:**
-```
-GET /api/v1/registry
-```
-
-**Get server by name:**
-```
-GET /api/v1/registry/servers/{name}
-```
-
-**List servers:**
-```
-GET /api/v1/registry/servers
-```
-
-**Get groups:**
-```
-GET /api/v1/registry/groups
-```
-
-**Implementation**: `cmd/thv-registry-api/api/v1/server.go`
-
-### Storage Providers
-
-#### File Provider
-
-**Implementation**: `cmd/thv-registry-api/internal/service/file_provider.go`
-
-- Reads from JSON file
-- File watched for changes
-- Auto-reload on update
-- Simple deployment
-
-#### Kubernetes Provider
-
-**Implementation**: `cmd/thv-registry-api/internal/service/k8s_provider.go`
-
-- Reads from ConfigMap
-- Watches for ConfigMap updates
-- Auto-reload on change
-- Native K8s integration
-
-**ConfigMap format:**
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: mcp-registry
-data:
-  registry.json: |
-    {
-      "version": "1.0.0",
-      "servers": { ... }
-    }
-```
+For detailed documentation, see `cmd/thv-registry-api/README.md`.
 
 ## MCPRegistry CRD (Kubernetes)
 

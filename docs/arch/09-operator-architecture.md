@@ -40,97 +40,54 @@ graph TB
 
 ### MCPServer
 
-Defines an MCP server deployment.
+Defines an MCP server deployment, including container images, transports, middleware, and authentication configuration.
 
 **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpserver_types.go`
 
-**Example:**
-```yaml
-apiVersion: mcp.stacklok.com/v1alpha1
-kind: MCPServer
-metadata:
-  name: weather-server
-spec:
-  image: ghcr.io/example/weather:latest
-  transport: sse
-  port: 8080
-  targetPort: 3000
-  permissionProfile:
-    type: builtin
-    name: network
-  oidcConfig:
-    type: kubernetes
-  authzConfig:
-    type: inline
-    inline:
-      policies:
-      - permit(principal, action, resource);
-```
+MCPServer resources support various transport types (stdio, SSE, streamable-http), permission profiles, OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets.
 
-**Status:**
-```yaml
-status:
-  phase: Running
-  url: http://weather-server.default.svc.cluster.local:8080
-```
+**Status fields** include phase (Running, Pending, Error) and the accessible URL for the MCP server.
+
+For examples, see:
+- [`examples/operator/mcp-servers/mcpserver_github.yaml`](../../examples/operator/mcp-servers/mcpserver_github.yaml) - Basic GitHub MCP server
+- [`examples/operator/mcp-servers/mcpserver_with_configmap_oidc.yaml`](../../examples/operator/mcp-servers/mcpserver_with_configmap_oidc.yaml) - With OIDC authentication
+- [`examples/operator/mcp-servers/mcpserver_with_pod_template.yaml`](../../examples/operator/mcp-servers/mcpserver_with_pod_template.yaml) - With pod customizations
 
 ### MCPRegistry
 
-Manages MCP server registries in Kubernetes.
+Manages MCP server registries in Kubernetes, supporting both Git-based and ConfigMap-based registry sources with automatic or manual synchronization.
 
 **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpregistry_types.go`
 
-**Example:**
-```yaml
-apiVersion: mcp.stacklok.com/v1alpha1
-kind: MCPRegistry
-metadata:
-  name: company-registry
-spec:
-  source:
-    type: git
-    git:
-      url: https://github.com/company/mcp-registry
-      branch: main
-  syncPolicy:
-    automatic: true
-    interval: 1h
-  apiService:
-    enabled: true
-```
+MCPRegistry resources can sync registry data from external sources and optionally deploy a registry API service for serving the registry data to other components.
 
 **Controller**: `cmd/thv-operator/controllers/mcpregistry_controller.go`
 
-### ToolConfig
+For examples, see the [`examples/operator/`](../../examples/operator/) directory.
+
+### MCPToolConfig
 
 Defines tool filtering and override configuration.
 
 **Implementation**: `cmd/thv-operator/api/v1alpha1/toolconfig_types.go`
 
-**Example:**
-```yaml
-apiVersion: mcp.stacklok.com/v1alpha1
-kind: ToolConfig
-metadata:
-  name: filtered-tools
-spec:
-  filter:
-  - tool-a
-  - tool-b
-  override:
-    tool-a:
-      name: renamed-tool
-      description: Custom description
-```
+MCPToolConfig allows you to filter which tools are exposed by an MCP server and customize tool metadata. See [`examples/operator/mcp-servers/mcpserver_fetch_tools_filter.yaml`](../../examples/operator/mcp-servers/mcpserver_fetch_tools_filter.yaml) for a complete example.
 
-**Referenced by MCPServer:**
-```yaml
-spec:
-  toolConfigRef:
-    name: filtered-tools
-```
+**Referenced by MCPServer** using `toolConfigRef`.
 
 **Controller**: `cmd/thv-operator/controllers/toolconfig_controller.go`
+
+### MCPExternalAuthConfig
+
+Manages external authentication configurations that can be shared across multiple MCPServer resources.
+
+**Implementation**: `cmd/thv-operator/api/v1alpha1/externalauthconfig_types.go`
+
+MCPExternalAuthConfig allows you to define reusable OIDC authentication configurations that can be referenced by multiple MCPServer resources. This is useful for sharing authentication settings across servers.
+
+**Referenced by MCPServer** using `oidcConfig.type: external`.
+
+For complete examples of all CRDs, see the [`examples/operator/mcp-servers/`](../../examples/operator/mcp-servers/) directory.
 
 ## Operator Components
 

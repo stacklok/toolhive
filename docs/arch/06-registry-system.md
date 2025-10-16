@@ -55,11 +55,6 @@ ToolHive ships with a curated registry from [toolhive-registry](https://github.c
 - Provenance information
 - Regular updates
 
-**Update registry:**
-```bash
-thv registry update
-```
-
 **Browse registry:**
 ```bash
 thv registry list
@@ -80,7 +75,7 @@ thv run server-name
 
 ### Top-Level Structure
 
-**Implementation**: `pkg/registry/types.go:29`
+**Implementation**: `pkg/registry/types.go`
 
 ```json
 {
@@ -100,7 +95,7 @@ thv run server-name
 
 ### Server Entry (Container-based)
 
-**Implementation**: `pkg/registry/types.go:71`
+**Implementation**: `pkg/registry/types.go`
 
 ```json
 {
@@ -147,7 +142,7 @@ thv run server-name
 
 ### Remote Server Entry
 
-**Implementation**: `pkg/registry/types.go:172`
+**Implementation**: `pkg/registry/types.go`
 
 ```json
 {
@@ -191,7 +186,7 @@ thv run server-name
 
 ### Group Entry
 
-**Implementation**: `pkg/registry/types.go:17`
+**Implementation**: `pkg/registry/types.go`
 
 ```json
 {
@@ -228,7 +223,7 @@ thv registry list --tag official
 
 **Show server details:**
 ```bash
-thv registry show weather-server
+thv registry info weather-server
 ```
 
 **Implementation**: `cmd/thv/app/registry.go`, `cmd/thv/app/search.go`
@@ -287,7 +282,7 @@ User overrides take precedence over registry defaults.
 - Stores secrets securely
 - Adds to RunConfig
 
-**Implementation**: `pkg/registry/types.go:109`
+**Implementation**: `pkg/registry/types.go`
 
 ## Custom Registries
 
@@ -311,11 +306,10 @@ Organizations can provide their own registries.
 ```
 
 **Add to ToolHive:**
-```bash
-thv registry add /path/to/registry.json
-```
 
-**Configuration stored in:**
+Custom registries can be configured in the ToolHive configuration file.
+
+**Configuration location:**
 - Linux: `~/.config/toolhive/config.yaml`
 - macOS: `~/Library/Application Support/toolhive/config.yaml`
 
@@ -323,14 +317,10 @@ thv registry add /path/to/registry.json
 
 ### Remote Registry
 
-**Add remote registry:**
-```bash
-thv registry add https://registry.company.com/mcp/registry.json
-```
+Remote registries can be configured in the ToolHive configuration file to fetch registry data from external sources.
 
 **ToolHive fetches:**
 - On startup
-- On `thv registry update`
 - Caches locally
 
 **Authentication:**
@@ -644,7 +634,7 @@ data:
 - `repository_url` - Source code URL
 - `tags` - Categorization labels
 
-**Implementation**: `pkg/registry/types.go:71`
+**Implementation**: `pkg/registry/types.go`
 
 ### RemoteServerMetadata (Remote Servers)
 
@@ -663,7 +653,7 @@ data:
 - `repository_url` - Documentation URL
 - `tags` - Categorization labels
 
-**Implementation**: `pkg/registry/types.go:172`
+**Implementation**: `pkg/registry/types.go`
 
 ### Group
 
@@ -692,7 +682,7 @@ data:
 thv group run data-pipeline
 ```
 
-**Implementation**: `pkg/registry/types.go:17`
+**Implementation**: `pkg/registry/types.go`
 
 ## Provenance and Security
 
@@ -714,7 +704,7 @@ ToolHive supports Sigstore verification:
 thv run weather-server --verify-provenance
 ```
 
-**Implementation**: `pkg/registry/types.go:92`, cosign integration planned
+**Implementation**: `pkg/registry/types.go`, cosign integration planned
 
 ### Supply Chain Security
 
@@ -743,24 +733,14 @@ ToolHive will support the upstream [MCP registry format](https://github.com/mode
 
 ### CLI Operations
 
-**Update registry:**
+**List servers:**
 ```bash
-thv registry update
+thv registry list
 ```
 
-**Add custom registry:**
+**Show server info:**
 ```bash
-thv registry add <path-or-url>
-```
-
-**Remove custom registry:**
-```bash
-thv registry remove <name>
-```
-
-**List registries:**
-```bash
-thv registry sources
+thv registry info <server-name>
 ```
 
 **Implementation**: `cmd/thv/app/registry.go`

@@ -26,7 +26,7 @@ graph LR
 
 ## Provider Types
 
-**Implementation**: `pkg/secrets/types.go:48`
+**Implementation**: `pkg/secrets/types.go`
 
 ### 1. Encrypted (Default)
 
@@ -40,7 +40,8 @@ graph LR
 ### 2. 1Password
 
 - **Storage**: 1Password vaults
-- **Access**: Via `op` CLI
+- **Access**: Via 1Password SDK (`github.com/1password/onepassword-sdk-go`)
+- **Authentication**: Service account token (`OP_SERVICE_ACCOUNT_TOKEN`)
 - **Capabilities**: Read-only, list
 
 **Implementation**: `pkg/secrets/1password.go`
@@ -70,7 +71,7 @@ graph LR
 2. Environment variable (`TOOLHIVE_SECRET_<NAME>`)
 3. Error if not found
 
-**Implementation**: `pkg/secrets/fallback.go`, `pkg/secrets/factory.go:259`
+**Implementation**: `pkg/secrets/fallback.go`, `pkg/secrets/factory.go`
 
 ### Usage Pattern
 
@@ -85,7 +86,7 @@ thv run my-server --secret "api-key,target=API_KEY"
 3. Inject: `envVars["API_KEY"] = secretValue`
 4. Container receives environment variable
 
-**Implementation**: `pkg/runner/config.go:320`, `pkg/environment/`
+**Implementation**: `pkg/runner/config.go`, `pkg/environment/`
 
 ## Security Model
 
@@ -135,7 +136,7 @@ ToolHive prompts for value on first run.
 
 **Challenge**: Cannot prompt for password
 
-**Solution**: `pkg/workloads/manager.go:399`
+**Solution**: `pkg/workloads/manager.go`
 - Parent process retrieves password
 - Passed via `TOOLHIVE_SECRETS_PASSWORD` env var to child
 - Child uses password without prompting
@@ -147,7 +148,7 @@ ToolHive prompts for value on first run.
 2. Config file: `~/.config/toolhive/config.yaml`
 3. Default: `encrypted`
 
-**Implementation**: `pkg/secrets/factory.go:217`
+**Implementation**: `pkg/secrets/factory.go`
 
 ## Related Documentation
 

@@ -85,18 +85,15 @@ thv run go://package-name
 
 ### 2. Kubernetes Operator (thv-operator)
 
-Manages MCP servers in Kubernetes clusters. Located in `cmd/thv-operator/`.
+Manages MCP servers in Kubernetes clusters using custom resources.
 
-**Key responsibilities:**
-- Watch and reconcile MCP server custom resources
-- Create Deployments, StatefulSets, and Services
-- Manage lifecycle of MCP server workloads in Kubernetes
-- Provide operator-specific configuration through CRDs
+The operator watches for `MCPServer`, `MCPRegistry`, `MCPToolConfig`, and `MCPExternalAuthConfig` CRDs, reconciling them into Kubernetes resources (Deployments, StatefulSets, Services).
 
-**Key CRDs:**
-- `MCPServer` - Defines an MCP server deployment
-- `MCPRegistry` - Manages MCP server registries
-- `ToolConfig` - Configures tool filtering and overrides
+**For details**, see:
+- [`cmd/thv-operator/README.md`](../../cmd/thv-operator/README.md) - Operator overview and usage
+- [`cmd/thv-operator/DESIGN.md`](../../cmd/thv-operator/DESIGN.md) - Design decisions and patterns
+- [`cmd/thv-operator/crd-api.md`](../../cmd/thv-operator/crd-api.md) - Complete CRD API reference
+- [Operator Architecture](09-operator-architecture.md) - Architecture documentation
 
 ### 3. Proxy Runner (thv-proxyrunner)
 
@@ -117,6 +114,8 @@ Deployment (proxy-runner) -> StatefulSet (MCP server)
 
 A registry API server for hosting custom MCP server registries. Located in `cmd/thv-registry-api/`.
 
+> **Note**: The registry API server is being moved out of the main ToolHive repository into its own project.
+
 **Key responsibilities:**
 - Serve MCP server registry data
 - Support ToolHive's registry format
@@ -135,8 +134,8 @@ A **workload** in ToolHive represents a complete deployment unit that includes:
 - Middleware configuration
 
 **Related files:**
-- `pkg/workloads/manager.go:38` - Workload manager interface
-- `pkg/container/runtime/types.go:125` - Runtime abstraction
+- `pkg/workloads/manager.go` - Workload manager interface
+- `pkg/container/runtime/types.go` - Runtime abstraction
 
 ### Transports
 
@@ -164,7 +163,7 @@ A layered middleware architecture that provides:
 
 **Related files:**
 - `docs/middleware.md` - Complete middleware documentation
-- `pkg/runner/middleware.go:15` - Middleware factory registration
+- `pkg/runner/middleware.go` - Middleware factory registration
 
 ### RunConfig
 
@@ -178,7 +177,7 @@ The **RunConfig** is ToolHive's standard configuration format for running MCP se
 - Part of ToolHive's API contract
 
 **Related files:**
-- `pkg/runner/config.go:34` - RunConfig struct definition
+- `pkg/runner/config.go` - RunConfig struct definition
 
 ### Permission Profiles
 
@@ -192,7 +191,7 @@ Security configurations that define:
 - `network` - Allow all network access
 
 **Related files:**
-- `pkg/permissions/profile.go:22` - Profile struct definition
+- `pkg/permissions/profile.go` - Profile struct definition
 
 ### Groups
 

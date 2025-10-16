@@ -65,7 +65,7 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
    - Async operations
 
 10. **[Kubernetes Operator Architecture](09-operator-architecture.md)**
-    - CRD design (MCPServer, MCPRegistry, ToolConfig)
+    - CRD design (MCPServer, MCPRegistry, MCPToolConfig, MCPExternalAuthConfig)
     - Two-binary architecture (operator + proxy-runner)
     - Deployment pattern
     - Status management
@@ -299,10 +299,10 @@ transport, err := transport.NewFactory().Create(config)
 ### Interface Segregation
 
 Clean abstractions for:
-- **Runtime**: Container operations (`pkg/container/runtime/types.go:125`)
-- **Transport**: Communication (`pkg/transport/types/transport.go:81`)
-- **Middleware**: Request processing (`pkg/transport/types/transport.go:20`)
-- **Workloads**: Lifecycle management (`pkg/workloads/manager.go:38`)
+- **Runtime**: Container operations (`pkg/container/runtime/types.go`)
+- **Transport**: Communication (`pkg/transport/types/transport.go`)
+- **Middleware**: Request processing (`pkg/transport/types/transport.go`)
+- **Workloads**: Lifecycle management (`pkg/workloads/manager.go`)
 
 ### Middleware Chain
 

@@ -201,8 +201,8 @@ thv run --transport stdio --proxy-mode streamable-http my-server
 ```
 
 **Implementation:**
-- `pkg/runner/config.go:139` - ProxyMode configuration
-- `pkg/transport/stdio.go:82` - SetProxyMode method
+- `pkg/runner/config.go` - ProxyMode configuration
+- `pkg/transport/stdio.go` - SetProxyMode method
 
 ### Transport Decision Matrix
 
@@ -233,7 +233,7 @@ graph LR
 ```
 
 **Implementation:**
-- `pkg/transport/types/transport.go:20` - MiddlewareFunction type
+- `pkg/transport/types/transport.go` - MiddlewareFunction type
 - Middleware applied in reverse order (last registered = outermost)
 - Each transport type accepts `[]MiddlewareFunction` in constructor
 
@@ -279,15 +279,15 @@ thv run https://mcp.example.com/sse --name my-remote-server
 1. **No container created** - ToolHive recognizes URL as remote endpoint
 2. **Proxy started** - Local HTTP proxy on specified port (or auto-assigned)
 3. **Transparent proxy used** - Same proxy as SSE/Streamable transports
-4. **RunConfig saved** - Contains `RemoteURL` field: `pkg/runner/config.go:45`
+4. **RunConfig saved** - Contains `RemoteURL` field: `pkg/runner/config.go`
 5. **Middleware applied** - Auth, authz, audit, etc. applied to remote traffic
 6. **Client config generated** - Local clients use local proxy URL
 
 **Implementation:**
-- `pkg/transport/http.go:100` - `SetRemoteURL` method
-- `pkg/transport/http.go:164` - Remote detection in Setup
-- `pkg/transport/http.go:274` - Remote URL handling in Start
-- `pkg/transport/proxy/transparent/transparent_proxy.go:142` - Host header fix for remote
+- `pkg/transport/http.go` - `SetRemoteURL` method
+- `pkg/transport/http.go` - Remote detection in Setup
+- `pkg/transport/http.go` - Remote URL handling in Start
+- `pkg/transport/proxy/transparent/transparent_proxy.go` - Host header fix for remote
 
 ### Remote Authentication
 
@@ -306,13 +306,13 @@ thv run https://mcp.example.com \
 
 1. **OAuth flow initiated** - Authorization code or device flow
 2. **Access token obtained** - Token stored securely
-3. **Token injection middleware** - Created via `pkg/transport/http.go:111`
+3. **Token injection middleware** - Created via `pkg/transport/http.go`
 4. **Token added to requests** - Bearer token injected into Authorization header
 5. **Token refresh** - Automatic refresh using refresh token
 
 **Implementation:**
-- `pkg/runner/config.go:439` - `RemoteAuthConfig` struct
-- `pkg/transport/http.go:106` - `SetTokenSource` method
+- `pkg/runner/config.go` - `RemoteAuthConfig` struct
+- `pkg/transport/http.go` - `SetTokenSource` method
 
 ### Remote vs Container Workloads
 
@@ -391,7 +391,7 @@ spec:
 
 ### Host Port Selection
 
-**Implementation**: `pkg/runner/config.go:245`
+**Implementation**: `pkg/runner/config.go`
 
 ToolHive assigns ports as follows:
 
@@ -423,7 +423,7 @@ Result:
 
 ### MCP Environment Variables
 
-**Implementation**: `pkg/transport/http.go:177`
+**Implementation**: `pkg/transport/http.go`
 
 Environment variables set automatically:
 
@@ -442,7 +442,7 @@ Environment variables set automatically:
 
 For stdio transport, ToolHive attaches to container stdin/stdout:
 
-**Implementation**: `pkg/transport/stdio.go:162`
+**Implementation**: `pkg/transport/stdio.go`
 
 ```go
 stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
@@ -465,7 +465,7 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 
 ### SSE/Streamable HTTP Transports (Transparent Proxy)
 
-**Implementation**: `pkg/transport/proxy/transparent/transparent_proxy.go:227`
+**Implementation**: `pkg/transport/proxy/transparent/transparent_proxy.go`
 
 - Session ID detection from headers (`Mcp-Session-Id`)
 - Session ID detection from SSE body (`sessionId` field)
@@ -578,7 +578,7 @@ For deployment behind reverse proxy, transparent proxy respects forwarded header
 
 ## Transport Factory
 
-**Implementation**: `pkg/transport/factory.go:19`
+**Implementation**: `pkg/transport/factory.go`
 
 ```go
 func (*Factory) Create(config types.Config) (types.Transport, error) {

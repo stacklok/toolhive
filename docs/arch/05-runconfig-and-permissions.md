@@ -12,9 +12,9 @@ This document describes ToolHive's configuration format (RunConfig) and security
 - **Complete**: Contains everything needed to run a workload
 - **Part of API contract**: Format stability guaranteed
 
-**Implementation**: `pkg/runner/config.go:34`
+**Implementation**: `pkg/runner/config.go`
 
-**Current schema version**: `v0.1.0` (`pkg/runner/config.go:30`)
+**Current schema version**: `v0.1.0` (`pkg/runner/config.go`)
 
 ## RunConfig Structure
 
@@ -120,7 +120,7 @@ type RunConfig struct {
 }
 ```
 
-**Implementation**: `pkg/runner/config.go:42-49`
+**Implementation**: `pkg/runner/config.go-49`
 
 #### Transport Configuration
 
@@ -153,7 +153,7 @@ type RunConfig struct {
 - `target_host`: Container host (default: `127.0.0.1`)
 - `proxy_mode`: For stdio: `sse` or `streamable-http`
 
-**Implementation**: `pkg/runner/config.go:64-76`, `139`
+**Implementation**: `pkg/runner/config.go-76`, `139`
 
 #### Environment Variables
 
@@ -181,7 +181,7 @@ type RunConfig struct {
 }
 ```
 
-**Implementation**: `pkg/runner/config.go:84-88`, `290-303`
+**Implementation**: `pkg/runner/config.go-88`, `290-303`
 
 #### Volumes
 
@@ -199,7 +199,7 @@ type RunConfig struct {
 
 **Relative paths**: Resolved relative to current directory
 
-**Implementation**: `pkg/runner/config.go:93-95`
+**Implementation**: `pkg/runner/config.go-95`
 
 #### Secrets
 
@@ -219,7 +219,7 @@ type RunConfig struct {
 - `encrypted`: Encrypted local storage (default)
 - `1password`: 1Password CLI integration
 
-**Implementation**: `pkg/runner/config.go:119`, `307-341`
+**Implementation**: `pkg/runner/config.go`, `307-341`
 
 ### Middleware Configuration
 
@@ -256,7 +256,7 @@ type RunConfig struct {
 - `authz` - Cedar authorization
 - `audit` - Request logging
 
-**Implementation**: `pkg/runner/config.go:159-161`, `pkg/transport/types/transport.go:31-39`
+**Implementation**: `pkg/runner/config.go-161`, `pkg/transport/types/transport.go-39`
 
 ### Tool Filtering
 
@@ -282,7 +282,7 @@ type RunConfig struct {
 }
 ```
 
-**Implementation**: `pkg/runner/config.go:150-154`, `464-472`
+**Implementation**: `pkg/runner/config.go-154`, `464-472`
 
 ## RunConfig Lifecycle
 
@@ -299,7 +299,7 @@ thv run ghcr.io/example/mcp-server:latest \
 
 ToolHive constructs RunConfig internally:
 
-**Implementation**: `cmd/thv/app/run.go`, `pkg/runner/config.go:209`
+**Implementation**: `cmd/thv/app/run.go`, `pkg/runner/config.go`
 
 ### Serialization
 
@@ -318,7 +318,7 @@ config, err := runner.ReadJSON(reader)
 - Unknown fields ignored (forward compatibility)
 - Required fields validated
 
-**Implementation**: `pkg/runner/config.go:164-206`
+**Implementation**: `pkg/runner/config.go-206`
 
 ### State Storage
 
@@ -331,7 +331,7 @@ config, err := runner.ReadJSON(reader)
 - On configuration update
 - Used for restart
 
-**Implementation**: `pkg/runner/config.go:429`, `pkg/state/`
+**Implementation**: `pkg/runner/config.go`, `pkg/state/`
 
 ### Export/Import
 
@@ -361,7 +361,7 @@ Permission profiles define security boundaries for MCP servers using a defense-i
 2. **Network isolation** - Control inbound/outbound connections
 3. **Privilege isolation** - Avoid privileged mode
 
-**Implementation**: `pkg/permissions/profile.go:22`
+**Implementation**: `pkg/permissions/profile.go`
 
 ### Profile Structure
 
@@ -404,7 +404,7 @@ Three formats supported:
 {"read": ["C:\\Users\\name\\data:C:\\data"]}
 ```
 
-**Implementation**: `pkg/permissions/profile.go:152`, `404`
+**Implementation**: `pkg/permissions/profile.go`, `404`
 
 #### Read vs Write
 
@@ -433,7 +433,7 @@ Three formats supported:
 - Command injection patterns rejected
 - Windows paths handled specially
 
-**Implementation**: `pkg/permissions/profile.go:170-182`
+**Implementation**: `pkg/permissions/profile.go-182`
 
 ### Network Permissions
 
@@ -484,7 +484,7 @@ Three formats supported:
 }
 ```
 
-**Implementation**: `pkg/permissions/profile.go:56-66`
+**Implementation**: `pkg/permissions/profile.go-66`
 
 #### Inbound Connections
 
@@ -501,7 +501,7 @@ Three formats supported:
 
 **Note**: Inbound restrictions currently have limited implementation.
 
-**Implementation**: `pkg/permissions/profile.go:68-72`
+**Implementation**: `pkg/permissions/profile.go-72`
 
 #### Network Isolation
 
@@ -542,7 +542,7 @@ When `isolate_network: true` in RunConfig:
 }
 ```
 
-**Implementation**: `pkg/permissions/profile.go:42-44`
+**Implementation**: `pkg/permissions/profile.go-44`
 
 ### Built-in Profiles
 
@@ -568,7 +568,7 @@ When `isolate_network: true` in RunConfig:
 
 **Use for**: Maximum security, no external access needed
 
-**Implementation**: `pkg/permissions/profile.go:112`
+**Implementation**: `pkg/permissions/profile.go`
 
 #### `network` Profile
 
@@ -590,7 +590,7 @@ When `isolate_network: true` in RunConfig:
 
 **Use for**: API calls, web scraping, external services
 
-**Implementation**: `pkg/permissions/profile.go:133`
+**Implementation**: `pkg/permissions/profile.go`
 
 ### Custom Profiles
 
@@ -620,7 +620,7 @@ When `isolate_network: true` in RunConfig:
 thv run my-server --permission-profile /path/to/profile.json
 ```
 
-**Implementation**: `pkg/permissions/profile.go:94`
+**Implementation**: `pkg/permissions/profile.go`
 
 ### Profile Selection
 

@@ -39,8 +39,8 @@ A **workload** is the fundamental deployment unit in ToolHive. It represents eve
 - `unhealthy` - Workload is running but unhealthy
 
 **Implementation:**
-- Interface: `pkg/workloads/manager.go:38`
-- Status: `pkg/container/runtime/types.go:17`
+- Interface: `pkg/workloads/manager.go`
+- Status: `pkg/container/runtime/types.go`
 - Core type: `pkg/core/workload.go`
 
 **Related concepts:** Transport, Permission Profile, RunConfig
@@ -67,9 +67,9 @@ A **transport** defines how MCP clients communicate with MCP servers. It encapsu
    - Session management via headers
 
 **Implementation:**
-- Interface: `pkg/transport/types/transport.go:81`
-- Types: `pkg/transport/types/transport.go:109`
-- Factory: `pkg/transport/factory.go:19`
+- Interface: `pkg/transport/types/transport.go`
+- Types: `pkg/transport/types/transport.go`
+- Factory: `pkg/transport/factory.go`
 
 **Related concepts:** Proxy, Middleware, Session
 
@@ -99,7 +99,7 @@ A **proxy** is the component that sits between MCP clients and MCP servers, forw
 - Metrics and auth info endpoints
 
 **Implementation:**
-- Interface: `pkg/transport/types/transport.go:149`
+- Interface: `pkg/transport/types/transport.go`
 
 **Related concepts:** Transport, Middleware, Session
 
@@ -122,8 +122,8 @@ A **proxy** is the component that sits between MCP clients and MCP servers, forw
 Middleware applied in reverse order: Auth → Parser → Authz → Audit
 
 **Implementation:**
-- Interface: `pkg/transport/types/transport.go:23`
-- Factory: `pkg/runner/middleware.go:15`
+- Interface: `pkg/transport/types/transport.go`
+- Factory: `pkg/runner/middleware.go`
 - Documentation: `docs/middleware.md`
 
 **Related concepts:** Proxy, Authentication, Authorization
@@ -149,8 +149,8 @@ Middleware applied in reverse order: Auth → Parser → Authz → Audit
 - API contract: Format is versioned and stable
 
 **Implementation:**
-- Definition: `pkg/runner/config.go:34`
-- Schema version: `pkg/runner/config.go:30`
+- Definition: `pkg/runner/config.go`
+- Schema version: `pkg/runner/config.go`
 
 **Related concepts:** Workload, Permission Profile, Middleware
 
@@ -179,9 +179,9 @@ A **permission profile** defines security boundaries for MCP servers:
 - `network` - Full network access
 
 **Implementation:**
-- Definition: `pkg/permissions/profile.go:22`
-- Network: `pkg/permissions/profile.go:48`
-- Mount declarations: `pkg/permissions/profile.go:152`
+- Definition: `pkg/permissions/profile.go`
+- Network: `pkg/permissions/profile.go`
+- Mount declarations: `pkg/permissions/profile.go`
 
 **Related concepts:** RunConfig, Workload, Security
 
@@ -199,11 +199,11 @@ A **group** is a logical collection of MCP servers that share a common purpose o
 - Create group by adding workloads with `--group` flag
 - List workloads in group: `thv group list <name>`
 - Move workloads: `thv group move`
-- Delete group: `thv group delete <name>`
+- Delete group: `thv group rm <name>`
 
 **Implementation:**
 - Group management: `pkg/groups/`
-- Workload group field: `pkg/runner/config.go:148`
+- Workload group field: `pkg/runner/config.go`
 
 **Related concepts:** Virtual MCP, Workload, Client
 
@@ -215,12 +215,12 @@ A **registry** is a catalog of MCP server definitions with metadata, configurati
 
 1. **Built-in Registry**: Curated by Stacklok
    - Source: https://github.com/stacklok/toolhive-registry
-   - Updated regularly via `thv registry update`
+   - Embedded in the binary
    - Trusted and verified servers
 
 2. **Custom Registry**: User-provided
-   - JSON file: `thv registry add <path>`
-   - Remote URL: `thv registry add <url>`
+   - Configured via config file
+   - JSON file or remote URL
    - Organization-specific servers
 
 3. **Registry API**: Self-hosted registry server
@@ -299,9 +299,9 @@ A **runtime** is an abstraction over container orchestration systems. It provide
 Order: Podman → Colima → Docker → Kubernetes (via env)
 
 **Implementation:**
-- Interface: `pkg/container/runtime/types.go:125`
+- Interface: `pkg/container/runtime/types.go`
 - Factory: `pkg/container/factory.go`
-- Detection: `pkg/container/runtime/types.go:291`
+- Detection: `pkg/container/runtime/types.go`
 
 **Related concepts:** Deployer, Workload, Container
 
@@ -364,8 +364,8 @@ ToolHive can automatically configure clients to use MCP servers:
 
 **Implementation:**
 - CLI: `cmd/thv/app/run.go`
-- Workloads: `pkg/workloads/manager.go:316`
-- Runtime: `pkg/container/runtime/types.go:98`
+- Workloads: `pkg/workloads/manager.go`
+- Runtime: `pkg/container/runtime/types.go`
 
 **Related concepts:** Workload, Runtime, Transport
 
@@ -409,8 +409,8 @@ ToolHive can automatically configure clients to use MCP servers:
 - Each message ends with `\n`
 
 **Implementation:**
-- Transport: `pkg/transport/stdio.go:162`
-- Runtime interface: `pkg/container/runtime/types.go:115`
+- Transport: `pkg/transport/stdio.go`
+- Runtime interface: `pkg/container/runtime/types.go`
 
 **Related concepts:** Stdio Transport, Runtime
 
@@ -459,7 +459,7 @@ ToolHive can automatically configure clients to use MCP servers:
 
 **Implementation:**
 - Filter middleware: `pkg/mcp/middleware.go`
-- Override type: `pkg/runner/config.go:464`
+- Override type: `pkg/runner/config.go`
 
 **Related concepts:** Middleware, Authorization
 
@@ -542,7 +542,7 @@ permit(
 
 **Implementation:**
 - CLI: `cmd/thv/app/export.go`
-- Serialization: `pkg/runner/config.go:164`
+- Serialization: `pkg/runner/config.go`
 
 **Related concepts:** RunConfig, Import, State
 
@@ -561,7 +561,7 @@ permit(
 
 **Implementation:**
 - CLI: `cmd/thv/app/run.go`
-- Deserialization: `pkg/runner/config.go:175`
+- Deserialization: `pkg/runner/config.go`
 
 **Related concepts:** RunConfig, Export, Deploy
 

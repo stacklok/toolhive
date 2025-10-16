@@ -9,7 +9,7 @@ The workloads manager abstracts lifecycle operations across:
 - Remote MCP servers
 - Kubernetes deployments (via operator)
 
-**Implementation**: `pkg/workloads/manager.go:38`
+**Implementation**: `pkg/workloads/manager.go`
 
 ## Workload Lifecycle
 
@@ -32,7 +32,7 @@ stateDiagram-v2
     Error --> Removing: Delete
 ```
 
-**States**: `pkg/container/runtime/types.go:17`
+**States**: `pkg/container/runtime/types.go`
 - `starting`, `running`, `stopping`, `stopped`
 - `removing`, `error`, `unhealthy`
 
@@ -54,7 +54,7 @@ thv run my-server
 
 Saves state → forks process → returns immediately → child runs in background
 
-**Implementation**: `pkg/workloads/manager.go:316`, `357`
+**Implementation**: `pkg/workloads/manager.go`, `357`
 
 ### Stop
 
@@ -66,7 +66,7 @@ thv stop my-server
 
 **Remote workload**: Stops proxy → preserves state
 
-**Implementation**: `pkg/workloads/manager.go:196`, `242`, `288`
+**Implementation**: `pkg/workloads/manager.go`, `242`, `288`
 
 ### Restart
 
@@ -76,7 +76,7 @@ thv restart my-server
 
 Loads state → verifies not running → starts workload with saved config
 
-**Implementation**: `pkg/workloads/manager.go:676`, `747`
+**Implementation**: `pkg/workloads/manager.go`, `747`
 
 ### Delete
 
@@ -88,7 +88,7 @@ thv rm my-server
 
 **Remote workload**: Stops proxy → deletes state
 
-**Implementation**: `pkg/workloads/manager.go:657`, `488`, `515`
+**Implementation**: `pkg/workloads/manager.go`, `488`, `515`
 
 ### Update
 
@@ -98,7 +98,7 @@ thv update my-server --image new-version:v2
 
 Stop → delete → save new config → start
 
-**Implementation**: `pkg/workloads/manager.go:696`, `710`
+**Implementation**: `pkg/workloads/manager.go`, `710`
 
 ### List
 
@@ -110,7 +110,7 @@ thv list --filter "group=dev"
 
 Combines container workloads (from runtime) + remote workloads (from state)
 
-**Implementation**: `pkg/workloads/manager.go:175`
+**Implementation**: `pkg/workloads/manager.go`
 
 ## Async Operations
 
@@ -151,7 +151,7 @@ All three stopped in parallel, result aggregated.
 
 **Detection**: `RunConfig.RemoteURL != ""`
 
-**Implementation**: Logic in `pkg/workloads/manager.go:219-286`, `465-512`, `747-798`
+**Implementation**: Logic in `pkg/workloads/manager.go-286`, `465-512`, `747-798`
 
 ## State Management
 
@@ -194,7 +194,7 @@ Automatically added:
 - `toolhive.stacklok.com/transport`
 - `toolhive.stacklok.com/port`
 
-**Implementation**: `pkg/labels/`, `pkg/runner/config.go:405`
+**Implementation**: `pkg/labels/`, `pkg/runner/config.go`
 
 ### Custom Labels
 

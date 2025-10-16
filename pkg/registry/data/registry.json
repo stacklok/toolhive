@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-16T00:18:19Z",
+  "last_updated": "2025-10-16T12:10:24Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -348,9 +348,9 @@
         "jira_batch_create_versions"
       ],
       "metadata": {
-        "stars": 3092,
+        "stars": 3332,
         "pulls": 12849,
-        "last_updated": "2025-09-18T02:27:57Z"
+        "last_updated": "2025-10-16T02:30:32Z"
       },
       "repository_url": "https://github.com/sooperset/mcp-atlassian",
       "tags": [
@@ -587,9 +587,9 @@
         "get_price_list_urls"
       ],
       "metadata": {
-        "stars": 6364,
+        "stars": 6742,
         "pulls": 8179,
-        "last_updated": "2025-09-18T02:27:57Z"
+        "last_updated": "2025-10-16T02:30:32Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -711,7 +711,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.9.1",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.9.2",
       "permissions": {
         "network": {
           "outbound": {
@@ -1663,9 +1663,9 @@
         "list_allowed_directories"
       ],
       "metadata": {
-        "stars": 68103,
+        "stars": 70459,
         "pulls": 20619,
-        "last_updated": "2025-09-18T02:27:57Z"
+        "last_updated": "2025-10-16T02:30:32Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -3637,9 +3637,9 @@
         "open_nodes"
       ],
       "metadata": {
-        "stars": 68103,
+        "stars": 70459,
         "pulls": 15854,
-        "last_updated": "2025-09-18T02:27:57Z"
+        "last_updated": "2025-10-16T02:30:32Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -3974,7 +3974,7 @@
         "mcp",
         "docker"
       ],
-      "image": "ghcr.io/stackloklabs/ocireg-mcp/server:0.0.5",
+      "image": "ghcr.io/stackloklabs/ocireg-mcp/server:0.0.6",
       "permissions": {
         "network": {
           "outbound": {
@@ -4849,9 +4849,9 @@
         "search_docs"
       ],
       "metadata": {
-        "stars": 2084,
+        "stars": 2189,
         "pulls": 102,
-        "last_updated": "2025-09-18T02:27:56Z"
+        "last_updated": "2025-10-16T02:30:31Z"
       },
       "repository_url": "https://github.com/supabase-community/supabase-mcp",
       "tags": [

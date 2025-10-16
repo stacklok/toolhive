@@ -1,0 +1,337 @@
+package controllers
+
+import (
+	"context"
+	"fmt"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+)
+
+// deploymentForMCPRemoteProxy returns a MCPRemoteProxy Deployment object
+func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+) *appsv1.Deployment {
+	ls := labelsForMCPRemoteProxy(proxy.Name)
+	replicas := int32(1)
+
+	// Build deployment components using helper functions
+	args := r.buildContainerArgs()
+	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
+	env := r.buildEnvVarsForProxy(ctx, proxy)
+	resources := buildResourceRequirements(proxy.Spec.Resources)
+	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadata(ls, proxy)
+	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, proxy)
+	podSecurityContext, containerSecurityContext := r.buildSecurityContexts(ctx, proxy)
+
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        proxy.Name,
+			Namespace:   proxy.Namespace,
+			Labels:      deploymentLabels,
+			Annotations: deploymentAnnotations,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: ls,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      deploymentTemplateLabels,
+					Annotations: deploymentTemplateAnnotations,
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name),
+					Containers: []corev1.Container{{
+						Image:           getToolhiveRunnerImage(),
+						Name:            "toolhive",
+						Args:            args,
+						Env:             env,
+						VolumeMounts:    volumeMounts,
+						Resources:       resources,
+						Ports:           r.buildContainerPorts(proxy),
+						LivenessProbe:   buildHealthProbe("/health", "http", 30, 10, 5, 3),
+						ReadinessProbe:  buildHealthProbe("/health", "http", 5, 5, 3, 3),
+						SecurityContext: containerSecurityContext,
+					}},
+					Volumes:         volumes,
+					SecurityContext: podSecurityContext,
+				},
+			},
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(proxy, dep, r.Scheme); err != nil {
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Error(err, "Failed to set controller reference for Deployment")
+		return nil
+	}
+	return dep
+}
+
+// buildContainerArgs builds the container arguments for the proxy
+func (*MCPRemoteProxyReconciler) buildContainerArgs() []string {
+	// The third argument is required by proxyrunner command signature but is ignored
+	// when RemoteURL is set (HTTPTransport.Setup returns early for remote servers)
+	return []string{"run", "--foreground=true", "placeholder-for-remote-proxy"}
+}
+
+// buildVolumesForProxy builds volumes and volume mounts for the proxy
+func (*MCPRemoteProxyReconciler) buildVolumesForProxy(
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) ([]corev1.VolumeMount, []corev1.Volume) {
+	volumeMounts := []corev1.VolumeMount{}
+	volumes := []corev1.Volume{}
+
+	// Add RunConfig ConfigMap volume
+	configMapName := fmt.Sprintf("%s-runconfig", proxy.Name)
+	volumeMounts = append(volumeMounts, corev1.VolumeMount{
+		Name:      "runconfig",
+		MountPath: "/etc/runconfig",
+		ReadOnly:  true,
+	})
+
+	volumes = append(volumes, corev1.Volume{
+		Name: "runconfig",
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: configMapName,
+				},
+			},
+		},
+	})
+
+	// Add authz config volume if needed
+	authzVolumeMount, authzVolume := GenerateAuthzVolumeConfig(proxy.Spec.AuthzConfig, proxy.Name)
+	if authzVolumeMount != nil {
+		volumeMounts = append(volumeMounts, *authzVolumeMount)
+		volumes = append(volumes, *authzVolume)
+	}
+
+	return volumeMounts, volumes
+}
+
+// buildEnvVarsForProxy builds environment variables for the proxy container
+func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+) []corev1.EnvVar {
+	env := []corev1.EnvVar{}
+
+	// Add OpenTelemetry environment variables
+	if proxy.Spec.Telemetry != nil && proxy.Spec.Telemetry.OpenTelemetry != nil {
+		otelEnvVars := GenerateOpenTelemetryEnvVars(proxy.Spec.Telemetry, proxy.Name, proxy.Namespace)
+		env = append(env, otelEnvVars...)
+	}
+
+	// Add token exchange environment variables
+	if proxy.Spec.ExternalAuthConfigRef != nil {
+		tokenExchangeEnvVars, err := GenerateTokenExchangeEnvVars(
+			ctx,
+			r.Client,
+			proxy.Namespace,
+			proxy.Spec.ExternalAuthConfigRef,
+			GetExternalAuthConfigByName,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate token exchange environment variables")
+		} else {
+			env = append(env, tokenExchangeEnvVars...)
+		}
+	}
+
+	// Add user-specified environment variables
+	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
+		for _, envVar := range proxy.Spec.ResourceOverrides.ProxyDeployment.Env {
+			env = append(env, corev1.EnvVar{
+				Name:  envVar.Name,
+				Value: envVar.Value,
+			})
+		}
+	}
+
+	return ensureRequiredEnvVars(ctx, env)
+}
+
+// buildDeploymentMetadata builds deployment-level labels and annotations
+func (*MCPRemoteProxyReconciler) buildDeploymentMetadata(
+	baseLabels map[string]string, proxy *mcpv1alpha1.MCPRemoteProxy,
+) (map[string]string, map[string]string) {
+	deploymentLabels := baseLabels
+	deploymentAnnotations := make(map[string]string)
+
+	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
+		if proxy.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
+			deploymentLabels = mergeLabels(baseLabels, proxy.Spec.ResourceOverrides.ProxyDeployment.Labels)
+		}
+		if proxy.Spec.ResourceOverrides.ProxyDeployment.Annotations != nil {
+			deploymentAnnotations = mergeAnnotations(
+				make(map[string]string), proxy.Spec.ResourceOverrides.ProxyDeployment.Annotations,
+			)
+		}
+	}
+
+	return deploymentLabels, deploymentAnnotations
+}
+
+// buildPodTemplateMetadata builds pod template labels and annotations
+func (*MCPRemoteProxyReconciler) buildPodTemplateMetadata(
+	baseLabels map[string]string, proxy *mcpv1alpha1.MCPRemoteProxy,
+) (map[string]string, map[string]string) {
+	templateLabels := baseLabels
+	templateAnnotations := make(map[string]string)
+
+	if proxy.Spec.ResourceOverrides != nil &&
+		proxy.Spec.ResourceOverrides.ProxyDeployment != nil &&
+		proxy.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides != nil {
+
+		overrides := proxy.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides
+		if overrides.Labels != nil {
+			templateLabels = mergeLabels(baseLabels, overrides.Labels)
+		}
+		if overrides.Annotations != nil {
+			templateAnnotations = mergeAnnotations(templateAnnotations, overrides.Annotations)
+		}
+	}
+
+	return templateLabels, templateAnnotations
+}
+
+// buildSecurityContexts builds pod and container security contexts
+func (r *MCPRemoteProxyReconciler) buildSecurityContexts(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+) (*corev1.PodSecurityContext, *corev1.SecurityContext) {
+	if r.PlatformDetector == nil {
+		r.PlatformDetector = NewSharedPlatformDetector()
+	}
+
+	detectedPlatform, err := r.PlatformDetector.DetectPlatform(ctx)
+	if err != nil {
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Error(err, "Failed to detect platform, defaulting to Kubernetes", "mcpremoteproxy", proxy.Name)
+	}
+
+	securityBuilder := kubernetes.NewSecurityContextBuilder(detectedPlatform)
+	return securityBuilder.BuildPodSecurityContext(), securityBuilder.BuildContainerSecurityContext()
+}
+
+// buildContainerPorts builds container port configuration
+func (*MCPRemoteProxyReconciler) buildContainerPorts(proxy *mcpv1alpha1.MCPRemoteProxy) []corev1.ContainerPort {
+	return []corev1.ContainerPort{{
+		ContainerPort: proxy.Spec.Port,
+		Name:          "http",
+		Protocol:      corev1.ProtocolTCP,
+	}}
+}
+
+// buildHealthProbe builds a health probe configuration
+func buildHealthProbe(
+	path, port string, initialDelay, period, timeout, failureThreshold int32,
+) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: path,
+				Port: intstr.FromString(port),
+			},
+		},
+		InitialDelaySeconds: initialDelay,
+		PeriodSeconds:       period,
+		TimeoutSeconds:      timeout,
+		FailureThreshold:    failureThreshold,
+	}
+}
+
+// buildResourceRequirements builds resource requirements from spec
+func buildResourceRequirements(resourceSpec mcpv1alpha1.ResourceRequirements) corev1.ResourceRequirements {
+	resources := corev1.ResourceRequirements{}
+
+	if resourceSpec.Limits.CPU != "" || resourceSpec.Limits.Memory != "" {
+		resources.Limits = corev1.ResourceList{}
+		if resourceSpec.Limits.CPU != "" {
+			resources.Limits[corev1.ResourceCPU] = resource.MustParse(resourceSpec.Limits.CPU)
+		}
+		if resourceSpec.Limits.Memory != "" {
+			resources.Limits[corev1.ResourceMemory] = resource.MustParse(resourceSpec.Limits.Memory)
+		}
+	}
+
+	if resourceSpec.Requests.CPU != "" || resourceSpec.Requests.Memory != "" {
+		resources.Requests = corev1.ResourceList{}
+		if resourceSpec.Requests.CPU != "" {
+			resources.Requests[corev1.ResourceCPU] = resource.MustParse(resourceSpec.Requests.CPU)
+		}
+		if resourceSpec.Requests.Memory != "" {
+			resources.Requests[corev1.ResourceMemory] = resource.MustParse(resourceSpec.Requests.Memory)
+		}
+	}
+
+	return resources
+}
+
+// serviceForMCPRemoteProxy returns a MCPRemoteProxy Service object
+func (r *MCPRemoteProxyReconciler) serviceForMCPRemoteProxy(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+) *corev1.Service {
+	ls := labelsForMCPRemoteProxy(proxy.Name)
+	svcName := createProxyServiceName(proxy.Name)
+
+	// Build service metadata with overrides
+	serviceLabels, serviceAnnotations := r.buildServiceMetadata(ls, proxy)
+
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        svcName,
+			Namespace:   proxy.Namespace,
+			Labels:      serviceLabels,
+			Annotations: serviceAnnotations,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: ls,
+			Ports: []corev1.ServicePort{{
+				Port:       proxy.Spec.Port,
+				TargetPort: intstr.FromInt(int(proxy.Spec.Port)),
+				Protocol:   corev1.ProtocolTCP,
+				Name:       "http",
+			}},
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(proxy, svc, r.Scheme); err != nil {
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Error(err, "Failed to set controller reference for Service")
+		return nil
+	}
+	return svc
+}
+
+// buildServiceMetadata builds service labels and annotations
+func (*MCPRemoteProxyReconciler) buildServiceMetadata(
+	baseLabels map[string]string, proxy *mcpv1alpha1.MCPRemoteProxy,
+) (map[string]string, map[string]string) {
+	serviceLabels := baseLabels
+	serviceAnnotations := make(map[string]string)
+
+	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyService != nil {
+		if proxy.Spec.ResourceOverrides.ProxyService.Labels != nil {
+			serviceLabels = mergeLabels(baseLabels, proxy.Spec.ResourceOverrides.ProxyService.Labels)
+		}
+		if proxy.Spec.ResourceOverrides.ProxyService.Annotations != nil {
+			serviceAnnotations = mergeAnnotations(
+				make(map[string]string), proxy.Spec.ResourceOverrides.ProxyService.Annotations,
+			)
+		}
+	}
+
+	return serviceLabels, serviceAnnotations
+}

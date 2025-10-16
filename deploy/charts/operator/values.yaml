@@ -54,6 +54,8 @@ operator:
     capabilities:
       drop:
       - ALL
+    seccompProfile:
+      type: RuntimeDefault
 
   # -- Liveness probe configuration for the operator
   livenessProbe:

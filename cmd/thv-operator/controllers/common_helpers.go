@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -347,6 +348,17 @@ func EnsureAuthzConfigMap(
 		}
 	} else if err != nil {
 		return fmt.Errorf("failed to get authorization ConfigMap: %w", err)
+	} else {
+		// ConfigMap exists, check if it needs to be updated
+		if !reflect.DeepEqual(existingConfigMap.Data, configMap.Data) {
+			ctxLogger.Info("Updating authorization ConfigMap",
+				"ConfigMap.Namespace", configMap.Namespace,
+				"ConfigMap.Name", configMap.Name)
+			existingConfigMap.Data = configMap.Data
+			if err := c.Update(ctx, existingConfigMap); err != nil {
+				return fmt.Errorf("failed to update authorization ConfigMap: %w", err)
+			}
+		}
 	}
 
 	return nil
@@ -415,7 +427,7 @@ func AddAuthzConfigOptions(
 		}
 		key := authzRef.ConfigMap.Key
 		if key == "" {
-			key = "authz.json"
+			key = defaultAuthzKey
 		}
 
 		// Ensure we have a Kubernetes client to fetch the ConfigMap

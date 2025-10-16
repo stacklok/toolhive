@@ -124,97 +124,16 @@ A registry API server for hosting custom MCP server registries. Located in `cmd/
 
 ## Core Concepts
 
-### Workloads
+For detailed definitions and relationships, see [Core Concepts](02-core-concepts.md).
 
-A **workload** in ToolHive represents a complete deployment unit that includes:
-- Primary MCP server container
-- Proxy process (for non-stdio transports)
-- Network configurations
-- Permission profiles and security policies
-- Middleware configuration
-
-**Related files:**
-- `pkg/workloads/manager.go` - Workload manager interface
-- `pkg/container/runtime/types.go` - Runtime abstraction
-
-### Transports
-
-ToolHive supports multiple MCP transport protocols as defined in the [MCP specification](https://modelcontextprotocol.io/specification):
-
-1. **stdio** - Standard input/output communication
-2. **SSE (Server-Sent Events)** - HTTP-based streaming
-3. **streamable-http** - Bidirectional HTTP streaming
-
-**Related files:**
-- `pkg/transport/stdio.go` - Stdio transport implementation
-- `pkg/transport/proxy/httpsse/http_proxy.go` - SSE proxy
-- `pkg/transport/proxy/streamable/streamable_proxy.go` - Streamable HTTP proxy
-
-### Middleware
-
-A layered middleware architecture that provides:
-- **Authentication** - JWT token validation
-- **Token Exchange** - OAuth 2.0 token exchange
-- **MCP Parsing** - JSON-RPC request parsing
-- **Tool Filtering** - Control which tools are exposed
-- **Authorization** - Cedar policy evaluation
-- **Audit** - Request logging and compliance
-- **Telemetry** - OpenTelemetry instrumentation
-
-**Related files:**
-- `docs/middleware.md` - Complete middleware documentation
-- `pkg/runner/middleware.go` - Middleware factory registration
-
-### RunConfig
-
-The **RunConfig** is ToolHive's standard configuration format for running MCP servers. It's a serializable JSON/YAML structure that contains all necessary information to deploy an MCP server.
-
-**Key features:**
-- Portable and exportable
-- Version-controlled schema
-- Contains middleware configuration
-- Includes permission profiles
-- Part of ToolHive's API contract
-
-**Related files:**
-- `pkg/runner/config.go` - RunConfig struct definition
-
-### Permission Profiles
-
-Security configurations that define:
-- **Read/Write mounts** - File system access controls
-- **Network permissions** - Outbound/inbound connection rules
-- **Privileged mode** - Host device access (use with caution)
-
-**Built-in profiles:**
-- `none` - No permissions (default)
-- `network` - Allow all network access
-
-**Related files:**
-- `pkg/permissions/profile.go` - Profile struct definition
-
-### Groups
-
-Logical groupings of MCP servers that share a common purpose or use case. Groups serve as the foundation for:
-- **Virtual MCP servers** - Aggregate multiple MCP servers into one
-- **Organizational structure** - Group related servers together
-- **Access control** - Apply policies at the group level
-
-**Related files:**
-- PR #2106 - Virtual MCP server proposal
-
-### Registry
-
-ToolHive ships with a curated registry of trusted MCP servers built from [toolhive-registry](https://github.com/stacklok/toolhive-registry).
-
-**Features:**
-- Predefined server configurations
-- Version management
-- Custom registry support (JSON file or remote endpoint)
-- Future support for upstream [MCP registry format](https://github.com/modelcontextprotocol/registry)
-
-**Related files:**
-- `cmd/thv-registry-api/` - Registry API server
+**Key concepts:**
+- **Workloads** - Complete deployment units (container + proxy + config)
+- **Transports** - Communication protocols (stdio, SSE, streamable-http)
+- **Middleware** - Composable request processing layers
+- **RunConfig** - Portable configuration format
+- **Permission Profiles** - Security policies
+- **Groups** - Logical server collections
+- **Registry** - Catalog of trusted MCP servers
 
 ## Deployment Modes
 
@@ -257,15 +176,29 @@ Deployment (thv-proxyrunner) -> StatefulSet (MCP server container)
 ```mermaid
 sequenceDiagram
     participant Client
-    participant Proxy as Proxy<br/>(SSE or Streamable HTTP)
-    participant Container
+    participant Middleware
+    participant Proxy as Stdio Proxy
+    participant Stdin as Container<br/>stdin
+    participant Stdout as Container<br/>stdout
 
-    Client->>Proxy: HTTP Request<br/>(SSE or Streamable HTTP)
-    Proxy->>Proxy: Apply Middleware
-    Proxy->>Container: Write to stdin
-    Container->>Proxy: Read from stdout
-    Proxy->>Proxy: Parse JSON-RPC
-    Proxy->>Client: HTTP Response<br/>(SSE or Streamable HTTP)
+    Note over Client,Stdout: Middleware at HTTP Boundary
+
+    rect rgb(230, 240, 255)
+        Note over Client,Stdin: Independent Flow: Client → Container
+        Client->>Middleware: HTTP Request (SSE or Streamable)
+        Middleware->>Proxy: After auth/authz/audit
+        Note over Proxy: HTTP → JSON-RPC
+        Proxy->>Stdin: Write to stdin
+    end
+
+    rect rgb(255, 240, 230)
+        Note over Stdout,Client: Independent Flow: Container → Client (async)
+        Stdout->>Proxy: Read from stdout
+        Note over Proxy: JSON-RPC → HTTP
+        Proxy->>Client: SSE (broadcast) or Streamable (correlated)
+    end
+
+    Note over Client,Stdout: stdin and stdout are independent streams
 ```
 
 ### For SSE/Streamable HTTP Transports
@@ -299,37 +232,8 @@ These are automatically converted to container images at runtime.
 1. **From Registry**: `thv run server-name`
 2. **From Container Image**: `thv run ghcr.io/example/mcp:latest`
 3. **Using Protocol Scheme**: `thv run uvx://package-name`
-4. **From Exported Config**: `thv run --from-config path/to/config.json`
+4. **From Exported Config**: `thv run --from-config path/to/config.json` - Useful for sharing configurations, migrating workloads, or version-controlling server setups
 5. **Remote MCP Server**: `thv run <URL>`
-
-## Project Structure
-
-```
-toolhive/
-├── cmd/
-│   ├── thv/                    # Main CLI binary
-│   ├── thv-operator/           # Kubernetes operator
-│   ├── thv-proxyrunner/        # Proxy runner for K8s
-│   └── thv-registry-api/       # Registry API server
-├── pkg/
-│   ├── api/                    # REST API server
-│   ├── auth/                   # Authentication
-│   ├── authz/                  # Authorization (Cedar)
-│   ├── audit/                  # Audit logging
-│   ├── client/                 # Client configuration
-│   ├── container/              # Container runtime abstraction
-│   ├── permissions/            # Permission profiles
-│   ├── registry/               # Registry management
-│   ├── runner/                 # MCP server execution
-│   ├── transport/              # Transport implementations
-│   ├── workloads/              # Workload lifecycle
-│   └── ...
-├── docs/
-│   ├── arch/                   # Architecture documentation
-│   └── middleware.md           # Middleware documentation
-└── deploy/
-    └── charts/                 # Helm charts
-```
 
 ## Related Documentation
 

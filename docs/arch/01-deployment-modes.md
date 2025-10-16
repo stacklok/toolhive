@@ -334,8 +334,8 @@ No local filesystem state required.
 
 **MCP server (StatefulSet):**
 - Scales independently from proxy
-- Persistent volumes attached per replica
 - Stable network identities
+- Persistent storage can be configured if needed
 
 **Operator:**
 - Single instance with leader election

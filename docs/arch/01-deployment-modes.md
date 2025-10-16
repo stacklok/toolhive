@@ -62,7 +62,7 @@ graph TB
 2. **ToolHive CLI (`cmd/thv/main.go`)**:
    - Parses command-line arguments
    - Loads or creates RunConfig
-   - Instantiates workloads API (`pkg/workloads/manager.go:38`)
+   - Instantiates workloads API (`pkg/workloads/manager.go`)
 
 3. **Workload Manager**:
    - Detects available container runtime (Podman → Colima → Docker)
@@ -122,7 +122,7 @@ sequenceDiagram
 ```
 
 **Key Implementation**:
-- `pkg/workloads/manager.go:357` - `RunWorkloadDetached` method
+- `pkg/workloads/manager.go` - `RunWorkloadDetached` method
 - Uses `exec.Command` with `SysProcAttr` to detach
 - Sets `TOOLHIVE_DETACHED=true` environment variable
 - Redirects stdout/stderr to log file: `~/.toolhive/logs/<workload>.log`
@@ -293,46 +293,18 @@ graph LR
 
 ### Custom Resource Definitions
 
-**MCPServer** (`cmd/thv-operator/api/v1alpha1/mcpserver_types.go`):
-```yaml
-apiVersion: mcp.stacklok.com/v1alpha1
-kind: MCPServer
-metadata:
-  name: my-mcp-server
-spec:
-  image: ghcr.io/example/mcp-server:latest
-  transport: sse
-  port: 8080
-  permissionProfile:
-    name: network
-  middleware:
-    - type: auth
-      parameters:
-        oidcConfig:
-          issuerURL: https://auth.example.com
-    - type: authz
-      parameters:
-        policies: |
-          permit(...);
-```
+ToolHive provides several CRDs for managing MCP servers in Kubernetes:
 
-**MCPRegistry** (`cmd/thv-operator/api/v1alpha1/mcpregistry_types.go`):
-```yaml
-apiVersion: mcp.stacklok.com/v1alpha1
-kind: MCPRegistry
-metadata:
-  name: my-registry
-spec:
-  source:
-    type: git
-    git:
-      url: https://github.com/example/mcp-registry
-      branch: main
-      path: registry.json
-  syncPolicy:
-    automatic: true
-    interval: 1h
-```
+- **MCPServer** - Defines an MCP server deployment with container images, transports, and middleware
+- **MCPRegistry** - Manages MCP server registries from Git or ConfigMap sources
+
+For complete examples, see the [`examples/operator/mcp-servers/`](../../examples/operator/mcp-servers/) directory, which includes:
+- Basic MCP server deployments with different transports (stdio, SSE, streamable-http)
+- Authentication configurations (inline OIDC, ConfigMap-based, Kubernetes-native)
+- Resource and pod template customizations
+- Tool filtering and middleware examples
+
+Full CRD API documentation is available in `cmd/thv-operator/crd-api.md`.
 
 ### Operator Design Decisions
 
@@ -373,7 +345,7 @@ No local filesystem state required.
 
 ### Workloads API Abstraction
 
-The workloads API (`pkg/workloads/manager.go:38`) provides a unified interface across all modes:
+The workloads API (`pkg/workloads/manager.go`) provides a unified interface across all modes:
 
 ```go
 type Manager interface {
@@ -388,7 +360,7 @@ type Manager interface {
 ```
 
 **Mode-specific behavior** is abstracted through:
-- **Runtime interface** (`pkg/container/runtime/types.go:125`)
+- **Runtime interface** (`pkg/container/runtime/types.go`)
 - **Factory pattern** for runtime selection (`pkg/container/factory.go`)
 
 ### Runtime Abstraction
@@ -426,7 +398,7 @@ classDiagram
 
 ### RunConfig Portability
 
-The **RunConfig** format (`pkg/runner/config.go:34`) is designed to be portable across all modes:
+The **RunConfig** format (`pkg/runner/config.go`) is designed to be portable across all modes:
 
 **Local → Local**: Direct JSON export/import via:
 - `thv export <workload>` → saves RunConfig JSON
@@ -441,7 +413,7 @@ The **RunConfig** format (`pkg/runner/config.go:34`) is designed to be portable 
 
 ### Environment Detection
 
-**Implementation**: `pkg/container/runtime/types.go:291`
+**Implementation**: `pkg/container/runtime/types.go`
 
 ToolHive automatically detects runtime environment:
 

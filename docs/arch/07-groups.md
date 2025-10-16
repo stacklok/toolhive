@@ -40,7 +40,7 @@ graph TB
 
 ### RunConfig Field
 
-**Implementation**: `pkg/runner/config.go:148`
+**Implementation**: `pkg/runner/config.go`
 
 ```json
 {
@@ -75,16 +75,16 @@ thv group move server1 --from data-pipeline --to development
 
 **Delete group (stops all workloads):**
 ```bash
-thv group delete data-pipeline
+thv group rm data-pipeline
 ```
 
-**Implementation**: `cmd/thv/app/group.go`, `pkg/groups/`, `pkg/workloads/manager.go:1038`
+**Implementation**: `cmd/thv/app/group.go`, `pkg/groups/`, `pkg/workloads/manager.go`
 
 ## Registry Groups
 
 Registry can define predefined groups:
 
-**Implementation**: `pkg/registry/types.go:17`
+**Implementation**: `pkg/registry/types.go`
 
 ```json
 {

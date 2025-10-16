@@ -196,9 +196,9 @@ A **group** is a logical collection of MCP servers that share a common purpose o
 - Client configuration (configure clients to use groups)
 
 **Operations:**
-- Create group by adding workloads with `--group` flag
+- Create group by adding workloads with `--group` flag or `thv group create`
+- List all groups: `thv group list`
 - List workloads in group: `thv group list <name>`
-- Move workloads: `thv group move`
 - Delete group: `thv group rm <name>`
 
 **Implementation:**

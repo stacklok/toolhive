@@ -9,9 +9,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
@@ -363,6 +367,46 @@ func createTempProfileFile(t *testing.T, content string) (string, func()) {
 	}
 
 	return tempFile.Name(), cleanup
+}
+
+func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
+	t.Parallel()
+
+	// Prevent nil pointer dereference in the logger.
+	logger.Initialize()
+
+	t.Run("token-exchange NOT added when config is nil", func(t *testing.T) {
+		t.Parallel()
+
+		var mws []types.MiddlewareConfig
+		// oidc config can be empty for this unit test
+		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, nil)
+
+		// Expect only auth + mcp parser when token-exchange config == nil
+		require.Len(t, mws, 2, "expected only auth and mcp parser middlewares when token-exchange config is nil")
+		assert.Equal(t, auth.MiddlewareType, mws[0].Type, "first middleware should be auth")
+		assert.Equal(t, mcp.ParserMiddlewareType, mws[1].Type, "second middleware should be MCP parser")
+
+		// Ensure token-exchange type is not present
+		for i, mw := range mws {
+			assert.NotEqual(t, tokenexchange.MiddlewareType, mw.Type, "middleware[%d] should not be token-exchange", i)
+		}
+	})
+
+	t.Run("token-exchange IS added and correctly ordered when config provided", func(t *testing.T) {
+		t.Parallel()
+
+		var mws []types.MiddlewareConfig
+		teCfg := &tokenexchange.Config{} // minimal config instance for this test
+
+		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, teCfg)
+
+		// Expect auth, token-exchange, then mcp parser
+		require.Len(t, mws, 3, "expected auth, token-exchange and mcp parser middlewares when token-exchange config is provided")
+		assert.Equal(t, auth.MiddlewareType, mws[0].Type, "first middleware should be auth")
+		assert.Equal(t, tokenexchange.MiddlewareType, mws[1].Type, "second middleware should be token-exchange")
+		assert.Equal(t, mcp.ParserMiddlewareType, mws[2].Type, "third middleware should be MCP parser")
+	})
 }
 
 func TestRunConfigBuilder_WithToolOverride(t *testing.T) {

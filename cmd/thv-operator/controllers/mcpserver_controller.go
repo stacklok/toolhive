@@ -842,7 +842,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 
 	// Add token exchange environment variables
 	if m.Spec.ExternalAuthConfigRef != nil {
-		tokenExchangeEnvVars, err := GenerateTokenExchangeEnvVars(ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef, GetExternalAuthConfigByName)
+		tokenExchangeEnvVars, err := GenerateTokenExchangeEnvVars(
+			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef, GetExternalAuthConfigByName,
+		)
 		if err != nil {
 			ctxLogger := log.FromContext(ctx)
 			ctxLogger.Error(err, "Failed to generate token exchange environment variables")
@@ -1376,7 +1378,9 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 		// Add token exchange environment variables
 		if mcpServer.Spec.ExternalAuthConfigRef != nil {
-			tokenExchangeEnvVars, err := GenerateTokenExchangeEnvVars(ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.ExternalAuthConfigRef, GetExternalAuthConfigByName)
+			tokenExchangeEnvVars, err := GenerateTokenExchangeEnvVars(
+				ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.ExternalAuthConfigRef, GetExternalAuthConfigByName,
+			)
 			if err != nil {
 				// If we can't generate env vars, consider the deployment needs update
 				// The actual error will be caught during reconciliation
@@ -1732,7 +1736,9 @@ func (*MCPServerReconciler) generateOpenTelemetryArgs(m *mcpv1alpha1.MCPServer) 
 
 // ensureAuthzConfigMap ensures the authorization ConfigMap exists for inline configuration
 func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
-	return EnsureAuthzConfigMap(ctx, r.Client, r.Scheme, m, m.Namespace, m.Name, m.Spec.AuthzConfig, labelsForInlineAuthzConfig(m.Name))
+	return EnsureAuthzConfigMap(
+		ctx, r.Client, r.Scheme, m, m.Namespace, m.Name, m.Spec.AuthzConfig, labelsForInlineAuthzConfig(m.Name),
+	)
 }
 
 // int32Ptr returns a pointer to an int32

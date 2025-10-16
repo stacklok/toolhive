@@ -9,21 +9,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/rest"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
-
-// mockPlatformDetector is a mock implementation of PlatformDetector for testing
-type mockPlatformDetector struct {
-	platform kubernetes.Platform
-	err      error
-}
-
-func (m *mockPlatformDetector) DetectPlatform(_ *rest.Config) (kubernetes.Platform, error) {
-	return m.platform, m.err
-}
 
 func TestMCPServerReconciler_DetectPlatform_Success(t *testing.T) {
 	t.Skip("Platform detection requires in-cluster Kubernetes configuration - skipping for unit tests")

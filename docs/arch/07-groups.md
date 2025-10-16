@@ -68,12 +68,7 @@ thv group list
 thv group list data-pipeline
 ```
 
-**Move workload between groups:**
-```bash
-thv group move server1 --from data-pipeline --to development
-```
-
-**Delete group (stops all workloads):**
+**Delete group:**
 ```bash
 thv group rm data-pipeline
 ```
@@ -111,14 +106,7 @@ This starts all servers defined in the registry group.
 
 ## Client Configuration
 
-Groups simplify client setup:
-
-**Configure client for group:**
-```bash
-thv client setup claude-code --group data-pipeline
-```
-
-**Result**: Client configured with all servers in the group
+Groups simplify client setup. The `thv client setup` command is interactive and allows configuring clients with workloads from specific groups.
 
 **Implementation**: Client manager reads group membership and configures all servers
 

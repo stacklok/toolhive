@@ -124,7 +124,7 @@ func (v *CLIEnvVarValidator) Validate(
 							continue
 						}
 					}
-					
+
 					// If secrets manager unavailable or secret not found, fall through to prompt
 				}
 

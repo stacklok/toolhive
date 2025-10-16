@@ -330,10 +330,11 @@ No local filesystem state required.
 
 **Proxy runner:**
 - Typically runs with 1 replica
-- Can be scaled for HA (with session affinity)
+- Multiple replicas may be possible with session affinity (not currently tested)
+- Note: stdio transport requires single proxy instance due to exclusive stdin/stdout attachment
 
 **MCP server (StatefulSet):**
-- Scales independently from proxy
+- Scales independently from proxy (for SSE/Streamable HTTP transports)
 - Stable network identities
 - Persistent storage can be configured if needed
 

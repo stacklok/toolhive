@@ -20,59 +20,61 @@ import (
 func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 	t.Parallel()
 	// Create a test MCPServer with a PodTemplateSpec
+	podTemplateSpec := &corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "mcp",
+					SecurityContext: &corev1.SecurityContext{
+						AllowPrivilegeEscalation: boolPtr(false),
+						RunAsUser:                int64Ptr(1000),
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+					},
+					Resources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("500m"),
+							corev1.ResourceMemory: resource.MustParse("256Mi"),
+						},
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("100m"),
+							corev1.ResourceMemory: resource.MustParse("128Mi"),
+						},
+					},
+				},
+			},
+			Tolerations: []corev1.Toleration{
+				{
+					Key:      "dedicated",
+					Operator: "Equal",
+					Value:    "mcp-servers",
+					Effect:   "NoSchedule",
+				},
+			},
+			NodeSelector: map[string]string{
+				"kubernetes.io/os": "linux",
+				"node-type":        "mcp-server",
+			},
+			SecurityContext: &corev1.PodSecurityContext{
+				RunAsNonRoot: boolPtr(true),
+				SeccompProfile: &corev1.SeccompProfile{
+					Type: corev1.SeccompProfileTypeRuntimeDefault,
+				},
+			},
+		},
+	}
+
 	mcpServer := &mcpv1alpha1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-mcp-server",
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			Port:      8080,
-			PodTemplateSpec: &corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					Tolerations: []corev1.Toleration{
-						{
-							Key:      "dedicated",
-							Operator: "Equal",
-							Value:    "mcp-servers",
-							Effect:   "NoSchedule",
-						},
-					},
-					NodeSelector: map[string]string{
-						"kubernetes.io/os": "linux",
-						"node-type":        "mcp-server",
-					},
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: boolPtr(true),
-						SeccompProfile: &corev1.SeccompProfile{
-							Type: corev1.SeccompProfileTypeRuntimeDefault,
-						},
-					},
-					Containers: []corev1.Container{
-						{
-							Name: "mcp",
-							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: boolPtr(false),
-								Capabilities: &corev1.Capabilities{
-									Drop: []corev1.Capability{"ALL"},
-								},
-								RunAsUser: int64Ptr(1000),
-							},
-							Resources: corev1.ResourceRequirements{
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("500m"),
-									corev1.ResourceMemory: resource.MustParse("512Mi"),
-								},
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse("100m"),
-									corev1.ResourceMemory: resource.MustParse("128Mi"),
-								},
-							},
-						},
-					},
-				},
-			},
+			Image:           "test-image:latest",
+			Transport:       "stdio",
+			Port:            8080,
+			PodTemplateSpec: podTemplateSpecToRawExtension(t, podTemplateSpec),
 		},
 	}
 
@@ -129,6 +131,8 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 			// Check container security context
 			require.NotNil(t, mcpContainer.SecurityContext, "Container SecurityContext should not be nil")
 			assert.False(t, *mcpContainer.SecurityContext.AllowPrivilegeEscalation, "AllowPrivilegeEscalation should be false")
+			require.NotNil(t, mcpContainer.SecurityContext.Capabilities, "Capabilities should not be nil")
+			assert.Contains(t, mcpContainer.SecurityContext.Capabilities.Drop, corev1.Capability("ALL"), "Should drop ALL capabilities")
 			assert.Equal(t, int64(1000), *mcpContainer.SecurityContext.RunAsUser, "RunAsUser should be 1000")
 			require.NotNil(t, mcpContainer.SecurityContext.Capabilities, "Capabilities should not be nil")
 			require.Len(t, mcpContainer.SecurityContext.Capabilities.Drop, 1, "Should drop one capability")
@@ -141,7 +145,7 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 			memoryRequest := mcpContainer.Resources.Requests[corev1.ResourceMemory]
 
 			assert.Equal(t, "500m", cpuLimit.String(), "CPU limit should match")
-			assert.Equal(t, "512Mi", memoryLimit.String(), "Memory limit should match")
+			assert.Equal(t, "256Mi", memoryLimit.String(), "Memory limit should match")
 			assert.Equal(t, "100m", cpuRequest.String(), "CPU request should match")
 			assert.Equal(t, "128Mi", memoryRequest.String(), "Memory request should match")
 

@@ -85,7 +85,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 
 	if proxy {
 		if follow {
-			return getProxyLogs(workloadName, follow)
+			return getProxyLogs(workloadName)
 		}
 		// Use the shared manager method for non-follow proxy logs
 		logs, err := manager.GetProxyLogs(ctx, workloadName)
@@ -227,12 +227,8 @@ func reportPruneResults(prunedFiles, errs []string) {
 	}
 }
 
-// getProxyLogs reads and displays the proxy logs for a given workload (follow mode only)
-func getProxyLogs(workloadName string, follow bool) error {
-	if !follow {
-		return fmt.Errorf("getProxyLogs should only be called with follow=true")
-	}
-
+// getProxyLogs reads and displays the proxy logs for a given workload in follow mode
+func getProxyLogs(workloadName string) error {
 	// Get the proxy log file path
 	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", workloadName))
 	if err != nil {
@@ -241,6 +237,12 @@ func getProxyLogs(workloadName string, follow bool) error {
 
 	// Clean the file path to prevent path traversal
 	cleanLogFilePath := filepath.Clean(logFilePath)
+
+	// Check if the log file exists
+	if _, err := os.Stat(cleanLogFilePath); os.IsNotExist(err) {
+		logger.Infof("proxy log not found for workload %s", workloadName)
+		return nil
+	}
 
 	return followProxyLogFile(cleanLogFilePath)
 }

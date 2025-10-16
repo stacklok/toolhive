@@ -36,10 +36,20 @@ type OIDCConfig struct { //nolint:revive // Keeping OIDCConfig name for backward
 	JWKSAllowPrivateIP bool
 }
 
+// OIDCConfigurable is an interface for resources that have OIDC configuration
+//
+//nolint:revive // Intentionally named OIDCConfigurable for clarity
+type OIDCConfigurable interface {
+	GetName() string
+	GetNamespace() string
+	GetOIDCConfig() *mcpv1alpha1.OIDCConfigRef
+	GetPort() int32
+}
+
 // Resolver is the interface for resolving OIDC configuration from various sources
 type Resolver interface {
-	// Resolve takes an MCPServer and its OIDC configuration reference and returns the resolved OIDC config
-	Resolve(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) (*OIDCConfig, error)
+	// Resolve takes any resource implementing OIDCConfigurable and resolves its OIDC config
+	Resolve(ctx context.Context, resource OIDCConfigurable) (*OIDCConfig, error)
 }
 
 // NewResolver creates a new OIDC configuration resolver
@@ -55,25 +65,24 @@ type resolver struct {
 	client client.Client
 }
 
-// Resolve resolves the OIDC configuration based on the type specified in OIDCConfigRef
-func (r *resolver) Resolve(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) (*OIDCConfig, error) {
-	if mcpServer.Spec.OIDCConfig == nil {
+// Resolve resolves the OIDC configuration from any resource implementing OIDCConfigurable
+func (r *resolver) Resolve(ctx context.Context, resource OIDCConfigurable) (*OIDCConfig, error) {
+	oidcConfig := resource.GetOIDCConfig()
+	if oidcConfig == nil {
 		return nil, nil
 	}
-
-	oidcConfig := mcpServer.Spec.OIDCConfig
 
 	// Calculate resource URL for RFC 9728 compliance
 	resourceURL := oidcConfig.ResourceURL
 	if resourceURL == "" {
-		resourceURL = createServiceURL(mcpServer.Name, mcpServer.Namespace, mcpServer.Spec.Port)
+		resourceURL = createServiceURL(resource.GetName(), resource.GetNamespace(), resource.GetPort())
 	}
 
 	switch oidcConfig.Type {
 	case mcpv1alpha1.OIDCConfigTypeKubernetes:
-		return r.resolveKubernetesConfig(ctx, oidcConfig.Kubernetes, resourceURL, mcpServer)
+		return r.resolveKubernetesConfig(ctx, oidcConfig.Kubernetes, resourceURL, resource.GetNamespace())
 	case mcpv1alpha1.OIDCConfigTypeConfigMap:
-		return r.resolveConfigMapConfig(ctx, oidcConfig.ConfigMap, resourceURL, mcpServer)
+		return r.resolveConfigMapConfig(ctx, oidcConfig.ConfigMap, resourceURL, resource.GetNamespace())
 	case mcpv1alpha1.OIDCConfigTypeInline:
 		return r.resolveInlineConfig(oidcConfig.Inline, resourceURL)
 	default:
@@ -81,17 +90,16 @@ func (r *resolver) Resolve(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer
 	}
 }
 
-// resolveKubernetesConfig resolves OIDC configuration for Kubernetes type
+// resolveKubernetesConfig resolves Kubernetes OIDC config using namespace directly
 func (*resolver) resolveKubernetesConfig(
 	ctx context.Context,
 	config *mcpv1alpha1.KubernetesOIDCConfig,
 	resourceURL string,
-	mcpServer *mcpv1alpha1.MCPServer,
+	namespace string,
 ) (*OIDCConfig, error) {
-	// Set defaults if config is nil
 	if config == nil {
 		ctxLogger := log.FromContext(ctx)
-		ctxLogger.Info("Kubernetes OIDCConfig is nil, using default configuration", "mcpServer", mcpServer.Name)
+		ctxLogger.Info("Kubernetes OIDCConfig is nil, using default configuration", "namespace", namespace)
 		defaultUseClusterAuth := true
 		config = &mcpv1alpha1.KubernetesOIDCConfig{
 			UseClusterAuth: &defaultUseClusterAuth,
@@ -99,7 +107,7 @@ func (*resolver) resolveKubernetesConfig(
 	}
 
 	// Handle UseClusterAuth with default of true if nil
-	useClusterAuth := true // default value
+	useClusterAuth := true
 	if config.UseClusterAuth != nil {
 		useClusterAuth = *config.UseClusterAuth
 	}
@@ -134,12 +142,12 @@ func (*resolver) resolveKubernetesConfig(
 	return result, nil
 }
 
-// resolveConfigMapConfig resolves OIDC configuration from a ConfigMap
+// resolveConfigMapConfig resolves ConfigMap OIDC config using namespace directly
 func (r *resolver) resolveConfigMapConfig(
 	ctx context.Context,
 	configRef *mcpv1alpha1.ConfigMapOIDCRef,
 	resourceURL string,
-	mcpServer *mcpv1alpha1.MCPServer,
+	namespace string,
 ) (*OIDCConfig, error) {
 	if configRef == nil {
 		return nil, nil
@@ -153,11 +161,11 @@ func (r *resolver) resolveConfigMapConfig(
 	configMap := &corev1.ConfigMap{}
 	err := r.client.Get(ctx, types.NamespacedName{
 		Name:      configRef.Name,
-		Namespace: mcpServer.Namespace,
+		Namespace: namespace,
 	}, configMap)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OIDC ConfigMap %s/%s: %w",
-			mcpServer.Namespace, configRef.Name, err)
+			namespace, configRef.Name, err)
 	}
 
 	config := &OIDCConfig{

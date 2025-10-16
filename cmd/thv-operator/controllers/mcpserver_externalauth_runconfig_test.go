@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -375,10 +376,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 				WithRuntimeObjects(objects...).
 				Build()
 
-			reconciler := &MCPServerReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
 			ctx := t.Context()
 			var options []runner.RunConfigBuilderOption
@@ -517,10 +515,7 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 				WithRuntimeObjects(objects...).
 				Build()
 
-			reconciler := &MCPServerReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
 			runConfig, err := reconciler.createRunConfigFromMCPServer(tt.mcpServer)
 
@@ -702,13 +697,10 @@ func TestGenerateTokenExchangeEnvVars(t *testing.T) {
 				WithRuntimeObjects(objects...).
 				Build()
 
-			reconciler := &MCPServerReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
 			ctx := t.Context()
-			envVars, err := reconciler.generateTokenExchangeEnvVars(ctx, tt.mcpServer)
+			envVars, err := GenerateTokenExchangeEnvVars(ctx, reconciler.Client, tt.mcpServer.Namespace, tt.mcpServer.Spec.ExternalAuthConfigRef, GetExternalAuthConfigByName)
 
 			if tt.expectError {
 				assert.Error(t, err)

@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
 func TestTelemetryArgs(t *testing.T) {
@@ -141,10 +142,7 @@ func TestTelemetryArgs(t *testing.T) {
 			t.Parallel()
 
 			client := fake.NewClientBuilder().WithScheme(scheme).Build()
-			r := &MCPServerReconciler{
-				Client: client,
-				Scheme: scheme,
-			}
+			r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
 
 			mcpServer := &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -217,12 +215,6 @@ func TestOpenTelemetryEnvVars(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client := fake.NewClientBuilder().WithScheme(scheme).Build()
-			r := &MCPServerReconciler{
-				Client: client,
-				Scheme: scheme,
-			}
-
 			mcpServer := &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
@@ -241,7 +233,7 @@ func TestOpenTelemetryEnvVars(t *testing.T) {
 				},
 			}
 
-			envVars := r.generateOpenTelemetryEnvVars(mcpServer)
+			envVars := GenerateOpenTelemetryEnvVars(mcpServer.Spec.Telemetry, mcpServer.Name, mcpServer.Namespace)
 			assert.Equal(t, tt.expectedEnv, envVars)
 		})
 	}
@@ -386,12 +378,6 @@ func TestServiceNameDefaulting(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client := fake.NewClientBuilder().WithScheme(scheme).Build()
-			r := &MCPServerReconciler{
-				Client: client,
-				Scheme: scheme,
-			}
-
 			mcpServer := &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      tt.serverName,
@@ -410,7 +396,7 @@ func TestServiceNameDefaulting(t *testing.T) {
 				},
 			}
 
-			envVars := r.generateOpenTelemetryEnvVars(mcpServer)
+			envVars := GenerateOpenTelemetryEnvVars(mcpServer.Spec.Telemetry, mcpServer.Name, mcpServer.Namespace)
 
 			// Check OTEL_RESOURCE_ATTRIBUTES contains correct service name and namespace
 			var resourceAttrs string

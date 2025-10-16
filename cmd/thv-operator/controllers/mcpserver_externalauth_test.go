@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
 func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
@@ -199,10 +200,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 				WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
 				Build()
 
-			reconciler := &MCPServerReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
 			// Execute
 			err := reconciler.handleExternalAuthConfig(ctx, tt.mcpServer)
@@ -281,10 +279,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_SameNamespace(t *testing.T
 		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
 		Build()
 
-	reconciler := &MCPServerReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
 	// Execute - should fail because config is in different namespace
 	err := reconciler.handleExternalAuthConfig(ctx, mcpServer)
@@ -348,10 +343,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_HashUpdateTrigger(t *testi
 		WithStatusSubresource(&mcpv1alpha1.MCPServer{}, &mcpv1alpha1.MCPExternalAuthConfig{}).
 		Build()
 
-	reconciler := &MCPServerReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
 	// First call - hash is the same, no update needed
 	err := reconciler.handleExternalAuthConfig(ctx, mcpServer)
@@ -427,10 +419,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_NoHashInConfig(t *testing.
 		WithStatusSubresource(&mcpv1alpha1.MCPServer{}).
 		Build()
 
-	reconciler := &MCPServerReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
 	// Execute
 	err := reconciler.handleExternalAuthConfig(ctx, mcpServer)

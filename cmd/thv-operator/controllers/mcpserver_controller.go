@@ -12,7 +12,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -25,7 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -42,9 +40,7 @@ import (
 type MCPServerReconciler struct {
 	client.Client
 	Scheme           *runtime.Scheme
-	platformDetector kubernetes.PlatformDetector
-	detectedPlatform kubernetes.Platform
-	platformOnce     sync.Once
+	PlatformDetector *SharedPlatformDetector
 	ImageValidation  validation.ImageValidation
 }
 
@@ -109,32 +105,9 @@ const (
 )
 
 // detectPlatform detects the Kubernetes platform type (Kubernetes vs OpenShift)
-// It uses sync.Once to ensure the detection is only performed once and cached
+// It uses the shared platform detector to ensure detection is only performed once and cached
 func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Platform, error) {
-	var err error
-	r.platformOnce.Do(func() {
-		// Initialize platform detector if not already done
-		if r.platformDetector == nil {
-			r.platformDetector = kubernetes.NewDefaultPlatformDetector()
-		}
-
-		cfg, configErr := rest.InClusterConfig()
-		if configErr != nil {
-			err = fmt.Errorf("failed to get in-cluster config for platform detection: %w", configErr)
-			return
-		}
-
-		r.detectedPlatform, err = r.platformDetector.DetectPlatform(cfg)
-		if err != nil {
-			err = fmt.Errorf("failed to detect platform: %w", err)
-			return
-		}
-
-		ctxLogger := log.FromContext(ctx)
-		ctxLogger.Info("Platform detected for MCPServer controller", "platform", r.detectedPlatform.String())
-	})
-
-	return r.detectedPlatform, err
+	return r.PlatformDetector.DetectPlatform(ctx)
 }
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch;create;update;patch;delete
@@ -863,13 +836,15 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 
 	// Add OpenTelemetry environment variables
 	if m.Spec.Telemetry != nil && m.Spec.Telemetry.OpenTelemetry != nil {
-		otelEnvVars := r.generateOpenTelemetryEnvVars(m)
+		otelEnvVars := GenerateOpenTelemetryEnvVars(m.Spec.Telemetry, m.Name, m.Namespace)
 		env = append(env, otelEnvVars...)
 	}
 
 	// Add token exchange environment variables
 	if m.Spec.ExternalAuthConfigRef != nil {
-		tokenExchangeEnvVars, err := r.generateTokenExchangeEnvVars(ctx, m)
+		tokenExchangeEnvVars, err := GenerateTokenExchangeEnvVars(
+			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef, GetExternalAuthConfigByName,
+		)
 		if err != nil {
 			ctxLogger := log.FromContext(ctx)
 			ctxLogger.Error(err, "Failed to generate token exchange environment variables")
@@ -927,7 +902,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	}
 
 	// Add volume mounts for authorization configuration
-	authzVolumeMount, authzVolume := r.generateAuthzVolumeConfig(m)
+	authzVolumeMount, authzVolume := GenerateAuthzVolumeConfig(m.Spec.AuthzConfig, m.Name)
 	if authzVolumeMount != nil {
 		volumeMounts = append(volumeMounts, *authzVolumeMount)
 		volumes = append(volumes, *authzVolume)
@@ -987,14 +962,15 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	}
 
 	// Detect platform and prepare ProxyRunner's pod and container security context
-	_, err := r.detectPlatform(ctx)
+	detectedPlatform, err := r.detectPlatform(ctx)
 	if err != nil {
 		ctxLogger := log.FromContext(ctx)
 		ctxLogger.Error(err, "Failed to detect platform, defaulting to Kubernetes", "mcpserver", m.Name)
+		detectedPlatform = kubernetes.PlatformKubernetes // Default to Kubernetes on error
 	}
 
 	// Use SecurityContextBuilder for platform-aware security context
-	securityBuilder := kubernetes.NewSecurityContextBuilder(r.detectedPlatform)
+	securityBuilder := kubernetes.NewSecurityContextBuilder(detectedPlatform)
 	proxyRunnerPodSecurityContext := securityBuilder.BuildPodSecurityContext()
 	proxyRunnerContainerSecurityContext := securityBuilder.BuildContainerSecurityContext()
 
@@ -1396,13 +1372,15 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 		// Add OpenTelemetry environment variables first
 		if mcpServer.Spec.Telemetry != nil && mcpServer.Spec.Telemetry.OpenTelemetry != nil {
-			otelEnvVars := r.generateOpenTelemetryEnvVars(mcpServer)
+			otelEnvVars := GenerateOpenTelemetryEnvVars(mcpServer.Spec.Telemetry, mcpServer.Name, mcpServer.Namespace)
 			expectedProxyEnv = append(expectedProxyEnv, otelEnvVars...)
 		}
 
 		// Add token exchange environment variables
 		if mcpServer.Spec.ExternalAuthConfigRef != nil {
-			tokenExchangeEnvVars, err := r.generateTokenExchangeEnvVars(ctx, mcpServer)
+			tokenExchangeEnvVars, err := GenerateTokenExchangeEnvVars(
+				ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.ExternalAuthConfigRef, GetExternalAuthConfigByName,
+			)
 			if err != nil {
 				// If we can't generate env vars, consider the deployment needs update
 				// The actual error will be caught during reconciliation
@@ -1619,84 +1597,6 @@ func labelsForInlineAuthzConfig(name string) map[string]string {
 	return labels
 }
 
-// generateAuthzVolumeConfig generates volume mount and volume configuration for authorization policies
-// Returns nil for both if no authorization configuration is present
-func (*MCPServerReconciler) generateAuthzVolumeConfig(m *mcpv1alpha1.MCPServer) (*corev1.VolumeMount, *corev1.Volume) {
-	if m.Spec.AuthzConfig == nil {
-		return nil, nil
-	}
-
-	switch m.Spec.AuthzConfig.Type {
-	case mcpv1alpha1.AuthzConfigTypeConfigMap:
-		if m.Spec.AuthzConfig.ConfigMap == nil {
-			return nil, nil
-		}
-
-		volumeMount := &corev1.VolumeMount{
-			Name:      "authz-config",
-			MountPath: "/etc/toolhive/authz",
-			ReadOnly:  true,
-		}
-
-		volume := &corev1.Volume{
-			Name: "authz-config",
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: m.Spec.AuthzConfig.ConfigMap.Name,
-					},
-					Items: []corev1.KeyToPath{
-						{
-							Key: func() string {
-								if m.Spec.AuthzConfig.ConfigMap.Key != "" {
-									return m.Spec.AuthzConfig.ConfigMap.Key
-								}
-								return defaultAuthzKey
-							}(),
-							Path: defaultAuthzKey,
-						},
-					},
-				},
-			},
-		}
-
-		return volumeMount, volume
-
-	case mcpv1alpha1.AuthzConfigTypeInline:
-		if m.Spec.AuthzConfig.Inline == nil {
-			return nil, nil
-		}
-
-		volumeMount := &corev1.VolumeMount{
-			Name:      "authz-config",
-			MountPath: "/etc/toolhive/authz",
-			ReadOnly:  true,
-		}
-
-		volume := &corev1.Volume{
-			Name: "authz-config",
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: fmt.Sprintf("%s-authz-inline", m.Name),
-					},
-					Items: []corev1.KeyToPath{
-						{
-							Key:  defaultAuthzKey,
-							Path: defaultAuthzKey,
-						},
-					},
-				},
-			},
-		}
-
-		return volumeMount, volume
-
-	default:
-		return nil, nil
-	}
-}
-
 // mergeStringMaps merges override map with default map, with default map taking precedence
 // This ensures that operator-required metadata is preserved for proper functionality
 func mergeStringMaps(defaultMap, overrideMap map[string]string) map[string]string {
@@ -1834,147 +1734,11 @@ func (*MCPServerReconciler) generateOpenTelemetryArgs(m *mcpv1alpha1.MCPServer) 
 	return args
 }
 
-// generateOpenTelemetryEnvVars generates OpenTelemetry environment variables for the proxy container
-func (*MCPServerReconciler) generateOpenTelemetryEnvVars(m *mcpv1alpha1.MCPServer) []corev1.EnvVar {
-	var envVars []corev1.EnvVar
-
-	if m.Spec.Telemetry == nil || m.Spec.Telemetry.OpenTelemetry == nil {
-		return envVars
-	}
-
-	otel := m.Spec.Telemetry.OpenTelemetry
-
-	// Add service name
-	serviceName := otel.ServiceName
-	if serviceName == "" {
-		serviceName = m.Name // Default to MCPServer name if not specified
-	}
-
-	// Enable resource detection
-	envVars = append(envVars, corev1.EnvVar{
-		Name:  "OTEL_RESOURCE_ATTRIBUTES",
-		Value: fmt.Sprintf("service.name=%s,service.namespace=%s", serviceName, m.Namespace),
-	})
-
-	return envVars
-}
-
-// generateTokenExchangeEnvVars generates environment variables for token exchange authentication
-func (r *MCPServerReconciler) generateTokenExchangeEnvVars(
-	ctx context.Context,
-	m *mcpv1alpha1.MCPServer,
-) ([]corev1.EnvVar, error) {
-	var envVars []corev1.EnvVar
-
-	if m.Spec.ExternalAuthConfigRef == nil {
-		return envVars, nil
-	}
-
-	// Fetch the MCPExternalAuthConfig
-	externalAuthConfig, err := GetExternalAuthConfigForMCPServer(ctx, r.Client, m)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
-	}
-
-	// Only token exchange type is supported currently
-	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeTokenExchange {
-		return envVars, nil
-	}
-
-	tokenExchangeSpec := externalAuthConfig.Spec.TokenExchange
-	if tokenExchangeSpec == nil {
-		return envVars, nil
-	}
-
-	// Add environment variable that references the Kubernetes Secret
-	envVars = append(envVars, corev1.EnvVar{
-		Name: "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
-		ValueFrom: &corev1.EnvVarSource{
-			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{
-					Name: tokenExchangeSpec.ClientSecretRef.Name,
-				},
-				Key: tokenExchangeSpec.ClientSecretRef.Key,
-			},
-		},
-	})
-
-	return envVars, nil
-}
-
 // ensureAuthzConfigMap ensures the authorization ConfigMap exists for inline configuration
 func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
-	ctxLogger := log.FromContext(ctx)
-	// Only create ConfigMap for inline authorization configuration
-	if m.Spec.AuthzConfig == nil || m.Spec.AuthzConfig.Type != mcpv1alpha1.AuthzConfigTypeInline ||
-		m.Spec.AuthzConfig.Inline == nil {
-		return nil
-	}
-
-	configMapName := fmt.Sprintf("%s-authz-inline", m.Name)
-
-	// Create authorization configuration data
-	authzConfigData := map[string]interface{}{
-		"version": "1.0",
-		"type":    "cedarv1",
-		"cedar": map[string]interface{}{
-			"policies": m.Spec.AuthzConfig.Inline.Policies,
-			"entities_json": func() string {
-				if m.Spec.AuthzConfig.Inline.EntitiesJSON != "" {
-					return m.Spec.AuthzConfig.Inline.EntitiesJSON
-				}
-				return "[]"
-			}(),
-		},
-	}
-
-	// Marshal to JSON
-	authzConfigJSON, err := json.Marshal(authzConfigData)
-	if err != nil {
-		return fmt.Errorf("failed to marshal inline authz config: %w", err)
-	}
-
-	// Define the ConfigMap
-	configMap := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      configMapName,
-			Namespace: m.Namespace,
-			Labels:    labelsForInlineAuthzConfig(m.Name),
-		},
-		Data: map[string]string{
-			defaultAuthzKey: string(authzConfigJSON),
-		},
-	}
-
-	// Set the MCPServer as the owner of the ConfigMap
-	if err := controllerutil.SetControllerReference(m, configMap, r.Scheme); err != nil {
-		return fmt.Errorf("failed to set controller reference for authorization ConfigMap: %w", err)
-	}
-
-	// Check if the ConfigMap already exists
-	existingConfigMap := &corev1.ConfigMap{}
-	err = r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: m.Namespace}, existingConfigMap)
-	if err != nil && errors.IsNotFound(err) {
-		// Create the ConfigMap
-		ctxLogger.Info("Creating authorization ConfigMap", "ConfigMap.Namespace", configMap.Namespace, "ConfigMap.Name", configMap.Name)
-		if err := r.Create(ctx, configMap); err != nil {
-			return fmt.Errorf("failed to create authorization ConfigMap: %w", err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("failed to get authorization ConfigMap: %w", err)
-	} else {
-		// ConfigMap exists, check if it needs to be updated
-		if !reflect.DeepEqual(existingConfigMap.Data, configMap.Data) {
-			ctxLogger.Info("Updating authorization ConfigMap",
-				"ConfigMap.Namespace", configMap.Namespace, "ConfigMap.Name", configMap.Name)
-			existingConfigMap.Data = configMap.Data
-			if err := r.Update(ctx, existingConfigMap); err != nil {
-				return fmt.Errorf("failed to update authorization ConfigMap: %w", err)
-			}
-		}
-	}
-
-	return nil
+	return EnsureAuthzConfigMap(
+		ctx, r.Client, r.Scheme, m, m.Namespace, m.Name, m.Spec.AuthzConfig, labelsForInlineAuthzConfig(m.Name),
+	)
 }
 
 // int32Ptr returns a pointer to an int32

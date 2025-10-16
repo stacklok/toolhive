@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
 type restartTestContext struct {
@@ -39,13 +40,10 @@ func setupRestartTest(t *testing.T) *restartTestContext {
 		Build()
 
 	return &restartTestContext{
-		mcpServer: mcpServer,
-		client:    fakeClient,
-		reconciler: &MCPServerReconciler{
-			Client: fakeClient,
-			Scheme: testScheme,
-		},
-		t: t,
+		mcpServer:  mcpServer,
+		client:     fakeClient,
+		reconciler: newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes),
+		t:          t,
 	}
 }
 

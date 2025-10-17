@@ -208,14 +208,14 @@ func TestGetRegistryAPIImage(t *testing.T) {
 		{
 			name:        "default image when env not set",
 			setEnv:      false,
-			expected:    "ghcr.io/stacklok/toolhive/thv-registry-api:latest",
+			expected:    "ghcr.io/stacklok/thv-registry-api:latest",
 			description: "Should return default image when environment variable is not set",
 		},
 		{
 			name:        "default image when env empty",
 			envValue:    "",
 			setEnv:      true,
-			expected:    "ghcr.io/stacklok/toolhive/thv-registry-api:latest",
+			expected:    "ghcr.io/stacklok/thv-registry-api:latest",
 			description: "Should return default image when environment variable is empty",
 		},
 		{

@@ -52,16 +52,6 @@ func generateOAuthClientSecretName(workloadName string) string {
 	return fmt.Sprintf("OAUTH_CLIENT_SECRET_%s", workloadName)
 }
 
-// GenerateUniqueSecretName generates a unique secret name for an OAuth client secret
-// It handles both name generation and uniqueness checking in a single function
-func GenerateUniqueSecretName(workloadName string) (string, error) {
-	secretManager, err := getSecretsManager()
-	if err != nil {
-		return "", fmt.Errorf("failed to get secrets manager: %w", err)
-	}
-	return GenerateUniqueSecretNameWithProvider(workloadName, secretManager)
-}
-
 // GenerateUniqueSecretNameWithProvider generates a unique secret name using the provided secret manager
 // This version is testable with dependency injection
 func GenerateUniqueSecretNameWithProvider(workloadName string, secretManager secrets.Provider) (string, error) {

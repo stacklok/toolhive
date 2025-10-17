@@ -81,11 +81,13 @@ MCPToolConfig allows you to filter which tools are exposed by an MCP server and 
 
 Manages external authentication configurations that can be shared across multiple MCPServer resources.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/externalauthconfig_types.go`
+**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`
 
 MCPExternalAuthConfig allows you to define reusable OIDC authentication configurations that can be referenced by multiple MCPServer resources. This is useful for sharing authentication settings across servers.
 
 **Referenced by MCPServer** using `oidcConfig.type: external`.
+
+**Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
 
 For complete examples of all CRDs, see the [`examples/operator/mcp-servers/`](../../examples/operator/mcp-servers/) directory.
 
@@ -220,14 +222,6 @@ spec:
 
 **Implementation**: `cmd/thv-operator/pkg/mcpregistrystatus/`
 
-**Example:**
-```go
-statusCollector := NewCollector(mcpServer)
-statusCollector.SetPhase(MCPServerPhaseRunning)
-statusCollector.SetURL("http://...")
-statusCollector.Apply(ctx, client)
-```
-
 ## MCPRegistry Controller
 
 **Architecture:**
@@ -297,13 +291,10 @@ spec:
 Operator syncs every hour.
 
 **Manual sync:**
-```yaml
-spec:
-  syncPolicy:
-    automatic: false
-```
 
-Trigger: Add annotation `mcp.stacklok.com/sync=true`
+Omit the `syncPolicy` field entirely.
+
+Trigger: Add annotation `toolhive.stacklok.dev/sync-trigger=true`
 
 ### Registry API Service
 

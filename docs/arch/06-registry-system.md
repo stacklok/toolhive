@@ -17,32 +17,33 @@ ToolHive was early to adopt the concept of an MCP server registry. The registry 
 ```mermaid
 graph TB
     subgraph "Registry Sources"
-        Builtin[Built-in Registry<br/>toolhive-registry]
-        Custom[Custom Registry<br/>JSON file or URL]
-        API[Registry API Server<br/>thv-registry-api]
+        Builtin[Built-in Registry<br/>Embedded JSON]
+        Git[Git Repository]
+        CM[ConfigMap]
     end
 
     subgraph "ToolHive CLI"
         CLI[thv CLI]
-        RegMgr[Registry Manager]
+        Provider[Provider Interface<br/>Local/Remote]
     end
 
     subgraph "Kubernetes"
         MCPReg[MCPRegistry CRD]
         Operator[thv-operator]
+        API[Registry API Service<br/>Optional]
     end
 
-    Builtin --> RegMgr
-    Custom --> RegMgr
-    API --> RegMgr
-    RegMgr --> CLI
+    Builtin --> Provider
+    Git --> MCPReg
+    CM --> MCPReg
+    Provider --> CLI
 
-    API --> MCPReg
     MCPReg --> Operator
+    Operator --> API
 
     style Builtin fill:#81c784
-    style Custom fill:#90caf9
-    style API fill:#ba68c8
+    style Git fill:#90caf9
+    style CM fill:#90caf9
 ```
 
 ## Built-in Registry
@@ -68,7 +69,7 @@ thv run server-name
 
 **Implementation:**
 - Embedded: `pkg/registry/data/registry.json`
-- Manager: `pkg/registry/registry.go`
+- Manager: `pkg/registry/provider.go`, `pkg/registry/provider_local.go`, `pkg/registry/provider_remote.go`
 - Update: `cmd/regup/` (registry updater tool)
 
 ## Registry Format
@@ -161,12 +162,6 @@ thv run server-name
       "secret": true
     }
   ],
-  "oauth_config": {
-    "issuer": "https://auth.example.com",
-    "client_id": "mcp-client",
-    "scopes": ["read", "write"],
-    "use_pkce": true
-  },
   "env_vars": [
     {
       "name": "REGION",
@@ -216,11 +211,6 @@ thv registry list
 thv search weather
 ```
 
-**Filter by tag:**
-```bash
-thv registry list --tag official
-```
-
 **Show server details:**
 ```bash
 thv registry info weather-server
@@ -246,7 +236,7 @@ thv run weather-server
 ```bash
 thv run weather-server \
   --env API_KEY=xyz \
-  --port 9000 \
+  --proxy-port 9000 \
   --permission-profile custom.json
 ```
 
@@ -354,7 +344,7 @@ ToolHive includes a registry API server (`thv-registry-api`) for hosting custom 
 - File or Kubernetes ConfigMap storage
 - Used by `MCPRegistry` CRD in Kubernetes deployments
 
-For detailed documentation, see `cmd/thv-registry-api/README.md`.
+The registry API server provides HTTP endpoints for serving registry data to other components.
 
 ## MCPRegistry CRD (Kubernetes)
 
@@ -365,7 +355,7 @@ For Kubernetes deployments, registries managed via `MCPRegistry` CRD.
 ### Example CRD
 
 ```yaml
-apiVersion: mcp.stacklok.com/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPRegistry
 metadata:
   name: company-registry
@@ -373,16 +363,11 @@ spec:
   source:
     type: git
     git:
-      url: https://github.com/company/mcp-registry
+      repository: https://github.com/company/mcp-registry
       branch: main
       path: registry.json
   syncPolicy:
-    automatic: true
     interval: 1h
-  apiService:
-    enabled: true
-    port: 8080
-    serviceType: ClusterIP
 ```
 
 ### Source Types
@@ -393,19 +378,14 @@ spec:
 source:
   type: git
   git:
-    url: https://github.com/example/registry
+    repository: https://github.com/example/registry
     branch: main
     path: registry.json
-    auth:
-      secretRef:
-        name: git-credentials
-        key: token
 ```
 
 **Features:**
 - Automatic sync from Git repository
 - Branch or tag tracking
-- Authentication via secrets
 - Shallow clones for efficiency
 
 **Implementation**: `cmd/thv-operator/pkg/sources/git.go`
@@ -433,20 +413,16 @@ source:
 **Automatic sync:**
 ```yaml
 syncPolicy:
-  automatic: true
   interval: 1h
 ```
 
 **Manual sync only:**
-```yaml
-syncPolicy:
-  automatic: false
-```
 
-Trigger manual sync:
+Omit the `syncPolicy` field entirely. Manual sync can be triggered:
+
 ```bash
 kubectl annotate mcpregistry company-registry \
-  mcp.stacklok.com/sync=true
+  toolhive.stacklok.dev/sync-trigger=true
 ```
 
 **Implementation**: `cmd/thv-operator/controllers/mcpregistry_controller.go`
@@ -492,7 +468,7 @@ status:
 - `Syncing` - Fetching registry data
 - `Ready` - Registry available
 - `Failed` - Sync failed
-- `Degraded` - Partial failure
+- `Terminating` - Registry being deleted
 
 **Implementation**: `cmd/thv-operator/pkg/mcpregistrystatus/`
 
@@ -591,7 +567,7 @@ data:
 
 **Run all servers in group:**
 ```bash
-thv group run data-pipeline
+thv group run data-pipeline  # assuming 'data-pipeline' is defined in your registry
 ```
 
 **Implementation**: `pkg/registry/types.go`
@@ -611,9 +587,9 @@ ToolHive supports Sigstore verification:
 - `cert_issuer` - Certificate authority
 - `attestation` - SLSA attestation data
 
-**Verification** (planned):
+**Verification:**
 ```bash
-thv run weather-server --verify-provenance
+thv run weather-server --image-verification enabled
 ```
 
 **Implementation**: `pkg/registry/types.go`, cosign integration planned
@@ -633,9 +609,7 @@ ToolHive will support the upstream [MCP registry format](https://github.com/mode
 
 **Migration plan:**
 1. **Read both formats**: ToolHive format + upstream format
-2. **Converter tool**: `thv registry convert`
-3. **Deprecation period**: Support both formats
-4. **Eventual migration**: Prefer upstream format
+2. **Deprecation period**: Support both formats
 
 **Timeline**: Planned for future release
 
@@ -671,7 +645,7 @@ kubectl get mcpregistry company-registry -o yaml
 
 **Trigger manual sync:**
 ```bash
-kubectl annotate mcpregistry company-registry mcp.stacklok.com/sync=true
+kubectl annotate mcpregistry company-registry toolhive.stacklok.dev/sync-trigger=true
 ```
 
 **View registry data:**

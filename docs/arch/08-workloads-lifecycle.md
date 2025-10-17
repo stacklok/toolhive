@@ -21,7 +21,7 @@ stateDiagram-v2
 
     Running --> Stopping: Stop
     Running --> Unhealthy: Health Failed
-    Running --> Error: Container Exit
+    Running --> Stopped: Container Exit
 
     Stopping --> Stopped: Success
     Stopped --> Starting: Restart
@@ -90,37 +90,15 @@ thv rm my-server
 
 **Implementation**: `pkg/workloads/manager.go`
 
-### Update
-
-```bash
-thv update my-server --image new-version:v2
-```
-
-Stop → delete → save new config → start
-
-**Implementation**: `pkg/workloads/manager.go`
-
 ### List
 
-```bash
-thv list
-thv list --all  # Include stopped
-thv list --filter "group=dev"
-```
-
-Combines container workloads (from runtime) + remote workloads (from state)
+Listing combines container workloads from the runtime with remote workloads from persisted state. The manager can filter workloads by label or group, and can optionally include stopped workloads.
 
 **Implementation**: `pkg/workloads/manager.go`
 
-## Async Operations
+## Batch Operations
 
-Many operations run asynchronously for batch processing:
-
-```bash
-thv stop server1 server2 server3
-```
-
-All three stopped in parallel, result aggregated.
+Some operations (stop, delete) support processing multiple workloads in a single invocation, handling each workload sequentially or in parallel as appropriate.
 
 **Pattern**: Operations return `errgroup.Group`
 
@@ -191,26 +169,17 @@ Provides atomic status updates:
 
 ### Standard Labels
 
-Automatically added:
-- `toolhive-name`
-- `toolhive-basename`
-- `toolhive-transport`
-- `toolhive-port`
+The system automatically applies standard labels to workloads:
+- `toolhive-name` - Full workload name
+- `toolhive-basename` - Base name without timestamp
+- `toolhive-transport` - Transport protocol type
+- `toolhive-port` - Proxy port number
 
 **Implementation**: `pkg/labels/`, `pkg/runner/config.go`
 
 ### Custom Labels
 
-```bash
-thv run my-server --label "team=backend" --label "env=prod"
-```
-
-### Filtering
-
-```bash
-thv list --filter "team=backend"
-thv list --filter "transport=sse"
-```
+Users can apply custom labels for organizational purposes. Labels support filtering during list operations.
 
 **Implementation**: `pkg/workloads/types/labels.go`
 

@@ -137,12 +137,9 @@ type APISource struct {
 	// Endpoint is the base API URL (without path)
 	// The controller will append the appropriate paths:
 	// Phase 1 (ToolHive API):
-	//   - /v1/registry/servers - List all servers (single response, no pagination)
-	//   - /v1/registry/servers/{name} - Get specific server (future)
-	//   - /v1/registry/info - Get registry metadata (future)
-	// Phase 2 (Upstream MCP Registry API):
-	//   - /v0/servers - List all servers with pagination
-	//   - /v0/servers/{serverName}/versions - List server versions
+	//   - /v0/servers - List all servers (single response, no pagination)
+	//   - /v0/servers/{name} - Get specific server (future)
+	//   - /v0/info - Get registry metadata (future)
 	// Example: "http://my-registry-api.default.svc.cluster.local/api"
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1

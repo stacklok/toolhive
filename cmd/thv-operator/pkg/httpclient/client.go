@@ -11,7 +11,7 @@ import (
 
 const (
 	// DefaultTimeout is the default timeout for HTTP requests
-	DefaultTimeout = 30 * time.Second
+	DefaultTimeout = 10 * time.Second
 
 	// UserAgent is the user agent string for HTTP requests
 	UserAgent = "toolhive-operator/1.0"

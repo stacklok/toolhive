@@ -502,12 +502,15 @@ permit(
 
 **Audit** logs MCP operations for compliance, monitoring, and debugging.
 
-**Audit events:**
+**Audit events include:**
 - `mcp_tool_call` - Tool executions
+- `mcp_tools_list`, `mcp_resources_list`, `mcp_prompts_list` - List operations
 - `mcp_resource_read` - Resource access
 - `mcp_prompt_get` - Prompt retrieval
-- `mcp_list_operation` - List operations
+- `mcp_initialize` - Session initialization
+- `sse_connection` - SSE connections
 - `http_request` - Generic HTTP requests
+- And others - see `pkg/audit/mcp_events.go` for complete list of 15 event types
 
 **Event data:**
 - Timestamp, source, outcome

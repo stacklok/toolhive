@@ -9,8 +9,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -176,16 +179,13 @@ func CreateTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 	}
 }
 
-func TestFindClientConfigs(t *testing.T) {
-	t.Parallel()
+func TestFindClientConfigs(t *testing.T) { // Cant run in parallel because it uses global logger
 	// Setup a temporary home directory for testing
 	tempHome := t.TempDir()
 
 	t.Run("InvalidConfigFileFormat", func(t *testing.T) {
-		t.Parallel()
-
 		// Initialize in-memory test logger
-		observerLogs := logger.InitializeTest()
+		observerLogs := initializeTest(t)
 
 		// Create an invalid JSON file
 		invalidPath := filepath.Join(tempHome, ".cursor", "invalid.json")
@@ -258,6 +258,33 @@ func TestFindClientConfigs(t *testing.T) {
 		assert.Contains(t, logOutput, "failed to validate config file format", "Should log the specific validation error")
 		assert.Contains(t, logOutput, "cursor", "Should mention cursor in the error message")
 	})
+}
+
+func initializeTest(t *testing.T) *observer.ObservedLogs {
+	t.Helper()
+
+	// Set log level based on current debug flag
+	var level zap.AtomicLevel
+	if viper.GetBool("debug") {
+		level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	} else {
+		level = zap.NewAtomicLevelAt(zap.InfoLevel)
+	}
+
+	core, observedLogs := observer.New(level)
+	logger := zap.New(core)
+
+	// Save original logger for restoring
+	originalLogger := zap.L()
+
+	zap.ReplaceGlobals(logger)
+
+	// Restore original logger
+	t.Cleanup(func() {
+		zap.ReplaceGlobals(originalLogger)
+	})
+
+	return observedLogs
 }
 
 func TestSuccessfulClientConfigOperations(t *testing.T) {

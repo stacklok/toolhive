@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/stacklok/toolhive/pkg/env"
 )
@@ -167,21 +166,4 @@ func unstructuredLogsWithEnv(envReader env.Reader) bool {
 		return true
 	}
 	return unstructuredLogs
-}
-
-func InitializeTest() *observer.ObservedLogs {
-	// Set log level based on current debug flag
-	var level zap.AtomicLevel
-	if viper.GetBool("debug") {
-		level = zap.NewAtomicLevelAt(zap.DebugLevel)
-	} else {
-		level = zap.NewAtomicLevelAt(zap.InfoLevel)
-	}
-
-	core, observedLogs := observer.New(level)
-
-	logger := zap.New(core)
-	zap.ReplaceGlobals(logger)
-
-	return observedLogs
 }

@@ -307,7 +307,7 @@ thv run https://mcp.example.com \
 **What happens:**
 
 1. **OAuth flow initiated** - Authorization code or device flow
-2. **Access token obtained** - Token stored securely
+2. **Access token obtained** - Token encrypted and stored using the secrets provider (AES-256-GCM with password in OS keyring)
 3. **Token injection middleware** - Created via `pkg/transport/http.go`
 4. **Token added to requests** - Bearer token injected into Authorization header
 5. **Token refresh** - Automatic refresh using refresh token

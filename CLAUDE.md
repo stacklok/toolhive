@@ -201,6 +201,39 @@ Follow conventional commit format:
 - Do not end subject line with period
 - Use body to explain what and why vs. how
 
+## Architecture Documentation
+
+ToolHive maintains comprehensive architecture documentation in `docs/arch/`. When making changes that affect architecture, you MUST update the relevant documentation to keep it in sync with the code.
+
+### When to Update Documentation
+
+Update architecture docs when you:
+- Add or modify core components (workloads, transports, middleware, permissions, registry, groups)
+- Change system design patterns, abstractions, or interfaces
+- Modify the RunConfig schema or permission profiles
+- Update the Kubernetes operator or CRDs
+- Add new architectural concepts or change how components interact
+
+### Which Documentation to Update
+
+| Code Changes | Documentation Files |
+|--------------|---------------------|
+| Core packages (`pkg/workloads/`, `pkg/transport/`, `pkg/permissions/`, `pkg/registry/`, `pkg/groups/`) | `docs/arch/02-core-concepts.md` + topic-specific doc (e.g., `08-workloads-lifecycle.md`, `06-registry-system.md`) |
+| RunConfig schema (`pkg/runner/config.go`) | `docs/arch/05-runconfig-and-permissions.md` |
+| Middleware (`pkg/*/middleware.go`) | `docs/middleware.md` and `docs/arch/02-core-concepts.md` |
+| Operator or CRDs (`cmd/thv-operator/`, `api/`) | `docs/arch/09-operator-architecture.md` |
+| Major architectural changes | `docs/arch/00-overview.md` and `docs/arch/02-core-concepts.md` |
+
+### Documentation Guidelines
+
+- Include code references using `file_path` format (without line numbers since they change frequently)
+- Update Mermaid diagrams when component interactions change
+- Keep terminology consistent with definitions in `docs/arch/02-core-concepts.md`
+- Cross-reference related documentation
+- Explain design decisions and the "why" behind changes
+
+For the complete documentation structure and navigation, see `docs/arch/README.md`.
+
 ## Development Best Practices
 
 - **Linting**:

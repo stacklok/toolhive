@@ -29,9 +29,6 @@ const defaultProxyHost = "0.0.0.0"
 // defaultAPITimeout is the default timeout for Kubernetes API calls made during reconciliation
 const defaultAPITimeout = 15 * time.Second
 
-// defaultAuthzKey is the default key in the ConfigMap for authorization configuration
-const defaultAuthzKey = "authz.json"
-
 // ensureRunConfigConfigMap ensures the RunConfig ConfigMap exists and is up to date
 func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
 	runConfig, err := r.createRunConfigFromMCPServer(m)

@@ -61,6 +61,32 @@ graph LR
 
 **Implementation**: `pkg/secrets/none.go`
 
+## Kubernetes Mode
+
+In Kubernetes/operator mode, ToolHive uses **native Kubernetes Secrets** instead of the provider system. This is a fundamentally different architecture from CLI mode.
+
+### Secret References
+
+MCPServer resources reference Kubernetes Secrets via `SecretRef`. Secrets are injected as environment variables using Kubernetes `SecretKeyRef`.
+
+**Implementation**:
+- CRD types: `cmd/thv-operator/api/v1alpha1/mcpserver_types.go`
+- Pod builder: `cmd/thv-operator/controllers/mcpserver_podtemplatespec_builder.go`
+
+### External Authentication Secrets
+
+OAuth/OIDC client secrets are stored in Kubernetes Secrets and referenced by `MCPExternalAuthConfig` resources.
+
+**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`
+
+For examples, see [`examples/operator/mcp-servers/`](../../examples/operator/mcp-servers/).
+
+### Third-Party Secret Management
+
+For systems like HashiCorp Vault or External Secrets Operator, use `podTemplateMetadataOverrides` for annotations-based injection.
+
+**Example**: `examples/operator/vault/mcpserver-github-with-vault.yaml`
+
 ## Secret Resolution
 
 ### Fallback Chain

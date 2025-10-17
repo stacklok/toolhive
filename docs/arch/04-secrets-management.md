@@ -8,7 +8,7 @@ ToolHive provides a secrets management system for securely handling API keys, to
 graph LR
     subgraph "Providers"
         Encrypted[Encrypted Storage<br/>AES-256-GCM]
-        OnePass[1Password CLI]
+        OnePass[1Password SDK]
         Env[Environment Vars]
     end
 
@@ -50,7 +50,8 @@ graph LR
 
 - **Storage**: Environment variables (`TOOLHIVE_SECRET_*`)
 - **Use case**: CI/CD, stateless deployments
-- **Capabilities**: Read-only
+- **Capabilities**: Read-only (ListSecrets explicitly disabled for security)
+- **Security**: Prevents enumeration of all environment variables
 
 **Implementation**: `pkg/secrets/environment.go`
 

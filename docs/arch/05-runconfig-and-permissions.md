@@ -107,16 +107,19 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 #### Environment Variables
 
 **Sources:**
-1. Direct specification: `--env KEY=value`
-2. Environment files: `--env-file path/to/.env`
-3. Environment directory: `--env-file-dir path/to/dir`
-4. Secrets: `--secret name,target=ENV_VAR`
+1. Direct specification via configuration
+2. Environment files
+3. Environment directories
+4. Secret references
 
 **Merge order:**
-1. Base environment from config
-2. Transport-specific vars (`MCP_TRANSPORT`, `MCP_PORT`, etc.)
-3. User-provided environment variables
-4. Secret-derived environment variables
+1. User-provided environment variables
+2. Environment file variables
+3. Environment directory variables
+4. Transport-specific variables (overwrites existing) - `MCP_TRANSPORT`, `MCP_PORT`, etc.
+5. Secret-derived variables (overwrites existing at runtime)
+
+**Architecture reasoning**: User inputs form the base, transport variables overwrite to ensure correct MCP protocol configuration, and secrets overwrite last to guarantee sensitive values take final precedence.
 
 **Format:**
 ```json
@@ -166,7 +169,9 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 
 **Secret providers:**
 - `encrypted`: Encrypted local storage (default)
-- `1password`: 1Password CLI integration
+- `1password`: 1Password SDK integration
+- `environment`: Environment variable provider
+- `none`: No-op provider (for testing)
 
 **Implementation**: `pkg/runner/config.go`, `307-341`
 
@@ -284,23 +289,25 @@ config, err := runner.ReadJSON(reader)
 
 ### Export/Import
 
-**Export:**
-```bash
-thv export my-server > config.json
-```
+RunConfig serialization enables portability across systems and deployment contexts.
 
-**Import:**
-```bash
-thv run --from-config config.json
-```
+**Export architecture:**
+- Serializes complete workload configuration to JSON
+- Includes all runtime parameters, permissions, middleware
+- Excludes secret values (only secret references included)
+
+**Import architecture:**
+- Deserializes JSON to RunConfig struct
+- Validates schema version compatibility
+- Resolves secrets at import time from configured provider
 
 **Use cases:**
-- Share configurations
-- Backup workloads
-- Migration between systems
-- CI/CD pipelines
+- Configuration sharing between environments
+- Workload backup and restore
+- System migration
+- CI/CD automation
 
-**Implementation**: `cmd/thv/app/export.go`
+**Implementation**: `cmd/thv/app/export.go`, `pkg/runner/config.go`
 
 ## Permission Profiles
 
@@ -348,12 +355,13 @@ Three formats supported:
    ```
    Mounts volume `my-data` → `/data` (read-only)
 
-**Windows paths supported:**
-```json
-{"read": ["C:\\Users\\name\\data:C:\\data"]}
-```
+**Windows path handling:**
+- Windows paths allowed as host paths (left side of colon)
+- Windows paths rejected as container paths (right side of colon)
+- Architectural reason: Containers run Linux internally, requiring Linux-style paths
+- Example: `C:\Users\name\data:/data` (Windows host → Linux container path)
 
-**Implementation**: `pkg/permissions/profile.go`, `404`
+**Implementation**: `pkg/permissions/profile.go`
 
 #### Read vs Write
 
@@ -543,7 +551,9 @@ When `isolate_network: true` in RunConfig:
 
 ### Custom Profiles
 
-**Define in JSON file:**
+Custom permission profiles can be defined in JSON files for reusable security policies.
+
+**Profile structure example:**
 
 ```json
 {
@@ -564,10 +574,7 @@ When `isolate_network: true` in RunConfig:
 }
 ```
 
-**Use profile:**
-```bash
-thv run my-server --permission-profile /path/to/profile.json
-```
+**Profile resolution**: Profiles can be referenced by name (built-in), file path (custom), or from registry metadata (server-specific defaults).
 
 **Implementation**: `pkg/permissions/profile.go`
 
@@ -593,26 +600,30 @@ thv run my-server --permission-profile /path/to/profile.json
 
 ### Permission Auditing
 
-**Review RunConfig before running:**
-```bash
-thv export my-server | jq '.permission_profile'
-```
+**Architecture approach:**
+- RunConfig files provide declarative permission specifications
+- Exported configurations can be reviewed before deployment
+- Container runtime APIs expose actual applied permissions
+- Gap between declared and applied permissions indicates security issues
 
-**Check actual mounts:**
-```bash
-docker inspect thv-my-server | jq '.[0].Mounts'
-```
+**Verification points:**
+- Permission profile contents in RunConfig
+- Actual mount points in running containers
+- Network policy enforcement
+- Privilege escalation prevention
+
+**Implementation**: `cmd/thv/app/export.go`, container runtime inspection APIs
 
 ### Network Isolation
 
-**Enable network isolation:**
-```bash
-thv run my-server \
-  --isolate-network \
-  --permission-profile custom-profile.json
-```
+**Architecture pattern:**
+1. RunConfig `isolate_network` flag triggers isolated network creation
+2. Container placed in custom network with no default egress
+3. Egress proxy deployed to enforce permission profile rules
+4. DNS resolution controlled by proxy
+5. Only whitelisted hosts/ports reachable
 
-**Custom profile with whitelist:**
+**Network policy enforcement:**
 ```json
 {
   "network": {
@@ -624,22 +635,25 @@ thv run my-server \
 }
 ```
 
+**Implementation**: `pkg/networking/`, `pkg/permissions/profile.go`
+
 ### Secrets Management
 
-**Never hardcode secrets in RunConfig:**
-```bash
-# ❌ Bad
-thv run my-server --env API_KEY=secret123
+**Architecture principle**: Secrets referenced by name, never embedded in configuration.
 
-# ✅ Good
-thv run my-server --secret api-key,target=API_KEY
-```
+**Secret reference pattern:**
+- RunConfig contains secret name and target environment variable
+- Secret values resolved at runtime from provider
+- No plaintext secrets in serialized RunConfig files
+- Secret changes don't require RunConfig updates
 
-**Secret providers:**
-- Encrypted storage (password-protected)
-- 1Password integration
+**Provider architecture:**
+- **encrypted**: Password-protected local storage (default)
+- **1password**: 1Password SDK integration for enterprise vaults
+- **environment**: CI/CD environment variables
+- **none**: Testing/development no-op provider
 
-**Implementation**: `pkg/secrets/`
+**Implementation**: `pkg/secrets/`, `pkg/runner/config.go`
 
 ## Platform-Specific Considerations
 

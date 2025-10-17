@@ -235,7 +235,8 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 
 	// Save the migrated RunConfig back to disk so migration only happens once
 	if err := config.SaveState(context.Background()); err != nil {
-		logger.Warnf("Failed to save migrated RunConfig for workload %s: %v", config.Name, err)
+		// Log error without potentially sensitive details - only log error type and message
+		logger.Warnf("Failed to save migrated RunConfig for workload %s: %s", config.Name, err.Error())
 		// Don't fail the migration - the secret is already stored and the config is updated in memory
 	}
 

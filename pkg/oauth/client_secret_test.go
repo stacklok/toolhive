@@ -1,11 +1,15 @@
 package oauth
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
 
 func TestGenerateOAuthClientSecretName(t *testing.T) {
@@ -18,8 +22,8 @@ func TestGenerateOAuthClientSecretName(t *testing.T) {
 	}{
 		{
 			name:         "normal workload name",
-			workloadName: "test-workload",
-			expected:     "OAUTH_CLIENT_SECRET_test-workload",
+			workloadName: "my-workload",
+			expected:     "OAUTH_CLIENT_SECRET_my-workload",
 		},
 		{
 			name:         "empty workload name",
@@ -28,13 +32,13 @@ func TestGenerateOAuthClientSecretName(t *testing.T) {
 		},
 		{
 			name:         "workload name with special characters",
-			workloadName: "test-workload-123",
-			expected:     "OAUTH_CLIENT_SECRET_test-workload-123",
+			workloadName: "my_workload-123",
+			expected:     "OAUTH_CLIENT_SECRET_my_workload-123",
 		},
 		{
 			name:         "workload name with underscores",
-			workloadName: "test_workload",
-			expected:     "OAUTH_CLIENT_SECRET_test_workload",
+			workloadName: "another_workload",
+			expected:     "OAUTH_CLIENT_SECRET_another_workload",
 		},
 	}
 
@@ -42,14 +46,12 @@ func TestGenerateOAuthClientSecretName(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-
 			result := generateOAuthClientSecretName(tc.workloadName)
 			assert.Equal(t, tc.expected, result)
 		})
 	}
 }
 
-// TestSecretParameterToCLIString tests the ToCLIString method
 func TestSecretParameterToCLIString(t *testing.T) {
 	t.Parallel()
 
@@ -59,28 +61,19 @@ func TestSecretParameterToCLIString(t *testing.T) {
 		expected string
 	}{
 		{
-			name: "normal secret parameter",
-			param: secrets.SecretParameter{
-				Name:   "SECRET_NAME",
-				Target: "oauth_secret",
-			},
-			expected: "SECRET_NAME,target=oauth_secret",
+			name:     "normal secret parameter",
+			param:    secrets.SecretParameter{Name: "GITHUB_TOKEN", Target: "GITHUB_PERSONAL_ACCESS_TOKEN"},
+			expected: "GITHUB_TOKEN,target=GITHUB_PERSONAL_ACCESS_TOKEN",
 		},
 		{
-			name: "secret parameter with different target",
-			param: secrets.SecretParameter{
-				Name:   "API_KEY",
-				Target: "API_KEY",
-			},
-			expected: "API_KEY,target=API_KEY",
+			name:     "secret parameter with different target",
+			param:    secrets.SecretParameter{Name: "MY_SECRET", Target: "CUSTOM_TARGET"},
+			expected: "MY_SECRET,target=CUSTOM_TARGET",
 		},
 		{
-			name: "secret parameter with special characters",
-			param: secrets.SecretParameter{
-				Name:   "SECRET-NAME-123",
-				Target: "SECRET_TARGET",
-			},
-			expected: "SECRET-NAME-123,target=SECRET_TARGET",
+			name:     "secret parameter with special characters",
+			param:    secrets.SecretParameter{Name: "MY-SECRET_123", Target: "CUSTOM-TARGET_456"},
+			expected: "MY-SECRET_123,target=CUSTOM-TARGET_456",
 		},
 	}
 
@@ -88,69 +81,57 @@ func TestSecretParameterToCLIString(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-
 			result := tc.param.ToCLIString()
 			assert.Equal(t, tc.expected, result)
 		})
 	}
 }
 
-// TestParseSecretParameter tests the ParseSecretParameter function
 func TestParseSecretParameter(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
 		name           string
-		parameter      string
-		expectedResult secrets.SecretParameter
+		input          string
 		expectError    bool
 		errorContains  string
+		expectedResult secrets.SecretParameter
 	}{
 		{
-			name:      "valid CLI format",
-			parameter: "SECRET_NAME,target=oauth_secret",
-			expectedResult: secrets.SecretParameter{
-				Name:   "SECRET_NAME",
-				Target: "oauth_secret",
-			},
-			expectError: false,
+			name:           "valid CLI format",
+			input:          "GITHUB_TOKEN,target=GITHUB_PERSONAL_ACCESS_TOKEN",
+			expectError:    false,
+			expectedResult: secrets.SecretParameter{Name: "GITHUB_TOKEN", Target: "GITHUB_PERSONAL_ACCESS_TOKEN"},
 		},
 		{
-			name:      "valid CLI format with different target",
-			parameter: "API_KEY,target=API_KEY",
-			expectedResult: secrets.SecretParameter{
-				Name:   "API_KEY",
-				Target: "API_KEY",
-			},
-			expectError: false,
+			name:           "valid CLI format with different target",
+			input:          "MY_SECRET,target=CUSTOM_TARGET",
+			expectError:    false,
+			expectedResult: secrets.SecretParameter{Name: "MY_SECRET", Target: "CUSTOM_TARGET"},
 		},
 		{
-			name:           "empty parameter",
-			parameter:      "",
-			expectedResult: secrets.SecretParameter{},
-			expectError:    true,
-			errorContains:  "secret parameter cannot be empty",
+			name:          "empty parameter",
+			input:         "",
+			expectError:   true,
+			errorContains: "secret parameter cannot be empty",
 		},
 		{
-			name:           "invalid format - no target",
-			parameter:      "SECRET_NAME",
-			expectedResult: secrets.SecretParameter{},
-			expectError:    true,
-			errorContains:  "invalid secret parameter format",
+			name:          "invalid format - no target",
+			input:         "GITHUB_TOKEN",
+			expectError:   true,
+			errorContains: "invalid secret parameter format",
 		},
 		{
-			name:           "invalid format - no comma",
-			parameter:      "SECRET_NAME target=oauth_secret",
-			expectedResult: secrets.SecretParameter{},
-			expectError:    true,
-			errorContains:  "invalid secret parameter format",
+			name:          "invalid format - no comma",
+			input:         "GITHUB_TOKENtarget=GITHUB_PERSONAL_ACCESS_TOKEN",
+			expectError:   true,
+			errorContains: "invalid secret parameter format",
 		},
 		{
-			name:           "invalid format - no equals",
-			parameter:      "SECRET_NAME,target oauth_secret",
-			expectedResult: secrets.SecretParameter{},
-			expectError:    true,
-			errorContains:  "invalid secret parameter format",
+			name:          "invalid format - no equals",
+			input:         "GITHUB_TOKEN,targetGITHUB_PERSONAL_ACCESS_TOKEN",
+			expectError:   true,
+			errorContains: "invalid secret parameter format",
 		},
 	}
 
@@ -158,8 +139,7 @@ func TestParseSecretParameter(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-
-			result, err := secrets.ParseSecretParameter(tc.parameter)
+			result, err := secrets.ParseSecretParameter(tc.input)
 
 			if tc.expectError {
 				assert.Error(t, err)
@@ -175,32 +155,224 @@ func TestParseSecretParameter(t *testing.T) {
 	}
 }
 
-// TestProcessOAuthClientSecret tests the main processing function
-// Note: This test is limited to cases that don't require secrets manager setup
-func TestProcessOAuthClientSecret(t *testing.T) {
+// TestGenerateUniqueSecretNameWithProvider tests the testable version with dependency injection
+func TestGenerateUniqueSecretNameWithProvider(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name           string
+		workloadName   string
+		mockSetup      func(*mocks.MockProvider)
+		expectedResult string
+		expectError    bool
+		errorContains  string
+	}{
+		{
+			name:         "base name available",
+			workloadName: "test-workload",
+			mockSetup: func(mock *mocks.MockProvider) {
+				mock.EXPECT().
+					GetSecret(gomock.Any(), "OAUTH_CLIENT_SECRET_test-workload").
+					Return("", errors.New("secret not found"))
+			},
+			expectedResult: "OAUTH_CLIENT_SECRET_test-workload",
+			expectError:    false,
+		},
+		{
+			name:         "base name conflicts, generates unique name",
+			workloadName: "test-workload",
+			mockSetup: func(mock *mocks.MockProvider) {
+				mock.EXPECT().
+					GetSecret(gomock.Any(), "OAUTH_CLIENT_SECRET_test-workload").
+					Return("existing-secret", nil)
+			},
+			expectedResult: "", // Will have timestamp, so we'll check prefix
+			expectError:    false,
+		},
+		{
+			name:         "empty workload name",
+			workloadName: "",
+			mockSetup: func(mock *mocks.MockProvider) {
+				mock.EXPECT().
+					GetSecret(gomock.Any(), "OAUTH_CLIENT_SECRET_").
+					Return("", errors.New("secret not found"))
+			},
+			expectedResult: "OAUTH_CLIENT_SECRET_",
+			expectError:    false,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockProvider := mocks.NewMockProvider(ctrl)
+			tc.mockSetup(mockProvider)
+
+			result, err := GenerateUniqueSecretNameWithProvider(tc.workloadName, mockProvider)
+
+			if tc.expectError {
+				assert.Error(t, err)
+				if tc.errorContains != "" {
+					assert.Contains(t, err.Error(), tc.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+				if tc.expectedResult != "" {
+					assert.Equal(t, tc.expectedResult, result)
+				} else {
+					// For timestamp-based results, just check the prefix
+					assert.Contains(t, result, "OAUTH_CLIENT_SECRET_")
+				}
+			}
+		})
+	}
+}
+
+// TestStoreSecretInManagerWithProvider tests the testable version with dependency injection
+func TestStoreSecretInManagerWithProvider(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name          string
+		secretName    string
+		secretValue   string
+		mockSetup     func(*mocks.MockProvider)
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name:        "successful storage",
+			secretName:  "test-secret",
+			secretValue: "test-value",
+			mockSetup: func(mock *mocks.MockProvider) {
+				mock.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{CanWrite: true})
+				mock.EXPECT().
+					SetSecret(gomock.Any(), "test-secret", "test-value").
+					Return(nil)
+			},
+			expectError: false,
+		},
+		{
+			name:        "provider does not support writing",
+			secretName:  "test-secret",
+			secretValue: "test-value",
+			mockSetup: func(mock *mocks.MockProvider) {
+				mock.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{CanWrite: false})
+			},
+			expectError:   true,
+			errorContains: "does not support writing secrets",
+		},
+		{
+			name:        "storage fails",
+			secretName:  "test-secret",
+			secretValue: "test-value",
+			mockSetup: func(mock *mocks.MockProvider) {
+				mock.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{CanWrite: true})
+				mock.EXPECT().
+					SetSecret(gomock.Any(), "test-secret", "test-value").
+					Return(errors.New("storage failed"))
+			},
+			expectError:   true,
+			errorContains: "failed to store secret",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockProvider := mocks.NewMockProvider(ctrl)
+			tc.mockSetup(mockProvider)
+
+			err := StoreSecretInManagerWithProvider(context.Background(), tc.secretName, tc.secretValue, mockProvider)
+
+			if tc.expectError {
+				assert.Error(t, err)
+				if tc.errorContains != "" {
+					assert.Contains(t, err.Error(), tc.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestProcessOAuthClientSecretWithProvider tests the testable version with dependency injection
+func TestProcessOAuthClientSecretWithProvider(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
 		name           string
 		workloadName   string
 		clientSecret   string
+		mockSetup      func(*mocks.MockProvider)
+		expectedResult string
 		expectError    bool
 		errorContains  string
-		expectedResult string
 	}{
 		{
 			name:           "empty client secret",
 			workloadName:   "test-workload",
 			clientSecret:   "",
-			expectError:    false,
+			mockSetup:      func(mock *mocks.MockProvider) {},
 			expectedResult: "",
+			expectError:    false,
 		},
 		{
 			name:           "already in CLI format",
 			workloadName:   "test-workload",
 			clientSecret:   "EXISTING_SECRET,target=oauth_secret",
-			expectError:    false,
+			mockSetup:      func(mock *mocks.MockProvider) {},
 			expectedResult: "EXISTING_SECRET,target=oauth_secret",
+			expectError:    false,
+		},
+		{
+			name:         "plain text secret - successful conversion",
+			workloadName: "test-workload",
+			clientSecret: "plain-text-secret",
+			mockSetup: func(mock *mocks.MockProvider) {
+				// Mock GenerateUniqueSecretNameWithProvider
+				mock.EXPECT().
+					GetSecret(gomock.Any(), "OAUTH_CLIENT_SECRET_test-workload").
+					Return("", errors.New("secret not found"))
+
+				// Mock StoreSecretInManagerWithProvider
+				mock.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{CanWrite: true})
+				mock.EXPECT().
+					SetSecret(gomock.Any(), "OAUTH_CLIENT_SECRET_test-workload", "plain-text-secret").
+					Return(nil)
+			},
+			expectedResult: "OAUTH_CLIENT_SECRET_test-workload,target=oauth_secret",
+			expectError:    false,
+		},
+		{
+			name:         "plain text secret - storage fails",
+			workloadName: "test-workload",
+			clientSecret: "plain-text-secret",
+			mockSetup: func(mock *mocks.MockProvider) {
+				// Mock GenerateUniqueSecretNameWithProvider
+				mock.EXPECT().
+					GetSecret(gomock.Any(), "OAUTH_CLIENT_SECRET_test-workload").
+					Return("", errors.New("secret not found"))
+
+				// Mock StoreSecretInManagerWithProvider - storage fails
+				mock.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{CanWrite: true})
+				mock.EXPECT().
+					SetSecret(gomock.Any(), "OAUTH_CLIENT_SECRET_test-workload", "plain-text-secret").
+					Return(errors.New("storage failed"))
+			},
+			expectError:   true,
+			errorContains: "failed to store secret in manager",
 		},
 	}
 
@@ -209,74 +381,23 @@ func TestProcessOAuthClientSecret(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := ProcessOAuthClientSecret(tc.workloadName, tc.clientSecret)
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockProvider := mocks.NewMockProvider(ctrl)
+			tc.mockSetup(mockProvider)
+
+			result, err := ProcessOAuthClientSecretWithProvider(tc.workloadName, tc.clientSecret, mockProvider)
 
 			if tc.expectError {
 				assert.Error(t, err)
-				if tc.errorContains != "" && err != nil {
+				if tc.errorContains != "" {
 					assert.Contains(t, err.Error(), tc.errorContains)
 				}
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tc.expectedResult, result)
 			}
-		})
-	}
-}
-
-// TestGenerateUniqueSecretName_Uniqueness tests uniqueness of generated names
-func TestGenerateUniqueSecretName_Uniqueness(t *testing.T) {
-	t.Parallel()
-
-	// Test that the function generates unique names when conflicts exist
-	workloadName := "test-workload"
-
-	// Generate multiple base names and verify they follow the expected pattern
-	for i := 0; i < 3; i++ {
-		baseName := generateOAuthClientSecretName(workloadName)
-		expectedPrefix := "OAUTH_CLIENT_SECRET_" + workloadName
-		assert.Equal(t, expectedPrefix, baseName)
-	}
-}
-
-// TestGenerateUniqueSecretName_SpecialCharacters tests various workload name formats
-func TestGenerateUniqueSecretName_SpecialCharacters(t *testing.T) {
-	t.Parallel()
-
-	testCases := []struct {
-		name         string
-		workloadName string
-		expected     string
-	}{
-		{
-			name:         "with hyphens",
-			workloadName: "test-workload-123",
-			expected:     "OAUTH_CLIENT_SECRET_test-workload-123",
-		},
-		{
-			name:         "with underscores",
-			workloadName: "test_workload_123",
-			expected:     "OAUTH_CLIENT_SECRET_test_workload_123",
-		},
-		{
-			name:         "with numbers",
-			workloadName: "workload123",
-			expected:     "OAUTH_CLIENT_SECRET_workload123",
-		},
-		{
-			name:         "with mixed characters",
-			workloadName: "test-workload_123",
-			expected:     "OAUTH_CLIENT_SECRET_test-workload_123",
-		},
-	}
-
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			result := generateOAuthClientSecretName(tc.workloadName)
-			assert.Equal(t, tc.expected, result)
 		})
 	}
 }

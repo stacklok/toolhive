@@ -3,6 +3,7 @@ package oauth
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"time"
 
@@ -12,6 +13,16 @@ import (
 
 // ProcessOAuthClientSecret processes an OAuth client secret, converting plain text to CLI format if needed
 func ProcessOAuthClientSecret(workloadName, clientSecret string) (string, error) {
+	secretManager, err := getSecretsManager()
+	if err != nil {
+		return "", fmt.Errorf("failed to get secrets manager: %w", err)
+	}
+	return ProcessOAuthClientSecretWithProvider(workloadName, clientSecret, secretManager)
+}
+
+// ProcessOAuthClientSecretWithProvider processes an OAuth client secret using the provided secret manager
+// This version is testable with dependency injection
+func ProcessOAuthClientSecretWithProvider(workloadName, clientSecret string, secretManager secrets.Provider) (string, error) {
 	if clientSecret == "" {
 		return "", nil
 	}
@@ -22,13 +33,13 @@ func ProcessOAuthClientSecret(workloadName, clientSecret string) (string, error)
 	}
 
 	// It's plain text - convert to CLI format
-	secretName, err := GenerateUniqueSecretName(workloadName)
+	secretName, err := GenerateUniqueSecretNameWithProvider(workloadName, secretManager)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate unique secret name: %w", err)
 	}
 
 	// Store the secret in the secret manager
-	if err := StoreSecretInManager(context.Background(), secretName, clientSecret); err != nil {
+	if err := StoreSecretInManagerWithProvider(context.Background(), secretName, clientSecret, secretManager); err != nil {
 		return "", fmt.Errorf("failed to store secret in manager: %w", err)
 	}
 
@@ -44,38 +55,47 @@ func generateOAuthClientSecretName(workloadName string) string {
 // GenerateUniqueSecretName generates a unique secret name for an OAuth client secret
 // It handles both name generation and uniqueness checking in a single function
 func GenerateUniqueSecretName(workloadName string) (string, error) {
-	// Generate base name
-	baseName := generateOAuthClientSecretName(workloadName)
-
-	// Get the secrets manager to check for existing secrets
 	secretManager, err := getSecretsManager()
 	if err != nil {
 		return "", fmt.Errorf("failed to get secrets manager: %w", err)
 	}
+	return GenerateUniqueSecretNameWithProvider(workloadName, secretManager)
+}
+
+// GenerateUniqueSecretNameWithProvider generates a unique secret name using the provided secret manager
+// This version is testable with dependency injection
+func GenerateUniqueSecretNameWithProvider(workloadName string, secretManager secrets.Provider) (string, error) {
+	// Generate base name
+	baseName := generateOAuthClientSecretName(workloadName)
 
 	// Check if the base name is available
-	_, err = secretManager.GetSecret(context.Background(), baseName)
+	_, err := secretManager.GetSecret(context.Background(), baseName)
 	if err != nil {
 		// Secret doesn't exist, we can use the base name
 		return baseName, nil
 	}
 
 	// Secret exists, generate a unique name with timestamp
-	// Second precision is sufficient for OAuth client secret generation
-	// as workload creation is not a high-frequency concurrent operation
-	timestamp := time.Now().Unix()
-	uniqueName := fmt.Sprintf("%s_%d", baseName, timestamp)
+	// Use nanosecond precision + random suffix for collision resistance
+	timestamp := time.Now().UnixNano()
+	randomSuffix := make([]byte, 4)
+	rand.Read(randomSuffix)
+	uniqueName := fmt.Sprintf("%s_%d_%x", baseName, timestamp, randomSuffix)
 	return uniqueName, nil
 }
 
 // StoreSecretInManager stores a secret in the configured secret manager
 func StoreSecretInManager(ctx context.Context, secretName, secretValue string) error {
-	// Use existing getSecretsManager function from secret.go
 	secretManager, err := getSecretsManager()
 	if err != nil {
 		return fmt.Errorf("failed to get secrets manager: %w", err)
 	}
+	return StoreSecretInManagerWithProvider(ctx, secretName, secretValue, secretManager)
+}
 
+// StoreSecretInManagerWithProvider stores a secret using the provided secret manager
+// This version is testable with dependency injection
+func StoreSecretInManagerWithProvider(ctx context.Context, secretName, secretValue string, secretManager secrets.Provider) error {
 	// Check if the provider supports writing secrets
 	if !secretManager.Capabilities().CanWrite {
 		configProvider := config.NewDefaultProvider()

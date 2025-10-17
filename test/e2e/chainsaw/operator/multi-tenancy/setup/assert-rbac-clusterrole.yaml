@@ -118,7 +118,6 @@ rules:
   resources:
   - mcpexternalauthconfigs/finalizers
   - mcpregistries/finalizers
-  - mcpremoteproxies/finalizers
   - mcpservers/finalizers
   - mcptoolconfigs/finalizers
   verbs:

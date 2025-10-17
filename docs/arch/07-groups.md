@@ -52,7 +52,7 @@ graph TB
 
 ### Group Operations
 
-Groups support standard lifecycle operations: create, list, and remove. Workloads can be assigned to groups at creation time or moved between groups. When removing a group, workloads are by default moved to the `default` group rather than deleted.
+Groups support standard lifecycle operations: create, list, and remove. Workloads can be assigned to groups at creation time using the `--group` flag. Moving workloads between groups is currently only supported internally (e.g., when removing a group) and is not exposed as a user-facing CLI command. When removing a group, workloads are by default moved to the `default` group rather than deleted.
 
 **Implementation**:
 - CLI commands: `cmd/thv/app/group.go`
@@ -72,6 +72,8 @@ Registry groups are predefined collections of servers that can be deployed toget
 **Implementation**: `pkg/registry/types.go`
 
 **Use case**: Deploy complete stacks (e.g., a full data processing pipeline) with a single command, ensuring all required components are available together.
+
+**Note**: The default registry currently contains no predefined groups. This feature is available for custom registries or future additions to the default registry.
 
 ## Client Configuration Integration
 
@@ -119,7 +121,7 @@ Groups provide a logical boundary for client configuration. The client manager c
 
 Groups serve as the foundation for upcoming features:
 
-- **Virtual MCP Servers**: Aggregate group into single interface (proposal in PR #2106)
+- **Virtual MCP Servers**: Aggregate multiple servers in a group into a single unified interface (proposed, under consideration)
 - **Group-level policies**: Apply authorization at group level
 - **Group metrics**: Aggregate telemetry from all group members
 - **Group health**: Overall health status of group

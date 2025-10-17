@@ -54,7 +54,7 @@ thv run my-server
 
 Saves state → forks process → returns immediately → child runs in background
 
-**Implementation**: `pkg/workloads/manager.go`, `357`
+**Implementation**: `pkg/workloads/manager.go`
 
 ### Stop
 
@@ -66,7 +66,7 @@ thv stop my-server
 
 **Remote workload**: Stops proxy → preserves state
 
-**Implementation**: `pkg/workloads/manager.go`, `242`, `288`
+**Implementation**: `pkg/workloads/manager.go`
 
 ### Restart
 
@@ -76,7 +76,7 @@ thv restart my-server
 
 Loads state → verifies not running → starts workload with saved config
 
-**Implementation**: `pkg/workloads/manager.go`, `747`
+**Implementation**: `pkg/workloads/manager.go`
 
 ### Delete
 
@@ -88,7 +88,7 @@ thv rm my-server
 
 **Remote workload**: Stops proxy → deletes state
 
-**Implementation**: `pkg/workloads/manager.go`, `488`, `515`
+**Implementation**: `pkg/workloads/manager.go`
 
 ### Update
 
@@ -98,7 +98,7 @@ thv update my-server --image new-version:v2
 
 Stop → delete → save new config → start
 
-**Implementation**: `pkg/workloads/manager.go`, `710`
+**Implementation**: `pkg/workloads/manager.go`
 
 ### List
 
@@ -151,24 +151,27 @@ All three stopped in parallel, result aggregated.
 
 **Detection**: `RunConfig.RemoteURL != ""`
 
-**Implementation**: Logic in `pkg/workloads/manager.go-286`, `465-512`, `747-798`
+**Implementation**: `pkg/workloads/manager.go`
 
 ## State Management
 
 ### Storage Locations
 
 **RunConfig state:**
-- Path: `~/.local/state/toolhive/state/<name>.json`
+- Path: `$XDG_STATE_HOME/toolhive/runconfigs/<name>.json`
+- Default: `~/.local/state/toolhive/runconfigs/<name>.json`
 - Contains: Full RunConfig
 - Used for: Restart, export
 
 **Status file:**
-- Path: `~/.local/state/toolhive/status/<name>.json`
+- Path: `$XDG_DATA_HOME/toolhive/statuses/<name>.json`
+- Default: `~/.local/share/toolhive/statuses/<name>.json`
 - Contains: Status, PID, timestamps
 - Used for: List, monitoring
 
 **PID file** (container workloads only):
-- Path: `~/.local/state/toolhive/pids/<name>.pid`
+- Path: `$XDG_DATA_HOME/toolhive/pids/toolhive-<name>.pid`
+- Default: `~/.local/share/toolhive/pids/toolhive-<name>.pid`
 - Contains: Proxy process PID
 - Used for: Stop operation
 
@@ -189,10 +192,10 @@ Provides atomic status updates:
 ### Standard Labels
 
 Automatically added:
-- `toolhive.stacklok.com/name`
-- `toolhive.stacklok.com/base-name`
-- `toolhive.stacklok.com/transport`
-- `toolhive.stacklok.com/port`
+- `toolhive-name`
+- `toolhive-basename`
+- `toolhive-transport`
+- `toolhive-port`
 
 **Implementation**: `pkg/labels/`, `pkg/runner/config.go`
 

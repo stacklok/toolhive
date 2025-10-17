@@ -52,63 +52,37 @@ graph TB
 
 ### Group Operations
 
-**Create group by adding workloads:**
-```bash
-thv run server1 --group data-pipeline
-thv run server2 --group data-pipeline
-```
+Groups support standard lifecycle operations: create, list, and remove. Workloads can be assigned to groups at creation time or moved between groups. When removing a group, workloads are by default moved to the `default` group rather than deleted.
 
-**List all groups:**
-```bash
-thv group list
-```
-
-**List workloads in group:**
-```bash
-thv group list data-pipeline
-```
-
-**Delete group:**
-```bash
-thv group rm data-pipeline
-```
-
-**Implementation**: `cmd/thv/app/group.go`, `pkg/groups/`, `pkg/workloads/manager.go`
+**Implementation**:
+- CLI commands: `cmd/thv/app/group.go`
+- Group manager: `pkg/groups/`
+- Workload integration: `pkg/workloads/manager.go`
 
 ## Registry Groups
 
-Registry can define predefined groups:
+Registry groups are predefined collections of servers that can be deployed together as a unit. These groups are defined in the registry schema and support both container-based and remote MCP servers.
+
+**Architecture:**
+- Registry groups are defined in the registry schema alongside individual servers
+- Groups can contain heterogeneous workload types (containers + remote servers)
+- Group deployment creates a runtime group with all member servers
+- Each server maintains its individual identity and configuration
 
 **Implementation**: `pkg/registry/types.go`
 
-```json
-{
-  "groups": [{
-    "name": "data-pipeline",
-    "description": "Complete data processing pipeline",
-    "servers": {
-      "data-reader": { /* ImageMetadata */ },
-      "data-processor": { /* ImageMetadata */ }
-    },
-    "remote_servers": {
-      "data-warehouse": { /* RemoteServerMetadata */ }
-    }
-  }]
-}
-```
+**Use case**: Deploy complete stacks (e.g., a full data processing pipeline) with a single command, ensuring all required components are available together.
 
-**Deploy entire group:**
-```bash
-thv group run data-pipeline
-```
+## Client Configuration Integration
 
-This starts all servers defined in the registry group.
+Groups provide a logical boundary for client configuration. The client manager can configure MCP clients with all servers belonging to a specific group, simplifying setup when multiple related servers need to be available to a client.
 
-## Client Configuration
+**Architecture:**
+- Client manager reads group membership from workload metadata
+- All servers in a group can be added to client configuration as a unit
+- Group membership is maintained in client configuration for organizational purposes
 
-Groups simplify client setup. The `thv client setup` command is interactive and allows configuring clients with workloads from specific groups.
-
-**Implementation**: Client manager reads group membership and configures all servers
+**Implementation**: `pkg/client/`
 
 ## Use Cases
 

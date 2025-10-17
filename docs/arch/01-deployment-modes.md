@@ -461,7 +461,7 @@ This allows the same codebase to behave appropriately in different environments.
 
 ### Local → Kubernetes
 
-1. Export RunConfig: `thv export my-server > runconfig.json`
+1. Export RunConfig: `thv export my-server runconfig.json`
 2. Convert to MCPServer CRD (manual or tool-assisted)
 3. Apply to cluster: `kubectl apply -f mcpserver.yaml`
 

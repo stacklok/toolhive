@@ -106,6 +106,7 @@ signs:
       - "sign-blob"
       - "--output-signature=${signature}"
       - "--output-certificate=${certificate}"
+      - "--bundle=${signature}" # added for cosign v3: required when using --output-signature or --signing-config
       - "${artifact}"
       - "--yes" # needed on cosign 2.0.0+
     artifacts: archive

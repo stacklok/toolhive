@@ -61,6 +61,8 @@ func GenerateUniqueSecretName(workloadName string) (string, error) {
 	}
 
 	// Secret exists, generate a unique name with timestamp
+	// Second precision is sufficient for OAuth client secret generation
+	// as workload creation is not a high-frequency concurrent operation
 	timestamp := time.Now().Unix()
 	uniqueName := fmt.Sprintf("%s_%d", baseName, timestamp)
 	return uniqueName, nil

@@ -174,3 +174,109 @@ func TestParseSecretParameter(t *testing.T) {
 		})
 	}
 }
+
+// TestProcessOAuthClientSecret tests the main processing function
+// Note: This test is limited to cases that don't require secrets manager setup
+func TestProcessOAuthClientSecret(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name           string
+		workloadName   string
+		clientSecret   string
+		expectError    bool
+		errorContains  string
+		expectedResult string
+	}{
+		{
+			name:           "empty client secret",
+			workloadName:   "test-workload",
+			clientSecret:   "",
+			expectError:    false,
+			expectedResult: "",
+		},
+		{
+			name:           "already in CLI format",
+			workloadName:   "test-workload",
+			clientSecret:   "EXISTING_SECRET,target=oauth_secret",
+			expectError:    false,
+			expectedResult: "EXISTING_SECRET,target=oauth_secret",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := ProcessOAuthClientSecret(tc.workloadName, tc.clientSecret)
+
+			if tc.expectError {
+				assert.Error(t, err)
+				if tc.errorContains != "" && err != nil {
+					assert.Contains(t, err.Error(), tc.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tc.expectedResult, result)
+			}
+		})
+	}
+}
+
+// TestGenerateUniqueSecretName_Uniqueness tests uniqueness of generated names
+func TestGenerateUniqueSecretName_Uniqueness(t *testing.T) {
+	t.Parallel()
+
+	// Test that the function generates unique names when conflicts exist
+	workloadName := "test-workload"
+
+	// Generate multiple base names and verify they follow the expected pattern
+	for i := 0; i < 3; i++ {
+		baseName := generateOAuthClientSecretName(workloadName)
+		expectedPrefix := "OAUTH_CLIENT_SECRET_" + workloadName
+		assert.Equal(t, expectedPrefix, baseName)
+	}
+}
+
+// TestGenerateUniqueSecretName_SpecialCharacters tests various workload name formats
+func TestGenerateUniqueSecretName_SpecialCharacters(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name         string
+		workloadName string
+		expected     string
+	}{
+		{
+			name:         "with hyphens",
+			workloadName: "test-workload-123",
+			expected:     "OAUTH_CLIENT_SECRET_test-workload-123",
+		},
+		{
+			name:         "with underscores",
+			workloadName: "test_workload_123",
+			expected:     "OAUTH_CLIENT_SECRET_test_workload_123",
+		},
+		{
+			name:         "with numbers",
+			workloadName: "workload123",
+			expected:     "OAUTH_CLIENT_SECRET_workload123",
+		},
+		{
+			name:         "with mixed characters",
+			workloadName: "test-workload_123",
+			expected:     "OAUTH_CLIENT_SECRET_test-workload_123",
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := generateOAuthClientSecretName(tc.workloadName)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}

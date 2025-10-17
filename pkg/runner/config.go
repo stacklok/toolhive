@@ -206,8 +206,7 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 
 	// Migrate plain text OAuth client secrets to CLI format
 	if err := migrateOAuthClientSecret(&config); err != nil {
-		logger.Warnf("Failed to migrate OAuth client secret for workload %s: %v", config.Name, err)
-		// Don't fail the load - just log the warning and continue
+		return nil, fmt.Errorf("failed to migrate OAuth client secret: %w", err)
 	}
 
 	return &config, nil
@@ -527,6 +526,7 @@ func (r *RemoteAuthConfig) UnmarshalJSON(data []byte) error {
 	}
 
 	// Check if this is the old PascalCase format by looking for old field name
+	// if one old field is present, then it's the old format
 	if _, isOld := raw["ClientID"]; isOld {
 		// Unmarshal using old PascalCase format
 		var oldFormat struct {

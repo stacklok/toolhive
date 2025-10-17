@@ -20,9 +20,11 @@ import (
 	"sigs.k8s.io/yaml"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/runner"
+	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 const (
@@ -526,4 +528,137 @@ func AddAuthzConfigOptions(
 		// Unknown type
 		return fmt.Errorf("unknown authz config type: %s", authzRef.Type)
 	}
+}
+
+// AddExternalAuthConfigOptions adds external authentication configuration options to builder options
+// This creates middleware configuration for token exchange and is shared between MCPServer and MCPRemoteProxy
+func AddExternalAuthConfigOptions(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	if externalAuthConfigRef == nil {
+		return nil
+	}
+
+	// Fetch the MCPExternalAuthConfig
+	externalAuthConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, externalAuthConfigRef.Name)
+	if err != nil {
+		return fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
+	}
+
+	// Only token exchange type is supported currently
+	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeTokenExchange {
+		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
+	}
+
+	tokenExchangeSpec := externalAuthConfig.Spec.TokenExchange
+	if tokenExchangeSpec == nil {
+		return fmt.Errorf("token exchange configuration is nil for type tokenExchange")
+	}
+
+	// Validate that the referenced Kubernetes secret exists
+	var secret corev1.Secret
+	if err := c.Get(ctx, types.NamespacedName{
+		Namespace: namespace,
+		Name:      tokenExchangeSpec.ClientSecretRef.Name,
+	}, &secret); err != nil {
+		return fmt.Errorf("failed to get client secret %s/%s: %w",
+			namespace, tokenExchangeSpec.ClientSecretRef.Name, err)
+	}
+
+	if _, ok := secret.Data[tokenExchangeSpec.ClientSecretRef.Key]; !ok {
+		return fmt.Errorf("client secret %s/%s is missing key %q",
+			namespace, tokenExchangeSpec.ClientSecretRef.Name, tokenExchangeSpec.ClientSecretRef.Key)
+	}
+
+	// Use scopes array directly from spec
+	scopes := tokenExchangeSpec.Scopes
+
+	// Determine header strategy based on ExternalTokenHeaderName
+	headerStrategy := "replace" // Default strategy
+	if tokenExchangeSpec.ExternalTokenHeaderName != "" {
+		headerStrategy = "custom"
+	}
+
+	// Build token exchange middleware configuration
+	// Client secret is provided via TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET environment variable
+	// to avoid embedding plaintext secrets in the ConfigMap
+	tokenExchangeConfig := map[string]interface{}{
+		"token_url": tokenExchangeSpec.TokenURL,
+		"client_id": tokenExchangeSpec.ClientID,
+		"audience":  tokenExchangeSpec.Audience,
+	}
+
+	if len(scopes) > 0 {
+		tokenExchangeConfig["scopes"] = scopes
+	}
+
+	if headerStrategy != "" {
+		tokenExchangeConfig["header_strategy"] = headerStrategy
+	}
+
+	if tokenExchangeSpec.ExternalTokenHeaderName != "" {
+		tokenExchangeConfig["external_token_header_name"] = tokenExchangeSpec.ExternalTokenHeaderName
+	}
+
+	// Create middleware parameters
+	middlewareParams := map[string]interface{}{
+		"token_exchange_config": tokenExchangeConfig,
+	}
+
+	// Marshal parameters to JSON
+	paramsJSON, err := json.Marshal(middlewareParams)
+	if err != nil {
+		return fmt.Errorf("failed to marshal token exchange middleware parameters: %w", err)
+	}
+
+	// Create middleware config
+	middlewareConfig := transporttypes.MiddlewareConfig{
+		Type:       "tokenexchange",
+		Parameters: json.RawMessage(paramsJSON),
+	}
+
+	// Add to options using the WithMiddlewareConfig builder option
+	*options = append(*options, runner.WithMiddlewareConfig([]transporttypes.MiddlewareConfig{middlewareConfig}))
+
+	return nil
+}
+
+// AddOIDCConfigOptions adds OIDC authentication configuration options to builder options
+// This is shared between MCPServer and MCPRemoteProxy and uses the OIDC resolver
+func AddOIDCConfigOptions(
+	ctx context.Context,
+	c client.Client,
+	resource oidc.OIDCConfigurable,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	// Use the OIDC resolver to get configuration
+	resolver := oidc.NewResolver(c)
+	oidcConfig, err := resolver.Resolve(ctx, resource)
+	if err != nil {
+		return fmt.Errorf("failed to resolve OIDC configuration: %w", err)
+	}
+
+	if oidcConfig == nil {
+		return nil
+	}
+
+	// Add OIDC config to options
+	*options = append(*options, runner.WithOIDCConfig(
+		oidcConfig.Issuer,
+		oidcConfig.Audience,
+		oidcConfig.JWKSURL,
+		oidcConfig.IntrospectionURL,
+		oidcConfig.ClientID,
+		oidcConfig.ClientSecret,
+		oidcConfig.ThvCABundlePath,
+		oidcConfig.JWKSAuthTokenPath,
+		oidcConfig.ResourceURL,
+		oidcConfig.JWKSAllowPrivateIP,
+	))
+
+	return nil
 }

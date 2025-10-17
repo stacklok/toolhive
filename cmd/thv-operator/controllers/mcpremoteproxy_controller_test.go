@@ -590,7 +590,7 @@ func TestEnsureRBACResources(t *testing.T) {
 		Namespace: proxy.Namespace,
 	}, role)
 	assert.NoError(t, err)
-	assert.Equal(t, defaultRBACRules, role.Rules)
+	assert.Equal(t, remoteProxyRBACRules, role.Rules)
 
 	// Verify RoleBinding
 	rb := &rbacv1.RoleBinding{}

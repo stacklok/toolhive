@@ -339,14 +339,15 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
 	proxyRunnerNameForRBAC := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
 
-	// Ensure Role (same RBAC rules as MCPServer)
+	// Ensure Role with minimal permissions for remote proxies
+	// Remote proxies only need ConfigMap and Secret read access (no StatefulSet/Pod management)
 	if err := EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "Role", func() client.Object {
 		return &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      proxyRunnerNameForRBAC,
 				Namespace: proxy.Namespace,
 			},
-			Rules: defaultRBACRules,
+			Rules: remoteProxyRBACRules,
 		}
 	}); err != nil {
 		return err

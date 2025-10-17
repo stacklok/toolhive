@@ -14,7 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	configMapChecksum "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -180,17 +179,17 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()
 
-	if err := r.addAuthzConfigOptionsForRemoteProxy(ctx, proxy, &options); err != nil {
+	if err := AddAuthzConfigOptions(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig, &options); err != nil {
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
 	// Add OIDC configuration (required for proxy mode)
-	if err := r.addOIDCConfigOptionsForRemoteProxy(ctx, &options, proxy); err != nil {
+	if err := AddOIDCConfigOptions(ctx, r.Client, proxy, &options); err != nil {
 		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
 	}
 
 	// Add external auth configuration if specified
-	if err := r.addExternalAuthConfigOptionsForRemoteProxy(ctx, proxy, &options); err != nil {
+	if err := AddExternalAuthConfigOptions(ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef, &options); err != nil {
 		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
 	}
 
@@ -207,130 +206,6 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		nil,
 		options...,
 	)
-}
-
-// addAuthzConfigOptionsForRemoteProxy adds authorization configuration options for remote proxy
-func (r *MCPRemoteProxyReconciler) addAuthzConfigOptionsForRemoteProxy(
-	ctx context.Context,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
-	options *[]runner.RunConfigBuilderOption,
-) error {
-	return AddAuthzConfigOptions(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig, options)
-}
-
-// addOIDCConfigOptionsForRemoteProxy adds OIDC authentication configuration options for remote proxy
-func (r *MCPRemoteProxyReconciler) addOIDCConfigOptionsForRemoteProxy(
-	ctx context.Context,
-	options *[]runner.RunConfigBuilderOption,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
-) error {
-	resolver := oidc.NewResolver(r.Client)
-	oidcConfig, err := resolver.Resolve(ctx, proxy)
-	if err != nil {
-		return fmt.Errorf("failed to resolve OIDC configuration: %w", err)
-	}
-
-	if oidcConfig == nil {
-		return nil
-	}
-
-	*options = append(*options, runner.WithOIDCConfig(
-		oidcConfig.Issuer,
-		oidcConfig.Audience,
-		oidcConfig.JWKSURL,
-		oidcConfig.IntrospectionURL,
-		oidcConfig.ClientID,
-		oidcConfig.ClientSecret,
-		oidcConfig.ThvCABundlePath,
-		oidcConfig.JWKSAuthTokenPath,
-		oidcConfig.ResourceURL,
-		oidcConfig.JWKSAllowPrivateIP,
-	))
-
-	return nil
-}
-
-// addExternalAuthConfigOptionsForRemoteProxy adds external authentication configuration for remote proxy
-func (r *MCPRemoteProxyReconciler) addExternalAuthConfigOptionsForRemoteProxy(
-	ctx context.Context,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
-	options *[]runner.RunConfigBuilderOption,
-) error {
-	if proxy.Spec.ExternalAuthConfigRef == nil {
-		return nil
-	}
-
-	externalAuthConfig, err := GetExternalAuthConfigForMCPRemoteProxy(ctx, r.Client, proxy)
-	if err != nil {
-		return fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
-	}
-
-	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeTokenExchange {
-		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
-	}
-
-	tokenExchangeSpec := externalAuthConfig.Spec.TokenExchange
-	if tokenExchangeSpec == nil {
-		return fmt.Errorf("token exchange configuration is nil for type tokenExchange")
-	}
-
-	// Validate that the referenced Kubernetes secret exists
-	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{
-		Namespace: proxy.Namespace,
-		Name:      tokenExchangeSpec.ClientSecretRef.Name,
-	}, &secret); err != nil {
-		return fmt.Errorf("failed to get client secret %s/%s: %w",
-			proxy.Namespace, tokenExchangeSpec.ClientSecretRef.Name, err)
-	}
-
-	if _, ok := secret.Data[tokenExchangeSpec.ClientSecretRef.Key]; !ok {
-		return fmt.Errorf("client secret %s/%s is missing key %q",
-			proxy.Namespace, tokenExchangeSpec.ClientSecretRef.Name, tokenExchangeSpec.ClientSecretRef.Key)
-	}
-
-	scopes := tokenExchangeSpec.Scopes
-
-	headerStrategy := "replace"
-	if tokenExchangeSpec.ExternalTokenHeaderName != "" {
-		headerStrategy = "custom"
-	}
-
-	tokenExchangeConfig := map[string]interface{}{
-		"token_url": tokenExchangeSpec.TokenURL,
-		"client_id": tokenExchangeSpec.ClientID,
-		"audience":  tokenExchangeSpec.Audience,
-	}
-
-	if len(scopes) > 0 {
-		tokenExchangeConfig["scopes"] = scopes
-	}
-
-	if headerStrategy != "" {
-		tokenExchangeConfig["header_strategy"] = headerStrategy
-	}
-
-	if tokenExchangeSpec.ExternalTokenHeaderName != "" {
-		tokenExchangeConfig["external_token_header_name"] = tokenExchangeSpec.ExternalTokenHeaderName
-	}
-
-	middlewareParams := map[string]interface{}{
-		"token_exchange_config": tokenExchangeConfig,
-	}
-
-	paramsJSON, err := json.Marshal(middlewareParams)
-	if err != nil {
-		return fmt.Errorf("failed to marshal token exchange middleware parameters: %w", err)
-	}
-
-	middlewareConfig := transporttypes.MiddlewareConfig{
-		Type:       "tokenexchange",
-		Parameters: json.RawMessage(paramsJSON),
-	}
-
-	*options = append(*options, runner.WithMiddlewareConfig([]transporttypes.MiddlewareConfig{middlewareConfig}))
-
-	return nil
 }
 
 // validateRunConfigForRemoteProxy validates a RunConfig for remote proxy deployments

@@ -188,19 +188,10 @@ ToolHive uses two different proxy implementations:
 
 ### Proxy Mode Selection (Stdio Transport)
 
-When using stdio transport, choose the HTTP protocol for clients:
+When stdio transport is selected, the proxy mode determines which HTTP protocol clients use to communicate:
 
-**SSE Mode** (default for backward compatibility):
-```bash
-thv run --transport stdio my-server
-# or explicitly
-thv run --transport stdio --proxy-mode sse my-server
-```
-
-**Streamable HTTP Mode**:
-```bash
-thv run --transport stdio --proxy-mode streamable-http my-server
-```
+- **SSE Mode**: Default for backward compatibility, provides SSE endpoints for clients
+- **Streamable HTTP Mode**: Modern streaming protocol following MCP specification
 
 **Implementation:**
 - `pkg/runner/config.go` - ProxyMode configuration
@@ -270,11 +261,9 @@ graph TB
 
 ### How Remote Proxying Works
 
-**Running a remote MCP server:**
+**Remote server architecture:**
 
-```bash
-thv run https://mcp.example.com/sse --name my-remote-server
-```
+When a remote URL is configured in RunConfig:
 
 **What happens:**
 
@@ -293,28 +282,20 @@ thv run https://mcp.example.com/sse --name my-remote-server
 
 ### Remote Authentication
 
-Remote MCP servers can require OAuth 2.0 authentication:
+Remote MCP servers can require OAuth 2.0 authentication. The architecture uses:
 
-```bash
-thv run https://mcp.example.com \
-  --name my-remote-server \
-  --remote-auth-client-id <client-id> \
-  --remote-auth-client-secret <client-secret> \
-  --remote-auth-scopes "read write" \
-  --remote-auth-issuer https://auth.example.com
-```
-
-**What happens:**
+**Token management pattern:**
 
 1. **OAuth flow initiated** - Authorization code or device flow
-2. **Access token obtained** - Token encrypted and stored using the secrets provider (AES-256-GCM with password in OS keyring)
-3. **Token injection middleware** - Created via `pkg/transport/http.go`
-4. **Token added to requests** - Bearer token injected into Authorization header
-5. **Token refresh** - Automatic refresh using refresh token
+2. **TokenSource pattern** - Access tokens managed in-memory by `oauth2.ReuseTokenSource`
+3. **Automatic refresh** - Tokens refreshed on-demand using refresh tokens (not persisted)
+4. **Token injection middleware** - Bearer token added to Authorization header
+5. **Client credentials storage** - Only OAuth client secrets stored in secrets provider (not access tokens)
 
 **Implementation:**
 - `pkg/runner/config.go` - `RemoteAuthConfig` struct
 - `pkg/transport/http.go` - `SetTokenSource` method
+- `pkg/auth/oauth/flow.go` - OAuth flow and TokenSource creation
 
 ### Remote vs Container Workloads
 
@@ -370,52 +351,48 @@ For complete CRD examples, see [`examples/operator/mcp-servers/`](../../examples
 
 ## Port Management
 
-### Host Port Selection
+### Port Architecture
 
 **Implementation**: `pkg/runner/config.go`
 
-ToolHive assigns ports as follows:
+ToolHive uses two port concepts:
 
-1. **User-specified port**: If `--port` provided, verify availability
-2. **Random port**: If not specified, find available port
-3. **Validation**: In CLI mode, check port availability before use
-4. **No validation in K8s**: Ports are container ports, not host ports
+1. **Proxy Port (Host Port)**: Port where the proxy listens for client connections
+   - User-specified or auto-assigned from available ports
+   - Validated for availability in CLI mode
+   - In Kubernetes: ClusterIP or LoadBalancer port
 
-**Port conflicts**:
-- If requested port unavailable, error returned (no fallback)
-- Use `--port 0` to request random available port
+2. **Target Port (Container Port)**: Port where MCP server listens inside container
+   - Specified by container image or runtime configuration
+   - For SSE/Streamable HTTP transports only
+   - Port mapping: ProxyPort (host) → TargetPort (container)
 
-### Target Port (SSE/Streamable HTTP)
-
-For SSE and Streamable HTTP transports:
-
-- **ProxyPort (HostPort)**: Port where proxy listens (host)
-- **TargetPort (ContainerPort)**: Port where MCP server listens (container)
-
-**Example:**
-```bash
-thv run --transport sse --port 8080 --target-port 3000 my-server
-```
-
-Result:
-- Proxy listens on host port 8080
-- Container exposes port 3000
-- Port mapping: 8080 (host) → 3000 (container)
+**Port assignment strategy:**
+- If port specified in config, verify availability (CLI mode only)
+- If not specified, find available port dynamically
+- Random port selection: Request port 0 to get next available
+- Kubernetes mode: No host port validation (uses service abstraction)
 
 ### MCP Environment Variables
 
 **Implementation**: `pkg/transport/http.go`
 
-Environment variables set automatically:
+Environment variables set automatically for container configuration:
 
 - `MCP_TRANSPORT`: Transport type (stdio, sse, streamable-http)
 - `MCP_PORT`: Target port (for SSE/Streamable HTTP)
-- `MCP_HOST`: Target host (usually 0.0.0.0 for containers)
+- `MCP_HOST`: Target host for binding
+  - Local deployment: `127.0.0.1` (default for container communication)
+  - Kubernetes: `0.0.0.0` (bind all interfaces for cluster networking)
 - `FASTMCP_PORT`: Alias for `MCP_PORT` (legacy support)
+
+**Architecture distinction:**
+- **Target host** (`targetHost`): Where to connect to container (typically 127.0.0.1)
+- **Proxy host** (`proxyHost`): Where proxy binds (0.0.0.0 in Kubernetes for cluster access)
 
 **Merge strategy**:
 - User-provided values take precedence
-- ToolHive sets defaults if not provided
+- ToolHive sets deployment-appropriate defaults
 
 **Reference**: PR #1890 - Runtime Authoring Guide
 
@@ -438,7 +415,7 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 5. **Framing** - Newline-delimited JSON-RPC messages
 
 **Monitoring:**
-- Container monitor detects exit: `pkg/container/monitor.go`
+- Container monitor detects exit: `pkg/container/docker/monitor.go`
 - Proxy automatically stopped on container exit
 - Workload status updated
 
@@ -536,18 +513,11 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 
 ### TLS Support
 
-**Current state:**
-- HTTPS for remote MCP servers (certificate validation)
-- Local proxy uses HTTP (localhost only)
-
-**Configuration:**
-```bash
-# Remote server with HTTPS
-thv run https://secure-mcp.example.com
-
-# Custom CA bundle
-thv run https://mcp.example.com --ca-bundle /path/to/ca.pem
-```
+**Architecture:**
+- **Remote MCP servers**: Full HTTPS support with certificate validation
+- **Custom CA bundles**: Configurable via RunConfig for self-signed certificates
+- **Local proxy**: HTTP only (localhost binding for security)
+- **Trust store**: System CA bundle or custom CA bundle from configuration
 
 ### Trust Proxy Headers
 

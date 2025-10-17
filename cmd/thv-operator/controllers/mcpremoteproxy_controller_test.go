@@ -519,13 +519,13 @@ func TestServiceNameGeneration(t *testing.T) {
 	}{
 		{
 			proxyName:   "salesforce-proxy",
-			expected:    "mcp-salesforce-proxy-proxy",
-			expectedURL: "http://mcp-salesforce-proxy-proxy.default.svc.cluster.local:8080",
+			expected:    "mcp-salesforce-proxy-remote-proxy",
+			expectedURL: "http://mcp-salesforce-proxy-remote-proxy.default.svc.cluster.local:8080",
 		},
 		{
 			proxyName:   "simple",
-			expected:    "mcp-simple-proxy",
-			expectedURL: "http://mcp-simple-proxy.default.svc.cluster.local:8080",
+			expected:    "mcp-simple-remote-proxy",
+			expectedURL: "http://mcp-simple-remote-proxy.default.svc.cluster.local:8080",
 		},
 	}
 

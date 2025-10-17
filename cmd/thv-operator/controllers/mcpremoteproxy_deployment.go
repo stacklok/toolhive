@@ -6,7 +6,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -27,7 +26,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	args := r.buildContainerArgs()
 	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
 	env := r.buildEnvVarsForProxy(ctx, proxy)
-	resources := buildResourceRequirements(proxy.Spec.Resources)
+	resources := BuildResourceRequirements(proxy.Spec.Resources)
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadata(ls, proxy)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, proxy)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContexts(ctx, proxy)
@@ -59,8 +58,8 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 						VolumeMounts:    volumeMounts,
 						Resources:       resources,
 						Ports:           r.buildContainerPorts(proxy),
-						LivenessProbe:   buildHealthProbe("/health", "http", 30, 10, 5, 3),
-						ReadinessProbe:  buildHealthProbe("/health", "http", 5, 5, 3, 3),
+						LivenessProbe:   BuildHealthProbe("/health", "http", 30, 10, 5, 3),
+						ReadinessProbe:  BuildHealthProbe("/health", "http", 5, 5, 3, 3),
 						SecurityContext: containerSecurityContext,
 					}},
 					Volumes:         volumes,
@@ -160,7 +159,7 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		}
 	}
 
-	return ensureRequiredEnvVars(ctx, env)
+	return EnsureRequiredEnvVars(ctx, env)
 }
 
 // buildDeploymentMetadata builds deployment-level labels and annotations
@@ -172,10 +171,10 @@ func (*MCPRemoteProxyReconciler) buildDeploymentMetadata(
 
 	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
 		if proxy.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
-			deploymentLabels = mergeLabels(baseLabels, proxy.Spec.ResourceOverrides.ProxyDeployment.Labels)
+			deploymentLabels = MergeLabels(baseLabels, proxy.Spec.ResourceOverrides.ProxyDeployment.Labels)
 		}
 		if proxy.Spec.ResourceOverrides.ProxyDeployment.Annotations != nil {
-			deploymentAnnotations = mergeAnnotations(
+			deploymentAnnotations = MergeAnnotations(
 				make(map[string]string), proxy.Spec.ResourceOverrides.ProxyDeployment.Annotations,
 			)
 		}
@@ -197,10 +196,10 @@ func (*MCPRemoteProxyReconciler) buildPodTemplateMetadata(
 
 		overrides := proxy.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides
 		if overrides.Labels != nil {
-			templateLabels = mergeLabels(baseLabels, overrides.Labels)
+			templateLabels = MergeLabels(baseLabels, overrides.Labels)
 		}
 		if overrides.Annotations != nil {
-			templateAnnotations = mergeAnnotations(templateAnnotations, overrides.Annotations)
+			templateAnnotations = MergeAnnotations(templateAnnotations, overrides.Annotations)
 		}
 	}
 
@@ -232,51 +231,6 @@ func (*MCPRemoteProxyReconciler) buildContainerPorts(proxy *mcpv1alpha1.MCPRemot
 		Name:          "http",
 		Protocol:      corev1.ProtocolTCP,
 	}}
-}
-
-// buildHealthProbe builds a health probe configuration
-func buildHealthProbe(
-	path, port string, initialDelay, period, timeout, failureThreshold int32,
-) *corev1.Probe {
-	return &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{
-				Path: path,
-				Port: intstr.FromString(port),
-			},
-		},
-		InitialDelaySeconds: initialDelay,
-		PeriodSeconds:       period,
-		TimeoutSeconds:      timeout,
-		FailureThreshold:    failureThreshold,
-	}
-}
-
-// buildResourceRequirements builds resource requirements from spec
-func buildResourceRequirements(resourceSpec mcpv1alpha1.ResourceRequirements) corev1.ResourceRequirements {
-	resources := corev1.ResourceRequirements{}
-
-	if resourceSpec.Limits.CPU != "" || resourceSpec.Limits.Memory != "" {
-		resources.Limits = corev1.ResourceList{}
-		if resourceSpec.Limits.CPU != "" {
-			resources.Limits[corev1.ResourceCPU] = resource.MustParse(resourceSpec.Limits.CPU)
-		}
-		if resourceSpec.Limits.Memory != "" {
-			resources.Limits[corev1.ResourceMemory] = resource.MustParse(resourceSpec.Limits.Memory)
-		}
-	}
-
-	if resourceSpec.Requests.CPU != "" || resourceSpec.Requests.Memory != "" {
-		resources.Requests = corev1.ResourceList{}
-		if resourceSpec.Requests.CPU != "" {
-			resources.Requests[corev1.ResourceCPU] = resource.MustParse(resourceSpec.Requests.CPU)
-		}
-		if resourceSpec.Requests.Memory != "" {
-			resources.Requests[corev1.ResourceMemory] = resource.MustParse(resourceSpec.Requests.Memory)
-		}
-	}
-
-	return resources
 }
 
 // serviceForMCPRemoteProxy returns a MCPRemoteProxy Service object
@@ -324,10 +278,10 @@ func (*MCPRemoteProxyReconciler) buildServiceMetadata(
 
 	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyService != nil {
 		if proxy.Spec.ResourceOverrides.ProxyService.Labels != nil {
-			serviceLabels = mergeLabels(baseLabels, proxy.Spec.ResourceOverrides.ProxyService.Labels)
+			serviceLabels = MergeLabels(baseLabels, proxy.Spec.ResourceOverrides.ProxyService.Labels)
 		}
 		if proxy.Spec.ResourceOverrides.ProxyService.Annotations != nil {
-			serviceAnnotations = mergeAnnotations(
+			serviceAnnotations = MergeAnnotations(
 				make(map[string]string), proxy.Spec.ResourceOverrides.ProxyService.Annotations,
 			)
 		}

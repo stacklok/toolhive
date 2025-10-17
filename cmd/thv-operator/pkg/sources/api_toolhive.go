@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sync"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/go-logr/logr"
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/httpclient"
 	"github.com/stacklok/toolhive/pkg/registry"
@@ -186,40 +188,83 @@ func (h *ToolHiveAPIHandler) convertToToolhiveRegistry(
 		RemoteServers: make(map[string]*registry.RemoteServerMetadata),
 	}
 
-	// Fetch detailed information for each server
-	for _, serverSummary := range response.Servers {
-		// Build URL for server details: /v0/servers/{name}
-		detailURL := h.buildServerDetailURL(baseURL, serverSummary.Name)
-
-		logger.V(1).Info("Fetching server details",
-			"server", serverSummary.Name,
-			"url", detailURL)
-
-		// Fetch server details
-		detailData, err := h.httpClient.Get(ctx, detailURL)
-		if err != nil {
-			logger.Error(err, "Failed to fetch server details, using summary only",
-				"server", serverSummary.Name)
-			// Fall back to summary data
-			h.addServerFromSummary(toolhiveRegistry, &serverSummary)
-			continue
-		}
-
-		// Parse server detail response
-		var serverDetail ServerDetailResponse
-		if err := json.Unmarshal(detailData, &serverDetail); err != nil {
-			logger.Error(err, "Failed to parse server detail response, using summary only",
-				"server", serverSummary.Name)
-			// Fall back to summary data
-			h.addServerFromSummary(toolhiveRegistry, &serverSummary)
-			continue
-		}
-
-		// Add server with full details
-		h.addServerFromDetail(toolhiveRegistry, &serverDetail)
-	}
+	// Fetch detailed information for each server in parallel
+	h.fetchServerDetailsParallel(ctx, baseURL, response.Servers, toolhiveRegistry, logger)
 
 	return toolhiveRegistry, nil
+}
+
+// fetchServerDetailsParallel fetches server details concurrently with controlled parallelism
+func (h *ToolHiveAPIHandler) fetchServerDetailsParallel(
+	ctx context.Context,
+	baseURL string,
+	servers []ServerSummaryResponse,
+	toolhiveRegistry *registry.Registry,
+	logger logr.Logger,
+) {
+	// Limit concurrent requests to avoid overwhelming the API
+	const maxConcurrency = 10
+
+	// Create a semaphore to limit concurrency
+	semaphore := make(chan struct{}, maxConcurrency)
+
+	// Use WaitGroup to wait for all goroutines to complete
+	var wg sync.WaitGroup
+
+	// Mutex to protect concurrent writes to the registry
+	var mu sync.Mutex
+
+	for _, serverSummary := range servers {
+		wg.Add(1)
+
+		// Launch goroutine for each server
+		go func(summary ServerSummaryResponse) {
+			defer wg.Done()
+
+			// Acquire semaphore slot
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			// Build URL for server details: /v0/servers/{name}
+			detailURL := h.buildServerDetailURL(baseURL, summary.Name)
+
+			logger.V(1).Info("Fetching server details",
+				"server", summary.Name,
+				"url", detailURL)
+
+			// Fetch server details
+			detailData, err := h.httpClient.Get(ctx, detailURL)
+			if err != nil {
+				logger.Error(err, "Failed to fetch server details, using summary only",
+					"server", summary.Name)
+				// Fall back to summary data
+				mu.Lock()
+				h.addServerFromSummary(toolhiveRegistry, &summary)
+				mu.Unlock()
+				return
+			}
+
+			// Parse server detail response
+			var serverDetail ServerDetailResponse
+			if err := json.Unmarshal(detailData, &serverDetail); err != nil {
+				logger.Error(err, "Failed to parse server detail response, using summary only",
+					"server", summary.Name)
+				// Fall back to summary data
+				mu.Lock()
+				h.addServerFromSummary(toolhiveRegistry, &summary)
+				mu.Unlock()
+				return
+			}
+
+			// Add server with full details (thread-safe)
+			mu.Lock()
+			h.addServerFromDetail(toolhiveRegistry, &serverDetail)
+			mu.Unlock()
+		}(serverSummary)
+	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
 }
 
 // addServerFromSummary adds a server using only summary data (fallback)

@@ -25,6 +25,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
+const (
+	defaultAuthzKey = "authz.json"
+)
+
 // PlatformDetectorInterface provides platform detection capabilities
 type PlatformDetectorInterface interface {
 	DetectPlatform(ctx context.Context) (kubernetes.Platform, error)

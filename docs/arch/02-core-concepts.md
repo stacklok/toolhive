@@ -115,11 +115,13 @@ A **proxy** is the component that sits between MCP clients and MCP servers, forw
 4. **Tool Filter** (`tool-filter`) - Filter and override tools in `tools/list` responses
 5. **Tool Call Filter** (`tool-call-filter`) - Validate and map `tools/call` requests
 6. **Telemetry** (`telemetry`) - OpenTelemetry instrumentation
-7. **Authorization** (`authz`) - Cedar policy evaluation
+7. **Authorization** (`authorization`) - Cedar policy evaluation
 8. **Audit** (`audit`) - Request logging
 
-**Execution order:**
-Middleware applied in reverse order: Auth → Parser → Authz → Audit
+**Execution order (request flow):**
+Middleware applied in reverse configuration order. Requests flow through: Audit* → Authorization* → Telemetry* → Parser → Token Exchange* → Auth → Tool Call Filter* → Tool Filter* → MCP Server
+
+(*optional middleware, only present if configured)
 
 **Implementation:**
 - Interface: `pkg/transport/types/transport.go`
@@ -132,14 +134,18 @@ Middleware applied in reverse order: Auth → Parser → Authz → Audit
 
 **RunConfig** is ToolHive's standard configuration format for running MCP servers. It's a JSON/YAML structure that contains everything needed to deploy a workload.
 
-**Key fields:**
-- `image` or `remoteURL` - What to run
-- `transport` - How to communicate
-- `port`, `targetPort` - Network configuration
-- `permissionProfile` - Security settings
-- `middlewareConfigs` - Middleware chain
-- `envVars` - Environment variables
-- `volumes` - File mounts
+**Configuration categories:**
+- **Execution**: `image`, `cmdArgs`, `transport`, `name`, `containerName`
+- **Networking**: `host`, `port`, `targetPort`, `targetHost`, `isolateNetwork`, `proxyMode`
+- **Security**: `permissionProfile`, `secrets`, `oidcConfig`, `authzConfig`, `trustProxyHeaders`
+- **Observability**: `auditConfig`, `telemetryConfig`, `debug`
+- **Customization**: `envVars`, `volumes`, `toolsFilter`, `toolsOverride`, `ignoreConfig`
+- **Organization**: `group`, `containerLabels`
+- **Middleware**: `middlewareConfigs` - Dynamic middleware chain configuration
+- **Remote servers**: `remoteURL`, `remoteAuthConfig`
+- **Kubernetes**: `k8sPodTemplatePatch`
+
+See `pkg/runner/config.go` for complete field reference.
 
 **Schema version:** `v0.1.0` (current)
 
@@ -235,7 +241,9 @@ A **registry** is a catalog of MCP server definitions with metadata, configurati
 
 **Implementation:**
 - Registry types: `pkg/registry/types.go`
-- Registry manager: `pkg/registry/registry.go`
+- Provider abstraction: `pkg/registry/provider.go`, `pkg/registry/factory.go`
+- Local provider: `pkg/registry/provider_local.go`
+- Remote provider: `pkg/registry/provider_remote.go`
 - API server: `cmd/thv-registry-api/`
 
 **Related concepts:** Image Metadata, Remote Server Metadata
@@ -268,10 +276,9 @@ A **session** tracks state for MCP client connections, particularly for transpor
 - Cleaned up after inactivity or explicit deletion
 
 **Implementation:**
-- Manager: `pkg/transport/session/manager.go`
-- SSE: `pkg/transport/session/sse_session.go`
-- Streamable: `pkg/transport/session/streamable_session.go`
-- Proxy: `pkg/transport/session/proxy_session.go`
+- Session manager: `pkg/transport/session/manager.go`
+- Session implementations: `pkg/transport/session/sse_session.go`, `streamable_session.go`, `proxy_session.go`
+- Storage abstraction: `pkg/transport/session/storage.go`
 
 **Related concepts:** Transport, Proxy
 
@@ -325,14 +332,15 @@ ToolHive can automatically configure clients to use MCP servers:
 - Updates on workload start/stop
 - Supports multiple config formats
 
-**Client operations:**
-- `thv client list` - Show available clients
-- `thv client setup <client>` - Configure client
-- `thv client status` - Show client status
+**Client discovery and management:**
+- Automatic client detection through platform-specific directories
+- Client-specific server configurations
+- Configuration migration support for version upgrades
 
 **Implementation:**
-- Client types: `pkg/client/types.go`
+- Configuration: `pkg/client/config.go`
 - Manager: `pkg/client/manager.go`
+- Discovery: `pkg/client/discovery.go`
 
 **Related concepts:** Workload, Group
 
@@ -433,8 +441,9 @@ ToolHive can automatically configure clients to use MCP servers:
 - Used by audit for event logging
 
 **Implementation:**
-- Parser middleware: `pkg/mcp/parser.go`
-- Parsed type: `pkg/mcp/types.go`
+- Parser implementation: `pkg/mcp/parser.go`
+- Middleware: `pkg/mcp/middleware.go`
+- Tool filtering: `pkg/mcp/tool_filter.go`
 
 **Related concepts:** Middleware, Authorization, Audit
 
@@ -508,15 +517,14 @@ permit(
 
 **Audit** logs MCP operations for compliance, monitoring, and debugging.
 
-**Audit events include:**
-- `mcp_tool_call` - Tool executions
-- `mcp_tools_list`, `mcp_resources_list`, `mcp_prompts_list` - List operations
-- `mcp_resource_read` - Resource access
-- `mcp_prompt_get` - Prompt retrieval
-- `mcp_initialize` - Session initialization
-- `sse_connection` - SSE connections
-- `http_request` - Generic HTTP requests
-- And others - see `pkg/audit/mcp_events.go` for complete list of 15 event types
+**Audit event categories:**
+- Connection events (initialization, SSE connections)
+- Operation events (tool calls, resource reads, prompt retrieval)
+- List operations (tools, resources, prompts)
+- Notification events (MCP notifications, ping, logging, completion)
+- Generic fallback events (unrecognized MCP requests, HTTP requests)
+
+See `pkg/audit/mcp_events.go` for complete list of event types.
 
 **Event data:**
 - Timestamp, source, outcome
@@ -527,7 +535,8 @@ permit(
 
 **Implementation:**
 - Audit middleware: `pkg/audit/middleware.go`
-- Event types: `pkg/audit/events.go`
+- Event types: `pkg/audit/event.go`, `pkg/audit/mcp_events.go`
+- Auditor: `pkg/audit/auditor.go`
 - Config: `pkg/audit/config.go`
 
 **Related concepts:** Middleware, Authorization, Parse
@@ -593,8 +602,8 @@ permit(
 - Shutdown if unhealthy
 
 **Implementation:**
-- Monitor: `pkg/container/monitor.go`
-- Health checker: `pkg/healthcheck/checker.go`
+- Monitor: `pkg/container/docker/monitor.go`
+- Health checker: `pkg/healthcheck/healthcheck.go`
 
 **Related concepts:** Workload, Transport, Proxy
 
@@ -626,16 +635,16 @@ graph TB
 
 ```mermaid
 graph LR
-    Client[Client] --> Proxy[Proxy]
-    Proxy --> MW1[Auth]
-    MW1 --> MW2[Parser]
-    MW2 --> MW3[Authz]
-    MW3 --> MW4[Audit]
-    MW4 --> Container[MCP Server]
+    Client[Client Request] --> Proxy[Proxy]
+    Proxy --> Chain[Middleware Chain]
+    Chain --> Container[MCP Server]
 
     style Proxy fill:#81c784
     style Container fill:#ffb74d
+    style Chain fill:#fff9c4
 ```
+
+Requests pass through up to 8 middleware components (Auth, Token Exchange, Tool Filter, Tool Call Filter, Parser, Telemetry, Authorization, Audit). See `docs/middleware.md` for complete middleware architecture and execution order.
 
 ### Data Hierarchy
 

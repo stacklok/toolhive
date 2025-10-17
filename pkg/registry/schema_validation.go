@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/santhosh-tekuri/jsonschema/v5"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 //go:embed data/schema.json
@@ -20,10 +20,16 @@ func ValidateRegistrySchema(registryData []byte) error {
 		return fmt.Errorf("failed to read embedded registry schema: %w", err)
 	}
 
+	// Parse the schema data (v6 requires parsed JSON object)
+	var schemaDoc interface{}
+	if err := json.Unmarshal(schemaData, &schemaDoc); err != nil {
+		return fmt.Errorf("failed to parse schema: %w", err)
+	}
+
 	// Compile the schema
 	compiler := jsonschema.NewCompiler()
 	schemaID := "file://local/registry-schema.json"
-	if err := compiler.AddResource(schemaID, strings.NewReader(string(schemaData))); err != nil {
+	if err := compiler.AddResource(schemaID, schemaDoc); err != nil {
 		return fmt.Errorf("failed to add schema resource: %w", err)
 	}
 	schema, err := compiler.Compile(schemaID)
@@ -88,15 +94,15 @@ func collectErrors(err *jsonschema.ValidationError, messages *[]string) {
 		return
 	}
 
-	// This is a leaf error - add it if it has a meaningful message
-	if err.Message != "" {
+	// This is a leaf error - format it with the error kind and instance location
+	// In v6, BasicOutput provides structured error information
+	output := err.BasicOutput()
+	if output != nil && output.Error != nil {
 		// Create a descriptive error message with path context
-		var pathStr string
-		if err.InstanceLocation != "" {
-			pathStr = fmt.Sprintf(" at '%s'", err.InstanceLocation)
+		errorMsg := output.Error.String()
+		if output.InstanceLocation != "" {
+			errorMsg = fmt.Sprintf("%s at '%s'", errorMsg, output.InstanceLocation)
 		}
-
-		errorMsg := fmt.Sprintf("%s%s", err.Message, pathStr)
 		*messages = append(*messages, errorMsg)
 	}
 }

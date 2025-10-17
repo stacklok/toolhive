@@ -106,7 +106,7 @@ func TestCreateMiddlewareWithConfigData(t *testing.T) {
 		defer ctrl.Finish()
 
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		config := &Config{
 			Component:           "test-component",
@@ -159,7 +159,7 @@ func TestCreateMiddlewareWithConfigData(t *testing.T) {
 		defer ctrl.Finish()
 
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		err = CreateMiddleware(middlewareConfig, mockRunner)
 		assert.NoError(t, err)
@@ -178,7 +178,7 @@ func TestCreateMiddlewareWithConfigData(t *testing.T) {
 		defer ctrl.Finish()
 
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		err = CreateMiddleware(middlewareConfig, mockRunner)
 		assert.NoError(t, err)
@@ -224,7 +224,7 @@ func TestCreateMiddlewareWithConfigData(t *testing.T) {
 		defer ctrl.Finish()
 
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		err = CreateMiddleware(middlewareConfig, mockRunner)
 		assert.NoError(t, err)
@@ -295,7 +295,7 @@ func TestCreateMiddlewareWithConfigData(t *testing.T) {
 		defer ctrl.Finish()
 
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		err = CreateMiddleware(middlewareConfig, mockRunner)
 		assert.NoError(t, err)
@@ -437,7 +437,7 @@ func TestBackwardsCompatibility(t *testing.T) {
 		defer ctrl.Finish()
 
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		err = CreateMiddleware(middlewareConfig, mockRunner)
 		assert.NoError(t, err)
@@ -483,7 +483,7 @@ func TestBackwardsCompatibility(t *testing.T) {
 		defer ctrl.Finish()
 
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		err = CreateMiddleware(middlewareConfig, mockRunner)
 		assert.NoError(t, err)

@@ -322,7 +322,7 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		// Test CreateMiddleware
 		err = CreateMiddleware(middlewareConfig, mockRunner)
@@ -368,7 +368,7 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		// Test CreateMiddleware
 		err = CreateMiddleware(middlewareConfig, mockRunner)
@@ -405,7 +405,7 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		// Test CreateMiddleware - should succeed even with invalid path because ConfigData takes precedence
 		err = CreateMiddleware(middlewareConfig, mockRunner)

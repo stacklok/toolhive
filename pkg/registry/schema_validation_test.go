@@ -250,7 +250,7 @@ func TestRegistrySchemaValidation(t *testing.T) {
 				}
 			}`,
 			expectError:   true,
-			errorContains: "additionalProperties",
+			errorContains: "additional properties",
 		},
 		{
 			name: "valid remote server",

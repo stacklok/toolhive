@@ -75,14 +75,36 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create a shared platform detector for all controllers
+	sharedPlatformDetector := controllers.NewSharedPlatformDetector()
+
 	rec := &controllers.MCPServerReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		ImageValidation: validation.ImageValidationAlwaysAllow,
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		PlatformDetector: sharedPlatformDetector,
+		ImageValidation:  validation.ImageValidationAlwaysAllow,
 	}
 
 	if err = rec.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "MCPServer")
+		os.Exit(1)
+	}
+
+	// Register MCPToolConfig controller
+	if err = (&controllers.ToolConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MCPToolConfig")
+		os.Exit(1)
+	}
+
+	// Register MCPExternalAuthConfig controller
+	if err = (&controllers.MCPExternalAuthConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MCPExternalAuthConfig")
 		os.Exit(1)
 	}
 

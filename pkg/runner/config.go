@@ -305,13 +305,17 @@ func (c *RunConfig) WithEnvironmentVariables(envVars map[string]string) (*RunCon
 
 // ValidateSecrets checks if the secrets can be parsed and are valid
 func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.Provider) error {
-	if len(c.Secrets) == 0 {
-		return nil // No secrets to validate
+	if len(c.Secrets) > 0 {
+		_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+		if err != nil {
+			return fmt.Errorf("failed to get secrets: %w", err)
+		}
 	}
-
-	_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
-	if err != nil {
-		return fmt.Errorf("failed to get secrets: %w", err)
+	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.ClientSecret != "" {
+		_, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.ClientSecret)
+		if err != nil {
+			return fmt.Errorf("failed to get secrets: %w", err)
+		}
 	}
 
 	return nil
@@ -319,23 +323,37 @@ func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.P
 
 // WithSecrets processes secrets and adds them to environment variables
 func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provider) (*RunConfig, error) {
-	if len(c.Secrets) == 0 {
-		return c, nil // No secrets to process
+	// Process regular secrets if provided
+	if len(c.Secrets) > 0 {
+		secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+		if err != nil {
+			return c, fmt.Errorf("failed to get secrets: %v", err)
+		}
+
+		// Initialize EnvVars if it's nil
+		if c.EnvVars == nil {
+			c.EnvVars = make(map[string]string)
+		}
+
+		// Add secret variables to environment variables
+		for key, value := range secretVariables {
+			c.EnvVars[key] = value
+		}
 	}
 
-	secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
-	if err != nil {
-		return c, fmt.Errorf("failed to get secrets: %v", err)
-	}
-
-	// Initialize EnvVars if it's nil
-	if c.EnvVars == nil {
-		c.EnvVars = make(map[string]string)
-	}
-
-	// Add secret variables to environment variables
-	for key, value := range secretVariables {
-		c.EnvVars[key] = value
+	// Process RemoteAuthConfig.ClientSecret if it's in CLI format
+	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.ClientSecret != "" {
+		// Check if it's in CLI format (contains ",target=")
+		if secretParam, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.ClientSecret); err == nil {
+			// It's in CLI format, resolve the actual secret value
+			actualSecret, err := secretManager.GetSecret(ctx, secretParam.Name)
+			if err != nil {
+				return c, fmt.Errorf("failed to resolve OAuth client secret '%s': %w", secretParam.Name, err)
+			}
+			// Replace the CLI format string with the actual secret value
+			c.RemoteAuthConfig.ClientSecret = actualSecret
+		}
+		// If it's not in CLI format (plain text), leave it as is
 	}
 
 	return c, nil
@@ -438,27 +456,28 @@ func LoadState(ctx context.Context, name string) (*RunConfig, error) {
 
 // RemoteAuthConfig holds configuration for remote authentication
 type RemoteAuthConfig struct {
-	ClientID         string
-	ClientSecret     string
-	ClientSecretFile string
-	Scopes           []string
-	SkipBrowser      bool
-	Timeout          time.Duration `swaggertype:"string" example:"5m"`
-	CallbackPort     int
+	ClientID         string        `json:"client_id,omitempty" yaml:"client_id,omitempty"`
+	ClientSecret     string        `json:"client_secret,omitempty" yaml:"client_secret,omitempty"`
+	ClientSecretFile string        `json:"client_secret_file,omitempty" yaml:"client_secret_file,omitempty"`
+	Scopes           []string      `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+	SkipBrowser      bool          `json:"skip_browser,omitempty" yaml:"skip_browser,omitempty"`
+	Timeout          time.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty" swaggertype:"string" example:"5m"`
+	CallbackPort     int           `json:"callback_port,omitempty" yaml:"callback_port,omitempty"`
+	UsePKCE          bool          `json:"use_pkce" yaml:"use_pkce"`
 
 	// OAuth endpoint configuration (from registry)
-	Issuer       string
-	AuthorizeURL string
-	TokenURL     string
+	Issuer       string `json:"issuer,omitempty" yaml:"issuer,omitempty"`
+	AuthorizeURL string `json:"authorize_url,omitempty" yaml:"authorize_url,omitempty"`
+	TokenURL     string `json:"token_url,omitempty" yaml:"token_url,omitempty"`
 
 	// Headers for HTTP requests
-	Headers []*registry.Header
+	Headers []*registry.Header `json:"headers,omitempty" yaml:"headers,omitempty"`
 
 	// Environment variables for the client
-	EnvVars []*registry.EnvVar
+	EnvVars []*registry.EnvVar `json:"env_vars,omitempty" yaml:"env_vars,omitempty"`
 
 	// OAuth parameters for server-specific customization
-	OAuthParams map[string]string
+	OAuthParams map[string]string `json:"oauth_params,omitempty" yaml:"oauth_params,omitempty"`
 }
 
 // ToolOverride represents a tool override.

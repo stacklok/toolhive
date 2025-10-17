@@ -840,7 +840,7 @@ func TestCreateMiddleware_ValidConfig(t *testing.T) {
 			},
 			expectError: false,
 			expectedCalls: func(runner *mocks.MockMiddlewareRunner, _ *mocks.MockRunnerConfig) {
-				runner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+				runner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 			},
 		},
 		{
@@ -860,7 +860,7 @@ func TestCreateMiddleware_ValidConfig(t *testing.T) {
 			},
 			expectError: false,
 			expectedCalls: func(runner *mocks.MockMiddlewareRunner, config *mocks.MockRunnerConfig) {
-				runner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+				runner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 				runner.EXPECT().SetPrometheusHandler(gomock.Any()).Times(1)
 				config.EXPECT().GetPort().Return(8080).Times(1)
 			},
@@ -883,7 +883,7 @@ func TestCreateMiddleware_ValidConfig(t *testing.T) {
 			},
 			expectError: false,
 			expectedCalls: func(runner *mocks.MockMiddlewareRunner, config *mocks.MockRunnerConfig) {
-				runner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+				runner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 				runner.EXPECT().SetPrometheusHandler(gomock.Any()).Times(1)
 				config.EXPECT().GetPort().Return(8080).Times(1)
 			},
@@ -906,7 +906,7 @@ func TestCreateMiddleware_ValidConfig(t *testing.T) {
 			},
 			expectError: false,
 			expectedCalls: func(runner *mocks.MockMiddlewareRunner, _ *mocks.MockRunnerConfig) {
-				runner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+				runner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 				// No SetPrometheusHandler call expected for no-op provider
 			},
 		},
@@ -999,7 +999,7 @@ func TestCreateMiddleware_InvalidConfig(t *testing.T) {
 			},
 			expectedError: "", // This should not error - empty server name is allowed
 			expectedCalls: func(runner *mocks.MockMiddlewareRunner) {
-				runner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+				runner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 			},
 		},
 		{
@@ -1017,7 +1017,7 @@ func TestCreateMiddleware_InvalidConfig(t *testing.T) {
 			},
 			expectedError: "", // This should not error - empty transport is allowed
 			expectedCalls: func(runner *mocks.MockMiddlewareRunner) {
-				runner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+				runner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 			},
 		},
 	}
@@ -1387,7 +1387,7 @@ func TestFactoryMiddleware_Integration(t *testing.T) {
 
 		// Expect middleware to be added and Prometheus handler to be set
 		var capturedMiddleware types.Middleware
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1).Do(func(mw types.Middleware) {
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1).Do(func(_ string, mw types.Middleware) {
 			capturedMiddleware = mw
 		})
 		mockRunner.EXPECT().SetPrometheusHandler(gomock.Any()).Times(1)
@@ -1444,7 +1444,7 @@ func TestFactoryMiddleware_Integration(t *testing.T) {
 
 		// Expect only middleware to be added (no Prometheus)
 		var capturedMiddleware types.Middleware
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1).Do(func(mw types.Middleware) {
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1).Do(func(_ string, mw types.Middleware) {
 			capturedMiddleware = mw
 		})
 

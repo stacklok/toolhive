@@ -131,6 +131,17 @@ spec:
                   - value
                   type: object
                 type: array
+              externalAuthConfigRef:
+                description: |-
+                  ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.
+                  The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer.
+                properties:
+                  name:
+                    description: Name is the name of the MCPExternalAuthConfig resource
+                    type: string
+                required:
+                - name
+                type: object
               image:
                 description: Image is the container image for the MCP server
                 type: string
@@ -9039,6 +9050,10 @@ spec:
                   - type
                   type: object
                 type: array
+              externalAuthConfigHash:
+                description: ExternalAuthConfigHash is the hash of the referenced
+                  MCPExternalAuthConfig spec
+                type: string
               message:
                 description: Message provides additional information about the current
                   phase

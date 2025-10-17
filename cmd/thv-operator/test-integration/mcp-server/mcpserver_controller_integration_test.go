@@ -141,7 +141,28 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			// Verify there's exactly one container (the toolhive proxy runner)
 			Expect(deployment.Spec.Template.Spec.Containers).To(HaveLen(1))
 
+			templateSpec := deployment.Spec.Template.Spec
+
+			foundRunconfigVolume := false
+			for _, v := range templateSpec.Volumes {
+				if v.Name == "runconfig" && v.ConfigMap != nil && v.ConfigMap.Name == (mcpServerName+"-runconfig") {
+					foundRunconfigVolume = true
+					break
+				}
+			}
+			Expect(foundRunconfigVolume).To(BeTrue(), "Deployment should have a volume sourced from runconfig ConfigMap")
+
 			container := deployment.Spec.Template.Spec.Containers[0]
+
+			// Verify that the runconfig ConfigMap is mounted as a volume
+			foundRunconfigMount := false
+			for _, vm := range container.VolumeMounts {
+				if vm.Name == "runconfig" && vm.MountPath == "/etc/runconfig" {
+					foundRunconfigMount = true
+					break
+				}
+			}
+			Expect(foundRunconfigMount).To(BeTrue(), "runconfig ConfigMap should be mounted at /etc/runconfig")
 
 			// Verify container name and image
 			Expect(container.Name).To(Equal("toolhive"))
@@ -168,24 +189,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			// Verify container args contain the required parameters
 			Expect(container.Args).To(ContainElement("run"))
 			Expect(container.Args).To(ContainElement("--foreground=true"))
-			Expect(container.Args).To(ContainElement(fmt.Sprintf("--proxy-port=%d", mcpServer.Spec.Port)))
-			Expect(container.Args).To(ContainElement(fmt.Sprintf("--name=%s", mcpServerName)))
-			Expect(container.Args).To(ContainElement(fmt.Sprintf("--transport=%s", mcpServer.Spec.Transport)))
-			Expect(container.Args).To(ContainElement(fmt.Sprintf("--proxy-mode=%s", mcpServer.Spec.ProxyMode)))
 			Expect(container.Args).To(ContainElement(mcpServer.Spec.Image))
-
-			// Verify that user args are appended after "--"
-			dashIndex := -1
-			for i, arg := range container.Args {
-				if arg == "--" {
-					dashIndex = i
-					break
-				}
-			}
-			if len(mcpServer.Spec.Args) > 0 {
-				Expect(dashIndex).To(BeNumerically(">=", 0))
-				Expect(container.Args[dashIndex+1:]).To(ContainElement("--verbose"))
-			}
 
 			// Verify container ports
 			Expect(container.Ports).To(HaveLen(1))
@@ -206,6 +210,26 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			Expect(container.ReadinessProbe.InitialDelaySeconds).To(Equal(int32(5)))
 			Expect(container.ReadinessProbe.PeriodSeconds).To(Equal(int32(5)))
 
+		})
+
+		It("Should create the RunConfig ConfigMap", func() {
+
+			// Wait for Service to be created (using the correct naming pattern)
+			configMap := &corev1.ConfigMap{}
+			configMapName := mcpServerName + "-runconfig"
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: namespace,
+				}, configMap)
+			}, timeout, interval).Should(Succeed())
+
+			// Verify owner reference is set correctly
+			verifyOwnerReference(configMap.OwnerReferences, createdMCPServer, "ConfigMap")
+
+			// Verify Service configuration
+			Expect(configMap.Data).To(HaveKey("runconfig.json"))
+			Expect(configMap.Annotations).To(HaveKey("toolhive.stacklok.dev/content-checksum"))
 		})
 
 		It("Should create a Service for the MCPServer Proxy", func() {
@@ -306,7 +330,6 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 					return err
 				}
 				mcpServer.Spec.Image = "example/mcp-server:v2"
-				mcpServer.Spec.Port = 9090
 				return k8sClient.Update(ctx, mcpServer)
 			}, timeout, interval).Should(Succeed())
 
@@ -322,16 +345,12 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				container := deployment.Spec.Template.Spec.Containers[0]
 				// Check if the new image is in the args
 				hasNewImage := false
-				hasNewPort := false
 				for _, arg := range container.Args {
 					if arg == "example/mcp-server:v2" {
 						hasNewImage = true
 					}
-					if arg == "--proxy-port=9090" {
-						hasNewPort = true
-					}
 				}
-				return hasNewImage && hasNewPort
+				return hasNewImage
 			}, timeout, interval).Should(BeTrue())
 		})
 	})

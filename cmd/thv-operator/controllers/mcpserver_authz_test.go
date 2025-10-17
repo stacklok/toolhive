@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
 func TestGenerateAuthzArgs(t *testing.T) {
@@ -157,10 +158,7 @@ func TestGenerateAuthzArgs(t *testing.T) {
 				WithRuntimeObjects(objects...).
 				Build()
 
-			reconciler := &MCPServerReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
 			args := reconciler.generateAuthzArgs(tt.mcpServer)
 			assert.Equal(t, tt.expectedArgs, args)
@@ -270,10 +268,7 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 				WithRuntimeObjects(tt.mcpServer).
 				Build()
 
-			reconciler := &MCPServerReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -307,6 +302,93 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEnsureAuthzConfigMap_Updates(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	// Create MCPServer with initial inline authz config
+	mcpServer := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-server",
+			Namespace: "test-namespace",
+			UID:       "test-uid",
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image: "test-image",
+			AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
+				Type: mcpv1alpha1.AuthzConfigTypeInline,
+				Inline: &mcpv1alpha1.InlineAuthzConfig{
+					Policies: []string{
+						`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+					},
+					EntitiesJSON: `[]`,
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(mcpServer).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Step 1: Create the ConfigMap
+	err := reconciler.ensureAuthzConfigMap(ctx, mcpServer)
+	require.NoError(t, err)
+
+	// Verify ConfigMap was created with initial data
+	configMapName := mcpServer.Name + "-authz-inline"
+	configMap := &corev1.ConfigMap{}
+	err = fakeClient.Get(ctx, client.ObjectKey{
+		Name:      configMapName,
+		Namespace: mcpServer.Namespace,
+	}, configMap)
+	require.NoError(t, err)
+
+	initialData := configMap.Data["authz.json"]
+	require.Contains(t, initialData, `call_tool`)
+	require.Contains(t, initialData, `weather`)
+
+	// Step 2: Update the MCPServer with different policies
+	mcpServer.Spec.AuthzConfig.Inline.Policies = []string{
+		`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
+		`forbid(principal, action == Action::"call_tool", resource);`,
+	}
+	mcpServer.Spec.AuthzConfig.Inline.EntitiesJSON = `[{"uid": {"type": "User", "id": "alice"}}]`
+
+	// Step 3: Call ensureAuthzConfigMap again to trigger update
+	err = reconciler.ensureAuthzConfigMap(ctx, mcpServer)
+	require.NoError(t, err)
+
+	// Step 4: Verify ConfigMap was updated with new data
+	updatedConfigMap := &corev1.ConfigMap{}
+	err = fakeClient.Get(ctx, client.ObjectKey{
+		Name:      configMapName,
+		Namespace: mcpServer.Namespace,
+	}, updatedConfigMap)
+	require.NoError(t, err)
+
+	updatedData := updatedConfigMap.Data["authz.json"]
+	// Verify old data is gone
+	require.NotContains(t, updatedData, `weather`, "Old policy should be removed")
+	// Verify new data is present
+	require.Contains(t, updatedData, `get_prompt`, "New policy should be present")
+	require.Contains(t, updatedData, `greeting`, "New policy should be present")
+	require.Contains(t, updatedData, `forbid`, "New forbid policy should be present")
+	require.Contains(t, updatedData, `alice`, "New entities should be present")
+
+	// Verify the data actually changed
+	require.NotEqual(t, initialData, updatedData, "ConfigMap data should have been updated")
 }
 
 func TestGenerateAuthzVolumeConfig(t *testing.T) {
@@ -384,9 +466,7 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			reconciler := &MCPServerReconciler{}
-
-			volumeMount, volume := reconciler.generateAuthzVolumeConfig(tt.mcpServer)
+			volumeMount, volume := GenerateAuthzVolumeConfig(tt.mcpServer.Spec.AuthzConfig, tt.mcpServer.Name)
 
 			if tt.expectVolumeMount {
 				require.NotNil(t, volumeMount, "Expected volume mount to be created")

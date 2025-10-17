@@ -208,7 +208,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create middlewares slice for incoming request authentication
-	var middlewares []types.MiddlewareFunction
+	var middlewares []types.NamedMiddleware
 
 	// Get OIDC configuration if enabled (for protecting the proxy endpoint)
 	var oidcConfig *auth.TokenValidatorConfig
@@ -237,7 +237,10 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
-	middlewares = append(middlewares, authMiddleware)
+	middlewares = append(middlewares, types.NamedMiddleware{
+		Name:     "auth",
+		Function: authMiddleware,
+	})
 
 	// Add OAuth token injection or token exchange middleware for outgoing requests
 	if err := addExternalTokenMiddleware(&middlewares, tokenSource); err != nil {
@@ -384,7 +387,7 @@ func createTokenInjectionMiddleware(tokenSource oauth2.TokenSource) types.Middle
 }
 
 // addExternalTokenMiddleware adds token exchange or token injection middleware to the middleware chain
-func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSource oauth2.TokenSource) error {
+func addExternalTokenMiddleware(middlewares *[]types.NamedMiddleware, tokenSource oauth2.TokenSource) error {
 	if remoteAuthFlags.TokenExchangeURL != "" {
 		// Use token exchange middleware when token exchange is configured
 		tokenExchangeConfig, err := remoteAuthFlags.BuildTokenExchangeConfig()
@@ -410,11 +413,17 @@ func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSo
 				return fmt.Errorf("failed to create token exchange middleware: %v", err)
 			}
 		}
-		*middlewares = append(*middlewares, tokenExchangeMiddleware)
+		*middlewares = append(*middlewares, types.NamedMiddleware{
+			Name:     "token-exchange",
+			Function: tokenExchangeMiddleware,
+		})
 	} else if tokenSource != nil {
 		// Fallback to direct token injection when no token exchange is configured
 		tokenMiddleware := createTokenInjectionMiddleware(tokenSource)
-		*middlewares = append(*middlewares, tokenMiddleware)
+		*middlewares = append(*middlewares, types.NamedMiddleware{
+			Name:     "token-injection",
+			Function: tokenMiddleware,
+		})
 	}
 	return nil
 }

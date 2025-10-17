@@ -676,30 +676,32 @@ components:
     runner.RemoteAuthConfig:
       description: RemoteAuthConfig contains OAuth configuration for remote MCP servers
       properties:
-        authorizeURL:
+        authorize_url:
           type: string
-        callbackPort:
+        callback_port:
           type: integer
-        clientID:
+        client_id:
           type: string
-        clientSecret:
+        client_secret:
           type: string
-        clientSecretFile:
+        client_secret_file:
           type: string
-        envVars:
+        env_vars:
           description: Environment variables for the client
           items:
             $ref: '#/components/schemas/registry.EnvVar'
           type: array
+          uniqueItems: false
         headers:
           description: Headers for HTTP requests
           items:
             $ref: '#/components/schemas/registry.Header'
           type: array
+          uniqueItems: false
         issuer:
           description: OAuth endpoint configuration (from registry)
           type: string
-        oauthParams:
+        oauth_params:
           additionalProperties:
             type: string
           description: OAuth parameters for server-specific customization
@@ -708,13 +710,16 @@ components:
           items:
             type: string
           type: array
-        skipBrowser:
+          uniqueItems: false
+        skip_browser:
           type: boolean
         timeout:
           example: 5m
           type: string
-        tokenURL:
+        token_url:
           type: string
+        use_pkce:
+          type: boolean
       type: object
     runner.RunConfig:
       properties:

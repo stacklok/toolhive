@@ -91,8 +91,9 @@ var _ = BeforeSuite(func() {
 
 	// Register the MCPServer controller
 	err = (&controllers.MCPServerReconciler{
-		Client: k8sManager.GetClient(),
-		Scheme: k8sManager.GetScheme(),
+		Client:           k8sManager.GetClient(),
+		Scheme:           k8sManager.GetScheme(),
+		PlatformDetector: controllers.NewSharedPlatformDetector(),
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 

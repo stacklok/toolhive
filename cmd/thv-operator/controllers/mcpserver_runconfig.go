@@ -2,26 +2,22 @@ package controllers
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap"
+	configMapChecksum "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/operator/accessors"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -35,53 +31,6 @@ const defaultAPITimeout = 15 * time.Second
 
 // defaultAuthzKey is the default key in the ConfigMap for authorization configuration
 const defaultAuthzKey = "authz.json"
-
-// RunConfig management methods
-
-// computeConfigMapChecksum computes a SHA256 checksum of the ConfigMap content for change detection
-func computeConfigMapChecksum(cm *corev1.ConfigMap) string {
-	h := sha256.New()
-
-	// Include data content in checksum
-	var dataKeys []string
-	for key := range cm.Data {
-		dataKeys = append(dataKeys, key)
-	}
-	sort.Strings(dataKeys)
-
-	for _, key := range dataKeys {
-		h.Write([]byte(key))
-		h.Write([]byte(cm.Data[key]))
-	}
-
-	// Include labels in checksum (excluding checksum annotation itself)
-	var labelKeys []string
-	for key := range cm.Labels {
-		labelKeys = append(labelKeys, key)
-	}
-	sort.Strings(labelKeys)
-
-	for _, key := range labelKeys {
-		h.Write([]byte(key))
-		h.Write([]byte(cm.Labels[key]))
-	}
-
-	// Include relevant annotations in checksum (excluding checksum annotation itself)
-	var annotationKeys []string
-	for key := range cm.Annotations {
-		if key != "toolhive.stacklok.dev/content-checksum" {
-			annotationKeys = append(annotationKeys, key)
-		}
-	}
-	sort.Strings(annotationKeys)
-
-	for _, key := range annotationKeys {
-		h.Write([]byte(key))
-		h.Write([]byte(cm.Annotations[key]))
-	}
-
-	return hex.EncodeToString(h.Sum(nil))
-}
 
 // ensureRunConfigConfigMap ensures the RunConfig ConfigMap exists and is up to date
 func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
@@ -112,89 +61,19 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *m
 		},
 	}
 
+	checksum := configMapChecksum.NewRunConfigConfigMapChecksum()
 	// Compute and add content checksum annotation
-	checksum := computeConfigMapChecksum(configMap)
+	cs := checksum.ComputeConfigMapChecksum(configMap)
 	configMap.Annotations = map[string]string{
-		"toolhive.stacklok.dev/content-checksum": checksum,
+		"toolhive.stacklok.dev/content-checksum": cs,
 	}
 
-	return r.ensureRunConfigConfigMapResource(ctx, m, configMap)
-}
-
-// ensureRunConfigConfigMapResource ensures the RunConfig ConfigMap exists and is up to date
-// This method handles content changes by comparing checksums
-func (r *MCPServerReconciler) ensureRunConfigConfigMapResource(
-	ctx context.Context,
-	mcpServer *mcpv1alpha1.MCPServer,
-	desired *corev1.ConfigMap,
-) error {
-	ctxLogger := log.FromContext(ctx)
-	current := &corev1.ConfigMap{}
-	objectKey := types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}
-	err := r.Get(ctx, objectKey, current)
-
-	if errors.IsNotFound(err) {
-		// ConfigMap doesn't exist, create it
-		if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-			return fmt.Errorf("failed to set controller reference for RunConfig ConfigMap: %w", err)
-		}
-
-		ctxLogger.Info("RunConfig ConfigMap does not exist, creating", "ConfigMap.Name", desired.Name)
-		if err := r.Create(ctx, desired); err != nil {
-			return fmt.Errorf("failed to create RunConfig ConfigMap: %w", err)
-		}
-		ctxLogger.Info("RunConfig ConfigMap created", "ConfigMap.Name", desired.Name)
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("failed to get RunConfig ConfigMap: %w", err)
+	runConfigConfigMap := configmap.NewRunConfigConfigMap(r.Client, r.Scheme, checksum)
+	err = runConfigConfigMap.UpsertRunConfigMap(ctx, m, configMap)
+	if err != nil {
+		return fmt.Errorf("failed to upsert RunConfig ConfigMap: %w", err)
 	}
-
-	// ConfigMap exists, check if content has changed by comparing checksums
-	currentChecksum := current.Annotations["toolhive.stacklok.dev/content-checksum"]
-	desiredChecksum := desired.Annotations["toolhive.stacklok.dev/content-checksum"]
-
-	if currentChecksum != desiredChecksum {
-		// Content changed, update the ConfigMap with new checksum
-		// Copy resource version and other metadata for update
-		desired.ResourceVersion = current.ResourceVersion
-		desired.UID = current.UID
-
-		if err := controllerutil.SetControllerReference(mcpServer, desired, r.Scheme); err != nil {
-			return fmt.Errorf("failed to set controller reference for RunConfig ConfigMap: %w", err)
-		}
-
-		ctxLogger.Info("RunConfig ConfigMap content changed, updating",
-			"ConfigMap.Name", desired.Name,
-			"oldChecksum", currentChecksum,
-			"newChecksum", desiredChecksum)
-		if err := r.Update(ctx, desired); err != nil {
-			return fmt.Errorf("failed to update RunConfig ConfigMap: %w", err)
-		}
-		ctxLogger.Info("RunConfig ConfigMap updated", "ConfigMap.Name", desired.Name)
-	}
-
 	return nil
-}
-
-// runConfigContentEquals compares the actual content of RunConfig ConfigMaps using checksums
-func (*MCPServerReconciler) runConfigContentEquals(current, desired *corev1.ConfigMap) bool {
-	// Compare checksums - if both have checksums, use them for comparison
-	currentChecksum := current.Annotations["toolhive.stacklok.dev/content-checksum"]
-	desiredChecksum := desired.Annotations["toolhive.stacklok.dev/content-checksum"]
-
-	if currentChecksum != "" && desiredChecksum != "" {
-		return currentChecksum == desiredChecksum
-	}
-
-	// Fallback to compute checksums if they don't exist (for backward compatibility)
-	if currentChecksum == "" {
-		currentChecksum = computeConfigMapChecksum(current)
-	}
-	if desiredChecksum == "" {
-		desiredChecksum = computeConfigMapChecksum(desired)
-	}
-
-	return currentChecksum == desiredChecksum
 }
 
 // createRunConfigFromMCPServer converts MCPServer spec to RunConfig using the builder pattern
@@ -302,12 +181,18 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()
 
-	if err := r.addAuthzConfigOptions(ctx, m, &options, m.Spec.AuthzConfig); err != nil {
+	if err := AddAuthzConfigOptions(ctx, r.Client, m.Namespace, m.Spec.AuthzConfig, &options); err != nil {
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
-	// Add OIDC authentication configuration if specified
-	addOIDCConfigOptions(&options, m.Spec.OIDCConfig)
+	if err := r.addOIDCConfigOptions(ctx, &options, m); err != nil {
+		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
+	}
+
+	// Add external auth configuration if specified
+	if err := r.addExternalAuthConfigOptions(ctx, m, &options); err != nil {
+		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
+	}
 
 	// Add audit configuration if specified
 	addAuditConfigOptions(&options, m.Spec.Audit)
@@ -638,128 +523,39 @@ func addTelemetryConfigOptions(
 	))
 }
 
-// addAuthzConfigOptions adds authorization configuration options to the builder options
-// Supports both inline and ConfigMap-based configurations.
-func (r *MCPServerReconciler) addAuthzConfigOptions(
-	ctx context.Context,
-	m *mcpv1alpha1.MCPServer,
-	options *[]runner.RunConfigBuilderOption,
-	authzRef *mcpv1alpha1.AuthzConfigRef,
-) error {
-	if authzRef == nil {
-		return nil
-	}
-
-	switch authzRef.Type {
-	case mcpv1alpha1.AuthzConfigTypeInline:
-		if authzRef.Inline == nil {
-			return fmt.Errorf("inline authz config type specified but inline config is nil")
-		}
-
-		policies := authzRef.Inline.Policies
-		entitiesJSON := authzRef.Inline.EntitiesJSON
-
-		// Create authorization config
-		authzCfg := &authz.Config{
-			Version: "v1",
-			Type:    authz.ConfigTypeCedarV1,
-			Cedar: &authz.CedarConfig{
-				Policies:     policies,
-				EntitiesJSON: entitiesJSON,
-			},
-		}
-
-		// Add authorization config to options
-		*options = append(*options, runner.WithAuthzConfig(authzCfg))
-		return nil
-
-	case mcpv1alpha1.AuthzConfigTypeConfigMap:
-		// Validate reference
-		if authzRef.ConfigMap == nil || authzRef.ConfigMap.Name == "" {
-			return fmt.Errorf("configMap authz config type specified but reference is missing name")
-		}
-		key := authzRef.ConfigMap.Key
-		if key == "" {
-			key = defaultAuthzKey
-		}
-
-		// Ensure we have a Kubernetes client to fetch the ConfigMap
-		if r.Client == nil {
-			return fmt.Errorf("kubernetes client is not configured for ConfigMap authz resolution")
-		}
-
-		// Fetch the ConfigMap from the same namespace as the MCPServer
-		var cm corev1.ConfigMap
-		if err := r.Get(ctx, types.NamespacedName{
-			Namespace: m.Namespace,
-			Name:      authzRef.ConfigMap.Name,
-		}, &cm); err != nil {
-			return fmt.Errorf("failed to get Authz ConfigMap %s/%s: %w", m.Namespace, authzRef.ConfigMap.Name, err)
-		}
-
-		raw, ok := cm.Data[key]
-		if !ok {
-			return fmt.Errorf("authz ConfigMap %s/%s is missing key %q", m.Namespace, authzRef.ConfigMap.Name, key)
-		}
-		if strings.TrimSpace(raw) == "" {
-			return fmt.Errorf("authz ConfigMap %s/%s key %q is empty", m.Namespace, authzRef.ConfigMap.Name, key)
-		}
-
-		// Unmarshal into authz.Config supporting YAML or JSON
-		var cfg authz.Config
-		// Try YAML first (it also handles JSON)
-		if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
-			// Fallback to JSON explicitly for clearer error paths
-			if err2 := json.Unmarshal([]byte(raw), &cfg); err2 != nil {
-				return fmt.Errorf("failed to parse authz config from ConfigMap %s/%s key %q: %v; json fallback error: %v",
-					m.Namespace, authzRef.ConfigMap.Name, key, err, err2)
-			}
-		}
-
-		// Validate the config
-		if err := cfg.Validate(); err != nil {
-			return fmt.Errorf("invalid authz config from ConfigMap %s/%s key %q: %w",
-				m.Namespace, authzRef.ConfigMap.Name, key, err)
-		}
-
-		*options = append(*options, runner.WithAuthzConfig(&cfg))
-		return nil
-
-	default:
-		// Unknown type
-		return fmt.Errorf("unknown authz config type: %s", authzRef.Type)
-	}
-}
-
 // addOIDCConfigOptions adds OIDC authentication configuration options to the builder options
-func addOIDCConfigOptions(
+func (r *MCPServerReconciler) addOIDCConfigOptions(
+	ctx context.Context,
 	options *[]runner.RunConfigBuilderOption,
-	oidcConfig *mcpv1alpha1.OIDCConfigRef,
-) {
+	m *mcpv1alpha1.MCPServer,
+) error {
+
+	// Use the OIDC resolver to get configuration
+	resolver := oidc.NewResolver(r.Client)
+	oidcConfig, err := resolver.Resolve(ctx, m)
+	if err != nil {
+		return fmt.Errorf("failed to resolve OIDC configuration: %w", err)
+	}
+
 	if oidcConfig == nil {
-		return
+		return nil
 	}
 
-	// Handle inline OIDC configuration
-	if oidcConfig.Type == mcpv1alpha1.OIDCConfigTypeInline && oidcConfig.Inline != nil {
-		inline := oidcConfig.Inline
+	// Add OIDC config to options
+	*options = append(*options, runner.WithOIDCConfig(
+		oidcConfig.Issuer,
+		oidcConfig.Audience,
+		oidcConfig.JWKSURL,
+		oidcConfig.IntrospectionURL,
+		oidcConfig.ClientID,
+		oidcConfig.ClientSecret,
+		oidcConfig.ThvCABundlePath,
+		oidcConfig.JWKSAuthTokenPath,
+		oidcConfig.ResourceURL,
+		oidcConfig.JWKSAllowPrivateIP,
+	))
 
-		// Add OIDC config to options
-		*options = append(*options, runner.WithOIDCConfig(
-			inline.Issuer,
-			inline.Audience,
-			inline.JWKSURL,
-			inline.IntrospectionURL,
-			inline.ClientID,
-			inline.ClientSecret,
-			inline.ThvCABundlePath,
-			inline.JWKSAuthTokenPath,
-			"", // resourceURL - not available in InlineOIDCConfig
-			inline.JWKSAllowPrivateIP,
-		))
-	}
-
-	// ConfigMap and Kubernetes types are not currently supported for OIDC configuration
+	return nil
 }
 
 // addAuditConfigOptions adds audit configuration options to the builder options
@@ -773,4 +569,99 @@ func addAuditConfigOptions(
 
 	// Add audit config to options with default config (no custom config path for now)
 	*options = append(*options, runner.WithAuditEnabled(auditConfig.Enabled, ""))
+}
+
+// addExternalAuthConfigOptions adds external authentication configuration options to the builder options
+// This creates middleware configuration for token exchange
+func (r *MCPServerReconciler) addExternalAuthConfigOptions(
+	ctx context.Context,
+	m *mcpv1alpha1.MCPServer,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	if m.Spec.ExternalAuthConfigRef == nil {
+		return nil
+	}
+
+	// Fetch the MCPExternalAuthConfig
+	externalAuthConfig, err := GetExternalAuthConfigForMCPServer(ctx, r.Client, m)
+	if err != nil {
+		return fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
+	}
+
+	// Only token exchange type is supported currently
+	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeTokenExchange {
+		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
+	}
+
+	tokenExchangeSpec := externalAuthConfig.Spec.TokenExchange
+	if tokenExchangeSpec == nil {
+		return fmt.Errorf("token exchange configuration is nil for type tokenExchange")
+	}
+
+	// Validate that the referenced Kubernetes secret exists
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: m.Namespace,
+		Name:      tokenExchangeSpec.ClientSecretRef.Name,
+	}, &secret); err != nil {
+		return fmt.Errorf("failed to get client secret %s/%s: %w",
+			m.Namespace, tokenExchangeSpec.ClientSecretRef.Name, err)
+	}
+
+	if _, ok := secret.Data[tokenExchangeSpec.ClientSecretRef.Key]; !ok {
+		return fmt.Errorf("client secret %s/%s is missing key %q",
+			m.Namespace, tokenExchangeSpec.ClientSecretRef.Name, tokenExchangeSpec.ClientSecretRef.Key)
+	}
+
+	// Use scopes array directly from spec (already matches middleware.Config format)
+	scopes := tokenExchangeSpec.Scopes
+
+	// Determine header strategy based on ExternalTokenHeaderName
+	headerStrategy := "replace" // Default strategy
+	if tokenExchangeSpec.ExternalTokenHeaderName != "" {
+		headerStrategy = "custom"
+	}
+
+	// Build token exchange middleware configuration
+	// Client secret is provided via TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET environment variable
+	// to avoid embedding plaintext secrets in the ConfigMap
+	tokenExchangeConfig := map[string]interface{}{
+		"token_url": tokenExchangeSpec.TokenURL,
+		"client_id": tokenExchangeSpec.ClientID,
+		"audience":  tokenExchangeSpec.Audience,
+	}
+
+	if len(scopes) > 0 {
+		tokenExchangeConfig["scopes"] = scopes
+	}
+
+	if headerStrategy != "" {
+		tokenExchangeConfig["header_strategy"] = headerStrategy
+	}
+
+	if tokenExchangeSpec.ExternalTokenHeaderName != "" {
+		tokenExchangeConfig["external_token_header_name"] = tokenExchangeSpec.ExternalTokenHeaderName
+	}
+
+	// Create middleware parameters
+	middlewareParams := map[string]interface{}{
+		"token_exchange_config": tokenExchangeConfig,
+	}
+
+	// Marshal parameters to JSON
+	paramsJSON, err := json.Marshal(middlewareParams)
+	if err != nil {
+		return fmt.Errorf("failed to marshal token exchange middleware parameters: %w", err)
+	}
+
+	// Create middleware config
+	middlewareConfig := transporttypes.MiddlewareConfig{
+		Type:       "tokenexchange",
+		Parameters: json.RawMessage(paramsJSON),
+	}
+
+	// Add to options using the WithMiddlewareConfig builder option
+	*options = append(*options, runner.WithMiddlewareConfig([]transporttypes.MiddlewareConfig{middlewareConfig}))
+
+	return nil
 }

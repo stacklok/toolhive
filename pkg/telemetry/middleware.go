@@ -608,7 +608,7 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	}
 
 	// Add middleware to runner
-	runner.AddMiddleware(telemetryMw)
+	runner.AddMiddleware(config.Type, telemetryMw)
 
 	// Set Prometheus handler if enabled
 	if prometheusHandler != nil {

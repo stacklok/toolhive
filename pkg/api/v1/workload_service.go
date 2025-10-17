@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -127,10 +126,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		if req.Transport == "" {
 			req.Transport = types.TransportTypeStreamableHTTP.String()
 		}
-		remoteAuthConfig, err = createRequestToRemoteAuthConfig(ctx, req)
-		if err != nil {
-			return nil, err
-		}
+		remoteAuthConfig = createRequestToRemoteAuthConfig(ctx, req)
 	} else {
 		// Create a dedicated context with longer timeout for image retrieval
 		imageCtx, cancel := context.WithTimeout(ctx, imageRetrievalTimeout)
@@ -155,21 +151,22 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 
 		if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
 			if remoteServerMetadata.OAuthConfig != nil {
-				clientSecret, err := resolveClientSecret(ctx, req.OAuthConfig.ClientSecret)
-				if err != nil {
-					return nil, err
-				}
 				remoteAuthConfig = &runner.RemoteAuthConfig{
 					ClientID:     req.OAuthConfig.ClientID,
-					ClientSecret: clientSecret,
 					Scopes:       remoteServerMetadata.OAuthConfig.Scopes,
 					CallbackPort: remoteServerMetadata.OAuthConfig.CallbackPort,
 					Issuer:       remoteServerMetadata.OAuthConfig.Issuer,
 					AuthorizeURL: remoteServerMetadata.OAuthConfig.AuthorizeURL,
 					TokenURL:     remoteServerMetadata.OAuthConfig.TokenURL,
+					UsePKCE:      remoteServerMetadata.OAuthConfig.UsePKCE,
 					OAuthParams:  remoteServerMetadata.OAuthConfig.OAuthParams,
 					Headers:      remoteServerMetadata.Headers,
 					EnvVars:      remoteServerMetadata.EnvVars,
+				}
+
+				// Store the client secret in CLI format if provided
+				if req.OAuthConfig.ClientSecret != nil {
+					remoteAuthConfig.ClientSecret = req.OAuthConfig.ClientSecret.ToCLIString()
 				}
 			}
 		}
@@ -252,48 +249,30 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 
 // createRequestToRemoteAuthConfig converts API request to runner RemoteAuthConfig
 func createRequestToRemoteAuthConfig(
-	ctx context.Context,
+	_ context.Context,
 	req *createRequest,
-) (*runner.RemoteAuthConfig, error) {
-
-	// Resolve client secret from secret management if provided
-	clientSecret, err := resolveClientSecret(ctx, req.OAuthConfig.ClientSecret)
-	if err != nil {
-		return nil, err
-	}
+) *runner.RemoteAuthConfig {
 
 	// Create RemoteAuthConfig
-	return &runner.RemoteAuthConfig{
+	remoteAuthConfig := &runner.RemoteAuthConfig{
 		ClientID:     req.OAuthConfig.ClientID,
-		ClientSecret: clientSecret,
 		Scopes:       req.OAuthConfig.Scopes,
 		Issuer:       req.OAuthConfig.Issuer,
 		AuthorizeURL: req.OAuthConfig.AuthorizeURL,
 		TokenURL:     req.OAuthConfig.TokenURL,
+		UsePKCE:      req.OAuthConfig.UsePKCE,
 		OAuthParams:  req.OAuthConfig.OAuthParams,
 		CallbackPort: req.OAuthConfig.CallbackPort,
 		SkipBrowser:  req.OAuthConfig.SkipBrowser,
 		Headers:      req.Headers,
-	}, nil
-}
-
-// resolveClientSecret resolves client secret from secret management
-func resolveClientSecret(ctx context.Context, secretParam *secrets.SecretParameter) (string, error) {
-	var clientSecret string
-	if secretParam != nil {
-
-		secretsProvider, err := getSecretsManager()
-		if err != nil {
-			return "", fmt.Errorf("failed to get secrets manager: %w", err)
-		}
-		// Get the secret from the secrets manager
-		secretValue, err := secretsProvider.GetSecret(ctx, secretParam.Name)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve OAuth client secret: %w", err)
-		}
-		clientSecret = secretValue
 	}
-	return clientSecret, nil
+
+	// Store the client secret in CLI format if provided
+	if req.OAuthConfig.ClientSecret != nil {
+		remoteAuthConfig.ClientSecret = req.OAuthConfig.ClientSecret.ToCLIString()
+	}
+
+	return remoteAuthConfig
 }
 
 // GetWorkloadNamesFromRequest gets workload names from either the names field or group
@@ -322,21 +301,4 @@ func (s *WorkloadService) GetWorkloadNamesFromRequest(ctx context.Context, req b
 	}
 
 	return workloadNames, nil
-}
-
-// getSecretsManager is a helper function to get the secrets manager
-func getSecretsManager() (secrets.Provider, error) {
-	cfg := config.NewDefaultProvider().GetConfig()
-
-	// Check if secrets setup has been completed
-	if !cfg.Secrets.SetupCompleted {
-		return nil, secrets.ErrSecretsNotSetup
-	}
-
-	providerType, err := cfg.Secrets.GetProviderType()
-	if err != nil {
-		return nil, err
-	}
-
-	return secrets.CreateSecretProvider(providerType)
 }

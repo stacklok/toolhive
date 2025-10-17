@@ -1394,12 +1394,132 @@ func TestBuildWWWAuthenticate_Format(t *testing.T) {
 	t.Parallel()
 	tv := &TokenValidator{
 		issuer:      "https://issuer.example.com",
-		resourceURL: "https://resource.example.com/.well-known/oauth-protected-resource",
+		resourceURL: "https://resource.example.com",
 	}
 	got := tv.buildWWWAuthenticate(true, `failed to parse "token", reason`)
 	want := `Bearer realm="https://issuer.example.com", resource_metadata="https://resource.example.com/.well-known/oauth-protected-resource", error="invalid_token", error_description="failed to parse \"token\", reason"`
 	if got != want {
 		t.Fatalf("format mismatch:\nwant: %s\n got: %s", want, got)
+	}
+}
+
+func TestBuildWWWAuthenticate_ResourceMetadata(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                     string
+		issuer                   string
+		resourceURL              string
+		includeError             bool
+		errDescription           string
+		expectedResourceMetadata string
+	}{
+		{
+			name:                     "resource URL without path",
+			issuer:                   "https://issuer.example.com",
+			resourceURL:              "http://localhost:8080",
+			includeError:             false,
+			expectedResourceMetadata: `resource_metadata="http://localhost:8080/.well-known/oauth-protected-resource"`,
+		},
+		{
+			name:                     "resource URL with trailing slash",
+			issuer:                   "https://issuer.example.com",
+			resourceURL:              "http://localhost:8080/",
+			includeError:             false,
+			expectedResourceMetadata: `resource_metadata="http://localhost:8080/.well-known/oauth-protected-resource"`,
+		},
+		{
+			name:                     "resource URL with path",
+			issuer:                   "https://issuer.example.com",
+			resourceURL:              "http://localhost:9090/mcp",
+			includeError:             false,
+			expectedResourceMetadata: `resource_metadata="http://localhost:9090/.well-known/oauth-protected-resource/mcp"`,
+		},
+		{
+			name:                     "resource URL with path and trailing slash",
+			issuer:                   "https://issuer.example.com",
+			resourceURL:              "http://localhost:9090/mcp/",
+			includeError:             false,
+			expectedResourceMetadata: `resource_metadata="http://localhost:9090/.well-known/oauth-protected-resource/mcp/"`,
+		},
+		{
+			name:                     "resource URL with nested path",
+			issuer:                   "https://issuer.example.com",
+			resourceURL:              "https://api.example.com/v1/mcp",
+			includeError:             false,
+			expectedResourceMetadata: `resource_metadata="https://api.example.com/.well-known/oauth-protected-resource/v1/mcp"`,
+		},
+		{
+			name:                     "resource URL with HTTPS",
+			issuer:                   "https://issuer.example.com",
+			resourceURL:              "https://resource.example.com",
+			includeError:             false,
+			expectedResourceMetadata: `resource_metadata="https://resource.example.com/.well-known/oauth-protected-resource"`,
+		},
+		{
+			name:                     "empty resource URL",
+			issuer:                   "https://issuer.example.com",
+			resourceURL:              "",
+			includeError:             false,
+			expectedResourceMetadata: "",
+		},
+		{
+			name:                     "with error and description",
+			issuer:                   "https://issuer.example.com",
+			resourceURL:              "http://localhost:8080",
+			includeError:             true,
+			errDescription:           "token expired",
+			expectedResourceMetadata: `resource_metadata="http://localhost:8080/.well-known/oauth-protected-resource"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tv := &TokenValidator{
+				issuer:      tt.issuer,
+				resourceURL: tt.resourceURL,
+			}
+
+			got := tv.buildWWWAuthenticate(tt.includeError, tt.errDescription)
+
+			// Check that it starts with "Bearer "
+			if !strings.HasPrefix(got, "Bearer ") {
+				t.Errorf("Expected header to start with 'Bearer ', got: %s", got)
+			}
+
+			// Check realm is present
+			if tt.issuer != "" && !strings.Contains(got, fmt.Sprintf(`realm="%s"`, tt.issuer)) {
+				t.Errorf("Expected realm to be present in: %s", got)
+			}
+
+			// Check resource_metadata
+			if tt.expectedResourceMetadata != "" {
+				if !strings.Contains(got, tt.expectedResourceMetadata) {
+					t.Errorf("Expected resource_metadata:\n  %s\nto be in:\n  %s", tt.expectedResourceMetadata, got)
+				}
+			} else if tt.resourceURL == "" {
+				// If resource URL is empty, resource_metadata should not be present
+				if strings.Contains(got, "resource_metadata") {
+					t.Errorf("Expected no resource_metadata in: %s", got)
+				}
+			}
+
+			// Check error fields
+			if tt.includeError {
+				if !strings.Contains(got, `error="invalid_token"`) {
+					t.Errorf("Expected error field in: %s", got)
+				}
+				if tt.errDescription != "" && !strings.Contains(got, fmt.Sprintf(`error_description="%s"`, tt.errDescription)) {
+					t.Errorf("Expected error_description in: %s", got)
+				}
+			} else {
+				if strings.Contains(got, "error=") {
+					t.Errorf("Expected no error field in: %s", got)
+				}
+			}
+		})
 	}
 }
 

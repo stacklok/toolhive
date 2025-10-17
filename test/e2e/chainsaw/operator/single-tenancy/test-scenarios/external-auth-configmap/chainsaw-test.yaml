@@ -1,0 +1,283 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: external-auth-configmap-test
+spec:
+  description: Test that external authentication (token exchange) configuration is correctly generated in ConfigMap
+  steps:
+  - name: enable-configmap-mode
+    try:
+    - script:
+        content: |
+          echo "Setting TOOLHIVE_USE_CONFIGMAP=true on operator deployment..."
+
+          # Use strategic merge patch to add the environment variable to existing env array
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='strategic' -p='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"true"}]}]}}}}'
+
+          # Wait for rollout to complete
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+
+          # Verify the environment variable was set
+          echo "Verifying TOOLHIVE_USE_CONFIGMAP environment variable is set..."
+          ENV_VAR=$(kubectl get deployment toolhive-operator -n toolhive-system -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].env[?(@.name=="TOOLHIVE_USE_CONFIGMAP")].value}')
+          if [ "$ENV_VAR" = "true" ]; then
+            echo "✓ TOOLHIVE_USE_CONFIGMAP=true verified on operator deployment"
+          else
+            echo "✗ Failed to set TOOLHIVE_USE_CONFIGMAP environment variable"
+            exit 1
+          fi
+
+          # Wait for controller caches to sync after restart
+          echo "Waiting for controller caches to sync..."
+          sleep 5
+          echo "✓ Controller caches should be synced"
+        timeout: 120s
+
+  - name: create-oauth-secret
+    try:
+    - apply:
+        file: oauth-secret.yaml
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: oauth-test-secret
+            namespace: toolhive-system
+
+  - name: create-external-auth-config
+    try:
+    - apply:
+        file: mcpexternalauthconfig.yaml
+    - assert:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: MCPExternalAuthConfig
+          metadata:
+            name: test-external-auth
+            namespace: toolhive-system
+
+  - name: verify-external-auth-config-status
+    try:
+    - script:
+        content: |
+          echo "Verifying MCPExternalAuthConfig status..."
+
+          # Wait for status to be updated with hash (increased attempts for controller cache sync)
+          for i in $(seq 1 15); do
+            HASH=$(kubectl get mcpexternalauthconfig test-external-auth -n toolhive-system -o jsonpath='{.status.configHash}' 2>/dev/null || echo "")
+            if [ -n "$HASH" ]; then
+              echo "✓ MCPExternalAuthConfig hash is set: $HASH"
+              break
+            fi
+            echo "  Waiting for MCPExternalAuthConfig hash... (attempt $i/15)"
+            sleep 3
+          done
+
+          if [ -z "$HASH" ]; then
+            echo "✗ MCPExternalAuthConfig hash was not set"
+            kubectl get mcpexternalauthconfig test-external-auth -n toolhive-system -o yaml
+            exit 1
+          fi
+
+          echo "✓ MCPExternalAuthConfig status verified"
+        timeout: 120s
+
+  - name: create-mcpserver-with-external-auth
+    try:
+    - apply:
+        file: mcpserver-with-external-auth.yaml
+    - assert:
+        file: assert-mcpserver-running.yaml
+        timeout: 120s
+
+  - name: verify-pod-running
+    try:
+    - assert:
+        file: assert-mcpserver-pod-running.yaml
+        timeout: 120s
+
+  - name: verify-mcpserver-external-auth-hash
+    try:
+    - script:
+        content: |
+          echo "Verifying MCPServer has external auth config hash..."
+
+          # Get hash from MCPExternalAuthConfig
+          EXTERNAL_AUTH_HASH=$(kubectl get mcpexternalauthconfig test-external-auth -n toolhive-system -o jsonpath='{.status.configHash}')
+          echo "MCPExternalAuthConfig hash: $EXTERNAL_AUTH_HASH"
+
+          # Get hash from MCPServer status
+          MCPSERVER_HASH=$(kubectl get mcpserver external-auth-test -n toolhive-system -o jsonpath='{.status.externalAuthConfigHash}')
+          echo "MCPServer externalAuthConfigHash: $MCPSERVER_HASH"
+
+          if [ "$EXTERNAL_AUTH_HASH" != "$MCPSERVER_HASH" ]; then
+            echo "✗ Hash mismatch between MCPExternalAuthConfig and MCPServer"
+            exit 1
+          fi
+
+          echo "✓ MCPServer external auth hash verified"
+        timeout: 120s
+
+  - name: verify-configmap-external-auth-config
+    try:
+    - script:
+        content: |
+          echo "Verifying ConfigMap external auth configuration..."
+
+          # Wait for ConfigMap to be created
+          for i in $(seq 1 10); do
+            if kubectl get configmap -n toolhive-system -l toolhive.stacklok.io/mcp-server=external-auth-test >/dev/null 2>&1; then
+              echo "✓ ConfigMap exists"
+              break
+            fi
+            echo "  Waiting for ConfigMap... (attempt $i/10)"
+            sleep 2
+          done
+
+          # Get the ConfigMap and extract the runconfig.json
+          CONFIGMAP_JSON=$(kubectl get configmap -n toolhive-system -l toolhive.stacklok.io/mcp-server=external-auth-test -o jsonpath='{.items[0].data.runconfig\.json}' 2>/dev/null || echo "")
+
+          if [ -z "$CONFIGMAP_JSON" ]; then
+            echo "✗ ConfigMap does not contain runconfig.json data"
+            kubectl get configmap -n toolhive-system -l toolhive.stacklok.io/mcp-server=external-auth-test -o yaml
+            exit 1
+          fi
+
+          echo "$CONFIGMAP_JSON" > /tmp/runconfig.json
+
+          # Debug: Show the full ConfigMap content
+          echo "=== DEBUG: Full runconfig.json content ==="
+          echo "$CONFIGMAP_JSON" | jq . || echo "$CONFIGMAP_JSON"
+          echo "=== END DEBUG ==="
+
+          # Verify middleware_configs section is present in runconfig.json
+          if ! echo "$CONFIGMAP_JSON" | jq -e '.middleware_configs' > /dev/null 2>&1; then
+            echo "✗ middleware_configs section not found in runconfig.json"
+            exit 1
+          fi
+          echo "✓ middleware_configs section found"
+
+          # Verify tokenexchange middleware exists
+          TOKENEXCHANGE_CONFIG=$(echo "$CONFIGMAP_JSON" | jq '.middleware_configs[] | select(.type=="tokenexchange") | .parameters.token_exchange_config')
+          if [ -z "$TOKENEXCHANGE_CONFIG" ]; then
+            echo "✗ tokenexchange middleware configuration not found"
+            exit 1
+          fi
+          echo "✓ tokenexchange middleware configuration found"
+
+          # Verify token URL
+          TOKEN_URL=$(echo "$TOKENEXCHANGE_CONFIG" | jq -r '.token_url // empty')
+          if [ "$TOKEN_URL" != "https://oauth.example.com/token" ]; then
+            echo "✗ Token URL mismatch. Expected: 'https://oauth.example.com/token', Got: '$TOKEN_URL'"
+            exit 1
+          fi
+          echo "✓ Token URL verified"
+
+          # Verify client ID
+          CLIENT_ID=$(echo "$TOKENEXCHANGE_CONFIG" | jq -r '.client_id // empty')
+          if [ "$CLIENT_ID" != "test-client-id" ]; then
+            echo "✗ Client ID mismatch. Expected: 'test-client-id', Got: '$CLIENT_ID'"
+            exit 1
+          fi
+          echo "✓ Client ID verified"
+
+          # Verify audience
+          AUDIENCE=$(echo "$TOKENEXCHANGE_CONFIG" | jq -r '.audience // empty')
+          if [ "$AUDIENCE" != "mcp-backend" ]; then
+            echo "✗ Audience mismatch. Expected: 'mcp-backend', Got: '$AUDIENCE'"
+            exit 1
+          fi
+          echo "✓ Audience verified"
+
+          # Verify scopes array contains "read" and "write"
+          SCOPES=$(echo "$TOKENEXCHANGE_CONFIG" | jq -r '.scopes | join(" ")')
+          if [ "$SCOPES" != "read write" ]; then
+            echo "✗ Scopes mismatch. Expected: 'read write', Got: '$SCOPES'"
+            exit 1
+          fi
+          echo "✓ Scopes verified"
+
+          # Verify external token header name
+          EXT_HEADER=$(echo "$TOKENEXCHANGE_CONFIG" | jq -r '.external_token_header_name // empty')
+          if [ "$EXT_HEADER" != "X-Upstream-Token" ]; then
+            echo "✗ External token header name mismatch. Expected: 'X-Upstream-Token', Got: '$EXT_HEADER'"
+            exit 1
+          fi
+          echo "✓ External token header name verified"
+
+          # Verify header strategy is "custom"
+          HEADER_STRATEGY=$(echo "$TOKENEXCHANGE_CONFIG" | jq -r '.header_strategy // empty')
+          if [ "$HEADER_STRATEGY" != "custom" ]; then
+            echo "✗ Header strategy mismatch. Expected: 'custom', Got: '$HEADER_STRATEGY'"
+            exit 1
+          fi
+          echo "✓ Header strategy verified"
+
+          # Verify client secret is NOT in ConfigMap (should be env var)
+          CLIENT_SECRET=$(echo "$TOKENEXCHANGE_CONFIG" | jq -r '.client_secret // empty')
+          if [ -n "$CLIENT_SECRET" ]; then
+            echo "✗ Client secret should not be in ConfigMap (should be environment variable)"
+            exit 1
+          fi
+          echo "✓ Client secret not in ConfigMap (as expected)"
+
+          echo "✓ All external auth configuration validations passed!"
+        timeout: 120s
+
+  - name: verify-deployment-env-var
+    try:
+    - script:
+        content: |
+          echo "Verifying TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET environment variable..."
+
+          # Get deployment by name (deployment name matches MCPServer name)
+          DEPLOYMENT_NAME="external-auth-test"
+
+          # Verify deployment exists
+          if ! kubectl get deployment "$DEPLOYMENT_NAME" -n toolhive-system >/dev/null 2>&1; then
+            echo "✗ Deployment not found: $DEPLOYMENT_NAME"
+            exit 1
+          fi
+          echo "Found deployment: $DEPLOYMENT_NAME"
+
+          # Check for TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET env var
+          ENV_VAR=$(kubectl get deployment "$DEPLOYMENT_NAME" -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET")]}')
+
+          if [ -z "$ENV_VAR" ]; then
+            echo "✗ TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET environment variable not found"
+            kubectl get deployment "$DEPLOYMENT_NAME" -n toolhive-system -o yaml
+            exit 1
+          fi
+
+          # Verify it's sourced from secret
+          SECRET_REF=$(echo "$ENV_VAR" | jq -r '.valueFrom.secretKeyRef.name // empty')
+          if [ "$SECRET_REF" != "oauth-test-secret" ]; then
+            echo "✗ Environment variable not sourced from correct secret. Expected: 'oauth-test-secret', Got: '$SECRET_REF'"
+            exit 1
+          fi
+
+          SECRET_KEY=$(echo "$ENV_VAR" | jq -r '.valueFrom.secretKeyRef.key // empty')
+          if [ "$SECRET_KEY" != "client-secret" ]; then
+            echo "✗ Environment variable not sourced from correct key. Expected: 'client-secret', Got: '$SECRET_KEY'"
+            exit 1
+          fi
+
+          echo "✓ TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET environment variable verified"
+        timeout: 120s
+
+  - name: cleanup-configmap-mode
+    try:
+    - script:
+        content: |
+          echo "Cleaning up ConfigMap mode..."
+
+          # Wait for ConfigMap to be deleted
+          kubectl wait --for=delete configmap -l toolhive.stacklok.io/mcp-server=external-auth-test -n toolhive-system --timeout=60s || true
+
+          # Disable ConfigMap mode to avoid affecting subsequent tests
+          echo "Disabling ConfigMap mode..."
+          kubectl patch deployment toolhive-operator -n toolhive-system --type='strategic' -p='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"TOOLHIVE_USE_CONFIGMAP","value":"false"}]}]}}}}'
+          kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=60s
+          echo "✓ ConfigMap mode cleanup completed"
+        timeout: 120s

@@ -772,8 +772,24 @@ func (v *TokenValidator) buildWWWAuthenticate(includeError bool, errDescription 
 	}
 
 	// resource_metadata (RFC 9728)
+	// Per RFC 9728 Section 3.1, the well-known URI is inserted between the host and path components
+	// Example: https://resource.example.com/resource1 -> https://resource.example.com/.well-known/oauth-protected-resource/resource1
 	if v.resourceURL != "" {
-		parts = append(parts, fmt.Sprintf(`resource_metadata="%s"`, EscapeQuotes(v.resourceURL)))
+		parsedURL, err := url.Parse(v.resourceURL)
+		if err == nil {
+			// Per RFC 9728 Section 3.1, remove any terminating slash from path
+			path := parsedURL.Path
+			if path == "/" {
+				path = ""
+			}
+
+			// Construct the metadata URL by inserting the well-known path between host and path
+			metadataURL := fmt.Sprintf("%s://%s/.well-known/oauth-protected-resource%s",
+				parsedURL.Scheme,
+				parsedURL.Host,
+				path)
+			parts = append(parts, fmt.Sprintf(`resource_metadata="%s"`, EscapeQuotes(metadataURL)))
+		}
 	}
 
 	// error fields (RFC 6750 §3)

@@ -1,0 +1,141 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.3
+  name: mcpexternalauthconfigs.toolhive.stacklok.dev
+spec:
+  group: toolhive.stacklok.dev
+  names:
+    kind: MCPExternalAuthConfig
+    listKind: MCPExternalAuthConfigList
+    plural: mcpexternalauthconfigs
+    shortNames:
+    - extauth
+    - mcpextauth
+    singular: mcpexternalauthconfig
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          MCPExternalAuthConfig is the Schema for the mcpexternalauthconfigs API.
+          MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
+          MCPServer resources within the same namespace. Cross-namespace references
+          are not supported for security and isolation reasons.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              MCPExternalAuthConfigSpec defines the desired state of MCPExternalAuthConfig.
+              MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
+              MCPServer resources in the same namespace.
+            properties:
+              tokenExchange:
+                description: |-
+                  TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange
+                  Only used when Type is "tokenExchange"
+                properties:
+                  audience:
+                    description: Audience is the target audience for the exchanged
+                      token
+                    type: string
+                  clientId:
+                    description: ClientID is the OAuth 2.0 client identifier
+                    type: string
+                  clientSecretRef:
+                    description: ClientSecretRef is a reference to a secret containing
+                      the OAuth 2.0 client secret
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  externalTokenHeaderName:
+                    description: |-
+                      ExternalTokenHeaderName is the name of the custom header to use for the exchanged token.
+                      If set, the exchanged token will be added to this custom header (e.g., "X-Upstream-Token").
+                      If empty or not set, the exchanged token will replace the Authorization header (default behavior).
+                    type: string
+                  scopes:
+                    description: Scopes is a list of OAuth 2.0 scopes to request for
+                      the exchanged token
+                    items:
+                      type: string
+                    type: array
+                  tokenUrl:
+                    description: TokenURL is the OAuth 2.0 token endpoint URL for
+                      token exchange
+                    type: string
+                required:
+                - audience
+                - clientId
+                - clientSecretRef
+                - tokenUrl
+                type: object
+              type:
+                description: Type is the type of external authentication to configure
+                enum:
+                - tokenExchange
+                type: string
+            required:
+            - type
+            type: object
+          status:
+            description: MCPExternalAuthConfigStatus defines the observed state of
+              MCPExternalAuthConfig
+            properties:
+              configHash:
+                description: ConfigHash is a hash of the current configuration for
+                  change detection
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the most recent generation observed for this MCPExternalAuthConfig.
+                  It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server.
+                format: int64
+                type: integer
+              referencingServers:
+                description: |-
+                  ReferencingServers is a list of MCPServer resources that reference this MCPExternalAuthConfig
+                  This helps track which servers need to be reconciled when this config changes
+                items:
+                  type: string
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

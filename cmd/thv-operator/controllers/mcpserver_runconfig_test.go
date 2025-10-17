@@ -16,7 +16,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -527,34 +529,6 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			},
 		},
 		{
-			name: "with configmap OIDC authentication configuration",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "oidc-configmap-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					Port:      8080,
-					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
-							Name: "test-oidc-config",
-							Key:  "oidc.json",
-						},
-					},
-				},
-			},
-			//nolint:thelper // We want to see the error at the specific line
-			expected: func(t *testing.T, config *runner.RunConfig) {
-				assert.Equal(t, "oidc-configmap-server", config.Name)
-				// For ConfigMap type, OIDC config should not be set directly in RunConfig
-				// since it will be handled by proxyrunner when reading from ConfigMap
-				assert.Nil(t, config.OIDCConfig)
-			},
-		},
-		{
 			name: "with audit configuration enabled",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -645,12 +619,9 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					WithRuntimeObjects(cm).
 					Build()
 
-				r = &MCPServerReconciler{
-					Client: fakeClient,
-					Scheme: scheme,
-				}
+				r = newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 			} else {
-				r = &MCPServerReconciler{}
+				r = newTestMCPServerReconciler(nil, nil, kubernetes.PlatformKubernetes)
 			}
 
 			result, err := r.createRunConfigFromMCPServer(tt.mcpServer)
@@ -696,7 +667,7 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 		},
 	}
 
-	reconciler := &MCPServerReconciler{}
+	reconciler := newTestMCPServerReconciler(nil, nil, kubernetes.PlatformKubernetes)
 
 	// Generate RunConfig and ConfigMap 10 times
 	var configMaps []*corev1.ConfigMap
@@ -727,15 +698,15 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 		}
 
 		// Compute and add checksum
-		checksum := computeConfigMapChecksum(configMap)
+		configMapChecksum := checksum.NewRunConfigConfigMapChecksum().ComputeConfigMapChecksum(configMap)
 		configMap.Annotations = map[string]string{
-			"toolhive.stacklok.dev/content-checksum": checksum,
+			"toolhive.stacklok.dev/content-checksum": configMapChecksum,
 		}
 
 		// Store results
 		runConfigs = append(runConfigs, runConfig)
 		configMaps = append(configMaps, configMap)
-		checksums = append(checksums, checksum)
+		checksums = append(checksums, configMapChecksum)
 	}
 
 	// Verify all RunConfigs are identical
@@ -862,7 +833,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			mcpServer: createTestMCPServerWithConfig("same-server", "default", "test:v1", nil),
 			existingCM: func() *corev1.ConfigMap {
 				// Create a ConfigMap with the same content that would be generated
-				r := &MCPServerReconciler{}
+				r := newTestMCPServerReconciler(nil, nil, kubernetes.PlatformKubernetes)
 				mcpServer := createTestMCPServerWithConfig("same-server", "default", "test:v1", nil)
 				runConfig, err := r.createRunConfigFromMCPServer(mcpServer)
 				if err != nil {
@@ -882,7 +853,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				}
 
 				// Compute the actual checksum for this content
-				checksum := computeConfigMapChecksum(configMap)
+				checksum := checksum.NewRunConfigConfigMapChecksum().ComputeConfigMapChecksum(configMap)
 				configMap.Annotations = map[string]string{
 					"toolhive.stacklok.dev/content-checksum": checksum,
 				}
@@ -1116,10 +1087,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			}
 			fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithRuntimeObjects(objects...).Build()
 
-			reconciler := &MCPServerReconciler{
-				Client: fakeClient,
-				Scheme: testScheme,
-			}
+			reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
 
 			// Execute the method under test
 			err := reconciler.ensureRunConfigConfigMap(context.TODO(), tt.mcpServer)
@@ -1207,10 +1175,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			WithRuntimeObjects(mcpServer, authzCM).
 			Build()
 
-		reconciler := &MCPServerReconciler{
-			Client: fakeClient,
-			Scheme: testScheme,
-		}
+		reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
 
 		err := reconciler.ensureRunConfigConfigMap(context.TODO(), mcpServer)
 		require.NoError(t, err)
@@ -1238,115 +1203,6 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 		assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
 		assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, runConfig.AuthzConfig.Cedar.EntitiesJSON)
 	})
-}
-
-// TestRunConfigContentEquals tests the content comparison logic
-func TestRunConfigContentEquals(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name     string
-		current  *corev1.ConfigMap
-		desired  *corev1.ConfigMap
-		expected bool
-	}{
-		{
-			name: "identical content with same checksum",
-			current: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"key": "value"},
-					Annotations: map[string]string{
-						"other":                                  "annotation",
-						"toolhive.stacklok.dev/content-checksum": "samechecksum123",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			desired: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"key": "value"},
-					Annotations: map[string]string{
-						"other":                                  "annotation",
-						"toolhive.stacklok.dev/content-checksum": "samechecksum123",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			expected: true,
-		},
-		{
-			name: "different data content",
-			current: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"toolhive.stacklok.dev/content-checksum": "oldchecksum123",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "old-content"},
-			},
-			desired: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"toolhive.stacklok.dev/content-checksum": "newchecksum456",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "new-content"},
-			},
-			expected: false,
-		},
-		{
-			name: "different labels",
-			current: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"key": "old-value"},
-					Annotations: map[string]string{
-						"toolhive.stacklok.dev/content-checksum": "oldchecksum123",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			desired: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"key": "new-value"},
-					Annotations: map[string]string{
-						"toolhive.stacklok.dev/content-checksum": "newchecksum456",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			expected: false,
-		},
-		{
-			name: "different non-checksum annotations",
-			current: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"other":                                  "old-annotation",
-						"toolhive.stacklok.dev/content-checksum": "oldchecksum123",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			desired: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"other":                                  "new-annotation",
-						"toolhive.stacklok.dev/content-checksum": "newchecksum456",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			r := &MCPServerReconciler{}
-			result := r.runConfigContentEquals(tt.current, tt.desired)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
 }
 
 // TestValidateRunConfig tests the validation logic
@@ -1440,7 +1296,7 @@ func TestValidateRunConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			r := &MCPServerReconciler{}
+			r := newTestMCPServerReconciler(nil, nil, kubernetes.PlatformKubernetes)
 			err := r.validateRunConfig(t.Context(), tt.config)
 
 			if tt.expectErr {
@@ -1466,101 +1322,6 @@ func TestLabelsForRunConfig(t *testing.T) {
 
 	result := labelsForRunConfig("test-server")
 	assert.Equal(t, expected, result)
-}
-
-// TestComputeConfigMapChecksum tests the checksum computation
-func TestComputeConfigMapChecksum(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name               string
-		cm1                *corev1.ConfigMap
-		cm2                *corev1.ConfigMap
-		sameShouldChecksum bool
-	}{
-		{
-			name: "identical configmaps have same checksum",
-			cm1: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:      map[string]string{"key": "value"},
-					Annotations: map[string]string{"other": "annotation"},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			cm2: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:      map[string]string{"key": "value"},
-					Annotations: map[string]string{"other": "annotation"},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			sameShouldChecksum: true,
-		},
-		{
-			name: "different data content produces different checksum",
-			cm1: &corev1.ConfigMap{
-				Data: map[string]string{"runconfig.json": "content1"},
-			},
-			cm2: &corev1.ConfigMap{
-				Data: map[string]string{"runconfig.json": "content2"},
-			},
-			sameShouldChecksum: false,
-		},
-		{
-			name: "different labels produce different checksum",
-			cm1: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"key": "value1"},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			cm2: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"key": "value2"},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			sameShouldChecksum: false,
-		},
-		{
-			name: "checksum annotation is ignored in computation",
-			cm1: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"other":                                  "annotation",
-						"toolhive.stacklok.dev/content-checksum": "checksum1",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			cm2: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"other":                                  "annotation",
-						"toolhive.stacklok.dev/content-checksum": "checksum2",
-					},
-				},
-				Data: map[string]string{"runconfig.json": "content"},
-			},
-			sameShouldChecksum: true, // Should be same because checksum annotation is ignored
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			checksum1 := computeConfigMapChecksum(tt.cm1)
-			checksum2 := computeConfigMapChecksum(tt.cm2)
-
-			assert.NotEmpty(t, checksum1)
-			assert.NotEmpty(t, checksum2)
-
-			if tt.sameShouldChecksum {
-				assert.Equal(t, checksum1, checksum2)
-			} else {
-				assert.NotEqual(t, checksum1, checksum2)
-			}
-		})
-	}
 }
 
 // TestEnsureRunConfigConfigMapCompleteFlow tests the complete flow from MCPServer changes to ConfigMap updates
@@ -1764,10 +1525,7 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 			testScheme := createRunConfigTestScheme()
 
 			fakeClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
-			reconciler := &MCPServerReconciler{
-				Client: fakeClient,
-				Scheme: testScheme,
-			}
+			reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
 
 			// Create initial MCPServer and ConfigMap
 			mcpServer := tt.initialServer()
@@ -1911,10 +1669,7 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 				WithRuntimeObjects(tc.mcpServer).
 				Build()
 
-			reconciler := &MCPServerReconciler{
-				Client: fakeClient,
-				Scheme: testScheme,
-			}
+			reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
 
 			// Execute the method under test
 			err := reconciler.ensureRunConfigConfigMap(context.TODO(), tc.mcpServer)

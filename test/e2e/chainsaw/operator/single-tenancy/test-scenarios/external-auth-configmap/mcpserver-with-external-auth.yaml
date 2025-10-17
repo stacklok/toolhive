@@ -1,0 +1,24 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: external-auth-test
+  namespace: toolhive-system
+spec:
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: stdio
+  port: 8080
+
+  # Reference to external authentication configuration
+  externalAuthConfigRef:
+    name: test-external-auth
+
+  permissionProfile:
+    type: builtin
+    name: network
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"

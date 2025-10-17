@@ -191,7 +191,7 @@ graph TB
 
 Full API documentation available at:
 - OpenAPI spec: `pkg/api/openapi.go`
-- Interactive docs: `http://localhost:8080/scalar` (Scalar UI)
+- Interactive docs: `http://localhost:8080/api/doc` (Scalar UI)
 
 **Key endpoints:**
 - `/api/v1/workloads` - Workload management

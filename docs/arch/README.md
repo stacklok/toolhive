@@ -10,7 +10,6 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
    - High-level platform overview
    - Key components and concepts
    - Five ways to run MCP servers
-   - Project structure
 
 2. **[Deployment Modes](01-deployment-modes.md)**
    - Local Mode: CLI and UI

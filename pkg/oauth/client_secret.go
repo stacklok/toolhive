@@ -79,7 +79,9 @@ func GenerateUniqueSecretNameWithProvider(workloadName string, secretManager sec
 	// Use nanosecond precision + random suffix for collision resistance
 	timestamp := time.Now().UnixNano()
 	randomSuffix := make([]byte, 4)
-	rand.Read(randomSuffix)
+	if _, err := rand.Read(randomSuffix); err != nil {
+		return "", fmt.Errorf("failed to generate random suffix: %w", err)
+	}
 	uniqueName := fmt.Sprintf("%s_%d_%x", baseName, timestamp, randomSuffix)
 	return uniqueName, nil
 }

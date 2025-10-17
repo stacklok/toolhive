@@ -341,28 +341,7 @@ Remote MCP servers will be supported in Kubernetes mode by:
 3. **No StatefulSet created** - proxy forwards to remote URL
 4. **Service exposes proxy** - Clients use ClusterIP/LoadBalancer
 
-**Example CRD:**
-```yaml
-apiVersion: mcp.stacklok.com/v1alpha1
-kind: MCPServer
-metadata:
-  name: remote-mcp
-spec:
-  remoteURL: https://mcp.example.com/sse
-  transport: sse
-  port: 8080
-  remoteAuth:
-    clientID: my-client-id
-    clientSecretRef:
-      name: mcp-auth-secret
-      key: client-secret
-    issuerURL: https://auth.example.com
-  middleware:
-    - type: authz
-      parameters:
-        policies: |
-          permit(...);
-```
+For complete CRD examples, see [`examples/operator/mcp-servers/`](../../examples/operator/mcp-servers/).
 
 ## Transport Selection Guide
 

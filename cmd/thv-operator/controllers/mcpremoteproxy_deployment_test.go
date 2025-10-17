@@ -313,7 +313,7 @@ func TestBuildResourceRequirements(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := buildResourceRequirements(tt.resourceSpec)
+			result := BuildResourceRequirements(tt.resourceSpec)
 
 			if tt.validate != nil {
 				tt.validate(t, result)
@@ -326,7 +326,7 @@ func TestBuildResourceRequirements(t *testing.T) {
 func TestBuildHealthProbe(t *testing.T) {
 	t.Parallel()
 
-	probe := buildHealthProbe("/health", "http", 10, 5, 3, 2)
+	probe := BuildHealthProbe("/health", "http", 10, 5, 3, 2)
 
 	assert.NotNil(t, probe)
 	assert.NotNil(t, probe.HTTPGet)

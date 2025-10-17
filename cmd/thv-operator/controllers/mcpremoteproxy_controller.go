@@ -5,6 +5,8 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"maps"
+	"reflect"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -197,7 +199,25 @@ func (r *MCPRemoteProxyReconciler) ensureDeployment(
 		return ctrl.Result{}, err
 	}
 
-	// Deployment exists - do not manage replica count to allow HPA/external scaling
+	// Deployment exists - check if it needs to be updated
+	if r.deploymentNeedsUpdate(ctx, deployment, proxy) {
+		newDeployment := r.deploymentForMCPRemoteProxy(ctx, proxy)
+		if newDeployment == nil {
+			return ctrl.Result{}, fmt.Errorf("failed to create updated Deployment object")
+		}
+		// Update the deployment spec but preserve replica count for HPA compatibility
+		deployment.Spec.Template = newDeployment.Spec.Template
+		deployment.Labels = newDeployment.Labels
+		deployment.Annotations = newDeployment.Annotations
+
+		ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
+		if err := r.Update(ctx, deployment); err != nil {
+			ctxLogger.Error(err, "Failed to update Deployment")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -227,12 +247,31 @@ func (r *MCPRemoteProxyReconciler) ensureService(
 		return ctrl.Result{}, err
 	}
 
+	// Service exists - check if it needs to be updated
+	if r.serviceNeedsUpdate(service, proxy) {
+		newService := r.serviceForMCPRemoteProxy(ctx, proxy)
+		if newService == nil {
+			return ctrl.Result{}, fmt.Errorf("failed to create updated Service object")
+		}
+		service.Spec.Ports = newService.Spec.Ports
+		service.Labels = newService.Labels
+		service.Annotations = newService.Annotations
+
+		ctxLogger.Info("Updating Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
+		if err := r.Update(ctx, service); err != nil {
+			ctxLogger.Error(err, "Failed to update Service")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	return ctrl.Result{}, nil
 }
 
 // ensureServiceURL ensures the service URL is set in the status
 func (r *MCPRemoteProxyReconciler) ensureServiceURL(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
 	if proxy.Status.URL == "" {
+		// Note: createProxyServiceURL uses the remote-prefixed service name
 		proxy.Status.URL = createProxyServiceURL(proxy.Name, proxy.Namespace, proxy.Spec.Port)
 		return r.Status().Update(ctx, proxy)
 	}
@@ -474,19 +513,117 @@ func labelsForMCPRemoteProxy(name string) map[string]string {
 }
 
 // proxyRunnerServiceAccountNameForRemoteProxy returns the service account name for the proxy runner
+// Uses "remote-" prefix to avoid conflicts with MCPServer resources of the same name
 func proxyRunnerServiceAccountNameForRemoteProxy(proxyName string) string {
-	return fmt.Sprintf("%s-proxy-runner", proxyName)
+	return fmt.Sprintf("%s-remote-proxy-runner", proxyName)
 }
 
 // createProxyServiceName generates the service name for a remote proxy
+// Uses "remote-" prefix to avoid conflicts with MCPServer resources of the same name
 func createProxyServiceName(proxyName string) string {
-	return fmt.Sprintf("mcp-%s-proxy", proxyName)
+	return fmt.Sprintf("mcp-%s-remote-proxy", proxyName)
 }
 
 // createProxyServiceURL generates the full cluster-local service URL for a remote proxy
 func createProxyServiceURL(proxyName, namespace string, port int32) string {
 	serviceName := createProxyServiceName(proxyName)
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
+}
+
+// deploymentNeedsUpdate checks if the deployment needs to be updated based on spec changes
+func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) bool {
+	if len(deployment.Spec.Template.Spec.Containers) == 0 {
+		return true
+	}
+
+	container := deployment.Spec.Template.Spec.Containers[0]
+
+	// Check if runner image has changed
+	if container.Image != getToolhiveRunnerImage() {
+		return true
+	}
+
+	// Check if port has changed
+	if len(container.Ports) > 0 && container.Ports[0].ContainerPort != proxy.Spec.Port {
+		return true
+	}
+
+	// Check if environment variables have changed
+	expectedEnv := r.buildEnvVarsForProxy(ctx, proxy)
+	if !reflect.DeepEqual(container.Env, expectedEnv) {
+		return true
+	}
+
+	// Check if resources have changed
+	expectedResources := BuildResourceRequirements(proxy.Spec.Resources)
+	if !reflect.DeepEqual(container.Resources, expectedResources) {
+		return true
+	}
+
+	// Check if service account has changed
+	expectedServiceAccountName := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
+	currentServiceAccountName := deployment.Spec.Template.Spec.ServiceAccountName
+	if currentServiceAccountName != "" && currentServiceAccountName != expectedServiceAccountName {
+		return true
+	}
+
+	// Check if deployment metadata has changed
+	expectedLabels := labelsForMCPRemoteProxy(proxy.Name)
+	expectedAnnotations := make(map[string]string)
+
+	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
+		if proxy.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
+			expectedLabels = MergeLabels(expectedLabels, proxy.Spec.ResourceOverrides.ProxyDeployment.Labels)
+		}
+		if proxy.Spec.ResourceOverrides.ProxyDeployment.Annotations != nil {
+			expectedAnnotations = MergeAnnotations(make(map[string]string), proxy.Spec.ResourceOverrides.ProxyDeployment.Annotations)
+		}
+	}
+
+	if !maps.Equal(deployment.Labels, expectedLabels) {
+		return true
+	}
+
+	if !maps.Equal(deployment.Annotations, expectedAnnotations) {
+		return true
+	}
+
+	return false
+}
+
+// serviceNeedsUpdate checks if the service needs to be updated
+func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(service *corev1.Service, proxy *mcpv1alpha1.MCPRemoteProxy) bool {
+	// Check if port has changed
+	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != proxy.Spec.Port {
+		return true
+	}
+
+	// Check if service metadata has changed
+	expectedLabels := labelsForMCPRemoteProxy(proxy.Name)
+	expectedAnnotations := make(map[string]string)
+
+	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyService != nil {
+		if proxy.Spec.ResourceOverrides.ProxyService.Labels != nil {
+			expectedLabels = MergeLabels(expectedLabels, proxy.Spec.ResourceOverrides.ProxyService.Labels)
+		}
+		if proxy.Spec.ResourceOverrides.ProxyService.Annotations != nil {
+			expectedAnnotations = MergeAnnotations(make(map[string]string), proxy.Spec.ResourceOverrides.ProxyService.Annotations)
+		}
+	}
+
+	if !maps.Equal(service.Labels, expectedLabels) {
+		return true
+	}
+
+	if !maps.Equal(service.Annotations, expectedAnnotations) {
+		return true
+	}
+
+	return false
 }
 
 // SetupWithManager sets up the controller with the Manager

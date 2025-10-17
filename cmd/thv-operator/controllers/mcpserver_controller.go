@@ -46,6 +46,7 @@ type MCPServerReconciler struct {
 
 // defaultRBACRules are the default RBAC rules that the
 // ToolHive ProxyRunner and/or MCP server needs to have in order to run.
+// These permissions are needed for MCPServer which deploys and manages MCP server containers.
 var defaultRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{"apps"},
@@ -75,6 +76,22 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{""},
 		Resources: []string{"configmaps"},
+		Verbs:     []string{"get", "list", "watch"},
+	},
+}
+
+// remoteProxyRBACRules defines minimal RBAC permissions for MCPRemoteProxy.
+// Remote proxies only connect to external MCP servers and do not deploy containers,
+// so they only need read access to ConfigMaps and Secrets (for OIDC/token exchange).
+var remoteProxyRBACRules = []rbacv1.PolicyRule{
+	{
+		APIGroups: []string{""},
+		Resources: []string{"configmaps"},
+		Verbs:     []string{"get", "list", "watch"},
+	},
+	{
+		APIGroups: []string{""},
+		Resources: []string{"secrets"},
 		Verbs:     []string{"get", "list", "watch"},
 	},
 }

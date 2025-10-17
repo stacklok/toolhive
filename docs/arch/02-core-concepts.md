@@ -112,8 +112,8 @@ A **proxy** is the component that sits between MCP clients and MCP servers, forw
 1. **Authentication** (`auth`) - JWT token validation
 2. **Token Exchange** (`tokenexchange`) - OAuth token exchange
 3. **MCP Parser** (`mcp-parser`) - JSON-RPC parsing
-4. **Tool Filter** (`tool-filter`) - Filter available tools
-5. **Tool Call Filter** (`tool-call-filter`) - Filter tool calls
+4. **Tool Filter** (`tool-filter`) - Filter and override tools in `tools/list` responses
+5. **Tool Call Filter** (`tool-call-filter`) - Validate and map `tools/call` requests
 6. **Telemetry** (`telemetry`) - OpenTelemetry instrumentation
 7. **Authorization** (`authz`) - Cedar policy evaluation
 8. **Audit** (`audit`) - Request logging
@@ -384,7 +384,7 @@ ToolHive can automatically configure clients to use MCP servers:
 3. Forward to destination (container or remote)
 4. Return responses to clients
 5. Track sessions
-6. Expose metrics and health endpoints
+6. Expose telemetry and health endpoints
 
 **Implementation:**
 - Transparent: `pkg/transport/proxy/transparent/transparent_proxy.go`
@@ -438,31 +438,37 @@ ToolHive can automatically configure clients to use MCP servers:
 
 **Related concepts:** Middleware, Authorization, Audit
 
-### Filter
+### Filter and Override
 
-**Filter** controls which tools or operations are available to MCP clients.
+**Filter and override** controls which tools are available to MCP clients and how they are presented.
 
-**Two filter types:**
+**Two complementary operations:**
 
-1. **Tool Filter**: Controls `tools/list` responses
-   - Whitelist specific tools
-   - Override tool names/descriptions
-   - Applied to list responses
-   - **Why**: Prevents tools from appearing in AI context, reducing token usage
+1. **Tool Filtering**: Whitelist specific tools by name
+   - Configured via `--tool` flags or `toolsFilter` config
+   - Tools not in filter list are hidden from clients
+   - Empty filter list means all tools are available
 
-2. **Tool Call Filter**: Controls `tools/call` requests
-   - Validate tool calls against whitelist
-   - Apply name overrides to calls
-   - Reject unauthorized calls
-   - **Why**: Context optimization - ensures only relevant tool calls are processed
+2. **Tool Overriding**: Customize tool presentation
+   - Configured via `toolsOverride` map in config file
+   - Override tool names and/or descriptions
+   - Maps actual tool name to user-visible name/description
+
+**Two middlewares for consistency:**
+
+- **Tool Filter middleware**: Processes outgoing `tools/list` responses
+- **Tool Call Filter middleware**: Processes incoming `tools/call` requests
+
+Both middlewares share the same configuration to ensure clients only see tools they can call, and can only call tools they see.
 
 **Configuration:**
-- `toolsFilter` - List of allowed tools
-- `toolsOverride` - Map of name/description overrides
+- `toolsFilter` - List of allowed tool names (from `--tool` flags)
+- `toolsOverride` - Map from actual name to override (from config file)
 
 **Implementation:**
-- Filter middleware: `pkg/mcp/middleware.go`
-- Override type: `pkg/runner/config.go`
+- Middleware factories: `pkg/mcp/middleware.go`
+- Filter logic: `pkg/mcp/tool_filter.go`
+- Configuration: `pkg/runner/config.go`
 
 **Related concepts:** Middleware, Authorization
 
@@ -671,7 +677,7 @@ Registry
 | **Proxy** (verb) | Forward traffic with middleware |
 | **Attach** | Connect to container stdin/stdout |
 | **Parse** | Extract structured info from JSON-RPC |
-| **Filter** | Control available tools/operations |
+| **Filter and Override** | Control available tools and how they're presented |
 | **Authorize** | Evaluate Cedar policies |
 | **Audit** | Log operations for compliance |
 | **Export** | Serialize RunConfig to JSON |

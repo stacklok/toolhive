@@ -1,0 +1,94 @@
+name: Validate Proposal Naming
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - 'docs/proposals/**'
+    types: [opened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'The PR number to validate the naming convention for'
+        required: true
+        type: string
+
+jobs:
+  validate-proposal-naming:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Set PR number
+        run: |
+          # Set PR_NUMBER based on context: use inputs.pr_number for manual dispatch, 
+          # otherwise use github.event.number for pull request events
+          if [ -n "${{ inputs.pr_number }}" ]; then
+            echo "PR_NUMBER=${{ inputs.pr_number }}" >> $GITHUB_ENV
+            echo "Using PR number from manual input: ${{ inputs.pr_number }}"
+          else
+            echo "PR_NUMBER=${{ github.event.number }}" >> $GITHUB_ENV
+            echo "Using PR number from event: ${{ github.event.number }}"
+          fi
+
+      - name: Validate proposal naming
+        run: |
+          # Get the list of changed files in docs/proposals
+          CHANGED_FILES=$(git diff --name-only --diff-filter A origin/${{ github.base_ref }}...HEAD | grep '^docs/proposals/')
+
+          # This is here to avoid errors when running this workflow manually without a PR
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "ℹ️ No proposal files changed in this PR"
+            exit 0
+          fi
+
+          echo "Checking proposal file naming convention..."
+          echo "Files to check:"
+          echo "$CHANGED_FILES"
+
+          VALIDATION_FAILED=false
+
+          # Check each changed file
+          while IFS= read -r file; do
+            if [ -n "$file" ] && [ -f "$file" ]; then
+              filename=$(basename "$file")
+              echo "Checking file: $filename"
+
+              # Check if the filename follows the THV-####-name pattern with the current PR number
+              if echo "$filename" | grep -qE "^THV-${PR_NUMBER}-.*\.md$"; then
+                echo "✅ $filename follows the correct naming convention"
+              else
+                echo "❌ $filename does not follow the correct naming convention"
+                echo "   Expected format: THV-${PR_NUMBER}-name-of-your-proposal.md"
+                echo "   Where ${PR_NUMBER} is the current PR number"
+                VALIDATION_FAILED=true
+              fi
+            fi
+          done <<< "$CHANGED_FILES"
+
+          # Check if any validation failed
+          if [ "$VALIDATION_FAILED" = "true" ]; then
+            echo ""
+            echo "❌ Validation failed! Some proposal files do not follow the naming convention."
+            echo ""
+            echo "Proposal files must follow this naming pattern:"
+            echo "  THV-${PR_NUMBER}-name-of-your-proposal.md"
+            echo ""
+            echo "Where:"
+            echo "  - THV- is the prefix"
+            echo "  - ${PR_NUMBER} is the current PR number"
+            echo "  - name-of-your-proposal is a descriptive name in kebab-case"
+            echo "  - .md is the file extension"
+            echo ""
+            echo "Example of valid name for this PR:"
+            echo "  - THV-${PR_NUMBER}-new-feature-proposal.md"
+            echo ""
+            exit 1
+          else
+            echo ""
+            echo "✅ All proposal files follow the correct naming convention!"
+          fi

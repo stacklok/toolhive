@@ -1,0 +1,704 @@
+// Package controllers contains the reconciliation logic for the MCPRemoteProxy custom resource.
+// It handles the creation, update, and deletion of remote MCP proxies in Kubernetes.
+package controllers
+
+import (
+	"context"
+	"fmt"
+	"maps"
+	"reflect"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+)
+
+// MCPRemoteProxyReconciler reconciles a MCPRemoteProxy object
+type MCPRemoteProxyReconciler struct {
+	client.Client
+	Scheme           *runtime.Scheme
+	PlatformDetector *SharedPlatformDetector
+}
+
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptoolconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch;apply
+// +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=rolebindings,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
+
+// Reconcile is part of the main kubernetes reconciliation loop which aims to
+// move the current state of the cluster closer to the desired state.
+func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	// Fetch the MCPRemoteProxy instance
+	proxy := &mcpv1alpha1.MCPRemoteProxy{}
+	err := r.Get(ctx, req.NamespacedName, proxy)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			ctxLogger.Info("MCPRemoteProxy resource not found. Ignoring since object must be deleted")
+			return ctrl.Result{}, nil
+		}
+		ctxLogger.Error(err, "Failed to get MCPRemoteProxy")
+		return ctrl.Result{}, err
+	}
+
+	// Validate and handle configurations
+	if err := r.validateAndHandleConfigs(ctx, proxy); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Ensure all resources
+	if err := r.ensureAllResources(ctx, proxy); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Update status
+	if err := r.updateMCPRemoteProxyStatus(ctx, proxy); err != nil {
+		ctxLogger.Error(err, "Failed to update MCPRemoteProxy status")
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// validateAndHandleConfigs validates spec and handles referenced configurations
+func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// Validate the spec
+	if err := r.validateSpec(ctx, proxy); err != nil {
+		ctxLogger.Error(err, "MCPRemoteProxy spec validation failed")
+		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
+		proxy.Status.Message = fmt.Sprintf("Validation failed: %v", err)
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:    mcpv1alpha1.ConditionTypeAuthConfigured,
+			Status:  metav1.ConditionFalse,
+			Reason:  mcpv1alpha1.ConditionReasonAuthInvalid,
+			Message: err.Error(),
+		})
+		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after validation error")
+		}
+		return err
+	}
+
+	// Handle MCPToolConfig
+	if err := r.handleToolConfig(ctx, proxy); err != nil {
+		ctxLogger.Error(err, "Failed to handle MCPToolConfig")
+		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
+		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPToolConfig error")
+		}
+		return err
+	}
+
+	// Handle MCPExternalAuthConfig
+	if err := r.handleExternalAuthConfig(ctx, proxy); err != nil {
+		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
+		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
+		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPExternalAuthConfig error")
+		}
+		return err
+	}
+
+	return nil
+}
+
+// ensureAllResources ensures all Kubernetes resources for the proxy
+func (r *MCPRemoteProxyReconciler) ensureAllResources(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// Ensure RBAC resources
+	if err := r.ensureRBACResources(ctx, proxy); err != nil {
+		ctxLogger.Error(err, "Failed to ensure RBAC resources")
+		return err
+	}
+
+	// Ensure authorization ConfigMap
+	if err := r.ensureAuthzConfigMapForProxy(ctx, proxy); err != nil {
+		ctxLogger.Error(err, "Failed to ensure authorization ConfigMap")
+		return err
+	}
+
+	// Ensure RunConfig ConfigMap
+	if err := r.ensureRunConfigConfigMap(ctx, proxy); err != nil {
+		ctxLogger.Error(err, "Failed to ensure RunConfig ConfigMap")
+		return err
+	}
+
+	// Ensure Deployment
+	if result, err := r.ensureDeployment(ctx, proxy); err != nil {
+		return err
+	} else if result.RequeueAfter > 0 {
+		return nil
+	}
+
+	// Ensure Service
+	if result, err := r.ensureService(ctx, proxy); err != nil {
+		return err
+	} else if result.RequeueAfter > 0 {
+		return nil
+	}
+
+	// Update service URL in status
+	return r.ensureServiceURL(ctx, proxy)
+}
+
+// ensureAuthzConfigMapForProxy ensures the authorization ConfigMap for inline configuration
+func (r *MCPRemoteProxyReconciler) ensureAuthzConfigMapForProxy(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	authzLabels := labelsForMCPRemoteProxy(proxy.Name)
+	authzLabels[authzLabelKey] = authzLabelValueInline
+	return EnsureAuthzConfigMap(
+		ctx, r.Client, r.Scheme, proxy, proxy.Namespace, proxy.Name, proxy.Spec.AuthzConfig, authzLabels,
+	)
+}
+
+// ensureDeployment ensures the Deployment exists and is up to date
+func (r *MCPRemoteProxyReconciler) ensureDeployment(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+) (ctrl.Result, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	deployment := &appsv1.Deployment{}
+	err := r.Get(ctx, types.NamespacedName{Name: proxy.Name, Namespace: proxy.Namespace}, deployment)
+
+	if errors.IsNotFound(err) {
+		dep := r.deploymentForMCPRemoteProxy(ctx, proxy)
+		if dep == nil {
+			return ctrl.Result{}, fmt.Errorf("failed to create Deployment object")
+		}
+		ctxLogger.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
+		if err := r.Create(ctx, dep); err != nil {
+			ctxLogger.Error(err, "Failed to create new Deployment")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 0}, nil
+	} else if err != nil {
+		ctxLogger.Error(err, "Failed to get Deployment")
+		return ctrl.Result{}, err
+	}
+
+	// Deployment exists - check if it needs to be updated
+	if r.deploymentNeedsUpdate(ctx, deployment, proxy) {
+		newDeployment := r.deploymentForMCPRemoteProxy(ctx, proxy)
+		if newDeployment == nil {
+			return ctrl.Result{}, fmt.Errorf("failed to create updated Deployment object")
+		}
+		// Update the deployment spec but preserve replica count for HPA compatibility
+		deployment.Spec.Template = newDeployment.Spec.Template
+		deployment.Labels = newDeployment.Labels
+		deployment.Annotations = newDeployment.Annotations
+
+		ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
+		if err := r.Update(ctx, deployment); err != nil {
+			ctxLogger.Error(err, "Failed to update Deployment")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// ensureService ensures the Service exists and is up to date
+func (r *MCPRemoteProxyReconciler) ensureService(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+) (ctrl.Result, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	serviceName := createProxyServiceName(proxy.Name)
+	service := &corev1.Service{}
+	err := r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: proxy.Namespace}, service)
+
+	if errors.IsNotFound(err) {
+		svc := r.serviceForMCPRemoteProxy(ctx, proxy)
+		if svc == nil {
+			return ctrl.Result{}, fmt.Errorf("failed to create Service object")
+		}
+		ctxLogger.Info("Creating a new Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
+		if err := r.Create(ctx, svc); err != nil {
+			ctxLogger.Error(err, "Failed to create new Service")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 0}, nil
+	} else if err != nil {
+		ctxLogger.Error(err, "Failed to get Service")
+		return ctrl.Result{}, err
+	}
+
+	// Service exists - check if it needs to be updated
+	if r.serviceNeedsUpdate(service, proxy) {
+		newService := r.serviceForMCPRemoteProxy(ctx, proxy)
+		if newService == nil {
+			return ctrl.Result{}, fmt.Errorf("failed to create updated Service object")
+		}
+		service.Spec.Ports = newService.Spec.Ports
+		service.Labels = newService.Labels
+		service.Annotations = newService.Annotations
+
+		ctxLogger.Info("Updating Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
+		if err := r.Update(ctx, service); err != nil {
+			ctxLogger.Error(err, "Failed to update Service")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// ensureServiceURL ensures the service URL is set in the status
+func (r *MCPRemoteProxyReconciler) ensureServiceURL(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	if proxy.Status.URL == "" {
+		// Note: createProxyServiceURL uses the remote-prefixed service name
+		proxy.Status.URL = createProxyServiceURL(proxy.Name, proxy.Namespace, proxy.Spec.Port)
+		return r.Status().Update(ctx, proxy)
+	}
+	return nil
+}
+
+// validateSpec validates the MCPRemoteProxy spec
+func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	if proxy.Spec.RemoteURL == "" {
+		return fmt.Errorf("remoteURL is required")
+	}
+
+	// Validate external auth config if referenced
+	if proxy.Spec.ExternalAuthConfigRef != nil {
+		externalAuthConfig, err := GetExternalAuthConfigForMCPRemoteProxy(ctx, r.Client, proxy)
+		if err != nil {
+			return fmt.Errorf("failed to validate external auth config: %w", err)
+		}
+		if externalAuthConfig == nil {
+			return fmt.Errorf("referenced MCPExternalAuthConfig %s not found", proxy.Spec.ExternalAuthConfigRef.Name)
+		}
+	}
+
+	return nil
+}
+
+// handleToolConfig handles MCPToolConfig reference for an MCPRemoteProxy
+func (r *MCPRemoteProxyReconciler) handleToolConfig(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	ctxLogger := log.FromContext(ctx)
+	if proxy.Spec.ToolConfigRef == nil {
+		if proxy.Status.ToolConfigHash != "" {
+			proxy.Status.ToolConfigHash = ""
+			if err := r.Status().Update(ctx, proxy); err != nil {
+				return fmt.Errorf("failed to clear MCPToolConfig hash from status: %w", err)
+			}
+		}
+		return nil
+	}
+
+	toolConfig, err := GetToolConfigForMCPRemoteProxy(ctx, r.Client, proxy)
+	if err != nil {
+		return err
+	}
+
+	if toolConfig == nil {
+		return fmt.Errorf("MCPToolConfig %s not found", proxy.Spec.ToolConfigRef.Name)
+	}
+
+	if proxy.Status.ToolConfigHash != toolConfig.Status.ConfigHash {
+		ctxLogger.Info("MCPToolConfig has changed, updating MCPRemoteProxy",
+			"proxy", proxy.Name,
+			"toolconfig", toolConfig.Name,
+			"oldHash", proxy.Status.ToolConfigHash,
+			"newHash", toolConfig.Status.ConfigHash)
+
+		proxy.Status.ToolConfigHash = toolConfig.Status.ConfigHash
+		if err := r.Status().Update(ctx, proxy); err != nil {
+			return fmt.Errorf("failed to update MCPToolConfig hash in status: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// handleExternalAuthConfig validates and tracks the hash of the referenced MCPExternalAuthConfig
+func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	ctxLogger := log.FromContext(ctx)
+	if proxy.Spec.ExternalAuthConfigRef == nil {
+		if proxy.Status.ExternalAuthConfigHash != "" {
+			proxy.Status.ExternalAuthConfigHash = ""
+			if err := r.Status().Update(ctx, proxy); err != nil {
+				return fmt.Errorf("failed to clear MCPExternalAuthConfig hash from status: %w", err)
+			}
+		}
+		return nil
+	}
+
+	externalAuthConfig, err := GetExternalAuthConfigForMCPRemoteProxy(ctx, r.Client, proxy)
+	if err != nil {
+		return err
+	}
+
+	if externalAuthConfig == nil {
+		return fmt.Errorf("MCPExternalAuthConfig %s not found", proxy.Spec.ExternalAuthConfigRef.Name)
+	}
+
+	if proxy.Status.ExternalAuthConfigHash != externalAuthConfig.Status.ConfigHash {
+		ctxLogger.Info("MCPExternalAuthConfig has changed, updating MCPRemoteProxy",
+			"proxy", proxy.Name,
+			"externalAuthConfig", externalAuthConfig.Name,
+			"oldHash", proxy.Status.ExternalAuthConfigHash,
+			"newHash", externalAuthConfig.Status.ConfigHash)
+
+		proxy.Status.ExternalAuthConfigHash = externalAuthConfig.Status.ConfigHash
+		if err := r.Status().Update(ctx, proxy); err != nil {
+			return fmt.Errorf("failed to update MCPExternalAuthConfig hash in status: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// ensureRBACResources ensures that the RBAC resources are in place for the remote proxy
+func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	proxyRunnerNameForRBAC := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
+
+	// Ensure Role with minimal permissions for remote proxies
+	// Remote proxies only need ConfigMap and Secret read access (no StatefulSet/Pod management)
+	if err := EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "Role", func() client.Object {
+		return &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      proxyRunnerNameForRBAC,
+				Namespace: proxy.Namespace,
+			},
+			Rules: remoteProxyRBACRules,
+		}
+	}); err != nil {
+		return err
+	}
+
+	// Ensure ServiceAccount
+	if err := EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "ServiceAccount", func() client.Object {
+		return &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      proxyRunnerNameForRBAC,
+				Namespace: proxy.Namespace,
+			},
+		}
+	}); err != nil {
+		return err
+	}
+
+	// Ensure RoleBinding
+	return EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "RoleBinding", func() client.Object {
+		return &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      proxyRunnerNameForRBAC,
+				Namespace: proxy.Namespace,
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: "rbac.authorization.k8s.io",
+				Kind:     "Role",
+				Name:     proxyRunnerNameForRBAC,
+			},
+			Subjects: []rbacv1.Subject{
+				{
+					Kind:      "ServiceAccount",
+					Name:      proxyRunnerNameForRBAC,
+					Namespace: proxy.Namespace,
+				},
+			},
+		}
+	})
+}
+
+// updateMCPRemoteProxyStatus updates the status of the MCPRemoteProxy
+func (r *MCPRemoteProxyReconciler) updateMCPRemoteProxyStatus(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	// List the pods for this MCPRemoteProxy's deployment
+	podList := &corev1.PodList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(proxy.Namespace),
+		client.MatchingLabels(labelsForMCPRemoteProxy(proxy.Name)),
+	}
+	if err := r.List(ctx, podList, listOpts...); err != nil {
+		return err
+	}
+
+	// Update the status based on the pod status
+	var running, pending, failed int
+	for _, pod := range podList.Items {
+		switch pod.Status.Phase {
+		case corev1.PodRunning:
+			running++
+		case corev1.PodPending:
+			pending++
+		case corev1.PodFailed:
+			failed++
+		case corev1.PodSucceeded:
+			running++
+		case corev1.PodUnknown:
+			pending++
+		}
+	}
+
+	// Update the status
+	if running > 0 {
+		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseReady
+		proxy.Status.Message = "Remote proxy is running"
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:    mcpv1alpha1.ConditionTypeReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  mcpv1alpha1.ConditionReasonDeploymentReady,
+			Message: "Deployment is ready and running",
+		})
+	} else if pending > 0 {
+		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhasePending
+		proxy.Status.Message = "Remote proxy is starting"
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:    mcpv1alpha1.ConditionTypeReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  mcpv1alpha1.ConditionReasonDeploymentNotReady,
+			Message: "Deployment is not yet ready",
+		})
+	} else if failed > 0 {
+		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhaseFailed
+		proxy.Status.Message = "Remote proxy failed to start"
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:    mcpv1alpha1.ConditionTypeReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  mcpv1alpha1.ConditionReasonDeploymentNotReady,
+			Message: "Deployment failed",
+		})
+	} else {
+		proxy.Status.Phase = mcpv1alpha1.MCPRemoteProxyPhasePending
+		proxy.Status.Message = "No pods found for remote proxy"
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:    mcpv1alpha1.ConditionTypeReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  mcpv1alpha1.ConditionReasonDeploymentNotReady,
+			Message: "No pods found",
+		})
+	}
+
+	// Update ObservedGeneration to reflect that we've processed this generation
+	proxy.Status.ObservedGeneration = proxy.Generation
+
+	return r.Status().Update(ctx, proxy)
+}
+
+// labelsForMCPRemoteProxy returns the labels for selecting the resources belonging to the given MCPRemoteProxy CR name
+func labelsForMCPRemoteProxy(name string) map[string]string {
+	return map[string]string{
+		"app":                        "mcpremoteproxy",
+		"app.kubernetes.io/name":     "mcpremoteproxy",
+		"app.kubernetes.io/instance": name,
+		"toolhive":                   "true",
+		"toolhive-name":              name,
+	}
+}
+
+// proxyRunnerServiceAccountNameForRemoteProxy returns the service account name for the proxy runner
+// Uses "remote-" prefix to avoid conflicts with MCPServer resources of the same name
+func proxyRunnerServiceAccountNameForRemoteProxy(proxyName string) string {
+	return fmt.Sprintf("%s-remote-proxy-runner", proxyName)
+}
+
+// createProxyServiceName generates the service name for a remote proxy
+// Uses "remote-" prefix to avoid conflicts with MCPServer resources of the same name
+func createProxyServiceName(proxyName string) string {
+	return fmt.Sprintf("mcp-%s-remote-proxy", proxyName)
+}
+
+// createProxyServiceURL generates the full cluster-local service URL for a remote proxy
+func createProxyServiceURL(proxyName, namespace string, port int32) string {
+	serviceName := createProxyServiceName(proxyName)
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
+}
+
+// deploymentNeedsUpdate checks if the deployment needs to be updated based on spec changes
+func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) bool {
+	if len(deployment.Spec.Template.Spec.Containers) == 0 {
+		return true
+	}
+
+	container := deployment.Spec.Template.Spec.Containers[0]
+
+	// Check if runner image has changed
+	if container.Image != getToolhiveRunnerImage() {
+		return true
+	}
+
+	// Check if port has changed
+	if len(container.Ports) > 0 && container.Ports[0].ContainerPort != proxy.Spec.Port {
+		return true
+	}
+
+	// Check if environment variables have changed
+	expectedEnv := r.buildEnvVarsForProxy(ctx, proxy)
+	if !reflect.DeepEqual(container.Env, expectedEnv) {
+		return true
+	}
+
+	// Check if resources have changed
+	expectedResources := BuildResourceRequirements(proxy.Spec.Resources)
+	if !reflect.DeepEqual(container.Resources, expectedResources) {
+		return true
+	}
+
+	// Check if service account has changed
+	expectedServiceAccountName := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
+	currentServiceAccountName := deployment.Spec.Template.Spec.ServiceAccountName
+	if currentServiceAccountName != "" && currentServiceAccountName != expectedServiceAccountName {
+		return true
+	}
+
+	// Check if deployment metadata has changed
+	expectedLabels := labelsForMCPRemoteProxy(proxy.Name)
+	expectedAnnotations := make(map[string]string)
+
+	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
+		if proxy.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
+			expectedLabels = MergeLabels(expectedLabels, proxy.Spec.ResourceOverrides.ProxyDeployment.Labels)
+		}
+		if proxy.Spec.ResourceOverrides.ProxyDeployment.Annotations != nil {
+			expectedAnnotations = MergeAnnotations(make(map[string]string), proxy.Spec.ResourceOverrides.ProxyDeployment.Annotations)
+		}
+	}
+
+	if !maps.Equal(deployment.Labels, expectedLabels) {
+		return true
+	}
+
+	if !maps.Equal(deployment.Annotations, expectedAnnotations) {
+		return true
+	}
+
+	return false
+}
+
+// serviceNeedsUpdate checks if the service needs to be updated
+func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(service *corev1.Service, proxy *mcpv1alpha1.MCPRemoteProxy) bool {
+	// Check if port has changed
+	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != proxy.Spec.Port {
+		return true
+	}
+
+	// Check if service metadata has changed
+	expectedLabels := labelsForMCPRemoteProxy(proxy.Name)
+	expectedAnnotations := make(map[string]string)
+
+	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyService != nil {
+		if proxy.Spec.ResourceOverrides.ProxyService.Labels != nil {
+			expectedLabels = MergeLabels(expectedLabels, proxy.Spec.ResourceOverrides.ProxyService.Labels)
+		}
+		if proxy.Spec.ResourceOverrides.ProxyService.Annotations != nil {
+			expectedAnnotations = MergeAnnotations(make(map[string]string), proxy.Spec.ResourceOverrides.ProxyService.Annotations)
+		}
+	}
+
+	if !maps.Equal(service.Labels, expectedLabels) {
+		return true
+	}
+
+	if !maps.Equal(service.Annotations, expectedAnnotations) {
+		return true
+	}
+
+	return false
+}
+
+// SetupWithManager sets up the controller with the Manager
+func (r *MCPRemoteProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Create a handler that maps MCPExternalAuthConfig changes to MCPRemoteProxy reconciliation requests
+	externalAuthConfigHandler := handler.EnqueueRequestsFromMapFunc(
+		func(ctx context.Context, obj client.Object) []reconcile.Request {
+			externalAuthConfig, ok := obj.(*mcpv1alpha1.MCPExternalAuthConfig)
+			if !ok {
+				return nil
+			}
+
+			// List all MCPRemoteProxies in the same namespace
+			proxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+			if err := r.List(ctx, proxyList, client.InNamespace(externalAuthConfig.Namespace)); err != nil {
+				log.FromContext(ctx).Error(err, "Failed to list MCPRemoteProxies for MCPExternalAuthConfig watch")
+				return nil
+			}
+
+			// Find MCPRemoteProxies that reference this MCPExternalAuthConfig
+			var requests []reconcile.Request
+			for _, proxy := range proxyList.Items {
+				if proxy.Spec.ExternalAuthConfigRef != nil &&
+					proxy.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name {
+					requests = append(requests, reconcile.Request{
+						NamespacedName: types.NamespacedName{
+							Name:      proxy.Name,
+							Namespace: proxy.Namespace,
+						},
+					})
+				}
+			}
+
+			return requests
+		},
+	)
+
+	// Create a handler that maps MCPToolConfig changes to MCPRemoteProxy reconciliation requests
+	toolConfigHandler := handler.EnqueueRequestsFromMapFunc(
+		func(ctx context.Context, obj client.Object) []reconcile.Request {
+			toolConfig, ok := obj.(*mcpv1alpha1.MCPToolConfig)
+			if !ok {
+				return nil
+			}
+
+			// List all MCPRemoteProxies in the same namespace
+			proxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+			if err := r.List(ctx, proxyList, client.InNamespace(toolConfig.Namespace)); err != nil {
+				log.FromContext(ctx).Error(err, "Failed to list MCPRemoteProxies for MCPToolConfig watch")
+				return nil
+			}
+
+			// Find MCPRemoteProxies that reference this MCPToolConfig
+			var requests []reconcile.Request
+			for _, proxy := range proxyList.Items {
+				if proxy.Spec.ToolConfigRef != nil &&
+					proxy.Spec.ToolConfigRef.Name == toolConfig.Name {
+					requests = append(requests, reconcile.Request{
+						NamespacedName: types.NamespacedName{
+							Name:      proxy.Name,
+							Namespace: proxy.Namespace,
+						},
+					})
+				}
+			}
+
+			return requests
+		},
+	)
+
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&mcpv1alpha1.MCPRemoteProxy{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
+		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
+		Watches(&mcpv1alpha1.MCPToolConfig{}, toolConfigHandler).
+		Complete(r)
+}

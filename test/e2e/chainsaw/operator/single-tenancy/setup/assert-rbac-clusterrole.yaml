@@ -102,6 +102,7 @@ rules:
   resources:
   - mcpexternalauthconfigs
   - mcpregistries
+  - mcpremoteproxies
   - mcpservers
   - mcptoolconfigs
   verbs:
@@ -126,6 +127,7 @@ rules:
   resources:
   - mcpexternalauthconfigs/status
   - mcpregistries/status
+  - mcpremoteproxies/status
   - mcpservers/status
   - mcptoolconfigs/status
   verbs:

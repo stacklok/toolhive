@@ -134,6 +134,63 @@ Supported repository URL formats:
 - `git://example.com/repo.git` - Git protocol
 - `file:///path/to/local/repo` - Local filesystem (for testing)
 
+### API Source
+
+Synchronize from HTTP/HTTPS API endpoints compatible with 
+[Model Context Protocol Registry API](https://github.com/modelcontextprotocol/registry/blob/main/docs/reference/api/generic-registry-api.md):
+
+```yaml
+spec:
+  source:
+    type: api
+    api:
+      endpoint: "https://registry.example.com"
+```
+
+The API source automatically detects the registry format by probing the endpoint:
+
+**ToolHive Registry API** (Supported):
+- Endpoint responds to `/v0/info` with registry metadata
+- Fetches servers from `/v0/servers`
+- Fetches server details from `/v0/servers/{name}`
+- No pagination - returns all servers in single response
+- Data already in ToolHive format (no conversion needed)
+
+**Upstream MCP Registry API** (Future, once the data format will stabilize):
+- Endpoint responds to `/openapi.yaml` with OpenAPI specification
+- Will support cursor-based pagination via `/v0/servers?cursor=...`
+- Will convert upstream format to ToolHive format automatically
+
+Example configurations:
+
+**Internal ToolHive Registry API:**
+```yaml
+spec:
+  source:
+    type: api
+    api:
+      endpoint: "http://my-registry-api.default.svc.cluster.local:8080"
+  syncPolicy:
+    interval: "30m"
+```
+
+**External Registry API:**
+```yaml
+spec:
+  source:
+    type: api
+    api:
+      endpoint: "https://registry.modelcontextprotocol.io/"
+  syncPolicy:
+    interval: "1h"
+```
+
+**Notes:**
+- API endpoints are validated at sync time
+- Format detection is automatic (ToolHive vs Upstream)
+- HTTPS is recommended for production use
+- Authentication support planned for future release
+
 ### Registry Formats
 
 **ToolHive Format** (default):

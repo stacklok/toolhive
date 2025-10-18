@@ -114,7 +114,8 @@ func (v *CLIEnvVarValidator) Validate(
 			if envVar.Required {
 
 				if envVar.Secret {
-					// Only use secrets manager if it's available
+					// Check if secrets manager is available before attempting to retrieve secret.
+					// Falls back to prompt if unavailable or secret not found.
 					if secretsManager != nil {
 						value, err := secretsManager.GetSecret(ctx, envVar.Name)
 						if err != nil {

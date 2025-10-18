@@ -125,7 +125,8 @@ func (v *CLIEnvVarValidator) Validate(
 							continue
 						}
 					} else {
-						logger.Warnf("Secrets manager not configured (setup incomplete or missing provider) - falling back to environment variables or prompt")
+						logger.Warnf("Secrets manager not configured (setup incomplete or missing provider) - " +
+							"falling back to environment variables or prompt")
 					}
 
 					// If secrets manager unavailable or secret not found, fall through to prompt

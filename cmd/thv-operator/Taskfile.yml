@@ -125,8 +125,8 @@ tasks:
   operator-deploy-local:
     desc: |
       Build the ToolHive runtime and Operator image locally and deploy it to the K8s cluster.
-      Set ENABLE_EXPERIMENTAL_FEATURES=true to enable experimental features in the operator
-      and automatically build and deploy the registry API image.
+      Set ENABLE_EXPERIMENTAL_FEATURES=true to enable experimental features in the operator.
+      Note: Registry API image is pulled from ghcr.io/stacklok/thv-registry-api:latest
       Example: task operator-deploy-local ENABLE_EXPERIMENTAL_FEATURES=true
     platforms: [linux, darwin]
     vars:
@@ -135,21 +135,16 @@ tasks:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1
       TOOLHIVE_IMAGE:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-proxyrunner | tail -n 1
-      REGISTRY_API_IMAGE:
-        sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-registry-api | tail -n 1
     cmds:
       - echo "Loading toolhive operator image {{.OPERATOR_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.OPERATOR_IMAGE}}
       - echo "Loading toolhive image {{.TOOLHIVE_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.TOOLHIVE_IMAGE}}
-      - echo "Loading registry API image {{.REGISTRY_API_IMAGE}} into kind..."
-      - kind load docker-image --name toolhive {{.REGISTRY_API_IMAGE}}
       - |
         helm upgrade --install toolhive-operator deploy/charts/operator \
         --set operator.image={{.OPERATOR_IMAGE}} \
         --set operator.toolhiveRunnerImage={{.TOOLHIVE_IMAGE}} \
         --set operator.features.experimental={{.ENABLE_EXPERIMENTAL_FEATURES}} \
-        --set registryAPI.image={{.REGISTRY_API_IMAGE}} \
         --namespace toolhive-system \
         --create-namespace \
         --kubeconfig kconfig.yaml \

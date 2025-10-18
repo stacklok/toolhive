@@ -2547,6 +2547,12 @@ paths:
               schema:
                 type: string
           description: Logs for the specified workload
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid workload name
         "404":
           content:
             application/json:
@@ -2554,6 +2560,42 @@ paths:
                 type: string
           description: Not Found
       summary: Get logs for a specific workload
+      tags:
+      - logs
+  /api/v1beta/workloads/{name}/proxy-logs:
+    get:
+      description: Retrieve proxy logs for a specific workload by name from the file
+        system.
+      parameters:
+      - description: Workload name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: string
+            text/plain:
+              schema:
+                type: string
+          description: Proxy logs for the specified workload
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid workload name
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Proxy logs not found for workload
+      summary: Get proxy logs for a specific workload
       tags:
       - logs
   /api/v1beta/workloads/{name}/restart:

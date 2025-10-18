@@ -725,3 +725,316 @@ func TestGetToolType(t *testing.T) {
 		})
 	}
 }
+
+func TestAddNetworkLabels(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		networkName string
+		expected    map[string]string
+	}{
+		{
+			name:        "Add network labels with standard name",
+			networkName: "test-network",
+			expected: map[string]string{
+				LabelToolHive: "true",
+				LabelName:     "test-network",
+			},
+		},
+		{
+			name:        "Add network labels with complex name",
+			networkName: "my-app-network-prod",
+			expected: map[string]string{
+				LabelToolHive: "true",
+				LabelName:     "my-app-network-prod",
+			},
+		},
+		{
+			name:        "Add network labels with empty name",
+			networkName: "",
+			expected: map[string]string{
+				LabelToolHive: "true",
+				LabelName:     "",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			labels := make(map[string]string)
+			AddNetworkLabels(labels, tc.networkName)
+
+			// Verify all expected labels are present with correct values
+			for key, expectedValue := range tc.expected {
+				actualValue, exists := labels[key]
+				if !exists {
+					t.Errorf("Expected label %s to exist, but it doesn't", key)
+				}
+				if actualValue != expectedValue {
+					t.Errorf("Expected label %s to be %s, but got %s", key, expectedValue, actualValue)
+				}
+			}
+
+			// Verify no unexpected labels are present
+			if len(labels) != len(tc.expected) {
+				t.Errorf("Expected %d labels, but got %d", len(tc.expected), len(labels))
+			}
+		})
+	}
+}
+
+func TestAddNetworkIsolationLabel(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name             string
+		networkIsolation bool
+		expectedValue    string
+	}{
+		{
+			name:             "Network isolation enabled",
+			networkIsolation: true,
+			expectedValue:    "true",
+		},
+		{
+			name:             "Network isolation disabled",
+			networkIsolation: false,
+			expectedValue:    "false",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			labels := make(map[string]string)
+			AddNetworkIsolationLabel(labels, tc.networkIsolation)
+
+			// Verify the network isolation label is set correctly
+			actualValue, exists := labels[LabelNetworkIsolation]
+			if !exists {
+				t.Errorf("Expected label %s to exist, but it doesn't", LabelNetworkIsolation)
+			}
+			if actualValue != tc.expectedValue {
+				t.Errorf("Expected label %s to be %s, but got %s", LabelNetworkIsolation, tc.expectedValue, actualValue)
+			}
+
+			// Verify only one label was added
+			if len(labels) != 1 {
+				t.Errorf("Expected 1 label, but got %d", len(labels))
+			}
+		})
+	}
+}
+
+func TestGetGroup(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		labels   map[string]string
+		expected string
+	}{
+		{
+			name: "Group name exists",
+			labels: map[string]string{
+				LabelGroup: "production",
+			},
+			expected: "production",
+		},
+		{
+			name: "Group name with complex value",
+			labels: map[string]string{
+				LabelGroup: "my-app-group",
+			},
+			expected: "my-app-group",
+		},
+		{
+			name:     "Group name doesn't exist",
+			labels:   map[string]string{},
+			expected: "",
+		},
+		{
+			name: "Group name exists but empty",
+			labels: map[string]string{
+				LabelGroup: "",
+			},
+			expected: "",
+		},
+		{
+			name: "Other labels present but no group",
+			labels: map[string]string{
+				LabelName:     "test-container",
+				LabelToolHive: "true",
+			},
+			expected: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := GetGroup(tc.labels)
+			if result != tc.expected {
+				t.Errorf("Expected group name to be %s, but got %s", tc.expected, result)
+			}
+		})
+	}
+}
+
+func TestSetGroup(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		groupName string
+		expected  string
+	}{
+		{
+			name:      "Set standard group name",
+			groupName: "production",
+			expected:  "production",
+		},
+		{
+			name:      "Set complex group name",
+			groupName: "my-app-group-dev",
+			expected:  "my-app-group-dev",
+		},
+		{
+			name:      "Set empty group name",
+			groupName: "",
+			expected:  "",
+		},
+		{
+			name:      "Set group name with special characters",
+			groupName: "group_123",
+			expected:  "group_123",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			labels := make(map[string]string)
+			SetGroup(labels, tc.groupName)
+
+			// Verify the group label is set correctly
+			actualValue, exists := labels[LabelGroup]
+			if !exists {
+				t.Errorf("Expected label %s to exist, but it doesn't", LabelGroup)
+			}
+			if actualValue != tc.expected {
+				t.Errorf("Expected label %s to be %s, but got %s", LabelGroup, tc.expected, actualValue)
+			}
+
+			// Verify only one label was added
+			if len(labels) != 1 {
+				t.Errorf("Expected 1 label, but got %d", len(labels))
+			}
+		})
+	}
+}
+
+func TestSetGroupOverwrite(t *testing.T) {
+	t.Parallel()
+	// Test that SetGroup overwrites existing group value
+	labels := map[string]string{
+		LabelGroup:    "old-group",
+		LabelName:     "test-container",
+		LabelToolHive: "true",
+	}
+
+	SetGroup(labels, "new-group")
+
+	// Verify the group was updated
+	if labels[LabelGroup] != "new-group" {
+		t.Errorf("Expected group to be updated to new-group, but got %s", labels[LabelGroup])
+	}
+
+	// Verify other labels were not affected
+	if labels[LabelName] != "test-container" {
+		t.Errorf("Expected name label to remain unchanged")
+	}
+	if labels[LabelToolHive] != "true" {
+		t.Errorf("Expected toolhive label to remain unchanged")
+	}
+
+	// Verify total number of labels
+	if len(labels) != 3 {
+		t.Errorf("Expected 3 labels, but got %d", len(labels))
+	}
+}
+
+func TestIsAuxiliaryWorkload(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		labels   map[string]string
+		expected bool
+	}{
+		{
+			name: "Auxiliary workload with lowercase true",
+			labels: map[string]string{
+				LabelAuxiliary: "true",
+			},
+			expected: true,
+		},
+		{
+			name: "Auxiliary workload with uppercase TRUE",
+			labels: map[string]string{
+				LabelAuxiliary: "TRUE",
+			},
+			expected: true,
+		},
+		{
+			name: "Auxiliary workload with mixed case TrUe",
+			labels: map[string]string{
+				LabelAuxiliary: "TrUe",
+			},
+			expected: true,
+		},
+		{
+			name: "Not an auxiliary workload - false value",
+			labels: map[string]string{
+				LabelAuxiliary: "false",
+			},
+			expected: false,
+		},
+		{
+			name: "Not an auxiliary workload - other value",
+			labels: map[string]string{
+				LabelAuxiliary: "yes",
+			},
+			expected: false,
+		},
+		{
+			name:     "Not an auxiliary workload - label missing",
+			labels:   map[string]string{},
+			expected: false,
+		},
+		{
+			name: "Not an auxiliary workload - other labels present",
+			labels: map[string]string{
+				LabelName:     "test-container",
+				LabelToolHive: "true",
+			},
+			expected: false,
+		},
+		{
+			name: "Auxiliary workload with other labels",
+			labels: map[string]string{
+				LabelAuxiliary: "true",
+				LabelName:      "inspector",
+				LabelToolHive:  "true",
+			},
+			expected: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := IsAuxiliaryWorkload(tc.labels)
+			if result != tc.expected {
+				t.Errorf("Expected IsAuxiliaryWorkload to return %v, but got %v", tc.expected, result)
+			}
+		})
+	}
+}

@@ -1797,8 +1797,8 @@ golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b h1:M2rDM6z3Fhozi9O7NWsxAkg/y
 golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b/go.mod h1:3//PLf8L/X+8b4vuAfHzxeRUl04Adcb341+IGKfnqS8=
 golang.org/x/exp/event v0.0.0-20251002181428-27f1f14c8bb9 h1:hKV5V8vl7XoHscYxkN/EsUPINoGd/1zlcdHdFUsLEM4=
 golang.org/x/exp/event v0.0.0-20251002181428-27f1f14c8bb9/go.mod h1:eyy3Yar83hHaVrAPacajZo3VTNwkBZtfqzEdIsFYx/A=
-golang.org/x/exp/jsonrpc2 v0.0.0-20251009144603-d2f985daa21b h1:f+jLhWpK7wol83wmx8weucM8X8F9NXsz2es4lZznVTE=
-golang.org/x/exp/jsonrpc2 v0.0.0-20251009144603-d2f985daa21b/go.mod h1:UsQSnEjuZuEwMA9XtFqCZ80S6QkIIiGvoRV/sr4yIfU=
+golang.org/x/exp/jsonrpc2 v0.0.0-20251017212417-90e834f514db h1:Gm+ZDsZmWllUgjLJ/XWYu9hjY3IL1fKNO1rlWMzyYzw=
+golang.org/x/exp/jsonrpc2 v0.0.0-20251017212417-90e834f514db/go.mod h1:UsQSnEjuZuEwMA9XtFqCZ80S6QkIIiGvoRV/sr4yIfU=
 golang.org/x/image v0.0.0-20180708004352-c73c2afc3b81/go.mod h1:ux5Hcp/YLpHSI86hEcLt0YII63i6oz57MZXIpbrjZUs=
 golang.org/x/image v0.0.0-20190227222117-0694c2d4d067/go.mod h1:kZ7UVZpmo3dzQBMxlp+ypCbDeSB+sBbTgSJuh5dn5js=
 golang.org/x/image v0.0.0-20190802002840-cff245a6509b/go.mod h1:FeLwcggjj3mMvU+oOTbSwawSJRM1uh48EjtB4UJZlP0=

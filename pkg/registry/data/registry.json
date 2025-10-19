@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-18T00:16:44Z",
+  "last_updated": "2025-10-19T00:19:54Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -711,7 +711,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.9.2",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.9.4",
       "permissions": {
         "network": {
           "outbound": {
@@ -1566,9 +1566,9 @@
         "annotatedMessage"
       ],
       "metadata": {
-        "stars": 68300,
+        "stars": 70658,
         "pulls": 17019,
-        "last_updated": "2025-09-20T02:26:30Z"
+        "last_updated": "2025-10-18T02:26:52Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1907,9 +1907,9 @@
         "update_pull_request_branch"
       ],
       "metadata": {
-        "stars": 22775,
+        "stars": 23700,
         "pulls": 5000,
-        "last_updated": "2025-09-20T02:26:29Z"
+        "last_updated": "2025-10-18T02:26:51Z"
       },
       "repository_url": "https://github.com/github/github-mcp-server",
       "tags": [
@@ -2854,8 +2854,8 @@
       ],
       "metadata": {
         "stars": 7,
-        "pulls": 216,
-        "last_updated": "2025-09-20T02:26:29Z"
+        "pulls": 473,
+        "last_updated": "2025-10-18T02:26:51Z"
       },
       "repository_url": "https://github.com/kionsoftware/kion-mcp",
       "tags": [
@@ -4110,9 +4110,9 @@
         "get_vulnerability"
       ],
       "metadata": {
-        "stars": 21,
+        "stars": 24,
         "pulls": 10318,
-        "last_updated": "2025-09-20T02:26:30Z"
+        "last_updated": "2025-10-18T02:26:52Z"
       },
       "repository_url": "https://github.com/StacklokLabs/osv-mcp",
       "tags": [
@@ -4478,9 +4478,9 @@
         "unsubscribe"
       ],
       "metadata": {
-        "stars": 246,
+        "stars": 291,
         "pulls": 10366,
-        "last_updated": "2025-09-20T02:26:30Z"
+        "last_updated": "2025-10-18T02:26:52Z"
       },
       "repository_url": "https://github.com/redis/mcp-redis",
       "tags": [

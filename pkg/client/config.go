@@ -83,6 +83,10 @@ type mcpClientConfig struct {
 	SupportedTransportTypesMap    map[types.TransportType]string // stdio should be mapped to sse
 	IsTransportTypeFieldSupported bool
 	MCPServersUrlLabel            string
+	// YAML-specific configuration (only used when Extension == YAML)
+	YAMLStorageType     string                 // "map" or "array" - how servers are stored
+	YAMLIdentifierField string                 // For array type: field name that identifies the server
+	YAMLDefaults        map[string]interface{} // Default values to add to entries
 }
 
 var (
@@ -370,6 +374,12 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		IsTransportTypeFieldSupported: true,
 		MCPServersUrlLabel:            "uri",
+		// YAML configuration
+		YAMLStorageType: "map",
+		YAMLDefaults: map[string]interface{}{
+			"enabled": true,
+			"timeout": 60,
+		},
 	},
 	{
 		ClientType:           Trae,
@@ -405,6 +415,9 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		IsTransportTypeFieldSupported: true,
 		MCPServersUrlLabel:            "url",
+		// YAML configuration
+		YAMLStorageType:     "array",
+		YAMLIdentifierField: "name",
 	},
 }
 
@@ -526,7 +539,17 @@ func (cm *ClientManager) CreateClientConfig(clientType MCPClient) (*ConfigFile, 
 
 	// Create the file if it does not exist
 	logger.Infof("Creating new client config file at %s", path)
-	err := os.WriteFile(path, []byte("{}"), 0600)
+
+	var initialContent []byte
+	if clientCfg.Extension == YAML {
+		// For YAML files, create an empty file - the updater will initialize structure as needed
+		initialContent = []byte("")
+	} else {
+		// JSON files get empty object
+		initialContent = []byte("{}")
+	}
+
+	err := os.WriteFile(path, initialContent, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client config file: %w", err)
 	}
@@ -598,16 +621,8 @@ func (cm *ClientManager) retrieveConfigFileMetadata(clientType MCPClient) (*Conf
 	var configUpdater ConfigUpdater
 	switch clientCfg.Extension {
 	case YAML:
-		// Select the appropriate YAML converter based on client type
-		var converter YAMLConverter
-		switch clientCfg.ClientType {
-		case Continue:
-			converter = &ContinueYAMLConverter{}
-		case Goose:
-			converter = &GooseYAMLConverter{}
-		default:
-			converter = &GooseYAMLConverter{} // Default fallback
-		}
+		// Use the generic YAML converter with configuration from mcpClientConfig
+		converter := NewGenericYAMLConverter(clientCfg)
 		configUpdater = &YAMLConfigUpdater{
 			Path:      path,
 			Converter: converter,

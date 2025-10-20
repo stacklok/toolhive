@@ -1,10 +1,13 @@
 package client
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 const (
-	// GooseTimeout is the Goose operation timeout in seconds
-	GooseTimeout = 60
+	storageTypeMap   = "map"
+	storageTypeArray = "array"
 )
 
 // YAMLConverter defines an interface for converting MCPServer data to different YAML config formats
@@ -14,228 +17,204 @@ type YAMLConverter interface {
 	RemoveEntry(config interface{}, serverName string) error
 }
 
-// GooseExtension represents an extension in Goose's config.yaml format
-type GooseExtension struct {
-	Name    string `yaml:"name"`
-	Enabled bool   `yaml:"enabled"`
-	Type    string `yaml:"type"`
-	Timeout int    `yaml:"timeout,omitempty"`
-	Uri     string `yaml:"uri,omitempty"`
+// GenericYAMLConverter implements YAMLConverter using configuration from mcpClientConfig
+type GenericYAMLConverter struct {
+	storageType     string                 // "map" or "array"
+	serversPath     string                 // path to servers section (e.g., "extensions" or "mcpServers")
+	identifierField string                 // for array type: field that identifies the server
+	defaults        map[string]interface{} // default values for fields
+	urlLabel        string                 // label for URL field (e.g., "url", "uri", "serverUrl")
 }
 
-// GooseConfig represents the structure of Goose's config.yaml
-type GooseConfig struct {
-	Extensions map[string]GooseExtension `yaml:"extensions"`
+// NewGenericYAMLConverter creates a converter from mcpClientConfig
+func NewGenericYAMLConverter(cfg *mcpClientConfig) *GenericYAMLConverter {
+	// Extract the servers path from MCPServersPathPrefix (remove leading "/")
+	serversPath := strings.TrimPrefix(cfg.MCPServersPathPrefix, "/")
+
+	return &GenericYAMLConverter{
+		storageType:     cfg.YAMLStorageType,
+		serversPath:     serversPath,
+		identifierField: cfg.YAMLIdentifierField,
+		defaults:        cfg.YAMLDefaults,
+		urlLabel:        cfg.MCPServersUrlLabel,
+	}
 }
 
-// GooseYAMLConverter implements YAMLConverter for Goose config format
-type GooseYAMLConverter struct{}
+// ConvertFromMCPServer converts an MCPServer to the appropriate format based on configuration
+func (g *GenericYAMLConverter) ConvertFromMCPServer(serverName string, server MCPServer) (interface{}, error) {
+	result := make(map[string]interface{})
 
-// ConvertFromMCPServer converts an MCPServer to a GooseExtension
-func (*GooseYAMLConverter) ConvertFromMCPServer(serverName string, server MCPServer) (interface{}, error) {
-	uri := server.Url
-	if server.ServerUrl != "" {
-		uri = server.ServerUrl
-	}
+	// Add name field
+	result["name"] = serverName
 
-	return GooseExtension{
-		Name:    serverName,
-		Enabled: true,
-		Timeout: GooseTimeout,
-		Type:    server.Type,
-		Uri:     uri,
-	}, nil
-}
-
-// UpsertEntry adds or updates a server entry in the config map
-func (*GooseYAMLConverter) UpsertEntry(config interface{}, serverName string, entry interface{}) error {
-	configMap, ok := config.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("invalid config format")
-	}
-
-	// Handle generic map - preserve all existing fields
-	extension, ok := entry.(GooseExtension)
-	if !ok {
-		return fmt.Errorf("entry is not a GooseExtension")
-	}
-
-	if configMap["extensions"] == nil {
-		configMap["extensions"] = make(map[string]interface{})
-	}
-
-	extensions, ok := configMap["extensions"].(map[string]interface{})
-	if !ok {
-		// Convert if it's a different map type
-		extensions = make(map[string]interface{})
-		configMap["extensions"] = extensions
-	}
-
-	// Convert GooseExtension to map for YAML marshaling
-	extensionMap := map[string]interface{}{
-		"name":    extension.Name,
-		"enabled": extension.Enabled,
-		"type":    extension.Type,
-		"uri":     extension.Uri,
-	}
-	if extension.Timeout > 0 {
-		extensionMap["timeout"] = extension.Timeout
-	}
-
-	extensions[serverName] = extensionMap
-	return nil
-}
-
-// RemoveEntry removes a server entry from the config map
-func (*GooseYAMLConverter) RemoveEntry(config interface{}, serverName string) error {
-	configMap, ok := config.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("invalid config format")
-	}
-
-	// Handle generic map - preserve all existing fields
-	if configMap["extensions"] == nil {
-		return nil // Nothing to remove
-	}
-
-	extensions, ok := configMap["extensions"].(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("invalid extensions format")
-	}
-
-	delete(extensions, serverName)
-	return nil
-}
-
-// ContinueServer represents a server in Continue's config.yaml format
-type ContinueServer struct {
-	Name string `yaml:"name"`
-	Type string `yaml:"type"`
-	Url  string `yaml:"url"`
-}
-
-// ContinueConfig represents the structure of Continue's config.yaml
-type ContinueConfig struct {
-	McpServers []ContinueServer `yaml:"mcpServers"`
-}
-
-// ContinueYAMLConverter implements YAMLConverter for Continue config format
-type ContinueYAMLConverter struct{}
-
-// ConvertFromMCPServer converts an MCPServer to a ContinueServer
-func (*ContinueYAMLConverter) ConvertFromMCPServer(serverName string, server MCPServer) (interface{}, error) {
+	// Handle URL field - use whichever MCPServer field has a value
 	url := server.Url
 	if server.ServerUrl != "" {
 		url = server.ServerUrl
 	}
 
-	return ContinueServer{
-		Name: serverName,
-		Type: server.Type,
-		Url:  url,
-	}, nil
+	if url != "" {
+		// Use the configured URL label (e.g., "uri" for Goose, "url" for Continue)
+		if g.urlLabel != "" {
+			result[g.urlLabel] = url
+		} else {
+			result["url"] = url // Default fallback
+		}
+	}
+
+	// Add type field
+	if server.Type != "" {
+		result["type"] = server.Type
+	}
+
+	// Apply defaults (e.g., enabled, timeout for Goose)
+	for key, value := range g.defaults {
+		if _, exists := result[key]; !exists {
+			result[key] = value
+		}
+	}
+
+	return result, nil
 }
 
-// UpsertEntry adds or updates a server entry in the config array
-func (*ContinueYAMLConverter) UpsertEntry(config interface{}, serverName string, entry interface{}) error {
+// UpsertEntry adds or updates an entry based on storage type (map or array)
+func (g *GenericYAMLConverter) UpsertEntry(config interface{}, serverName string, entry interface{}) error {
 	configMap, ok := config.(map[string]interface{})
 	if !ok {
 		return fmt.Errorf("invalid config format")
 	}
 
-	server, ok := entry.(ContinueServer)
+	// Initialize servers section if it doesn't exist
+	if configMap[g.serversPath] == nil {
+		if g.storageType == storageTypeMap {
+			configMap[g.serversPath] = make(map[string]interface{})
+		} else {
+			configMap[g.serversPath] = []interface{}{}
+		}
+	}
+
+	// Convert entry to map for YAML marshaling
+	entryMap, ok := entry.(map[string]interface{})
 	if !ok {
-		return fmt.Errorf("entry is not a ContinueServer")
+		return fmt.Errorf("entry must be a map[string]interface{}")
 	}
 
-	// Initialize mcpServers array if it doesn't exist
-	if configMap["mcpServers"] == nil {
-		configMap["mcpServers"] = []interface{}{}
+	if g.storageType == storageTypeMap {
+		return g.upsertMapEntry(configMap, serverName, entryMap)
+	}
+	return g.upsertArrayEntry(configMap, serverName, entryMap)
+}
+
+// upsertMapEntry handles map-based storage (like Goose)
+func (g *GenericYAMLConverter) upsertMapEntry(
+	configMap map[string]interface{}, serverName string, entryMap map[string]interface{},
+) error {
+	servers, ok := configMap[g.serversPath].(map[string]interface{})
+	if !ok {
+		servers = make(map[string]interface{})
+		configMap[g.serversPath] = servers
 	}
 
-	// Get the servers array
+	servers[serverName] = entryMap
+	return nil
+}
+
+// upsertArrayEntry handles array-based storage (like Continue)
+func (g *GenericYAMLConverter) upsertArrayEntry(
+	configMap map[string]interface{}, serverName string, entryMap map[string]interface{},
+) error {
 	var servers []interface{}
-	switch v := configMap["mcpServers"].(type) {
+
+	// Get the servers array, handling different types
+	switch v := configMap[g.serversPath].(type) {
 	case []interface{}:
 		servers = v
 	case []map[string]interface{}:
-		// Convert to []interface{}
 		servers = make([]interface{}, len(v))
 		for i, s := range v {
 			servers[i] = s
 		}
 	default:
-		return fmt.Errorf("invalid mcpServers format")
+		servers = []interface{}{}
 	}
 
-	// Convert ContinueServer to map for YAML marshaling
-	serverMap := map[string]interface{}{
-		"name": server.Name,
-		"type": server.Type,
-		"url":  server.Url,
-	}
-
-	// Check if server already exists and update it, or append if new
+	// Find and update existing entry or append new one
 	found := false
 	for i, s := range servers {
-		serverEntry, ok := s.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if name, exists := serverEntry["name"]; exists && name == serverName {
-			servers[i] = serverMap
-			found = true
-			break
+		if serverEntry, ok := s.(map[string]interface{}); ok {
+			if id, exists := serverEntry[g.identifierField]; exists && id == serverName {
+				servers[i] = entryMap
+				found = true
+				break
+			}
 		}
 	}
 
 	if !found {
-		servers = append(servers, serverMap)
+		servers = append(servers, entryMap)
 	}
 
-	configMap["mcpServers"] = servers
+	configMap[g.serversPath] = servers
 	return nil
 }
 
-// RemoveEntry removes a server entry from the config array
-func (*ContinueYAMLConverter) RemoveEntry(config interface{}, serverName string) error {
+// RemoveEntry removes an entry based on storage type
+func (g *GenericYAMLConverter) RemoveEntry(config interface{}, serverName string) error {
 	configMap, ok := config.(map[string]interface{})
 	if !ok {
 		return fmt.Errorf("invalid config format")
 	}
 
-	if configMap["mcpServers"] == nil {
+	if configMap[g.serversPath] == nil {
 		return nil // Nothing to remove
 	}
 
-	// Get the servers array
+	if g.storageType == storageTypeMap {
+		return g.removeMapEntry(configMap, serverName)
+	}
+	return g.removeArrayEntry(configMap, serverName)
+}
+
+// removeMapEntry handles removal from map-based storage
+func (g *GenericYAMLConverter) removeMapEntry(configMap map[string]interface{}, serverName string) error {
+	servers, ok := configMap[g.serversPath].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("invalid servers format")
+	}
+
+	delete(servers, serverName)
+	return nil
+}
+
+// removeArrayEntry handles removal from array-based storage
+func (g *GenericYAMLConverter) removeArrayEntry(configMap map[string]interface{}, serverName string) error {
 	var servers []interface{}
-	switch v := configMap["mcpServers"].(type) {
+
+	// Get the servers array
+	switch v := configMap[g.serversPath].(type) {
 	case []interface{}:
 		servers = v
 	case []map[string]interface{}:
-		// Convert to []interface{}
 		servers = make([]interface{}, len(v))
 		for i, s := range v {
 			servers[i] = s
 		}
 	default:
-		return fmt.Errorf("invalid mcpServers format")
+		return nil // Nothing to remove
 	}
 
-	// Filter out the server with the matching name
+	// Filter out the server with matching identifier
 	filtered := make([]interface{}, 0, len(servers))
 	for _, s := range servers {
-		serverEntry, ok := s.(map[string]interface{})
-		if !ok {
-			filtered = append(filtered, s)
-			continue
-		}
-		if name, exists := serverEntry["name"]; !exists || name != serverName {
+		if serverEntry, ok := s.(map[string]interface{}); ok {
+			if name, exists := serverEntry[g.identifierField]; !exists || name != serverName {
+				filtered = append(filtered, s)
+			}
+		} else {
 			filtered = append(filtered, s)
 		}
 	}
 
-	configMap["mcpServers"] = filtered
+	configMap[g.serversPath] = filtered
 	return nil
 }

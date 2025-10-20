@@ -18,7 +18,7 @@ require (
 	github.com/google/go-containerregistry v0.20.6
 	github.com/google/uuid v1.6.0
 	github.com/lestrrat-go/httprc/v3 v3.0.1
-	github.com/lestrrat-go/jwx/v3 v3.0.11
+	github.com/lestrrat-go/jwx/v3 v3.0.12
 	github.com/mark3labs/mcp-go v0.41.1
 	github.com/olekukonko/tablewriter v1.1.0
 	github.com/onsi/ginkgo/v2 v2.26.0
@@ -263,8 +263,8 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
 	golang.org/x/exp/event v0.0.0-20251002181428-27f1f14c8bb9 // indirect
-	golang.org/x/net v0.44.0 // indirect
-	golang.org/x/text v0.29.0 // indirect
+	golang.org/x/net v0.45.0 // indirect
+	golang.org/x/text v0.30.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
 	golang.org/x/tools v0.37.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
@@ -310,7 +310,7 @@ require (
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/segmentio/asm v1.2.0 // indirect
+	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/spf13/cobra v1.10.1
 	github.com/spf13/pflag v1.0.10
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
@@ -318,7 +318,7 @@ require (
 	go.opentelemetry.io/otel v1.38.0
 	go.opentelemetry.io/otel/metric v1.38.0
 	go.opentelemetry.io/otel/trace v1.38.0
-	golang.org/x/crypto v0.42.0 // indirect
+	golang.org/x/crypto v0.43.0 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
 	golang.org/x/sys v0.37.0
 	k8s.io/client-go v0.34.1

@@ -235,6 +235,55 @@ func TestGenericYAMLConverter_UpsertEntry_MapStorage(t *testing.T) {
 	})
 }
 
+func TestGenericYAMLConverter_UpsertEntry_InvalidEntry(t *testing.T) {
+	t.Parallel()
+	converter := NewGenericYAMLConverter(createGooseConfig())
+
+	t.Run("invalid entry type", func(t *testing.T) {
+		t.Parallel()
+		config := make(map[string]interface{})
+		entry := "invalid entry" // Not a map
+
+		err := converter.UpsertEntry(config, "test", entry)
+		if err == nil {
+			t.Error("UpsertEntry() should have returned error for invalid entry type")
+		}
+		if err.Error() != "entry must be a map[string]interface{}" {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	})
+}
+
+func TestGenericYAMLConverter_UpsertEntry_MapStorage_InvalidServers(t *testing.T) {
+	t.Parallel()
+	converter := NewGenericYAMLConverter(createGooseConfig())
+
+	t.Run("servers is not a map", func(t *testing.T) {
+		t.Parallel()
+		config := map[string]interface{}{
+			"extensions": "invalid", // Not a map
+		}
+		entry := map[string]interface{}{
+			"name": "test-server",
+		}
+
+		err := converter.UpsertEntry(config, "test-server", entry)
+		if err != nil {
+			t.Fatalf("UpsertEntry() should handle invalid servers type, got error: %v", err)
+		}
+
+		// Should have replaced invalid servers with proper map
+		extensions, ok := config["extensions"].(map[string]interface{})
+		if !ok {
+			t.Fatal("extensions should be a map now")
+		}
+
+		if _, exists := extensions["test-server"]; !exists {
+			t.Error("server should have been added")
+		}
+	})
+}
+
 func TestGenericYAMLConverter_UpsertEntry_ArrayStorage(t *testing.T) {
 	t.Parallel()
 	converter := NewGenericYAMLConverter(createContinueConfig())
@@ -391,6 +440,99 @@ func TestGenericYAMLConverter_RemoveEntry_ArrayStorage(t *testing.T) {
 		err := converter.RemoveEntry(config, "nonexistent")
 		if err != nil {
 			t.Fatalf("RemoveEntry() should not error when servers don't exist, got: %v", err)
+		}
+	})
+
+	t.Run("remove with typed map array", func(t *testing.T) {
+		t.Parallel()
+		config := map[string]interface{}{
+			"mcpServers": []map[string]interface{}{
+				{"name": "server1", "type": "sse"},
+				{"name": "server2", "type": "stdio"},
+			},
+		}
+
+		err := converter.RemoveEntry(config, "server1")
+		if err != nil {
+			t.Fatalf("RemoveEntry() error = %v", err)
+		}
+
+		servers := config["mcpServers"].([]interface{})
+		if len(servers) != 1 {
+			t.Fatalf("expected 1 server remaining, got %d", len(servers))
+		}
+
+		remainingServer := servers[0].(map[string]interface{})
+		if remainingServer["name"] != "server2" {
+			t.Error("wrong server was removed")
+		}
+	})
+
+	t.Run("remove with non-map entry in array", func(t *testing.T) {
+		t.Parallel()
+		config := map[string]interface{}{
+			"mcpServers": []interface{}{
+				map[string]interface{}{"name": "server1"},
+				"invalid-entry", // Not a map - should be preserved
+				map[string]interface{}{"name": "server2"},
+			},
+		}
+
+		err := converter.RemoveEntry(config, "server1")
+		if err != nil {
+			t.Fatalf("RemoveEntry() error = %v", err)
+		}
+
+		servers := config["mcpServers"].([]interface{})
+		if len(servers) != 2 {
+			t.Fatalf("expected 2 entries remaining, got %d", len(servers))
+		}
+
+		// First entry should be the non-map entry
+		if servers[0] != "invalid-entry" {
+			t.Error("invalid-entry should be preserved")
+		}
+
+		// Second entry should be server2
+		remainingServer := servers[1].(map[string]interface{})
+		if remainingServer["name"] != "server2" {
+			t.Error("wrong server was removed")
+		}
+	})
+}
+
+func TestGenericYAMLConverter_UpsertEntry_ArrayStorage_TypedMapArray(t *testing.T) {
+	t.Parallel()
+	converter := NewGenericYAMLConverter(createContinueConfig())
+
+	t.Run("upsert with typed map array", func(t *testing.T) {
+		t.Parallel()
+		config := map[string]interface{}{
+			"mcpServers": []map[string]interface{}{
+				{"name": "existing-server", "type": "old"},
+			},
+		}
+
+		entry := map[string]interface{}{
+			"name": "new-server",
+			"type": "sse",
+			"url":  "http://new.com",
+		}
+
+		err := converter.UpsertEntry(config, "new-server", entry)
+		if err != nil {
+			t.Fatalf("UpsertEntry() error = %v", err)
+		}
+
+		servers := config["mcpServers"].([]interface{})
+		if len(servers) != 2 {
+			t.Fatalf("expected 2 servers, got %d", len(servers))
+		}
+
+		// Check new server was added
+		newServer := servers[1].(map[string]interface{})
+		if !reflect.DeepEqual(newServer, entry) {
+			t.Errorf("new server = %+v, want %+v", newServer, entry)
 		}
 	})
 }

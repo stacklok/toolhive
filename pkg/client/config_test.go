@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -479,4 +480,215 @@ func createTestConfigFilesWithConfigs(t *testing.T, homeDir string, clientConfig
 			require.NoError(t, err)
 		}
 	}
+}
+
+func TestCreateClientConfig(t *testing.T) {
+	t.Parallel()
+	logger.Initialize()
+
+	testConfig := &config.Config{
+		Secrets: config.Secrets{
+			ProviderType: "encrypted",
+		},
+		Clients: config.Clients{
+			RegisteredClients: []string{
+				string(VSCode),
+				string(Goose),
+			},
+		},
+	}
+
+	t.Run("CreateJSONClientConfig", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create mock client config for JSON client (VSCode)
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           VSCode,
+				Description:          "Visual Studio Code (Mock)",
+				RelPath:              []string{"mock_vscode"},
+				SettingsFile:         "settings.json",
+				MCPServersPathPrefix: "/mcp/servers",
+				Extension:            JSON,
+			},
+		}
+
+		// Create the parent directory structure that would normally exist
+		configDir := filepath.Join(tempHome, "mock_vscode")
+		err := os.MkdirAll(configDir, 0755)
+		require.NoError(t, err)
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should create a new JSON file
+		cf, err := manager.CreateClientConfig(VSCode)
+		require.NoError(t, err, "Should successfully create new JSON client config")
+		require.NotNil(t, cf, "Should return a config file")
+
+		// Verify the file was created
+		_, statErr := os.Stat(cf.Path)
+		require.NoError(t, statErr, "Config file should exist after creation")
+
+		// Verify the file contains an empty JSON object
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err, "Should be able to read created file")
+		assert.Equal(t, "{}", string(content), "JSON config should contain empty object")
+
+		// Verify file permissions
+		fileInfo, err := os.Stat(cf.Path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0600), fileInfo.Mode().Perm(), "File should have 0600 permissions")
+	})
+
+	t.Run("CreateYAMLClientConfig", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create mock client config for YAML client (Goose)
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           Goose,
+				Description:          "Goose AI agent (Mock)",
+				RelPath:              []string{"mock_goose"},
+				SettingsFile:         "config.yaml",
+				MCPServersPathPrefix: "/extensions",
+				Extension:            YAML,
+			},
+		}
+
+		// Create the parent directory structure that would normally exist
+		configDir := filepath.Join(tempHome, "mock_goose")
+		err := os.MkdirAll(configDir, 0755)
+		require.NoError(t, err)
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should create a new YAML file
+		cf, err := manager.CreateClientConfig(Goose)
+		require.NoError(t, err, "Should successfully create new YAML client config")
+		require.NotNil(t, cf, "Should return a config file")
+
+		// Verify the file was created
+		_, statErr := os.Stat(cf.Path)
+		require.NoError(t, statErr, "Config file should exist after creation")
+
+		// Verify the file is empty (YAML files start empty)
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err, "Should be able to read created file")
+		assert.Equal(t, "", string(content), "YAML config should be empty initially")
+
+		// Verify file permissions
+		fileInfo, err := os.Stat(cf.Path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0600), fileInfo.Mode().Perm(), "File should have 0600 permissions")
+	})
+
+	t.Run("CreateClientConfigFileAlreadyExists", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create mock client config
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           VSCode,
+				Description:          "Visual Studio Code (Mock)",
+				RelPath:              []string{"mock_vscode"},
+				SettingsFile:         "settings.json",
+				MCPServersPathPrefix: "/mcp/servers",
+				Extension:            JSON,
+			},
+		}
+
+		// Pre-create the config file
+		configDir := filepath.Join(tempHome, "mock_vscode")
+		err := os.MkdirAll(configDir, 0755)
+		require.NoError(t, err)
+		configPath := filepath.Join(configDir, "settings.json")
+		err = os.WriteFile(configPath, []byte(testValidJSON), 0644)
+		require.NoError(t, err)
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should fail because file already exists
+		cf, err := manager.CreateClientConfig(VSCode)
+		assert.Error(t, err, "Should return error when config file already exists")
+		assert.Nil(t, cf, "Should not return a config file on error")
+		assert.Contains(t, err.Error(), "already exists", "Error should mention file already exists")
+	})
+
+	t.Run("CreateClientConfigUnsupportedClientType", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create empty mock client configs (no supported clients)
+		mockClientConfigs := []mcpClientConfig{}
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig with unsupported client type
+		cf, err := manager.CreateClientConfig(VSCode)
+		assert.Error(t, err, "Should return error for unsupported client type")
+		assert.Nil(t, cf, "Should not return a config file on error")
+		assert.Contains(t, err.Error(), "unsupported client type", "Error should mention unsupported client type")
+	})
+
+	t.Run("CreateClientConfigWriteError", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create mock client config with a path that will cause write error
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           VSCode,
+				Description:          "Visual Studio Code (Mock)",
+				RelPath:              []string{"readonly_dir", "nested"},
+				SettingsFile:         "settings.json",
+				MCPServersPathPrefix: "/mcp/servers",
+				Extension:            JSON,
+			},
+		}
+
+		// Create the nested directory first and make it readonly
+		nestedDir := filepath.Join(tempHome, "readonly_dir", "nested")
+		err := os.MkdirAll(nestedDir, 0755)
+		require.NoError(t, err)
+
+		// Now make the nested directory read-only so we can't create files in it
+		err = os.Chmod(nestedDir, 0444)
+		require.NoError(t, err)
+		defer os.Chmod(nestedDir, 0755) // Cleanup
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should fail due to permission error
+		// Note: The exact error depends on how os.Stat behaves with readonly dirs
+		cf, err := manager.CreateClientConfig(VSCode)
+		assert.Error(t, err, "Should return error when unable to write file")
+		assert.Nil(t, cf, "Should not return a config file on error")
+		// Accept either error message since readonly directory can trigger different error paths
+		hasExpectedError := strings.Contains(err.Error(), "failed to create client config file") ||
+			strings.Contains(err.Error(), "already exists")
+		assert.True(t, hasExpectedError, "Error should mention creation failure or file exists, got: %v", err.Error())
+	})
 }

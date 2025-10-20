@@ -55,6 +55,8 @@ const (
 	LMStudio MCPClient = "lm-studio"
 	// Goose represents the Goose AI agent.
 	Goose MCPClient = "goose"
+	// Trae represents the Trae IDE.
+	Trae MCPClient = "trae"
 )
 
 // Extension is extension of the client config file.
@@ -366,6 +368,26 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		IsTransportTypeFieldSupported: true,
 		MCPServersUrlLabel:            "uri",
+	},
+	{
+		ClientType:           Trae,
+		Description:          "Trae IDE",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{"Trae", "User"},
+		PlatformPrefix: map[string][]string{
+			"linux":   {".config"},
+			"darwin":  {"Library", "Application Support"},
+			"windows": {"AppData", "Roaming"},
+		},
+		Extension: JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: false,
+		MCPServersUrlLabel:            "url",
 	},
 }
 

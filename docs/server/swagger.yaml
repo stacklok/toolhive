@@ -125,6 +125,7 @@ components:
       - AmpWindsurf
       - LMStudio
       - Goose
+      - Trae
     client.MCPClientStatus:
       properties:
         client_type:
@@ -146,6 +147,7 @@ components:
           - AmpWindsurf
           - LMStudio
           - Goose
+          - Trae
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -1040,6 +1042,7 @@ components:
             - AmpWindsurf
             - LMStudio
             - Goose
+            - Trae
           type: array
           uniqueItems: false
       type: object
@@ -1090,6 +1093,7 @@ components:
           - AmpWindsurf
           - LMStudio
           - Goose
+          - Trae
       type: object
     v1.createClientResponse:
       properties:
@@ -1118,6 +1122,7 @@ components:
           - AmpWindsurf
           - LMStudio
           - Goose
+          - Trae
       type: object
     v1.createGroupRequest:
       properties:

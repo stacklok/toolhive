@@ -29,6 +29,7 @@ Valid clients:
   - goose: Goose AI agent
   - lm-studio: LM Studio application
   - roo-code: Roo Code extension for VS Code
+  - trae: Trae IDE
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition
   - windsurf: Windsurf IDE

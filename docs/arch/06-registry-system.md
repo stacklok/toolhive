@@ -136,7 +136,9 @@ thv run server-name
   "provenance": {
     "sigstore_url": "https://rekor.sigstore.dev",
     "repository_uri": "https://github.com/example/weather-mcp",
-    "signer_identity": "build@example.com"
+    "signer_identity": "build@example.com",
+    "runner_environment": "github-actions",
+    "cert_issuer": "https://token.actions.githubusercontent.com"
   }
 }
 ```
@@ -317,7 +319,7 @@ Remote registries can be configured in the ToolHive configuration file to fetch 
 - Basic auth: `https://user:pass@registry.company.com/registry.json`
 - Bearer token: via environment variable
 
-**Implementation**: `pkg/registry/registry.go`
+**Implementation**: `pkg/registry/provider.go`, `pkg/registry/provider_local.go`, `pkg/registry/provider_remote.go`, `pkg/registry/factory.go`
 
 ### Registry Priority
 
@@ -331,7 +333,7 @@ First match wins. Use registry namespacing to avoid conflicts:
 thv run custom-registry/server-name
 ```
 
-**Implementation**: `pkg/registry/registry.go`
+**Implementation**: `pkg/registry/provider.go`, `pkg/registry/provider_local.go`, `pkg/registry/provider_remote.go`, `pkg/registry/factory.go`
 
 ## Registry API Server
 
@@ -397,7 +399,6 @@ source:
   type: configmap
   configmap:
     name: mcp-registry-data
-    namespace: default
     key: registry.json
 ```
 
@@ -453,13 +454,13 @@ curl http://localhost:8080/api/v1/registry
 ```yaml
 status:
   phase: Ready
-  lastSyncTime: "2025-10-13T12:00:00Z"
   syncStatus:
-    phase: Synced
+    phase: Complete
     message: "Successfully synced registry"
+    lastSyncTime: "2025-10-13T12:00:00Z"
     lastSyncHash: "abc123def456"
-  apiServiceStatus:
-    ready: true
+  apiStatus:
+    phase: Ready
     endpoint: "http://company-registry-api.default.svc.cluster.local:8080"
 ```
 
@@ -592,7 +593,10 @@ ToolHive supports Sigstore verification:
 thv run weather-server --image-verification enabled
 ```
 
-**Implementation**: `pkg/registry/types.go`, cosign integration planned
+**Implementation**:
+- `pkg/registry/types.go` - Provenance type definitions
+- `pkg/container/verifier/` - Sigstore/cosign verification using sigstore-go library
+- `pkg/runner/retriever/retriever.go` - Image verification orchestration
 
 ### Supply Chain Security
 

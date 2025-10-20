@@ -113,13 +113,13 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 4. Secret references
 
 **Merge order:**
-1. User-provided environment variables
-2. Environment file variables
-3. Environment directory variables
+1. Environment file variables
+2. Environment directory variables
+3. User-provided environment variables
 4. Transport-specific variables (overwrites existing) - `MCP_TRANSPORT`, `MCP_PORT`, etc.
 5. Secret-derived variables (overwrites existing at runtime)
 
-**Architecture reasoning**: User inputs form the base, transport variables overwrite to ensure correct MCP protocol configuration, and secrets overwrite last to guarantee sensitive values take final precedence.
+**Architecture reasoning**: Environment files and directories form the base layer, user-provided variables overwrite them for explicit control, transport variables overwrite to ensure correct MCP protocol configuration, and secrets overwrite last to guarantee sensitive values take final precedence.
 
 **Format:**
 ```json
@@ -168,10 +168,12 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 ```
 
 **Secret providers:**
-- `encrypted`: Encrypted local storage (default)
+- `encrypted`: Encrypted local storage
 - `1password`: 1Password SDK integration
 - `environment`: Environment variable provider
 - `none`: No-op provider (for testing)
+
+**Note**: There is no automatic default provider. Users must run `thv secret setup` to configure a provider before using secrets functionality.
 
 **Implementation**: `pkg/runner/config.go`, `307-341`
 
@@ -277,8 +279,8 @@ config, err := runner.ReadJSON(reader)
 ### State Storage
 
 **Location:**
-- Linux: `~/.local/state/toolhive/state/<workload-name>.json`
-- macOS: `~/Library/Application Support/toolhive/state/<workload-name>.json`
+- Linux: `~/.local/state/toolhive/runconfigs/<workload-name>.json`
+- macOS: `~/Library/Application Support/toolhive/runconfigs/<workload-name>.json`
 
 **Saved automatically:**
 - On workload creation
@@ -470,11 +472,12 @@ When `isolate_network: true` in RunConfig:
 4. Only allowed hosts/ports reachable
 
 **Egress proxy implementation:**
-- Transparent CONNECT proxy
-- DNS resolution controlled
-- TLS connections inspected (optional)
+- Standard HTTP/HTTPS forward proxy (Squid)
+- Configured via HTTP_PROXY/HTTPS_PROXY environment variables
+- DNS resolution controlled via custom DNS container
+- ACL-based filtering of hosts and ports
 
-**Implementation**: `pkg/networking/`
+**Implementation**: `pkg/container/docker/squid.go`, `pkg/networking/`
 
 ### Privileged Mode
 
@@ -581,10 +584,10 @@ Custom permission profiles can be defined in JSON files for reusable security po
 ### Profile Selection
 
 **Priority order:**
-1. Command-line path: `--permission-profile /path/to/profile.json`
-2. Built-in name: `--permission-profile network`
+1. Direct profile object: `WithPermissionProfile(profile)` (programmatic use)
+2. Command-line flag: `--permission-profile <name|path>` (supports "none", "network", "stdio", or file path)
 3. Registry default: From server metadata
-4. Global default: `none`
+4. Global default: `network`
 
 **Implementation**: `pkg/permissions/`, registry metadata
 
@@ -681,7 +684,7 @@ Custom permission profiles can be defined in JSON files for reusable security po
 - `--security-opt no-new-privileges`
 - Network isolation via custom networks
 
-**Implementation**: `pkg/container/runtime/docker/`
+**Implementation**: `pkg/container/docker/`
 
 ## Related Documentation
 

@@ -92,7 +92,7 @@ The operator watches for `MCPServer`, `MCPRegistry`, `MCPToolConfig`, and `MCPEx
 **For details**, see:
 - [`cmd/thv-operator/README.md`](../../cmd/thv-operator/README.md) - Operator overview and usage
 - [`cmd/thv-operator/DESIGN.md`](../../cmd/thv-operator/DESIGN.md) - Design decisions and patterns
-- [`cmd/thv-operator/crd-api.md`](../../cmd/thv-operator/crd-api.md) - Complete CRD API reference
+- [`docs/operator/crd-api.md`](../operator/crd-api.md) - Complete CRD API reference
 - [Operator Architecture](09-operator-architecture.md) - Architecture documentation
 
 ### 3. Proxy Runner (thv-proxyrunner)
@@ -101,7 +101,7 @@ A specialized binary used by the Kubernetes operator. Located in `cmd/thv-proxyr
 
 **Key responsibilities:**
 - Run as proxy container in Kubernetes Deployments
-- Create and manage MCP server containers via StatefulSets
+- Dynamically create and manage MCP server StatefulSets via the Kubernetes API
 - Handle transport-specific proxying (SSE, streamable-http, stdio)
 - Apply middleware chain to incoming requests
 
@@ -145,15 +145,15 @@ ToolHive can run locally in two ways:
 
 Direct command-line usage via `thv` binary:
 - Spawns MCP servers as detached processes
-- Uses Docker/Podman/Colima for container runtime
-- Stores state locally in `~/.toolhive/` or equivalent
+- Uses Docker/Podman/Colima/Rancher Desktop for container runtime
+- Stores state using XDG Base Directory Specification (typically `~/.config/toolhive/`, `~/.local/state/toolhive/`)
 
 #### 2. UI Mode
 
 Via [ToolHive Studio](https://github.com/stacklok/toolhive-studio):
 - Spawns a ToolHive API server (`thv serve`)
 - Exposes RESTful API for UI operations
-- Uses Docker/Podman/Rancher Desktop for containers
+- Uses Docker/Podman/Colima/Rancher Desktop for containers
 - Provides web-based management interface
 
 ### Kubernetes Mode

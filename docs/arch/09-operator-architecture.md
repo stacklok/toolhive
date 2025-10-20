@@ -46,7 +46,7 @@ Defines an MCP server deployment, including container images, transports, middle
 
 MCPServer resources support various transport types (stdio, SSE, streamable-http), permission profiles, OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets.
 
-**Status fields** include phase (Running, Pending, Error) and the accessible URL for the MCP server.
+**Status fields** include phase (Running, Pending, Failed, Terminating) and the accessible URL for the MCP server.
 
 For examples, see:
 - [`examples/operator/mcp-servers/mcpserver_github.yaml`](../../examples/operator/mcp-servers/mcpserver_github.yaml) - Basic GitHub MCP server
@@ -88,6 +88,21 @@ MCPExternalAuthConfig allows you to define reusable OIDC authentication configur
 **Referenced by MCPServer** using `oidcConfig.type: external`.
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
+
+### MCPRemoteProxy
+
+Defines a proxy for remote MCP servers with authentication, authorization, audit logging, and tool filtering.
+
+**Key fields:**
+- `remoteURL` - URL of the remote MCP server to proxy
+- `oidcConfig` - OIDC authentication for incoming requests (required)
+- `externalAuthConfigRef` - Token exchange for remote service authentication
+- `authzConfig` - Authorization policies
+- `toolConfigRef` - Tool filtering and renaming
+
+**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpremoteproxy_types.go`
+
+**Controller**: `cmd/thv-operator/controllers/mcpremoteproxy_controller.go`
 
 For complete examples of all CRDs, see the [`examples/operator/mcp-servers/`](../../examples/operator/mcp-servers/) directory.
 
@@ -259,6 +274,10 @@ graph TB
 - Reads from existing ConfigMap
 - Watches for updates
 
+**Storage Manager**: `cmd/thv-operator/pkg/sources/storage_manager.go`
+- Creates ConfigMap with key `registry.json` containing full registry data
+- Sync metadata (timestamp, hash, attempt count) stored in MCPRegistry CRD status field `SyncStatus`
+
 **Interface**: `cmd/thv-operator/pkg/sources/types.go`
 
 ### Storage Manager
@@ -274,9 +293,9 @@ graph TB
 data:
   registry.json: |
     { full registry data }
-  sync_metadata.json: |
-    { sync timestamp, hash }
 ```
+
+Sync metadata (timestamp, hash, attempt count) is stored in the MCPRegistry CRD status field `SyncStatus`, not in the ConfigMap.
 
 ### Sync Policy
 
@@ -284,17 +303,16 @@ data:
 ```yaml
 spec:
   syncPolicy:
-    automatic: true
     interval: 1h
 ```
 
-Operator syncs every hour.
+Operator syncs every hour. The presence of `syncPolicy` with an `interval` enables automatic synchronization.
 
 **Manual sync:**
 
 Omit the `syncPolicy` field entirely.
 
-Trigger: Add annotation `toolhive.stacklok.dev/sync-trigger=true`
+Trigger: Add or update annotation `toolhive.stacklok.dev/sync-trigger=<unique-value>` where the value can be any non-empty string. The operator triggers sync when this value changes, allowing multiple manual syncs by using different values (e.g., timestamps, counters).
 
 ### Registry API Service
 
@@ -310,13 +328,25 @@ When enabled, operator creates:
 ### ConfigMap References
 
 **OIDC config:**
+
+Both patterns are supported:
 ```yaml
+# Pattern 1: Direct data fields (as shown in examples/operator/mcp-servers/mcpserver_with_configmap_oidc.yaml)
+# ConfigMap contains: issuer, audience, clientId as direct fields
 spec:
   oidcConfig:
     type: configMap
     configMap:
       name: oidc-config
-      key: oidc.json
+
+# Pattern 2: JSON file with key parameter
+# ConfigMap contains a JSON file at the specified key
+spec:
+  oidcConfig:
+    type: configMap
+    configMap:
+      name: oidc-config
+      key: oidc.json  # defaults to oidc.json if omitted
 ```
 
 **Authz policies:**
@@ -326,7 +356,7 @@ spec:
     type: configMap
     configMap:
       name: authz-policies
-      key: policies.cedar
+      key: authz.json  # defaults to authz.json if omitted
 ```
 
 ### Inline Configuration

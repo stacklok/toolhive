@@ -169,13 +169,13 @@ A **permission profile** defines security boundaries for MCP servers:
 1. **File System Access**:
    - `read` - Mount paths as read-only
    - `write` - Mount paths as read-write
-   - Mount declaration formats: `path`, `host:container`, `uri://resource:container`
+   - Mount declaration formats: `path`, `host:container`, `scheme://resource:container-path`
 
 2. **Network Access**:
-   - `outbound.insecureAllowAll` - Allow all outbound connections
-   - `outbound.allowHost` - Whitelist specific hosts
-   - `outbound.allowPort` - Whitelist specific ports
-   - `inbound.allowHost` - Whitelist inbound connections
+   - `outbound.insecure_allow_all` - Allow all outbound connections
+   - `outbound.allow_host` - Whitelist specific hosts
+   - `outbound.allow_port` - Whitelist specific ports
+   - `inbound.allow_host` - Whitelist inbound connections
 
 3. **Privileged Mode**:
    - `privileged` - Run with host device access (dangerous!)
@@ -265,10 +265,11 @@ A **session** tracks state for MCP client connections, particularly for transpor
    - Request/response correlation
    - Ephemeral sessions for sessionless requests
 
-3. **Proxy Session**: For transparent proxy (SSE/Streamable transports)
+3. **MCP Session** (`SessionTypeMCP`): For transparent proxy (SSE/Streamable transports when containers speak HTTP natively)
    - Session ID detection from headers
    - Session ID detection from SSE body
    - Minimal state tracking
+   - Note: Distinct from stdio transport + SSE/Streamable proxy modes which use `SSESession`/`StreamableSession`
 
 **Session lifecycle:**
 - Created on first request or explicit initialize

@@ -313,7 +313,7 @@ Remote MCP servers can require OAuth 2.0 authentication. The architecture uses:
 
 ### Kubernetes Support for Remote MCPs
 
-**Proposal**: [PR #2151](https://github.com/stacklok/toolhive/pull/2151)
+**Implementation**: [PR #2151](https://github.com/stacklok/toolhive/pull/2151)
 
 Remote MCP servers will be supported in Kubernetes mode by:
 
@@ -381,14 +381,12 @@ Environment variables set automatically for container configuration:
 
 - `MCP_TRANSPORT`: Transport type (stdio, sse, streamable-http)
 - `MCP_PORT`: Target port (for SSE/Streamable HTTP)
-- `MCP_HOST`: Target host for binding
-  - Local deployment: `127.0.0.1` (default for container communication)
-  - Kubernetes: `0.0.0.0` (bind all interfaces for cluster networking)
+- `MCP_HOST`: Target host - always `127.0.0.1` (both local and Kubernetes)
 - `FASTMCP_PORT`: Alias for `MCP_PORT` (legacy support)
 
 **Architecture distinction:**
-- **Target host** (`targetHost`): Where to connect to container (typically 127.0.0.1)
-- **Proxy host** (`proxyHost`): Where proxy binds (0.0.0.0 in Kubernetes for cluster access)
+- **Target host** (`MCP_HOST` env var): Where container listens - always `127.0.0.1`
+- **Proxy host**: Where proxy binds - `127.0.0.1` in local mode, `0.0.0.0` in Kubernetes for cluster access
 
 **Merge strategy**:
 - User-provided values take precedence
@@ -521,9 +519,9 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 
 ### Trust Proxy Headers
 
-**Implementation**: `pkg/transport/proxy/transparent/transparent_proxy.go`
+**Implementation**: `pkg/transport/proxy/httpsse/http_proxy.go`, `pkg/transport/proxy/transparent/transparent_proxy.go`
 
-For deployment behind reverse proxy, transparent proxy respects forwarded headers.
+For deployment behind reverse proxy, proxies respect X-Forwarded headers (Host, Port, Proto, Prefix).
 
 **Security**: Only enable if ToolHive is behind trusted reverse proxy.
 

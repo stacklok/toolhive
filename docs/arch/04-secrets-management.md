@@ -28,9 +28,12 @@ graph LR
 
 **Implementation**: `pkg/secrets/types.go`
 
-### 1. Encrypted (Default)
+### 1. Encrypted
 
-- **Storage**: `~/.local/share/toolhive/secrets_encrypted` (Linux)
+- **Storage**: Platform-specific XDG data directory
+  - Linux: `~/.local/share/toolhive/secrets_encrypted`
+  - macOS: `~/Library/Application Support/toolhive/secrets_encrypted`
+  - Windows: `%LOCALAPPDATA%/toolhive/secrets_encrypted`
 - **Encryption**: AES-256-GCM
 - **Password**: Stored in OS keyring (keyctl/Keychain/DPAPI)
 - **Capabilities**: Read, write, delete, list
@@ -157,7 +160,13 @@ Registry defines secret requirements:
 }
 ```
 
-ToolHive prompts for value on first run.
+**Prompting behavior depends on execution context:**
+
+- **CLI Interactive Mode**: ToolHive prompts for missing required secret values on first run. If a secrets manager is configured, it attempts to retrieve the secret first and only prompts if not found. Prompted values are automatically stored in the secrets manager for future use.
+
+- **Detached/Background Mode**: Cannot prompt (no TTY). Missing required secrets cause an error. All secrets must be provided via `--secret` flag or pre-configured in secrets manager.
+
+- **Kubernetes Operator**: Cannot prompt. All required secrets must be provided via Kubernetes Secret resources referenced in the workload specification.
 
 ### Detached Processes
 

@@ -31,7 +31,7 @@ graph LR
 | Feature | Local CLI | Local UI | Kubernetes |
 |---------|-----------|----------|------------|
 | **Binary** | `thv` | `thv` (API server) | `thv-operator` + `thv-proxyrunner` |
-| **Container Runtime** | Docker/Podman/Colima | Docker/Podman/Rancher | Kubernetes |
+| **Container Runtime** | Docker/Podman/Colima/Rancher | Docker/Podman/Colima/Rancher | Kubernetes |
 | **Process Management** | Detached processes | API-managed | Operator-managed |
 | **State Storage** | Local filesystem | Local filesystem | etcd (K8s API) |
 | **Scaling** | Single machine | Single machine | Cluster-wide |
@@ -176,11 +176,11 @@ graph TB
    - Returns JSON responses
 
 4. **Workload Operations**:
-   - Create: `POST /api/v1/workloads`
-   - List: `GET /api/v1/workloads`
-   - Stop: `POST /api/v1/workloads/{name}/stop`
-   - Delete: `DELETE /api/v1/workloads/{name}`
-   - Logs: `GET /api/v1/workloads/{name}/logs`
+   - Create: `POST /api/v1beta/workloads`
+   - List: `GET /api/v1beta/workloads`
+   - Stop: `POST /api/v1beta/workloads/{name}/stop`
+   - Delete: `DELETE /api/v1beta/workloads/{name}`
+   - Logs: `GET /api/v1beta/workloads/{name}/logs`
 
 5. **Runtime Selection**:
    - Picks runtime driver based on environment
@@ -194,10 +194,10 @@ Full API documentation available at:
 - Interactive docs: `http://localhost:8080/api/doc` (Scalar UI)
 
 **Key endpoints:**
-- `/api/v1/workloads` - Workload management
-- `/api/v1/registry` - Registry browsing
-- `/api/v1/clients` - Client configuration
-- `/api/v1/groups` - Group management
+- `/api/v1beta/workloads` - Workload management
+- `/api/v1beta/registry` - Registry browsing
+- `/api/v1beta/clients` - Client configuration
+- `/api/v1beta/groups` - Group management
 
 ### Differences from CLI Mode
 
@@ -398,7 +398,7 @@ classDiagram
 ```
 
 **Implementation files:**
-- Docker: `pkg/container/runtime/docker/` (implementation details in Docker engine integration)
+- Docker: `pkg/container/docker/` (implementation details in Docker engine integration)
 - Kubernetes: Operator uses Kubernetes API directly, not the Runtime interface
 
 ### RunConfig Portability
@@ -406,7 +406,7 @@ classDiagram
 The **RunConfig** format (`pkg/runner/config.go`) is designed to be portable across all modes:
 
 **Local → Local**: Direct JSON export/import via:
-- `thv export <workload>` → saves RunConfig JSON
+- `thv export <workload> <output-file>` → saves RunConfig JSON
 - `thv run --from-config <file>` → loads RunConfig JSON
 
 **Local → Kubernetes**: Manual conversion:

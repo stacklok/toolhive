@@ -211,7 +211,7 @@ func (c *Client) DeployWorkload(
 	if permissionConfig.NetworkMode == "" || permissionConfig.NetworkMode == "bridge" || permissionConfig.NetworkMode == "default" {
 		// Add toolhive-external to endpoints config for default networking modes
 		externalEndpointsConfig["toolhive-external"] = &network.EndpointSettings{}
-		
+
 		err = c.ops.createExternalNetworks(ctx)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create external networks: %v", err)
@@ -274,7 +274,7 @@ func (c *Client) DeployWorkload(
 
 	// Debug: Log before calling createMcpContainer
 	logger.Infof("DEBUG: About to call createMcpContainer with network mode: '%s'", permissionConfig.NetworkMode)
-	
+
 	err = c.ops.createMcpContainer(
 		ctx,
 		name,
@@ -1442,10 +1442,10 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 
 	// create mcp container
 	internalEndpointsConfig := map[string]*network.EndpointSettings{}
-	
+
 	// Debug: Log the network mode being processed
 	logger.Infof("DEBUG: createMcpContainer network mode: '%s', isolateNetwork: %v", permissionConfig.NetworkMode, isolateNetwork)
-	
+
 	// Check if we have a custom network mode (e.g., "host", "none", etc.)
 	if permissionConfig.NetworkMode != "" && permissionConfig.NetworkMode != "bridge" && permissionConfig.NetworkMode != "default" {
 		// For custom network modes like "host", "none", etc., don't add any endpoint configurations

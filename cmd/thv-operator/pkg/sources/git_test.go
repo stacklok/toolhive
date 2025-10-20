@@ -30,35 +30,12 @@ type MockGitClient struct {
 	mock.Mock
 }
 
-func (m *MockGitClient) Clone(ctx context.Context, config *git.CloneConfig) (*git.RepositoryInfo, error) {
-	args := m.Called(ctx, config)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*git.RepositoryInfo), args.Error(1)
-}
-
-func (m *MockGitClient) Pull(ctx context.Context, repoInfo *git.RepositoryInfo) error {
-	args := m.Called(ctx, repoInfo)
-	return args.Error(0)
-}
-
-func (m *MockGitClient) GetFileContent(repoInfo *git.RepositoryInfo, path string) ([]byte, error) {
-	args := m.Called(repoInfo, path)
+func (m *MockGitClient) FetchFileSparse(ctx context.Context, config *git.CloneConfig, filePath string) ([]byte, error) {
+	args := m.Called(ctx, config, filePath)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).([]byte), args.Error(1)
-}
-
-func (m *MockGitClient) GetCommitHash(repoInfo *git.RepositoryInfo) (string, error) {
-	args := m.Called(repoInfo)
-	return args.String(0), args.Error(1)
-}
-
-func (m *MockGitClient) Cleanup(repoInfo *git.RepositoryInfo) error {
-	args := m.Called(repoInfo)
-	return args.Error(0)
 }
 
 // MockSourceDataValidator is a mock implementation of SourceDataValidator
@@ -284,9 +261,6 @@ func TestGitSourceHandler_FetchRegistry(t *testing.T) {
 				},
 			},
 			setupMocks: func(gitClient *MockGitClient, validator *MockSourceDataValidator) {
-				repoInfo := &git.RepositoryInfo{
-					RemoteURL: testGitRepoURL,
-				}
 				testData := []byte(`{"version": "1.0.0"}`)
 				testRegistry := &registry.Registry{
 					Version:       "1.0.0",
@@ -294,12 +268,9 @@ func TestGitSourceHandler_FetchRegistry(t *testing.T) {
 					RemoteServers: make(map[string]*registry.RemoteServerMetadata),
 				}
 
-				gitClient.On("Clone", mock.Anything, mock.MatchedBy(func(config *git.CloneConfig) bool {
+				gitClient.On("FetchFileSparse", mock.Anything, mock.MatchedBy(func(config *git.CloneConfig) bool {
 					return config.URL == testGitRepoURL && config.Branch == testBranch
-				})).Return(repoInfo, nil)
-
-				gitClient.On("GetFileContent", repoInfo, DefaultRegistryDataFile).Return(testData, nil)
-				gitClient.On("Cleanup", repoInfo).Return(nil)
+				}), DefaultRegistryDataFile).Return(testData, nil)
 
 				validator.On("ValidateData", testData, mcpv1alpha1.RegistryFormatToolHive).Return(testRegistry, nil)
 			},
@@ -325,9 +296,6 @@ func TestGitSourceHandler_FetchRegistry(t *testing.T) {
 				},
 			},
 			setupMocks: func(gitClient *MockGitClient, validator *MockSourceDataValidator) {
-				repoInfo := &git.RepositoryInfo{
-					RemoteURL: testGitRepoURL,
-				}
 				testData := []byte(`{"version": "1.0.0"}`)
 				testRegistry := &registry.Registry{
 					Version:       "1.0.0",
@@ -335,12 +303,9 @@ func TestGitSourceHandler_FetchRegistry(t *testing.T) {
 					RemoteServers: make(map[string]*registry.RemoteServerMetadata),
 				}
 
-				gitClient.On("Clone", mock.Anything, mock.MatchedBy(func(config *git.CloneConfig) bool {
+				gitClient.On("FetchFileSparse", mock.Anything, mock.MatchedBy(func(config *git.CloneConfig) bool {
 					return config.URL == testGitRepoURL && config.Tag == testTag
-				})).Return(repoInfo, nil)
-
-				gitClient.On("GetFileContent", repoInfo, testFilePath).Return(testData, nil)
-				gitClient.On("Cleanup", repoInfo).Return(nil)
+				}), testFilePath).Return(testData, nil)
 
 				validator.On("ValidateData", testData, mcpv1alpha1.RegistryFormatToolHive).Return(testRegistry, nil)
 			},
@@ -369,7 +334,7 @@ func TestGitSourceHandler_FetchRegistry(t *testing.T) {
 			errorContains: "source validation failed",
 		},
 		{
-			name: "clone failure",
+			name: "fetch failure",
 			registry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-registry",
@@ -387,12 +352,12 @@ func TestGitSourceHandler_FetchRegistry(t *testing.T) {
 				},
 			},
 			setupMocks: func(gitClient *MockGitClient, _ *MockSourceDataValidator) {
-				gitClient.On("Clone", mock.Anything, mock.MatchedBy(func(config *git.CloneConfig) bool {
+				gitClient.On("FetchFileSparse", mock.Anything, mock.MatchedBy(func(config *git.CloneConfig) bool {
 					return config.URL == testGitRepoURL && config.Commit == testCommit
-				})).Return(nil, errors.New("clone failed"))
+				}), DefaultRegistryDataFile).Return(nil, errors.New("fetch failed"))
 			},
 			expectError:   true,
-			errorContains: "failed to clone repository",
+			errorContains: "failed to fetch file",
 		},
 		{
 			name: "file not found",
@@ -412,16 +377,10 @@ func TestGitSourceHandler_FetchRegistry(t *testing.T) {
 				},
 			},
 			setupMocks: func(gitClient *MockGitClient, _ *MockSourceDataValidator) {
-				repoInfo := &git.RepositoryInfo{
-					RemoteURL: testGitRepoURL,
-				}
-
-				gitClient.On("Clone", mock.Anything, mock.Anything).Return(repoInfo, nil)
-				gitClient.On("GetFileContent", repoInfo, DefaultRegistryDataFile).Return(nil, errors.New("file not found"))
-				gitClient.On("Cleanup", repoInfo).Return(nil)
+				gitClient.On("FetchFileSparse", mock.Anything, mock.Anything, DefaultRegistryDataFile).Return(nil, errors.New("file not found"))
 			},
 			expectError:   true,
-			errorContains: "failed to get file",
+			errorContains: "failed to fetch file",
 		},
 		{
 			name: "validation data failure",
@@ -441,14 +400,9 @@ func TestGitSourceHandler_FetchRegistry(t *testing.T) {
 				},
 			},
 			setupMocks: func(gitClient *MockGitClient, validator *MockSourceDataValidator) {
-				repoInfo := &git.RepositoryInfo{
-					RemoteURL: testGitRepoURL,
-				}
 				testData := []byte(`invalid json`)
 
-				gitClient.On("Clone", mock.Anything, mock.Anything).Return(repoInfo, nil)
-				gitClient.On("GetFileContent", repoInfo, DefaultRegistryDataFile).Return(testData, nil)
-				gitClient.On("Cleanup", repoInfo).Return(nil)
+				gitClient.On("FetchFileSparse", mock.Anything, mock.Anything, DefaultRegistryDataFile).Return(testData, nil)
 
 				validator.On("ValidateData", testData, mcpv1alpha1.RegistryFormatToolHive).Return(nil, errors.New("invalid data"))
 			},
@@ -525,17 +479,11 @@ func TestGitSourceHandler_CurrentHash(t *testing.T) {
 				},
 			},
 			setupMocks: func(gitClient *MockGitClient) {
-				repoInfo := &git.RepositoryInfo{
-					RemoteURL: testGitRepoURL,
-				}
 				testData := []byte(`{"version": "1.0.0"}`)
 
-				gitClient.On("Clone", mock.Anything, mock.MatchedBy(func(config *git.CloneConfig) bool {
+				gitClient.On("FetchFileSparse", mock.Anything, mock.MatchedBy(func(config *git.CloneConfig) bool {
 					return config.URL == testGitRepoURL && config.Branch == testBranch
-				})).Return(repoInfo, nil)
-
-				gitClient.On("GetFileContent", repoInfo, DefaultRegistryDataFile).Return(testData, nil)
-				gitClient.On("Cleanup", repoInfo).Return(nil)
+				}), DefaultRegistryDataFile).Return(testData, nil)
 			},
 			expectError:  false,
 			expectedHash: fmt.Sprintf("%x", sha256.Sum256([]byte(`{"version": "1.0.0"}`))),
@@ -563,7 +511,7 @@ func TestGitSourceHandler_CurrentHash(t *testing.T) {
 			errorContains: "source validation failed",
 		},
 		{
-			name: "clone failure",
+			name: "fetch failure",
 			registry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-registry",
@@ -579,10 +527,10 @@ func TestGitSourceHandler_CurrentHash(t *testing.T) {
 				},
 			},
 			setupMocks: func(gitClient *MockGitClient) {
-				gitClient.On("Clone", mock.Anything, mock.Anything).Return(nil, errors.New("clone failed"))
+				gitClient.On("FetchFileSparse", mock.Anything, mock.Anything, DefaultRegistryDataFile).Return(nil, errors.New("fetch failed"))
 			},
 			expectError:   true,
-			errorContains: "failed to clone repository",
+			errorContains: "failed to fetch file",
 		},
 		{
 			name: "file not found",
@@ -602,16 +550,10 @@ func TestGitSourceHandler_CurrentHash(t *testing.T) {
 				},
 			},
 			setupMocks: func(gitClient *MockGitClient) {
-				repoInfo := &git.RepositoryInfo{
-					RemoteURL: testGitRepoURL,
-				}
-
-				gitClient.On("Clone", mock.Anything, mock.Anything).Return(repoInfo, nil)
-				gitClient.On("GetFileContent", repoInfo, testFilePath).Return(nil, errors.New("file not found"))
-				gitClient.On("Cleanup", repoInfo).Return(nil)
+				gitClient.On("FetchFileSparse", mock.Anything, mock.Anything, testFilePath).Return(nil, errors.New("file not found"))
 			},
 			expectError:   true,
-			errorContains: "failed to get file",
+			errorContains: "failed to fetch file",
 		},
 	}
 
@@ -695,9 +637,6 @@ func TestGitSourceHandler_CleanupFailure(t *testing.T) {
 		},
 	}
 
-	repoInfo := &git.RepositoryInfo{
-		RemoteURL: testGitRepoURL,
-	}
 	testData := []byte(`{"version": "1.0.0"}`)
 	testRegistry := &registry.Registry{
 		Version:       "1.0.0",
@@ -705,9 +644,7 @@ func TestGitSourceHandler_CleanupFailure(t *testing.T) {
 		RemoteServers: make(map[string]*registry.RemoteServerMetadata),
 	}
 
-	mockGitClient.On("Clone", mock.Anything, mock.Anything).Return(repoInfo, nil)
-	mockGitClient.On("GetFileContent", repoInfo, DefaultRegistryDataFile).Return(testData, nil)
-	mockGitClient.On("Cleanup", repoInfo).Return(errors.New("cleanup failed")) // Cleanup fails
+	mockGitClient.On("FetchFileSparse", mock.Anything, mock.Anything, DefaultRegistryDataFile).Return(testData, nil)
 
 	mockValidator.On("ValidateData", testData, mcpv1alpha1.RegistryFormatToolHive).Return(testRegistry, nil)
 

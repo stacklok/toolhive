@@ -18,7 +18,14 @@ import (
 const (
 	// DefaultRegistryDataFile is the default file name for the registry data in Git sources
 	DefaultRegistryDataFile = "registry.json"
+	// WorkspaceDirEnvVar is the environment variable name for the workspace directory
+	WorkspaceDirEnvVar = "WORKSPACE_DIR"
 )
+
+// getWorkspaceDir returns the workspace directory from env var or empty string for system temp
+func getWorkspaceDir() string {
+	return os.Getenv(WorkspaceDirEnvVar)
+}
 
 // GitSourceHandler handles registry data from Git repositories
 type GitSourceHandler struct {
@@ -76,7 +83,7 @@ func (*GitSourceHandler) Validate(source *mcpv1alpha1.MCPRegistrySource) error {
 	return nil
 }
 
-// FetchRegistry retrieves registry data from the Git repository
+// FetchRegistry retrieves registry data from the Git repository using sparse checkout
 func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*FetchResult, error) {
 
 	// Validate source configuration
@@ -84,12 +91,18 @@ func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1
 		return nil, fmt.Errorf("source validation failed: %w", err)
 	}
 
-	// Create temporary directory for cloning
-	tempDir, err := os.MkdirTemp("", "mcpregistry-git-*")
+	// Create temporary directory for sparse checkout
+	tempDir, err := os.MkdirTemp(getWorkspaceDir(), "mcpregistry-git-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
+
+	// Get file path
+	filePath := mcpRegistry.Spec.Source.Git.Path
+	if filePath == "" {
+		filePath = DefaultRegistryDataFile
+	}
 
 	// Prepare clone configuration
 	cloneConfig := &git.CloneConfig{
@@ -100,26 +113,28 @@ func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1
 		Directory: tempDir,
 	}
 
-	// Clone the repository with timing and metrics
-	logger := log.FromContext(ctx)
+	// Fetch file using sparse checkout with timing and metrics
 	startTime := time.Now()
-	logger.Info("Starting git clone",
+	logger := log.FromContext(ctx)
+	logger.Info("Starting git sparse checkout",
 		"repository", cloneConfig.URL,
 		"branch", cloneConfig.Branch,
 		"tag", cloneConfig.Tag,
-		"commit", cloneConfig.Commit)
+		"commit", cloneConfig.Commit,
+		"file", filePath)
 
-	repoInfo, err := h.gitClient.Clone(ctx, cloneConfig)
-	cloneDuration := time.Since(startTime)
+	registryData, err := h.gitClient.FetchFileSparse(ctx, cloneConfig, filePath)
+	fetchDuration := time.Since(startTime)
 
 	if err != nil {
-		logger.Error(err, "Git clone failed",
+		logger.Error(err, "Git sparse checkout failed",
 			"repository", cloneConfig.URL,
-			"duration", cloneDuration.String())
-		return nil, fmt.Errorf("failed to clone repository: %w", err)
+			"file", filePath,
+			"duration", fetchDuration.String())
+		return nil, fmt.Errorf("failed to fetch file %s from repository: %w", filePath, err)
 	}
 
-	// Calculate directory size and object count
+	// Calculate directory size and object count for metrics
 	dirSize, objectCount, sizeErr := calculateDirectoryMetrics(tempDir)
 	if sizeErr != nil {
 		logger.Error(sizeErr, "Failed to calculate directory metrics")
@@ -127,31 +142,13 @@ func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1
 		objectCount = 0
 	}
 
-	logger.Info("Git clone completed",
+	logger.Info("Git sparse checkout completed",
 		"repository", cloneConfig.URL,
-		"duration", cloneDuration.String(),
+		"file", filePath,
+		"duration", fetchDuration.String(),
 		"directory_size_mb", fmt.Sprintf("%.2f", float64(dirSize)/(1024*1024)),
 		"object_count", objectCount,
-		"branch", repoInfo.Branch)
-
-	// Ensure cleanup
-	defer func() {
-		if cleanupErr := h.gitClient.Cleanup(repoInfo); cleanupErr != nil {
-			// Log error but don't fail the operation
-			log.FromContext(ctx).Error(cleanupErr, "Failed to cleanup repository")
-		}
-	}()
-
-	// Get file content from repository
-	filePath := mcpRegistry.Spec.Source.Git.Path
-	if filePath == "" {
-		filePath = DefaultRegistryDataFile
-	}
-
-	registryData, err := h.gitClient.GetFileContent(repoInfo, filePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get file %s from repository: %w", filePath, err)
-	}
+		"file_size_kb", fmt.Sprintf("%.2f", float64(len(registryData))/1024))
 
 	// Validate and parse registry data
 	reg, err := h.validator.ValidateData(registryData, mcpRegistry.Spec.Source.Format)
@@ -159,29 +156,32 @@ func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1
 		return nil, fmt.Errorf("registry data validation failed: %w", err)
 	}
 
-	// Calculate hash using the same method as CurrentHash for consistency
-	hash, err := h.CurrentHash(ctx, mcpRegistry)
-	if err != nil {
-		return nil, fmt.Errorf("failed to calculate hash: %w", err)
-	}
+	// Calculate hash from the registry data we already fetched (no second clone needed)
+	hash := fmt.Sprintf("%x", sha256.Sum256(registryData))
 
 	// Create and return fetch result with pre-calculated hash
 	return NewFetchResult(reg, hash, mcpRegistry.Spec.Source.Format), nil
 }
 
-// CurrentHash returns the current hash of the source data without performing a full fetch
+// CurrentHash returns the current hash of the source data using sparse checkout
 func (h *GitSourceHandler) CurrentHash(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (string, error) {
 	// Validate source configuration
 	if err := h.Validate(&mcpRegistry.Spec.Source); err != nil {
 		return "", fmt.Errorf("source validation failed: %w", err)
 	}
 
-	// Create temporary directory for cloning
-	tempDir, err := os.MkdirTemp("", "mcpregistry-git-hash-*")
+	// Create temporary directory for sparse checkout
+	tempDir, err := os.MkdirTemp(getWorkspaceDir(), "mcpregistry-git-hash-*")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary directory: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
+
+	// Get file path
+	filePath := mcpRegistry.Spec.Source.Git.Path
+	if filePath == "" {
+		filePath = DefaultRegistryDataFile
+	}
 
 	// Prepare clone configuration
 	cloneConfig := &git.CloneConfig{
@@ -192,29 +192,10 @@ func (h *GitSourceHandler) CurrentHash(ctx context.Context, mcpRegistry *mcpv1al
 		Directory: tempDir,
 	}
 
-	// Clone the repository
-	repoInfo, err := h.gitClient.Clone(ctx, cloneConfig)
+	// Fetch file using sparse checkout
+	registryData, err := h.gitClient.FetchFileSparse(ctx, cloneConfig, filePath)
 	if err != nil {
-		return "", fmt.Errorf("failed to clone repository: %w", err)
-	}
-
-	// Ensure cleanup
-	defer func() {
-		if cleanupErr := h.gitClient.Cleanup(repoInfo); cleanupErr != nil {
-			// Log error but don't fail the operation
-			fmt.Printf("Warning: failed to cleanup repository: %v\n", cleanupErr)
-		}
-	}()
-
-	// Get file content from repository
-	filePath := mcpRegistry.Spec.Source.Git.Path
-	if filePath == "" {
-		filePath = DefaultRegistryDataFile
-	}
-
-	registryData, err := h.gitClient.GetFileContent(repoInfo, filePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to get file %s from repository: %w", filePath, err)
+		return "", fmt.Errorf("failed to fetch file %s from repository: %w", filePath, err)
 	}
 
 	// Compute and return hash of the data

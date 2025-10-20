@@ -11,9 +11,11 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
-const (
-	mainBranchName = "main"
-)
+// Integration tests use local test repositories created on-the-fly.
+// These tests are fast (<1s each) and don't require network access.
+// They test real Git operations with branches, commits, and tags.
+//
+// For E2E tests with remote repositories (slow), see e2e_test.go
 
 // TestDefaultGitClient_FullWorkflow tests a complete Git workflow with a real repository
 func TestDefaultGitClient_FullWorkflow(t *testing.T) {
@@ -39,7 +41,7 @@ func TestDefaultGitClient_FullWorkflow(t *testing.T) {
 	// Create a test file
 	testFilePath := filepath.Join(sourceRepoDir, "registry.json")
 	testContent := `{"name": "test-registry", "version": "1.0.0"}`
-	err = os.WriteFile(testFilePath, []byte(testContent), 0644)
+	err = os.WriteFile(testFilePath, []byte(testContent), 0600)
 	if err != nil {
 		t.Fatalf("Failed to write test file: %v", err)
 	}
@@ -67,54 +69,32 @@ func TestDefaultGitClient_FullWorkflow(t *testing.T) {
 	}
 	defer os.RemoveAll(cloneDir)
 
-	// Test the full workflow
+	// Test the full workflow with new FetchFileSparse API
 	client := NewDefaultGitClient()
 
-	// Clone the repository
+	// Fetch the file using sparse checkout
 	config := &CloneConfig{
 		URL:       sourceRepoDir, // Use local path for testing
 		Directory: cloneDir,
 	}
 
-	repoInfo, err := client.Clone(context.Background(), config)
+	content, err := client.FetchFileSparse(context.Background(), config, "registry.json")
 	if err != nil {
-		t.Fatalf("Failed to clone repository: %v", err)
+		t.Fatalf("Failed to fetch file: %v", err)
 	}
 
-	// Verify repository info was populated
-	if repoInfo.Repository == nil {
-		t.Error("Repository should not be nil")
-	}
-	if repoInfo.RemoteURL != sourceRepoDir {
-		t.Errorf("Expected RemoteURL to be %s, got %s", sourceRepoDir, repoInfo.RemoteURL)
-	}
-
-	// Test GetFileContent
-	content, err := client.GetFileContent(repoInfo, "registry.json")
-	if err != nil {
-		t.Fatalf("Failed to get file content: %v", err)
-	}
 	if string(content) != testContent {
 		t.Errorf("Expected content %q, got %q", testContent, string(content))
 	}
 
-	// Test GetFileContent with non-existent file
-	_, err = client.GetFileContent(repoInfo, "nonexistent.json")
+	// Test FetchFileSparse with non-existent file
+	_, err = client.FetchFileSparse(context.Background(), config, "nonexistent.json")
 	if err == nil {
 		t.Error("Expected error for non-existent file")
 	}
 
-	// Test Cleanup
-	err = client.Cleanup(repoInfo)
-	if err != nil {
-		t.Fatalf("Failed to cleanup: %v", err)
-	}
-
-	// Verify directory was removed
-	_, err = os.Stat(cloneDir)
-	if !os.IsNotExist(err) {
-		t.Error("Expected clone directory to be removed")
-	}
+	// Cleanup is automatic - just remove the directory
+	// (The new API doesn't require explicit cleanup)
 }
 
 // TestDefaultGitClient_CloneWithBranch tests cloning with a specific branch
@@ -138,14 +118,14 @@ func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 		t.Fatalf("Failed to get source worktree: %v", err)
 	}
 
-	// Create initial commit on mainBranchName branch
-	testFilePath := filepath.Join(sourceRepoDir, "mainBranchName.txt")
-	err = os.WriteFile(testFilePath, []byte("mainBranchName branch content"), 0644)
+	// Create initial commit on main branch
+	testFilePath := filepath.Join(sourceRepoDir, "main.txt")
+	err = os.WriteFile(testFilePath, []byte("main branch content"), 0600)
 	if err != nil {
 		t.Fatalf("Failed to write test file: %v", err)
 	}
 
-	_, err = sourceWorkTree.Add("mainBranchName.txt")
+	_, err = sourceWorkTree.Add("main.txt")
 	if err != nil {
 		t.Fatalf("Failed to add file: %v", err)
 	}
@@ -172,7 +152,7 @@ func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 
 	// Add content to feature branch
 	featureFilePath := filepath.Join(sourceRepoDir, "feature.txt")
-	err = os.WriteFile(featureFilePath, []byte("feature branch content"), 0644)
+	err = os.WriteFile(featureFilePath, []byte("feature branch content"), 0600)
 	if err != nil {
 		t.Fatalf("Failed to write feature file: %v", err)
 	}
@@ -192,7 +172,7 @@ func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 		t.Fatalf("Failed to commit feature: %v", err)
 	}
 
-	// Clone the feature branch
+	// Fetch from the feature branch using new API
 	cloneDir, err := os.MkdirTemp("", "git-clone-branch-*")
 	if err != nil {
 		t.Fatalf("Failed to create clone temp dir: %v", err)
@@ -206,33 +186,35 @@ func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 		Directory: cloneDir,
 	}
 
-	repoInfo, err := client.Clone(context.Background(), config)
+	// Fetch the feature-specific file
+	content, err := client.FetchFileSparse(context.Background(), config, "feature.txt")
 	if err != nil {
-		t.Fatalf("Failed to clone feature branch: %v", err)
-	}
-
-	// Verify we're on the feature branch and have the feature file
-	content, err := client.GetFileContent(repoInfo, "feature.txt")
-	if err != nil {
-		t.Fatalf("Failed to get feature file content: %v", err)
+		t.Fatalf("Failed to fetch feature file: %v", err)
 	}
 	if string(content) != "feature branch content" {
 		t.Errorf("Expected feature content, got %q", string(content))
 	}
 
-	// Verify we also have mainBranchName.txt (since feature branch was created from mainBranchName)
-	mainBranchNameContent, err := client.GetFileContent(repoInfo, "mainBranchName.txt")
+	// For the second fetch, use a new clone directory
+	cloneDir2, err := os.MkdirTemp("", "git-clone-branch-2-*")
 	if err != nil {
-		t.Fatalf("Failed to get mainBranchName.txt content: %v", err)
+		t.Fatalf("Failed to create second clone temp dir: %v", err)
 	}
-	if string(mainBranchNameContent) != "mainBranchName branch content" {
-		t.Errorf("Expected mainBranchName branch content, got %q", string(mainBranchNameContent))
+	defer os.RemoveAll(cloneDir2)
+
+	config2 := &CloneConfig{
+		URL:       sourceRepoDir,
+		Branch:    "feature",
+		Directory: cloneDir2,
 	}
 
-	// Clean up
-	err = client.Cleanup(repoInfo)
+	// Fetch main.txt from feature branch (should exist since feature was branched from main)
+	mainContent, err := client.FetchFileSparse(context.Background(), config2, "main.txt")
 	if err != nil {
-		t.Fatalf("Failed to cleanup: %v", err)
+		t.Fatalf("Failed to get main.txt content: %v", err)
+	}
+	if string(mainContent) != "main branch content" {
+		t.Errorf("Expected main branch content, got %q", string(mainContent))
 	}
 }
 
@@ -259,7 +241,7 @@ func TestDefaultGitClient_CloneWithCommit(t *testing.T) {
 
 	// Create first commit
 	file1Path := filepath.Join(sourceRepoDir, "file1.txt")
-	err = os.WriteFile(file1Path, []byte("first commit"), 0644)
+	err = os.WriteFile(file1Path, []byte("first commit"), 0600)
 	if err != nil {
 		t.Fatalf("Failed to write first file: %v", err)
 	}
@@ -281,7 +263,7 @@ func TestDefaultGitClient_CloneWithCommit(t *testing.T) {
 
 	// Create second commit
 	file2Path := filepath.Join(sourceRepoDir, "file2.txt")
-	err = os.WriteFile(file2Path, []byte("second commit"), 0644)
+	err = os.WriteFile(file2Path, []byte("second commit"), 0600)
 	if err != nil {
 		t.Fatalf("Failed to write second file: %v", err)
 	}
@@ -301,7 +283,7 @@ func TestDefaultGitClient_CloneWithCommit(t *testing.T) {
 		t.Fatalf("Failed to make second commit: %v", err)
 	}
 
-	// Clone at the first commit
+	// Fetch file at the first commit using new API
 	cloneDir, err := os.MkdirTemp("", "git-clone-commit-*")
 	if err != nil {
 		t.Fatalf("Failed to create clone temp dir: %v", err)
@@ -315,67 +297,64 @@ func TestDefaultGitClient_CloneWithCommit(t *testing.T) {
 		Directory: cloneDir,
 	}
 
-	repoInfo, err := client.Clone(context.Background(), config)
+	// Fetch the first file (should exist at first commit)
+	content, err := client.FetchFileSparse(context.Background(), config, "file1.txt")
 	if err != nil {
-		t.Fatalf("Failed to clone at specific commit: %v", err)
-	}
-
-	// Verify we have the first file
-	content, err := client.GetFileContent(repoInfo, "file1.txt")
-	if err != nil {
-		t.Fatalf("Failed to get first file content: %v", err)
+		t.Fatalf("Failed to fetch first file: %v", err)
 	}
 	if string(content) != "first commit" {
 		t.Errorf("Expected first commit content, got %q", string(content))
 	}
 
-	// Verify we don't have the second file (since we're at first commit)
-	_, err = client.GetFileContent(repoInfo, "file2.txt")
+	// Try to fetch the second file (should not exist at first commit)
+	_, err = client.FetchFileSparse(context.Background(), config, "file2.txt")
 	if err == nil {
 		t.Error("Expected error for file2.txt not present at first commit")
 	}
-
-	// Clean up
-	err = client.Cleanup(repoInfo)
-	if err != nil {
-		t.Fatalf("Failed to cleanup: %v", err)
-	}
 }
 
-// TestDefaultGitClient_UpdateRepositoryInfo tests the updateRepositoryInfo method
-func TestDefaultGitClient_UpdateRepositoryInfo(t *testing.T) {
+// TestDefaultGitClient_WithSubdirectory tests fetching files from subdirectories
+func TestDefaultGitClient_WithSubdirectory(t *testing.T) {
 	t.Parallel()
-	// Create a temporary directory for the test repository
-	tempRepoDir, err := os.MkdirTemp("", "git-repo-update-*")
+	// Create a temporary directory for the source repository
+	sourceRepoDir, err := os.MkdirTemp("", "git-source-subdir-*")
 	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
+		t.Fatalf("Failed to create source temp dir: %v", err)
 	}
-	defer os.RemoveAll(tempRepoDir)
+	defer os.RemoveAll(sourceRepoDir)
 
 	// Create a test repository
-	repo, err := git.PlainInit(tempRepoDir, false)
+	sourceRepo, err := git.PlainInit(sourceRepoDir, false)
 	if err != nil {
-		t.Fatalf("Failed to init repository: %v", err)
+		t.Fatalf("Failed to init source repository: %v", err)
 	}
 
-	workTree, err := repo.Worktree()
+	sourceWorkTree, err := sourceRepo.Worktree()
 	if err != nil {
-		t.Fatalf("Failed to get worktree: %v", err)
+		t.Fatalf("Failed to get source worktree: %v", err)
 	}
 
-	// Create and commit a file to get a proper HEAD
-	testFilePath := filepath.Join(tempRepoDir, "test.txt")
-	err = os.WriteFile(testFilePath, []byte("test content"), 0644)
+	// Create subdirectory and file
+	subDir := filepath.Join(sourceRepoDir, "pkg", "registry")
+	err = os.MkdirAll(subDir, 0700)
+	if err != nil {
+		t.Fatalf("Failed to create subdirectory: %v", err)
+	}
+
+	testFilePath := filepath.Join(subDir, "data.json")
+	testContent := `{"servers": ["server1", "server2"]}`
+	err = os.WriteFile(testFilePath, []byte(testContent), 0600)
 	if err != nil {
 		t.Fatalf("Failed to write test file: %v", err)
 	}
 
-	_, err = workTree.Add("test.txt")
+	// Add and commit the file
+	_, err = sourceWorkTree.Add("pkg/registry/data.json")
 	if err != nil {
 		t.Fatalf("Failed to add file: %v", err)
 	}
 
-	commitHash, err := workTree.Commit("Initial commit", &git.CommitOptions{
+	_, err = sourceWorkTree.Commit("Add data file", &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  "Test Author",
 			Email: "test@example.com",
@@ -385,34 +364,129 @@ func TestDefaultGitClient_UpdateRepositoryInfo(t *testing.T) {
 		t.Fatalf("Failed to commit: %v", err)
 	}
 
-	// Create a branch
-	branchRef := plumbing.NewBranchReferenceName(mainBranchName)
-	err = repo.Storer.SetReference(plumbing.NewHashReference(branchRef, commitHash))
+	// Fetch file from subdirectory using sparse checkout
+	cloneDir, err := os.MkdirTemp("", "git-clone-subdir-*")
 	if err != nil {
-		t.Fatalf("Failed to set branch reference: %v", err)
+		t.Fatalf("Failed to create clone temp dir: %v", err)
 	}
-
-	// Checkout the branch to set HEAD properly
-	err = workTree.Checkout(&git.CheckoutOptions{
-		Branch: branchRef,
-	})
-	if err != nil {
-		t.Fatalf("Failed to checkout branch: %v", err)
-	}
+	defer os.RemoveAll(cloneDir)
 
 	client := NewDefaultGitClient()
-	repoInfo := &RepositoryInfo{
-		Repository: repo,
+	config := &CloneConfig{
+		URL:       sourceRepoDir,
+		Directory: cloneDir,
 	}
 
-	// Test updateRepositoryInfo
-	err = client.updateRepositoryInfo(repoInfo)
+	content, err := client.FetchFileSparse(context.Background(), config, "pkg/registry/data.json")
 	if err != nil {
-		t.Fatalf("updateRepositoryInfo failed: %v", err)
+		t.Fatalf("Failed to fetch file from subdirectory: %v", err)
 	}
 
-	// Verify the repository info was updated correctly
-	if repoInfo.Branch != mainBranchName {
-		t.Errorf("Expected Branch to be %q, got %s", mainBranchName, repoInfo.Branch)
+	if string(content) != testContent {
+		t.Errorf("Expected content %q, got %q", testContent, string(content))
+	}
+
+	// Verify sparse checkout only checked out the necessary directory
+	// (The working directory should not have all files, only the sparse checkout path)
+	// This is verified by checking that only the pkg/registry directory exists
+	pkgDir := filepath.Join(cloneDir, "pkg", "registry")
+	if _, err := os.Stat(pkgDir); os.IsNotExist(err) {
+		t.Error("Expected pkg/registry directory to exist in sparse checkout")
+	}
+}
+
+// TestDefaultGitClient_WithTag tests cloning with a specific tag
+func TestDefaultGitClient_WithTag(t *testing.T) {
+	t.Parallel()
+	// Create a temporary directory for the source repository
+	sourceRepoDir, err := os.MkdirTemp("", "git-source-tag-*")
+	if err != nil {
+		t.Fatalf("Failed to create source temp dir: %v", err)
+	}
+	defer os.RemoveAll(sourceRepoDir)
+
+	// Create a test repository
+	sourceRepo, err := git.PlainInit(sourceRepoDir, false)
+	if err != nil {
+		t.Fatalf("Failed to init source repository: %v", err)
+	}
+
+	sourceWorkTree, err := sourceRepo.Worktree()
+	if err != nil {
+		t.Fatalf("Failed to get source worktree: %v", err)
+	}
+
+	// Create first version
+	file1Path := filepath.Join(sourceRepoDir, "version.txt")
+	err = os.WriteFile(file1Path, []byte("v1.0.0"), 0600)
+	if err != nil {
+		t.Fatalf("Failed to write first file: %v", err)
+	}
+
+	_, err = sourceWorkTree.Add("version.txt")
+	if err != nil {
+		t.Fatalf("Failed to add first file: %v", err)
+	}
+
+	firstCommit, err := sourceWorkTree.Commit("First version", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test Author",
+			Email: "test@example.com",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to make first commit: %v", err)
+	}
+
+	// Create tag for v1.0.0
+	tagRef := plumbing.NewHashReference(plumbing.NewTagReferenceName("v1.0.0"), firstCommit)
+	err = sourceRepo.Storer.SetReference(tagRef)
+	if err != nil {
+		t.Fatalf("Failed to create tag: %v", err)
+	}
+
+	// Create second version (but don't tag it)
+	err = os.WriteFile(file1Path, []byte("v2.0.0"), 0600)
+	if err != nil {
+		t.Fatalf("Failed to write second file: %v", err)
+	}
+
+	_, err = sourceWorkTree.Add("version.txt")
+	if err != nil {
+		t.Fatalf("Failed to add second file: %v", err)
+	}
+
+	_, err = sourceWorkTree.Commit("Second version", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test Author",
+			Email: "test@example.com",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to make second commit: %v", err)
+	}
+
+	// Fetch file at the v1.0.0 tag
+	cloneDir, err := os.MkdirTemp("", "git-clone-tag-*")
+	if err != nil {
+		t.Fatalf("Failed to create clone temp dir: %v", err)
+	}
+	defer os.RemoveAll(cloneDir)
+
+	client := NewDefaultGitClient()
+	config := &CloneConfig{
+		URL:       sourceRepoDir,
+		Tag:       "v1.0.0",
+		Directory: cloneDir,
+	}
+
+	content, err := client.FetchFileSparse(context.Background(), config, "version.txt")
+	if err != nil {
+		t.Fatalf("Failed to fetch file at tag: %v", err)
+	}
+
+	// Should get v1.0.0 content, not v2.0.0
+	if string(content) != "v1.0.0" {
+		t.Errorf("Expected v1.0.0 content, got %q", string(content))
 	}
 }

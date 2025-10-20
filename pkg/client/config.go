@@ -57,6 +57,8 @@ const (
 	Goose MCPClient = "goose"
 	// Trae represents the Trae IDE.
 	Trae MCPClient = "trae"
+	// Continue represents the Continue.dev IDE plugins.
+	Continue MCPClient = "continue"
 )
 
 // Extension is extension of the client config file.
@@ -389,6 +391,21 @@ var supportedClientIntegrations = []mcpClientConfig{
 		IsTransportTypeFieldSupported: false,
 		MCPServersUrlLabel:            "url",
 	},
+	{
+		ClientType:           Continue,
+		Description:          "Continue.dev IDE plugins",
+		SettingsFile:         "config.yaml",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".continue"},
+		Extension:            YAML,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "streamable-http",
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
+	},
 }
 
 // ConfigFile represents a client configuration file
@@ -581,9 +598,19 @@ func (cm *ClientManager) retrieveConfigFileMetadata(clientType MCPClient) (*Conf
 	var configUpdater ConfigUpdater
 	switch clientCfg.Extension {
 	case YAML:
+		// Select the appropriate YAML converter based on client type
+		var converter YAMLConverter
+		switch clientCfg.ClientType {
+		case Continue:
+			converter = &ContinueYAMLConverter{}
+		case Goose:
+			converter = &GooseYAMLConverter{}
+		default:
+			converter = &GooseYAMLConverter{} // Default fallback
+		}
 		configUpdater = &YAMLConfigUpdater{
 			Path:      path,
-			Converter: &GooseYAMLConverter{},
+			Converter: converter,
 		}
 	case JSON:
 		configUpdater = &JSONConfigUpdater{

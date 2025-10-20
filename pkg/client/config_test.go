@@ -144,6 +144,14 @@ func createMockClientConfigs() []mcpClientConfig {
 			MCPServersPathPrefix: "/extensions",
 			Extension:            YAML,
 		},
+		{
+			ClientType:           Continue,
+			Description:          "Continue.dev extension (Mock)",
+			RelPath:              []string{"mock_continue"},
+			SettingsFile:         "config.yaml",
+			MCPServersPathPrefix: "/mcpServers",
+			Extension:            YAML,
+		},
 	}
 }
 
@@ -308,6 +316,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				string(LMStudio),
 				string(Goose),
 				string(Trae),
+				string(Continue),
 			},
 		},
 	}
@@ -401,6 +410,9 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case Goose:
 				assert.Contains(t, string(content), `extensions:`,
 					"Goose config should contain extensions key")
+			case Continue:
+				assert.Contains(t, string(content), `mcpServers:`,
+					"Continue.dev config should contain extensions key")
 			}
 		}
 	})
@@ -434,7 +446,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae:
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}

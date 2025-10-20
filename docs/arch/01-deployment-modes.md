@@ -97,7 +97,7 @@ The CLI automatically detects container runtimes in this order:
    - `$TOOLHIVE_COLIMA_SOCKET` (if set)
    - `~/.colima/default/docker.sock`
 
-3. **Docker** - Checks for Docker socket at:
+3. **Docker** (including Docker Desktop and Rancher Desktop) - Checks for Docker socket at:
    - `$TOOLHIVE_DOCKER_SOCKET` (if set)
    - `/var/run/docker.sock`
    - `~/.docker/run/docker.sock` (Docker Desktop on macOS)
@@ -308,11 +308,11 @@ For complete examples, see the [`examples/operator/mcp-servers/`](../../examples
 - Resource and pod template customizations
 - Tool filtering and middleware examples
 
-Full CRD API documentation is available in `cmd/thv-operator/crd-api.md`.
+Full CRD API documentation is available in [`cmd/thv-operator/crd-api.md`](../../cmd/thv-operator/crd-api.md).
 
 ### Operator Design Decisions
 
-See `cmd/thv-operator/DESIGN.md` for detailed decision documentation.
+See [`cmd/thv-operator/DESIGN.md`](../../cmd/thv-operator/DESIGN.md) for detailed decision documentation.
 
 **Key principles:**
 - Use CRD attributes for business logic affecting reconciliation

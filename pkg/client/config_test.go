@@ -307,6 +307,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				string(AmpWindsurf),
 				string(LMStudio),
 				string(Goose),
+				string(Trae),
 			},
 		},
 	}
@@ -394,7 +395,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case AmpWindsurf:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"AmpWindsurf config should contain mcpServers key")
-			case LMStudio:
+			case LMStudio, Trae:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"LMStudio config should contain mcpServers key")
 			case Goose:
@@ -433,7 +434,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose:
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}

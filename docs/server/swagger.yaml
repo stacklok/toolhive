@@ -801,6 +801,10 @@ components:
         name:
           description: Name is the name of the MCP server
           type: string
+        network_mode:
+          description: NetworkMode specifies the network mode for the container (e.g.,
+            "host", "bridge", "none")
+          type: string
         oidc_config:
           $ref: '#/components/schemas/auth.TokenValidatorConfig'
         permission_profile:

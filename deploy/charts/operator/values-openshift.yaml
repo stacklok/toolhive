@@ -89,10 +89,10 @@ operator:
   resources:
     limits:
       cpu: 500m
-      memory: 384Mi
+      memory: 512Mi
     requests:
       cpu: 10m
-      memory: 192Mi
+      memory: 256Mi
 
   # -- RBAC configuration for the operator
   rbac:

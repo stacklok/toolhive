@@ -308,7 +308,7 @@ For complete examples, see the [`examples/operator/mcp-servers/`](../../examples
 - Resource and pod template customizations
 - Tool filtering and middleware examples
 
-Full CRD API documentation is available in [`cmd/thv-operator/crd-api.md`](../../cmd/thv-operator/crd-api.md).
+Full CRD API documentation is available in `docs/operator/crd-api.md`.
 
 ### Operator Design Decisions
 

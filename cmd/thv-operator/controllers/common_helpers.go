@@ -10,9 +10,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -20,9 +22,12 @@ import (
 	"sigs.k8s.io/yaml"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/runner"
+	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 const (
@@ -368,6 +373,52 @@ func EnsureAuthzConfigMap(
 	return nil
 }
 
+// GetToolConfigForMCPRemoteProxy fetches MCPToolConfig referenced by MCPRemoteProxy
+func GetToolConfigForMCPRemoteProxy(
+	ctx context.Context,
+	c client.Client,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) (*mcpv1alpha1.MCPToolConfig, error) {
+	if proxy.Spec.ToolConfigRef == nil {
+		return nil, fmt.Errorf("MCPRemoteProxy %s does not reference a MCPToolConfig", proxy.Name)
+	}
+
+	toolConfig := &mcpv1alpha1.MCPToolConfig{}
+	err := c.Get(ctx, types.NamespacedName{
+		Name:      proxy.Spec.ToolConfigRef.Name,
+		Namespace: proxy.Namespace,
+	}, toolConfig)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MCPToolConfig %s: %w", proxy.Spec.ToolConfigRef.Name, err)
+	}
+
+	return toolConfig, nil
+}
+
+// GetExternalAuthConfigForMCPRemoteProxy fetches MCPExternalAuthConfig referenced by MCPRemoteProxy
+func GetExternalAuthConfigForMCPRemoteProxy(
+	ctx context.Context,
+	c client.Client,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) (*mcpv1alpha1.MCPExternalAuthConfig, error) {
+	if proxy.Spec.ExternalAuthConfigRef == nil {
+		return nil, fmt.Errorf("MCPRemoteProxy %s does not reference a MCPExternalAuthConfig", proxy.Name)
+	}
+
+	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+	err := c.Get(ctx, types.NamespacedName{
+		Name:      proxy.Spec.ExternalAuthConfigRef.Name,
+		Namespace: proxy.Namespace,
+	}, externalAuthConfig)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", proxy.Spec.ExternalAuthConfigRef.Name, err)
+	}
+
+	return externalAuthConfig, nil
+}
+
 // GetExternalAuthConfigByName is a generic helper for fetching MCPExternalAuthConfig by name
 func GetExternalAuthConfigByName(
 	ctx context.Context,
@@ -480,4 +531,287 @@ func AddAuthzConfigOptions(
 		// Unknown type
 		return fmt.Errorf("unknown authz config type: %s", authzRef.Type)
 	}
+}
+
+// AddExternalAuthConfigOptions adds external authentication configuration options to builder options
+// This creates middleware configuration for token exchange and is shared between MCPServer and MCPRemoteProxy
+func AddExternalAuthConfigOptions(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	if externalAuthConfigRef == nil {
+		return nil
+	}
+
+	// Fetch the MCPExternalAuthConfig
+	externalAuthConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, externalAuthConfigRef.Name)
+	if err != nil {
+		return fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
+	}
+
+	// Only token exchange type is supported currently
+	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeTokenExchange {
+		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
+	}
+
+	tokenExchangeSpec := externalAuthConfig.Spec.TokenExchange
+	if tokenExchangeSpec == nil {
+		return fmt.Errorf("token exchange configuration is nil for type tokenExchange")
+	}
+
+	// Validate that the referenced Kubernetes secret exists
+	var secret corev1.Secret
+	if err := c.Get(ctx, types.NamespacedName{
+		Namespace: namespace,
+		Name:      tokenExchangeSpec.ClientSecretRef.Name,
+	}, &secret); err != nil {
+		return fmt.Errorf("failed to get client secret %s/%s: %w",
+			namespace, tokenExchangeSpec.ClientSecretRef.Name, err)
+	}
+
+	if _, ok := secret.Data[tokenExchangeSpec.ClientSecretRef.Key]; !ok {
+		return fmt.Errorf("client secret %s/%s is missing key %q",
+			namespace, tokenExchangeSpec.ClientSecretRef.Name, tokenExchangeSpec.ClientSecretRef.Key)
+	}
+
+	// Use scopes array directly from spec
+	scopes := tokenExchangeSpec.Scopes
+
+	// Determine header strategy based on ExternalTokenHeaderName
+	headerStrategy := "replace" // Default strategy
+	if tokenExchangeSpec.ExternalTokenHeaderName != "" {
+		headerStrategy = "custom"
+	}
+
+	// Build token exchange middleware configuration
+	// Client secret is provided via TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET environment variable
+	// to avoid embedding plaintext secrets in the ConfigMap
+	tokenExchangeConfig := map[string]interface{}{
+		"token_url": tokenExchangeSpec.TokenURL,
+		"client_id": tokenExchangeSpec.ClientID,
+		"audience":  tokenExchangeSpec.Audience,
+	}
+
+	if len(scopes) > 0 {
+		tokenExchangeConfig["scopes"] = scopes
+	}
+
+	if headerStrategy != "" {
+		tokenExchangeConfig["header_strategy"] = headerStrategy
+	}
+
+	if tokenExchangeSpec.ExternalTokenHeaderName != "" {
+		tokenExchangeConfig["external_token_header_name"] = tokenExchangeSpec.ExternalTokenHeaderName
+	}
+
+	// Create middleware parameters
+	middlewareParams := map[string]interface{}{
+		"token_exchange_config": tokenExchangeConfig,
+	}
+
+	// Marshal parameters to JSON
+	paramsJSON, err := json.Marshal(middlewareParams)
+	if err != nil {
+		return fmt.Errorf("failed to marshal token exchange middleware parameters: %w", err)
+	}
+
+	// Create middleware config
+	middlewareConfig := transporttypes.MiddlewareConfig{
+		Type:       tokenexchange.MiddlewareType,
+		Parameters: json.RawMessage(paramsJSON),
+	}
+
+	// Add to options using the WithMiddlewareConfig builder option
+	*options = append(*options, runner.WithMiddlewareConfig([]transporttypes.MiddlewareConfig{middlewareConfig}))
+
+	return nil
+}
+
+// AddOIDCConfigOptions adds OIDC authentication configuration options to builder options
+// This is shared between MCPServer and MCPRemoteProxy and uses the OIDC resolver
+func AddOIDCConfigOptions(
+	ctx context.Context,
+	c client.Client,
+	res oidc.OIDCConfigurable,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	// Use the OIDC resolver to get configuration
+	resolver := oidc.NewResolver(c)
+	oidcConfig, err := resolver.Resolve(ctx, res)
+	if err != nil {
+		return fmt.Errorf("failed to resolve OIDC configuration: %w", err)
+	}
+
+	if oidcConfig == nil {
+		return nil
+	}
+
+	// Add OIDC config to options
+	*options = append(*options, runner.WithOIDCConfig(
+		oidcConfig.Issuer,
+		oidcConfig.Audience,
+		oidcConfig.JWKSURL,
+		oidcConfig.IntrospectionURL,
+		oidcConfig.ClientID,
+		oidcConfig.ClientSecret,
+		oidcConfig.ThvCABundlePath,
+		oidcConfig.JWKSAuthTokenPath,
+		oidcConfig.ResourceURL,
+		oidcConfig.JWKSAllowPrivateIP,
+	))
+
+	return nil
+}
+
+// BuildResourceRequirements builds Kubernetes resource requirements from spec
+// Shared between MCPServer and MCPRemoteProxy
+func BuildResourceRequirements(resourceSpec mcpv1alpha1.ResourceRequirements) corev1.ResourceRequirements {
+	resources := corev1.ResourceRequirements{}
+
+	if resourceSpec.Limits.CPU != "" || resourceSpec.Limits.Memory != "" {
+		resources.Limits = corev1.ResourceList{}
+		if resourceSpec.Limits.CPU != "" {
+			resources.Limits[corev1.ResourceCPU] = resource.MustParse(resourceSpec.Limits.CPU)
+		}
+		if resourceSpec.Limits.Memory != "" {
+			resources.Limits[corev1.ResourceMemory] = resource.MustParse(resourceSpec.Limits.Memory)
+		}
+	}
+
+	if resourceSpec.Requests.CPU != "" || resourceSpec.Requests.Memory != "" {
+		resources.Requests = corev1.ResourceList{}
+		if resourceSpec.Requests.CPU != "" {
+			resources.Requests[corev1.ResourceCPU] = resource.MustParse(resourceSpec.Requests.CPU)
+		}
+		if resourceSpec.Requests.Memory != "" {
+			resources.Requests[corev1.ResourceMemory] = resource.MustParse(resourceSpec.Requests.Memory)
+		}
+	}
+
+	return resources
+}
+
+// BuildHealthProbe builds a Kubernetes health probe configuration
+// Shared between MCPServer and MCPRemoteProxy
+func BuildHealthProbe(
+	path, port string, initialDelay, period, timeout, failureThreshold int32,
+) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: path,
+				Port: intstr.FromString(port),
+			},
+		},
+		InitialDelaySeconds: initialDelay,
+		PeriodSeconds:       period,
+		TimeoutSeconds:      timeout,
+		FailureThreshold:    failureThreshold,
+	}
+}
+
+// EnsureRequiredEnvVars ensures required environment variables are set with defaults
+// Shared between MCPServer and MCPRemoteProxy
+func EnsureRequiredEnvVars(ctx context.Context, env []corev1.EnvVar) []corev1.EnvVar {
+	ctxLogger := log.FromContext(ctx)
+	xdgConfigHomeFound := false
+	homeFound := false
+	toolhiveRuntimeFound := false
+	unstructuredLogsFound := false
+
+	for _, envVar := range env {
+		switch envVar.Name {
+		case "XDG_CONFIG_HOME":
+			xdgConfigHomeFound = true
+		case "HOME":
+			homeFound = true
+		case "TOOLHIVE_RUNTIME":
+			toolhiveRuntimeFound = true
+		case "UNSTRUCTURED_LOGS":
+			unstructuredLogsFound = true
+		}
+	}
+
+	if !xdgConfigHomeFound {
+		ctxLogger.V(1).Info("XDG_CONFIG_HOME not found, setting to /tmp")
+		env = append(env, corev1.EnvVar{
+			Name:  "XDG_CONFIG_HOME",
+			Value: "/tmp",
+		})
+	}
+
+	if !homeFound {
+		ctxLogger.V(1).Info("HOME not found, setting to /tmp")
+		env = append(env, corev1.EnvVar{
+			Name:  "HOME",
+			Value: "/tmp",
+		})
+	}
+
+	if !toolhiveRuntimeFound {
+		ctxLogger.V(1).Info("TOOLHIVE_RUNTIME not found, setting to kubernetes")
+		env = append(env, corev1.EnvVar{
+			Name:  "TOOLHIVE_RUNTIME",
+			Value: "kubernetes",
+		})
+	}
+
+	// Always use structured JSON logs in Kubernetes (not configurable)
+	if !unstructuredLogsFound {
+		ctxLogger.V(1).Info("UNSTRUCTURED_LOGS not found, setting to false for structured JSON logging")
+		env = append(env, corev1.EnvVar{
+			Name:  "UNSTRUCTURED_LOGS",
+			Value: "false",
+		})
+	}
+
+	return env
+}
+
+// MergeLabels merges override labels with default labels
+// Default labels take precedence to ensure operator-required metadata is preserved
+// Shared between MCPServer and MCPRemoteProxy
+func MergeLabels(defaultLabels, overrideLabels map[string]string) map[string]string {
+	return mergeStringMaps(defaultLabels, overrideLabels)
+}
+
+// MergeAnnotations merges override annotations with default annotations
+// Default annotations take precedence to ensure operator-required metadata is preserved
+// Shared between MCPServer and MCPRemoteProxy
+func MergeAnnotations(defaultAnnotations, overrideAnnotations map[string]string) map[string]string {
+	return mergeStringMaps(defaultAnnotations, overrideAnnotations)
+}
+
+// mergeStringMaps merges override map with default map, with default map taking precedence
+func mergeStringMaps(defaultMap, overrideMap map[string]string) map[string]string {
+	result := make(map[string]string)
+	for k, v := range overrideMap {
+		result[k] = v
+	}
+	for k, v := range defaultMap {
+		result[k] = v // default takes precedence
+	}
+	return result
+}
+
+// CreateProxyServiceName generates the service name for a proxy (MCPServer or MCPRemoteProxy)
+// Shared naming convention across both controllers
+func CreateProxyServiceName(resourceName string) string {
+	return fmt.Sprintf("mcp-%s-proxy", resourceName)
+}
+
+// CreateProxyServiceURL generates the full cluster-local service URL
+// Shared between MCPServer and MCPRemoteProxy
+func CreateProxyServiceURL(resourceName, namespace string, port int32) string {
+	serviceName := CreateProxyServiceName(resourceName)
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
+}
+
+// ProxyRunnerServiceAccountName generates the service account name for the proxy runner
+// Shared between MCPServer and MCPRemoteProxy
+func ProxyRunnerServiceAccountName(resourceName string) string {
+	return fmt.Sprintf("%s-proxy-runner", resourceName)
 }

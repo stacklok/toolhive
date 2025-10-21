@@ -108,6 +108,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Register MCPRemoteProxy controller
+	if err = (&controllers.MCPRemoteProxyReconciler{
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		PlatformDetector: controllers.NewSharedPlatformDetector(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MCPRemoteProxy")
+		os.Exit(1)
+	}
+
 	// Only register MCPRegistry controller if feature flag is enabled
 	rec.ImageValidation = validation.ImageValidationRegistryEnforcing
 

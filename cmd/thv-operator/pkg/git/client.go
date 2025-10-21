@@ -147,7 +147,7 @@ func (*DefaultGitClient) performSparseCheckout(repo *git.Repository, filePath st
 func (*DefaultGitClient) readFileSecurely(baseDir, filePath string) ([]byte, error) {
 	// Sanitize the file path to prevent path traversal
 	cleanFilePath := filepath.Clean(filePath)
-	if cleanFilePath == ".." || filepath.IsAbs(cleanFilePath) || filepath.Dir(cleanFilePath) == ".." {
+	if cleanFilePath == ".." || strings.HasPrefix(cleanFilePath, ".."+string(filepath.Separator)) || filepath.IsAbs(cleanFilePath) {
 		return nil, fmt.Errorf("invalid file path: potential path traversal detected in %s", filePath)
 	}
 

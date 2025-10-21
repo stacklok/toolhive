@@ -1,0 +1,7 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: mcpgroup-test-group-1
+  namespace: toolhive-system
+spec:
+  description: "Test group for basic lifecycle testing"

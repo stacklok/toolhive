@@ -176,6 +176,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	// Check if the GroupRef is valid if specified
+	r.validateGroupRef(ctx, mcpServer)
+
 	// Check if MCPToolConfig is referenced and handle it
 	if err := r.handleToolConfig(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPToolConfig")
@@ -394,6 +397,49 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+	if mcpServer.Spec.GroupRef == "" {
+		// No group reference, nothing to validate
+		return
+	}
+
+	ctxLogger := log.FromContext(ctx)
+
+	// Find the referenced MCPGroup
+	group := &mcpv1alpha1.MCPGroup{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: mcpServer.Namespace, Name: mcpServer.Spec.GroupRef}, group); err != nil {
+		ctxLogger.Error(err, "Failed to validate GroupRef")
+		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionGroupRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonGroupRefNotFound,
+			Message:            err.Error(),
+			ObservedGeneration: mcpServer.Generation,
+		})
+	} else if group.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
+		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionGroupRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonGroupRefNotReady,
+			Message:            "GroupRef is not in Ready state",
+			ObservedGeneration: mcpServer.Generation,
+		})
+	} else {
+		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionGroupRefValidated,
+			Status:             metav1.ConditionTrue,
+			Reason:             mcpv1alpha1.ConditionReasonGroupRefValidated,
+			Message:            "GroupRef is valid and in Ready state",
+			ObservedGeneration: mcpServer.Generation,
+		})
+	}
+
+	if err := r.Status().Update(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to update MCPServer status after GroupRef validation")
+	}
+
 }
 
 // setImageValidationCondition is a helper function to set the image validation status condition

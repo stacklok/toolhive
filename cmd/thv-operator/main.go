@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server" // Import for metricsserver
@@ -75,9 +77,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Set up field indexing for MCPServer.Spec.GroupRef
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mcpv1alpha1.MCPServer{},
+		"spec.groupRef",
+		func(obj client.Object) []string {
+			mcpServer := obj.(*mcpv1alpha1.MCPServer)
+			if mcpServer.Spec.GroupRef == "" {
+				return nil
+			}
+			return []string{mcpServer.Spec.GroupRef}
+		},
+	); err != nil {
+		setupLog.Error(err, "unable to create field index for spec.groupRef")
+		os.Exit(1)
+	}
+
 	// Create a shared platform detector for all controllers
 	sharedPlatformDetector := controllers.NewSharedPlatformDetector()
-
 	rec := &controllers.MCPServerReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
@@ -123,6 +141,14 @@ func main() {
 
 	if err = (controllers.NewMCPRegistryReconciler(mgr.GetClient(), mgr.GetScheme())).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "MCPRegistry")
+		os.Exit(1)
+	}
+
+	// Set up MCPGroup controller
+	if err = (&controllers.MCPGroupReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MCPGroup")
 		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder

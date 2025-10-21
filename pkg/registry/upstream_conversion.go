@@ -8,32 +8,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
-// ToolhiveExtensionKey is the key used for ToolHive-specific metadata in the x-publisher field
-const ToolhiveExtensionKey = "x-dev.toolhive"
-
-// ToolhivePublisherExtension contains toolhive-specific metadata in the x-publisher field
-type ToolhivePublisherExtension struct {
-	// Tier represents the tier classification level of the server
-	Tier string `json:"tier,omitempty" yaml:"tier,omitempty"`
-	// Transport defines the communication protocol for the server
-	Transport string `json:"transport,omitempty" yaml:"transport,omitempty"`
-	// Tools is a list of tool names provided by this MCP server
-	Tools []string `json:"tools,omitempty" yaml:"tools,omitempty"`
-	// Metadata contains additional information about the server
-	Metadata *Metadata `json:"metadata,omitempty" yaml:"metadata,omitempty"`
-	// Tags are categorization labels for the server
-	Tags []string `json:"tags,omitempty" yaml:"tags,omitempty"`
-	// CustomMetadata allows for additional user-defined metadata
-	CustomMetadata map[string]any `json:"custom_metadata,omitempty" yaml:"custom_metadata,omitempty"`
-	// Permissions defines the security profile and access permissions for the server
-	Permissions *permissions.Profile `json:"permissions,omitempty" yaml:"permissions,omitempty"`
-	// TargetPort is the port for the container to expose (only applicable to SSE and Streamable HTTP transports)
-	TargetPort int `json:"target_port,omitempty" yaml:"target_port,omitempty"`
-	// DockerTags lists the available Docker tags for this server image
-	DockerTags []string `json:"docker_tags,omitempty" yaml:"docker_tags,omitempty"`
-	// Provenance contains verification and signing metadata
-	Provenance *Provenance `json:"provenance,omitempty" yaml:"provenance,omitempty"`
-}
+const (
+	// registryTypeOCI is the registry type for OCI/Docker images
+	registryTypeOCI = "oci"
+)
 
 // ConvertUpstreamToToolhive converts an upstream server detail to toolhive format
 func ConvertUpstreamToToolhive(upstream *UpstreamServerDetail) (ServerMetadata, error) {
@@ -41,60 +19,62 @@ func ConvertUpstreamToToolhive(upstream *UpstreamServerDetail) (ServerMetadata, 
 		return nil, fmt.Errorf("upstream server detail is nil")
 	}
 
-	// Extract toolhive-specific metadata from x-publisher field
-	var toolhiveExt *ToolhivePublisherExtension
-	if upstream.XPublisher != nil {
-		toolhiveExt = upstream.XPublisher.XDevToolhive
+	// Extract toolhive-specific metadata from _meta field
+	var toolhiveExt *ToolhiveMetadataExtension
+	if upstream.Meta != nil {
+		toolhiveExt = upstream.Meta.ToolhiveExtension
 	}
 
 	// Determine if this is a remote server or container server
-	if len(upstream.Server.Remotes) > 0 {
+	if len(upstream.Remotes) > 0 {
 		return convertToRemoteServer(upstream, toolhiveExt), nil
 	}
 
-	return convertToImageMetadata(upstream, toolhiveExt)
+	if len(upstream.Packages) > 0 {
+		return convertToImageMetadata(upstream, toolhiveExt)
+	}
+
+	return nil, fmt.Errorf("no packages or remotes found for server")
 }
 
 // convertToRemoteServer converts upstream format to RemoteServerMetadata
-func convertToRemoteServer(upstream *UpstreamServerDetail, toolhiveExt *ToolhivePublisherExtension) *RemoteServerMetadata {
+func convertToRemoteServer(upstream *UpstreamServerDetail, toolhiveExt *ToolhiveMetadataExtension) *RemoteServerMetadata {
+	// Use the first remote as the primary one
+	primaryRemote := upstream.Remotes[0]
+
 	remote := &RemoteServerMetadata{
 		BaseServerMetadata: BaseServerMetadata{
-			Name:          upstream.Server.Name,
-			Description:   upstream.Server.Description,
-			Tier:          getStringOrDefault(toolhiveExt, func(t *ToolhivePublisherExtension) string { return t.Tier }, "Community"),
-			Status:        convertStatus(upstream.Server.Status),
-			Transport:     convertTransport(upstream.Server.Remotes[0].TransportType),
-			Tools:         getSliceOrDefault(toolhiveExt, func(t *ToolhivePublisherExtension) []string { return t.Tools }, []string{}),
+			Name:          upstream.Name,
+			Description:   upstream.Description,
+			Tier:          getStringOrDefault(toolhiveExt, func(t *ToolhiveMetadataExtension) string { return t.Tier }, "Community"),
+			Status:        "active", // Status field removed from new schema
+			Transport:     string(primaryRemote.Type),
+			Tools:         getSliceOrDefault(toolhiveExt, func(t *ToolhiveMetadataExtension) []string { return t.Tools }, []string{}),
 			Metadata:      getMetadataOrDefault(toolhiveExt),
-			RepositoryURL: getRepositoryURL(upstream.Server.Repository),
-			Tags:          getSliceOrDefault(toolhiveExt, func(t *ToolhivePublisherExtension) []string { return t.Tags }, []string{}),
+			RepositoryURL: getRepositoryURL(upstream.Repository),
+			Tags:          getSliceOrDefault(toolhiveExt, func(t *ToolhiveMetadataExtension) []string { return t.Tags }, []string{}),
 			CustomMetadata: getMapOrDefault(toolhiveExt,
-				func(t *ToolhivePublisherExtension) map[string]any { return t.CustomMetadata }, nil),
+				func(t *ToolhiveMetadataExtension) map[string]any { return t.CustomMetadata }, nil),
 		},
-		URL:     upstream.Server.Remotes[0].URL,
-		Headers: convertHeaders(upstream.Server.Remotes[0].Headers),
-		EnvVars: convertEnvironmentVariables(getPackageEnvVars(upstream.Server.Packages)),
-	}
-
-	// Override transport if specified in toolhive extension
-	if toolhiveExt != nil && toolhiveExt.Transport != "" {
-		remote.Transport = toolhiveExt.Transport
+		URL:     primaryRemote.URL,
+		Headers: convertHeaders(primaryRemote.Headers),
+		EnvVars: convertEnvironmentVariables(getPackageEnvVars(upstream.Packages)),
 	}
 
 	return remote
 }
 
 // convertToImageMetadata converts upstream format to ImageMetadata
-func convertToImageMetadata(upstream *UpstreamServerDetail, toolhiveExt *ToolhivePublisherExtension) (*ImageMetadata, error) {
-	if len(upstream.Server.Packages) == 0 {
+func convertToImageMetadata(upstream *UpstreamServerDetail, toolhiveExt *ToolhiveMetadataExtension) (*ImageMetadata, error) {
+	if len(upstream.Packages) == 0 {
 		return nil, fmt.Errorf("no packages found for container server")
 	}
 
-	// Find the primary package (prefer Docker, then others)
+	// Find the primary package (prefer OCI/Docker, then others)
 	var primaryPackage *UpstreamPackage
-	for i := range upstream.Server.Packages {
-		pkg := &upstream.Server.Packages[i]
-		if pkg.RegistryName == "docker" {
+	for i := range upstream.Packages {
+		pkg := &upstream.Packages[i]
+		if pkg.RegistryType == registryTypeOCI || pkg.RegistryType == "docker" {
 			primaryPackage = pkg
 			break
 		}
@@ -103,26 +83,29 @@ func convertToImageMetadata(upstream *UpstreamServerDetail, toolhiveExt *Toolhiv
 		}
 	}
 
+	// Determine transport from package
+	transport := string(primaryPackage.Transport.Type)
+
 	image := &ImageMetadata{
 		BaseServerMetadata: BaseServerMetadata{
-			Name:          upstream.Server.Name,
-			Description:   upstream.Server.Description,
-			Tier:          getStringOrDefault(toolhiveExt, func(t *ToolhivePublisherExtension) string { return t.Tier }, "Community"),
-			Status:        convertStatus(upstream.Server.Status),
-			Transport:     getStringOrDefault(toolhiveExt, func(t *ToolhivePublisherExtension) string { return t.Transport }, "stdio"),
-			Tools:         getSliceOrDefault(toolhiveExt, func(t *ToolhivePublisherExtension) []string { return t.Tools }, []string{}),
+			Name:          upstream.Name,
+			Description:   upstream.Description,
+			Tier:          getStringOrDefault(toolhiveExt, func(t *ToolhiveMetadataExtension) string { return t.Tier }, "Community"),
+			Status:        "active", // Status field removed from new schema
+			Transport:     transport,
+			Tools:         getSliceOrDefault(toolhiveExt, func(t *ToolhiveMetadataExtension) []string { return t.Tools }, []string{}),
 			Metadata:      getMetadataOrDefault(toolhiveExt),
-			RepositoryURL: getRepositoryURL(upstream.Server.Repository),
-			Tags:          getSliceOrDefault(toolhiveExt, func(t *ToolhivePublisherExtension) []string { return t.Tags }, []string{}),
+			RepositoryURL: getRepositoryURL(upstream.Repository),
+			Tags:          getSliceOrDefault(toolhiveExt, func(t *ToolhiveMetadataExtension) []string { return t.Tags }, []string{}),
 			CustomMetadata: getMapOrDefault(toolhiveExt,
-				func(t *ToolhivePublisherExtension) map[string]any { return t.CustomMetadata }, nil),
+				func(t *ToolhiveMetadataExtension) map[string]any { return t.CustomMetadata }, nil),
 		},
 		Image:       formatImageName(primaryPackage),
-		TargetPort:  getIntOrDefault(toolhiveExt, func(t *ToolhivePublisherExtension) int { return t.TargetPort }, 0),
+		TargetPort:  getIntOrDefault(toolhiveExt, func(t *ToolhiveMetadataExtension) int { return t.TargetPort }, 0),
 		Permissions: getPermissionsOrDefault(toolhiveExt),
 		EnvVars:     convertEnvironmentVariables(primaryPackage.EnvironmentVariables),
 		Args:        convertPackageArguments(primaryPackage.PackageArguments),
-		DockerTags:  getSliceOrDefault(toolhiveExt, func(t *ToolhivePublisherExtension) []string { return t.DockerTags }, []string{}),
+		DockerTags:  getSliceOrDefault(toolhiveExt, func(t *ToolhiveMetadataExtension) []string { return t.DockerTags }, []string{}),
 		Provenance:  getProvenanceOrDefault(toolhiveExt),
 	}
 
@@ -136,28 +119,23 @@ func ConvertToolhiveToUpstream(server ServerMetadata) (*UpstreamServerDetail, er
 	}
 
 	upstream := &UpstreamServerDetail{
-		Server: UpstreamServer{
-			Name:        server.GetName(),
-			Description: server.GetDescription(),
-			Status:      convertStatusToUpstream(server.GetStatus()),
-			VersionDetail: UpstreamVersionDetail{
-				Version: "1.0.0", // Default version, could be extracted from metadata
-			},
-		},
+		Schema:      "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+		Name:        server.GetName(),
+		Description: server.GetDescription(),
+		Version:     "1.0.0", // Default version, could be extracted from metadata
 	}
 
 	// Set repository if available
 	if repoURL := server.GetRepositoryURL(); repoURL != "" {
-		upstream.Server.Repository = &UpstreamRepository{
+		upstream.Repository = &UpstreamRepository{
 			URL:    repoURL,
 			Source: extractSourceFromURL(repoURL),
 		}
 	}
 
-	// Create toolhive extension for x-publisher
-	toolhiveExt := &ToolhivePublisherExtension{
+	// Create toolhive extension for _meta
+	toolhiveExt := &ToolhiveMetadataExtension{
 		Tier:           server.GetTier(),
-		Transport:      server.GetTransport(),
 		Tools:          server.GetTools(),
 		Metadata:       server.GetMetadata(),
 		Tags:           server.GetTags(),
@@ -166,85 +144,57 @@ func ConvertToolhiveToUpstream(server ServerMetadata) (*UpstreamServerDetail, er
 
 	if server.IsRemote() {
 		if remoteServer, ok := server.(*RemoteServerMetadata); ok {
-			upstream.Server.Remotes = []UpstreamRemote{
+			upstream.Remotes = []UpstreamRemote{
 				{
-					TransportType: convertTransportToUpstream(remoteServer.Transport),
-					URL:           remoteServer.URL,
-					Headers:       convertHeadersToUpstream(remoteServer.Headers),
+					Type:    convertTransportToUpstream(remoteServer.Transport),
+					URL:     remoteServer.URL,
+					Headers: convertHeadersToUpstream(remoteServer.Headers),
 				},
 			}
-			upstream.Server.Packages = convertEnvVarsToPackages(remoteServer.EnvVars)
+			// Add environment variables as a package if present
+			if len(remoteServer.EnvVars) > 0 {
+				upstream.Packages = convertEnvVarsToPackages(remoteServer.EnvVars)
+			}
 		}
 	} else {
 		if imageServer, ok := server.(*ImageMetadata); ok {
 			toolhiveExt.TargetPort = imageServer.TargetPort
-			toolhiveExt.Permissions = imageServer.Permissions
 			toolhiveExt.DockerTags = imageServer.DockerTags
 			toolhiveExt.Provenance = imageServer.Provenance
 
-			upstream.Server.Packages = []UpstreamPackage{
+			// Determine registry type and format package
+			registryType, identifier, version := parseImageString(imageServer.Image)
+
+			upstream.Packages = []UpstreamPackage{
 				{
-					RegistryName:         "docker",
-					Name:                 extractImageName(imageServer.Image),
-					Version:              extractImageTag(imageServer.Image),
+					RegistryType:         registryType,
+					Identifier:           identifier,
+					Version:              version,
 					PackageArguments:     convertArgsToUpstream(imageServer.Args),
 					EnvironmentVariables: convertEnvVarsToUpstream(imageServer.EnvVars),
+					Transport: UpstreamTransport{
+						Type: convertTransportToUpstream(imageServer.Transport),
+					},
 				},
+			}
+
+			// Add permissions to toolhive extension
+			if imageServer.Permissions != nil {
+				toolhiveExt.CustomMetadata = make(map[string]any)
+				toolhiveExt.CustomMetadata["permissions"] = imageServer.Permissions
 			}
 		}
 	}
 
-	// Add toolhive extension to x-publisher
-	upstream.XPublisher = &UpstreamPublisher{
-		XDevToolhive: toolhiveExt,
+	// Add toolhive extension to _meta
+	upstream.Meta = &UpstreamMeta{
+		ToolhiveExtension: toolhiveExt,
 	}
 
 	return upstream, nil
 }
 
 // Helper functions for conversion
-
-func convertStatus(status UpstreamServerStatus) string {
-	switch status {
-	case UpstreamServerStatusActive:
-		return "active"
-	case UpstreamServerStatusDeprecated:
-		return "deprecated"
-	default:
-		return "active"
-	}
-}
-
-func convertStatusToUpstream(status string) UpstreamServerStatus {
-	switch status {
-	case "deprecated":
-		return UpstreamServerStatusDeprecated
-	default:
-		return UpstreamServerStatusActive
-	}
-}
-
-func convertTransport(transportType UpstreamTransportType) string {
-	switch transportType {
-	case UpstreamTransportTypeSSE:
-		return "sse"
-	case UpstreamTransportTypeStreamable:
-		return "streamable-http"
-	default:
-		return "stdio"
-	}
-}
-
-func convertTransportToUpstream(transport string) UpstreamTransportType {
-	switch transport {
-	case "sse":
-		return UpstreamTransportTypeSSE
-	case "streamable-http":
-		return UpstreamTransportTypeStreamable
-	default:
-		return UpstreamTransportTypeSSE // Default for remote
-	}
-}
 
 func convertHeaders(headers []UpstreamKeyValueInput) []*Header {
 	result := make([]*Header, 0, len(headers))
@@ -313,6 +263,8 @@ func convertPackageArguments(args []UpstreamArgument) []string {
 				result = append(result, arg.Value)
 			} else if arg.ValueHint != "" {
 				result = append(result, arg.ValueHint)
+			} else if arg.Default != "" {
+				result = append(result, arg.Default)
 			}
 		case UpstreamArgumentTypeNamed:
 			if arg.Value != "" {
@@ -336,34 +288,120 @@ func convertArgsToUpstream(args []string) []UpstreamArgument {
 	return result
 }
 
+func convertTransportToUpstream(transport string) UpstreamTransportType {
+	switch transport {
+	case "sse":
+		return UpstreamTransportTypeSSE
+	case "streamable-http":
+		return UpstreamTransportTypeStreamable
+	case "stdio":
+		return UpstreamTransportTypeStdio
+	default:
+		return UpstreamTransportTypeStdio
+	}
+}
+
 func formatImageName(pkg *UpstreamPackage) string {
-	switch pkg.RegistryName {
-	case "docker":
-		return fmt.Sprintf("%s:%s", pkg.Name, pkg.Version)
+	switch pkg.RegistryType {
+	case registryTypeOCI, "docker":
+		// For OCI/Docker packages, format as name:version
+		if pkg.Version != "" {
+			return fmt.Sprintf("%s:%s", pkg.Identifier, pkg.Version)
+		}
+		return pkg.Identifier
 	case "npm":
 		// For npm packages, use the npx:// protocol scheme that toolhive supports
-		return fmt.Sprintf("npx://%s@%s", pkg.Name, pkg.Version)
+		if pkg.Version != "" {
+			return fmt.Sprintf("npx://%s@%s", pkg.Identifier, pkg.Version)
+		}
+		return fmt.Sprintf("npx://%s", pkg.Identifier)
 	case "pypi":
 		// For Python packages, use the uvx:// protocol scheme that toolhive supports
-		return fmt.Sprintf("uvx://%s@%s", pkg.Name, pkg.Version)
+		if pkg.Version != "" {
+			return fmt.Sprintf("uvx://%s@%s", pkg.Identifier, pkg.Version)
+		}
+		return fmt.Sprintf("uvx://%s", pkg.Identifier)
+	case "nuget":
+		// For NuGet packages, use the dnx:// protocol scheme
+		if pkg.Version != "" {
+			return fmt.Sprintf("dnx://%s@%s", pkg.Identifier, pkg.Version)
+		}
+		return fmt.Sprintf("dnx://%s", pkg.Identifier)
+	case "mcpb":
+		// For MCPB packages, return the URL as-is
+		return pkg.Identifier
 	default:
-		// For unknown registries, return the package name as-is
-		// This might need manual handling or could be a direct image reference
-		return pkg.Name
+		// For unknown registries, return the identifier as-is
+		return pkg.Identifier
 	}
 }
 
-func extractImageName(image string) string {
-	parts := strings.Split(image, ":")
-	return parts[0]
-}
+func parseImageString(image string) (registryType, identifier, version string) {
+	// Handle special protocol schemes
+	if strings.HasPrefix(image, "npx://") {
+		registryType = "npm"
+		image = strings.TrimPrefix(image, "npx://")
+		// For scoped packages like @scope/name@version, find the last @ after the first character
+		if strings.HasPrefix(image, "@") && strings.Count(image, "@") > 1 {
+			// Scoped package with version: @scope/name@version
+			lastAt := strings.LastIndex(image, "@")
+			identifier = image[:lastAt]
+			version = image[lastAt+1:]
+		} else if !strings.HasPrefix(image, "@") && strings.Contains(image, "@") {
+			// Unscoped package with version: package@version
+			lastAt := strings.LastIndex(image, "@")
+			identifier = image[:lastAt]
+			version = image[lastAt+1:]
+		} else {
+			// Package without version (scoped or unscoped)
+			identifier = image
+		}
+		return
+	}
 
-func extractImageTag(image string) string {
+	if strings.HasPrefix(image, "uvx://") {
+		registryType = "pypi"
+		image = strings.TrimPrefix(image, "uvx://")
+		lastAt := strings.LastIndex(image, "@")
+		if lastAt > 0 {
+			identifier = image[:lastAt]
+			version = image[lastAt+1:]
+		} else {
+			identifier = image
+		}
+		return
+	}
+
+	if strings.HasPrefix(image, "dnx://") {
+		registryType = "nuget"
+		image = strings.TrimPrefix(image, "dnx://")
+		lastAt := strings.LastIndex(image, "@")
+		if lastAt > 0 {
+			identifier = image[:lastAt]
+			version = image[lastAt+1:]
+		} else {
+			identifier = image
+		}
+		return
+	}
+
+	if strings.HasPrefix(image, "http://") || strings.HasPrefix(image, "https://") {
+		registryType = "mcpb"
+		identifier = image
+		return
+	}
+
+	// Default to OCI/Docker
+	registryType = registryTypeOCI
 	parts := strings.Split(image, ":")
 	if len(parts) > 1 {
-		return parts[1]
+		identifier = parts[0]
+		version = parts[1]
+	} else {
+		identifier = image
+		version = "latest"
 	}
-	return "latest"
+	return
 }
 
 func getRepositoryURL(repo *UpstreamRepository) string {
@@ -400,10 +438,13 @@ func convertEnvVarsToPackages(envVars []*EnvVar) []UpstreamPackage {
 	upstreamEnvVars := convertEnvVarsToUpstream(envVars)
 	return []UpstreamPackage{
 		{
-			RegistryName:         "remote",
-			Name:                 "remote-server",
+			RegistryType:         "remote",
+			Identifier:           "remote-server",
 			Version:              "1.0.0",
 			EnvironmentVariables: upstreamEnvVars,
+			Transport: UpstreamTransport{
+				Type: UpstreamTransportTypeStdio,
+			},
 		},
 	}
 }
@@ -446,7 +487,7 @@ func getIntOrDefault[T any](ext *T, getter func(*T) int, defaultValue int) int {
 	return defaultValue
 }
 
-func getMetadataOrDefault(ext *ToolhivePublisherExtension) *Metadata {
+func getMetadataOrDefault(ext *ToolhiveMetadataExtension) *Metadata {
 	if ext != nil && ext.Metadata != nil {
 		return ext.Metadata
 	}
@@ -457,14 +498,19 @@ func getMetadataOrDefault(ext *ToolhivePublisherExtension) *Metadata {
 	}
 }
 
-func getPermissionsOrDefault(ext *ToolhivePublisherExtension) *permissions.Profile {
-	if ext != nil && ext.Permissions != nil {
-		return ext.Permissions
+func getPermissionsOrDefault(ext *ToolhiveMetadataExtension) *permissions.Profile {
+	if ext != nil {
+		// Check if permissions are stored in custom metadata
+		if ext.CustomMetadata != nil {
+			if perms, ok := ext.CustomMetadata["permissions"].(*permissions.Profile); ok {
+				return perms
+			}
+		}
 	}
 	return nil
 }
 
-func getProvenanceOrDefault(ext *ToolhivePublisherExtension) *Provenance {
+func getProvenanceOrDefault(ext *ToolhiveMetadataExtension) *Provenance {
 	if ext != nil && ext.Provenance != nil {
 		return ext.Provenance
 	}

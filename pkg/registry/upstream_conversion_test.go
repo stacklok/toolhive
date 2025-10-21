@@ -12,46 +12,43 @@ import (
 func TestConvertUpstreamToToolhive_DockerPackage(t *testing.T) {
 	t.Parallel()
 	upstream := &UpstreamServerDetail{
-		Server: UpstreamServer{
-			Name:        "io.modelcontextprotocol/filesystem",
-			Description: "Node.js server implementing Model Context Protocol (MCP) for filesystem operations.",
-			Status:      UpstreamServerStatusActive,
-			Repository: &UpstreamRepository{
-				URL:    "https://github.com/modelcontextprotocol/servers",
-				Source: "github",
-				ID:     "b94b5f7e-c7c6-d760-2c78-a5e9b8a5b8c9",
-			},
-			VersionDetail: UpstreamVersionDetail{
-				Version: "1.0.2",
-			},
-			Packages: []UpstreamPackage{
-				{
-					RegistryName: "docker",
-					Name:         "mcp/filesystem",
-					Version:      "1.0.2",
-					PackageArguments: []UpstreamArgument{
-						{
-							Type:      UpstreamArgumentTypePositional,
-							ValueHint: "target_dir",
-							Value:     "/project",
-						},
+		Name:        "io.modelcontextprotocol/filesystem",
+		Description: "Node.js server implementing Model Context Protocol (MCP) for filesystem operations.",
+		Version:     "1.0.2",
+		Repository: &UpstreamRepository{
+			URL:    "https://github.com/modelcontextprotocol/servers",
+			Source: "github",
+			ID:     "b94b5f7e-c7c6-d760-2c78-a5e9b8a5b8c9",
+		},
+		Packages: []UpstreamPackage{
+			{
+				RegistryType: "oci",
+				Identifier:   "mcp/filesystem",
+				Version:      "1.0.2",
+				PackageArguments: []UpstreamArgument{
+					{
+						Type:      UpstreamArgumentTypePositional,
+						ValueHint: "target_dir",
+						Value:     "/project",
 					},
-					EnvironmentVariables: []UpstreamKeyValueInput{
-						{
-							Name:        "LOG_LEVEL",
-							Description: "Logging level (debug, info, warn, error)",
-							Default:     "info",
-						},
+				},
+				EnvironmentVariables: []UpstreamKeyValueInput{
+					{
+						Name:        "LOG_LEVEL",
+						Description: "Logging level (debug, info, warn, error)",
+						Default:     "info",
 					},
+				},
+				Transport: UpstreamTransport{
+					Type: UpstreamTransportTypeStdio,
 				},
 			},
 		},
-		XPublisher: &UpstreamPublisher{
-			XDevToolhive: &ToolhivePublisherExtension{
-				Tier:      "Official",
-				Transport: "stdio",
-				Tools:     []string{"read_file", "write_file", "list_directory"},
-				Tags:      []string{"filesystem", "files"},
+		Meta: &UpstreamMeta{
+			ToolhiveExtension: &ToolhiveMetadataExtension{
+				Tier:  "Official",
+				Tools: []string{"read_file", "write_file", "list_directory"},
+				Tags:  []string{"filesystem", "files"},
 			},
 		},
 	}
@@ -89,30 +86,28 @@ func TestConvertUpstreamToToolhive_DockerPackage(t *testing.T) {
 func TestConvertUpstreamToToolhive_NPMPackage(t *testing.T) {
 	t.Parallel()
 	upstream := &UpstreamServerDetail{
-		Server: UpstreamServer{
-			Name:        "io.modelcontextprotocol/brave-search",
-			Description: "MCP server for Brave Search API integration",
-			Status:      UpstreamServerStatusActive,
-			Repository: &UpstreamRepository{
-				URL:    "https://github.com/modelcontextprotocol/servers",
-				Source: "github",
-			},
-			VersionDetail: UpstreamVersionDetail{
-				Version: "1.0.2",
-			},
-			Packages: []UpstreamPackage{
-				{
-					RegistryName: "npm",
-					Name:         "@modelcontextprotocol/server-brave-search",
-					Version:      "1.0.2",
-					EnvironmentVariables: []UpstreamKeyValueInput{
-						{
-							Name:        "BRAVE_API_KEY",
-							Description: "Brave Search API Key",
-							IsRequired:  true,
-							IsSecret:    true,
-						},
+		Name:        "io.modelcontextprotocol/brave-search",
+		Description: "MCP server for Brave Search API integration",
+		Version:     "1.0.2",
+		Repository: &UpstreamRepository{
+			URL:    "https://github.com/modelcontextprotocol/servers",
+			Source: "github",
+		},
+		Packages: []UpstreamPackage{
+			{
+				RegistryType: "npm",
+				Identifier:   "@modelcontextprotocol/server-brave-search",
+				Version:      "1.0.2",
+				EnvironmentVariables: []UpstreamKeyValueInput{
+					{
+						Name:        "BRAVE_API_KEY",
+						Description: "Brave Search API Key",
+						IsRequired:  true,
+						IsSecret:    true,
 					},
+				},
+				Transport: UpstreamTransport{
+					Type: UpstreamTransportTypeStdio,
 				},
 			},
 		},
@@ -129,7 +124,7 @@ func TestConvertUpstreamToToolhive_NPMPackage(t *testing.T) {
 	assert.Equal(t, "MCP server for Brave Search API integration", imageMetadata.GetDescription())
 	assert.Equal(t, "Community", imageMetadata.GetTier()) // Default value
 	assert.Equal(t, "active", imageMetadata.GetStatus())
-	assert.Equal(t, "stdio", imageMetadata.GetTransport())                                        // Default value
+	assert.Equal(t, "stdio", imageMetadata.GetTransport())
 	assert.Equal(t, "npx://@modelcontextprotocol/server-brave-search@1.0.2", imageMetadata.Image) // NPM package as protocol scheme
 
 	// Check environment variables
@@ -143,37 +138,32 @@ func TestConvertUpstreamToToolhive_NPMPackage(t *testing.T) {
 func TestConvertUpstreamToToolhive_RemoteServer(t *testing.T) {
 	t.Parallel()
 	upstream := &UpstreamServerDetail{
-		Server: UpstreamServer{
-			Name:        "Remote Filesystem Server",
-			Description: "Cloud-hosted MCP filesystem server",
-			Repository: &UpstreamRepository{
-				URL:    "https://github.com/example/remote-fs",
-				Source: "github",
-				ID:     "xyz789ab-cdef-0123-4567-890ghijklmno",
-			},
-			VersionDetail: UpstreamVersionDetail{
-				Version: "2.0.0",
-			},
-			Remotes: []UpstreamRemote{
-				{
-					TransportType: UpstreamTransportTypeSSE,
-					URL:           "https://mcp-fs.example.com/sse",
-					Headers: []UpstreamKeyValueInput{
-						{
-							Name:        "X-API-Key",
-							Description: "API key for authentication",
-							IsRequired:  true,
-							IsSecret:    true,
-						},
+		Name:        "io.modelcontextprotocol/remote-fs",
+		Description: "Cloud-hosted MCP filesystem server",
+		Version:     "2.0.0",
+		Repository: &UpstreamRepository{
+			URL:    "https://github.com/example/remote-fs",
+			Source: "github",
+			ID:     "xyz789ab-cdef-0123-4567-890ghijklmno",
+		},
+		Remotes: []UpstreamRemote{
+			{
+				Type: UpstreamTransportTypeSSE,
+				URL:  "https://mcp-fs.example.com/sse",
+				Headers: []UpstreamKeyValueInput{
+					{
+						Name:        "X-API-Key",
+						Description: "API key for authentication",
+						IsRequired:  true,
+						IsSecret:    true,
 					},
 				},
 			},
 		},
-		XPublisher: &UpstreamPublisher{
-			XDevToolhive: &ToolhivePublisherExtension{
-				Tier:      "Community",
-				Transport: "sse",
-				Tools:     []string{"remote_read", "remote_write"},
+		Meta: &UpstreamMeta{
+			ToolhiveExtension: &ToolhiveMetadataExtension{
+				Tier:  "Community",
+				Tools: []string{"remote_read", "remote_write"},
 			},
 		},
 	}
@@ -185,7 +175,7 @@ func TestConvertUpstreamToToolhive_RemoteServer(t *testing.T) {
 	remoteMetadata, ok := result.(*RemoteServerMetadata)
 	require.True(t, ok, "Expected RemoteServerMetadata")
 
-	assert.Equal(t, "Remote Filesystem Server", remoteMetadata.GetName())
+	assert.Equal(t, "io.modelcontextprotocol/remote-fs", remoteMetadata.GetName())
 	assert.Equal(t, "Cloud-hosted MCP filesystem server", remoteMetadata.GetDescription())
 	assert.Equal(t, "Community", remoteMetadata.GetTier())
 	assert.Equal(t, "active", remoteMetadata.GetStatus())
@@ -244,21 +234,20 @@ func TestConvertToolhiveToUpstream_ImageMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	assert.Equal(t, "test-server", result.Server.Name)
-	assert.Equal(t, "Test MCP server", result.Server.Description)
-	assert.Equal(t, UpstreamServerStatusActive, result.Server.Status)
-	assert.Equal(t, "1.0.0", result.Server.VersionDetail.Version)
+	assert.Equal(t, "test-server", result.Name)
+	assert.Equal(t, "Test MCP server", result.Description)
+	assert.Equal(t, "1.0.0", result.Version)
 
 	// Check repository
-	require.NotNil(t, result.Server.Repository)
-	assert.Equal(t, "https://github.com/example/test-server", result.Server.Repository.URL)
-	assert.Equal(t, "github", result.Server.Repository.Source)
+	require.NotNil(t, result.Repository)
+	assert.Equal(t, "https://github.com/example/test-server", result.Repository.URL)
+	assert.Equal(t, "github", result.Repository.Source)
 
 	// Check packages
-	require.Len(t, result.Server.Packages, 1)
-	pkg := result.Server.Packages[0]
-	assert.Equal(t, "docker", pkg.RegistryName)
-	assert.Equal(t, "test/server", pkg.Name)
+	require.Len(t, result.Packages, 1)
+	pkg := result.Packages[0]
+	assert.Equal(t, "oci", pkg.RegistryType)
+	assert.Equal(t, "test/server", pkg.Identifier)
 	assert.Equal(t, "1.0.0", pkg.Version)
 
 	// Check package arguments
@@ -276,19 +265,17 @@ func TestConvertToolhiveToUpstream_ImageMetadata(t *testing.T) {
 	assert.True(t, envVar.IsRequired)
 	assert.False(t, envVar.IsSecret)
 
-	// Check x-publisher
-	require.NotNil(t, result.XPublisher)
+	// Check _meta
+	require.NotNil(t, result.Meta)
 
 	// Check toolhive extension
-	require.NotNil(t, result.XPublisher.XDevToolhive)
-	toolhiveExt := result.XPublisher.XDevToolhive
+	require.NotNil(t, result.Meta.ToolhiveExtension)
+	toolhiveExt := result.Meta.ToolhiveExtension
 	assert.Equal(t, "Official", toolhiveExt.Tier)
-	assert.Equal(t, "stdio", toolhiveExt.Transport)
 	assert.Equal(t, []string{"test_tool1", "test_tool2"}, toolhiveExt.Tools)
 	assert.Equal(t, []string{"test", "example"}, toolhiveExt.Tags)
 	assert.Equal(t, 8080, toolhiveExt.TargetPort)
 	assert.Equal(t, []string{"1.0.0", "latest"}, toolhiveExt.DockerTags)
-	assert.NotNil(t, toolhiveExt.Permissions)
 }
 
 func TestConvertUpstreamToToolhive_NilInput(t *testing.T) {
@@ -310,51 +297,31 @@ func TestConvertToolhiveToUpstream_NilInput(t *testing.T) {
 func TestConvertUpstreamToToolhive_NoPackagesOrRemotes(t *testing.T) {
 	t.Parallel()
 	upstream := &UpstreamServerDetail{
-		Server: UpstreamServer{
-			Name:        "empty-server",
-			Description: "Server with no packages or remotes",
-			VersionDetail: UpstreamVersionDetail{
-				Version: "1.0.0",
-			},
-		},
+		Name:        "empty-server",
+		Description: "Server with no packages or remotes",
+		Version:     "1.0.0",
 	}
 
 	result, err := ConvertUpstreamToToolhive(upstream)
 	assert.Error(t, err)
 	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "no packages found for container server")
+	assert.Contains(t, err.Error(), "no packages or remotes found for server")
 }
 
-func TestConvertStatus(t *testing.T) {
+func TestConvertTransportToUpstream(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		input    UpstreamServerStatus
-		expected string
+		input    string
+		expected UpstreamTransportType
 	}{
-		{UpstreamServerStatusActive, "active"},
-		{UpstreamServerStatusDeprecated, "deprecated"},
-		{"", "active"}, // Default case
+		{"sse", UpstreamTransportTypeSSE},
+		{"streamable-http", UpstreamTransportTypeStreamable},
+		{"stdio", UpstreamTransportTypeStdio},
+		{"", UpstreamTransportTypeStdio}, // Default case
 	}
 
 	for _, test := range tests {
-		result := convertStatus(test.input)
-		assert.Equal(t, test.expected, result)
-	}
-}
-
-func TestConvertTransport(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input    UpstreamTransportType
-		expected string
-	}{
-		{UpstreamTransportTypeSSE, "sse"},
-		{UpstreamTransportTypeStreamable, "streamable-http"},
-		{"", "stdio"}, // Default case
-	}
-
-	for _, test := range tests {
-		result := convertTransport(test.input)
+		result := convertTransportToUpstream(test.input)
 		assert.Equal(t, test.expected, result)
 	}
 }
@@ -367,10 +334,10 @@ func TestFormatImageName(t *testing.T) {
 		expected string
 	}{
 		{
-			name: "Docker package",
+			name: "OCI package",
 			pkg: &UpstreamPackage{
-				RegistryName: "docker",
-				Name:         "nginx",
+				RegistryType: "oci",
+				Identifier:   "nginx",
 				Version:      "latest",
 			},
 			expected: "nginx:latest",
@@ -378,8 +345,8 @@ func TestFormatImageName(t *testing.T) {
 		{
 			name: "NPM package",
 			pkg: &UpstreamPackage{
-				RegistryName: "npm",
-				Name:         "@modelcontextprotocol/server-filesystem",
+				RegistryType: "npm",
+				Identifier:   "@modelcontextprotocol/server-filesystem",
 				Version:      "1.0.2",
 			},
 			expected: "npx://@modelcontextprotocol/server-filesystem@1.0.2",
@@ -387,17 +354,34 @@ func TestFormatImageName(t *testing.T) {
 		{
 			name: "Python package",
 			pkg: &UpstreamPackage{
-				RegistryName: "pypi",
-				Name:         "weather-mcp-server",
+				RegistryType: "pypi",
+				Identifier:   "weather-mcp-server",
 				Version:      "0.5.0",
 			},
 			expected: "uvx://weather-mcp-server@0.5.0",
 		},
 		{
+			name: "NuGet package",
+			pkg: &UpstreamPackage{
+				RegistryType: "nuget",
+				Identifier:   "Knapcode.SampleMcpServer",
+				Version:      "0.4.0-beta",
+			},
+			expected: "dnx://Knapcode.SampleMcpServer@0.4.0-beta",
+		},
+		{
+			name: "MCPB package",
+			pkg: &UpstreamPackage{
+				RegistryType: "mcpb",
+				Identifier:   "https://github.com/example/releases/download/v1.0.0/package.mcpb",
+			},
+			expected: "https://github.com/example/releases/download/v1.0.0/package.mcpb",
+		},
+		{
 			name: "Unknown registry",
 			pkg: &UpstreamPackage{
-				RegistryName: "unknown",
-				Name:         "some-package",
+				RegistryType: "unknown",
+				Identifier:   "some-package",
 				Version:      "1.0.0",
 			},
 			expected: "some-package",
@@ -413,37 +397,81 @@ func TestFormatImageName(t *testing.T) {
 	}
 }
 
-func TestExtractImageName(t *testing.T) {
+func TestParseImageString(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		input    string
-		expected string
+		name             string
+		image            string
+		expectedRegistry string
+		expectedID       string
+		expectedVersion  string
 	}{
-		{"nginx:latest", "nginx"},
-		{"registry.example.com/myapp:v1.0.0", "registry.example.com/myapp"},
-		{"simple-name", "simple-name"},
+		{
+			name:             "Docker image with tag",
+			image:            "nginx:latest",
+			expectedRegistry: "oci",
+			expectedID:       "nginx",
+			expectedVersion:  "latest",
+		},
+		{
+			name:             "NPM scoped package",
+			image:            "npx://@modelcontextprotocol/server-filesystem@1.0.2",
+			expectedRegistry: "npm",
+			expectedID:       "@modelcontextprotocol/server-filesystem",
+			expectedVersion:  "1.0.2",
+		},
+		{
+			name:             "NPM unscoped package with version",
+			image:            "npx://express@4.18.2",
+			expectedRegistry: "npm",
+			expectedID:       "express",
+			expectedVersion:  "4.18.2",
+		},
+		{
+			name:             "NPM unscoped package without version",
+			image:            "npx://express",
+			expectedRegistry: "npm",
+			expectedID:       "express",
+			expectedVersion:  "",
+		},
+		{
+			name:             "Python package",
+			image:            "uvx://weather-mcp-server@0.5.0",
+			expectedRegistry: "pypi",
+			expectedID:       "weather-mcp-server",
+			expectedVersion:  "0.5.0",
+		},
+		{
+			name:             "NuGet package",
+			image:            "dnx://Knapcode.SampleMcpServer@0.4.0-beta",
+			expectedRegistry: "nuget",
+			expectedID:       "Knapcode.SampleMcpServer",
+			expectedVersion:  "0.4.0-beta",
+		},
+		{
+			name:             "MCPB URL",
+			image:            "https://github.com/example/releases/download/v1.0.0/package.mcpb",
+			expectedRegistry: "mcpb",
+			expectedID:       "https://github.com/example/releases/download/v1.0.0/package.mcpb",
+			expectedVersion:  "",
+		},
+		{
+			name:             "Image without tag",
+			image:            "nginx",
+			expectedRegistry: "oci",
+			expectedID:       "nginx",
+			expectedVersion:  "latest",
+		},
 	}
 
 	for _, test := range tests {
-		result := extractImageName(test.input)
-		assert.Equal(t, test.expected, result)
-	}
-}
-
-func TestExtractImageTag(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"nginx:latest", "latest"},
-		{"registry.example.com/myapp:v1.0.0", "v1.0.0"},
-		{"simple-name", "latest"},
-	}
-
-	for _, test := range tests {
-		result := extractImageTag(test.input)
-		assert.Equal(t, test.expected, result)
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			registryType, identifier, version := parseImageString(test.image)
+			assert.Equal(t, test.expectedRegistry, registryType)
+			assert.Equal(t, test.expectedID, identifier)
+			assert.Equal(t, test.expectedVersion, version)
+		})
 	}
 }
 
@@ -465,38 +493,23 @@ func TestExtractSourceFromURL(t *testing.T) {
 	}
 }
 
-func TestConvertUpstreamToToolhive_PythonPackage(t *testing.T) {
+func TestConvertUpstreamToToolhive_NPMUnscopedPackage(t *testing.T) {
 	t.Parallel()
 	upstream := &UpstreamServerDetail{
-		Server: UpstreamServer{
-			Name:        "weather-mcp-server",
-			Description: "Python MCP server for weather data access",
-			Repository: &UpstreamRepository{
-				URL:    "https://github.com/example/weather-mcp",
-				Source: "github",
-			},
-			VersionDetail: UpstreamVersionDetail{
-				Version: "0.5.0",
-			},
-			Packages: []UpstreamPackage{
-				{
-					RegistryName: "pypi",
-					Name:         "weather-mcp-server",
-					Version:      "0.5.0",
-					RuntimeHint:  "uvx",
-					EnvironmentVariables: []UpstreamKeyValueInput{
-						{
-							Name:        "WEATHER_API_KEY",
-							Description: "API key for weather service",
-							IsRequired:  true,
-							IsSecret:    true,
-						},
-						{
-							Name:        "WEATHER_UNITS",
-							Description: "Temperature units (celsius, fahrenheit)",
-							Default:     "celsius",
-						},
-					},
+		Name:        "io.example/express-server",
+		Description: "MCP server using Express.js",
+		Version:     "4.18.2",
+		Repository: &UpstreamRepository{
+			URL:    "https://github.com/example/express-server",
+			Source: "github",
+		},
+		Packages: []UpstreamPackage{
+			{
+				RegistryType: "npm",
+				Identifier:   "express",
+				Version:      "4.18.2",
+				Transport: UpstreamTransport{
+					Type: UpstreamTransportTypeStdio,
 				},
 			},
 		},
@@ -509,7 +522,66 @@ func TestConvertUpstreamToToolhive_PythonPackage(t *testing.T) {
 	imageMetadata, ok := result.(*ImageMetadata)
 	require.True(t, ok, "Expected ImageMetadata")
 
-	assert.Equal(t, "weather-mcp-server", imageMetadata.GetName())
+	assert.Equal(t, "io.example/express-server", imageMetadata.GetName())
+	assert.Equal(t, "MCP server using Express.js", imageMetadata.GetDescription())
+	assert.Equal(t, "npx://express@4.18.2", imageMetadata.Image) // Unscoped NPM package
+
+	// Test roundtrip conversion
+	converted, err := ConvertToolhiveToUpstream(imageMetadata)
+	require.NoError(t, err)
+	require.NotNil(t, converted)
+	require.Len(t, converted.Packages, 1)
+
+	pkg := converted.Packages[0]
+	assert.Equal(t, "npm", pkg.RegistryType)
+	assert.Equal(t, "express", pkg.Identifier)
+	assert.Equal(t, "4.18.2", pkg.Version)
+}
+
+func TestConvertUpstreamToToolhive_PythonPackage(t *testing.T) {
+	t.Parallel()
+	upstream := &UpstreamServerDetail{
+		Name:        "io.github.example/weather-mcp",
+		Description: "Python MCP server for weather data access",
+		Version:     "0.5.0",
+		Repository: &UpstreamRepository{
+			URL:    "https://github.com/example/weather-mcp",
+			Source: "github",
+		},
+		Packages: []UpstreamPackage{
+			{
+				RegistryType: "pypi",
+				Identifier:   "weather-mcp-server",
+				Version:      "0.5.0",
+				RuntimeHint:  "uvx",
+				EnvironmentVariables: []UpstreamKeyValueInput{
+					{
+						Name:        "WEATHER_API_KEY",
+						Description: "API key for weather service",
+						IsRequired:  true,
+						IsSecret:    true,
+					},
+					{
+						Name:        "WEATHER_UNITS",
+						Description: "Temperature units (celsius, fahrenheit)",
+						Default:     "celsius",
+					},
+				},
+				Transport: UpstreamTransport{
+					Type: UpstreamTransportTypeStdio,
+				},
+			},
+		},
+	}
+
+	result, err := ConvertUpstreamToToolhive(upstream)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	imageMetadata, ok := result.(*ImageMetadata)
+	require.True(t, ok, "Expected ImageMetadata")
+
+	assert.Equal(t, "io.github.example/weather-mcp", imageMetadata.GetName())
 	assert.Equal(t, "Python MCP server for weather data access", imageMetadata.GetDescription())
 	assert.Equal(t, "uvx://weather-mcp-server@0.5.0", imageMetadata.Image)
 

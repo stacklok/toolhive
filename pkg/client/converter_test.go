@@ -5,7 +5,11 @@ import (
 	"testing"
 )
 
-const invalidConfig = "invalid"
+const (
+	invalidConfig = "invalid"
+	testServer1   = "server1"
+	testServer2   = "server2"
+)
 
 // Helper function to create a Goose-style config
 func createGooseConfig() *mcpClientConfig {
@@ -360,12 +364,12 @@ func TestGenericYAMLConverter_RemoveEntry_MapStorage(t *testing.T) {
 		t.Parallel()
 		config := map[string]interface{}{
 			"extensions": map[string]interface{}{
-				"server1": map[string]interface{}{"name": "server1"},
-				"server2": map[string]interface{}{"name": "server2"},
+				testServer1: map[string]interface{}{"name": testServer1},
+				testServer2: map[string]interface{}{"name": testServer2},
 			},
 		}
 
-		err := converter.RemoveEntry(config, "server1")
+		err := converter.RemoveEntry(config, testServer1)
 		if err != nil {
 			t.Fatalf("RemoveEntry() error = %v", err)
 		}
@@ -373,12 +377,12 @@ func TestGenericYAMLConverter_RemoveEntry_MapStorage(t *testing.T) {
 		extensions := config["extensions"].(map[string]interface{})
 
 		// Check server1 was removed
-		if _, exists := extensions["server1"]; exists {
+		if _, exists := extensions[testServer1]; exists {
 			t.Error("server1 should have been removed")
 		}
 
 		// Check server2 still exists
-		if _, exists := extensions["server2"]; !exists {
+		if _, exists := extensions[testServer2]; !exists {
 			t.Error("server2 should still exist")
 		}
 	})
@@ -412,12 +416,12 @@ func TestGenericYAMLConverter_RemoveEntry_ArrayStorage(t *testing.T) {
 		t.Parallel()
 		config := map[string]interface{}{
 			"mcpServers": []interface{}{
-				map[string]interface{}{"name": "server1"},
-				map[string]interface{}{"name": "server2"},
+				map[string]interface{}{"name": testServer1},
+				map[string]interface{}{"name": testServer2},
 			},
 		}
 
-		err := converter.RemoveEntry(config, "server1")
+		err := converter.RemoveEntry(config, testServer1)
 		if err != nil {
 			t.Fatalf("RemoveEntry() error = %v", err)
 		}
@@ -428,7 +432,7 @@ func TestGenericYAMLConverter_RemoveEntry_ArrayStorage(t *testing.T) {
 		}
 
 		remainingServer := servers[0].(map[string]interface{})
-		if remainingServer["name"] != "server2" {
+		if remainingServer["name"] != testServer2 {
 			t.Error("wrong server was removed")
 		}
 	})
@@ -447,12 +451,12 @@ func TestGenericYAMLConverter_RemoveEntry_ArrayStorage(t *testing.T) {
 		t.Parallel()
 		config := map[string]interface{}{
 			"mcpServers": []map[string]interface{}{
-				{"name": "server1", "type": "sse"},
-				{"name": "server2", "type": "stdio"},
+				{"name": testServer1, "type": "sse"},
+				{"name": testServer2, "type": "stdio"},
 			},
 		}
 
-		err := converter.RemoveEntry(config, "server1")
+		err := converter.RemoveEntry(config, testServer1)
 		if err != nil {
 			t.Fatalf("RemoveEntry() error = %v", err)
 		}
@@ -463,7 +467,7 @@ func TestGenericYAMLConverter_RemoveEntry_ArrayStorage(t *testing.T) {
 		}
 
 		remainingServer := servers[0].(map[string]interface{})
-		if remainingServer["name"] != "server2" {
+		if remainingServer["name"] != testServer2 {
 			t.Error("wrong server was removed")
 		}
 	})
@@ -472,13 +476,13 @@ func TestGenericYAMLConverter_RemoveEntry_ArrayStorage(t *testing.T) {
 		t.Parallel()
 		config := map[string]interface{}{
 			"mcpServers": []interface{}{
-				map[string]interface{}{"name": "server1"},
+				map[string]interface{}{"name": testServer1},
 				"invalid-entry", // Not a map - should be preserved
-				map[string]interface{}{"name": "server2"},
+				map[string]interface{}{"name": testServer2},
 			},
 		}
 
-		err := converter.RemoveEntry(config, "server1")
+		err := converter.RemoveEntry(config, testServer1)
 		if err != nil {
 			t.Fatalf("RemoveEntry() error = %v", err)
 		}
@@ -495,7 +499,7 @@ func TestGenericYAMLConverter_RemoveEntry_ArrayStorage(t *testing.T) {
 
 		// Second entry should be server2
 		remainingServer := servers[1].(map[string]interface{})
-		if remainingServer["name"] != "server2" {
+		if remainingServer["name"] != testServer2 {
 			t.Error("wrong server was removed")
 		}
 	})

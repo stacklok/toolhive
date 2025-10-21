@@ -272,9 +272,6 @@ func (c *Client) DeployWorkload(
 	// about ingress/egress/dns containers.
 	lb.AddNetworkIsolationLabel(labels, networkIsolation)
 
-	// Debug: Log before calling createMcpContainer
-	logger.Infof("DEBUG: About to call createMcpContainer with network mode: '%s'", permissionConfig.NetworkMode)
-
 	err = c.ops.createMcpContainer(
 		ctx,
 		name,
@@ -779,13 +776,6 @@ func (c *Client) getPermissionConfigFromProfile(
 		CapAdd:      []string{},
 		SecurityOpt: []string{"label:disable"},
 		Privileged:  profile.Privileged,
-	}
-
-	// Debug: Log the network mode being used
-	if networkMode != "" {
-		logger.Infof("Using network mode: %s", networkMode)
-	} else {
-		logger.Infof("No network mode specified, using default")
 	}
 
 	// Add mounts
@@ -1443,14 +1433,11 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 	// create mcp container
 	internalEndpointsConfig := map[string]*network.EndpointSettings{}
 
-	// Debug: Log the network mode being processed
-	logger.Infof("DEBUG: createMcpContainer network mode: '%s', isolateNetwork: %v", permissionConfig.NetworkMode, isolateNetwork)
-
 	// Check if we have a custom network mode (e.g., "host", "none", etc.)
 	if permissionConfig.NetworkMode != "" && permissionConfig.NetworkMode != "bridge" && permissionConfig.NetworkMode != "default" {
 		// For custom network modes like "host", "none", etc., don't add any endpoint configurations
 		// The NetworkMode in hostConfig will handle the networking
-		logger.Infof("Using custom network mode: %s, keeping endpoints config empty", permissionConfig.NetworkMode)
+		logger.Infof("Using custom network mode: %s", permissionConfig.NetworkMode)
 		// Leave internalEndpointsConfig as empty map
 	} else if isolateNetwork {
 		internalEndpointsConfig[networkName] = &network.EndpointSettings{

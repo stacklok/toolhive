@@ -100,8 +100,9 @@ func TestE2E_FetchFileSparse_WithCommit(t *testing.T) {
 
 	// Use a specific commit hash from the repository (latest commit on main)
 	config := &CloneConfig{
-		URL:       "https://github.com/stacklok/toolhive.git",
-		Commit:    "032122368e1233068a9095db8542d35d425f257a", // Latest commit on main branch
+		URL: "https://github.com/stacklok/toolhive.git",
+		// Any valid commit can be used, since the repo is not fetched in this test
+		Commit:    "032122368e1233068a9095db8542d35d425f257a",
 		Directory: tempDir,
 	}
 

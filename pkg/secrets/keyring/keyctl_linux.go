@@ -126,7 +126,8 @@ func (k *keyctlProvider) DeleteAll(service string) error {
 }
 
 func (k *keyctlProvider) IsAvailable() bool {
-	testKey := "toolhive-keyring-test"
+	// Use a unique test key to avoid conflicts with concurrent calls
+	testKey := GenerateUniqueTestKey()
 	testValue := "test"
 
 	if err := k.Set("toolhive-test", testKey, testValue); err != nil {

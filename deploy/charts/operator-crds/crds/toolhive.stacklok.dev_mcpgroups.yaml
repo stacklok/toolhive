@@ -11,10 +11,17 @@ spec:
     kind: MCPGroup
     listKind: MCPGroupList
     plural: mcpgroups
+    shortNames:
+    - mcpg
+    - mcpgroup
     singular: mcpgroup
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='MCPServersChecked')].status
+      name: Ready
+      type: string
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: MCPGroup is the Schema for the mcpgroups API

@@ -53,15 +53,17 @@ const (
 
 // MCPGroupConditionReason represents the reason for a condition's last transition
 const (
-	ConditionReasonListMCPServersFailed    = "ListMCPServersFailed"
-	ConditionReasonListMCPServersSucceeded = "ListMCPServersSucceeded"
+	ConditionReasonListMCPServersFailed    = "ListMCPServersCheckFailed"
+	ConditionReasonListMCPServersSucceeded = "ListMCPServersCheckSucceeded"
 )
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+//+kubebuilder:resource:shortName=mcpg;mcpgroup
 //+kubebuilder:printerColumn:name="Servers",type="integer",JSONPath=".status.serverCount",description="The number of MCPServers in this group"
 //+kubebuilder:printerColumn:name="Phase",type="string",JSONPath=".status.phase",description="The phase of the MCPGroup"
 //+kubebuilder:printerColumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="The age of the MCPGroup"
+//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='MCPServersChecked')].status"
 
 // MCPGroup is the Schema for the mcpgroups API
 type MCPGroup struct {

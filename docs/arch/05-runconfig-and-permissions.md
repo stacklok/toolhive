@@ -651,7 +651,7 @@ Custom permission profiles can be defined in JSON files for reusable security po
 - Secret changes don't require RunConfig updates
 
 **Provider architecture:**
-- **encrypted**: Password-protected local storage (default)
+- **encrypted**: Password-protected local storage
 - **1password**: 1Password SDK integration for enterprise vaults
 - **environment**: CI/CD environment variables
 - **none**: Testing/development no-op provider

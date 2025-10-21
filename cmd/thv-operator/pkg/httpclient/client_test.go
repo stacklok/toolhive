@@ -189,6 +189,52 @@ var _ = Describe("DefaultClient", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(data).To(HaveLen(1024 * 1024))
 			})
+
+			It("should reject response exceeding 100MB size limit via Content-Length", func() {
+				mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					// Set Content-Length to 101MB
+					w.Header().Set("Content-Length", fmt.Sprintf("%d", 101*1024*1024))
+					w.WriteHeader(http.StatusOK)
+				}))
+
+				_, err := client.Get(ctx, mockServer.URL)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("exceeds maximum allowed size"))
+				Expect(err.Error()).To(ContainSubstring("100.00 MB"))
+			})
+
+			It("should reject response exceeding 100MB size limit by actual content", func() {
+				// Create data larger than 100MB
+				// We'll simulate this with a handler that writes chunks
+				mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+					// Write 101MB of data in chunks
+					chunk := make([]byte, 1024*1024) // 1MB chunks
+					for i := 0; i < 101; i++ {
+						_, _ = w.Write(chunk)
+					}
+				}))
+
+				_, err := client.Get(ctx, mockServer.URL)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("exceeds maximum allowed size"))
+			})
+
+			It("should successfully handle response at exactly 100MB", func() {
+				// Create exactly 100MB of data
+				mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+					// Write exactly 100MB
+					chunk := make([]byte, 1024*1024) // 1MB chunks
+					for i := 0; i < 100; i++ {
+						_, _ = w.Write(chunk)
+					}
+				}))
+
+				data, err := client.Get(ctx, mockServer.URL)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(data).To(HaveLen(100 * 1024 * 1024))
+			})
 		})
 	})
 })

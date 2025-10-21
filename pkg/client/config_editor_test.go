@@ -302,7 +302,7 @@ func TestYAMLConfigUpdaterUpsert(t *testing.T) {
 
 		ycu := YAMLConfigUpdater{
 			Path:      configPath,
-			Converter: &GooseYAMLConverter{},
+			Converter: NewGenericYAMLConverter(createGooseConfig()),
 		}
 
 		mcpServer := MCPServer{
@@ -322,19 +322,21 @@ func TestYAMLConfigUpdaterUpsert(t *testing.T) {
 			t.Fatalf("Failed to read YAML file: %v", err)
 		}
 
-		var config GooseConfig
+		var config map[string]interface{}
 		err = yaml.Unmarshal(content, &config)
 		if err != nil {
 			t.Fatalf("Failed to unmarshal YAML: %v", err)
 		}
 
-		extension, exists := config.Extensions[serverName]
+		extensions, ok := config["extensions"].(map[string]interface{})
+		assert.True(t, ok, "Extensions should be a map")
+		extension, exists := extensions[serverName].(map[string]interface{})
 		assert.True(t, exists, "Extension should exist")
-		assert.Equal(t, mcpServer.Url, extension.Uri, "URI should match")
-		assert.Equal(t, mcpServer.Type, extension.Type, "Type should match")
-		assert.Equal(t, serverName, extension.Name, "Name should match")
-		assert.Equal(t, true, extension.Enabled, "Should be enabled")
-		assert.Equal(t, GooseTimeout, extension.Timeout, "Timeout should match")
+		assert.Equal(t, mcpServer.Url, extension["uri"], "URI should match")
+		assert.Equal(t, mcpServer.Type, extension["type"], "Type should match")
+		assert.Equal(t, serverName, extension["name"], "Name should match")
+		assert.Equal(t, true, extension["enabled"], "Should be enabled")
+		assert.Equal(t, 60, extension["timeout"], "Timeout should match")
 
 		t.Cleanup(func() {
 			if err := os.RemoveAll(tempDir); err != nil {
@@ -368,7 +370,7 @@ extensions:
 
 		ycu := YAMLConfigUpdater{
 			Path:      configPath,
-			Converter: &GooseYAMLConverter{},
+			Converter: NewGenericYAMLConverter(createGooseConfig()),
 		}
 
 		// Add a new MCP server
@@ -433,7 +435,7 @@ func TestYAMLConfigUpdaterRemove(t *testing.T) {
 
 		ycu := YAMLConfigUpdater{
 			Path:      configPath,
-			Converter: &GooseYAMLConverter{},
+			Converter: NewGenericYAMLConverter(createGooseConfig()),
 		}
 
 		serverName := "existingServer"
@@ -448,14 +450,16 @@ func TestYAMLConfigUpdaterRemove(t *testing.T) {
 			t.Fatalf("Failed to read YAML file: %v", err)
 		}
 
-		var config GooseConfig
+		var config map[string]interface{}
 		err = yaml.Unmarshal(content, &config)
 		if err != nil {
 			t.Fatalf("Failed to unmarshal YAML: %v", err)
 		}
 
-		_, exists := config.Extensions[serverName]
-		assert.False(t, exists, "Extension should not exist after removal")
+		if extensions, ok := config["extensions"].(map[string]interface{}); ok {
+			_, exists := extensions[serverName]
+			assert.False(t, exists, "Extension should not exist after removal")
+		}
 
 		t.Cleanup(func() {
 			if err := os.RemoveAll(tempDir); err != nil {
@@ -472,7 +476,7 @@ func TestYAMLConfigUpdaterRemove(t *testing.T) {
 
 		ycu := YAMLConfigUpdater{
 			Path:      configPath,
-			Converter: &GooseYAMLConverter{},
+			Converter: NewGenericYAMLConverter(createGooseConfig()),
 		}
 
 		// Try to remove non-existent server
@@ -487,14 +491,18 @@ func TestYAMLConfigUpdaterRemove(t *testing.T) {
 			t.Fatalf("Failed to read YAML file: %v", err)
 		}
 
-		var config GooseConfig
+		var config map[string]interface{}
 		err = yaml.Unmarshal(content, &config)
 		if err != nil {
 			t.Fatalf("Failed to unmarshal YAML: %v", err)
 		}
 
-		_, exists := config.Extensions["existingServer"]
-		assert.True(t, exists, "Existing extension should still exist")
+		if extensions, ok := config["extensions"].(map[string]interface{}); ok {
+			_, exists := extensions["existingServer"]
+			assert.True(t, exists, "Existing extension should still exist")
+		} else {
+			t.Fatal("Extensions not found in config")
+		}
 
 		t.Cleanup(func() {
 			if err := os.RemoveAll(tempDir); err != nil {
@@ -511,7 +519,7 @@ func TestYAMLConfigUpdaterRemove(t *testing.T) {
 
 		ycu := YAMLConfigUpdater{
 			Path:      configPath,
-			Converter: &GooseYAMLConverter{},
+			Converter: NewGenericYAMLConverter(createGooseConfig()),
 		}
 
 		// Try to remove from empty file
@@ -559,14 +567,14 @@ func setupExistingTestYAMLConfig(t *testing.T, testName string) (string, string)
 	configPath := filepath.Join(tempDir, fmt.Sprintf("config-%s.yaml", testName))
 
 	// Create a YAML config with existing extension
-	testConfig := GooseConfig{
-		Extensions: map[string]GooseExtension{
-			"existingServer": {
-				Name:    "existingServer",
-				Enabled: true,
-				Type:    "existing-type",
-				Timeout: GooseTimeout,
-				Uri:     fmt.Sprintf("existing-url-%s", testName),
+	testConfig := map[string]interface{}{
+		"extensions": map[string]interface{}{
+			"existingServer": map[string]interface{}{
+				"name":    "existingServer",
+				"enabled": true,
+				"type":    "existing-type",
+				"timeout": 60,
+				"uri":     fmt.Sprintf("existing-url-%s", testName),
 			},
 		},
 	}

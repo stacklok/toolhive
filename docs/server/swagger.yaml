@@ -126,6 +126,7 @@ components:
       - LMStudio
       - Goose
       - Trae
+      - Continue
     client.MCPClientStatus:
       properties:
         client_type:
@@ -148,6 +149,7 @@ components:
           - LMStudio
           - Goose
           - Trae
+          - Continue
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -1047,6 +1049,7 @@ components:
             - LMStudio
             - Goose
             - Trae
+            - Continue
           type: array
           uniqueItems: false
       type: object
@@ -1098,6 +1101,7 @@ components:
           - LMStudio
           - Goose
           - Trae
+          - Continue
       type: object
     v1.createClientResponse:
       properties:
@@ -1127,6 +1131,7 @@ components:
           - LMStudio
           - Goose
           - Trae
+          - Continue
       type: object
     v1.createGroupRequest:
       properties:

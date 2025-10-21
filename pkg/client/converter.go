@@ -5,11 +5,6 @@ import (
 	"strings"
 )
 
-const (
-	storageTypeMap   = "map"
-	storageTypeArray = "array"
-)
-
 // YAMLConverter defines an interface for converting MCPServer data to different YAML config formats
 type YAMLConverter interface {
 	ConvertFromMCPServer(serverName string, server MCPServer) (interface{}, error)
@@ -19,7 +14,7 @@ type YAMLConverter interface {
 
 // GenericYAMLConverter implements YAMLConverter using configuration from mcpClientConfig
 type GenericYAMLConverter struct {
-	storageType     string                 // "map" or "array"
+	storageType     YAMLStorageType        // How servers are stored in YAML (map or array)
 	serversPath     string                 // path to servers section (e.g., "extensions" or "mcpServers")
 	identifierField string                 // for array type: field that identifies the server
 	defaults        map[string]interface{} // default values for fields
@@ -86,7 +81,7 @@ func (g *GenericYAMLConverter) UpsertEntry(config interface{}, serverName string
 
 	// Initialize servers section if it doesn't exist
 	if configMap[g.serversPath] == nil {
-		if g.storageType == storageTypeMap {
+		if g.storageType == YAMLStorageTypeMap {
 			configMap[g.serversPath] = make(map[string]interface{})
 		} else {
 			configMap[g.serversPath] = []interface{}{}
@@ -99,7 +94,7 @@ func (g *GenericYAMLConverter) UpsertEntry(config interface{}, serverName string
 		return fmt.Errorf("entry must be a map[string]interface{}")
 	}
 
-	if g.storageType == storageTypeMap {
+	if g.storageType == YAMLStorageTypeMap {
 		return g.upsertMapEntry(configMap, serverName, entryMap)
 	}
 	return g.upsertArrayEntry(configMap, serverName, entryMap)
@@ -169,7 +164,7 @@ func (g *GenericYAMLConverter) RemoveEntry(config interface{}, serverName string
 		return nil // Nothing to remove
 	}
 
-	if g.storageType == storageTypeMap {
+	if g.storageType == YAMLStorageTypeMap {
 		return g.removeMapEntry(configMap, serverName)
 	}
 	return g.removeArrayEntry(configMap, serverName)

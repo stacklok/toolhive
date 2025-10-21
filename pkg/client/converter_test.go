@@ -17,7 +17,7 @@ func createGooseConfig() *mcpClientConfig {
 		ClientType:           Goose,
 		MCPServersPathPrefix: "/extensions",
 		MCPServersUrlLabel:   "uri",
-		YAMLStorageType:      "map",
+		YAMLStorageType:      YAMLStorageTypeMap,
 		YAMLDefaults: map[string]interface{}{
 			"enabled": true,
 			"timeout": 60,
@@ -31,7 +31,7 @@ func createContinueConfig() *mcpClientConfig {
 		ClientType:           Continue,
 		MCPServersPathPrefix: "/mcpServers",
 		MCPServersUrlLabel:   "url",
-		YAMLStorageType:      "array",
+		YAMLStorageType:      YAMLStorageTypeArray,
 		YAMLIdentifierField:  "name",
 	}
 }

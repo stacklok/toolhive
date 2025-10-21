@@ -71,6 +71,16 @@ const (
 	YAML Extension = "yaml"
 )
 
+// YAMLStorageType represents how servers are stored in YAML configuration files.
+type YAMLStorageType string
+
+const (
+	// YAMLStorageTypeMap represents servers stored as a map with server names as keys.
+	YAMLStorageTypeMap YAMLStorageType = "map"
+	// YAMLStorageTypeArray represents servers stored as an array of objects.
+	YAMLStorageTypeArray YAMLStorageType = "array"
+)
+
 // mcpClientConfig represents a configuration path for a supported MCP client.
 type mcpClientConfig struct {
 	ClientType                    MCPClient
@@ -84,7 +94,7 @@ type mcpClientConfig struct {
 	IsTransportTypeFieldSupported bool
 	MCPServersUrlLabel            string
 	// YAML-specific configuration (only used when Extension == YAML)
-	YAMLStorageType     string                 // "map" or "array" - how servers are stored
+	YAMLStorageType     YAMLStorageType        // How servers are stored in YAML (map or array)
 	YAMLIdentifierField string                 // For array type: field name that identifies the server
 	YAMLDefaults        map[string]interface{} // Default values to add to entries
 }
@@ -375,7 +385,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		IsTransportTypeFieldSupported: true,
 		MCPServersUrlLabel:            "uri",
 		// YAML configuration
-		YAMLStorageType: "map",
+		YAMLStorageType: YAMLStorageTypeMap,
 		YAMLDefaults: map[string]interface{}{
 			"enabled": true,
 			"timeout": 60,
@@ -416,7 +426,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		IsTransportTypeFieldSupported: true,
 		MCPServersUrlLabel:            "url",
 		// YAML configuration
-		YAMLStorageType:     "array",
+		YAMLStorageType:     YAMLStorageTypeArray,
 		YAMLIdentifierField: "name",
 	},
 }

@@ -552,6 +552,260 @@ func TestDefaultManager_RestartWorkloads(t *testing.T) {
 	}
 }
 
+func TestDefaultManager_restartRemoteWorkload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		runConfig    *runner.RunConfig
+		foreground   bool
+		setupMocks   func(*statusMocks.MockStatusManager)
+		expectError  bool
+		errorMsg     string
+	}{
+		{
+			name:         "remote workload already running",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-base",
+				RemoteURL: "http://example.com",
+			},
+			foreground: false,
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+			},
+			expectError: false,
+		},
+		{
+			name:         "status manager error",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-base",
+				RemoteURL: "http://example.com",
+			},
+			foreground: false,
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{}, errors.New("status manager error"))
+			},
+			expectError: true,
+			errorMsg:    "status manager error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			statusMgr := statusMocks.NewMockStatusManager(ctrl)
+			tt.setupMocks(statusMgr)
+
+			manager := &defaultManager{
+				statuses: statusMgr,
+			}
+
+			err := manager.restartRemoteWorkload(context.Background(), tt.workloadName, tt.runConfig, tt.foreground)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestDefaultManager_restartContainerWorkload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		foreground   bool
+		setupMocks   func(*statusMocks.MockStatusManager, *runtimeMocks.MockRuntime)
+		expectError  bool
+		errorMsg     string
+	}{
+		{
+			name:         "container workload already running",
+			workloadName: "container-workload",
+			foreground:   false,
+			setupMocks: func(sm *statusMocks.MockStatusManager, rm *runtimeMocks.MockRuntime) {
+				// Mock container info
+				rm.EXPECT().GetWorkloadInfo(gomock.Any(), "container-workload").Return(runtime.ContainerInfo{
+					Name:  "container-workload",
+					State: "running",
+					Labels: map[string]string{
+						"toolhive.base-name": "container-workload",
+					},
+				}, nil)
+				sm.EXPECT().GetWorkload(gomock.Any(), "container-workload").Return(core.Workload{
+					Name:   "container-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+			},
+			expectError: false,
+		},
+		{
+			name:         "status manager error",
+			workloadName: "container-workload",
+			foreground:   false,
+			setupMocks: func(sm *statusMocks.MockStatusManager, rm *runtimeMocks.MockRuntime) {
+				// Mock container info
+				rm.EXPECT().GetWorkloadInfo(gomock.Any(), "container-workload").Return(runtime.ContainerInfo{
+					Name:  "container-workload",
+					State: "running",
+					Labels: map[string]string{
+						"toolhive.base-name": "container-workload",
+					},
+				}, nil)
+				sm.EXPECT().GetWorkload(gomock.Any(), "container-workload").Return(core.Workload{}, errors.New("status manager error"))
+			},
+			expectError: true,
+			errorMsg:    "status manager error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			statusMgr := statusMocks.NewMockStatusManager(ctrl)
+			runtimeMgr := runtimeMocks.NewMockRuntime(ctrl)
+
+			tt.setupMocks(statusMgr, runtimeMgr)
+
+			manager := &defaultManager{
+				statuses: statusMgr,
+				runtime:  runtimeMgr,
+			}
+
+			err := manager.restartContainerWorkload(context.Background(), tt.workloadName, tt.foreground)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestDefaultManager_restartLogicConsistency tests that both remote and container workloads
+// use the same consistent logic for checking if they're already running
+func TestDefaultManager_restartLogicConsistency(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		workloadName      string
+		workloadStatus    runtime.WorkloadStatus
+		expectEarlyReturn bool
+	}{
+		{
+			name:              "workload already running - should return early",
+			workloadName:      "test-workload",
+			workloadStatus:    runtime.WorkloadStatusRunning,
+			expectEarlyReturn: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			statusMgr := statusMocks.NewMockStatusManager(ctrl)
+
+			// Test remote workload logic
+			t.Run("remote_workload", func(t *testing.T) {
+				t.Parallel()
+				statusMgr.EXPECT().GetWorkload(gomock.Any(), tt.workloadName).Return(core.Workload{
+					Name:   tt.workloadName,
+					Status: tt.workloadStatus,
+				}, nil)
+
+				manager := &defaultManager{
+					statuses: statusMgr,
+				}
+
+				runConfig := &runner.RunConfig{
+					BaseName:  "test-base",
+					RemoteURL: "http://example.com",
+				}
+
+				err := manager.restartRemoteWorkload(context.Background(), tt.workloadName, runConfig, false)
+
+				if tt.expectEarlyReturn {
+					// Should return early without error when already running
+					require.NoError(t, err)
+				} else {
+					// Should fail because we can't mock runner.LoadState
+					require.Error(t, err)
+					assert.Contains(t, err.Error(), "failed to load state")
+				}
+			})
+
+			// Test container workload logic
+			t.Run("container_workload", func(t *testing.T) {
+				t.Parallel()
+				ctrl2 := gomock.NewController(t)
+				defer ctrl2.Finish()
+
+				statusMgr2 := statusMocks.NewMockStatusManager(ctrl2)
+				runtimeMgr := runtimeMocks.NewMockRuntime(ctrl2)
+
+				statusMgr2.EXPECT().GetWorkload(gomock.Any(), tt.workloadName).Return(core.Workload{
+					Name:   tt.workloadName,
+					Status: tt.workloadStatus,
+				}, nil)
+
+				// Mock container info
+				runtimeMgr.EXPECT().GetWorkloadInfo(gomock.Any(), tt.workloadName).Return(runtime.ContainerInfo{
+					Name:  tt.workloadName,
+					State: "running",
+					Labels: map[string]string{
+						"toolhive.base-name": tt.workloadName,
+					},
+				}, nil)
+
+				manager := &defaultManager{
+					statuses: statusMgr2,
+					runtime:  runtimeMgr,
+				}
+
+				err := manager.restartContainerWorkload(context.Background(), tt.workloadName, false)
+
+				if tt.expectEarlyReturn {
+					// Should return early without error when already running
+					require.NoError(t, err)
+				} else {
+					// Should fail because we can't mock runner.LoadState
+					require.Error(t, err)
+					assert.Contains(t, err.Error(), "failed to load state")
+				}
+			})
+		})
+	}
+}
+
 func TestDefaultManager_RunWorkload(t *testing.T) {
 	t.Parallel()
 
@@ -813,64 +1067,6 @@ func TestDefaultManager_removeContainer(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
-		})
-	}
-}
-
-func TestDefaultManager_isWorkloadAlreadyRunning(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		workloadName  string
-		workloadState *workloadState
-		expected      bool
-	}{
-		{
-			name:         "both running",
-			workloadName: "test-workload",
-			workloadState: &workloadState{
-				Running:      true,
-				ProxyRunning: true,
-			},
-			expected: true,
-		},
-		{
-			name:         "workload running, proxy not",
-			workloadName: "test-workload",
-			workloadState: &workloadState{
-				Running:      true,
-				ProxyRunning: false,
-			},
-			expected: false,
-		},
-		{
-			name:         "workload not running, proxy running",
-			workloadName: "test-workload",
-			workloadState: &workloadState{
-				Running:      false,
-				ProxyRunning: true,
-			},
-			expected: false,
-		},
-		{
-			name:         "neither running",
-			workloadName: "test-workload",
-			workloadState: &workloadState{
-				Running:      false,
-				ProxyRunning: false,
-			},
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			manager := &defaultManager{}
-			result := manager.isWorkloadAlreadyRunning(tt.workloadName, tt.workloadState)
-			assert.Equal(t, tt.expected, result)
 		})
 	}
 }

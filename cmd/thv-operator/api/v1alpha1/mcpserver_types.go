@@ -29,10 +29,10 @@ const (
 	// ConditionReasonGroupRefValidated indicates the GroupRef is valid
 	ConditionReasonGroupRefValidated = "GroupRefIsValid"
 
-	// ConditionReasonGroupRefInvalid indicates the GroupRef is invalid
+	// ConditionReasonGroupRefNotFound indicates the GroupRef is invalid
 	ConditionReasonGroupRefNotFound = "GroupRefNotFound"
 
-	// ConditionReasonGroupRefError indicates the referenced MCPGroup is not in the Ready state
+	// ConditionReasonGroupRefNotReady indicates the referenced MCPGroup is not in the Ready state
 	ConditionReasonGroupRefNotReady = "GroupRefNotReady"
 )
 

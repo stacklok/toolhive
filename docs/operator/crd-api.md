@@ -11,6 +11,8 @@ Package v1alpha1 contains API Schema definitions for the toolhive v1alpha1 API g
 ### Resource Types
 - [MCPExternalAuthConfig](#mcpexternalauthconfig)
 - [MCPExternalAuthConfigList](#mcpexternalauthconfiglist)
+- [MCPGroup](#mcpgroup)
+- [MCPGroupList](#mcpgrouplist)
 - [MCPRegistry](#mcpregistry)
 - [MCPRegistryList](#mcpregistrylist)
 - [MCPRemoteProxy](#mcpremoteproxy)
@@ -350,6 +352,102 @@ _Appears in:_
 | `referencingServers` _string array_ | ReferencingServers is a list of MCPServer resources that reference this MCPExternalAuthConfig<br />This helps track which servers need to be reconciled when this config changes |  |  |
 
 
+#### MCPGroup
+
+
+
+MCPGroup is the Schema for the mcpgroups API
+
+
+
+_Appears in:_
+- [MCPGroupList](#mcpgrouplist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPGroup` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[MCPGroupSpec](#mcpgroupspec)_ |  |  |  |
+| `status` _[MCPGroupStatus](#mcpgroupstatus)_ |  |  |  |
+
+
+#### MCPGroupList
+
+
+
+MCPGroupList contains a list of MCPGroup
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPGroupList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[MCPGroup](#mcpgroup) array_ |  |  |  |
+
+
+#### MCPGroupPhase
+
+_Underlying type:_ _string_
+
+MCPGroupPhase represents the lifecycle phase of an MCPGroup
+
+_Validation:_
+- Enum: [Ready Pending Failed]
+
+_Appears in:_
+- [MCPGroupStatus](#mcpgroupstatus)
+
+| Field | Description |
+| --- | --- |
+| `Ready` | MCPGroupPhaseReady indicates the MCPGroup is ready<br /> |
+| `Pending` | MCPGroupPhasePending indicates the MCPGroup is pending<br /> |
+| `Failed` | MCPGroupPhaseFailed indicates the MCPGroup has failed<br /> |
+
+
+#### MCPGroupSpec
+
+
+
+MCPGroupSpec defines the desired state of MCPGroup
+
+
+
+_Appears in:_
+- [MCPGroup](#mcpgroup)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `description` _string_ | Description provides human-readable context |  |  |
+
+
+#### MCPGroupStatus
+
+
+
+MCPGroupStatus defines observed state
+
+
+
+_Appears in:_
+- [MCPGroup](#mcpgroup)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `phase` _[MCPGroupPhase](#mcpgroupphase)_ | Phase indicates current state | Pending | Enum: [Ready Pending Failed] <br /> |
+| `servers` _string array_ | Servers lists server names in this group |  |  |
+| `serverCount` _integer_ | ServerCount is the number of servers |  |  |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent observations |  |  |
+
+
 #### MCPRegistry
 
 
@@ -685,6 +783,7 @@ _Appears in:_
 | `externalAuthConfigRef` _[ExternalAuthConfigRef](#externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer. |  |  |
 | `telemetry` _[TelemetryConfig](#telemetryconfig)_ | Telemetry defines observability configuration for the MCP server |  |  |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false |  |
+| `groupRef` _string_ | GroupRef is the name of the MCPGroup this server belongs to<br />Must reference an existing MCPGroup in the same namespace |  |  |
 
 
 #### MCPServerStatus

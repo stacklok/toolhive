@@ -5,7 +5,6 @@ import (
 	"sort"
 	"time"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -15,6 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
 const (
@@ -22,6 +23,7 @@ const (
 	MCPGroupFinalizerName = "toolhive.stacklok.dev/mcpgroup-finalizer"
 )
 
+// MCPGroupReconciler reconciles a MCPGroup object
 type MCPGroupReconciler struct {
 	client.Client
 }
@@ -146,10 +148,7 @@ func (r *MCPGroupReconciler) handleDeletion(ctx context.Context, mcpGroup *mcpv1
 		// Update conditions on all referencing MCPServers to indicate the group is being deleted
 		if len(referencingServers) > 0 {
 			ctxLogger.Info("Updating conditions on referencing MCPServers", "count", len(referencingServers))
-			if err := r.updateReferencingServersOnDeletion(ctx, referencingServers, mcpGroup.Name); err != nil {
-				ctxLogger.Error(err, "Failed to update referencing MCPServers")
-				// Continue with deletion even if update fails - this is best effort
-			}
+			r.updateReferencingServersOnDeletion(ctx, referencingServers, mcpGroup.Name)
 		}
 
 		// Remove the finalizer to allow deletion
@@ -169,7 +168,9 @@ func (r *MCPGroupReconciler) handleDeletion(ctx context.Context, mcpGroup *mcpv1
 }
 
 // findReferencingMCPServers finds all MCPServers that reference the given MCPGroup
-func (r *MCPGroupReconciler) findReferencingMCPServers(ctx context.Context, mcpGroup *mcpv1alpha1.MCPGroup) ([]mcpv1alpha1.MCPServer, error) {
+func (r *MCPGroupReconciler) findReferencingMCPServers(
+	ctx context.Context, mcpGroup *mcpv1alpha1.MCPGroup) ([]mcpv1alpha1.MCPServer, error) {
+
 	mcpServerList := &mcpv1alpha1.MCPServerList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(mcpGroup.Namespace),
@@ -183,7 +184,8 @@ func (r *MCPGroupReconciler) findReferencingMCPServers(ctx context.Context, mcpG
 }
 
 // updateReferencingServersOnDeletion updates the conditions on MCPServers to indicate their group is being deleted
-func (r *MCPGroupReconciler) updateReferencingServersOnDeletion(ctx context.Context, servers []mcpv1alpha1.MCPServer, groupName string) error {
+func (r *MCPGroupReconciler) updateReferencingServersOnDeletion(
+	ctx context.Context, servers []mcpv1alpha1.MCPServer, groupName string) {
 	ctxLogger := log.FromContext(ctx)
 
 	for _, server := range servers {
@@ -206,8 +208,6 @@ func (r *MCPGroupReconciler) updateReferencingServersOnDeletion(ctx context.Cont
 		ctxLogger.Info("Updated MCPServer condition for group deletion",
 			"mcpserver", server.Name, "mcpgroup", groupName)
 	}
-
-	return nil
 }
 
 func (r *MCPGroupReconciler) findMCPGroupForMCPServer(ctx context.Context, obj client.Object) []ctrl.Request {
@@ -225,7 +225,14 @@ func (r *MCPGroupReconciler) findMCPGroupForMCPServer(ctx context.Context, obj c
 	}
 
 	// Find which MCPGroup this MCPServer belongs to
-	ctxLogger.Info("Finding MCPGroup for MCPServer", "namespace", obj.GetNamespace(), "mcpserver", obj.GetName(), "groupRef", mcpServer.Spec.GroupRef)
+	ctxLogger.Info(
+		"Finding MCPGroup for MCPServer",
+		"namespace",
+		obj.GetNamespace(),
+		"mcpserver",
+		obj.GetName(),
+		"groupRef",
+		mcpServer.Spec.GroupRef)
 	group := &mcpv1alpha1.MCPGroup{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: obj.GetNamespace(), Name: mcpServer.Spec.GroupRef}, group); err != nil {
 		ctxLogger.Error(err, "Failed to get MCPGroup for MCPServer", "namespace", obj.GetNamespace(), "name", mcpServer.Spec.GroupRef)
@@ -241,6 +248,7 @@ func (r *MCPGroupReconciler) findMCPGroupForMCPServer(ctx context.Context, obj c
 	}
 }
 
+// SetupWithManager sets up the controller with the Manager.
 func (r *MCPGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPGroup{}).

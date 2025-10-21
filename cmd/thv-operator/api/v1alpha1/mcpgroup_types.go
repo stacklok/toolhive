@@ -60,6 +60,7 @@ const (
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=mcpg;mcpgroup
+//nolint:lll
 //+kubebuilder:printerColumn:name="Servers",type="integer",JSONPath=".status.serverCount",description="The number of MCPServers in this group"
 //+kubebuilder:printerColumn:name="Phase",type="string",JSONPath=".status.phase",description="The phase of the MCPGroup"
 //+kubebuilder:printerColumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="The age of the MCPGroup"

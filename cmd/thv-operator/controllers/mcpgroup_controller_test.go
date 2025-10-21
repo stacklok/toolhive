@@ -207,12 +207,12 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 			// First reconcile adds the finalizer
 			result, err := r.Reconcile(ctx, req)
 			require.NoError(t, err)
-			assert.True(t, result.Requeue || result.RequeueAfter > 0, "Should requeue after adding finalizer")
+			assert.True(t, result.RequeueAfter > 0, "Should requeue after adding finalizer")
 
 			// Second reconcile processes normally
 			result, err = r.Reconcile(ctx, req)
 			require.NoError(t, err)
-			assert.False(t, result.Requeue)
+			assert.False(t, result.RequeueAfter > 0, "Should not requeue")
 
 			// Check the updated MCPGroup
 			var updatedGroup mcpv1alpha1.MCPGroup
@@ -343,12 +343,12 @@ func TestMCPGroupReconciler_ServerFiltering(t *testing.T) {
 			// First reconcile adds the finalizer
 			result, err := r.Reconcile(ctx, req)
 			require.NoError(t, err)
-			assert.True(t, result.Requeue || result.RequeueAfter > 0, "Should requeue after adding finalizer")
+			assert.True(t, result.RequeueAfter > 0, "Should requeue after adding finalizer")
 
 			// Second reconcile processes normally
 			result, err = r.Reconcile(ctx, req)
 			require.NoError(t, err)
-			assert.False(t, result.Requeue)
+			assert.False(t, result.RequeueAfter > 0, "Should not requeue")
 
 			var updatedGroup mcpv1alpha1.MCPGroup
 			err = fakeClient.Get(ctx, req.NamespacedName, &updatedGroup)
@@ -551,7 +551,7 @@ func TestMCPGroupReconciler_GroupNotFound(t *testing.T) {
 
 	result, err := r.Reconcile(ctx, req)
 	require.NoError(t, err)
-	assert.False(t, result.Requeue)
+	assert.False(t, result.RequeueAfter > 0, "Should not requeue for non-existent group")
 }
 
 // TestMCPGroupReconciler_Conditions tests the MCPServersChecked condition
@@ -646,12 +646,12 @@ func TestMCPGroupReconciler_Conditions(t *testing.T) {
 			// First reconcile adds the finalizer
 			result, err := r.Reconcile(ctx, req)
 			require.NoError(t, err)
-			assert.True(t, result.Requeue || result.RequeueAfter > 0, "Should requeue after adding finalizer")
+			assert.True(t, result.RequeueAfter > 0, "Should requeue after adding finalizer")
 
 			// Second reconcile processes normally
 			result, err = r.Reconcile(ctx, req)
 			require.NoError(t, err)
-			assert.False(t, result.Requeue)
+			assert.False(t, result.RequeueAfter > 0, "Should not requeue")
 
 			var updatedGroup mcpv1alpha1.MCPGroup
 			err = fakeClient.Get(ctx, req.NamespacedName, &updatedGroup)
@@ -720,7 +720,7 @@ func TestMCPGroupReconciler_Finalizer(t *testing.T) {
 	// First reconcile should add the finalizer
 	result, err := r.Reconcile(ctx, req)
 	require.NoError(t, err)
-	assert.True(t, result.Requeue || result.RequeueAfter > 0, "Should requeue after adding finalizer")
+	assert.True(t, result.RequeueAfter > 0, "Should requeue after adding finalizer")
 
 	// Verify finalizer was added
 	var updatedGroup mcpv1alpha1.MCPGroup
@@ -731,7 +731,7 @@ func TestMCPGroupReconciler_Finalizer(t *testing.T) {
 	// Second reconcile should proceed with normal logic
 	result, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
-	assert.False(t, result.Requeue)
+	assert.False(t, result.RequeueAfter > 0, "Should not requeue")
 }
 
 // TestMCPGroupReconciler_Deletion tests deletion with finalizer cleanup
@@ -841,7 +841,7 @@ func TestMCPGroupReconciler_Deletion(t *testing.T) {
 			// Reconcile should handle deletion
 			result, err := r.Reconcile(ctx, req)
 			require.NoError(t, err)
-			assert.False(t, result.Requeue)
+			assert.False(t, result.RequeueAfter > 0, "Should not requeue on deletion")
 
 			// Verify finalizer was removed (group might already be deleted by fake client)
 			var updatedGroup mcpv1alpha1.MCPGroup

@@ -406,6 +406,21 @@ func TestGenericYAMLConverter_RemoveEntry_MapStorage(t *testing.T) {
 			t.Error("RemoveEntry() should have returned error for invalid config type")
 		}
 	})
+
+	t.Run("remove with non-map servers", func(t *testing.T) {
+		t.Parallel()
+		config := map[string]interface{}{
+			"extensions": []interface{}{"invalid", "format"}, // Not a map
+		}
+
+		err := converter.RemoveEntry(config, testServer1)
+		if err == nil {
+			t.Error("RemoveEntry() should have returned error for non-map servers")
+		}
+		if err.Error() != "invalid servers format" {
+			t.Errorf("unexpected error message: %v", err)
+		}
+	})
 }
 
 func TestGenericYAMLConverter_RemoveEntry_ArrayStorage(t *testing.T) {
@@ -501,6 +516,19 @@ func TestGenericYAMLConverter_RemoveEntry_ArrayStorage(t *testing.T) {
 		remainingServer := servers[1].(map[string]interface{})
 		if remainingServer["name"] != testServer2 {
 			t.Error("wrong server was removed")
+		}
+	})
+
+	t.Run("remove with invalid servers type", func(t *testing.T) {
+		t.Parallel()
+		config := map[string]interface{}{
+			"mcpServers": "invalid-type", // Not an array
+		}
+
+		err := converter.RemoveEntry(config, testServer1)
+		// Should return nil (nothing to remove) when servers is not an array type
+		if err != nil {
+			t.Fatalf("RemoveEntry() should handle invalid servers type gracefully, got error: %v", err)
 		}
 	})
 }

@@ -23,6 +23,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -619,7 +620,7 @@ func AddExternalAuthConfigOptions(
 
 	// Create middleware config
 	middlewareConfig := transporttypes.MiddlewareConfig{
-		Type:       "tokenexchange",
+		Type:       tokenexchange.MiddlewareType,
 		Parameters: json.RawMessage(paramsJSON),
 	}
 

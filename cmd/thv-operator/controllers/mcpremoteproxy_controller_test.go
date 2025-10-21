@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -324,6 +325,53 @@ func TestHandleToolConfig(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "tool config hash update",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "tools-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
+						Name: "tool-config",
+					},
+				},
+				Status: mcpv1alpha1.MCPRemoteProxyStatus{
+					ToolConfigHash: "old-hash",
+				},
+			},
+			toolConfig: &mcpv1alpha1.MCPToolConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "tool-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPToolConfigSpec{
+					ToolsFilter: []string{"tool1", "tool2"},
+				},
+				Status: mcpv1alpha1.MCPToolConfigStatus{
+					ConfigHash: "new-hash",
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "tool config reference removed",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "tools-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+				},
+				Status: mcpv1alpha1.MCPRemoteProxyStatus{
+					ToolConfigHash: "old-hash",
+				},
+			},
+			expectError: false,
+		},
+		{
 			name: "tool config not found",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
@@ -372,6 +420,24 @@ func TestHandleToolConfig(t *testing.T) {
 				}
 			} else {
 				assert.NoError(t, err)
+
+				// Verify status updates
+				updatedProxy := &mcpv1alpha1.MCPRemoteProxy{}
+				err := fakeClient.Get(context.TODO(), client.ObjectKey{
+					Name:      tt.proxy.Name,
+					Namespace: tt.proxy.Namespace,
+				}, updatedProxy)
+				assert.NoError(t, err)
+
+				if tt.toolConfig != nil && tt.proxy.Spec.ToolConfigRef != nil {
+					// Hash should be set to the tool config's hash
+					assert.Equal(t, tt.toolConfig.Status.ConfigHash, updatedProxy.Status.ToolConfigHash,
+						"Status hash should be updated to match tool config")
+				} else if tt.proxy.Spec.ToolConfigRef == nil && tt.proxy.Status.ToolConfigHash != "" {
+					// Hash should be cleared when reference is removed
+					assert.Empty(t, updatedProxy.Status.ToolConfigHash,
+						"Status hash should be cleared when reference is removed")
+				}
 			}
 		})
 	}
@@ -439,6 +505,62 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "external auth config hash update",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "auth-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "auth-config",
+					},
+				},
+				Status: mcpv1alpha1.MCPRemoteProxyStatus{
+					ExternalAuthConfigHash: "old-hash",
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "auth-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL: "https://keycloak.com/token",
+						ClientID: "client-id",
+						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+							Name: "secret",
+							Key:  "key",
+						},
+						Audience: "api",
+					},
+				},
+				Status: mcpv1alpha1.MCPExternalAuthConfigStatus{
+					ConfigHash: "new-hash",
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "external auth config reference removed",
+			proxy: &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "auth-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+				},
+				Status: mcpv1alpha1.MCPRemoteProxyStatus{
+					ExternalAuthConfigHash: "old-hash",
+				},
+			},
+			expectError: false,
+		},
+		{
 			name: "external auth config not found",
 			proxy: &mcpv1alpha1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
@@ -487,6 +609,24 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 				}
 			} else {
 				assert.NoError(t, err)
+
+				// Verify status updates
+				updatedProxy := &mcpv1alpha1.MCPRemoteProxy{}
+				err := fakeClient.Get(context.TODO(), client.ObjectKey{
+					Name:      tt.proxy.Name,
+					Namespace: tt.proxy.Namespace,
+				}, updatedProxy)
+				assert.NoError(t, err)
+
+				if tt.externalAuth != nil && tt.proxy.Spec.ExternalAuthConfigRef != nil {
+					// Hash should be set to the external auth config's hash
+					assert.Equal(t, tt.externalAuth.Status.ConfigHash, updatedProxy.Status.ExternalAuthConfigHash,
+						"Status hash should be updated to match external auth config")
+				} else if tt.proxy.Spec.ExternalAuthConfigRef == nil && tt.proxy.Status.ExternalAuthConfigHash != "" {
+					// Hash should be cleared when reference is removed
+					assert.Empty(t, updatedProxy.Status.ExternalAuthConfigHash,
+						"Status hash should be cleared when reference is removed")
+				}
 			}
 		})
 	}

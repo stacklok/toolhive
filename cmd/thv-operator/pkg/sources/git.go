@@ -4,9 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
+	"runtime"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -85,6 +84,8 @@ func (*GitSourceHandler) Validate(source *mcpv1alpha1.MCPRegistrySource) error {
 
 // FetchRegistry retrieves registry data from the Git repository using sparse checkout
 func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*FetchResult, error) {
+	logger := log.FromContext(ctx)
+	startTime := time.Now()
 
 	// Validate source configuration
 	if err := h.Validate(&mcpRegistry.Spec.Source); err != nil {
@@ -96,7 +97,13 @@ func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
 	}
-	defer os.RemoveAll(tempDir)
+
+	// Ensure cleanup happens
+	defer func() {
+		if err := os.RemoveAll(tempDir); err != nil {
+			logger.Error(err, "Failed to remove temporary directory", "temp_dir", tempDir)
+		}
+	}()
 
 	// Get file path
 	filePath := mcpRegistry.Spec.Source.Git.Path
@@ -113,42 +120,11 @@ func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1
 		Directory: tempDir,
 	}
 
-	// Fetch file using sparse checkout with timing and metrics
-	startTime := time.Now()
-	logger := log.FromContext(ctx)
-	logger.Info("Starting git sparse checkout",
-		"repository", cloneConfig.URL,
-		"branch", cloneConfig.Branch,
-		"tag", cloneConfig.Tag,
-		"commit", cloneConfig.Commit,
-		"file", filePath)
-
+	// Fetch file using sparse checkout
 	registryData, err := h.gitClient.FetchFileSparse(ctx, cloneConfig, filePath)
-	fetchDuration := time.Since(startTime)
-
 	if err != nil {
-		logger.Error(err, "Git sparse checkout failed",
-			"repository", cloneConfig.URL,
-			"file", filePath,
-			"duration", fetchDuration.String())
 		return nil, fmt.Errorf("failed to fetch file %s from repository: %w", filePath, err)
 	}
-
-	// Calculate directory size and object count for metrics
-	dirSize, objectCount, sizeErr := calculateDirectoryMetrics(tempDir)
-	if sizeErr != nil {
-		logger.Error(sizeErr, "Failed to calculate directory metrics")
-		dirSize = 0
-		objectCount = 0
-	}
-
-	logger.Info("Git sparse checkout completed",
-		"repository", cloneConfig.URL,
-		"file", filePath,
-		"duration", fetchDuration.String(),
-		"directory_size_mb", fmt.Sprintf("%.2f", float64(dirSize)/(1024*1024)),
-		"object_count", objectCount,
-		"file_size_kb", fmt.Sprintf("%.2f", float64(len(registryData))/1024))
 
 	// Validate and parse registry data
 	reg, err := h.validator.ValidateData(registryData, mcpRegistry.Spec.Source.Format)
@@ -159,12 +135,24 @@ func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1
 	// Calculate hash from the registry data we already fetched (no second clone needed)
 	hash := fmt.Sprintf("%x", sha256.Sum256(registryData))
 
+	logger.Info("Registry fetch completed",
+		"registry", mcpRegistry.Name,
+		"servers", len(reg.Servers),
+		"duration", time.Since(startTime).String())
+
 	// Create and return fetch result with pre-calculated hash
 	return NewFetchResult(reg, hash, mcpRegistry.Spec.Source.Format), nil
 }
 
 // CurrentHash returns the current hash of the source data using sparse checkout
 func (h *GitSourceHandler) CurrentHash(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (string, error) {
+	logger := log.FromContext(ctx)
+	startTime := time.Now()
+
+	// Capture memory stats before operation
+	var memBefore runtime.MemStats
+	runtime.ReadMemStats(&memBefore)
+
 	// Validate source configuration
 	if err := h.Validate(&mcpRegistry.Spec.Source); err != nil {
 		return "", fmt.Errorf("source validation failed: %w", err)
@@ -175,7 +163,38 @@ func (h *GitSourceHandler) CurrentHash(ctx context.Context, mcpRegistry *mcpv1al
 	if err != nil {
 		return "", fmt.Errorf("failed to create temporary directory: %w", err)
 	}
+
 	defer os.RemoveAll(tempDir)
+	// Ensure cleanup happens
+	defer func() {
+		if err := os.RemoveAll(tempDir); err != nil {
+			logger.Error(err, "Failed to remove temp directory", "temp_dir", tempDir)
+		}
+
+		// Force garbage collection to release memory from git objects
+		runtime.GC()
+
+		// Log memory stats after cleanup and GC
+		var memAfter runtime.MemStats
+		runtime.ReadMemStats(&memAfter)
+
+		// Calculate delta in MB with proper signed arithmetic
+		allocAfterMB := memAfter.Alloc / (1024 * 1024)
+		allocBeforeMB := memBefore.Alloc / (1024 * 1024)
+		var deltaMB int64
+		if allocAfterMB >= allocBeforeMB {
+			// #nosec G115 -- Memory delta in MB will never exceed int64 max
+			deltaMB = int64(allocAfterMB - allocBeforeMB)
+		} else {
+			// #nosec G115 -- Memory delta in MB will never exceed int64 max
+			deltaMB = -int64(allocBeforeMB - allocAfterMB)
+		}
+
+		logger.Info("Hash calculation cleanup completed",
+			"registry", mcpRegistry.Name,
+			"alloc_mb", allocAfterMB,
+			"delta_mb", deltaMB)
+	}()
 
 	// Get file path
 	filePath := mcpRegistry.Spec.Source.Git.Path
@@ -200,27 +219,11 @@ func (h *GitSourceHandler) CurrentHash(ctx context.Context, mcpRegistry *mcpv1al
 
 	// Compute and return hash of the data
 	hash := fmt.Sprintf("%x", sha256.Sum256(registryData))
+
+	logger.Info("Hash calculation completed",
+		"registry", mcpRegistry.Name,
+		"hash", hash[:12]+"...",
+		"duration", time.Since(startTime).String())
+
 	return hash, nil
-}
-
-// calculateDirectoryMetrics calculates the total size and file count of a directory
-func calculateDirectoryMetrics(dirPath string) (totalSize int64, fileCount int, err error) {
-	err = filepath.WalkDir(dirPath, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if !d.IsDir() {
-			fileCount++
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			totalSize += info.Size()
-		}
-
-		return nil
-	})
-
-	return totalSize, fileCount, err
 }

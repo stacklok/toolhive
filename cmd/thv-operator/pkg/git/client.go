@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // Client defines the interface for Git operations
@@ -27,30 +29,86 @@ func NewDefaultGitClient() *DefaultGitClient {
 
 // FetchFileSparse fetches a single file using sparse checkout for minimal memory usage
 func (c *DefaultGitClient) FetchFileSparse(ctx context.Context, config *CloneConfig, filePath string) ([]byte, error) {
-	// Clone repository with appropriate options
+	logger := log.FromContext(ctx)
+
+	// Log memory stats before operation
+	var memBefore runtime.MemStats
+	runtime.ReadMemStats(&memBefore)
+	logger.V(1).Info("Git operation starting",
+		"url", config.URL,
+		"file", filePath,
+		"alloc_mb", memBefore.Alloc/(1024*1024))
+
 	repo, err := c.cloneRepositoryForSparseCheckout(ctx, config)
 	if err != nil {
 		return nil, err
 	}
 
+	// Variable to hold repo reference for cleanup
+	repoRef := &repo
+
+	// Ensure cleanup happens even on error
+	defer func() {
+		logger.V(1).Info("Git cleanup starting")
+
+		// Explicitly clear repository reference to help GC
+		if repoRef != nil && *repoRef != nil {
+			*repoRef = nil
+		}
+
+		// Force garbage collection to release memory
+		runtime.GC()
+
+		// Log memory stats after cleanup
+		var memAfter runtime.MemStats
+		runtime.ReadMemStats(&memAfter)
+
+		// Calculate delta in MB with proper signed arithmetic
+		allocAfterMB := memAfter.Alloc / (1024 * 1024)
+		allocBeforeMB := memBefore.Alloc / (1024 * 1024)
+		var deltaMB int64
+		if allocAfterMB >= allocBeforeMB {
+			// #nosec G115 -- Memory delta in MB will never exceed int64 max
+			deltaMB = int64(allocAfterMB - allocBeforeMB)
+		} else {
+			// #nosec G115 -- Memory delta in MB will never exceed int64 max
+			deltaMB = -int64(allocBeforeMB - allocAfterMB)
+		}
+
+		logger.V(1).Info("Git cleanup completed",
+			"alloc_mb", allocAfterMB,
+			"delta_mb", deltaMB)
+	}()
+
 	// Checkout specific commit if needed
 	if config.Commit != "" {
+		logger.V(1).Info("Checking out commit", "commit", config.Commit)
 		if err := c.checkoutCommit(repo, config.Commit); err != nil {
 			return nil, err
 		}
 	}
 
 	// Perform sparse checkout
+	logger.V(1).Info("Performing sparse checkout", "file", filePath)
 	if err := c.performSparseCheckout(repo, filePath); err != nil {
 		return nil, err
 	}
 
 	// Read and return file content with path validation
-	return c.readFileSecurely(config.Directory, filePath)
+	content, err := c.readFileSecurely(config.Directory, filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.V(1).Info("File fetched successfully",
+		"size_kb", fmt.Sprintf("%.2f", float64(len(content))/1024))
+	return content, nil
 }
 
 // cloneRepositoryForSparseCheckout clones repository with minimal data transfer
 func (*DefaultGitClient) cloneRepositoryForSparseCheckout(ctx context.Context, config *CloneConfig) (*git.Repository, error) {
+	logger := log.FromContext(ctx)
+
 	cloneOptions := &git.CloneOptions{
 		URL:          config.URL,
 		Depth:        1,    // Shallow clone - only latest commit
@@ -68,6 +126,10 @@ func (*DefaultGitClient) cloneRepositoryForSparseCheckout(ctx context.Context, c
 	} else {
 		// For commit-based clones, we need full history to find the commit
 		// Disable shallow clone and single branch to fetch all refs
+		// WARNING: This loads full history into memory - potential memory leak!
+		logger.Info("WARNING: Cloning full repository history for commit lookup - this may consume significant memory",
+			"commit", config.Commit,
+			"url", config.URL)
 		cloneOptions.Depth = 0
 		cloneOptions.SingleBranch = false
 	}
@@ -139,6 +201,9 @@ func (*DefaultGitClient) performSparseCheckout(repo *git.Repository, filePath st
 			return fmt.Errorf("failed sparse checkout: %w", err)
 		}
 	}
+
+	// Clear reference to help GC
+	ref = nil
 
 	return nil
 }

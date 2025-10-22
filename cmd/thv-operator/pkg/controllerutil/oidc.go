@@ -40,6 +40,7 @@ func AddOIDCConfigOptions(
 		oidcConfig.JWKSAuthTokenPath,
 		oidcConfig.ResourceURL,
 		oidcConfig.JWKSAllowPrivateIP,
+		oidcConfig.InsecureAllowHTTP,
 	))
 
 	return nil

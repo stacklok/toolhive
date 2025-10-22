@@ -61,6 +61,11 @@ components:
         clientSecret:
           description: ClientSecret is the optional OIDC client secret for introspection
           type: string
+        insecureAllowHTTP:
+          description: |-
+            InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+            WARNING: This is insecure and should NEVER be used in production
+          type: boolean
         introspectionURL:
           description: IntrospectionURL is the optional introspection endpoint for
             validating tokens

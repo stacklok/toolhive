@@ -873,188 +873,63 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	volumeMounts := []corev1.VolumeMount{}
 	volumes := []corev1.Volume{}
 
-	// Check if global ConfigMap mode is enabled via environment variable
-	useConfigMap := true
-	if useConfigMap {
-		// Also add pod template patch for secrets and service account (same as regular flags approach)
-		builder, err := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Invalid PodTemplateSpec in MCPServer spec, continuing without customizations")
-			// Continue without pod template patch - the deployment will still work
-		} else {
-			// If service account is not specified, use the default MCP server service account
-			serviceAccount := m.Spec.ServiceAccount
-			if serviceAccount == nil {
-				defaultSA := mcpServerServiceAccountName(m.Name)
-				serviceAccount = &defaultSA
-			}
-			finalPodTemplateSpec := builder.
-				WithServiceAccount(serviceAccount).
-				WithSecrets(m.Spec.Secrets).
-				Build()
-			// Add pod template patch if we have one
-			if finalPodTemplateSpec != nil {
-				podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
-				if err != nil {
-					ctxLogger := log.FromContext(ctx)
-					ctxLogger.Error(err, "Failed to marshal pod template spec")
-				} else {
-					args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
-				}
-			}
-		}
-
-		// Add volume mount for ConfigMap
-		configMapName := fmt.Sprintf("%s-runconfig", m.Name)
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "runconfig",
-			MountPath: "/etc/runconfig",
-			ReadOnly:  true,
-		})
-
-		volumes = append(volumes, corev1.Volume{
-			Name: "runconfig",
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: configMapName,
-					},
-				},
-			},
-		})
+	// Using ConfigMap mode for all configuration
+	// Pod template patch for secrets and service account
+	builder, err := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec)
+	if err != nil {
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Error(err, "Invalid PodTemplateSpec in MCPServer spec, continuing without customizations")
+		// Continue without pod template patch - the deployment will still work
 	} else {
-		// Use individual configuration flags (existing behavior)
-		args = append(args, fmt.Sprintf("--proxy-port=%d", m.Spec.Port))
-		args = append(args, fmt.Sprintf("--name=%s", m.Name))
-		args = append(args, fmt.Sprintf("--transport=%s", m.Spec.Transport))
-		args = append(args, fmt.Sprintf("--host=%s", getProxyHost()))
-		if m.Spec.TargetPort != 0 {
-			args = append(args, fmt.Sprintf("--target-port=%d", m.Spec.TargetPort))
-		}
-		// Add proxy mode for stdio transport
-		if m.Spec.ProxyMode != "" {
-			args = append(args, fmt.Sprintf("--proxy-mode=%s", m.Spec.ProxyMode))
-		}
-		// Add trust proxy headers flag if enabled
-		if m.Spec.TrustProxyHeaders {
-			args = append(args, "--trust-proxy-headers")
-		}
-	}
-
-	// Add pod template patch and permission profile only if not using ConfigMap
-	// When using ConfigMap, these are included in the runconfig.json
-	if !useConfigMap {
-		// Generate pod template patch for secrets and merge with user-provided patch
 		// If service account is not specified, use the default MCP server service account
 		serviceAccount := m.Spec.ServiceAccount
 		if serviceAccount == nil {
 			defaultSA := mcpServerServiceAccountName(m.Name)
 			serviceAccount = &defaultSA
 		}
-
-		builder, err := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Invalid PodTemplateSpec in MCPServer spec, continuing without customizations")
-			// Continue without pod template patch - the deployment will still work
-		} else {
-			finalPodTemplateSpec := builder.
-				WithServiceAccount(serviceAccount).
-				WithSecrets(m.Spec.Secrets).
-				Build()
-			// Add pod template patch if we have one
-			if finalPodTemplateSpec != nil {
-				podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
-				if err != nil {
-					ctxLogger := log.FromContext(ctx)
-					ctxLogger.Error(err, "Failed to marshal pod template spec")
-				} else {
-					args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
-				}
-			}
-		}
-
-		// Add permission profile args
-		if m.Spec.PermissionProfile != nil {
-			switch m.Spec.PermissionProfile.Type {
-			case mcpv1alpha1.PermissionProfileTypeBuiltin:
-				args = append(args, fmt.Sprintf("--permission-profile=%s", m.Spec.PermissionProfile.Name))
-			case mcpv1alpha1.PermissionProfileTypeConfigMap:
-				args = append(args, fmt.Sprintf("--permission-profile-path=/etc/toolhive/profiles/%s", m.Spec.PermissionProfile.Key))
+		finalPodTemplateSpec := builder.
+			WithServiceAccount(serviceAccount).
+			WithSecrets(m.Spec.Secrets).
+			Build()
+		// Add pod template patch if we have one
+		if finalPodTemplateSpec != nil {
+			podTemplatePatch, err := json.Marshal(finalPodTemplateSpec)
+			if err != nil {
+				ctxLogger := log.FromContext(ctx)
+				ctxLogger.Error(err, "Failed to marshal pod template spec")
+			} else {
+				args = append(args, fmt.Sprintf("--k8s-pod-patch=%s", string(podTemplatePatch)))
 			}
 		}
 	}
 
-	// Add OIDC configuration args only if not using ConfigMap
-	// When using ConfigMap, OIDC configuration is included in the runconfig.json
-	if !useConfigMap && m.Spec.OIDCConfig != nil {
-		// Create a context with timeout for OIDC configuration operations
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+	// Add volume mount for ConfigMap
+	configMapName := fmt.Sprintf("%s-runconfig", m.Name)
+	volumeMounts = append(volumeMounts, corev1.VolumeMount{
+		Name:      "runconfig",
+		MountPath: "/etc/runconfig",
+		ReadOnly:  true,
+	})
 
-		oidcArgs := r.generateOIDCArgs(ctx, m)
-		args = append(args, oidcArgs...)
+	volumes = append(volumes, corev1.Volume{
+		Name: "runconfig",
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: configMapName,
+				},
+			},
+		},
+	})
 
-		// Add OAuth discovery resource URL for RFC 9728 compliance
-		resourceURL := m.Spec.OIDCConfig.ResourceURL
-		if resourceURL == "" {
-			resourceURL = ctrlutil.CreateProxyServiceURL(m.Name, m.Namespace, m.Spec.Port)
-		}
-		args = append(args, fmt.Sprintf("--resource-url=%s", resourceURL))
-	}
-
-	// Add authorization configuration args only if not using ConfigMap
-	// When using ConfigMap, authorization configuration is included in the runconfig.json
-	if !useConfigMap && m.Spec.AuthzConfig != nil {
-		authzArgs := r.generateAuthzArgs(m)
-		args = append(args, authzArgs...)
-	}
-
-	// Add audit configuration args only if not using ConfigMap
-	// When using ConfigMap, audit configuration is included in the runconfig.json
-	if !useConfigMap && m.Spec.Audit != nil && m.Spec.Audit.Enabled {
-		args = append(args, "--enable-audit")
-	}
-
-	// Add environment variables and tools filter only if not using ConfigMap
-	if !useConfigMap {
-		// Add environment variables as --env flags for the MCP server
-		for _, e := range m.Spec.Env {
-			args = append(args, fmt.Sprintf("--env=%s=%s", e.Name, e.Value))
-		}
-
-		// Add tools filter args
-		if len(m.Spec.ToolsFilter) > 0 {
-			slices.Sort(m.Spec.ToolsFilter)
-			args = append(args, fmt.Sprintf("--tools=%s", strings.Join(m.Spec.ToolsFilter, ",")))
-		}
-	}
-
-	// Add OpenTelemetry configuration args only if not using ConfigMap
-	// When using ConfigMap, telemetry configuration is included in the runconfig.json
-	if !useConfigMap && m.Spec.Telemetry != nil {
-		if m.Spec.Telemetry.OpenTelemetry != nil {
-			otelArgs := r.generateOpenTelemetryArgs(m)
-			args = append(args, otelArgs...)
-		}
-
-		if m.Spec.Telemetry.Prometheus != nil {
-			prometheusArgs := r.generatePrometheusArgs(m)
-			args = append(args, prometheusArgs...)
-		}
-	}
+	// Pod template patch, permission profile, OIDC, authorization, audit, environment variables,
+	// tools filter, and telemetry configuration are all included in the ConfigMap
+	// so we don't need to add them as individual flags
 
 	// Always add the image as it's required by proxy runner command signature
 	// When using ConfigMap, the image from ConfigMap takes precedence, but we still need
 	// to provide this as a positional argument to satisfy the command requirements
 	args = append(args, m.Spec.Image)
-
-	// Add additional args only if not using ConfigMap
-	if !useConfigMap && len(m.Spec.Args) > 0 {
-		args = append(args, "--")
-		args = append(args, m.Spec.Args...)
-	}
 
 	// Prepare container env vars for the proxy container
 	env := []corev1.EnvVar{}
@@ -1183,11 +1058,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 		}
 	}
 
-	// Check for Vault Agent Injection and add env-file-dir argument if needed
-	// Only add the flag when not using ConfigMap mode (when using ConfigMap, this is handled via the runconfig.json)
-	if !useConfigMap && hasVaultAgentInjection(deploymentTemplateAnnotations) {
-		args = append(args, "--env-file-dir=/vault/secrets")
-	}
+	// Vault Agent Injection is handled via the runconfig.json in ConfigMap mode
 
 	// Detect platform and prepare ProxyRunner's pod and container security context
 	detectedPlatform, err := r.detectPlatform(ctx)
@@ -1489,26 +1360,6 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			return true
 		}
 
-		// Check if the pod template spec has changed
-
-		// TODO: Add more comprehensive checks for PodTemplateSpec changes beyond just the args
-		// This would involve comparing the actual pod template spec fields with what would be
-		// generated by the operator, rather than just checking the command-line arguments.
-		if mcpServer.Spec.PodTemplateSpec != nil && mcpServer.Spec.PodTemplateSpec.Raw != nil {
-			// Use the raw bytes directly since PodTemplateSpec is now a RawExtension
-			podTemplatePatchArg := fmt.Sprintf("--k8s-pod-patch=%s", string(mcpServer.Spec.PodTemplateSpec.Raw))
-			found := false
-			for _, arg := range container.Args {
-				if arg == podTemplatePatchArg {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return true
-			}
-		}
-
 		// Check if the container port has changed
 		if len(container.Ports) > 0 && container.Ports[0].ContainerPort != mcpServer.Spec.Port {
 			return true
@@ -1780,15 +1631,6 @@ func hasVaultAgentInjection(annotations map[string]string) bool {
 	return exists && value == "true"
 }
 
-// getProxyHost returns the host to bind the proxy to
-func getProxyHost() string {
-	host := os.Getenv("TOOLHIVE_PROXY_HOST")
-	if host == "" {
-		host = defaultProxyHost
-	}
-	return host
-}
-
 // getToolhiveRunnerImage returns the image to use for the toolhive runner container
 func getToolhiveRunnerImage() string {
 	// Get the image from the environment variable or use a default
@@ -1798,205 +1640,6 @@ func getToolhiveRunnerImage() string {
 		image = "ghcr.io/stacklok/toolhive/proxyrunner:latest"
 	}
 	return image
-}
-
-// generateOIDCArgs generates OIDC command-line arguments based on the OIDC configuration
-func (r *MCPServerReconciler) generateOIDCArgs(ctx context.Context, m *mcpv1alpha1.MCPServer) []string {
-	var args []string
-
-	if m.Spec.OIDCConfig == nil {
-		return args
-	}
-
-	switch m.Spec.OIDCConfig.Type {
-	case mcpv1alpha1.OIDCConfigTypeKubernetes:
-		args = append(args, r.generateKubernetesOIDCArgs(ctx, m)...)
-	case mcpv1alpha1.OIDCConfigTypeConfigMap:
-		args = append(args, r.generateConfigMapOIDCArgs(ctx, m)...)
-	case mcpv1alpha1.OIDCConfigTypeInline:
-		args = append(args, r.generateInlineOIDCArgs(m)...)
-	}
-
-	return args
-}
-
-// generateKubernetesOIDCArgs generates OIDC args for Kubernetes service account token validation
-func (*MCPServerReconciler) generateKubernetesOIDCArgs(ctx context.Context, m *mcpv1alpha1.MCPServer) []string {
-	var args []string
-	config := m.Spec.OIDCConfig.Kubernetes
-
-	// Set defaults if config is nil
-	if config == nil {
-		ctxLogger := log.FromContext(ctx)
-		ctxLogger.Info("Kubernetes OIDCConfig is nil, using default configuration", "mcpServer", m.Name)
-		defaultUseClusterAuth := true
-		config = &mcpv1alpha1.KubernetesOIDCConfig{
-			UseClusterAuth: &defaultUseClusterAuth, // Default to true
-		}
-	}
-
-	// Handle UseClusterAuth with default of true if nil
-	useClusterAuth := true // default value
-	if config.UseClusterAuth != nil {
-		useClusterAuth = *config.UseClusterAuth
-	}
-
-	// Issuer (default: https://kubernetes.default.svc)
-	issuer := config.Issuer
-	if issuer == "" {
-		issuer = "https://kubernetes.default.svc"
-	}
-	args = append(args, fmt.Sprintf("--oidc-issuer=%s", issuer))
-
-	// Audience (default: toolhive)
-	audience := config.Audience
-	if audience == "" {
-		audience = "toolhive"
-	}
-	args = append(args, fmt.Sprintf("--oidc-audience=%s", audience))
-
-	// JWKS URL (optional - if empty, thv will use OIDC discovery)
-	jwksURL := config.JWKSURL
-	if jwksURL != "" {
-		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", jwksURL))
-	}
-
-	// Introspection URL (optional - if empty, thv will use OIDC discovery)
-	introspectionURL := config.IntrospectionURL
-	if introspectionURL != "" {
-		args = append(args, fmt.Sprintf("--oidc-introspection-url=%s", introspectionURL))
-	}
-
-	// Add cluster auth flags if enabled (default is true)
-	if useClusterAuth {
-		args = append(args, "--thv-ca-bundle=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
-		args = append(args, "--jwks-auth-token-file=/var/run/secrets/kubernetes.io/serviceaccount/token")
-		args = append(args, "--jwks-allow-private-ip")
-	}
-
-	// Client ID (format: {serviceAccount}.{namespace}.svc.cluster.local)
-	serviceAccount := config.ServiceAccount
-	if serviceAccount == "" {
-		serviceAccount = "default" // Use default service account if not specified
-	}
-
-	namespace := config.Namespace
-	if namespace == "" {
-		namespace = m.Namespace // Use MCPServer's namespace if not specified
-	}
-
-	clientID := fmt.Sprintf("%s.%s.svc.cluster.local", serviceAccount, namespace)
-	args = append(args, fmt.Sprintf("--oidc-client-id=%s", clientID))
-
-	return args
-}
-
-// generateConfigMapOIDCArgs generates OIDC args for ConfigMap-based configuration
-func (r *MCPServerReconciler) generateConfigMapOIDCArgs( // nolint:gocyclo
-	ctx context.Context,
-	m *mcpv1alpha1.MCPServer,
-) []string {
-	var args []string
-	config := m.Spec.OIDCConfig.ConfigMap
-
-	if config == nil {
-		return args
-	}
-
-	// Read the ConfigMap and extract OIDC configuration from documented keys
-	configMap := &corev1.ConfigMap{}
-	err := r.Get(ctx, types.NamespacedName{
-		Name:      config.Name,
-		Namespace: m.Namespace,
-	}, configMap)
-	if err != nil {
-		ctxLogger := log.FromContext(ctx)
-		ctxLogger.Error(err, "Failed to get ConfigMap", "configMapName", config.Name)
-		return args
-	}
-
-	// Extract OIDC configuration from well-known keys
-	if issuer, exists := configMap.Data["issuer"]; exists && issuer != "" {
-		args = append(args, fmt.Sprintf("--oidc-issuer=%s", issuer))
-	}
-	if audience, exists := configMap.Data["audience"]; exists && audience != "" {
-		args = append(args, fmt.Sprintf("--oidc-audience=%s", audience))
-	}
-	if jwksURL, exists := configMap.Data["jwksUrl"]; exists && jwksURL != "" {
-		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", jwksURL))
-	}
-	if introspectionURL, exists := configMap.Data["introspectionUrl"]; exists && introspectionURL != "" {
-		args = append(args, fmt.Sprintf("--oidc-introspection-url=%s", introspectionURL))
-	}
-	if clientID, exists := configMap.Data["clientId"]; exists && clientID != "" {
-		args = append(args, fmt.Sprintf("--oidc-client-id=%s", clientID))
-	}
-	if clientSecret, exists := configMap.Data["clientSecret"]; exists && clientSecret != "" {
-		args = append(args, fmt.Sprintf("--oidc-client-secret=%s", clientSecret))
-	}
-	if thvCABundlePath, exists := configMap.Data["thvCABundlePath"]; exists && thvCABundlePath != "" {
-		args = append(args, fmt.Sprintf("--thv-ca-bundle=%s", thvCABundlePath))
-	}
-	if jwksAuthTokenPath, exists := configMap.Data["jwksAuthTokenPath"]; exists && jwksAuthTokenPath != "" {
-		args = append(args, fmt.Sprintf("--jwks-auth-token-file=%s", jwksAuthTokenPath))
-	}
-	if jwksAllowPrivateIP, exists := configMap.Data["jwksAllowPrivateIP"]; exists && jwksAllowPrivateIP == "true" {
-		args = append(args, "--jwks-allow-private-ip")
-	}
-
-	return args
-}
-
-// generateInlineOIDCArgs generates OIDC args for inline configuration
-func (*MCPServerReconciler) generateInlineOIDCArgs(m *mcpv1alpha1.MCPServer) []string {
-	var args []string
-	config := m.Spec.OIDCConfig.Inline
-
-	if config == nil {
-		return args
-	}
-
-	// Issuer (required)
-	if config.Issuer != "" {
-		args = append(args, fmt.Sprintf("--oidc-issuer=%s", config.Issuer))
-	}
-
-	// Audience (optional)
-	if config.Audience != "" {
-		args = append(args, fmt.Sprintf("--oidc-audience=%s", config.Audience))
-	}
-
-	// JWKS URL (optional)
-	if config.JWKSURL != "" {
-		args = append(args, fmt.Sprintf("--oidc-jwks-url=%s", config.JWKSURL))
-	}
-
-	// Introspection URL (optional)
-	if config.IntrospectionURL != "" {
-		args = append(args, fmt.Sprintf("--oidc-introspection-url=%s", config.IntrospectionURL))
-	}
-
-	// CA Bundle path (optional)
-	if config.ThvCABundlePath != "" {
-		args = append(args, fmt.Sprintf("--thv-ca-bundle=%s", config.ThvCABundlePath))
-	}
-
-	// Auth token path (optional)
-	if config.JWKSAuthTokenPath != "" {
-		args = append(args, fmt.Sprintf("--jwks-auth-token-file=%s", config.JWKSAuthTokenPath))
-	}
-
-	// Allow private IP access (optional)
-	if config.JWKSAllowPrivateIP {
-		args = append(args, "--jwks-allow-private-ip")
-	}
-
-	// Client ID (optional)
-	if config.ClientID != "" {
-		args = append(args, fmt.Sprintf("--oidc-client-id=%s", config.ClientID))
-	}
-
-	return args
 }
 
 // generateAuthzArgs generates authorization command-line arguments based on the configuration type

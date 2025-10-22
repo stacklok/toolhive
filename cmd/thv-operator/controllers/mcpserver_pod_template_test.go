@@ -133,9 +133,6 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 			require.NotNil(t, mcpContainer.SecurityContext.Capabilities, "Capabilities should not be nil")
 			assert.Contains(t, mcpContainer.SecurityContext.Capabilities.Drop, corev1.Capability("ALL"), "Should drop ALL capabilities")
 			assert.Equal(t, int64(1000), *mcpContainer.SecurityContext.RunAsUser, "RunAsUser should be 1000")
-			require.NotNil(t, mcpContainer.SecurityContext.Capabilities, "Capabilities should not be nil")
-			require.Len(t, mcpContainer.SecurityContext.Capabilities.Drop, 1, "Should drop one capability")
-			assert.Equal(t, corev1.Capability("ALL"), mcpContainer.SecurityContext.Capabilities.Drop[0], "Should drop ALL capabilities")
 
 			// Check container resources
 			cpuLimit := mcpContainer.Resources.Limits[corev1.ResourceCPU]

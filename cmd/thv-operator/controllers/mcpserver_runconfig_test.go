@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
@@ -464,7 +465,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 						Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
 						ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
 							Name: "test-authz-config",
-							Key:  defaultAuthzKey,
+							Key:  ctrlutil.DefaultAuthzKey,
 						},
 					},
 				},
@@ -600,7 +601,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 							if k := tt.mcpServer.Spec.AuthzConfig.ConfigMap.Key; k != "" {
 								return k
 							}
-							return defaultAuthzKey
+							return ctrlutil.DefaultAuthzKey
 						}(): `{
 							"version": "v1",
 							"type": "cedarv1",

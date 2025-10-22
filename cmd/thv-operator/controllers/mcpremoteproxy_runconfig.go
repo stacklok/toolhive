@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	configMapChecksum "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -129,7 +130,7 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	var toolsOverride map[string]runner.ToolOverride
 
 	if proxy.Spec.ToolConfigRef != nil {
-		toolConfig, err := GetToolConfigForMCPRemoteProxy(context.Background(), r.Client, proxy)
+		toolConfig, err := ctrlutil.GetToolConfigForMCPRemoteProxy(context.Background(), r.Client, proxy)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)
 		}
@@ -179,17 +180,19 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()
 
-	if err := AddAuthzConfigOptions(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig, &options); err != nil {
+	if err := ctrlutil.AddAuthzConfigOptions(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig, &options); err != nil {
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
 	// Add OIDC configuration (required for proxy mode)
-	if err := AddOIDCConfigOptions(ctx, r.Client, proxy, &options); err != nil {
+	if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, proxy, &options); err != nil {
 		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
 	}
 
 	// Add external auth configuration if specified
-	if err := AddExternalAuthConfigOptions(ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef, &options); err != nil {
+	if err := ctrlutil.AddExternalAuthConfigOptions(
+		ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef, &options,
+	); err != nil {
 		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
 	}
 

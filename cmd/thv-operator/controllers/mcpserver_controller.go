@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -40,7 +41,7 @@ import (
 type MCPServerReconciler struct {
 	client.Client
 	Scheme           *runtime.Scheme
-	PlatformDetector *SharedPlatformDetector
+	PlatformDetector *ctrlutil.SharedPlatformDetector
 	ImageValidation  validation.ImageValidation
 }
 
@@ -333,7 +334,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Check if the Service already exists, if not create a new one
-	serviceName := CreateProxyServiceName(mcpServer.Name)
+	serviceName := ctrlutil.CreateProxyServiceName(mcpServer.Name)
 	service := &corev1.Service{}
 	err = r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: mcpServer.Namespace}, service)
 	if err != nil && errors.IsNotFound(err) {
@@ -358,7 +359,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Update the MCPServer status with the service URL
 	if mcpServer.Status.URL == "" {
-		mcpServer.Status.URL = CreateProxyServiceURL(mcpServer.Name, mcpServer.Namespace, mcpServer.Spec.Port)
+		mcpServer.Status.URL = ctrlutil.CreateProxyServiceURL(mcpServer.Name, mcpServer.Namespace, mcpServer.Spec.Port)
 		err = r.Status().Update(ctx, mcpServer)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update MCPServer status")
@@ -764,7 +765,7 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 }
 
 func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
-	proxyRunnerNameForRBAC := ProxyRunnerServiceAccountName(mcpServer.Name)
+	proxyRunnerNameForRBAC := ctrlutil.ProxyRunnerServiceAccountName(mcpServer.Name)
 
 	// Ensure Role
 	if err := r.ensureRBACResource(ctx, mcpServer, "Role", func() client.Object {
@@ -899,14 +900,14 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 
 	// Add OpenTelemetry environment variables
 	if m.Spec.Telemetry != nil && m.Spec.Telemetry.OpenTelemetry != nil {
-		otelEnvVars := GenerateOpenTelemetryEnvVars(m.Spec.Telemetry, m.Name, m.Namespace)
+		otelEnvVars := ctrlutil.GenerateOpenTelemetryEnvVars(m.Spec.Telemetry, m.Name, m.Namespace)
 		env = append(env, otelEnvVars...)
 	}
 
 	// Add token exchange environment variables
 	if m.Spec.ExternalAuthConfigRef != nil {
-		tokenExchangeEnvVars, err := GenerateTokenExchangeEnvVars(
-			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef, GetExternalAuthConfigByName,
+		tokenExchangeEnvVars, err := ctrlutil.GenerateTokenExchangeEnvVars(
+			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef, ctrlutil.GetExternalAuthConfigByName,
 		)
 		if err != nil {
 			ctxLogger := log.FromContext(ctx)
@@ -965,7 +966,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	}
 
 	// Add volume mounts for authorization configuration
-	authzVolumeMount, authzVolume := GenerateAuthzVolumeConfig(m.Spec.AuthzConfig, m.Name)
+	authzVolumeMount, authzVolume := ctrlutil.GenerateAuthzVolumeConfig(m.Spec.AuthzConfig, m.Name)
 	if authzVolumeMount != nil {
 		volumeMounts = append(volumeMounts, *authzVolumeMount)
 		volumes = append(volumes, *authzVolume)
@@ -1001,18 +1002,21 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 
 	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
 		if m.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
-			deploymentLabels = MergeLabels(ls, m.Spec.ResourceOverrides.ProxyDeployment.Labels)
+			deploymentLabels = ctrlutil.MergeLabels(ls, m.Spec.ResourceOverrides.ProxyDeployment.Labels)
 		}
 		if m.Spec.ResourceOverrides.ProxyDeployment.Annotations != nil {
-			deploymentAnnotations = MergeAnnotations(make(map[string]string), m.Spec.ResourceOverrides.ProxyDeployment.Annotations)
+			deploymentAnnotations = ctrlutil.MergeAnnotations(
+				make(map[string]string),
+				m.Spec.ResourceOverrides.ProxyDeployment.Annotations,
+			)
 		}
 
 		if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides != nil {
 			if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels != nil {
-				deploymentLabels = MergeLabels(ls, m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels)
+				deploymentLabels = ctrlutil.MergeLabels(ls, m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels)
 			}
 			if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Annotations != nil {
-				deploymentTemplateAnnotations = MergeAnnotations(deploymentAnnotations,
+				deploymentTemplateAnnotations = ctrlutil.MergeAnnotations(deploymentAnnotations,
 					m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Annotations)
 			}
 		}
@@ -1037,7 +1041,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	proxyRunnerPodSecurityContext := securityBuilder.BuildPodSecurityContext()
 	proxyRunnerContainerSecurityContext := securityBuilder.BuildContainerSecurityContext()
 
-	env = EnsureRequiredEnvVars(ctx, env)
+	env = ctrlutil.EnsureRequiredEnvVars(ctx, env)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1057,7 +1061,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 					Annotations: deploymentTemplateAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: ProxyRunnerServiceAccountName(m.Name),
+					ServiceAccountName: ctrlutil.ProxyRunnerServiceAccountName(m.Name),
 					Containers: []corev1.Container{{
 						Image:        getToolhiveRunnerImage(),
 						Name:         "toolhive",
@@ -1118,7 +1122,7 @@ func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1a
 
 	// we want to generate a service name that is unique for the proxy service
 	// to avoid conflicts with the headless service
-	svcName := CreateProxyServiceName(m.Name)
+	svcName := ctrlutil.CreateProxyServiceName(m.Name)
 
 	// Prepare service metadata with overrides
 	serviceLabels := ls
@@ -1126,10 +1130,10 @@ func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1a
 
 	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyService != nil {
 		if m.Spec.ResourceOverrides.ProxyService.Labels != nil {
-			serviceLabels = MergeLabels(ls, m.Spec.ResourceOverrides.ProxyService.Labels)
+			serviceLabels = ctrlutil.MergeLabels(ls, m.Spec.ResourceOverrides.ProxyService.Labels)
 		}
 		if m.Spec.ResourceOverrides.ProxyService.Annotations != nil {
-			serviceAnnotations = MergeAnnotations(make(map[string]string), m.Spec.ResourceOverrides.ProxyService.Annotations)
+			serviceAnnotations = ctrlutil.MergeAnnotations(make(map[string]string), m.Spec.ResourceOverrides.ProxyService.Annotations)
 		}
 	}
 
@@ -1371,14 +1375,14 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 		// Add OpenTelemetry environment variables first
 		if mcpServer.Spec.Telemetry != nil && mcpServer.Spec.Telemetry.OpenTelemetry != nil {
-			otelEnvVars := GenerateOpenTelemetryEnvVars(mcpServer.Spec.Telemetry, mcpServer.Name, mcpServer.Namespace)
+			otelEnvVars := ctrlutil.GenerateOpenTelemetryEnvVars(mcpServer.Spec.Telemetry, mcpServer.Name, mcpServer.Namespace)
 			expectedProxyEnv = append(expectedProxyEnv, otelEnvVars...)
 		}
 
 		// Add token exchange environment variables
 		if mcpServer.Spec.ExternalAuthConfigRef != nil {
-			tokenExchangeEnvVars, err := GenerateTokenExchangeEnvVars(
-				ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.ExternalAuthConfigRef, GetExternalAuthConfigByName,
+			tokenExchangeEnvVars, err := ctrlutil.GenerateTokenExchangeEnvVars(
+				ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.ExternalAuthConfigRef, ctrlutil.GetExternalAuthConfigByName,
 			)
 			if err != nil {
 				// If we can't generate env vars, consider the deployment needs update
@@ -1398,7 +1402,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			}
 		}
 		// Add default environment variables that are always injected
-		expectedProxyEnv = EnsureRequiredEnvVars(ctx, expectedProxyEnv)
+		expectedProxyEnv = ctrlutil.EnsureRequiredEnvVars(ctx, expectedProxyEnv)
 		if !reflect.DeepEqual(container.Env, expectedProxyEnv) {
 			return true
 		}
@@ -1481,7 +1485,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 	// Check if the service account name has changed
 	// ServiceAccountName: treat empty (not yet set) as equal to the expected default
-	expectedServiceAccountName := ProxyRunnerServiceAccountName(mcpServer.Name)
+	expectedServiceAccountName := ctrlutil.ProxyRunnerServiceAccountName(mcpServer.Name)
 	currentServiceAccountName := deployment.Spec.Template.Spec.ServiceAccountName
 	if currentServiceAccountName != "" && currentServiceAccountName != expectedServiceAccountName {
 		return true
@@ -1493,10 +1497,16 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 	if mcpServer.Spec.ResourceOverrides != nil && mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
 		if mcpServer.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
-			expectedLabels = MergeLabels(expectedLabels, mcpServer.Spec.ResourceOverrides.ProxyDeployment.Labels)
+			expectedLabels = ctrlutil.MergeLabels(
+				expectedLabels,
+				mcpServer.Spec.ResourceOverrides.ProxyDeployment.Labels,
+			)
 		}
 		if mcpServer.Spec.ResourceOverrides.ProxyDeployment.Annotations != nil {
-			expectedAnnotations = MergeAnnotations(make(map[string]string), mcpServer.Spec.ResourceOverrides.ProxyDeployment.Annotations)
+			expectedAnnotations = ctrlutil.MergeAnnotations(
+				make(map[string]string),
+				mcpServer.Spec.ResourceOverrides.ProxyDeployment.Annotations,
+			)
 		}
 	}
 
@@ -1524,10 +1534,13 @@ func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1alpha1.MCPServe
 
 	if mcpServer.Spec.ResourceOverrides != nil && mcpServer.Spec.ResourceOverrides.ProxyService != nil {
 		if mcpServer.Spec.ResourceOverrides.ProxyService.Labels != nil {
-			expectedLabels = MergeLabels(expectedLabels, mcpServer.Spec.ResourceOverrides.ProxyService.Labels)
+			expectedLabels = ctrlutil.MergeLabels(expectedLabels, mcpServer.Spec.ResourceOverrides.ProxyService.Labels)
 		}
 		if mcpServer.Spec.ResourceOverrides.ProxyService.Annotations != nil {
-			expectedAnnotations = MergeAnnotations(make(map[string]string), mcpServer.Spec.ResourceOverrides.ProxyService.Annotations)
+			expectedAnnotations = ctrlutil.MergeAnnotations(
+				make(map[string]string),
+				mcpServer.Spec.ResourceOverrides.ProxyService.Annotations,
+			)
 		}
 	}
 
@@ -1636,7 +1649,7 @@ func (*MCPServerReconciler) generateAuthzArgs(m *mcpv1alpha1.MCPServer) []string
 	}
 
 	// Both ConfigMap and inline configurations use the same mounted path
-	authzConfigPath := fmt.Sprintf("/etc/toolhive/authz/%s", defaultAuthzKey)
+	authzConfigPath := fmt.Sprintf("/etc/toolhive/authz/%s", ctrlutil.DefaultAuthzKey)
 	args = append(args, fmt.Sprintf("--authz-config=%s", authzConfigPath))
 
 	return args
@@ -1712,7 +1725,7 @@ func (*MCPServerReconciler) generateOpenTelemetryArgs(m *mcpv1alpha1.MCPServer) 
 
 // ensureAuthzConfigMap ensures the authorization ConfigMap exists for inline configuration
 func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
-	return EnsureAuthzConfigMap(
+	return ctrlutil.EnsureAuthzConfigMap(
 		ctx, r.Client, r.Scheme, m, m.Namespace, m.Name, m.Spec.AuthzConfig, labelsForInlineAuthzConfig(m.Name),
 	)
 }

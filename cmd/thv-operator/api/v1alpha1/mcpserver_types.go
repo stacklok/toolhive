@@ -322,6 +322,11 @@ type PermissionProfileSpec struct {
 
 // NetworkPermissions defines the network permissions for an MCP server
 type NetworkPermissions struct {
+	// Mode specifies the network mode for the container (e.g., "host", "bridge", "none")
+	// When empty, the default container runtime network mode is used
+	// +optional
+	Mode string `json:"mode,omitempty"`
+
 	// Outbound defines the outbound network permissions
 	// +optional
 	Outbound *OutboundNetworkPermissions `json:"outbound,omitempty"`

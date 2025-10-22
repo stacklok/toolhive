@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
 // TestMCPRemoteProxyValidateSpec tests the spec validation logic
@@ -180,7 +181,7 @@ func TestMCPRemoteProxyReconcile_CreateResources(t *testing.T) {
 	reconciler := &MCPRemoteProxyReconciler{
 		Client:           fakeClient,
 		Scheme:           scheme,
-		PlatformDetector: NewSharedPlatformDetector(),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
 	ctx := context.TODO()
@@ -911,7 +912,7 @@ func TestGetToolConfigForMCPRemoteProxy(t *testing.T) {
 		WithRuntimeObjects(toolConfig, proxy).
 		Build()
 
-	result, err := GetToolConfigForMCPRemoteProxy(context.TODO(), fakeClient, proxy)
+	result, err := ctrlutil.GetToolConfigForMCPRemoteProxy(context.TODO(), fakeClient, proxy)
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.Equal(t, "test-tools", result.Name)
@@ -949,7 +950,7 @@ func TestGetExternalAuthConfigForMCPRemoteProxy(t *testing.T) {
 		WithRuntimeObjects(externalAuth, proxy).
 		Build()
 
-	result, err := GetExternalAuthConfigForMCPRemoteProxy(context.TODO(), fakeClient, proxy)
+	result, err := ctrlutil.GetExternalAuthConfigForMCPRemoteProxy(context.TODO(), fakeClient, proxy)
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.Equal(t, "test-auth", result.Name)

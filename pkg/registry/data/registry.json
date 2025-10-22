@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-21T00:18:21Z",
+  "last_updated": "2025-10-22T00:18:33Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -711,7 +711,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.9.4",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.9.5",
       "permissions": {
         "network": {
           "outbound": {
@@ -1860,15 +1860,12 @@
         "add_issue_comment",
         "add_sub_issue",
         "assign_copilot_to_issue",
-        "create_and_submit_pull_request_review",
         "create_branch",
         "create_issue",
         "create_or_update_file",
-        "create_pending_pull_request_review",
         "create_pull_request",
         "create_repository",
         "delete_file",
-        "delete_pending_pull_request_review",
         "fork_repository",
         "get_commit",
         "get_file_contents",
@@ -1892,6 +1889,7 @@
         "list_tags",
         "merge_pull_request",
         "pull_request_read",
+        "pull_request_review_write",
         "push_files",
         "remove_sub_issue",
         "reprioritize_sub_issue",
@@ -1901,7 +1899,6 @@
         "search_pull_requests",
         "search_repositories",
         "search_users",
-        "submit_pending_pull_request_review",
         "update_issue",
         "update_pull_request",
         "update_pull_request_branch"
@@ -1925,7 +1922,7 @@
         "update",
         "issues"
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.18.0",
+      "image": "ghcr.io/github/github-mcp-server:v0.19.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -2204,9 +2201,9 @@
         "fetch_pyroscope_profile"
       ],
       "metadata": {
-        "stars": 1610,
+        "stars": 1728,
         "pulls": 8120,
-        "last_updated": "2025-09-24T02:28:46Z"
+        "last_updated": "2025-10-21T02:31:32Z"
       },
       "repository_url": "https://github.com/grafana/mcp-grafana",
       "tags": [
@@ -3859,9 +3856,9 @@
         "list_netbird_nameservers"
       ],
       "metadata": {
-        "stars": 39,
+        "stars": 41,
         "pulls": 10904,
-        "last_updated": "2025-09-24T02:28:46Z"
+        "last_updated": "2025-10-21T02:31:32Z"
       },
       "repository_url": "https://github.com/aantti/mcp-netbird",
       "tags": [
@@ -3985,9 +3982,9 @@
         "get_image_config"
       ],
       "metadata": {
-        "stars": 10,
+        "stars": 11,
         "pulls": 8029,
-        "last_updated": "2025-09-24T02:28:46Z"
+        "last_updated": "2025-10-21T02:31:33Z"
       },
       "repository_url": "https://github.com/StacklokLabs/ocireg-mcp",
       "tags": [
@@ -4987,9 +4984,9 @@
         "search_providers"
       ],
       "metadata": {
-        "stars": 953,
+        "stars": 1008,
         "pulls": 9600,
-        "last_updated": "2025-09-24T02:28:46Z"
+        "last_updated": "2025-10-21T02:31:33Z"
       },
       "repository_url": "https://github.com/hashicorp/terraform-mcp-server",
       "tags": [
@@ -5169,9 +5166,9 @@
         "get-library-docs"
       ],
       "metadata": {
-        "stars": 31260,
+        "stars": 34456,
         "pulls": 313,
-        "last_updated": "2025-09-24T02:28:46Z"
+        "last_updated": "2025-10-21T02:31:32Z"
       },
       "repository_url": "https://github.com/upstash/context7",
       "tags": [

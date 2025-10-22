@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap"
 	configMapChecksum "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/operator/accessors"
@@ -176,16 +177,16 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()
 
-	if err := AddAuthzConfigOptions(ctx, r.Client, m.Namespace, m.Spec.AuthzConfig, &options); err != nil {
+	if err := ctrlutil.AddAuthzConfigOptions(ctx, r.Client, m.Namespace, m.Spec.AuthzConfig, &options); err != nil {
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
-	if err := AddOIDCConfigOptions(ctx, r.Client, m, &options); err != nil {
+	if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, m, &options); err != nil {
 		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
 	}
 
 	// Add external auth configuration if specified
-	if err := AddExternalAuthConfigOptions(ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef, &options); err != nil {
+	if err := ctrlutil.AddExternalAuthConfigOptions(ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef, &options); err != nil {
 		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
 	}
 

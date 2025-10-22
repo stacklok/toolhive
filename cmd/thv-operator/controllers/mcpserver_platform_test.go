@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -45,7 +46,7 @@ func TestMCPServerReconciler_DetectPlatform_Success(t *testing.T) {
 				err:      nil,
 			}
 			reconciler := &MCPServerReconciler{
-				PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
+				PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
 			}
 
 			ctx := context.Background()
@@ -72,7 +73,7 @@ func TestMCPServerReconciler_DetectPlatform_Error(t *testing.T) {
 		err:      assert.AnError,
 	}
 	reconciler := &MCPServerReconciler{
-		PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
 	}
 
 	ctx := context.Background()
@@ -109,7 +110,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 	}
 	reconciler := &MCPServerReconciler{
 		Scheme:           scheme,
-		PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
 	}
 
 	ctx := context.Background()
@@ -181,7 +182,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_OpenShift(t *testing.T) {
 	}
 	reconciler := &MCPServerReconciler{
 		Scheme:           scheme,
-		PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
 	}
 
 	ctx := context.Background()
@@ -259,7 +260,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_PlatformDetectionError(t *te
 	}
 	reconciler := &MCPServerReconciler{
 		Scheme:           scheme,
-		PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
 	}
 
 	ctx := context.Background()

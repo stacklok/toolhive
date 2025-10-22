@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -26,7 +27,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	args := r.buildContainerArgs()
 	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
 	env := r.buildEnvVarsForProxy(ctx, proxy)
-	resources := BuildResourceRequirements(proxy.Spec.Resources)
+	resources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadata(ls, proxy)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, proxy)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContexts(ctx, proxy)
@@ -58,8 +59,8 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 						VolumeMounts:    volumeMounts,
 						Resources:       resources,
 						Ports:           r.buildContainerPorts(proxy),
-						LivenessProbe:   BuildHealthProbe("/health", "http", 30, 10, 5, 3),
-						ReadinessProbe:  BuildHealthProbe("/health", "http", 5, 5, 3, 3),
+						LivenessProbe:   ctrlutil.BuildHealthProbe("/health", "http", 30, 10, 5, 3),
+						ReadinessProbe:  ctrlutil.BuildHealthProbe("/health", "http", 5, 5, 3, 3),
 						SecurityContext: containerSecurityContext,
 					}},
 					Volumes:         volumes,
@@ -111,7 +112,7 @@ func (*MCPRemoteProxyReconciler) buildVolumesForProxy(
 	})
 
 	// Add authz config volume if needed
-	authzVolumeMount, authzVolume := GenerateAuthzVolumeConfig(proxy.Spec.AuthzConfig, proxy.Name)
+	authzVolumeMount, authzVolume := ctrlutil.GenerateAuthzVolumeConfig(proxy.Spec.AuthzConfig, proxy.Name)
 	if authzVolumeMount != nil {
 		volumeMounts = append(volumeMounts, *authzVolumeMount)
 		volumes = append(volumes, *authzVolume)
@@ -128,18 +129,18 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 
 	// Add OpenTelemetry environment variables
 	if proxy.Spec.Telemetry != nil && proxy.Spec.Telemetry.OpenTelemetry != nil {
-		otelEnvVars := GenerateOpenTelemetryEnvVars(proxy.Spec.Telemetry, proxy.Name, proxy.Namespace)
+		otelEnvVars := ctrlutil.GenerateOpenTelemetryEnvVars(proxy.Spec.Telemetry, proxy.Name, proxy.Namespace)
 		env = append(env, otelEnvVars...)
 	}
 
 	// Add token exchange environment variables
 	if proxy.Spec.ExternalAuthConfigRef != nil {
-		tokenExchangeEnvVars, err := GenerateTokenExchangeEnvVars(
+		tokenExchangeEnvVars, err := ctrlutil.GenerateTokenExchangeEnvVars(
 			ctx,
 			r.Client,
 			proxy.Namespace,
 			proxy.Spec.ExternalAuthConfigRef,
-			GetExternalAuthConfigByName,
+			ctrlutil.GetExternalAuthConfigByName,
 		)
 		if err != nil {
 			ctxLogger := log.FromContext(ctx)
@@ -159,7 +160,7 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		}
 	}
 
-	return EnsureRequiredEnvVars(ctx, env)
+	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
 }
 
 // buildDeploymentMetadata builds deployment-level labels and annotations
@@ -171,10 +172,10 @@ func (*MCPRemoteProxyReconciler) buildDeploymentMetadata(
 
 	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
 		if proxy.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
-			deploymentLabels = MergeLabels(baseLabels, proxy.Spec.ResourceOverrides.ProxyDeployment.Labels)
+			deploymentLabels = ctrlutil.MergeLabels(baseLabels, proxy.Spec.ResourceOverrides.ProxyDeployment.Labels)
 		}
 		if proxy.Spec.ResourceOverrides.ProxyDeployment.Annotations != nil {
-			deploymentAnnotations = MergeAnnotations(
+			deploymentAnnotations = ctrlutil.MergeAnnotations(
 				make(map[string]string), proxy.Spec.ResourceOverrides.ProxyDeployment.Annotations,
 			)
 		}
@@ -196,10 +197,10 @@ func (*MCPRemoteProxyReconciler) buildPodTemplateMetadata(
 
 		overrides := proxy.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides
 		if overrides.Labels != nil {
-			templateLabels = MergeLabels(baseLabels, overrides.Labels)
+			templateLabels = ctrlutil.MergeLabels(baseLabels, overrides.Labels)
 		}
 		if overrides.Annotations != nil {
-			templateAnnotations = MergeAnnotations(templateAnnotations, overrides.Annotations)
+			templateAnnotations = ctrlutil.MergeAnnotations(templateAnnotations, overrides.Annotations)
 		}
 	}
 
@@ -211,7 +212,7 @@ func (r *MCPRemoteProxyReconciler) buildSecurityContexts(
 	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
 ) (*corev1.PodSecurityContext, *corev1.SecurityContext) {
 	if r.PlatformDetector == nil {
-		r.PlatformDetector = NewSharedPlatformDetector()
+		r.PlatformDetector = ctrlutil.NewSharedPlatformDetector()
 	}
 
 	detectedPlatform, err := r.PlatformDetector.DetectPlatform(ctx)
@@ -278,10 +279,10 @@ func (*MCPRemoteProxyReconciler) buildServiceMetadata(
 
 	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyService != nil {
 		if proxy.Spec.ResourceOverrides.ProxyService.Labels != nil {
-			serviceLabels = MergeLabels(baseLabels, proxy.Spec.ResourceOverrides.ProxyService.Labels)
+			serviceLabels = ctrlutil.MergeLabels(baseLabels, proxy.Spec.ResourceOverrides.ProxyService.Labels)
 		}
 		if proxy.Spec.ResourceOverrides.ProxyService.Annotations != nil {
-			serviceAnnotations = MergeAnnotations(
+			serviceAnnotations = ctrlutil.MergeAnnotations(
 				make(map[string]string), proxy.Spec.ResourceOverrides.ProxyService.Annotations,
 			)
 		}

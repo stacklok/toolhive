@@ -23,7 +23,12 @@
       "Bash(task operator-test)",
       "Bash(task operator-e2e-test)",
       "Bash(task crdref-install)",
-      "Bash(task crdref-gen)"
+      "Bash(task crdref-gen)",
+      "Bash(helm template:*)",
+      "Bash(git log:*)",
+      "Bash(ct lint:*)",
+      "Bash(helm-docs --dry-run)",
+      "Bash(pre-commit run:*)"
     ],
     "deny": []
   }

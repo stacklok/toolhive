@@ -199,13 +199,20 @@ func (c *Client) DeployWorkload(
 	var additionalDNS string
 	networkName := fmt.Sprintf("toolhive-%s-internal", name)
 	externalEndpointsConfig := map[string]*network.EndpointSettings{
-		networkName:         {},
-		"toolhive-external": {},
+		networkName: {},
 	}
 
-	err = c.ops.createExternalNetworks(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create external networks: %v", err)
+	// Only create external networks and add endpoints if we're not using a custom network mode like "host" or "none"
+	if permissionConfig.NetworkMode == "" || permissionConfig.NetworkMode == "bridge" || permissionConfig.NetworkMode == "default" {
+		// Add toolhive-external to endpoints config for default networking modes
+		externalEndpointsConfig["toolhive-external"] = &network.EndpointSettings{}
+
+		err = c.ops.createExternalNetworks(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("failed to create external networks: %v", err)
+		}
+	} else {
+		logger.Infof("Skipping external network creation for custom network mode: %s", permissionConfig.NetworkMode)
 	}
 
 	networkIsolation := false
@@ -755,10 +762,16 @@ func (c *Client) getPermissionConfigFromProfile(
 	transportType string,
 	ignoreConfig *ignore.Config,
 ) (*runtime.PermissionConfig, error) {
+	// Get network mode from permission profile
+	networkMode := ""
+	if profile.Network != nil && profile.Network.Mode != "" {
+		networkMode = profile.Network.Mode
+	}
+
 	// Start with a default permission config
 	config := &runtime.PermissionConfig{
 		Mounts:      []runtime.Mount{},
-		NetworkMode: "", // set to blank as podman is not recognizing the "none" value when we attach to other networks
+		NetworkMode: networkMode,
 		CapDrop:     []string{"ALL"},
 		CapAdd:      []string{},
 		SecurityOpt: []string{"label:disable"},
@@ -1419,7 +1432,14 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 
 	// create mcp container
 	internalEndpointsConfig := map[string]*network.EndpointSettings{}
-	if isolateNetwork {
+
+	// Check if we have a custom network mode (e.g., "host", "none", etc.)
+	if permissionConfig.NetworkMode != "" && permissionConfig.NetworkMode != "bridge" && permissionConfig.NetworkMode != "default" {
+		// For custom network modes like "host", "none", etc., don't add any endpoint configurations
+		// The NetworkMode in hostConfig will handle the networking
+		logger.Infof("Using custom network mode: %s", permissionConfig.NetworkMode)
+		// Leave internalEndpointsConfig as empty map
+	} else if isolateNetwork {
 		internalEndpointsConfig[networkName] = &network.EndpointSettings{
 			NetworkID: networkName,
 		}

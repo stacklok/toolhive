@@ -24,6 +24,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
@@ -95,7 +96,7 @@ func main() {
 	}
 
 	// Create a shared platform detector for all controllers
-	sharedPlatformDetector := controllers.NewSharedPlatformDetector()
+	sharedPlatformDetector := ctrlutil.NewSharedPlatformDetector()
 	rec := &controllers.MCPServerReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
@@ -130,7 +131,7 @@ func main() {
 	if err = (&controllers.MCPRemoteProxyReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
-		PlatformDetector: controllers.NewSharedPlatformDetector(),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "MCPRemoteProxy")
 		os.Exit(1)

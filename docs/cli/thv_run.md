@@ -70,6 +70,16 @@ with the authorization server using RFC 7591 dynamic client registration:
 The container will be started with the specified transport mode and
 permission profile. Additional configuration can be provided via flags.
 
+#### Network Configuration
+
+You can specify the network mode for the container using the --network flag:
+
+- Host networking: $ thv run --network host <image>
+- Custom network: $ thv run --network my-network <image>
+- Default (bridge): $ thv run <image>
+
+The --network flag accepts any Docker-compatible network mode.
+
 ```
 thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
 ```
@@ -96,6 +106,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --jwks-auth-token-file string                Path to file containing bearer token for authenticating JWKS/OIDC requests
   -l, --label stringArray                          Set labels on the container (format: key=value)
       --name string                                Name of the MCP server (auto-generated from image if not provided)
+      --network string                             Connect the container to a network (e.g., 'host' for host networking)
       --oidc-audience string                       Expected audience for the token
       --oidc-client-id string                      OIDC client ID
       --oidc-client-secret string                  OIDC client secret (optional, for introspection)

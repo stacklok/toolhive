@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
 // TestDeploymentForMCPRemoteProxy tests deployment generation
@@ -171,7 +172,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 			scheme := createRunConfigTestScheme()
 			reconciler := &MCPRemoteProxyReconciler{
 				Scheme:           scheme,
-				PlatformDetector: NewSharedPlatformDetector(),
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 			}
 
 			dep := reconciler.deploymentForMCPRemoteProxy(context.TODO(), tt.proxy)
@@ -313,7 +314,7 @@ func TestBuildResourceRequirements(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := BuildResourceRequirements(tt.resourceSpec)
+			result := ctrlutil.BuildResourceRequirements(tt.resourceSpec)
 
 			if tt.validate != nil {
 				tt.validate(t, result)
@@ -326,7 +327,7 @@ func TestBuildResourceRequirements(t *testing.T) {
 func TestBuildHealthProbe(t *testing.T) {
 	t.Parallel()
 
-	probe := BuildHealthProbe("/health", "http", 10, 5, 3, 2)
+	probe := ctrlutil.BuildHealthProbe("/health", "http", 10, 5, 3, 2)
 
 	assert.NotNil(t, probe)
 	assert.NotNil(t, probe.HTTPGet)
@@ -413,7 +414,7 @@ func TestEnsureDeployment(t *testing.T) {
 			reconciler := &MCPRemoteProxyReconciler{
 				Client:           fakeClient,
 				Scheme:           scheme,
-				PlatformDetector: NewSharedPlatformDetector(),
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 			}
 
 			result, err := reconciler.ensureDeployment(context.TODO(), tt.proxy)

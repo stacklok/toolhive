@@ -5,6 +5,7 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -35,7 +36,7 @@ func newTestMCPServerReconciler(
 	return &MCPServerReconciler{
 		Client:           k8sClient,
 		Scheme:           scheme,
-		PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
 		ImageValidation:  validation.ImageValidationAlwaysAllow,
 	}
 }

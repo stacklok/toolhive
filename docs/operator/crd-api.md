@@ -45,6 +45,24 @@ _Appears in:_
 | `Error` | APIPhaseError means API deployment failed<br /> |
 
 
+#### APISource
+
+
+
+APISource defines API source configuration for ToolHive Registry APIs
+Phase 1: Supports ToolHive API endpoints (no pagination)
+Phase 2: Will add support for upstream MCP Registry API with pagination
+
+
+
+_Appears in:_
+- [MCPRegistrySource](#mcpregistrysource)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `endpoint` _string_ | Endpoint is the base API URL (without path)<br />The controller will append the appropriate paths:<br />Phase 1 (ToolHive API):<br />  - /v0/servers - List all servers (single response, no pagination)<br />  - /v0/servers/\{name\} - Get specific server (future)<br />  - /v0/info - Get registry metadata (future)<br />Example: "http://my-registry-api.default.svc.cluster.local/api" |  | MinLength: 1 <br />Pattern: `^https?://.*` <br />Required: \{\} <br /> |
+
+
 #### APIStatus
 
 
@@ -524,10 +542,11 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type is the type of source (configmap, git) | configmap | Enum: [configmap git] <br /> |
+| `type` _string_ | Type is the type of source (configmap, git, api) | configmap | Enum: [configmap git api] <br /> |
 | `format` _string_ | Format is the data format (toolhive, upstream) | toolhive | Enum: [toolhive upstream] <br /> |
 | `configmap` _[ConfigMapSource](#configmapsource)_ | ConfigMap defines the ConfigMap source configuration<br />Only used when Type is "configmap" |  |  |
 | `git` _[GitSource](#gitsource)_ | Git defines the Git repository source configuration<br />Only used when Type is "git" |  |  |
+| `api` _[APISource](#apisource)_ | API defines the API source configuration<br />Only used when Type is "api" |  |  |
 
 
 #### MCPRegistrySpec
@@ -919,6 +938,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `mode` _string_ | Mode specifies the network mode for the container (e.g., "host", "bridge", "none")<br />When empty, the default container runtime network mode is used |  |  |
 | `outbound` _[OutboundNetworkPermissions](#outboundnetworkpermissions)_ | Outbound defines the outbound network permissions |  |  |
 
 

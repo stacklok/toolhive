@@ -6,6 +6,7 @@ package keyring
 import (
 	"fmt"
 	"runtime"
+	"sync"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 )
@@ -15,6 +16,7 @@ const linuxOS = "linux"
 type compositeProvider struct {
 	providers []Provider
 	active    Provider
+	mu        sync.RWMutex
 }
 
 // NewCompositeProvider creates a new composite keyring provider that combines multiple backends.
@@ -42,10 +44,25 @@ func NewCompositeProvider() Provider {
 }
 
 func (c *compositeProvider) getActiveProvider() Provider {
+	// First, try to read the active provider with a read lock
+	c.mu.RLock()
+	if c.active != nil && c.active.IsAvailable() {
+		active := c.active
+		c.mu.RUnlock()
+		return active
+	}
+	c.mu.RUnlock()
+
+	// If no active provider or it's not available, find a new one with write lock
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Double-check pattern: another goroutine might have set c.active while we were waiting
 	if c.active != nil && c.active.IsAvailable() {
 		return c.active
 	}
 
+	// Find the first available provider
 	for _, provider := range c.providers {
 		if provider.IsAvailable() {
 			if c.active == nil || c.active.Name() != provider.Name() {

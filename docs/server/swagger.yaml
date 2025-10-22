@@ -267,6 +267,11 @@ components:
       properties:
         inbound:
           $ref: '#/components/schemas/permissions.InboundNetworkPermissions'
+        mode:
+          description: |-
+            Mode specifies the network mode for the container (e.g., "host", "bridge", "none")
+            When empty, the default container runtime network mode is used
+          type: string
         outbound:
           $ref: '#/components/schemas/permissions.OutboundNetworkPermissions'
       type: object

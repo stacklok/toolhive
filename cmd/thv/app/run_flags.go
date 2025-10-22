@@ -88,6 +88,9 @@ type RunFlags struct {
 	// Proxy headers
 	TrustProxyHeaders bool
 
+	// Network mode
+	Network string
+
 	// Labels
 	Labels []string
 
@@ -205,6 +208,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Isolate the container network from the host (default: false)")
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
 		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix)")
+	cmd.Flags().StringVar(&config.Network, "network", "",
+		"Connect the container to a network (e.g., 'host' for host networking)")
 	cmd.Flags().StringArrayVarP(&config.Labels, "label", "l", []string{}, "Set labels on the container (format: key=value)")
 	cmd.Flags().BoolVarP(&config.Foreground, "foreground", "f", false, "Run in foreground mode (block until container exits)")
 	cmd.Flags().StringArrayVar(
@@ -439,6 +444,7 @@ func buildRunnerConfig(
 		runner.WithPermissionProfileNameOrPath(runFlags.PermissionProfile),
 		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
 		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
+		runner.WithNetworkMode(runFlags.Network),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
 		runner.WithProxyMode(types.ProxyMode(runFlags.ProxyMode)),
 		runner.WithTransportAndPorts(transportType, runFlags.ProxyPort, runFlags.TargetPort),

@@ -46,6 +46,10 @@ type Profile struct {
 
 // NetworkPermissions defines network permissions for a container
 type NetworkPermissions struct {
+	// Mode specifies the network mode for the container (e.g., "host", "bridge", "none")
+	// When empty, the default container runtime network mode is used
+	Mode string `json:"mode,omitempty" yaml:"mode,omitempty"`
+
 	// Outbound defines outbound network permissions
 	Outbound *OutboundNetworkPermissions `json:"outbound,omitempty" yaml:"outbound,omitempty"`
 

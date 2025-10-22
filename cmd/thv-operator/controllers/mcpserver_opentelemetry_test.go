@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -233,7 +234,7 @@ func TestOpenTelemetryEnvVars(t *testing.T) {
 				},
 			}
 
-			envVars := GenerateOpenTelemetryEnvVars(mcpServer.Spec.Telemetry, mcpServer.Name, mcpServer.Namespace)
+			envVars := ctrlutil.GenerateOpenTelemetryEnvVars(mcpServer.Spec.Telemetry, mcpServer.Name, mcpServer.Namespace)
 			assert.Equal(t, tt.expectedEnv, envVars)
 		})
 	}
@@ -396,7 +397,7 @@ func TestServiceNameDefaulting(t *testing.T) {
 				},
 			}
 
-			envVars := GenerateOpenTelemetryEnvVars(mcpServer.Spec.Telemetry, mcpServer.Name, mcpServer.Namespace)
+			envVars := ctrlutil.GenerateOpenTelemetryEnvVars(mcpServer.Spec.Telemetry, mcpServer.Name, mcpServer.Namespace)
 
 			// Check OTEL_RESOURCE_ATTRIBUTES contains correct service name and namespace
 			var resourceAttrs string

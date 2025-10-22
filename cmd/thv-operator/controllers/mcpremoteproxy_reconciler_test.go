@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
 // TestMCPRemoteProxyFullReconciliation tests the complete reconciliation flow
@@ -300,7 +301,7 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 			reconciler := &MCPRemoteProxyReconciler{
 				Client:           fakeClient,
 				Scheme:           scheme,
-				PlatformDetector: NewSharedPlatformDetector(),
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 			}
 
 			ctx := context.TODO()
@@ -384,7 +385,7 @@ func TestMCPRemoteProxyConfigChangePropagation(t *testing.T) {
 	reconciler := &MCPRemoteProxyReconciler{
 		Client:           fakeClient,
 		Scheme:           scheme,
-		PlatformDetector: NewSharedPlatformDetector(),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
 	ctx := context.TODO()
@@ -461,7 +462,7 @@ func TestMCPRemoteProxyStatusProgression(t *testing.T) {
 	reconciler := &MCPRemoteProxyReconciler{
 		Client:           fakeClient,
 		Scheme:           scheme,
-		PlatformDetector: NewSharedPlatformDetector(),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
 	ctx := context.TODO()
@@ -540,7 +541,7 @@ func TestCommonHelpers(t *testing.T) {
 			WithRuntimeObjects(externalAuth).
 			Build()
 
-		result, err := GetExternalAuthConfigByName(context.TODO(), fakeClient, "default", "test-auth")
+		result, err := ctrlutil.GetExternalAuthConfigByName(context.TODO(), fakeClient, "default", "test-auth")
 		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.Equal(t, "test-auth", result.Name)
@@ -556,7 +557,7 @@ func TestCommonHelpers(t *testing.T) {
 			},
 		}
 
-		envVars := GenerateOpenTelemetryEnvVars(telemetryConfig, "test-resource", "test-ns")
+		envVars := ctrlutil.GenerateOpenTelemetryEnvVars(telemetryConfig, "test-resource", "test-ns")
 		require.Len(t, envVars, 1)
 		assert.Equal(t, "OTEL_RESOURCE_ATTRIBUTES", envVars[0].Name)
 		assert.Contains(t, envVars[0].Value, "service.name=test-service")
@@ -574,7 +575,7 @@ func TestCommonHelpers(t *testing.T) {
 			},
 		}
 
-		volumeMount, volume := GenerateAuthzVolumeConfig(authzConfig, "test-resource")
+		volumeMount, volume := ctrlutil.GenerateAuthzVolumeConfig(authzConfig, "test-resource")
 		require.NotNil(t, volumeMount)
 		require.NotNil(t, volume)
 		assert.Equal(t, "authz-config", volumeMount.Name)
@@ -592,7 +593,7 @@ func TestCommonHelpers(t *testing.T) {
 			},
 		}
 
-		volumeMount, volume := GenerateAuthzVolumeConfig(authzConfig, "test-resource")
+		volumeMount, volume := ctrlutil.GenerateAuthzVolumeConfig(authzConfig, "test-resource")
 		require.NotNil(t, volumeMount)
 		require.NotNil(t, volume)
 		assert.Equal(t, "test-resource-authz-inline", volume.ConfigMap.Name)
@@ -639,7 +640,7 @@ func TestEnsureAuthzConfigMapShared(t *testing.T) {
 	labels := labelsForMCPRemoteProxy(proxy.Name)
 	labels[authzLabelKey] = authzLabelValueInline
 
-	err := EnsureAuthzConfigMap(
+	err := ctrlutil.EnsureAuthzConfigMap(
 		context.TODO(),
 		fakeClient,
 		scheme,
@@ -658,8 +659,8 @@ func TestEnsureAuthzConfigMapShared(t *testing.T) {
 		Namespace: proxy.Namespace,
 	}, cm)
 	assert.NoError(t, err)
-	assert.Contains(t, cm.Data, defaultAuthzKey)
-	assert.Contains(t, cm.Data[defaultAuthzKey], "tools/list")
+	assert.Contains(t, cm.Data, ctrlutil.DefaultAuthzKey)
+	assert.Contains(t, cm.Data[ctrlutil.DefaultAuthzKey], "tools/list")
 }
 
 // TestEnsureRBACResourceShared tests the shared RBAC resource helper
@@ -692,7 +693,7 @@ func TestEnsureRBACResourceShared(t *testing.T) {
 		Build()
 
 	// Test ServiceAccount creation
-	err := EnsureRBACResource(context.TODO(), fakeClient, scheme, proxy, "ServiceAccount", func() client.Object {
+	err := ctrlutil.EnsureRBACResource(context.TODO(), fakeClient, scheme, proxy, "ServiceAccount", func() client.Object {
 		return &corev1.ServiceAccount{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-sa",
@@ -711,7 +712,7 @@ func TestEnsureRBACResourceShared(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Test Role creation
-	err = EnsureRBACResource(context.TODO(), fakeClient, scheme, proxy, "Role", func() client.Object {
+	err = ctrlutil.EnsureRBACResource(context.TODO(), fakeClient, scheme, proxy, "Role", func() client.Object {
 		return &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-role",
@@ -770,12 +771,12 @@ func TestGenerateTokenExchangeEnvVarsShared(t *testing.T) {
 		Name: "test-exchange",
 	}
 
-	envVars, err := GenerateTokenExchangeEnvVars(
+	envVars, err := ctrlutil.GenerateTokenExchangeEnvVars(
 		context.TODO(),
 		fakeClient,
 		"default",
 		ref,
-		GetExternalAuthConfigByName,
+		ctrlutil.GetExternalAuthConfigByName,
 	)
 	assert.NoError(t, err)
 	require.Len(t, envVars, 1)

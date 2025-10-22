@@ -806,9 +806,15 @@ func (d *defaultManager) restartRemoteWorkload(
 	runConfig *runner.RunConfig,
 	foreground bool,
 ) error {
-	workloadState := d.getRemoteWorkloadState(ctx, name, runConfig.BaseName)
+	// Get workload status using the status manager
+	workload, err := d.statuses.GetWorkload(ctx, name)
+	if err != nil && !errors.Is(err, rt.ErrWorkloadNotFound) {
+		return err
+	}
 
-	if d.isWorkloadAlreadyRunning(name, workloadState) {
+	// Check if already running - compare status to WorkloadStatusRunning
+	if err == nil && workload.Status == rt.WorkloadStatusRunning {
+		logger.Infof("Remote workload %s is already running", name)
 		return nil
 	}
 
@@ -893,41 +899,6 @@ func (d *defaultManager) restartContainerWorkload(ctx context.Context, name stri
 	// but the actual workload should run indefinitely with its own lifecycle management
 	// Use workload name for user-facing operations
 	return d.startWorkload(context.Background(), workloadName, mcpRunner, foreground)
-}
-
-// workloadState holds the current state of a workload for restart operations
-type workloadState struct {
-	BaseName     string
-	Running      bool
-	ProxyRunning bool
-}
-
-// getRemoteWorkloadState retrieves the current state of a remote workload
-func (d *defaultManager) getRemoteWorkloadState(ctx context.Context, name, baseName string) *workloadState {
-	workloadSt := &workloadState{
-		BaseName: baseName,
-	}
-
-	// Check the workload status
-	workload, err := d.statuses.GetWorkload(ctx, name)
-	if err != nil {
-		// If we can't get the status, assume it's not running
-		logger.Debugf("Failed to get status for remote workload %s: %v", name, err)
-		workloadSt.Running = false
-	} else {
-		workloadSt.Running = workload.Status == rt.WorkloadStatusRunning
-	}
-
-	return workloadSt
-}
-
-// isWorkloadAlreadyRunning checks if the workload is already fully running
-func (*defaultManager) isWorkloadAlreadyRunning(name string, workloadSt *workloadState) bool {
-	if workloadSt.Running && workloadSt.ProxyRunning {
-		logger.Infof("Container %s and proxy are already running", name)
-		return true
-	}
-	return false
 }
 
 // startWorkload starts the workload in either foreground or background mode

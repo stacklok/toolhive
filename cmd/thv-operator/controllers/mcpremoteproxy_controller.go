@@ -23,13 +23,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
 // MCPRemoteProxyReconciler reconciles a MCPRemoteProxy object
 type MCPRemoteProxyReconciler struct {
 	client.Client
 	Scheme           *runtime.Scheme
-	PlatformDetector *SharedPlatformDetector
+	PlatformDetector *ctrlutil.SharedPlatformDetector
 }
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch;create;update;patch;delete
@@ -169,7 +170,7 @@ func (r *MCPRemoteProxyReconciler) ensureAllResources(ctx context.Context, proxy
 func (r *MCPRemoteProxyReconciler) ensureAuthzConfigMapForProxy(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
 	authzLabels := labelsForMCPRemoteProxy(proxy.Name)
 	authzLabels[authzLabelKey] = authzLabelValueInline
-	return EnsureAuthzConfigMap(
+	return ctrlutil.EnsureAuthzConfigMap(
 		ctx, r.Client, r.Scheme, proxy, proxy.Namespace, proxy.Name, proxy.Spec.AuthzConfig, authzLabels,
 	)
 }
@@ -286,7 +287,7 @@ func (r *MCPRemoteProxyReconciler) validateSpec(ctx context.Context, proxy *mcpv
 
 	// Validate external auth config if referenced
 	if proxy.Spec.ExternalAuthConfigRef != nil {
-		externalAuthConfig, err := GetExternalAuthConfigForMCPRemoteProxy(ctx, r.Client, proxy)
+		externalAuthConfig, err := ctrlutil.GetExternalAuthConfigForMCPRemoteProxy(ctx, r.Client, proxy)
 		if err != nil {
 			return fmt.Errorf("failed to validate external auth config: %w", err)
 		}
@@ -311,7 +312,7 @@ func (r *MCPRemoteProxyReconciler) handleToolConfig(ctx context.Context, proxy *
 		return nil
 	}
 
-	toolConfig, err := GetToolConfigForMCPRemoteProxy(ctx, r.Client, proxy)
+	toolConfig, err := ctrlutil.GetToolConfigForMCPRemoteProxy(ctx, r.Client, proxy)
 	if err != nil {
 		return err
 	}
@@ -349,7 +350,7 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 		return nil
 	}
 
-	externalAuthConfig, err := GetExternalAuthConfigForMCPRemoteProxy(ctx, r.Client, proxy)
+	externalAuthConfig, err := ctrlutil.GetExternalAuthConfigForMCPRemoteProxy(ctx, r.Client, proxy)
 	if err != nil {
 		return err
 	}
@@ -380,7 +381,7 @@ func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, prox
 
 	// Ensure Role with minimal permissions for remote proxies
 	// Remote proxies only need ConfigMap and Secret read access (no StatefulSet/Pod management)
-	if err := EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "Role", func() client.Object {
+	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "Role", func() client.Object {
 		return &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      proxyRunnerNameForRBAC,
@@ -393,7 +394,7 @@ func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, prox
 	}
 
 	// Ensure ServiceAccount
-	if err := EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "ServiceAccount", func() client.Object {
+	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "ServiceAccount", func() client.Object {
 		return &corev1.ServiceAccount{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      proxyRunnerNameForRBAC,
@@ -405,7 +406,7 @@ func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, prox
 	}
 
 	// Ensure RoleBinding
-	return EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "RoleBinding", func() client.Object {
+	return ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "RoleBinding", func() client.Object {
 		return &rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      proxyRunnerNameForRBAC,
@@ -559,7 +560,7 @@ func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 	}
 
 	// Check if resources have changed
-	expectedResources := BuildResourceRequirements(proxy.Spec.Resources)
+	expectedResources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
 	if !reflect.DeepEqual(container.Resources, expectedResources) {
 		return true
 	}
@@ -577,10 +578,13 @@ func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 
 	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
 		if proxy.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
-			expectedLabels = MergeLabels(expectedLabels, proxy.Spec.ResourceOverrides.ProxyDeployment.Labels)
+			expectedLabels = ctrlutil.MergeLabels(expectedLabels, proxy.Spec.ResourceOverrides.ProxyDeployment.Labels)
 		}
 		if proxy.Spec.ResourceOverrides.ProxyDeployment.Annotations != nil {
-			expectedAnnotations = MergeAnnotations(make(map[string]string), proxy.Spec.ResourceOverrides.ProxyDeployment.Annotations)
+			expectedAnnotations = ctrlutil.MergeAnnotations(
+				make(map[string]string),
+				proxy.Spec.ResourceOverrides.ProxyDeployment.Annotations,
+			)
 		}
 	}
 
@@ -608,10 +612,10 @@ func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(service *corev1.Service, pro
 
 	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyService != nil {
 		if proxy.Spec.ResourceOverrides.ProxyService.Labels != nil {
-			expectedLabels = MergeLabels(expectedLabels, proxy.Spec.ResourceOverrides.ProxyService.Labels)
+			expectedLabels = ctrlutil.MergeLabels(expectedLabels, proxy.Spec.ResourceOverrides.ProxyService.Labels)
 		}
 		if proxy.Spec.ResourceOverrides.ProxyService.Annotations != nil {
-			expectedAnnotations = MergeAnnotations(make(map[string]string), proxy.Spec.ResourceOverrides.ProxyService.Annotations)
+			expectedAnnotations = ctrlutil.MergeAnnotations(make(map[string]string), proxy.Spec.ResourceOverrides.ProxyService.Annotations)
 		}
 	}
 

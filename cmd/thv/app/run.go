@@ -81,7 +81,17 @@ with the authorization server using RFC 7591 dynamic client registration:
 - Supports PKCE flow for enhanced security
 
 The container will be started with the specified transport mode and
-permission profile. Additional configuration can be provided via flags.`,
+permission profile. Additional configuration can be provided via flags.
+
+#### Network Configuration
+
+You can specify the network mode for the container using the --network flag:
+
+- Host networking: $ thv run --network host <image>
+- Custom network: $ thv run --network my-network <image>
+- Default (bridge): $ thv run <image>
+
+The --network flag accepts any Docker-compatible network mode.`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		// If --from-config is provided, no args are required
 		if runFlags.FromConfig != "" {

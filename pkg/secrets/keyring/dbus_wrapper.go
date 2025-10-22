@@ -36,13 +36,15 @@ func (*dbusWrapperProvider) DeleteAll(service string) error {
 }
 
 func (*dbusWrapperProvider) IsAvailable() bool {
-	testKey := "toolhive-keyring-test"
+	// Test keyring availability with a unique test key to avoid conflicts
+	testKey := GenerateUniqueTestKey()
 	testValue := "test"
 
 	if err := keyring.Set("toolhive-test", testKey, testValue); err != nil {
 		return false
 	}
 
+	// Clean up the test key
 	_ = keyring.Delete("toolhive-test", testKey)
 	return true
 }

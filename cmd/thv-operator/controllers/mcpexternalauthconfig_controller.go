@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
 const (
@@ -129,7 +130,7 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 
 // calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities
 func (*MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPExternalAuthConfigSpec) string {
-	return CalculateConfigHash(spec)
+	return ctrlutil.CalculateConfigHash(spec)
 }
 
 // handleDeletion handles the deletion of a MCPExternalAuthConfig
@@ -184,7 +185,7 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 	ctx context.Context,
 	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
 ) ([]mcpv1alpha1.MCPServer, error) {
-	return FindReferencingMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
+	return ctrlutil.FindReferencingMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
 		func(server *mcpv1alpha1.MCPServer) *string {
 			if server.Spec.ExternalAuthConfigRef != nil {
 				return &server.Spec.ExternalAuthConfigRef.Name

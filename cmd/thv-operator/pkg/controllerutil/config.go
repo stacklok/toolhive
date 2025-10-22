@@ -1,10 +1,11 @@
-package controllers
+package controllerutil
 
 import (
 	"context"
 	"fmt"
 	"hash/fnv"
 
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/dump"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -66,4 +67,70 @@ func FindReferencingMCPServers(
 	}
 
 	return referencingServers, nil
+}
+
+// GetToolConfigForMCPRemoteProxy fetches MCPToolConfig referenced by MCPRemoteProxy
+func GetToolConfigForMCPRemoteProxy(
+	ctx context.Context,
+	c client.Client,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) (*mcpv1alpha1.MCPToolConfig, error) {
+	if proxy.Spec.ToolConfigRef == nil {
+		return nil, fmt.Errorf("MCPRemoteProxy %s does not reference a MCPToolConfig", proxy.Name)
+	}
+
+	toolConfig := &mcpv1alpha1.MCPToolConfig{}
+	err := c.Get(ctx, types.NamespacedName{
+		Name:      proxy.Spec.ToolConfigRef.Name,
+		Namespace: proxy.Namespace,
+	}, toolConfig)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MCPToolConfig %s: %w", proxy.Spec.ToolConfigRef.Name, err)
+	}
+
+	return toolConfig, nil
+}
+
+// GetExternalAuthConfigForMCPRemoteProxy fetches MCPExternalAuthConfig referenced by MCPRemoteProxy
+func GetExternalAuthConfigForMCPRemoteProxy(
+	ctx context.Context,
+	c client.Client,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) (*mcpv1alpha1.MCPExternalAuthConfig, error) {
+	if proxy.Spec.ExternalAuthConfigRef == nil {
+		return nil, fmt.Errorf("MCPRemoteProxy %s does not reference a MCPExternalAuthConfig", proxy.Name)
+	}
+
+	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+	err := c.Get(ctx, types.NamespacedName{
+		Name:      proxy.Spec.ExternalAuthConfigRef.Name,
+		Namespace: proxy.Namespace,
+	}, externalAuthConfig)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", proxy.Spec.ExternalAuthConfigRef.Name, err)
+	}
+
+	return externalAuthConfig, nil
+}
+
+// GetExternalAuthConfigByName is a generic helper for fetching MCPExternalAuthConfig by name
+func GetExternalAuthConfigByName(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	name string,
+) (*mcpv1alpha1.MCPExternalAuthConfig, error) {
+	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+	err := c.Get(ctx, types.NamespacedName{
+		Name:      name,
+		Namespace: namespace,
+	}, externalAuthConfig)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", name, err)
+	}
+
+	return externalAuthConfig, nil
 }

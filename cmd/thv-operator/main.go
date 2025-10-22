@@ -100,6 +100,7 @@ func main() {
 	rec := &controllers.MCPServerReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
+		Recorder:         mgr.GetEventRecorderFor("mcpserver-controller"),
 		PlatformDetector: sharedPlatformDetector,
 		ImageValidation:  validation.ImageValidationAlwaysAllow,
 	}

@@ -872,7 +872,7 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 		WithLabels(nil),
 		WithGroup(""),
 		WithOIDCConfig("", "", "", "", "", "", "", "", "", false),
-		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil),
+		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    false,
@@ -924,7 +924,7 @@ func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 		WithLabels(nil),
 		WithGroup(""),
 		WithOIDCConfig("", "", "", "", "", "", "", "", "", false),
-		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil),
+		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    false,
@@ -979,7 +979,7 @@ func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 		WithLabels(nil),
 		WithGroup(""),
 		WithOIDCConfig("", "", "", "", "", "", "", "", "", false),
-		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil),
+		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    false,
@@ -1030,7 +1030,7 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 		WithLabels(nil),
 		WithGroup(""),
 		WithOIDCConfig("", "", "", "", "", "", "", "", "", false),
-		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil),
+		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    false,
@@ -1103,7 +1103,7 @@ func TestRunConfigBuilder_FilesystemMCPScenario(t *testing.T) {
 		WithLabels(nil),
 		WithGroup(""),
 		WithOIDCConfig("", "", "", "", "", "", "", "", "", false),
-		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil),
+		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
 			LoadGlobal:    false,

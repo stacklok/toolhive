@@ -589,6 +589,16 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		return fmt.Errorf("telemetry config is required")
 	}
 
+	// Debug: Log custom attributes being passed to provider
+	if len(params.Config.CustomAttributes) > 0 {
+		logger.Infof("Telemetry middleware received %d custom attributes", len(params.Config.CustomAttributes))
+		for key, value := range params.Config.CustomAttributes {
+			logger.Infof("  Middleware custom attribute: %s=%s", key, value)
+		}
+	} else {
+		logger.Infof("Telemetry middleware received NO custom attributes")
+	}
+
 	provider, err := NewProvider(context.Background(), *params.Config)
 	if err != nil {
 		return fmt.Errorf("failed to create telemetry provider: %w", err)

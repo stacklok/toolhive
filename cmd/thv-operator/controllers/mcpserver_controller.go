@@ -879,9 +879,10 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	// Pod template patch for secrets and service account
 	builder, err := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec)
 	if err != nil {
+		// NOTE: This should be unreachable - early validation in Reconcile() blocks invalid specs
+		// This is defense-in-depth: if somehow reached, log and continue without pod customizations
 		ctxLogger := log.FromContext(ctx)
-		ctxLogger.Error(err, "Invalid PodTemplateSpec in MCPServer spec, continuing without customizations")
-		// Continue without pod template patch - the deployment will still work
+		ctxLogger.Error(err, "UNEXPECTED: Invalid PodTemplateSpec passed early validation")
 	} else {
 		// If service account is not specified, use the default MCP server service account
 		serviceAccount := m.Spec.ServiceAccount

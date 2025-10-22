@@ -3,20 +3,27 @@ package git
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"runtime"
-	"strings"
 
+	"github.com/go-git/go-billy/v5/memfs"
+	"github.com/go-git/go-billy/v5/util"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
+	"github.com/go-git/go-git/v5/storage/filesystem"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // Client defines the interface for Git operations
 type Client interface {
-	// FetchFileSparse fetches a single file using sparse checkout for minimal memory usage
-	FetchFileSparse(ctx context.Context, config *CloneConfig, filePath string) ([]byte, error)
+	// Clone clones a repository with the given configuration
+	Clone(ctx context.Context, config *CloneConfig) (*RepositoryInfo, error)
+
+	// GetFileContent retrieves the content of a file from the repository
+	GetFileContent(repoInfo *RepositoryInfo, path string) ([]byte, error)
+
+	// Cleanup removes local repository directory
+	Cleanup(ctx context.Context, repoInfo *RepositoryInfo) error
 }
 
 // DefaultGitClient implements GitClient using go-git
@@ -27,220 +34,173 @@ func NewDefaultGitClient() *DefaultGitClient {
 	return &DefaultGitClient{}
 }
 
-// FetchFileSparse fetches a single file using sparse checkout for minimal memory usage
-func (c *DefaultGitClient) FetchFileSparse(ctx context.Context, config *CloneConfig, filePath string) ([]byte, error) {
-	logger := log.FromContext(ctx)
-
-	// Log memory stats before operation
-	var memBefore runtime.MemStats
-	runtime.ReadMemStats(&memBefore)
-	logger.V(1).Info("Git operation starting",
-		"url", config.URL,
-		"file", filePath,
-		"alloc_mb", memBefore.Alloc/(1024*1024))
-
-	repo, err := c.cloneRepositoryForSparseCheckout(ctx, config)
-	if err != nil {
-		return nil, err
-	}
-
-	// Variable to hold repo reference for cleanup
-	repoRef := &repo
-
-	// Ensure cleanup happens even on error
-	defer func() {
-		logger.V(1).Info("Git cleanup starting")
-
-		// Explicitly clear repository reference to help GC
-		if repoRef != nil && *repoRef != nil {
-			*repoRef = nil
-		}
-
-		// Force garbage collection to release memory
-		runtime.GC()
-
-		// Log memory stats after cleanup
-		var memAfter runtime.MemStats
-		runtime.ReadMemStats(&memAfter)
-
-		// Calculate delta in MB with proper signed arithmetic
-		allocAfterMB := memAfter.Alloc / (1024 * 1024)
-		allocBeforeMB := memBefore.Alloc / (1024 * 1024)
-		var deltaMB int64
-		if allocAfterMB >= allocBeforeMB {
-			// #nosec G115 -- Memory delta in MB will never exceed int64 max
-			deltaMB = int64(allocAfterMB - allocBeforeMB)
-		} else {
-			// #nosec G115 -- Memory delta in MB will never exceed int64 max
-			deltaMB = -int64(allocBeforeMB - allocAfterMB)
-		}
-
-		logger.V(1).Info("Git cleanup completed",
-			"alloc_mb", allocAfterMB,
-			"delta_mb", deltaMB)
-	}()
-
-	// Checkout specific commit if needed
-	if config.Commit != "" {
-		logger.V(1).Info("Checking out commit", "commit", config.Commit)
-		if err := c.checkoutCommit(repo, config.Commit); err != nil {
-			return nil, err
-		}
-	}
-
-	// Perform sparse checkout
-	logger.V(1).Info("Performing sparse checkout", "file", filePath)
-	if err := c.performSparseCheckout(repo, filePath); err != nil {
-		return nil, err
-	}
-
-	// Read and return file content with path validation
-	content, err := c.readFileSecurely(config.Directory, filePath)
-	if err != nil {
-		return nil, err
-	}
-
-	logger.V(1).Info("File fetched successfully",
-		"size_kb", fmt.Sprintf("%.2f", float64(len(content))/1024))
-	return content, nil
-}
-
-// cloneRepositoryForSparseCheckout clones repository with minimal data transfer
-func (*DefaultGitClient) cloneRepositoryForSparseCheckout(ctx context.Context, config *CloneConfig) (*git.Repository, error) {
-	logger := log.FromContext(ctx)
-
+// Clone clones a repository with the given configuration
+func (c *DefaultGitClient) Clone(_ context.Context, config *CloneConfig) (*RepositoryInfo, error) {
+	// Prepare clone options (no authentication for initial version)
 	cloneOptions := &git.CloneOptions{
-		URL:          config.URL,
-		Depth:        1,    // Shallow clone - only latest commit
-		SingleBranch: true, // Only fetch the target branch
-		NoCheckout:   true, // Don't checkout files yet
+		URL: config.URL,
 	}
 
-	// Set reference based on branch/tag/commit
+	// Set reference if specified (but not for commit-based clones)
 	if config.Commit == "" {
+		cloneOptions.Depth = 1
 		if config.Branch != "" {
 			cloneOptions.ReferenceName = plumbing.NewBranchReferenceName(config.Branch)
+			cloneOptions.SingleBranch = true
 		} else if config.Tag != "" {
 			cloneOptions.ReferenceName = plumbing.NewTagReferenceName(config.Tag)
+			cloneOptions.SingleBranch = true
 		}
-	} else {
-		// For commit-based clones, we need full history to find the commit
-		// Disable shallow clone and single branch to fetch all refs
-		// WARNING: This loads full history into memory - potential memory leak!
-		logger.Info("WARNING: Cloning full repository history for commit lookup - this may consume significant memory",
-			"commit", config.Commit,
-			"url", config.URL)
-		cloneOptions.Depth = 0
-		cloneOptions.SingleBranch = false
 	}
+	// For commit-based clones, we need the full repository to ensure the commit is available
 
-	repo, err := git.PlainCloneContext(ctx, config.Directory, false, cloneOptions)
+	// Use in-memory filesystems for the repository and the storer
+	// See https://github.com/mindersec/minder/blob/main/internal/providers/git/git.go
+	// for more details
+	// Clone the repository
+	memFS := memfs.New()
+	memFS = &LimitedFs{
+		Fs:            memFS,
+		MaxFiles:      10 * 1000,
+		TotalFileSize: 100 * 1024 * 1024,
+	}
+	// go-git seems to want separate filesystems for the storer and the checked out files
+	storerFs := memfs.New()
+	storerFs = &LimitedFs{
+		Fs:            storerFs,
+		MaxFiles:      10 * 1000,
+		TotalFileSize: 100 * 1024 * 1024,
+	}
+	storerCache := cache.NewObjectLRUDefault()
+	storer := filesystem.NewStorage(storerFs, storerCache)
+
+	repo, err := git.Clone(storer, memFS, cloneOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to clone repository: %w", err)
 	}
 
-	return repo, nil
+	// Get repository information
+	repoInfo := &RepositoryInfo{
+		Repository:       repo,
+		RemoteURL:        config.URL,
+		storerFilesystem: storerFs,
+		objectCache:      storerCache,
+	}
+
+	// If specific commit is requested, checkout that commit
+	if config.Commit != "" {
+		workTree, err := repo.Worktree()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get worktree: %w", err)
+		}
+
+		hash := plumbing.NewHash(config.Commit)
+		err = workTree.Checkout(&git.CheckoutOptions{
+			Hash: hash,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to checkout commit %s: %w", config.Commit, err)
+		}
+	}
+
+	// Update repository info with current state
+	if err := c.updateRepositoryInfo(repoInfo); err != nil {
+		return nil, fmt.Errorf("failed to update repository info: %w", err)
+	}
+
+	return repoInfo, nil
 }
 
-// checkoutCommit checks out a specific commit
-func (*DefaultGitClient) checkoutCommit(repo *git.Repository, commit string) error {
-	workTree, err := repo.Worktree()
+// GetFileContent retrieves the content of a file from the repository
+func (*DefaultGitClient) GetFileContent(repoInfo *RepositoryInfo, path string) ([]byte, error) {
+	if repoInfo == nil || repoInfo.Repository == nil {
+		return nil, fmt.Errorf("repository is nil")
+	}
+
+	// Get the HEAD reference
+	ref, err := repoInfo.Repository.Head()
 	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
+		return nil, fmt.Errorf("failed to get HEAD reference: %w", err)
 	}
 
-	// Parse the commit hash
-	hash := plumbing.NewHash(commit)
-
-	// Try to get the commit object to verify it exists
-	_, err = repo.CommitObject(hash)
+	// Get the commit object
+	commit, err := repoInfo.Repository.CommitObject(ref.Hash())
 	if err != nil {
-		return fmt.Errorf("commit %s not found: %w", commit, err)
+		return nil, fmt.Errorf("failed to get commit object: %w", err)
 	}
 
-	// Checkout the commit
-	if err := workTree.Checkout(&git.CheckoutOptions{Hash: hash}); err != nil {
-		return fmt.Errorf("failed to checkout commit %s: %w", commit, err)
+	// Get the tree
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tree: %w", err)
 	}
 
+	// Get the file
+	file, err := tree.File(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file %s: %w", path, err)
+	}
+
+	// Read file contents
+	content, err := file.Contents()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file contents: %w", err)
+	}
+
+	return []byte(content), nil
+}
+
+// Cleanup removes local repository directory
+func (*DefaultGitClient) Cleanup(ctx context.Context, repoInfo *RepositoryInfo) error {
+	logger := log.FromContext(ctx)
+	if repoInfo == nil || repoInfo.Repository == nil {
+		return fmt.Errorf("repository is nil")
+	}
+
+	// 1. Clear object cache explicitly
+	if repoInfo.objectCache != nil {
+		logger.V(1).Info("Clearing object cache")
+		repoInfo.objectCache.Clear()
+	}
+
+	// 2. Clear worktree filesystem
+	worktree, err := repoInfo.Repository.Worktree()
+	if err == nil && worktree.Filesystem != nil {
+		logger.V(1).Info("Clearing worktree filesystem")
+		_ = util.RemoveAll(worktree.Filesystem, "/")
+	}
+
+	// 3. Clear storer filesystem (memfs)
+	if repoInfo.storerFilesystem != nil {
+		logger.V(1).Info("Clearing storer filesystem")
+		_ = util.RemoveAll(repoInfo.storerFilesystem, "/")
+	}
+
+	// 4. Nil out all references
+	repoInfo.objectCache = nil
+	repoInfo.storerFilesystem = nil
+	repoInfo.Repository = nil
+
+	// 5. Force GC to reclaim memory
+	runtime.GC()
 	return nil
 }
 
-// performSparseCheckout performs sparse checkout for a single file
-func (*DefaultGitClient) performSparseCheckout(repo *git.Repository, filePath string) error {
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
+// updateRepositoryInfo updates the repository info with current state
+func (*DefaultGitClient) updateRepositoryInfo(repoInfo *RepositoryInfo) error {
+	if repoInfo == nil || repoInfo.Repository == nil {
+		return fmt.Errorf("repository is nil")
 	}
 
-	// Get HEAD reference to checkout
-	ref, err := repo.Head()
+	// Get current branch name
+	ref, err := repoInfo.Repository.Head()
 	if err != nil {
 		return fmt.Errorf("failed to get HEAD reference: %w", err)
 	}
 
-	// Determine what to checkout based on file location
-	fileDir := filepath.Dir(filePath)
-
-	// For root directory files, we can't use sparse checkout effectively
-	// Just do a regular checkout which is still efficient with depth=1
-	if fileDir == "." || fileDir == "/" {
-		if err := worktree.Checkout(&git.CheckoutOptions{
-			Hash:  ref.Hash(),
-			Force: true,
-		}); err != nil {
-			return fmt.Errorf("failed checkout: %w", err)
-		}
-	} else {
-		// For files in subdirectories, use sparse checkout
-		if err := worktree.Checkout(&git.CheckoutOptions{
-			Hash:                      ref.Hash(),
-			Force:                     true,
-			SparseCheckoutDirectories: []string{fileDir},
-		}); err != nil {
-			return fmt.Errorf("failed sparse checkout: %w", err)
-		}
+	if ref.Name().IsBranch() {
+		repoInfo.Branch = ref.Name().Short()
 	}
-
-	// Clear reference to help GC
-	ref = nil
 
 	return nil
-}
-
-// readFileSecurely reads a file with path traversal protection
-func (*DefaultGitClient) readFileSecurely(baseDir, filePath string) ([]byte, error) {
-	// Sanitize the file path to prevent path traversal
-	cleanFilePath := filepath.Clean(filePath)
-	if cleanFilePath == ".." || strings.HasPrefix(cleanFilePath, ".."+string(filepath.Separator)) || filepath.IsAbs(cleanFilePath) {
-		return nil, fmt.Errorf("invalid file path: potential path traversal detected in %s", filePath)
-	}
-
-	fullPath := filepath.Join(baseDir, cleanFilePath)
-
-	// Verify the resolved path is within the expected directory
-	absFullPath, err := filepath.Abs(fullPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve file path: %w", err)
-	}
-	absDir, err := filepath.Abs(baseDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve directory path: %w", err)
-	}
-
-	// Ensure paths end with separator for proper prefix matching
-	if !strings.HasSuffix(absDir, string(filepath.Separator)) {
-		absDir += string(filepath.Separator)
-	}
-	if !strings.HasPrefix(absFullPath, absDir) {
-		return nil, fmt.Errorf("file path escapes repository directory: %s", filePath)
-	}
-
-	// #nosec G304 -- Path is sanitized and validated to be within repository directory
-	content, err := os.ReadFile(absFullPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file %s: %w", filePath, err)
-	}
-
-	return content, nil
 }

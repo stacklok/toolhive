@@ -43,6 +43,10 @@ spec:
           ports:
             {{- toYaml .Values.operator.ports | nindent 12 }}
           env:
+          - name: GOMEMLIMIT
+            value: 300MiB # Explicit limit (update as needed: keep it close to memory limits)
+          - name: GOGC
+            value: '75' # 75% heap growth before GC (as Go default)
           # Always use structured JSON logs in Kubernetes (not configurable)
           - name: UNSTRUCTURED_LOGS
             value: "false"

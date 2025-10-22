@@ -84,10 +84,11 @@ syncStatus:
 ## Refactory Proposal
 ### High level requirements
 - Both the Kubernetes and the CLI registries provide the same data source functionalities.
-- The Kubernetes controller takes care deploying the registry API server as today and ensure
-  that its configuration matches the `MCPRegistry` specification.
+- The Kubernetes controller takes care of:
+  - Deploying the registry API server as today.
+  - Persist the registry API server configuration and ensure it is updated with the `MCPRegistry` specification.
+  - Maintaining the status information about the API and Sync status using today's format.
 - The registry API reacts to configuration changes to apply them.
-- The Kubernetes controller 
 
 
 ## Impacted code
@@ -99,6 +100,11 @@ syncStatus:
 #### Registry AP Server
 #### Integration tests
 
+## Phase 1 
+### Tasks
+
+## Phase 1 
+### Tasks
 
 ### [NEXT] New CRDs for data source specification
 Move the data source management functions from the `thv-operator` module to the `thv-registry-api` 

@@ -46,6 +46,7 @@ type MCPServerReconciler struct {
 
 // defaultRBACRules are the default RBAC rules that the
 // ToolHive ProxyRunner and/or MCP server needs to have in order to run.
+// These permissions are needed for MCPServer which deploys and manages MCP server containers.
 var defaultRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{"apps"},
@@ -75,6 +76,22 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{""},
 		Resources: []string{"configmaps"},
+		Verbs:     []string{"get", "list", "watch"},
+	},
+}
+
+// remoteProxyRBACRules defines minimal RBAC permissions for MCPRemoteProxy.
+// Remote proxies only connect to external MCP servers and do not deploy containers,
+// so they only need read access to ConfigMaps and Secrets (for OIDC/token exchange).
+var remoteProxyRBACRules = []rbacv1.PolicyRule{
+	{
+		APIGroups: []string{""},
+		Resources: []string{"configmaps"},
+		Verbs:     []string{"get", "list", "watch"},
+	},
+	{
+		APIGroups: []string{""},
+		Resources: []string{"secrets"},
 		Verbs:     []string{"get", "list", "watch"},
 	},
 }
@@ -158,6 +175,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Return and requeue to avoid double-processing after triggering restart
 		return ctrl.Result{Requeue: true}, nil
 	}
+
+	// Check if the GroupRef is valid if specified
+	r.validateGroupRef(ctx, mcpServer)
 
 	// Check if MCPToolConfig is referenced and handle it
 	if err := r.handleToolConfig(ctx, mcpServer); err != nil {
@@ -313,7 +333,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Check if the Service already exists, if not create a new one
-	serviceName := createServiceName(mcpServer.Name)
+	serviceName := CreateProxyServiceName(mcpServer.Name)
 	service := &corev1.Service{}
 	err = r.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: mcpServer.Namespace}, service)
 	if err != nil && errors.IsNotFound(err) {
@@ -338,7 +358,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Update the MCPServer status with the service URL
 	if mcpServer.Status.URL == "" {
-		mcpServer.Status.URL = createServiceURL(mcpServer.Name, mcpServer.Namespace, mcpServer.Spec.Port)
+		mcpServer.Status.URL = CreateProxyServiceURL(mcpServer.Name, mcpServer.Namespace, mcpServer.Spec.Port)
 		err = r.Status().Update(ctx, mcpServer)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update MCPServer status")
@@ -377,6 +397,49 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) {
+	if mcpServer.Spec.GroupRef == "" {
+		// No group reference, nothing to validate
+		return
+	}
+
+	ctxLogger := log.FromContext(ctx)
+
+	// Find the referenced MCPGroup
+	group := &mcpv1alpha1.MCPGroup{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: mcpServer.Namespace, Name: mcpServer.Spec.GroupRef}, group); err != nil {
+		ctxLogger.Error(err, "Failed to validate GroupRef")
+		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionGroupRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonGroupRefNotFound,
+			Message:            err.Error(),
+			ObservedGeneration: mcpServer.Generation,
+		})
+	} else if group.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
+		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionGroupRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1alpha1.ConditionReasonGroupRefNotReady,
+			Message:            "GroupRef is not in Ready state",
+			ObservedGeneration: mcpServer.Generation,
+		})
+	} else {
+		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionGroupRefValidated,
+			Status:             metav1.ConditionTrue,
+			Reason:             mcpv1alpha1.ConditionReasonGroupRefValidated,
+			Message:            "GroupRef is valid and in Ready state",
+			ObservedGeneration: mcpServer.Generation,
+		})
+	}
+
+	if err := r.Status().Update(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to update MCPServer status after GroupRef validation")
+	}
+
 }
 
 // setImageValidationCondition is a helper function to set the image validation status condition
@@ -701,7 +764,7 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 }
 
 func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) error {
-	proxyRunnerNameForRBAC := proxyRunnerServiceAccountName(mcpServer.Name)
+	proxyRunnerNameForRBAC := ProxyRunnerServiceAccountName(mcpServer.Name)
 
 	// Ensure Role
 	if err := r.ensureRBACResource(ctx, mcpServer, "Role", func() client.Object {
@@ -938,18 +1001,18 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 
 	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
 		if m.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
-			deploymentLabels = mergeLabels(ls, m.Spec.ResourceOverrides.ProxyDeployment.Labels)
+			deploymentLabels = MergeLabels(ls, m.Spec.ResourceOverrides.ProxyDeployment.Labels)
 		}
 		if m.Spec.ResourceOverrides.ProxyDeployment.Annotations != nil {
-			deploymentAnnotations = mergeAnnotations(make(map[string]string), m.Spec.ResourceOverrides.ProxyDeployment.Annotations)
+			deploymentAnnotations = MergeAnnotations(make(map[string]string), m.Spec.ResourceOverrides.ProxyDeployment.Annotations)
 		}
 
 		if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides != nil {
 			if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels != nil {
-				deploymentLabels = mergeLabels(ls, m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels)
+				deploymentLabels = MergeLabels(ls, m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels)
 			}
 			if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Annotations != nil {
-				deploymentTemplateAnnotations = mergeAnnotations(deploymentAnnotations,
+				deploymentTemplateAnnotations = MergeAnnotations(deploymentAnnotations,
 					m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Annotations)
 			}
 		}
@@ -974,7 +1037,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	proxyRunnerPodSecurityContext := securityBuilder.BuildPodSecurityContext()
 	proxyRunnerContainerSecurityContext := securityBuilder.BuildContainerSecurityContext()
 
-	env = ensureRequiredEnvVars(ctx, env)
+	env = EnsureRequiredEnvVars(ctx, env)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -994,7 +1057,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 					Annotations: deploymentTemplateAnnotations,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: proxyRunnerServiceAccountName(m.Name),
+					ServiceAccountName: ProxyRunnerServiceAccountName(m.Name),
 					Containers: []corev1.Container{{
 						Image:        getToolhiveRunnerImage(),
 						Name:         "toolhive",
@@ -1049,77 +1112,13 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 	return dep
 }
 
-func ensureRequiredEnvVars(ctx context.Context, env []corev1.EnvVar) []corev1.EnvVar {
-	// Check for the existence of the XDG_CONFIG_HOME, HOME, TOOLHIVE_RUNTIME, and UNSTRUCTURED_LOGS environment variables
-	// and set them to defaults if they don't exist
-	ctxLogger := log.FromContext(ctx)
-	xdgConfigHomeFound := false
-	homeFound := false
-	toolhiveRuntimeFound := false
-	unstructuredLogsFound := false
-	for _, envVar := range env {
-		if envVar.Name == "XDG_CONFIG_HOME" {
-			xdgConfigHomeFound = true
-		}
-		if envVar.Name == "HOME" {
-			homeFound = true
-		}
-		if envVar.Name == "TOOLHIVE_RUNTIME" {
-			toolhiveRuntimeFound = true
-		}
-		if envVar.Name == "UNSTRUCTURED_LOGS" {
-			unstructuredLogsFound = true
-		}
-	}
-	if !xdgConfigHomeFound {
-		ctxLogger.V(1).Info("XDG_CONFIG_HOME not found, setting to /tmp")
-		env = append(env, corev1.EnvVar{
-			Name:  "XDG_CONFIG_HOME",
-			Value: "/tmp",
-		})
-	}
-	if !homeFound {
-		ctxLogger.V(1).Info("HOME not found, setting to /tmp")
-		env = append(env, corev1.EnvVar{
-			Name:  "HOME",
-			Value: "/tmp",
-		})
-	}
-	if !toolhiveRuntimeFound {
-		ctxLogger.V(1).Info("TOOLHIVE_RUNTIME not found, setting to kubernetes")
-		env = append(env, corev1.EnvVar{
-			Name:  "TOOLHIVE_RUNTIME",
-			Value: "kubernetes",
-		})
-	}
-	// Always use structured JSON logs in Kubernetes (not configurable)
-	if !unstructuredLogsFound {
-		ctxLogger.V(1).Info("UNSTRUCTURED_LOGS not found, setting to false for structured JSON logging")
-		env = append(env, corev1.EnvVar{
-			Name:  "UNSTRUCTURED_LOGS",
-			Value: "false",
-		})
-	}
-	return env
-}
-
-func createServiceName(mcpServerName string) string {
-	return fmt.Sprintf("mcp-%s-proxy", mcpServerName)
-}
-
-// createServiceURL generates the full cluster-local service URL for an MCP server
-func createServiceURL(mcpServerName, namespace string, port int32) string {
-	serviceName := createServiceName(mcpServerName)
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
-}
-
 // serviceForMCPServer returns a MCPServer Service object
 func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1alpha1.MCPServer) *corev1.Service {
 	ls := labelsForMCPServer(m.Name)
 
 	// we want to generate a service name that is unique for the proxy service
 	// to avoid conflicts with the headless service
-	svcName := createServiceName(m.Name)
+	svcName := CreateProxyServiceName(m.Name)
 
 	// Prepare service metadata with overrides
 	serviceLabels := ls
@@ -1127,10 +1126,10 @@ func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1a
 
 	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyService != nil {
 		if m.Spec.ResourceOverrides.ProxyService.Labels != nil {
-			serviceLabels = mergeLabels(ls, m.Spec.ResourceOverrides.ProxyService.Labels)
+			serviceLabels = MergeLabels(ls, m.Spec.ResourceOverrides.ProxyService.Labels)
 		}
 		if m.Spec.ResourceOverrides.ProxyService.Annotations != nil {
-			serviceAnnotations = mergeAnnotations(make(map[string]string), m.Spec.ResourceOverrides.ProxyService.Annotations)
+			serviceAnnotations = MergeAnnotations(make(map[string]string), m.Spec.ResourceOverrides.ProxyService.Annotations)
 		}
 	}
 
@@ -1399,7 +1398,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			}
 		}
 		// Add default environment variables that are always injected
-		expectedProxyEnv = ensureRequiredEnvVars(ctx, expectedProxyEnv)
+		expectedProxyEnv = EnsureRequiredEnvVars(ctx, expectedProxyEnv)
 		if !reflect.DeepEqual(container.Env, expectedProxyEnv) {
 			return true
 		}
@@ -1482,7 +1481,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 	// Check if the service account name has changed
 	// ServiceAccountName: treat empty (not yet set) as equal to the expected default
-	expectedServiceAccountName := proxyRunnerServiceAccountName(mcpServer.Name)
+	expectedServiceAccountName := ProxyRunnerServiceAccountName(mcpServer.Name)
 	currentServiceAccountName := deployment.Spec.Template.Spec.ServiceAccountName
 	if currentServiceAccountName != "" && currentServiceAccountName != expectedServiceAccountName {
 		return true
@@ -1494,10 +1493,10 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 	if mcpServer.Spec.ResourceOverrides != nil && mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil {
 		if mcpServer.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
-			expectedLabels = mergeLabels(expectedLabels, mcpServer.Spec.ResourceOverrides.ProxyDeployment.Labels)
+			expectedLabels = MergeLabels(expectedLabels, mcpServer.Spec.ResourceOverrides.ProxyDeployment.Labels)
 		}
 		if mcpServer.Spec.ResourceOverrides.ProxyDeployment.Annotations != nil {
-			expectedAnnotations = mergeAnnotations(make(map[string]string), mcpServer.Spec.ResourceOverrides.ProxyDeployment.Annotations)
+			expectedAnnotations = MergeAnnotations(make(map[string]string), mcpServer.Spec.ResourceOverrides.ProxyDeployment.Annotations)
 		}
 	}
 
@@ -1525,10 +1524,10 @@ func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1alpha1.MCPServe
 
 	if mcpServer.Spec.ResourceOverrides != nil && mcpServer.Spec.ResourceOverrides.ProxyService != nil {
 		if mcpServer.Spec.ResourceOverrides.ProxyService.Labels != nil {
-			expectedLabels = mergeLabels(expectedLabels, mcpServer.Spec.ResourceOverrides.ProxyService.Labels)
+			expectedLabels = MergeLabels(expectedLabels, mcpServer.Spec.ResourceOverrides.ProxyService.Labels)
 		}
 		if mcpServer.Spec.ResourceOverrides.ProxyService.Annotations != nil {
-			expectedAnnotations = mergeAnnotations(make(map[string]string), mcpServer.Spec.ResourceOverrides.ProxyService.Annotations)
+			expectedAnnotations = MergeAnnotations(make(map[string]string), mcpServer.Spec.ResourceOverrides.ProxyService.Annotations)
 		}
 	}
 
@@ -1567,11 +1566,6 @@ func resourceRequirementsForMCPServer(m *mcpv1alpha1.MCPServer) corev1.ResourceR
 	return resources
 }
 
-// proxyRunnerServiceAccountName returns the service account name for the proxy runner
-func proxyRunnerServiceAccountName(mcpServerName string) string {
-	return fmt.Sprintf("%s-proxy-runner", mcpServerName)
-}
-
 // mcpServerServiceAccountName returns the service account name for the mcp server
 func mcpServerServiceAccountName(mcpServerName string) string {
 	return fmt.Sprintf("%s-sa", mcpServerName)
@@ -1595,24 +1589,6 @@ func labelsForInlineAuthzConfig(name string) map[string]string {
 	labels := labelsForMCPServer(name)
 	labels[authzLabelKey] = authzLabelValueInline
 	return labels
-}
-
-// mergeStringMaps merges override map with default map, with default map taking precedence
-// This ensures that operator-required metadata is preserved for proper functionality
-func mergeStringMaps(defaultMap, overrideMap map[string]string) map[string]string {
-	result := maps.Clone(overrideMap)
-	maps.Copy(result, defaultMap) // default map takes precedence
-	return result
-}
-
-// mergeLabels merges override labels with default labels, with default labels taking precedence
-func mergeLabels(defaultLabels, overrideLabels map[string]string) map[string]string {
-	return mergeStringMaps(defaultLabels, overrideLabels)
-}
-
-// mergeAnnotations merges override annotations with default annotations, with default annotations taking precedence
-func mergeAnnotations(defaultAnnotations, overrideAnnotations map[string]string) map[string]string {
-	return mergeStringMaps(defaultAnnotations, overrideAnnotations)
 }
 
 // hasVaultAgentInjection checks if Vault Agent Injection is enabled in the pod annotations

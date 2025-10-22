@@ -211,7 +211,7 @@ tasks:
         if [ -z "$CI" ]; then
           if ! command -v chainsaw >/dev/null 2>&1; then
             echo "Chainsaw not found, installing..."
-            go install github.com/kubernetes-sigs/chainsaw/cmd/chainsaw@latest
+            go install github.com/kyverno/chainsaw@latest
           fi
         fi
       - chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/setup
@@ -220,7 +220,7 @@ tasks:
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/setup
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup
-
+      
   operator-run:
     desc: Run the operator controller locally
     cmds:

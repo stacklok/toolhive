@@ -9,6 +9,9 @@ import (
 const (
 	// ConditionImageValidated indicates whether this image is fine to be used
 	ConditionImageValidated = "ImageValidated"
+
+	// ConditionGroupRefValidated indicates whether the GroupRef is valid
+	ConditionGroupRefValidated = "GroupRefValidated"
 )
 
 const (
@@ -20,6 +23,17 @@ const (
 	ConditionReasonImageValidationError = "ImageValidationError"
 	// ConditionReasonImageValidationSkipped indicates image validation was skipped
 	ConditionReasonImageValidationSkipped = "ImageValidationSkipped"
+)
+
+const (
+	// ConditionReasonGroupRefValidated indicates the GroupRef is valid
+	ConditionReasonGroupRefValidated = "GroupRefIsValid"
+
+	// ConditionReasonGroupRefNotFound indicates the GroupRef is invalid
+	ConditionReasonGroupRefNotFound = "GroupRefNotFound"
+
+	// ConditionReasonGroupRefNotReady indicates the referenced MCPGroup is not in the Ready state
+	ConditionReasonGroupRefNotReady = "GroupRefNotReady"
 )
 
 // MCPServerSpec defines the desired state of MCPServer
@@ -131,6 +145,11 @@ type MCPServerSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	TrustProxyHeaders bool `json:"trustProxyHeaders,omitempty"`
+
+	// GroupRef is the name of the MCPGroup this server belongs to
+	// Must reference an existing MCPGroup in the same namespace
+	// +optional
+	GroupRef string `json:"groupRef,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources

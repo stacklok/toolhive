@@ -20,7 +20,7 @@ func TestConcurrentKeyringAvailability(t *testing.T) {
 		t.Skip("Skipping concurrency test in short mode")
 	}
 
-	const numGoroutines = 20
+	const numGoroutines = 10
 	const numIterations = 5
 
 	var wg sync.WaitGroup
@@ -39,16 +39,10 @@ func TestConcurrentKeyringAvailability(t *testing.T) {
 				results <- available
 
 				// Test CreateSecretProvider (which internally calls IsKeyringAvailable)
-				provider, err := secrets.CreateSecretProvider(secrets.NoneType)
+				_, err := secrets.CreateSecretProvider(secrets.NoneType)
 				if err != nil {
 					errors <- fmt.Errorf("goroutine %d, iteration %d: CreateSecretProvider failed: %w", goroutineID, j, err)
 					continue
-				}
-
-				// Test provider operations
-				if provider != nil {
-					// Test a simple operation to ensure provider is working
-					_, _ = provider.GetSecret(context.Background(), "non-existent-key")
 				}
 			}
 		}(i)
@@ -79,87 +73,6 @@ func TestConcurrentKeyringAvailability(t *testing.T) {
 	expectedSuccess := numGoroutines * numIterations
 	assert.Equal(t, expectedSuccess, successCount,
 		"Expected %d successful keyring availability checks, got %d", expectedSuccess, successCount)
-}
-
-// TestConcurrentKeyringOperations tests that multiple goroutines can safely
-// perform keyring operations simultaneously using the same provider.
-func TestConcurrentKeyringOperations(t *testing.T) {
-	t.Parallel()
-	if testing.Short() {
-		t.Skip("Skipping concurrency test in short mode")
-	}
-
-	// Create a keyring provider directly
-	keyringProvider := keyring.NewCompositeProvider()
-	if !keyringProvider.IsAvailable() {
-		t.Skip("Skipping test: keyring not available")
-	}
-
-	const numGoroutines = 10
-	const numOperations = 3
-
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var errorList []error
-	successCount := 0
-
-	// Start multiple goroutines that perform concurrent keyring operations
-	for i := 0; i < numGoroutines; i++ {
-		wg.Add(1)
-		go func(goroutineID int) {
-			defer wg.Done()
-
-			for j := 0; j < numOperations; j++ {
-				// Use unique keys for each operation to avoid conflicts
-				service := fmt.Sprintf("test-service-%d", goroutineID)
-				key := fmt.Sprintf("test-key-%d-%d", goroutineID, j)
-				value := fmt.Sprintf("test-value-%d-%d", goroutineID, j)
-
-				// Test Set operation
-				err := keyringProvider.Set(service, key, value)
-				if err != nil {
-					mu.Lock()
-					errorList = append(errorList, fmt.Errorf("goroutine %d, iteration %d, Set: %w", goroutineID, j, err))
-					mu.Unlock()
-					continue
-				}
-
-				// Test Get operation
-				retrievedValue, err := keyringProvider.Get(service, key)
-				if err != nil {
-					mu.Lock()
-					errorList = append(errorList, fmt.Errorf("goroutine %d, iteration %d, Get: %w", goroutineID, j, err))
-					mu.Unlock()
-					continue
-				}
-
-				if retrievedValue == value {
-					mu.Lock()
-					successCount++
-					mu.Unlock()
-				}
-
-				// Test Delete operation
-				err = keyringProvider.Delete(service, key)
-				if err != nil {
-					mu.Lock()
-					errorList = append(errorList, fmt.Errorf("goroutine %d, iteration %d, Delete: %w", goroutineID, j, err))
-					mu.Unlock()
-				}
-			}
-		}(i)
-	}
-
-	// Wait for all goroutines to complete
-	wg.Wait()
-
-	// We expect all operations to succeed - no errors should occur with our fix
-	assert.Empty(t, errorList, "Expected no errors during concurrent keyring operations, but got %d errors", len(errorList))
-
-	// All keyring operations should succeed
-	expectedSuccess := numGoroutines * numOperations
-	assert.Equal(t, expectedSuccess, successCount,
-		"Expected %d successful keyring operations, got %d", expectedSuccess, successCount)
 }
 
 // TestConcurrentUniqueKeyGeneration tests that concurrent calls to

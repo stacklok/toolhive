@@ -102,6 +102,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --oidc-introspection-url string              URL for token introspection endpoint
       --oidc-issuer string                         OIDC issuer URL (e.g., https://accounts.google.com)
       --oidc-jwks-url string                       URL to fetch the JWKS from
+      --otel-custom-attributes string              Custom resource attributes for OpenTelemetry in key=value format (e.g., server_type=prod,region=us-east-1,team=platform)
       --otel-enable-prometheus-metrics-path        Enable Prometheus-style /metrics endpoint on the main transport port
       --otel-endpoint string                       OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)
       --otel-env-vars stringArray                  Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)

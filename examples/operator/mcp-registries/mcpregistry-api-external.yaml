@@ -1,0 +1,17 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: external-toolhive-api-registry
+  namespace: default
+spec:
+  displayName: "External ToolHive Registry via HTTPS"
+  source:
+    type: api
+    api:
+      # External registry API endpoint via HTTPS
+      # Base URL - controller appends /v0/servers
+      endpoint: "https://registry.example.com"
+  syncPolicy:
+    interval: "2h"
+  # Note: This example shows connecting to an external registry over HTTPS
+  # Authentication support will be added in Phase 2

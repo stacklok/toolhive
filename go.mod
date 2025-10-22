@@ -4,7 +4,7 @@ go 1.24.6
 
 require (
 	github.com/1password/onepassword-sdk-go v0.3.1
-	github.com/cedar-policy/cedar-go v1.2.7
+	github.com/cedar-policy/cedar-go v1.2.8
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -21,7 +21,7 @@ require (
 	github.com/lestrrat-go/jwx/v3 v3.0.12
 	github.com/mark3labs/mcp-go v0.42.0
 	github.com/olekukonko/tablewriter v1.1.0
-	github.com/onsi/ginkgo/v2 v2.26.0
+	github.com/onsi/ginkgo/v2 v2.27.1
 	github.com/onsi/gomega v1.38.2
 	github.com/ory/fosite v0.49.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c

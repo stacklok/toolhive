@@ -2,7 +2,6 @@ package git
 
 import (
 	"context"
-	"os"
 	"testing"
 )
 
@@ -24,15 +23,8 @@ func TestDefaultGitClient_Clone_InvalidURL(t *testing.T) {
 	client := NewDefaultGitClient()
 	ctx := context.Background()
 
-	tempDir, err := os.MkdirTemp("", "git-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
 	config := &CloneConfig{
-		URL:       "invalid-url",
-		Directory: tempDir,
+		URL: "invalid-url",
 	}
 
 	repoInfo, err := client.Clone(ctx, config)
@@ -49,15 +41,8 @@ func TestDefaultGitClient_Clone_NonExistentRepo(t *testing.T) {
 	client := NewDefaultGitClient()
 	ctx := context.Background()
 
-	tempDir, err := os.MkdirTemp("", "git-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
 	config := &CloneConfig{
-		URL:       "https://github.com/nonexistent/nonexistent.git",
-		Directory: tempDir,
+		URL: "https://github.com/nonexistent/nonexistent.git",
 	}
 
 	repoInfo, err := client.Clone(ctx, config)
@@ -73,9 +58,9 @@ func TestDefaultGitClient_Cleanup_NilRepoInfo(t *testing.T) {
 	t.Parallel()
 	client := NewDefaultGitClient()
 
-	err := client.Cleanup(nil)
-	if err != nil {
-		t.Errorf("Expected no error for nil repoInfo, got: %v", err)
+	err := client.Cleanup(context.Background(), nil)
+	if err == nil {
+		t.Errorf("Expected error for nil repoInfo, got nil")
 	}
 }
 
@@ -86,9 +71,9 @@ func TestDefaultGitClient_Cleanup_NilRepository(t *testing.T) {
 		Repository: nil,
 	}
 
-	err := client.Cleanup(repoInfo)
-	if err != nil {
-		t.Errorf("Expected no error for nil repository, got: %v", err)
+	err := client.Cleanup(context.Background(), repoInfo)
+	if err == nil {
+		t.Errorf("Expected error for nil repository, got nil")
 	}
 }
 
@@ -111,11 +96,10 @@ func TestDefaultGitClient_GetFileContent_NoRepo(t *testing.T) {
 func TestCloneConfig_Structure(t *testing.T) {
 	t.Parallel()
 	config := CloneConfig{
-		URL:       "https://github.com/example/repo.git",
-		Branch:    "main",
-		Tag:       "v1.0.0",
-		Commit:    "abc123",
-		Directory: "/tmp/repo",
+		URL:    "https://github.com/example/repo.git",
+		Branch: "main",
+		Tag:    "v1.0.0",
+		Commit: "abc123",
 	}
 
 	if config.URL != "https://github.com/example/repo.git" {
@@ -129,9 +113,6 @@ func TestCloneConfig_Structure(t *testing.T) {
 	}
 	if config.Commit != "abc123" {
 		t.Errorf("Expected Commit to be set correctly")
-	}
-	if config.Directory != "/tmp/repo" {
-		t.Errorf("Expected Directory to be set correctly")
 	}
 }
 
@@ -168,9 +149,6 @@ func TestCloneConfig_EmptyFields(t *testing.T) {
 	}
 	if config.Commit != "" {
 		t.Error("Expected empty Commit by default")
-	}
-	if config.Directory != "" {
-		t.Error("Expected empty Directory by default")
 	}
 }
 

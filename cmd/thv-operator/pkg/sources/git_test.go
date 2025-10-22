@@ -56,7 +56,7 @@ func (m *MockGitClient) GetCommitHash(repoInfo *git.RepositoryInfo) (string, err
 	return args.String(0), args.Error(1)
 }
 
-func (m *MockGitClient) Cleanup(repoInfo *git.RepositoryInfo) error {
+func (m *MockGitClient) Cleanup(_ context.Context, repoInfo *git.RepositoryInfo) error {
 	args := m.Called(repoInfo)
 	return args.Error(0)
 }

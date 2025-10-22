@@ -159,6 +159,7 @@ func NewCompositeProvider(
 
 	// Add custom attributes from CLI flags
 	if len(config.CustomAttributes) > 0 {
+		logger.Debugf("Adding %d custom attributes to OTEL resource", len(config.CustomAttributes))
 		for key, value := range config.CustomAttributes {
 			logger.Debugf("  Adding custom attribute to resource: %s=%s", key, value)
 			baseAttrs = append(baseAttrs, attribute.String(key, value))

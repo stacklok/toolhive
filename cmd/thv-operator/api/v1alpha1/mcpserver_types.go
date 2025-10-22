@@ -12,6 +12,9 @@ const (
 
 	// ConditionGroupRefValidated indicates whether the GroupRef is valid
 	ConditionGroupRefValidated = "GroupRefValidated"
+
+	// ConditionPodTemplateValid indicates whether the PodTemplateSpec is valid
+	ConditionPodTemplateValid = "PodTemplateValid"
 )
 
 const (
@@ -34,6 +37,14 @@ const (
 
 	// ConditionReasonGroupRefNotReady indicates the referenced MCPGroup is not in the Ready state
 	ConditionReasonGroupRefNotReady = "GroupRefNotReady"
+)
+
+const (
+	// ConditionReasonPodTemplateValid indicates PodTemplateSpec validation succeeded
+	ConditionReasonPodTemplateValid = "ValidPodTemplateSpec"
+
+	// ConditionReasonPodTemplateInvalid indicates PodTemplateSpec validation failed
+	ConditionReasonPodTemplateInvalid = "InvalidPodTemplateSpec"
 )
 
 // MCPServerSpec defines the desired state of MCPServer

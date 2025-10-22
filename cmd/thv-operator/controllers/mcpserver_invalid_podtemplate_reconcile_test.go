@@ -50,7 +50,7 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 				},
 			},
 			expectConditionStatus: metav1.ConditionFalse,
-			expectConditionReason: "InvalidPodTemplateSpec",
+			expectConditionReason: mcpv1alpha1.ConditionReasonPodTemplateInvalid,
 			expectEventReason:     "InvalidPodTemplateSpec",
 		},
 		{
@@ -70,7 +70,7 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 				},
 			},
 			expectConditionStatus: metav1.ConditionTrue,
-			expectConditionReason: "ValidPodTemplateSpec",
+			expectConditionReason: mcpv1alpha1.ConditionReasonPodTemplateValid,
 			expectEventReason:     "", // No warning event for valid spec
 		},
 		{
@@ -144,7 +144,7 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 			require.NoError(t, err)
 
 			// Find the PodTemplateValid condition
-			condition := meta.FindStatusCondition(updatedMCPServer.Status.Conditions, "PodTemplateValid")
+			condition := meta.FindStatusCondition(updatedMCPServer.Status.Conditions, mcpv1alpha1.ConditionPodTemplateValid)
 			if tt.expectConditionStatus != "" {
 				require.NotNil(t, condition, "PodTemplateValid condition should be set")
 				assert.Equal(t, tt.expectConditionStatus, condition.Status)

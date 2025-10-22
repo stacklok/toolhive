@@ -494,10 +494,10 @@ func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Con
 
 		// Set condition for invalid PodTemplateSpec
 		meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-			Type:               "PodTemplateValid",
+			Type:               mcpv1alpha1.ConditionPodTemplateValid,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: mcpServer.Generation,
-			Reason:             "InvalidPodTemplateSpec",
+			Reason:             mcpv1alpha1.ConditionReasonPodTemplateInvalid,
 			Message:            fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
 		})
 
@@ -513,10 +513,10 @@ func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Con
 
 	// Set condition for valid PodTemplateSpec
 	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
-		Type:               "PodTemplateValid",
+		Type:               mcpv1alpha1.ConditionPodTemplateValid,
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: mcpServer.Generation,
-		Reason:             "ValidPodTemplateSpec",
+		Reason:             mcpv1alpha1.ConditionReasonPodTemplateValid,
 		Message:            "PodTemplateSpec is valid",
 	})
 

@@ -28,7 +28,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -1799,10 +1801,44 @@ func int32Ptr(i int32) *int32 {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Create a handler that maps MCPExternalAuthConfig changes to MCPServer reconciliation requests
+	externalAuthConfigHandler := handler.EnqueueRequestsFromMapFunc(
+		func(ctx context.Context, obj client.Object) []reconcile.Request {
+			externalAuthConfig, ok := obj.(*mcpv1alpha1.MCPExternalAuthConfig)
+			if !ok {
+				return nil
+			}
+
+			// List all MCPServers in the same namespace
+			mcpServerList := &mcpv1alpha1.MCPServerList{}
+			if err := r.List(ctx, mcpServerList, client.InNamespace(externalAuthConfig.Namespace)); err != nil {
+				log.FromContext(ctx).Error(err, "Failed to list MCPServers for MCPExternalAuthConfig watch")
+				return nil
+			}
+
+			// Find MCPServers that reference this MCPExternalAuthConfig
+			var requests []reconcile.Request
+			for _, server := range mcpServerList.Items {
+				if server.Spec.ExternalAuthConfigRef != nil &&
+					server.Spec.ExternalAuthConfigRef.Name == externalAuthConfig.Name {
+					requests = append(requests, reconcile.Request{
+						NamespacedName: types.NamespacedName{
+							Name:      server.Name,
+							Namespace: server.Namespace,
+						},
+					})
+				}
+			}
+
+			return requests
+		},
+	)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
 		Complete(r)
 }
 

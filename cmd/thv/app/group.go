@@ -12,7 +12,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
-	runtime "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/registry"
@@ -21,6 +21,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
+
+// mcpOptimizerGroup is an internal group created by the UI to support the MCP optimizer feature.
+const mcpOptimizerGroup = "__mcp-optimizer__"
 
 var groupCmd = &cobra.Command{
 	Use:   "group",
@@ -124,6 +127,10 @@ func groupListCmdFunc(cmd *cobra.Command, _ []string) error {
 
 	// Print group names in table format
 	for _, group := range allGroups {
+		// Hide the MCP optimizer internal group
+		if group.Name == mcpOptimizerGroup {
+			continue
+		}
 		fmt.Fprintf(w, "%s\n", group.Name)
 	}
 

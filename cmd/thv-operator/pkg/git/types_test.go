@@ -19,53 +19,40 @@ func TestCloneConfig_BasicValidation(t *testing.T) {
 		expectValid bool
 	}{
 		{
-			name: "valid config with URL and directory",
+			name: "valid config with URL",
 			config: CloneConfig{
-				URL:       testRepoURL,
-				Directory: "/tmp/repo",
+				URL: testRepoURL,
 			},
 			expectValid: true,
 		},
 		{
 			name: "valid config with branch",
 			config: CloneConfig{
-				URL:       testRepoURL,
-				Branch:    mainBranch,
-				Directory: "/tmp/repo",
+				URL:    testRepoURL,
+				Branch: mainBranch,
 			},
 			expectValid: true,
 		},
 		{
 			name: "valid config with tag",
 			config: CloneConfig{
-				URL:       testRepoURL,
-				Tag:       "v1.0.0",
-				Directory: "/tmp/repo",
+				URL: testRepoURL,
+				Tag: "v1.0.0",
 			},
 			expectValid: true,
 		},
 		{
 			name: "valid config with commit",
 			config: CloneConfig{
-				URL:       testRepoURL,
-				Commit:    "abc123def456",
-				Directory: "/tmp/repo",
+				URL:    testRepoURL,
+				Commit: "abc123def456",
 			},
 			expectValid: true,
 		},
 		{
 			name: "invalid config - empty URL",
 			config: CloneConfig{
-				URL:       "",
-				Directory: "/tmp/repo",
-			},
-			expectValid: false,
-		},
-		{
-			name: "invalid config - empty directory",
-			config: CloneConfig{
-				URL:       testRepoURL,
-				Directory: "",
+				URL: "",
 			},
 			expectValid: false,
 		},
@@ -76,14 +63,13 @@ func TestCloneConfig_BasicValidation(t *testing.T) {
 			t.Parallel()
 			// Basic validation - check that required fields are not empty
 			hasURL := tt.config.URL != ""
-			hasDirectory := tt.config.Directory != ""
-			isValid := hasURL && hasDirectory
+			isValid := hasURL
 
 			if tt.expectValid && !isValid {
-				t.Errorf("Expected config to be valid, but URL=%q, Directory=%q", tt.config.URL, tt.config.Directory)
+				t.Errorf("Expected config to be valid, but URL=%q", tt.config.URL)
 			}
 			if !tt.expectValid && isValid {
-				t.Errorf("Expected config to be invalid, but URL=%q, Directory=%q", tt.config.URL, tt.config.Directory)
+				t.Errorf("Expected config to be invalid, but URL=%q", tt.config.URL)
 			}
 		})
 	}
@@ -92,11 +78,10 @@ func TestCloneConfig_BasicValidation(t *testing.T) {
 func TestCloneConfig_Fields(t *testing.T) {
 	t.Parallel()
 	config := CloneConfig{
-		URL:       testRepoURL,
-		Branch:    "feature-branch",
-		Tag:       "v2.0.0",
-		Commit:    "def456abc789",
-		Directory: "/path/to/clone",
+		URL:    testRepoURL,
+		Branch: "feature-branch",
+		Tag:    "v2.0.0",
+		Commit: "def456abc789",
 	}
 
 	if config.URL != testRepoURL {
@@ -110,9 +95,6 @@ func TestCloneConfig_Fields(t *testing.T) {
 	}
 	if config.Commit != "def456abc789" {
 		t.Errorf("Expected Commit to be 'def456abc789', got %q", config.Commit)
-	}
-	if config.Directory != "/path/to/clone" {
-		t.Errorf("Expected Directory to be '/path/to/clone', got %q", config.Directory)
 	}
 }
 
@@ -154,16 +136,12 @@ func TestRepositoryInfo_EmptyValues(t *testing.T) {
 func TestCloneConfig_EmptyOptionalFields(t *testing.T) {
 	t.Parallel()
 	config := CloneConfig{
-		URL:       testRepoURL,
-		Directory: "/tmp/repo",
+		URL: testRepoURL,
 		// Branch, Tag, Commit are intentionally empty
 	}
 
 	if config.URL == "" {
 		t.Error("Expected URL to be set")
-	}
-	if config.Directory == "" {
-		t.Error("Expected Directory to be set")
 	}
 	if config.Branch != "" {
 		t.Errorf("Expected Branch to be empty, got %q", config.Branch)
@@ -188,25 +166,22 @@ func TestCloneConfig_MutuallyExclusiveFields(t *testing.T) {
 		{
 			name: "branch only",
 			config: CloneConfig{
-				URL:       testRepoURL,
-				Branch:    mainBranch,
-				Directory: "/tmp/repo",
+				URL:    testRepoURL,
+				Branch: mainBranch,
 			},
 		},
 		{
 			name: "tag only",
 			config: CloneConfig{
-				URL:       testRepoURL,
-				Tag:       "v1.0.0",
-				Directory: "/tmp/repo",
+				URL: testRepoURL,
+				Tag: "v1.0.0",
 			},
 		},
 		{
 			name: "commit only",
 			config: CloneConfig{
-				URL:       testRepoURL,
-				Commit:    "abc123",
-				Directory: "/tmp/repo",
+				URL:    testRepoURL,
+				Commit: "abc123",
 			},
 		},
 	}
@@ -238,11 +213,10 @@ func TestCloneConfig_AllFieldsSet(t *testing.T) {
 	t.Parallel()
 	// Test that we can set all fields
 	config := CloneConfig{
-		URL:       testRepoURL,
-		Branch:    "develop",
-		Tag:       "v1.2.3",
-		Commit:    "abcdef123456",
-		Directory: "/tmp/test-repo",
+		URL:    testRepoURL,
+		Branch: "develop",
+		Tag:    "v1.2.3",
+		Commit: "abcdef123456",
 	}
 
 	// Verify all fields are accessible
@@ -257,9 +231,6 @@ func TestCloneConfig_AllFieldsSet(t *testing.T) {
 	}
 	if config.Commit == "" {
 		t.Error("Commit should be set")
-	}
-	if config.Directory == "" {
-		t.Error("Directory should be set")
 	}
 }
 

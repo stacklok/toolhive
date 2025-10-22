@@ -1,15 +1,20 @@
-// Package git provides efficient Git repository operations for MCPRegistry sources.
+// Package git provides Git repository operations for MCPRegistry sources.
 //
-// This package implements a memory-optimized wrapper around the go-git library
-// to enable MCPRegistry resources to fetch registry data directly from Git
-// repositories using sparse checkout for minimal resource usage.
+// This package implements a thin wrapper around the go-git library to enable
+// MCPRegistry resources to fetch registry data directly from Git repositories.
+// It supports cloning repositories, checking out specific branches/tags/commits,
+// and retrieving file contents from the repository.
 //
 // Key Components:
 //
 // # Client Interface
 //
-// The Client interface provides a single, optimized method:
-//   - FetchFileSparse: Fetches a single file using sparse checkout with minimal memory usage
+// The Client interface defines the core Git operations:
+//   - Clone: Clone public repositories
+//   - Pull: Update existing repositories (planned for future implementation)
+//   - GetFileContent: Retrieve specific files from repositories
+//   - GetCommitHash: Get current commit hash for change detection
+//   - Cleanup: Remove local repository directories
 //
 // # Example Usage
 //
@@ -20,38 +25,37 @@
 //	    Directory: "/tmp/repo",
 //	}
 //
-//	content, err := client.FetchFileSparse(ctx, config, "registry.json")
+//	repoInfo, err := client.Clone(ctx, config)
 //	if err != nil {
 //	    return err
 //	}
-//	// No cleanup needed - temporary directory is managed internally
+//	defer client.Cleanup(repoInfo)
 //
-// # Performance Characteristics
-//
-// The sparse checkout implementation provides significant performance improvements:
-//   - Memory usage: ~5-10 MB vs 100-200 MB for full clone
-//   - Speed: 2-5x faster than full clone
-//   - Disk I/O: Only downloads required files and git objects
+//	content, err := client.GetFileContent(repoInfo, "registry.json")
+//	if err != nil {
+//	    return err
+//	}
 //
 // # Security Considerations
 //
-// The implementation includes multiple security layers:
-//   - Path traversal protection with filepath.Clean()
-//   - Absolute path rejection
-//   - Boundary validation to ensure files stay within repository
-//   - Safe file reading with validated paths
+// This package is designed to be used within a Kubernetes operator environment
+// where Git repositories contain MCP server registry data. Future versions will
+// include security hardening such as:
+//   - Repository URL validation to prevent SSRF attacks
+//   - Sandboxed Git operations
+//   - Secure credential management via Kubernetes secrets
 //
-// # Implementation Details
+// # Implementation Status
 //
 // Current implementation supports:
 //   - Public repository access via HTTPS
-//   - Shallow clones with depth=1 for branches/tags
-//   - Sparse checkout for minimal file retrieval
-//   - Branch, tag, and commit specification
-//   - Automatic temporary directory cleanup
+//   - Branch, tag, and commit checkout
+//   - File content retrieval
+//   - Temporary directory management
 //
 // Planned features:
 //   - Authentication for private repositories
 //   - Repository caching for performance
 //   - Webhook support for immediate sync triggers
+//   - Git LFS support for large files
 package git

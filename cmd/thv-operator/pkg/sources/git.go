@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"os"
 	"runtime"
 	"time"
 
@@ -17,14 +16,7 @@ import (
 const (
 	// DefaultRegistryDataFile is the default file name for the registry data in Git sources
 	DefaultRegistryDataFile = "registry.json"
-	// WorkspaceDirEnvVar is the environment variable name for the workspace directory
-	WorkspaceDirEnvVar = "WORKSPACE_DIR"
 )
-
-// getWorkspaceDir returns the workspace directory from env var or empty string for system temp
-func getWorkspaceDir() string {
-	return os.Getenv(WorkspaceDirEnvVar)
-}
 
 // GitSourceHandler handles registry data from Git repositories
 type GitSourceHandler struct {
@@ -82,48 +74,78 @@ func (*GitSourceHandler) Validate(source *mcpv1alpha1.MCPRegistrySource) error {
 	return nil
 }
 
-// FetchRegistry retrieves registry data from the Git repository using sparse checkout
-func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*FetchResult, error) {
-	logger := log.FromContext(ctx)
-	startTime := time.Now()
+// FetchRegistry retrieves registry data from the Git repository
+func (h *GitSourceHandler) fetchRegistryData(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) ([]byte, error) {
 
 	// Validate source configuration
 	if err := h.Validate(&mcpRegistry.Spec.Source); err != nil {
 		return nil, fmt.Errorf("source validation failed: %w", err)
 	}
 
-	// Create temporary directory for sparse checkout
-	tempDir, err := os.MkdirTemp(getWorkspaceDir(), "mcpregistry-git-*")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
+	// Prepare clone configuration
+	cloneConfig := &git.CloneConfig{
+		URL:    mcpRegistry.Spec.Source.Git.Repository,
+		Branch: mcpRegistry.Spec.Source.Git.Branch,
+		Tag:    mcpRegistry.Spec.Source.Git.Tag,
+		Commit: mcpRegistry.Spec.Source.Git.Commit,
 	}
 
-	// Ensure cleanup happens
+	// Clone the repository with timing and metrics
+	logger := log.FromContext(ctx)
+	startTime := time.Now()
+	logger.Info("Starting git clone",
+		"repository", cloneConfig.URL,
+		"branch", cloneConfig.Branch,
+		"tag", cloneConfig.Tag,
+		"commit", cloneConfig.Commit)
+
+	// Capture memory stats before operation
+	var memBefore runtime.MemStats
+	runtime.ReadMemStats(&memBefore)
+	repoInfo, err := h.gitClient.Clone(ctx, cloneConfig)
+	cloneDuration := time.Since(startTime)
+
+	if err != nil {
+		logger.Error(err, "Git clone failed",
+			"repository", cloneConfig.URL,
+			"duration", cloneDuration.String())
+		return nil, fmt.Errorf("failed to clone repository: %w", err)
+	}
+
+	logger.Info("Git clone completed",
+		"repository", cloneConfig.URL,
+		"duration", cloneDuration.String(),
+		"branch", repoInfo.Branch)
+
+	// Ensure cleanup
 	defer func() {
-		if err := os.RemoveAll(tempDir); err != nil {
-			logger.Error(err, "Failed to remove temporary directory", "temp_dir", tempDir)
+		if cleanupErr := h.gitClient.Cleanup(ctx, repoInfo); cleanupErr != nil {
+			// Log error but don't fail the operation
+			log.FromContext(ctx).Error(cleanupErr, "Failed to cleanup repository")
 		}
+		logMemoryStatsAfterOperation(ctx, &memBefore)
 	}()
 
-	// Get file path
+	// Get file content from repository
 	filePath := mcpRegistry.Spec.Source.Git.Path
 	if filePath == "" {
 		filePath = DefaultRegistryDataFile
 	}
 
-	// Prepare clone configuration
-	cloneConfig := &git.CloneConfig{
-		URL:       mcpRegistry.Spec.Source.Git.Repository,
-		Branch:    mcpRegistry.Spec.Source.Git.Branch,
-		Tag:       mcpRegistry.Spec.Source.Git.Tag,
-		Commit:    mcpRegistry.Spec.Source.Git.Commit,
-		Directory: tempDir,
+	registryData, err := h.gitClient.GetFileContent(repoInfo, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file %s from repository: %w", filePath, err)
 	}
 
-	// Fetch file using sparse checkout
-	registryData, err := h.gitClient.FetchFileSparse(ctx, cloneConfig, filePath)
+	return registryData, nil
+}
+
+// FetchRegistry retrieves registry data from the Git repository
+func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*FetchResult, error) {
+
+	registryData, err := h.fetchRegistryData(ctx, mcpRegistry)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch file %s from repository: %w", filePath, err)
+		return nil, fmt.Errorf("failed to fetch registry data: %w", err)
 	}
 
 	// Validate and parse registry data
@@ -132,98 +154,57 @@ func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1
 		return nil, fmt.Errorf("registry data validation failed: %w", err)
 	}
 
-	// Calculate hash from the registry data we already fetched (no second clone needed)
+	// Calculate hash using the SHA256 hash of the registry data
 	hash := fmt.Sprintf("%x", sha256.Sum256(registryData))
-
-	logger.Info("Registry fetch completed",
-		"registry", mcpRegistry.Name,
-		"servers", len(reg.Servers),
-		"duration", time.Since(startTime).String())
 
 	// Create and return fetch result with pre-calculated hash
 	return NewFetchResult(reg, hash, mcpRegistry.Spec.Source.Format), nil
 }
 
-// CurrentHash returns the current hash of the source data using sparse checkout
+// CurrentHash returns the current hash of the source data after fetching the registry data
 func (h *GitSourceHandler) CurrentHash(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (string, error) {
-	logger := log.FromContext(ctx)
-	startTime := time.Now()
-
-	// Capture memory stats before operation
-	var memBefore runtime.MemStats
-	runtime.ReadMemStats(&memBefore)
-
-	// Validate source configuration
-	if err := h.Validate(&mcpRegistry.Spec.Source); err != nil {
-		return "", fmt.Errorf("source validation failed: %w", err)
-	}
-
-	// Create temporary directory for sparse checkout
-	tempDir, err := os.MkdirTemp(getWorkspaceDir(), "mcpregistry-git-hash-*")
+	registryData, err := h.fetchRegistryData(ctx, mcpRegistry)
 	if err != nil {
-		return "", fmt.Errorf("failed to create temporary directory: %w", err)
-	}
-
-	defer os.RemoveAll(tempDir)
-	// Ensure cleanup happens
-	defer func() {
-		if err := os.RemoveAll(tempDir); err != nil {
-			logger.Error(err, "Failed to remove temp directory", "temp_dir", tempDir)
-		}
-
-		// Force garbage collection to release memory from git objects
-		runtime.GC()
-
-		// Log memory stats after cleanup and GC
-		var memAfter runtime.MemStats
-		runtime.ReadMemStats(&memAfter)
-
-		// Calculate delta in MB with proper signed arithmetic
-		allocAfterMB := memAfter.Alloc / (1024 * 1024)
-		allocBeforeMB := memBefore.Alloc / (1024 * 1024)
-		var deltaMB int64
-		if allocAfterMB >= allocBeforeMB {
-			// #nosec G115 -- Memory delta in MB will never exceed int64 max
-			deltaMB = int64(allocAfterMB - allocBeforeMB)
-		} else {
-			// #nosec G115 -- Memory delta in MB will never exceed int64 max
-			deltaMB = -int64(allocBeforeMB - allocAfterMB)
-		}
-
-		logger.Info("Hash calculation cleanup completed",
-			"registry", mcpRegistry.Name,
-			"alloc_mb", allocAfterMB,
-			"delta_mb", deltaMB)
-	}()
-
-	// Get file path
-	filePath := mcpRegistry.Spec.Source.Git.Path
-	if filePath == "" {
-		filePath = DefaultRegistryDataFile
-	}
-
-	// Prepare clone configuration
-	cloneConfig := &git.CloneConfig{
-		URL:       mcpRegistry.Spec.Source.Git.Repository,
-		Branch:    mcpRegistry.Spec.Source.Git.Branch,
-		Tag:       mcpRegistry.Spec.Source.Git.Tag,
-		Commit:    mcpRegistry.Spec.Source.Git.Commit,
-		Directory: tempDir,
-	}
-
-	// Fetch file using sparse checkout
-	registryData, err := h.gitClient.FetchFileSparse(ctx, cloneConfig, filePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch file %s from repository: %w", filePath, err)
+		return "", fmt.Errorf("failed to fetch registry data: %w", err)
 	}
 
 	// Compute and return hash of the data
 	hash := fmt.Sprintf("%x", sha256.Sum256(registryData))
-
-	logger.Info("Hash calculation completed",
-		"registry", mcpRegistry.Name,
-		"hash", hash[:12]+"...",
-		"duration", time.Since(startTime).String())
-
 	return hash, nil
+}
+
+// logMemoryStatsAfterOperation logs the memory stats after an operation
+func logMemoryStatsAfterOperation(ctx context.Context, memBefore *runtime.MemStats) {
+	// Log memory stats after cleanup and GC
+	var memAfter runtime.MemStats
+	runtime.ReadMemStats(&memAfter)
+
+	// Calculate delta in MB with proper signed arithmetic
+	allocAfterMB := memAfter.Alloc / (1024 * 1024)
+	allocBeforeMB := memBefore.Alloc / (1024 * 1024)
+	var deltaMB int64
+	if allocAfterMB >= allocBeforeMB {
+		// #nosec G115 -- Memory delta in MB will never exceed int64 max
+		deltaMB = int64(allocAfterMB - allocBeforeMB)
+	} else {
+		// #nosec G115 -- Memory delta in MB will never exceed int64 max
+		deltaMB = -int64(allocBeforeMB - allocAfterMB)
+	}
+
+	// Calculate additional memory metrics for container memory debugging
+	// These help explain the difference between Go heap and container RSS
+	sysMB := memAfter.Sys / (1024 * 1024)                   // Total memory from OS
+	heapAllocMB := memAfter.HeapAlloc / (1024 * 1024)       // Bytes allocated on heap
+	heapSysMB := memAfter.HeapSys / (1024 * 1024)           // Bytes obtained from OS for heap
+	heapReleasedMB := memAfter.HeapReleased / (1024 * 1024) // Bytes returned to OS
+	heapIdleMB := memAfter.HeapIdle / (1024 * 1024)         // Bytes in idle spans
+
+	log.FromContext(ctx).Info("Memory stats after operation",
+		"alloc_mb", allocAfterMB,
+		"delta_mb", deltaMB,
+		"sys_mb", sysMB,
+		"heap_alloc_mb", heapAllocMB,
+		"heap_sys_mb", heapSysMB,
+		"heap_idle_mb", heapIdleMB,
+		"heap_released_mb", heapReleasedMB)
 }

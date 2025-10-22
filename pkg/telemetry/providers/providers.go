@@ -37,7 +37,8 @@ type Config struct {
 	EnablePrometheusMetricsPath bool // EnablePrometheusMetricsPath enables Prometheus /metrics endpoint
 
 	// Custom attributes
-	CustomAttributes map[string]string // CustomAttributes are additional resource attributes to include (as map for JSON serialization)
+	// CustomAttributes are additional resource attributes to include (as map for JSON serialization)
+	CustomAttributes map[string]string
 }
 
 // ProviderOption is an option type used to configure the telemetry providers

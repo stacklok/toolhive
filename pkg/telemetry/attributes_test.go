@@ -7,6 +7,7 @@ import (
 )
 
 func TestParseCustomAttributes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		input   string
@@ -138,7 +139,9 @@ func TestParseCustomAttributes(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // capture range variable
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := ParseCustomAttributes(tt.input)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseCustomAttributes() error = %v, wantErr %v", err, tt.wantErr)
@@ -171,6 +174,7 @@ func TestParseCustomAttributes(t *testing.T) {
 }
 
 func TestConvertMapToAttributes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input map[string]string
@@ -204,7 +208,9 @@ func TestConvertMapToAttributes(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt // capture range variable
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := ConvertMapToAttributes(tt.input)
 			if len(got) != len(tt.want) {
 				t.Errorf("ConvertMapToAttributes() got %d attributes, want %d", len(got), len(tt.want))

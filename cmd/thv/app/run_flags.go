@@ -199,7 +199,7 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringArrayVar(&config.OtelEnvironmentVariables, "otel-env-vars", nil,
 		"Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)")
 	cmd.Flags().StringVar(&config.OtelCustomAttributes, "otel-custom-attributes", "",
-		"Custom resource attributes for OpenTelemetry in key=value format (e.g., server_type=production,region=us-east-1,team=platform)")
+		"Custom resource attributes for OpenTelemetry in key=value format (e.g., server_type=prod,region=us-east-1,team=platform)")
 
 	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")

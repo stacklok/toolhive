@@ -187,12 +187,7 @@ func (c *Client) DeployWorkload(
 	if options != nil {
 		ignoreConfig = options.IgnoreConfig
 	}
-	// Get network mode from options if available
-	networkMode := ""
-	if options != nil && options.NetworkMode != "" {
-		networkMode = options.NetworkMode
-	}
-	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType, ignoreConfig, networkMode)
+	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType, ignoreConfig)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get permission config: %w", err)
 	}
@@ -766,12 +761,17 @@ func (c *Client) getPermissionConfigFromProfile(
 	profile *permissions.Profile,
 	transportType string,
 	ignoreConfig *ignore.Config,
-	networkMode string,
 ) (*runtime.PermissionConfig, error) {
+	// Get network mode from permission profile
+	networkMode := ""
+	if profile.Network != nil && profile.Network.Mode != "" {
+		networkMode = profile.Network.Mode
+	}
+
 	// Start with a default permission config
 	config := &runtime.PermissionConfig{
 		Mounts:      []runtime.Mount{},
-		NetworkMode: networkMode, // Use the provided network mode, fall back to blank if empty
+		NetworkMode: networkMode,
 		CapDrop:     []string{"ALL"},
 		CapAdd:      []string{},
 		SecurityOpt: []string{"label:disable"},

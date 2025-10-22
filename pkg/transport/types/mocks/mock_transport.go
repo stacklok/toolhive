@@ -254,17 +254,17 @@ func (mr *MockTransportMockRecorder) ProxyPort() *gomock.Call {
 }
 
 // Setup mocks base method.
-func (m *MockTransport) Setup(ctx context.Context, arg1 runtime.Deployer, containerName, image string, cmdArgs []string, envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string, isolateNetwork bool, ignoreConfig *ignore.Config, networkMode string) error {
+func (m *MockTransport) Setup(ctx context.Context, arg1 runtime.Deployer, containerName, image string, cmdArgs []string, envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string, isolateNetwork bool, ignoreConfig *ignore.Config) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Setup", ctx, arg1, containerName, image, cmdArgs, envVars, labels, permissionProfile, k8sPodTemplatePatch, isolateNetwork, ignoreConfig, networkMode)
+	ret := m.ctrl.Call(m, "Setup", ctx, arg1, containerName, image, cmdArgs, envVars, labels, permissionProfile, k8sPodTemplatePatch, isolateNetwork, ignoreConfig)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Setup indicates an expected call of Setup.
-func (mr *MockTransportMockRecorder) Setup(ctx, arg1, containerName, image, cmdArgs, envVars, labels, permissionProfile, k8sPodTemplatePatch, isolateNetwork, ignoreConfig, networkMode any) *gomock.Call {
+func (mr *MockTransportMockRecorder) Setup(ctx, arg1, containerName, image, cmdArgs, envVars, labels, permissionProfile, k8sPodTemplatePatch, isolateNetwork, ignoreConfig any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Setup", reflect.TypeOf((*MockTransport)(nil).Setup), ctx, arg1, containerName, image, cmdArgs, envVars, labels, permissionProfile, k8sPodTemplatePatch, isolateNetwork, ignoreConfig, networkMode)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Setup", reflect.TypeOf((*MockTransport)(nil).Setup), ctx, arg1, containerName, image, cmdArgs, envVars, labels, permissionProfile, k8sPodTemplatePatch, isolateNetwork, ignoreConfig)
 }
 
 // Start mocks base method.

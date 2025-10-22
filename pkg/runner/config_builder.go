@@ -41,6 +41,8 @@ type runConfigBuilder struct {
 	// Store ports separately for proper validation
 	port       int
 	targetPort int
+	// Store network mode to apply to permission profile after it's loaded
+	networkMode string
 	// Build context determines which validation and features are enabled
 	buildContext BuildContext
 }
@@ -227,10 +229,11 @@ func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	}
 }
 
-// WithNetworkMode sets the network mode for the container
+// WithNetworkMode sets the network mode for the container.
+// The network mode will be applied to the permission profile after it is loaded.
 func WithNetworkMode(networkMode string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
-		b.config.NetworkMode = networkMode
+		b.networkMode = networkMode
 		return nil
 	}
 }
@@ -778,6 +781,16 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	c.PermissionProfile, err = b.loadPermissionProfile(imageMetadata)
 	if err != nil {
 		return err
+	}
+
+	// Apply network mode to permission profile if specified
+	if b.networkMode != "" {
+		// Ensure Network permissions struct exists
+		if c.PermissionProfile.Network == nil {
+			c.PermissionProfile.Network = &permissions.NetworkPermissions{}
+		}
+		c.PermissionProfile.Network.Mode = b.networkMode
+		logger.Infof("Setting network mode to '%s' on permission profile", b.networkMode)
 	}
 
 	// Process volume mounts

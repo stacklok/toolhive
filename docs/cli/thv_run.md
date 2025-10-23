@@ -110,6 +110,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --oidc-audience string                       Expected audience for the token
       --oidc-client-id string                      OIDC client ID
       --oidc-client-secret string                  OIDC client secret (optional, for introspection)
+      --oidc-insecure-allow-http                   Allow HTTP (non-HTTPS) OIDC issuers for local development/testing (WARNING: Insecure!)
       --oidc-introspection-url string              URL for token introspection endpoint
       --oidc-issuer string                         OIDC issuer URL (e.g., https://accounts.google.com)
       --oidc-jwks-url string                       URL to fetch the JWKS from

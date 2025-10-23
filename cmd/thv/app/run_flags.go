@@ -66,6 +66,7 @@ type RunFlags struct {
 	ThvCABundle        string
 	JWKSAuthTokenFile  string
 	JWKSAllowPrivateIP bool
+	InsecureAllowHTTP  bool
 
 	// OAuth discovery configuration
 	ResourceURL string
@@ -175,6 +176,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Path to file containing bearer token for authenticating JWKS/OIDC requests")
 	cmd.Flags().BoolVar(&config.JWKSAllowPrivateIP, "jwks-allow-private-ip", false,
 		"Allow JWKS/OIDC endpoints on private IP addresses (use with caution)")
+	cmd.Flags().BoolVar(&config.InsecureAllowHTTP, "oidc-insecure-allow-http", false,
+		"Allow HTTP (non-HTTPS) OIDC issuers for local development/testing (WARNING: Insecure!)")
 
 	// Remote authentication flags
 	AddRemoteAuthFlags(cmd, &config.RemoteAuthFlags)
@@ -534,8 +537,10 @@ func configureMiddlewareAndOptions(
 
 	// Set additional configurations that are still needed in old format for other parts of the system
 	opts = append(opts,
-		runner.WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
-			runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP, false,
+		runner.WithOIDCConfig(
+			oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
+			runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile, runFlags.ResourceURL,
+			runFlags.JWKSAllowPrivateIP, runFlags.InsecureAllowHTTP,
 		),
 		runner.WithTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
 			runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, runFlags.OtelServiceName,

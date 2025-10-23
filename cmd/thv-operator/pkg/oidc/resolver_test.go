@@ -225,6 +225,43 @@ func TestResolve_ConfigMapType(t *testing.T) {
 			},
 		},
 		{
+			name: "configmap with insecureAllowHTTP enabled",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "insecure-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Port: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+							Name: "insecure-config",
+						},
+					},
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "insecure-config",
+					Namespace: "test-ns",
+				},
+				Data: map[string]string{
+					"issuer":             "http://localhost:8080/realms/test",
+					"audience":           "test-audience",
+					"jwksAllowPrivateIP": "true",
+					"insecureAllowHTTP":  "true",
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer:             "http://localhost:8080/realms/test",
+				Audience:           "test-audience",
+				ResourceURL:        "http://insecure-server.test-ns.svc.cluster.local:8080",
+				JWKSAllowPrivateIP: true,
+				InsecureAllowHTTP:  true,
+			},
+		},
+		{
 			name: "configmap not found",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -361,6 +398,36 @@ func TestResolve_InlineType(t *testing.T) {
 				Issuer:      "https://inline.example.com",
 				Audience:    "inline-audience",
 				ResourceURL: "https://custom-resource.example.com",
+			},
+		},
+		{
+			name: "inline with insecureAllowHTTP enabled",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "insecure-inline-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Port: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:             "http://localhost:8080/realms/test",
+							Audience:           "test-audience",
+							JWKSURL:            "http://localhost:8080/realms/test/protocol/openid-connect/certs",
+							JWKSAllowPrivateIP: true,
+							InsecureAllowHTTP:  true,
+						},
+					},
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer:             "http://localhost:8080/realms/test",
+				Audience:           "test-audience",
+				JWKSURL:            "http://localhost:8080/realms/test/protocol/openid-connect/certs",
+				ResourceURL:        "http://insecure-inline-server.test-ns.svc.cluster.local:8080",
+				JWKSAllowPrivateIP: true,
+				InsecureAllowHTTP:  true,
 			},
 		},
 		{

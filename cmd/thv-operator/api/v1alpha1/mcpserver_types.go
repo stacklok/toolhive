@@ -483,6 +483,13 @@ type InlineOIDCConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	JWKSAllowPrivateIP bool `json:"jwksAllowPrivateIP"`
+
+	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+	// WARNING: This is insecure and should NEVER be used in production
+	// Only enable for local development, testing, or trusted internal networks
+	// +kubebuilder:default=false
+	// +optional
+	InsecureAllowHTTP bool `json:"insecureAllowHTTP"`
 }
 
 // AuthzConfigRef defines a reference to authorization configuration

@@ -320,18 +320,20 @@ func WithOIDCConfig(
 	jwksAuthTokenFile string,
 	resourceURL string,
 	jwksAllowPrivateIP bool,
+	insecureAllowHTTP bool,
 ) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
 			oidcClientID != "" || oidcClientSecret != "" {
 			b.config.OIDCConfig = &auth.TokenValidatorConfig{
-				Issuer:           oidcIssuer,
-				Audience:         oidcAudience,
-				JWKSURL:          oidcJwksURL,
-				IntrospectionURL: oidcIntrospectionURL,
-				ClientID:         oidcClientID,
-				ClientSecret:     oidcClientSecret,
-				AllowPrivateIP:   jwksAllowPrivateIP,
+				Issuer:            oidcIssuer,
+				Audience:          oidcAudience,
+				JWKSURL:           oidcJwksURL,
+				IntrospectionURL:  oidcIntrospectionURL,
+				ClientID:          oidcClientID,
+				ClientSecret:      oidcClientSecret,
+				AllowPrivateIP:    jwksAllowPrivateIP,
+				InsecureAllowHTTP: insecureAllowHTTP,
 			}
 		}
 

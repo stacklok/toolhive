@@ -390,6 +390,10 @@ type TokenValidatorConfig struct {
 	// AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
 	AllowPrivateIP bool
 
+	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+	// WARNING: This is insecure and should NEVER be used in production
+	InsecureAllowHTTP bool
+
 	// IntrospectionURL is the optional introspection endpoint for validating tokens
 	IntrospectionURL string
 
@@ -405,7 +409,13 @@ func discoverOIDCConfiguration(
 	ctx context.Context,
 	issuer, caCertPath, authTokenFile string,
 	allowPrivateIP bool,
+	insecureAllowHTTP bool,
 ) (*OIDCDiscoveryDocument, error) {
+	// Validate issuer URL scheme
+	if err := networking.ValidateEndpointURLWithInsecure(issuer, insecureAllowHTTP); err != nil {
+		return nil, fmt.Errorf("invalid issuer URL: %w", err)
+	}
+
 	// Construct the well-known endpoint URL
 	wellKnownURL := strings.TrimSuffix(issuer, "/") + "/.well-known/openid-configuration"
 
@@ -424,6 +434,7 @@ func discoverOIDCConfiguration(
 		WithCABundle(caCertPath).
 		WithTokenFromFile(authTokenFile).
 		WithPrivateIPs(allowPrivateIP).
+		WithInsecureAllowHTTP(insecureAllowHTTP).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
@@ -471,11 +482,23 @@ func NewTokenValidatorConfig(issuer, audience, jwksURL, clientID string, clientS
 
 // NewTokenValidator creates a new token validator.
 func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*TokenValidator, error) {
+	// Log warning if insecure HTTP is enabled
+	if config.InsecureAllowHTTP {
+		logger.Warnf(
+			"WARNING: InsecureAllowHTTP is enabled for issuer '%s' - "+
+				"HTTP OIDC URLs are allowed. This is INSECURE and should NEVER be used in production!",
+			config.Issuer,
+		)
+	}
+
 	jwksURL := config.JWKSURL
 
 	// If JWKS URL is not provided but issuer is, try to discover it
 	if jwksURL == "" && config.Issuer != "" {
-		doc, err := discoverOIDCConfiguration(ctx, config.Issuer, config.CACertPath, config.AuthTokenFile, config.AllowPrivateIP)
+		doc, err := discoverOIDCConfiguration(
+			ctx, config.Issuer, config.CACertPath, config.AuthTokenFile,
+			config.AllowPrivateIP, config.InsecureAllowHTTP,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrFailedToDiscoverOIDC, err)
 		}
@@ -492,6 +515,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 		WithCABundle(config.CACertPath).
 		WithPrivateIPs(config.AllowPrivateIP).
 		WithTokenFromFile(config.AuthTokenFile).
+		WithInsecureAllowHTTP(config.InsecureAllowHTTP).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)

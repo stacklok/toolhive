@@ -185,6 +185,13 @@ spec:
                         description: ClientSecret is the client secret for introspection
                           (optional)
                         type: string
+                      insecureAllowHTTP:
+                        default: false
+                        description: |-
+                          InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+                          WARNING: This is insecure and should NEVER be used in production
+                          Only enable for local development, testing, or trusted internal networks
+                        type: boolean
                       introspectionUrl:
                         description: IntrospectionURL is the URL for token introspection
                           endpoint

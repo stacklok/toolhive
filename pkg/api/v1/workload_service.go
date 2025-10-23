@@ -208,7 +208,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		runner.WithTransportAndPorts(req.Transport, req.ProxyPort, req.TargetPort),
 		runner.WithAuditEnabled(false, ""),
 		runner.WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID,
-			"", "", "", "", "", false),
+			"", "", "", "", "", false, false),
 		runner.WithToolsFilter(req.ToolsFilter),
 		runner.WithToolsOverride(toolsOverride),
 		runner.WithTelemetryConfig("", false, false, false, "", 0.0, nil, false, nil),

@@ -577,8 +577,16 @@ func TestDefaultManager_restartRemoteWorkload(t *testing.T) {
 					Name:   "remote-workload",
 					Status: runtime.WorkloadStatusRunning,
 				}, nil)
+				// With the fix, restart now stops the workload first when it's already running
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(12345, nil)
+				// Allow any subsequent status updates
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+				sm.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 			},
-			expectError: false,
+			// With the fix, restart now proceeds to load state which fails in tests (can't mock runner.LoadState easily)
+			expectError: true,
+			errorMsg:    "failed to load state",
 		},
 		{
 			name:         "status manager error",
@@ -643,7 +651,7 @@ func TestDefaultManager_restartContainerWorkload(t *testing.T) {
 				// Mock container info
 				rm.EXPECT().GetWorkloadInfo(gomock.Any(), "container-workload").Return(runtime.ContainerInfo{
 					Name:  "container-workload",
-					State: "running",
+					State: runtime.WorkloadStatusRunning,
 					Labels: map[string]string{
 						"toolhive.base-name": "container-workload",
 					},
@@ -652,8 +660,17 @@ func TestDefaultManager_restartContainerWorkload(t *testing.T) {
 					Name:   "container-workload",
 					Status: runtime.WorkloadStatusRunning,
 				}, nil)
+				// With the fix, restart now stops the workload first when it's already running
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "container-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(12345, nil)
+				rm.EXPECT().StopWorkload(gomock.Any(), "container-workload").Return(nil)
+				// Allow any subsequent status updates
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+				sm.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 			},
-			expectError: false,
+			// With the fix, restart now proceeds to load state which fails in tests (can't mock runner.LoadState easily)
+			expectError: true,
+			errorMsg:    "failed to load state",
 		},
 		{
 			name:         "status manager error",
@@ -706,104 +723,86 @@ func TestDefaultManager_restartContainerWorkload(t *testing.T) {
 	}
 }
 
-// TestDefaultManager_restartLogicConsistency tests that both remote and container workloads
-// use the same consistent logic for checking if they're already running
+// TestDefaultManager_restartLogicConsistency tests that restart calls stop logic when workload is already running
 func TestDefaultManager_restartLogicConsistency(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name              string
-		workloadName      string
-		workloadStatus    runtime.WorkloadStatus
-		expectEarlyReturn bool
-	}{
-		{
-			name:              "workload already running - should return early",
-			workloadName:      "test-workload",
-			workloadStatus:    runtime.WorkloadStatusRunning,
-			expectEarlyReturn: true,
-		},
-	}
+	t.Run("remote_workload_already_running_calls_stop", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+		statusMgr := statusMocks.NewMockStatusManager(ctrl)
 
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
+		statusMgr.EXPECT().GetWorkload(gomock.Any(), "test-workload").Return(core.Workload{
+			Name:   "test-workload",
+			Status: runtime.WorkloadStatusRunning,
+		}, nil)
 
-			statusMgr := statusMocks.NewMockStatusManager(ctrl)
+		// When workload is running, expect stop logic to be called
+		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-base").Return(12345, nil)
 
-			// Test remote workload logic
-			t.Run("remote_workload", func(t *testing.T) {
-				t.Parallel()
-				statusMgr.EXPECT().GetWorkload(gomock.Any(), tt.workloadName).Return(core.Workload{
-					Name:   tt.workloadName,
-					Status: tt.workloadStatus,
-				}, nil)
+		// Allow any subsequent status updates - we don't care about the exact sequence
+		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+		statusMgr.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 
-				manager := &defaultManager{
-					statuses: statusMgr,
-				}
+		manager := &defaultManager{
+			statuses: statusMgr,
+		}
 
-				runConfig := &runner.RunConfig{
-					BaseName:  "test-base",
-					RemoteURL: "http://example.com",
-				}
+		runConfig := &runner.RunConfig{
+			BaseName:  "test-base",
+			RemoteURL: "http://example.com",
+		}
 
-				err := manager.restartRemoteWorkload(context.Background(), tt.workloadName, runConfig, false)
+		_ = manager.restartRemoteWorkload(context.Background(), "test-workload", runConfig, false)
 
-				if tt.expectEarlyReturn {
-					// Should return early without error when already running
-					require.NoError(t, err)
-				} else {
-					// Should fail because we can't mock runner.LoadState
-					require.Error(t, err)
-					assert.Contains(t, err.Error(), "failed to load state")
-				}
-			})
+		// The important part is that the stop methods were called (verified by mock expectations)
+		// We don't care if the restart ultimately succeeds or fails
+	})
 
-			// Test container workload logic
-			t.Run("container_workload", func(t *testing.T) {
-				t.Parallel()
-				ctrl2 := gomock.NewController(t)
-				defer ctrl2.Finish()
+	t.Run("container_workload_already_running_calls_stop", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
 
-				statusMgr2 := statusMocks.NewMockStatusManager(ctrl2)
-				runtimeMgr := runtimeMocks.NewMockRuntime(ctrl2)
+		statusMgr := statusMocks.NewMockStatusManager(ctrl)
+		runtimeMgr := runtimeMocks.NewMockRuntime(ctrl)
 
-				statusMgr2.EXPECT().GetWorkload(gomock.Any(), tt.workloadName).Return(core.Workload{
-					Name:   tt.workloadName,
-					Status: tt.workloadStatus,
-				}, nil)
+		statusMgr.EXPECT().GetWorkload(gomock.Any(), "test-workload").Return(core.Workload{
+			Name:   "test-workload",
+			Status: runtime.WorkloadStatusRunning,
+		}, nil)
 
-				// Mock container info
-				runtimeMgr.EXPECT().GetWorkloadInfo(gomock.Any(), tt.workloadName).Return(runtime.ContainerInfo{
-					Name:  tt.workloadName,
-					State: "running",
-					Labels: map[string]string{
-						"toolhive.base-name": tt.workloadName,
-					},
-				}, nil)
+		containerInfo := runtime.ContainerInfo{
+			Name:  "test-workload",
+			State: runtime.WorkloadStatusRunning,
+			Labels: map[string]string{
+				"toolhive.base-name": "test-workload",
+			},
+		}
+		runtimeMgr.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").Return(containerInfo, nil)
 
-				manager := &defaultManager{
-					statuses: statusMgr2,
-					runtime:  runtimeMgr,
-				}
+		// When workload is running, expect stop logic to be called
+		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(12345, nil)
+		runtimeMgr.EXPECT().StopWorkload(gomock.Any(), "test-workload").Return(nil)
 
-				err := manager.restartContainerWorkload(context.Background(), tt.workloadName, false)
+		// Allow any subsequent status updates (starting, error, etc.) - we don't care about the exact sequence
+		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+		statusMgr.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 
-				if tt.expectEarlyReturn {
-					// Should return early without error when already running
-					require.NoError(t, err)
-				} else {
-					// Should fail because we can't mock runner.LoadState
-					require.Error(t, err)
-					assert.Contains(t, err.Error(), "failed to load state")
-				}
-			})
-		})
-	}
+		manager := &defaultManager{
+			statuses: statusMgr,
+			runtime:  runtimeMgr,
+		}
+
+		_ = manager.restartContainerWorkload(context.Background(), "test-workload", false)
+
+		// The important part is that the stop methods were called (verified by mock expectations)
+		// We don't care if the restart ultimately succeeds or fails
+	})
 }
 
 func TestDefaultManager_RunWorkload(t *testing.T) {

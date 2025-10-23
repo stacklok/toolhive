@@ -812,10 +812,24 @@ func (d *defaultManager) restartRemoteWorkload(
 		return err
 	}
 
-	// Check if already running - compare status to WorkloadStatusRunning
+	// If workload is already running, we need to stop it first (including the supervisor process)
+	// This ensures restart performs a proper stop->start cycle and doesn't leave zombie supervisors
 	if err == nil && workload.Status == rt.WorkloadStatusRunning {
-		logger.Infof("Remote workload %s is already running", name)
-		return nil
+		logger.Infof("Remote workload %s is already running, stopping it before restart", name)
+
+		// Set status to stopping
+		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
+			logger.Debugf("Failed to set workload %s status to stopping: %v", name, err)
+		}
+
+		// Stop the supervisor process (proxy) first
+		// This is critical to avoid leaving orphaned supervisor processes
+		d.stopProxyIfNeeded(ctx, name, runConfig.BaseName)
+
+		// Clean up client configurations
+		if err := removeClientConfigurations(name, false); err != nil {
+			logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+		}
 	}
 
 	// Load runner configuration from state
@@ -837,6 +851,8 @@ func (d *defaultManager) restartRemoteWorkload(
 }
 
 // restartContainerWorkload handles restarting a container-based workload
+//
+//nolint:gocyclo // Complexity is justified - handles multiple restart scenarios and edge cases
 func (d *defaultManager) restartContainerWorkload(ctx context.Context, name string, foreground bool) error {
 	// Get container info to resolve partial names and extract proper workload name
 	var containerName string
@@ -864,10 +880,47 @@ func (d *defaultManager) restartContainerWorkload(ctx context.Context, name stri
 		return err
 	}
 
-	// Check if already running - compare status to WorkloadStatusRunning
+	// Check if we need to stop the workload before restarting
+	shouldStop := false
 	if err == nil && workload.Status == rt.WorkloadStatusRunning {
-		logger.Infof("Container %s is already running", containerName)
-		return nil
+		// Workload status shows running
+		shouldStop = true
+	} else if container.IsRunning() {
+		// Container is running but status is not running (inconsistent state)
+		shouldStop = true
+	}
+
+	// If we need to stop, do it now (including the supervisor process)
+	// This ensures restart performs a proper stop->start cycle and doesn't leave zombie supervisors
+	if shouldStop {
+		logger.Infof("Container %s is running, stopping it before restart", containerName)
+
+		// Set status to stopping
+		if err := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStopping, ""); err != nil {
+			logger.Debugf("Failed to set workload %s status to stopping: %v", workloadName, err)
+		}
+
+		// Stop the supervisor process (proxy) first
+		// This is critical to avoid leaving orphaned supervisor processes
+		if !labels.IsAuxiliaryWorkload(container.Labels) {
+			d.stopProcess(ctx, workloadName)
+		}
+
+		// Now stop the container if it's running
+		if container.IsRunning() {
+			if err := d.runtime.StopWorkload(ctx, containerName); err != nil {
+				if statusErr := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusError, err.Error()); statusErr != nil {
+					logger.Warnf("Failed to set workload %s status to error: %v", workloadName, statusErr)
+				}
+				return fmt.Errorf("failed to stop container %s: %v", containerName, err)
+			}
+			logger.Infof("Container %s stopped", containerName)
+		}
+
+		// Clean up client configurations
+		if err := removeClientConfigurations(workloadName, labels.IsAuxiliaryWorkload(container.Labels)); err != nil {
+			logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+		}
 	}
 
 	// Load runner configuration from state
@@ -881,18 +934,6 @@ func (d *defaultManager) restartContainerWorkload(ctx context.Context, name stri
 		logger.Warnf("Failed to set workload %s status to starting: %v", workloadName, err)
 	}
 	logger.Infof("Loaded configuration from state for %s", workloadName)
-
-	// Stop container if needed - since workload is not in running status, check if container needs stopping
-	if container.IsRunning() {
-		logger.Infof("Container %s is running but workload is not in running state. Stopping container...", containerName)
-		if err := d.runtime.StopWorkload(ctx, containerName); err != nil {
-			if statusErr := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusError, ""); statusErr != nil {
-				logger.Warnf("Failed to set workload %s status to error: %v", workloadName, statusErr)
-			}
-			return fmt.Errorf("failed to stop container %s: %v", containerName, err)
-		}
-		logger.Infof("Container %s stopped", containerName)
-	}
 
 	// Start the workload with background context to avoid timeout cancellation
 	// The ctx with AsyncOperationTimeout is only for the restart setup operations,

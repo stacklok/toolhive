@@ -434,6 +434,7 @@ func discoverOIDCConfiguration(
 		WithCABundle(caCertPath).
 		WithTokenFromFile(authTokenFile).
 		WithPrivateIPs(allowPrivateIP).
+		WithInsecureAllowHTTP(insecureAllowHTTP).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
@@ -514,6 +515,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 		WithCABundle(config.CACertPath).
 		WithPrivateIPs(config.AllowPrivateIP).
 		WithTokenFromFile(config.AuthTokenFile).
+		WithInsecureAllowHTTP(config.InsecureAllowHTTP).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)

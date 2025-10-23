@@ -41,12 +41,6 @@ func DiscoverOIDCEndpoints(ctx context.Context, issuer string) (*OIDCDiscoveryDo
 	return discoverOIDCEndpointsWithClient(ctx, issuer, nil, false)
 }
 
-// DiscoverOIDCEndpointsInsecure discovers OAuth endpoints from an OIDC issuer, allowing HTTP URLs
-// WARNING: This is insecure and should NEVER be used in production
-func DiscoverOIDCEndpointsInsecure(ctx context.Context, issuer string, insecureAllowHTTP bool) (*OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClient(ctx, issuer, nil, insecureAllowHTTP)
-}
-
 // DiscoverActualIssuer discovers the actual issuer from a URL that might be different from the issuer itself
 // This is useful when the resource metadata points to a URL that hosts the authorization server metadata
 // but the actual issuer identifier is different (e.g., Stripe's case)

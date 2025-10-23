@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauth"
 	"github.com/stacklok/toolhive/pkg/process"
@@ -79,6 +80,7 @@ type RunFlags struct {
 	OtelInsecure                    bool
 	OtelEnablePrometheusMetricsPath bool
 	OtelEnvironmentVariables        []string // renamed binding to otel-env-vars
+	OtelCustomAttributes            string   // Custom attributes in key=value format
 
 	// Network isolation
 	IsolateNetwork bool
@@ -199,6 +201,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Enable Prometheus-style /metrics endpoint on the main transport port")
 	cmd.Flags().StringArrayVar(&config.OtelEnvironmentVariables, "otel-env-vars", nil,
 		"Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)")
+	cmd.Flags().StringVar(&config.OtelCustomAttributes, "otel-custom-attributes", "",
+		"Custom resource attributes for OpenTelemetry in key=value format (e.g., server_type=prod,region=us-east-1,team=platform)")
 
 	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
@@ -321,7 +325,7 @@ func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *teleme
 
 	return createTelemetryConfig(finalOtelEndpoint, finalOtelEnablePrometheusMetricsPath,
 		runFlags.OtelServiceName, runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, finalOtelSamplingRate,
-		runFlags.OtelHeaders, finalOtelInsecure, finalOtelEnvironmentVariables)
+		runFlags.OtelHeaders, finalOtelInsecure, finalOtelEnvironmentVariables, runFlags.OtelCustomAttributes)
 }
 
 // setupRuntimeAndValidation creates container runtime and selects environment variable validator
@@ -779,7 +783,7 @@ func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionUR
 // createTelemetryConfig creates a telemetry configuration if any telemetry parameters are provided
 func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
 	otelServiceName string, otelTracingEnabled bool, otelMetricsEnabled bool, otelSamplingRate float64, otelHeaders []string,
-	otelInsecure bool, otelEnvironmentVariables []string) *telemetry.Config {
+	otelInsecure bool, otelEnvironmentVariables []string, otelCustomAttributes string) *telemetry.Config {
 	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
 		return nil
 	}
@@ -812,6 +816,14 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		}
 	}
 
+	// Parse custom attributes
+	customAttrs, err := telemetry.ParseCustomAttributes(otelCustomAttributes)
+	if err != nil {
+		// Log the error but don't fail - telemetry is optional
+		logger.Warnf("Failed to parse custom attributes: %v", err)
+		customAttrs = nil
+	}
+
 	return &telemetry.Config{
 		Endpoint:                    otelEndpoint,
 		ServiceName:                 serviceName,
@@ -823,6 +835,7 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		Insecure:                    otelInsecure,
 		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 		EnvironmentVariables:        processedEnvVars,
+		CustomAttributes:            customAttrs,
 	}
 }
 

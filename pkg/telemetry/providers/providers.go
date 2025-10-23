@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -34,6 +35,10 @@ type Config struct {
 
 	// Prometheus configuration
 	EnablePrometheusMetricsPath bool // EnablePrometheusMetricsPath enables Prometheus /metrics endpoint
+
+	// Custom attributes
+	// CustomAttributes are additional resource attributes to include (as map for JSON serialization)
+	CustomAttributes map[string]string
 }
 
 // ProviderOption is an option type used to configure the telemetry providers
@@ -117,6 +122,14 @@ func WithEnablePrometheusMetricsPath(enablePrometheusMetricsPath bool) ProviderO
 	}
 }
 
+// WithCustomAttributes sets the custom resource attributes
+func WithCustomAttributes(attributes map[string]string) ProviderOption {
+	return func(config *Config) error {
+		config.CustomAttributes = attributes
+		return nil
+	}
+}
+
 // CompositeProvider combines telemetry providers into a single interface.
 // It manages tracer providers, meter providers, Prometheus handlers, and cleanup.
 type CompositeProvider struct {
@@ -139,11 +152,26 @@ func NewCompositeProvider(
 	}
 
 	// Create resource for all providers
+	// Start with base attributes
+	baseAttrs := []attribute.KeyValue{
+		semconv.ServiceName(config.ServiceName),
+		semconv.ServiceVersion(config.ServiceVersion),
+	}
+
+	// Add custom attributes from CLI flags
+	if len(config.CustomAttributes) > 0 {
+		logger.Debugf("Adding %d custom attributes to OTEL resource", len(config.CustomAttributes))
+		for key, value := range config.CustomAttributes {
+			logger.Debugf("  Adding custom attribute to resource: %s=%s", key, value)
+			baseAttrs = append(baseAttrs, attribute.String(key, value))
+		}
+	}
+
+	// Create resource with base attributes and support for OTEL_RESOURCE_ATTRIBUTES env var
 	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceName(config.ServiceName),
-			semconv.ServiceVersion(config.ServiceVersion),
-		),
+		resource.WithAttributes(baseAttrs...),
+		resource.WithFromEnv(), // This reads OTEL_RESOURCE_ATTRIBUTES automatically
+		resource.WithHost(),    // Add host information
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource with service name '%s' and version '%s': %w",

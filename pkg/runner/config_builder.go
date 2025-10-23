@@ -353,7 +353,7 @@ func WithOIDCConfig(
 	}
 }
 
-// WithTelemetryConfig configures telemetry settings
+// WithTelemetryConfig configures telemetry settings (legacy - custom attributes handled via middleware)
 func WithTelemetryConfig(
 	otelEndpoint string,
 	otelEnablePrometheusMetricsPath bool,

@@ -481,6 +481,48 @@ func NewTokenValidatorConfig(issuer, audience, jwksURL, clientID string, clientS
 	}
 }
 
+// registerIntrospectionProviders creates and configures the provider registry
+// for token introspection based on the configuration.
+func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret string) (*Registry, error) {
+	registry := NewRegistry()
+
+	// Add Google provider if the introspection URL matches
+	if config.IntrospectionURL == GoogleTokeninfoURL {
+		logger.Debugf("Registering Google tokeninfo provider: %s", config.IntrospectionURL)
+		registry.AddProvider(NewGoogleProvider(config.IntrospectionURL))
+	}
+
+	// Add GitHub provider if the introspection URL matches GitHub's API pattern
+	if strings.Contains(config.IntrospectionURL, GitHubTokenCheckURL) {
+		logger.Debugf("Registering GitHub token validation provider: %s", config.IntrospectionURL)
+		githubProvider, err := NewGitHubProvider(
+			config.IntrospectionURL,
+			config.ClientID,
+			clientSecret,
+			config.CACertPath,
+			config.AllowPrivateIP,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create GitHub provider: %w", err)
+		}
+		registry.AddProvider(githubProvider)
+	}
+
+	// Add RFC7662 provider with auth if configured
+	if config.ClientID != "" || clientSecret != "" {
+		rfc7662Provider, err := NewRFC7662ProviderWithAuth(
+			config.IntrospectionURL, config.ClientID, clientSecret,
+			config.CACertPath, config.AuthTokenFile, config.AllowPrivateIP,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create RFC7662 provider: %w", err)
+		}
+		registry.AddProvider(rfc7662Provider)
+	}
+
+	return registry, nil
+}
+
 // NewTokenValidator creates a new token validator.
 func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*TokenValidator, error) {
 	// Log warning if insecure HTTP is enabled
@@ -533,48 +575,19 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 
 	// Skip synchronous JWKS registration - will be done lazily on first use
 
-	// Create provider registry with RFC7662 fallback
-	registry := NewRegistry()
-
-	// Add Google provider if the introspection URL matches
-	if config.IntrospectionURL == GoogleTokeninfoURL {
-		logger.Debugf("Registering Google tokeninfo provider: %s", config.IntrospectionURL)
-		registry.AddProvider(NewGoogleProvider(config.IntrospectionURL))
-	}
-
-	// Add GitHub provider if the introspection URL matches GitHub's API pattern
-	if strings.Contains(config.IntrospectionURL, GitHubTokenCheckURL) {
-		logger.Debugf("Registering GitHub token validation provider: %s", config.IntrospectionURL)
-		githubProvider, err := NewGitHubProvider(
-			config.IntrospectionURL,
-			config.ClientID,
-			config.ClientSecret,
-			config.CACertPath,
-			config.AllowPrivateIP,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create GitHub provider: %w", err)
-		}
-		registry.AddProvider(githubProvider)
-	}
-
 	// Load client secret from environment variable if not provided in config
 	// This allows secrets to be injected via Kubernetes Secret references
-	if config.ClientSecret == "" {
+	clientSecret := config.ClientSecret
+	if clientSecret == "" {
 		if envSecret := os.Getenv("TOOLHIVE_OIDC_CLIENT_SECRET"); envSecret != "" {
-			config.ClientSecret = envSecret
+			clientSecret = envSecret
 		}
 	}
 
-	// Add RFC7662 provider with auth if configured
-	if config.ClientID != "" || config.ClientSecret != "" {
-		rfc7662Provider, err := NewRFC7662ProviderWithAuth(
-			config.IntrospectionURL, config.ClientID, config.ClientSecret, config.CACertPath, config.AuthTokenFile, config.AllowPrivateIP,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create RFC7662 provider: %w", err)
-		}
-		registry.AddProvider(rfc7662Provider)
+	// Register introspection providers
+	registry, err := registerIntrospectionProviders(config, clientSecret)
+	if err != nil {
+		return nil, err
 	}
 
 	return &TokenValidator{
@@ -583,7 +596,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 		jwksURL:       jwksURL,
 		introspectURL: config.IntrospectionURL,
 		clientID:      config.ClientID,
-		clientSecret:  config.ClientSecret,
+		clientSecret:  clientSecret,
 		jwksClient:    cache,
 		client:        config.httpClient,
 		resourceURL:   config.ResourceURL,

@@ -564,51 +564,51 @@ func TestDefaultManager_restartRemoteWorkload(t *testing.T) {
 		expectError  bool
 		errorMsg     string
 	}{
-	{
-		name:         "remote workload already running with healthy supervisor",
-		workloadName: "remote-workload",
-		runConfig: &runner.RunConfig{
-			BaseName:  "remote-base",
-			RemoteURL: "http://example.com",
+		{
+			name:         "remote workload already running with healthy supervisor",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-base",
+				RemoteURL: "http://example.com",
+			},
+			foreground: false,
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+				// Check if supervisor is alive - return valid PID (supervisor is healthy)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(12345, nil)
+			},
+			// With healthy supervisor, restart should return early (no-op)
+			expectError: false,
 		},
-		foreground: false,
-		setupMocks: func(sm *statusMocks.MockStatusManager) {
-			sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{
-				Name:   "remote-workload",
-				Status: runtime.WorkloadStatusRunning,
-			}, nil)
-			// Check if supervisor is alive - return valid PID (supervisor is healthy)
-			sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(12345, nil)
+		{
+			name:         "remote workload already running with dead supervisor",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-base",
+				RemoteURL: "http://example.com",
+			},
+			foreground: false,
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+				// Check if supervisor is alive - return error (supervisor is dead)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(0, errors.New("no PID found"))
+				// With dead supervisor, restart proceeds with cleanup and restart
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(0, errors.New("no PID found"))
+				// Allow any subsequent status updates
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+				sm.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+			},
+			// Restart now proceeds to load state which fails in tests (can't mock runner.LoadState easily)
+			expectError: true,
+			errorMsg:    "failed to load state",
 		},
-		// With healthy supervisor, restart should return early (no-op)
-		expectError: false,
-	},
-	{
-		name:         "remote workload already running with dead supervisor",
-		workloadName: "remote-workload",
-		runConfig: &runner.RunConfig{
-			BaseName:  "remote-base",
-			RemoteURL: "http://example.com",
-		},
-		foreground: false,
-		setupMocks: func(sm *statusMocks.MockStatusManager) {
-			sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{
-				Name:   "remote-workload",
-				Status: runtime.WorkloadStatusRunning,
-			}, nil)
-			// Check if supervisor is alive - return error (supervisor is dead)
-			sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(0, errors.New("no PID found"))
-			// With dead supervisor, restart proceeds with cleanup and restart
-			sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusStopping, "").Return(nil)
-			sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(0, errors.New("no PID found"))
-			// Allow any subsequent status updates
-			sm.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
-			sm.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
-		},
-		// Restart now proceeds to load state which fails in tests (can't mock runner.LoadState easily)
-		expectError: true,
-		errorMsg:    "failed to load state",
-	},
 		{
 			name:         "status manager error",
 			workloadName: "remote-workload",
@@ -664,60 +664,60 @@ func TestDefaultManager_restartContainerWorkload(t *testing.T) {
 		expectError  bool
 		errorMsg     string
 	}{
-	{
-		name:         "container workload already running with healthy supervisor",
-		workloadName: "container-workload",
-		foreground:   false,
-		setupMocks: func(sm *statusMocks.MockStatusManager, rm *runtimeMocks.MockRuntime) {
-			// Mock container info
-			rm.EXPECT().GetWorkloadInfo(gomock.Any(), "container-workload").Return(runtime.ContainerInfo{
-				Name:  "container-workload",
-				State: runtime.WorkloadStatusRunning,
-				Labels: map[string]string{
-					"toolhive.base-name": "container-workload",
-				},
-			}, nil)
-			sm.EXPECT().GetWorkload(gomock.Any(), "container-workload").Return(core.Workload{
-				Name:   "container-workload",
-				Status: runtime.WorkloadStatusRunning,
-			}, nil)
-			// Check if supervisor is alive - return valid PID (supervisor is healthy)
-			sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(12345, nil)
+		{
+			name:         "container workload already running with healthy supervisor",
+			workloadName: "container-workload",
+			foreground:   false,
+			setupMocks: func(sm *statusMocks.MockStatusManager, rm *runtimeMocks.MockRuntime) {
+				// Mock container info
+				rm.EXPECT().GetWorkloadInfo(gomock.Any(), "container-workload").Return(runtime.ContainerInfo{
+					Name:  "container-workload",
+					State: runtime.WorkloadStatusRunning,
+					Labels: map[string]string{
+						"toolhive.base-name": "container-workload",
+					},
+				}, nil)
+				sm.EXPECT().GetWorkload(gomock.Any(), "container-workload").Return(core.Workload{
+					Name:   "container-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+				// Check if supervisor is alive - return valid PID (supervisor is healthy)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(12345, nil)
+			},
+			// With healthy supervisor, restart should return early (no-op)
+			expectError: false,
 		},
-		// With healthy supervisor, restart should return early (no-op)
-		expectError: false,
-	},
-	{
-		name:         "container workload already running with dead supervisor",
-		workloadName: "container-workload",
-		foreground:   false,
-		setupMocks: func(sm *statusMocks.MockStatusManager, rm *runtimeMocks.MockRuntime) {
-			// Mock container info
-			rm.EXPECT().GetWorkloadInfo(gomock.Any(), "container-workload").Return(runtime.ContainerInfo{
-				Name:  "container-workload",
-				State: runtime.WorkloadStatusRunning,
-				Labels: map[string]string{
-					"toolhive.base-name": "container-workload",
-				},
-			}, nil)
-			sm.EXPECT().GetWorkload(gomock.Any(), "container-workload").Return(core.Workload{
-				Name:   "container-workload",
-				Status: runtime.WorkloadStatusRunning,
-			}, nil)
-			// Check if supervisor is alive - return error (supervisor is dead)
-			sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(0, errors.New("no PID found"))
-			// With dead supervisor, restart proceeds with cleanup and restart
-			sm.EXPECT().SetWorkloadStatus(gomock.Any(), "container-workload", runtime.WorkloadStatusStopping, "").Return(nil)
-			sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(0, errors.New("no PID found"))
-			rm.EXPECT().StopWorkload(gomock.Any(), "container-workload").Return(nil)
-			// Allow any subsequent status updates
-			sm.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
-			sm.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+		{
+			name:         "container workload already running with dead supervisor",
+			workloadName: "container-workload",
+			foreground:   false,
+			setupMocks: func(sm *statusMocks.MockStatusManager, rm *runtimeMocks.MockRuntime) {
+				// Mock container info
+				rm.EXPECT().GetWorkloadInfo(gomock.Any(), "container-workload").Return(runtime.ContainerInfo{
+					Name:  "container-workload",
+					State: runtime.WorkloadStatusRunning,
+					Labels: map[string]string{
+						"toolhive.base-name": "container-workload",
+					},
+				}, nil)
+				sm.EXPECT().GetWorkload(gomock.Any(), "container-workload").Return(core.Workload{
+					Name:   "container-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+				// Check if supervisor is alive - return error (supervisor is dead)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(0, errors.New("no PID found"))
+				// With dead supervisor, restart proceeds with cleanup and restart
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "container-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(0, errors.New("no PID found"))
+				rm.EXPECT().StopWorkload(gomock.Any(), "container-workload").Return(nil)
+				// Allow any subsequent status updates
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+				sm.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+			},
+			// Restart now proceeds to load state which fails in tests (can't mock runner.LoadState easily)
+			expectError: true,
+			errorMsg:    "failed to load state",
 		},
-		// Restart now proceeds to load state which fails in tests (can't mock runner.LoadState easily)
-		expectError: true,
-		errorMsg:    "failed to load state",
-	},
 		{
 			name:         "status manager error",
 			workloadName: "container-workload",

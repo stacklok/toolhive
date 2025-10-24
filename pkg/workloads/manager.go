@@ -838,7 +838,7 @@ func (d *defaultManager) restartRemoteWorkload(
 	if err == nil && workload.Status == rt.WorkloadStatusRunning {
 		// Check if the supervisor process is actually alive
 		supervisorAlive := d.isSupervisorProcessAlive(ctx, runConfig.BaseName)
-		
+
 		if supervisorAlive {
 			// Workload is running and healthy - preserve old behavior (no-op)
 			logger.Infof("Remote workload %s is already running", name)
@@ -915,7 +915,7 @@ func (d *defaultManager) restartContainerWorkload(ctx context.Context, name stri
 	if err == nil && workload.Status == rt.WorkloadStatusRunning {
 		// Check if the supervisor process is actually alive
 		supervisorAlive := d.isSupervisorProcessAlive(ctx, workloadName)
-		
+
 		if supervisorAlive {
 			// Workload is running and healthy - preserve old behavior (no-op)
 			logger.Infof("Container %s is already running", containerName)

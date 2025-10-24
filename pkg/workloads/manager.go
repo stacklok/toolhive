@@ -606,6 +606,28 @@ func (d *defaultManager) getWorkloadContainer(ctx context.Context, name string) 
 	return &container, nil
 }
 
+// isSupervisorProcessAlive checks if the supervisor process for a workload is alive
+// by checking if a PID exists. If a PID exists, we assume the supervisor is running.
+// This is a reasonable assumption because:
+// - If the supervisor exits cleanly, it cleans up the PID
+// - If killed unexpectedly, the PID remains but stopProcess will handle it gracefully
+// - The main issue we're preventing is accumulating zombie supervisors from repeated restarts
+func (d *defaultManager) isSupervisorProcessAlive(ctx context.Context, name string) bool {
+	if name == "" {
+		return false
+	}
+
+	// Try to read the PID - if it exists, assume supervisor is running
+	_, err := d.statuses.GetWorkloadPID(ctx, name)
+	if err != nil {
+		// No PID found, supervisor is not running
+		return false
+	}
+
+	// PID exists, assume supervisor is alive
+	return true
+}
+
 // stopProcess stops the proxy process associated with the container
 func (d *defaultManager) stopProcess(ctx context.Context, name string) {
 	if name == "" {
@@ -812,18 +834,27 @@ func (d *defaultManager) restartRemoteWorkload(
 		return err
 	}
 
-	// If workload is already running, we need to stop it first (including the supervisor process)
-	// This ensures restart performs a proper stop->start cycle and doesn't leave zombie supervisors
+	// If workload is already running, check if the supervisor process is healthy
 	if err == nil && workload.Status == rt.WorkloadStatusRunning {
-		logger.Infof("Remote workload %s is already running, stopping it before restart", name)
+		// Check if the supervisor process is actually alive
+		supervisorAlive := d.isSupervisorProcessAlive(ctx, runConfig.BaseName)
+		
+		if supervisorAlive {
+			// Workload is running and healthy - preserve old behavior (no-op)
+			logger.Infof("Remote workload %s is already running", name)
+			return nil
+		}
+
+		// Supervisor is dead/missing - we need to clean up and restart to fix the damaged state
+		logger.Infof("Remote workload %s is running but supervisor is dead, cleaning up before restart", name)
 
 		// Set status to stopping
 		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
 			logger.Debugf("Failed to set workload %s status to stopping: %v", name, err)
 		}
 
-		// Stop the supervisor process (proxy) first
-		// This is critical to avoid leaving orphaned supervisor processes
+		// Stop the supervisor process (proxy) if it exists (may already be dead)
+		// This ensures we clean up any orphaned supervisor processes
 		d.stopProxyIfNeeded(ctx, name, runConfig.BaseName)
 
 		// Clean up client configurations
@@ -880,28 +911,43 @@ func (d *defaultManager) restartContainerWorkload(ctx context.Context, name stri
 		return err
 	}
 
+	// Check if workload is running and healthy (including supervisor process)
+	if err == nil && workload.Status == rt.WorkloadStatusRunning {
+		// Check if the supervisor process is actually alive
+		supervisorAlive := d.isSupervisorProcessAlive(ctx, workloadName)
+		
+		if supervisorAlive {
+			// Workload is running and healthy - preserve old behavior (no-op)
+			logger.Infof("Container %s is already running", containerName)
+			return nil
+		}
+
+		// Supervisor is dead/missing - we need to clean up and restart to fix the damaged state
+		logger.Infof("Container %s is running but supervisor is dead, cleaning up before restart", containerName)
+	}
+
 	// Check if we need to stop the workload before restarting
+	// This happens when: 1) container is running, or 2) inconsistent state
 	shouldStop := false
 	if err == nil && workload.Status == rt.WorkloadStatusRunning {
-		// Workload status shows running
+		// Workload status shows running (and supervisor is dead, otherwise we would have returned above)
 		shouldStop = true
 	} else if container.IsRunning() {
 		// Container is running but status is not running (inconsistent state)
 		shouldStop = true
 	}
 
-	// If we need to stop, do it now (including the supervisor process)
-	// This ensures restart performs a proper stop->start cycle and doesn't leave zombie supervisors
+	// If we need to stop, do it now (including cleanup of any remaining supervisor process)
 	if shouldStop {
-		logger.Infof("Container %s is running, stopping it before restart", containerName)
+		logger.Infof("Stopping container %s before restart", containerName)
 
 		// Set status to stopping
 		if err := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStopping, ""); err != nil {
 			logger.Debugf("Failed to set workload %s status to stopping: %v", workloadName, err)
 		}
 
-		// Stop the supervisor process (proxy) first
-		// This is critical to avoid leaving orphaned supervisor processes
+		// Stop the supervisor process (proxy) if it exists (may already be dead)
+		// This ensures we clean up any orphaned supervisor processes
 		if !labels.IsAuxiliaryWorkload(container.Labels) {
 			d.stopProcess(ctx, workloadName)
 		}

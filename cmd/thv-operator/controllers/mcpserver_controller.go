@@ -34,6 +34,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -313,12 +314,26 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Fetch RunConfig ConfigMap checksum to include in pod template annotations
+	runConfigChecksum, err := r.getRunConfigChecksum(ctx, mcpServer)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// ConfigMap doesn't exist yet - requeue with a short delay to allow
+			// API server propagation.
+			ctxLogger.Info("RunConfig ConfigMap not found yet, will retry",
+				"server", mcpServer.Name, "namespace", mcpServer.Namespace)
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+		ctxLogger.Error(err, "Failed to get RunConfig checksum")
+		return ctrl.Result{}, err
+	}
+
 	// Check if the deployment already exists, if not create a new one
 	deployment := &appsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: mcpServer.Name, Namespace: mcpServer.Namespace}, deployment)
 	if err != nil && errors.IsNotFound(err) {
 		// Define a new deployment
-		dep := r.deploymentForMCPServer(ctx, mcpServer)
+		dep := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum)
 		if dep == nil {
 			ctxLogger.Error(nil, "Failed to create Deployment object")
 			return ctrl.Result{}, fmt.Errorf("failed to create Deployment object")
@@ -385,9 +400,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Check if the deployment spec changed
-	if r.deploymentNeedsUpdate(ctx, deployment, mcpServer) {
+	if r.deploymentNeedsUpdate(ctx, deployment, mcpServer, runConfigChecksum) {
 		// Update the deployment
-		newDeployment := r.deploymentForMCPServer(ctx, mcpServer)
+		newDeployment := r.deploymentForMCPServer(ctx, mcpServer, runConfigChecksum)
 		deployment.Spec = newDeployment.Spec
 		err = r.Update(ctx, deployment)
 		if err != nil {
@@ -613,6 +628,19 @@ func (r *MCPServerReconciler) performRestart(ctx context.Context, mcpServer *mcp
 		ctxLogger.Info("Unknown restart strategy, defaulting to rolling", "strategy", strategy)
 		return r.performRollingRestart(ctx, mcpServer)
 	}
+}
+
+// getRunConfigChecksum fetches the RunConfig ConfigMap checksum annotation for this server.
+// Uses the shared RunConfigChecksumFetcher to maintain consistency with MCPRemoteProxy.
+func (r *MCPServerReconciler) getRunConfigChecksum(
+	ctx context.Context, mcpServer *mcpv1alpha1.MCPServer,
+) (string, error) {
+	if mcpServer == nil {
+		return "", fmt.Errorf("mcpServer cannot be nil")
+	}
+
+	fetcher := checksum.NewRunConfigChecksumFetcher(r.Client)
+	return fetcher.GetRunConfigChecksum(ctx, mcpServer.Namespace, mcpServer.Name)
 }
 
 // performRollingRestart triggers a rolling restart by updating the deployment's pod template annotation
@@ -864,7 +892,9 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 // deploymentForMCPServer returns a MCPServer Deployment object
 //
 //nolint:gocyclo
-func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcpv1alpha1.MCPServer) *appsv1.Deployment {
+func (r *MCPServerReconciler) deploymentForMCPServer(
+	ctx context.Context, m *mcpv1alpha1.MCPServer, runConfigChecksum string,
+) *appsv1.Deployment {
 	ls := labelsForMCPServer(m.Name)
 	replicas := int32(1)
 
@@ -1038,6 +1068,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(ctx context.Context, m *mcp
 
 	deploymentTemplateLabels := ls
 	deploymentTemplateAnnotations := make(map[string]string)
+
+	// Add RunConfig checksum annotation to trigger pod rollout when config changes
+	deploymentTemplateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(deploymentTemplateAnnotations, runConfigChecksum)
 
 	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
 		if m.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
@@ -1309,7 +1342,11 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	mcpServer *mcpv1alpha1.MCPServer,
+	runConfigChecksum string,
 ) bool {
+	if deployment == nil || mcpServer == nil {
+		return true
+	}
 	// Check if the container args have changed
 	if len(deployment.Spec.Template.Spec.Containers) > 0 {
 		container := deployment.Spec.Template.Spec.Containers[0]
@@ -1534,6 +1571,24 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	}
 
 	if !maps.Equal(deployment.Annotations, expectedAnnotations) {
+		return true
+	}
+
+	// Check if pod template annotations have changed (including runconfig checksum)
+	expectedPodTemplateAnnotations := make(map[string]string)
+	expectedPodTemplateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(expectedPodTemplateAnnotations, runConfigChecksum)
+
+	if mcpServer.Spec.ResourceOverrides != nil &&
+		mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil &&
+		mcpServer.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides != nil &&
+		mcpServer.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Annotations != nil {
+		expectedPodTemplateAnnotations = ctrlutil.MergeAnnotations(
+			expectedPodTemplateAnnotations,
+			mcpServer.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Annotations,
+		)
+	}
+
+	if !maps.Equal(deployment.Spec.Template.Annotations, expectedPodTemplateAnnotations) {
 		return true
 	}
 

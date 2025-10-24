@@ -120,11 +120,6 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		proxyHost = envHost
 	}
 
-	port := 8080
-	if proxy.Spec.Port != 0 {
-		port = int(proxy.Spec.Port)
-	}
-
 	// Get tool configuration from MCPToolConfig if referenced
 	var toolsFilter []string
 	var toolsOverride map[string]runner.ToolOverride
@@ -162,7 +157,7 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		// Key: Set RemoteURL instead of Image
 		runner.WithRemoteURL(proxy.Spec.RemoteURL),
 		// Use user-specified transport (sse or streamable-http, both use HTTPTransport internally)
-		runner.WithTransportAndPorts(transport, port, 0),
+		runner.WithTransportAndPorts(transport, int(proxy.GetProxyPort()), 0),
 		runner.WithHost(proxyHost),
 		runner.WithTrustProxyHeaders(proxy.Spec.TrustProxyHeaders),
 		runner.WithToolsFilter(toolsFilter),

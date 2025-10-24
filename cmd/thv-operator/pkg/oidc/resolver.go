@@ -44,7 +44,7 @@ type OIDCConfigurable interface {
 	GetName() string
 	GetNamespace() string
 	GetOIDCConfig() *mcpv1alpha1.OIDCConfigRef
-	GetPort() int32
+	GetProxyPort() int32
 }
 
 // Resolver is the interface for resolving OIDC configuration from various sources
@@ -76,7 +76,7 @@ func (r *resolver) Resolve(ctx context.Context, resource OIDCConfigurable) (*OID
 	// Calculate resource URL for RFC 9728 compliance
 	resourceURL := oidcConfig.ResourceURL
 	if resourceURL == "" {
-		resourceURL = createServiceURL(resource.GetName(), resource.GetNamespace(), resource.GetPort())
+		resourceURL = createServiceURL(resource.GetName(), resource.GetNamespace(), resource.GetProxyPort())
 	}
 
 	switch oidcConfig.Type {
@@ -204,13 +204,20 @@ func (*resolver) resolveInlineConfig(
 		return nil, nil
 	}
 
+	// Don't embed ClientSecret in the config if ClientSecretRef is set
+	// The secret will be injected via environment variable instead
+	clientSecret := config.ClientSecret
+	if config.ClientSecretRef != nil {
+		clientSecret = ""
+	}
+
 	return &OIDCConfig{
 		Issuer:             config.Issuer,
 		Audience:           config.Audience,
 		JWKSURL:            config.JWKSURL,
 		IntrospectionURL:   config.IntrospectionURL,
 		ClientID:           config.ClientID,
-		ClientSecret:       config.ClientSecret,
+		ClientSecret:       clientSecret,
 		ThvCABundlePath:    config.ThvCABundlePath,
 		JWKSAuthTokenPath:  config.JWKSAuthTokenPath,
 		ResourceURL:        resourceURL,

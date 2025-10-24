@@ -151,6 +151,19 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		}
 	}
 
+	// Add OIDC client secret environment variable if using inline config with secretRef
+	if proxy.Spec.OIDCConfig.Type == "inline" && proxy.Spec.OIDCConfig.Inline != nil {
+		oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
+			ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfig.Inline.ClientSecretRef,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate OIDC client secret environment variable")
+		} else if oidcClientSecretEnvVar != nil {
+			env = append(env, *oidcClientSecretEnvVar)
+		}
+	}
+
 	// Add user-specified environment variables
 	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
 		for _, envVar := range proxy.Spec.ResourceOverrides.ProxyDeployment.Env {
@@ -240,7 +253,7 @@ func (r *MCPRemoteProxyReconciler) buildSecurityContexts(
 // buildContainerPorts builds container port configuration
 func (*MCPRemoteProxyReconciler) buildContainerPorts(proxy *mcpv1alpha1.MCPRemoteProxy) []corev1.ContainerPort {
 	return []corev1.ContainerPort{{
-		ContainerPort: proxy.Spec.Port,
+		ContainerPort: int32(proxy.GetProxyPort()),
 		Name:          "http",
 		Protocol:      corev1.ProtocolTCP,
 	}}
@@ -266,8 +279,8 @@ func (r *MCPRemoteProxyReconciler) serviceForMCPRemoteProxy(
 		Spec: corev1.ServiceSpec{
 			Selector: ls,
 			Ports: []corev1.ServicePort{{
-				Port:       proxy.Spec.Port,
-				TargetPort: intstr.FromInt(int(proxy.Spec.Port)),
+				Port:       int32(proxy.GetProxyPort()),
+				TargetPort: intstr.FromInt(int(proxy.GetProxyPort())),
 				Protocol:   corev1.ProtocolTCP,
 				Name:       "http",
 			}},

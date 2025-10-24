@@ -391,7 +391,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Update the MCPServer status with the service URL
 	if mcpServer.Status.URL == "" {
-		mcpServer.Status.URL = ctrlutil.CreateProxyServiceURL(mcpServer.Name, mcpServer.Namespace, mcpServer.Spec.Port)
+		mcpServer.Status.URL = ctrlutil.CreateProxyServiceURL(mcpServer.Name, mcpServer.Namespace, mcpServer.Spec.ProxyPort)
 		err = r.Status().Update(ctx, mcpServer)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update MCPServer status")
@@ -986,6 +986,19 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		}
 	}
 
+	// Add OIDC client secret environment variable if using inline config with secretRef
+	if m.Spec.OIDCConfig != nil && m.Spec.OIDCConfig.Inline != nil {
+		oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
+			ctx, r.Client, m.Namespace, m.Spec.OIDCConfig.Inline.ClientSecretRef,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate OIDC client secret environment variable")
+		} else if oidcClientSecretEnvVar != nil {
+			env = append(env, *oidcClientSecretEnvVar)
+		}
+	}
+
 	// Add user-specified proxy environment variables from ResourceOverrides
 	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
 		for _, envVar := range m.Spec.ResourceOverrides.ProxyDeployment.Env {
@@ -1138,7 +1151,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 						VolumeMounts: volumeMounts,
 						Resources:    resources,
 						Ports: []corev1.ContainerPort{{
-							ContainerPort: m.Spec.Port,
+							ContainerPort: m.GetProxyPort(),
 							Name:          "http",
 							Protocol:      corev1.ProtocolTCP,
 						}},
@@ -1215,8 +1228,8 @@ func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1a
 		Spec: corev1.ServiceSpec{
 			Selector: ls, // Keep original labels for selector
 			Ports: []corev1.ServicePort{{
-				Port:       m.Spec.Port,
-				TargetPort: intstr.FromInt(int(m.Spec.Port)),
+				Port:       m.GetProxyPort(),
+				TargetPort: intstr.FromInt(int(m.GetProxyPort())),
 				Protocol:   corev1.ProtocolTCP,
 				Name:       "http",
 			}},
@@ -1370,7 +1383,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		}
 
 		// Check if the port has changed
-		portArg := fmt.Sprintf("--proxy-port=%d", mcpServer.Spec.Port)
+		portArg := fmt.Sprintf("--proxy-port=%d", mcpServer.Spec.ProxyPort)
 		found = false
 		for _, arg := range container.Args {
 			if arg == portArg {
@@ -1401,7 +1414,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		}
 
 		// Check if the container port has changed
-		if len(container.Ports) > 0 && container.Ports[0].ContainerPort != mcpServer.Spec.Port {
+		if len(container.Ports) > 0 && container.Ports[0].ContainerPort != mcpServer.Spec.ProxyPort {
 			return true
 		}
 
@@ -1440,6 +1453,20 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 				return true
 			}
 			expectedProxyEnv = append(expectedProxyEnv, tokenExchangeEnvVars...)
+		}
+
+		// Add OIDC client secret environment variable if using inline config with secretRef
+		if mcpServer.Spec.OIDCConfig != nil && mcpServer.Spec.OIDCConfig.Inline != nil {
+			oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
+				ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.OIDCConfig.Inline.ClientSecretRef,
+			)
+			if err != nil {
+				// If we can't generate env var, consider the deployment needs update
+				return true
+			}
+			if oidcClientSecretEnvVar != nil {
+				expectedProxyEnv = append(expectedProxyEnv, *oidcClientSecretEnvVar)
+			}
 		}
 
 		// Add user-specified environment variables
@@ -1508,12 +1535,12 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			return true
 		}
 
-		// Check if the targetPort has changed
-		if mcpServer.Spec.TargetPort != 0 {
-			targetPortArg := fmt.Sprintf("--target-port=%d", mcpServer.Spec.TargetPort)
+		// Check if the mcpPort has changed
+		if mcpServer.Spec.McpPort != 0 {
+			mcpPortArg := fmt.Sprintf("--target-port=%d", mcpServer.Spec.McpPort)
 			found := false
 			for _, arg := range container.Args {
-				if arg == targetPortArg {
+				if arg == mcpPortArg {
 					found = true
 					break
 				}
@@ -1598,7 +1625,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 // serviceNeedsUpdate checks if the service needs to be updated
 func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1alpha1.MCPServer) bool {
 	// Check if the service port has changed
-	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != mcpServer.Spec.Port {
+	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != mcpServer.Spec.ProxyPort {
 		return true
 	}
 

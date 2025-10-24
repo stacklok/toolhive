@@ -202,7 +202,12 @@ func (m *MCPRemoteProxy) GetOIDCConfig() *OIDCConfigRef {
 	return &m.Spec.OIDCConfig
 }
 
-// GetPort returns the port for the MCPRemoteProxy
-func (m *MCPRemoteProxy) GetPort() int32 {
-	return m.Spec.Port
+// GetProxyPort returns the proxy port of the MCPRemoteProxy
+func (m *MCPRemoteProxy) GetProxyPort() int32 {
+	if m.Spec.Port > 0 {
+		return m.Spec.Port
+	}
+
+	// default to 8080 if no port is specified
+	return 8080
 }

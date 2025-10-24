@@ -74,7 +74,7 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:           "test-image:latest",
 			Transport:       "stdio",
-			Port:            8080,
+			ProxyPort:       8080,
 			PodTemplateSpec: podTemplateSpecToRawExtension(t, podTemplateSpec),
 		},
 	}
@@ -162,7 +162,7 @@ func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -193,7 +193,7 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:          "test-image:latest",
 			Transport:      "stdio",
-			Port:           8080,
+			ProxyPort:      8080,
 			ServiceAccount: &customSA,
 			Secrets: []mcpv1alpha1.SecretRef{
 				{
@@ -290,6 +290,7 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 		assert.NotContains(t, arg, "--secret=", "No secret CLI arguments should be present")
 	}
 }
+
 func TestProxyRunnerSecurityContext(t *testing.T) {
 	t.Parallel()
 
@@ -302,7 +303,7 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -349,7 +350,7 @@ func TestProxyRunnerStructuredLogsEnvVar(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 

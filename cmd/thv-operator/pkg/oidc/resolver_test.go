@@ -507,3 +507,115 @@ func TestResolve_NoClientForConfigMap(t *testing.T) {
 	assert.Contains(t, err.Error(), "kubernetes client is required")
 	assert.Nil(t, config)
 }
+
+func TestResolve_InlineWithClientSecretRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		mcpServer *mcpv1alpha1.MCPServer
+		expected  *OIDCConfig
+	}{
+		{
+			name: "clientSecretRef set - clientSecret should be empty",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Port: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://example.com",
+							Audience: "test-audience",
+							ClientID: "test-client",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "oidc-secret",
+								Key:  "client-secret",
+							},
+						},
+					},
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer:       "https://example.com",
+				Audience:     "test-audience",
+				ClientID:     "test-client",
+				ClientSecret: "", // Should be empty when ClientSecretRef is set
+				ResourceURL:  "http://test-server.test-ns.svc.cluster.local:8080",
+			},
+		},
+		{
+			name: "both clientSecret and clientSecretRef - secretRef takes precedence",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Port: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:       "https://example.com",
+							Audience:     "test-audience",
+							ClientID:     "test-client",
+							ClientSecret: "plaintext-secret", // Should be ignored
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "oidc-secret",
+								Key:  "client-secret",
+							},
+						},
+					},
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer:       "https://example.com",
+				Audience:     "test-audience",
+				ClientID:     "test-client",
+				ClientSecret: "", // SecretRef takes precedence
+				ResourceURL:  "http://test-server.test-ns.svc.cluster.local:8080",
+			},
+		},
+		{
+			name: "only clientSecret - works as before",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Port: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:       "https://example.com",
+							Audience:     "test-audience",
+							ClientID:     "test-client",
+							ClientSecret: "plaintext-secret",
+						},
+					},
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer:       "https://example.com",
+				Audience:     "test-audience",
+				ClientID:     "test-client",
+				ClientSecret: "plaintext-secret", // Should be preserved
+				ResourceURL:  "http://test-server.test-ns.svc.cluster.local:8080",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resolver := NewResolver(nil)
+			config, err := resolver.Resolve(context.Background(), tt.mcpServer)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, config)
+		})
+	}
+}

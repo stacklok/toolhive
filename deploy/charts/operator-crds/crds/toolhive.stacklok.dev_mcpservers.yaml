@@ -150,6 +150,12 @@ spec:
               image:
                 description: Image is the container image for the MCP server
                 type: string
+              mcpPort:
+                description: McpPort is the port that MCP server listens to
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
               oidcConfig:
                 description: OIDCConfig defines OIDC authentication configuration
                   for the MCP server
@@ -182,9 +188,25 @@ spec:
                         description: ClientID is the OIDC client ID
                         type: string
                       clientSecret:
-                        description: ClientSecret is the client secret for introspection
-                          (optional)
+                        description: |-
+                          ClientSecret is the client secret for introspection (optional)
+                          Deprecated: Use ClientSecretRef instead for better security
                         type: string
+                      clientSecretRef:
+                        description: |-
+                          ClientSecretRef is a reference to a Kubernetes Secret containing the client secret
+                          If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
                       insecureAllowHTTP:
                         default: false
                         description: |-
@@ -314,7 +336,9 @@ spec:
                 x-kubernetes-preserve-unknown-fields: true
               port:
                 default: 8080
-                description: Port is the port to expose the MCP server on
+                description: |-
+                  Port is the port to expose the MCP server on
+                  Deprecated: Use ProxyPort instead
                 format: int32
                 maximum: 65535
                 minimum: 1
@@ -328,6 +352,13 @@ spec:
                 - sse
                 - streamable-http
                 type: string
+              proxyPort:
+                default: 8080
+                description: ProxyPort is the port to expose the proxy runner on
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
               resourceOverrides:
                 description: ResourceOverrides allows overriding annotations and labels
                   for resources created by the operator
@@ -456,7 +487,9 @@ spec:
                   If not specified, a ServiceAccount will be created automatically and used by the MCP server.
                 type: string
               targetPort:
-                description: TargetPort is the port that MCP server listens to
+                description: |-
+                  TargetPort is the port that MCP server listens to
+                  Deprecated: Use McpPort instead
                 format: int32
                 maximum: 65535
                 minimum: 1

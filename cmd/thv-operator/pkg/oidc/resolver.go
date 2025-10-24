@@ -204,13 +204,20 @@ func (*resolver) resolveInlineConfig(
 		return nil, nil
 	}
 
+	// Don't embed ClientSecret in the config if ClientSecretRef is set
+	// The secret will be injected via environment variable instead
+	clientSecret := config.ClientSecret
+	if config.ClientSecretRef != nil {
+		clientSecret = ""
+	}
+
 	return &OIDCConfig{
 		Issuer:             config.Issuer,
 		Audience:           config.Audience,
 		JWKSURL:            config.JWKSURL,
 		IntrospectionURL:   config.IntrospectionURL,
 		ClientID:           config.ClientID,
-		ClientSecret:       config.ClientSecret,
+		ClientSecret:       clientSecret,
 		ThvCABundlePath:    config.ThvCABundlePath,
 		JWKSAuthTokenPath:  config.JWKSAuthTokenPath,
 		ResourceURL:        resourceURL,

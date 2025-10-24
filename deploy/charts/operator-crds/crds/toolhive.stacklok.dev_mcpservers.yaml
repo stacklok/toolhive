@@ -182,9 +182,25 @@ spec:
                         description: ClientID is the OIDC client ID
                         type: string
                       clientSecret:
-                        description: ClientSecret is the client secret for introspection
-                          (optional)
+                        description: |-
+                          ClientSecret is the client secret for introspection (optional)
+                          Deprecated: Use ClientSecretRef instead for better security
                         type: string
+                      clientSecretRef:
+                        description: |-
+                          ClientSecretRef is a reference to a Kubernetes Secret containing the client secret
+                          If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
                       insecureAllowHTTP:
                         default: false
                         description: |-

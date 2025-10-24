@@ -79,9 +79,18 @@ MCPServer resources reference Kubernetes Secrets via `SecretRef`. Secrets are in
 
 ### External Authentication Secrets
 
-OAuth/OIDC client secrets are stored in Kubernetes Secrets and referenced by `MCPExternalAuthConfig` resources.
+OAuth/OIDC client secrets are stored in Kubernetes Secrets and referenced using `SecretKeyRef`:
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`
+1. **Token Exchange (MCPExternalAuthConfig)**: OAuth 2.0 client secrets for RFC-8693 token exchange flows
+   - **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`
+   - **Secret injection**: `cmd/thv-operator/pkg/controllerutil/tokenexchange.go`
+
+2. **OIDC Authentication (InlineOIDCConfig)**: OIDC client secrets for token introspection
+   - **CRD field**: `InlineOIDCConfig.ClientSecretRef` in `cmd/thv-operator/api/v1alpha1/mcpserver_types.go`
+   - **Secret injection**: `cmd/thv-operator/pkg/controllerutil/oidc.go`
+   - **Runtime loading**: `pkg/auth/token.go` (via `TOOLHIVE_OIDC_CLIENT_SECRET` environment variable)
+
+**Pattern**: Secrets are injected as environment variables using Kubernetes `envFrom.secretKeyRef`, keeping them out of ConfigMaps and YAML manifests.
 
 For examples, see [`examples/operator/mcp-servers/`](../../examples/operator/mcp-servers/).
 

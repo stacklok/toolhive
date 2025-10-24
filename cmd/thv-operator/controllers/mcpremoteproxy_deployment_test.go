@@ -16,6 +16,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -175,7 +176,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 			}
 
-			dep := reconciler.deploymentForMCPRemoteProxy(context.TODO(), tt.proxy)
+			dep := reconciler.deploymentForMCPRemoteProxy(context.TODO(), tt.proxy, "test-checksum")
 			require.NotNil(t, dep)
 
 			if tt.validate != nil {
@@ -405,6 +406,22 @@ func TestEnsureDeployment(t *testing.T) {
 			if tt.existingDeployment != nil {
 				objects = append(objects, tt.existingDeployment)
 			}
+
+			// Add RunConfig ConfigMap with checksum annotation
+			configMapName := fmt.Sprintf("%s-runconfig", tt.proxy.Name)
+			runConfigCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      configMapName,
+					Namespace: tt.proxy.Namespace,
+					Annotations: map[string]string{
+						"toolhive.stacklok.dev/content-checksum": "test-checksum-123",
+					},
+				},
+				Data: map[string]string{
+					"runconfig.json": "{}",
+				},
+			}
+			objects = append(objects, runConfigCM)
 
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -24,6 +25,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
 // MCPRemoteProxyReconciler reconciles a MCPRemoteProxy object
@@ -175,17 +177,58 @@ func (r *MCPRemoteProxyReconciler) ensureAuthzConfigMapForProxy(ctx context.Cont
 	)
 }
 
-// ensureDeployment ensures the Deployment exists and is up to date
+// getRunConfigChecksum fetches the RunConfig ConfigMap checksum annotation for this proxy.
+// Uses the shared RunConfigChecksumFetcher to maintain consistency with MCPServer.
+func (r *MCPRemoteProxyReconciler) getRunConfigChecksum(
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+) (string, error) {
+	if proxy == nil {
+		return "", fmt.Errorf("proxy cannot be nil")
+	}
+
+	fetcher := checksum.NewRunConfigChecksumFetcher(r.Client)
+	return fetcher.GetRunConfigChecksum(ctx, proxy.Namespace, proxy.Name)
+}
+
+// ensureDeployment ensures the Deployment exists and is up to date.
+//
+// This function coordinates deployment creation and updates, including:
+//   - Fetching the RunConfig ConfigMap checksum for pod restart triggering
+//   - Creating deployments when they don't exist
+//   - Updating deployments when configuration changes
+//   - Preserving replica counts for HPA compatibility
+//
+// If the RunConfig ConfigMap doesn't exist yet (e.g., during initial resource creation),
+// the function returns an error that will trigger reconciliation requeue, allowing the
+// ConfigMap to be created first in ensureAllResources().
 func (r *MCPRemoteProxyReconciler) ensureDeployment(
 	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
+	// Fetch RunConfig ConfigMap checksum to include in pod template annotations
+	// This ensures pods restart when configuration changes
+	runConfigChecksum, err := r.getRunConfigChecksum(ctx, proxy)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// ConfigMap doesn't exist yet - it will be created by ensureRunConfigConfigMap
+			// before this function is called. If we still hit this, it's likely a timing
+			// issue with API server consistency. Requeue with a short delay to allow
+			// API server propagation.
+			ctxLogger.Info("RunConfig ConfigMap not found yet, will retry",
+				"proxy", proxy.Name, "namespace", proxy.Namespace)
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+		// Other errors (missing annotation, empty checksum, etc.) are real problems
+		ctxLogger.Error(err, "Failed to get RunConfig checksum")
+		return ctrl.Result{}, err
+	}
+
 	deployment := &appsv1.Deployment{}
-	err := r.Get(ctx, types.NamespacedName{Name: proxy.Name, Namespace: proxy.Namespace}, deployment)
+	err = r.Get(ctx, types.NamespacedName{Name: proxy.Name, Namespace: proxy.Namespace}, deployment)
 
 	if errors.IsNotFound(err) {
-		dep := r.deploymentForMCPRemoteProxy(ctx, proxy)
+		dep := r.deploymentForMCPRemoteProxy(ctx, proxy, runConfigChecksum)
 		if dep == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create Deployment object")
 		}
@@ -201,8 +244,8 @@ func (r *MCPRemoteProxyReconciler) ensureDeployment(
 	}
 
 	// Deployment exists - check if it needs to be updated
-	if r.deploymentNeedsUpdate(ctx, deployment, proxy) {
-		newDeployment := r.deploymentForMCPRemoteProxy(ctx, proxy)
+	if r.deploymentNeedsUpdate(ctx, deployment, proxy, runConfigChecksum) {
+		newDeployment := r.deploymentForMCPRemoteProxy(ctx, proxy, runConfigChecksum)
 		if newDeployment == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create updated Deployment object")
 		}
@@ -531,13 +574,52 @@ func createProxyServiceURL(proxyName, namespace string, port int32) string {
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
 }
 
-// deploymentNeedsUpdate checks if the deployment needs to be updated based on spec changes
+// deploymentNeedsUpdate checks if the deployment needs to be updated based on spec changes.
+//
+// This function compares the existing deployment with the desired state derived from the
+// MCPRemoteProxy spec. It checks container specs, deployment metadata, and pod template
+// metadata (including the RunConfig checksum annotation).
+//
+// Returns true if any aspect of the deployment differs from the desired state.
 func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	proxy *mcpv1alpha1.MCPRemoteProxy,
+	runConfigChecksum string,
 ) bool {
+	if deployment == nil || proxy == nil {
+		return true
+	}
+
 	if len(deployment.Spec.Template.Spec.Containers) == 0 {
+		return true
+	}
+
+	if r.containerNeedsUpdate(ctx, deployment, proxy) {
+		return true
+	}
+
+	if r.deploymentMetadataNeedsUpdate(deployment, proxy) {
+		return true
+	}
+
+	if r.podTemplateMetadataNeedsUpdate(deployment, proxy, runConfigChecksum) {
+		return true
+	}
+
+	return false
+}
+
+// containerNeedsUpdate checks if the container specification has changed.
+//
+// Compares container image, ports, environment variables, resource requirements,
+// and service account between the existing deployment and desired state.
+func (r *MCPRemoteProxyReconciler) containerNeedsUpdate(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) bool {
+	if deployment == nil || proxy == nil || len(deployment.Spec.Template.Spec.Containers) == 0 {
 		return true
 	}
 
@@ -572,7 +654,21 @@ func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	// Check if deployment metadata has changed
+	return false
+}
+
+// deploymentMetadataNeedsUpdate checks if deployment-level metadata has changed.
+//
+// Compares deployment labels and annotations, including any user-specified overrides
+// from ResourceOverrides.ProxyDeployment.
+func (*MCPRemoteProxyReconciler) deploymentMetadataNeedsUpdate(
+	deployment *appsv1.Deployment,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+) bool {
+	if deployment == nil || proxy == nil {
+		return true
+	}
+
 	expectedLabels := labelsForMCPRemoteProxy(proxy.Name)
 	expectedAnnotations := make(map[string]string)
 
@@ -593,6 +689,35 @@ func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 	}
 
 	if !maps.Equal(deployment.Annotations, expectedAnnotations) {
+		return true
+	}
+
+	return false
+}
+
+// podTemplateMetadataNeedsUpdate checks if pod template metadata has changed.
+//
+// Compares pod template labels and annotations, including the critical RunConfig
+// checksum annotation that triggers pod restarts when configuration changes.
+// Also includes any user-specified overrides from ResourceOverrides.PodTemplateMetadata.
+func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
+	deployment *appsv1.Deployment,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+	runConfigChecksum string,
+) bool {
+	if deployment == nil || proxy == nil {
+		return true
+	}
+
+	expectedPodTemplateLabels, expectedPodTemplateAnnotations := r.buildPodTemplateMetadata(
+		labelsForMCPRemoteProxy(proxy.Name), proxy, runConfigChecksum,
+	)
+
+	if !maps.Equal(deployment.Spec.Template.Labels, expectedPodTemplateLabels) {
+		return true
+	}
+
+	if !maps.Equal(deployment.Spec.Template.Annotations, expectedPodTemplateAnnotations) {
 		return true
 	}
 

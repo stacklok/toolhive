@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -539,6 +540,14 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 	if config.IntrospectionURL == GoogleTokeninfoURL {
 		logger.Debugf("Registering Google tokeninfo provider: %s", config.IntrospectionURL)
 		registry.AddProvider(NewGoogleProvider(config.IntrospectionURL))
+	}
+
+	// Load client secret from environment variable if not provided in config
+	// This allows secrets to be injected via Kubernetes Secret references
+	if config.ClientSecret == "" {
+		if envSecret := os.Getenv("TOOLHIVE_OIDC_CLIENT_SECRET"); envSecret != "" {
+			config.ClientSecret = envSecret
+		}
 	}
 
 	// Add RFC7662 provider with auth if configured

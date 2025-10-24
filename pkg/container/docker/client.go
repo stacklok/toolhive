@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	gort "runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -190,6 +191,13 @@ func (c *Client) DeployWorkload(
 	permissionConfig, err := c.getPermissionConfigFromProfile(permissionProfile, transportType, ignoreConfig)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get permission config: %w", err)
+	}
+
+	// Check if host networking is requested but not supported
+	if permissionConfig.NetworkMode == "host" && !isHostNetworkingSupported() {
+		logger.Warnf("Host networking is not supported on %s (Docker Desktop uses a VM).", gort.GOOS)
+		logger.Warnf("Falling back to bridge networking. For true host networking, use native Linux Docker/Podman.")
+		permissionConfig.NetworkMode = "" // Fall back to default (bridge)
 	}
 
 	// Determine if we should attach stdio
@@ -1654,6 +1662,13 @@ func dockerToDomainStatus(status string) runtime.WorkloadStatus {
 	}
 	// We should not reach here.
 	return runtime.WorkloadStatusUnknown
+}
+
+// isHostNetworkingSupported checks if host networking is supported on the current platform.
+// Host networking only works on native Linux Docker/Podman. Docker Desktop on macOS/Windows
+// runs containers in a VM, so host networking doesn't provide access to the actual host network.
+func isHostNetworkingSupported() bool {
+	return gort.GOOS == "linux"
 }
 
 // findContainerByLabel finds a container by the base name label.

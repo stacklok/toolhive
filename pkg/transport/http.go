@@ -176,6 +176,17 @@ func (t *HTTPTransport) Setup(
 	}
 	envVars["MCP_TRANSPORT"] = env
 
+	// Check if we're using host networking mode
+	isHostNetworking := permissionProfile.Network != nil && permissionProfile.Network.Mode == "host"
+
+	if isHostNetworking {
+		// For host networking, both proxy and container ports are directly accessible on the host.
+		// No Docker port mapping is needed - both ports can coexist on 127.0.0.1
+		// The runner has already set proxyPort and targetPort to different values.
+		logger.Infof("Host networking detected, proxy on port %d will forward to container on port %d",
+			t.proxyPort, t.targetPort)
+	}
+
 	// Use the target port for the container's environment variables
 	envVars["MCP_PORT"] = fmt.Sprintf("%d", t.targetPort)
 	envVars["FASTMCP_PORT"] = fmt.Sprintf("%d", t.targetPort)
@@ -186,28 +197,32 @@ func (t *HTTPTransport) Setup(
 	containerOptions.K8sPodTemplatePatch = k8sPodTemplatePatch
 	containerOptions.IgnoreConfig = ignoreConfig
 
-	// Expose the target port in the container
-	containerPortStr := fmt.Sprintf("%d/tcp", t.targetPort)
-	containerOptions.ExposedPorts[containerPortStr] = struct{}{}
+	// Only set up port bindings and exposed ports for non-host networking
+	// Host networking doesn't support port bindings as containers use the host's network stack directly
+	if !isHostNetworking {
+		// Expose the target port in the container
+		containerPortStr := fmt.Sprintf("%d/tcp", t.targetPort)
+		containerOptions.ExposedPorts[containerPortStr] = struct{}{}
 
-	// Create host port bindings (configurable through the --host flag)
-	portBindings := []rt.PortBinding{
-		{
-			HostIP:   t.host,
-			HostPort: fmt.Sprintf("%d", t.targetPort),
-		},
+		// Create host port bindings (configurable through the --host flag)
+		portBindings := []rt.PortBinding{
+			{
+				HostIP:   t.host,
+				HostPort: fmt.Sprintf("%d", t.targetPort),
+			},
+		}
+
+		// Check if IPv6 is available and add IPv6 localhost binding (commented out for now)
+		//if networking.IsIPv6Available() {
+		//	portBindings = append(portBindings, rt.PortBinding{
+		//		HostIP:   "::1", // IPv6 localhost
+		//		HostPort: fmt.Sprintf("%d", t.targetPort),
+		//	})
+		//}
+
+		// Set the port bindings
+		containerOptions.PortBindings[containerPortStr] = portBindings
 	}
-
-	// Check if IPv6 is available and add IPv6 localhost binding (commented out for now)
-	//if networking.IsIPv6Available() {
-	//	portBindings = append(portBindings, rt.PortBinding{
-	//		HostIP:   "::1", // IPv6 localhost
-	//		HostPort: fmt.Sprintf("%d", t.targetPort),
-	//	})
-	//}
-
-	// Set the port bindings
-	containerOptions.PortBindings[containerPortStr] = portBindings
 
 	// For SSE transport, we don't need to attach stdio
 	containerOptions.AttachStdio = false
@@ -229,7 +244,7 @@ func (t *HTTPTransport) Setup(
 	if err != nil {
 		return fmt.Errorf("failed to create container: %v", err)
 	}
-	logger.Infof("Container created: %s", containerName)
+	logger.Infof("Container created: %s, exposedPort returned: %d", containerName, exposedPort)
 
 	if (t.Mode() == types.TransportTypeSSE || t.Mode() == types.TransportTypeStreamableHTTP) && rt.IsKubernetesRuntime() {
 		// If the SSEHeadlessServiceName is set, use it as the target host

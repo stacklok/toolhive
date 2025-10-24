@@ -542,6 +542,22 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 		registry.AddProvider(NewGoogleProvider(config.IntrospectionURL))
 	}
 
+	// Add GitHub provider if the introspection URL matches GitHub's API pattern
+	if strings.Contains(config.IntrospectionURL, GitHubTokenCheckURL) {
+		logger.Debugf("Registering GitHub token validation provider: %s", config.IntrospectionURL)
+		githubProvider, err := NewGitHubProvider(
+			config.IntrospectionURL,
+			config.ClientID,
+			config.ClientSecret,
+			config.CACertPath,
+			config.AllowPrivateIP,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create GitHub provider: %w", err)
+		}
+		registry.AddProvider(githubProvider)
+	}
+
 	// Load client secret from environment variable if not provided in config
 	// This allows secrets to be injected via Kubernetes Secret references
 	if config.ClientSecret == "" {

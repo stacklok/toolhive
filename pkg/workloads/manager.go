@@ -861,6 +861,11 @@ func (d *defaultManager) restartRemoteWorkload(
 		if err := removeClientConfigurations(name, false); err != nil {
 			logger.Warnf("Warning: Failed to remove client configurations: %v", err)
 		}
+
+		// Set status to stopped after cleanup is complete
+		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
+			logger.Debugf("Failed to set workload %s status to stopped: %v", name, err)
+		}
 	}
 
 	// Load runner configuration from state
@@ -966,6 +971,11 @@ func (d *defaultManager) restartContainerWorkload(ctx context.Context, name stri
 		// Clean up client configurations
 		if err := removeClientConfigurations(workloadName, labels.IsAuxiliaryWorkload(container.Labels)); err != nil {
 			logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+		}
+
+		// Set status to stopped after cleanup is complete
+		if err := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStopped, ""); err != nil {
+			logger.Debugf("Failed to set workload %s status to stopped: %v", workloadName, err)
 		}
 	}
 

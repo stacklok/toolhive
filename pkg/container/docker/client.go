@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	gort "runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -110,6 +109,7 @@ type deployOps interface {
 		exposedPorts map[string]struct{},
 		portBindings map[string][]runtime.PortBinding,
 		isolateNetwork bool,
+		useHostAccess bool,
 	) error
 	createIngressContainer(
 		ctx context.Context,
@@ -193,11 +193,12 @@ func (c *Client) DeployWorkload(
 		return 0, fmt.Errorf("failed to get permission config: %w", err)
 	}
 
-	// Check if host networking is requested but not supported
-	if permissionConfig.NetworkMode == "host" && !isHostNetworkingSupported() {
-		logger.Warnf("Host networking is not supported on %s (Docker Desktop uses a VM).", gort.GOOS)
-		logger.Warnf("Falling back to bridge networking. For true host networking, use native Linux Docker/Podman.")
-		permissionConfig.NetworkMode = "" // Fall back to default (bridge)
+	// Handle "host networking" by using bridge mode with host.docker.internal mapping
+	// This provides cross-platform access to the host without Docker's native host networking
+	useHostAccess := permissionConfig.NetworkMode == "host"
+	if useHostAccess {
+		logger.Infof("Host networking requested - using bridge mode with host.docker.internal mapping")
+		permissionConfig.NetworkMode = "" // Use default bridge networking
 	}
 
 	// Determine if we should attach stdio
@@ -264,28 +265,10 @@ func (c *Client) DeployWorkload(
 		networkName = ""
 	}
 
-	// Handle port binding generation differently for host vs bridge networking
-	var hostPort int
-	var newPortBindings map[string][]runtime.PortBinding
-	if permissionConfig.NetworkMode == "host" {
-		// For host networking, the container binds directly to the host port
-		// The port was set in MCP_PORT environment variable by the transport layer
-		mcpPort, ok := envVars["MCP_PORT"]
-		if !ok {
-			return 0, fmt.Errorf("MCP_PORT not found in environment variables for host networking")
-		}
-		hostPort, err = strconv.Atoi(mcpPort)
-		if err != nil {
-			return 0, fmt.Errorf("failed to parse MCP_PORT for host networking: %v", err)
-		}
-		newPortBindings = options.PortBindings // Use as-is (should be empty for host networking)
-		logger.Infof("Host networking: container listening on port %d (from MCP_PORT), will return this port", hostPort)
-	} else {
-		// For bridge/default networking, generate random port mappings
-		newPortBindings, hostPort, err = generatePortBindings(labels, options.PortBindings)
-		if err != nil {
-			return 0, fmt.Errorf("failed to generate port bindings: %v", err)
-		}
+	// Generate port bindings for bridge networking
+	newPortBindings, hostPort, err := generatePortBindings(labels, options.PortBindings)
+	if err != nil {
+		return 0, fmt.Errorf("failed to generate port bindings: %v", err)
 	}
 
 	// Add a label to the MCP server indicating network isolation.
@@ -307,6 +290,7 @@ func (c *Client) DeployWorkload(
 		options.ExposedPorts,
 		newPortBindings,
 		isolateNetwork,
+		useHostAccess,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create mcp container: %v", err)
@@ -1415,7 +1399,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 func (c *Client) createMcpContainer(ctx context.Context, name string, networkName string, image string, command []string,
 	envVars map[string]string, labels map[string]string, attachStdio bool, permissionConfig *runtime.PermissionConfig,
 	additionalDNS string, exposedPorts map[string]struct{}, portBindings map[string][]runtime.PortBinding,
-	isolateNetwork bool) error {
+	isolateNetwork bool, useHostAccess bool) error {
 	// Create container configuration
 	config := &container.Config{
 		Image:        image,
@@ -1445,31 +1429,26 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 		hostConfig.DNS = []string{additionalDNS}
 	}
 
+	// Add host.docker.internal mapping when host access is requested
+	if useHostAccess {
+		hostConfig.ExtraHosts = []string{"host.docker.internal:host-gateway"}
+	}
+
 	// Configure ports if options are provided
 	// Setup exposed ports
 	if err := setupExposedPorts(config, exposedPorts); err != nil {
 		return NewContainerError(err, "", err.Error())
 	}
 
-	// Setup port bindings only for non-host networking
-	// Host networking mode is incompatible with port bindings as the container
-	// uses the host's network stack directly
-	if permissionConfig.NetworkMode != "host" {
-		if err := setupPortBindings(hostConfig, portBindings); err != nil {
-			return NewContainerError(err, "", err.Error())
-		}
+	// Setup port bindings
+	if err := setupPortBindings(hostConfig, portBindings); err != nil {
+		return NewContainerError(err, "", err.Error())
 	}
 
 	// create mcp container
 	internalEndpointsConfig := map[string]*network.EndpointSettings{}
 
-	// Check if we have a custom network mode (e.g., "host", "none", etc.)
-	if permissionConfig.NetworkMode != "" && permissionConfig.NetworkMode != "bridge" && permissionConfig.NetworkMode != "default" {
-		// For custom network modes like "host", "none", etc., don't add any endpoint configurations
-		// The NetworkMode in hostConfig will handle the networking
-		logger.Infof("Using custom network mode: %s", permissionConfig.NetworkMode)
-		// Leave internalEndpointsConfig as empty map
-	} else if isolateNetwork {
+	if isolateNetwork {
 		internalEndpointsConfig[networkName] = &network.EndpointSettings{
 			NetworkID: networkName,
 		}
@@ -1662,13 +1641,6 @@ func dockerToDomainStatus(status string) runtime.WorkloadStatus {
 	}
 	// We should not reach here.
 	return runtime.WorkloadStatusUnknown
-}
-
-// isHostNetworkingSupported checks if host networking is supported on the current platform.
-// Host networking only works on native Linux Docker/Podman. Docker Desktop on macOS/Windows
-// runs containers in a VM, so host networking doesn't provide access to the actual host network.
-func isHostNetworkingSupported() bool {
-	return gort.GOOS == "linux"
 }
 
 // findContainerByLabel finds a container by the base name label.

@@ -986,6 +986,19 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		}
 	}
 
+	// Add OIDC client secret environment variable if using inline config with secretRef
+	if m.Spec.OIDCConfig != nil && m.Spec.OIDCConfig.Inline != nil {
+		oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
+			ctx, r.Client, m.Namespace, m.Spec.OIDCConfig.Inline.ClientSecretRef,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate OIDC client secret environment variable")
+		} else if oidcClientSecretEnvVar != nil {
+			env = append(env, *oidcClientSecretEnvVar)
+		}
+	}
+
 	// Add user-specified proxy environment variables from ResourceOverrides
 	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
 		for _, envVar := range m.Spec.ResourceOverrides.ProxyDeployment.Env {
@@ -1440,6 +1453,20 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 				return true
 			}
 			expectedProxyEnv = append(expectedProxyEnv, tokenExchangeEnvVars...)
+		}
+
+		// Add OIDC client secret environment variable if using inline config with secretRef
+		if mcpServer.Spec.OIDCConfig != nil && mcpServer.Spec.OIDCConfig.Inline != nil {
+			oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
+				ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.OIDCConfig.Inline.ClientSecretRef,
+			)
+			if err != nil {
+				// If we can't generate env var, consider the deployment needs update
+				return true
+			}
+			if oidcClientSecretEnvVar != nil {
+				expectedProxyEnv = append(expectedProxyEnv, *oidcClientSecretEnvVar)
+			}
 		}
 
 		// Add user-specified environment variables

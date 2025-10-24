@@ -151,6 +151,19 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		}
 	}
 
+	// Add OIDC client secret environment variable if using inline config with secretRef
+	if proxy.Spec.OIDCConfig.Type == "inline" && proxy.Spec.OIDCConfig.Inline != nil {
+		oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
+			ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfig.Inline.ClientSecretRef,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate OIDC client secret environment variable")
+		} else if oidcClientSecretEnvVar != nil {
+			env = append(env, *oidcClientSecretEnvVar)
+		}
+	}
+
 	// Add user-specified environment variables
 	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
 		for _, envVar := range proxy.Spec.ResourceOverrides.ProxyDeployment.Env {

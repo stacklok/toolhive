@@ -8,10 +8,3 @@ validate-maintainers: false
 remote: origin
 target-branch: main
 
-# Install all charts, not just changed ones.
-# This is required because the operator chart depends on the operator-crds chart.
-# Without 'all: true', ct only installs charts that have changed in the PR.
-# If a PR only changes the operator chart (not operator-crds), the operator
-# will fail to start because the CRDs are not installed in the test cluster.
-# The operator requires CRDs at startup to create field indexes (e.g., spec.groupRef).
-all: true

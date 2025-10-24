@@ -1,7 +1,7 @@
 # Configuration for chart-testing (ct) install command
 # See: https://github.com/helm/chart-testing
 
-chart-dirs:
+charts:
   - deploy/charts/operator-crds
   - deploy/charts/operator
 validate-maintainers: false

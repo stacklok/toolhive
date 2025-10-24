@@ -2,7 +2,8 @@
 # See: https://github.com/helm/chart-testing
 
 chart-dirs:
-  - deploy/charts
+  - deploy/charts/operator-crds
+  - deploy/charts/operator
 validate-maintainers: false
 remote: origin
 target-branch: main

@@ -195,7 +195,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			// Verify container ports
 			Expect(container.Ports).To(HaveLen(1))
 			Expect(container.Ports[0].Name).To(Equal("http"))
-			Expect(container.Ports[0].ContainerPort).To(Equal(mcpServer.Spec.Port))
+			Expect(container.Ports[0].ContainerPort).To(Equal(mcpServer.GetProxyPort()))
 			Expect(container.Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
 
 			// Verify probes

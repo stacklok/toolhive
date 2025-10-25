@@ -316,7 +316,7 @@ func (r *MCPRemoteProxyReconciler) ensureService(
 func (r *MCPRemoteProxyReconciler) ensureServiceURL(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
 	if proxy.Status.URL == "" {
 		// Note: createProxyServiceURL uses the remote-prefixed service name
-		proxy.Status.URL = createProxyServiceURL(proxy.Name, proxy.Namespace, proxy.Spec.Port)
+		proxy.Status.URL = createProxyServiceURL(proxy.Name, proxy.Namespace, int32(proxy.GetProxyPort()))
 		return r.Status().Update(ctx, proxy)
 	}
 	return nil
@@ -631,7 +631,7 @@ func (r *MCPRemoteProxyReconciler) containerNeedsUpdate(
 	}
 
 	// Check if port has changed
-	if len(container.Ports) > 0 && container.Ports[0].ContainerPort != proxy.Spec.Port {
+	if len(container.Ports) > 0 && container.Ports[0].ContainerPort != int32(proxy.GetProxyPort()) {
 		return true
 	}
 
@@ -727,7 +727,7 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 // serviceNeedsUpdate checks if the service needs to be updated
 func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(service *corev1.Service, proxy *mcpv1alpha1.MCPRemoteProxy) bool {
 	// Check if port has changed
-	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != proxy.Spec.Port {
+	if len(service.Spec.Ports) > 0 && service.Spec.Ports[0].Port != int32(proxy.GetProxyPort()) {
 		return true
 	}
 

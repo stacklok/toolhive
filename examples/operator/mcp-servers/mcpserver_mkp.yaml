@@ -7,7 +7,7 @@ spec:
   image: ghcr.io/stackloklabs/mkp/server
   transport: streamable-http
   targetPort: 8080
-  port: 8080
+  proxyPort: 8080
   args:
     # Change to true for read-write access.
     - --read-write=false

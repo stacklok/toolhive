@@ -52,8 +52,8 @@ func TestResourceOverrides(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 				},
 			},
 			expectedDeploymentLabels: map[string]string{
@@ -81,8 +81,8 @@ func TestResourceOverrides(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
@@ -146,8 +146,8 @@ func TestResourceOverrides(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
@@ -199,8 +199,8 @@ func TestResourceOverrides(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
@@ -264,8 +264,8 @@ func TestResourceOverrides(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
@@ -427,8 +427,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							Env: []mcpv1alpha1.EnvVar{
@@ -453,8 +453,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							Env: []mcpv1alpha1.EnvVar{
@@ -479,8 +479,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							Env: []mcpv1alpha1.EnvVar{
@@ -506,8 +506,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							Env: []mcpv1alpha1.EnvVar{
@@ -531,8 +531,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 				},
 			},
 			existingEnvVars: []corev1.EnvVar{},
@@ -546,8 +546,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 				},
 			},
 			existingEnvVars: []corev1.EnvVar{

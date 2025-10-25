@@ -57,8 +57,8 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 					Image:       "example/mcp-server:v1.0.0",
 					Transport:   "stdio",
 					ProxyMode:   "sse",
-					Port:        8080,
-					TargetPort:  8081,
+					ProxyPort:   8080,
+					McpPort:     8081,
 					Args:        []string{"--verbose", "--debug"},
 					ToolsFilter: []string{"tool1", "tool2"},
 					Env: []mcpv1alpha1.EnvVar{
@@ -246,7 +246,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 				}
 				// Update multiple fields
 				mcpServer.Spec.Image = "example/mcp-server:v2.0.0"
-				mcpServer.Spec.Port = 9090
+				mcpServer.Spec.ProxyPort = 9090
 				mcpServer.Spec.Env = append(mcpServer.Spec.Env, mcpv1alpha1.EnvVar{
 					Name:  "NEW_VAR",
 					Value: "new_value",
@@ -324,7 +324,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "telemetry/mcp-server:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					Telemetry: &mcpv1alpha1.TelemetryConfig{
 						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
 							Enabled:     true,
@@ -396,7 +396,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "authz/mcp-server:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
 						Type: mcpv1alpha1.AuthzConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineAuthzConfig{
@@ -460,8 +460,8 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:       "deterministic/mcp-server:v1.0.0",
 					Transport:   "sse",
-					Port:        9090,
-					TargetPort:  8080,
+					ProxyPort:   9090,
+					McpPort:     8080,
 					Args:        []string{"--arg1", "--arg2", "--arg3"},
 					ToolsFilter: []string{"tool3", "tool1", "tool2"},
 					Env: []mcpv1alpha1.EnvVar{

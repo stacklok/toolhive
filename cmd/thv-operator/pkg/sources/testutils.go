@@ -61,14 +61,16 @@ func (b *TestRegistryBuilder) WithServer(name string) *TestRegistryBuilder {
 		}
 	case mcpv1alpha1.RegistryFormatUpstream:
 		b.upstreamData = append(b.upstreamData, registry.UpstreamServerDetail{
-			Server: registry.UpstreamServer{
-				Name:        name,
-				Description: fmt.Sprintf("Test server description for %s", name),
-				Packages: []registry.UpstreamPackage{
-					{
-						RegistryName: "docker",
-						Name:         "test/image",
-						Version:      "latest",
+			Name:        name,
+			Description: fmt.Sprintf("Test server description for %s", name),
+			Version:     "1.0.0",
+			Packages: []registry.UpstreamPackage{
+				{
+					RegistryType: "oci",
+					Identifier:   "test/image",
+					Version:      "latest",
+					Transport: registry.UpstreamTransport{
+						Type: registry.UpstreamTransportTypeStdio,
 					},
 				},
 			},

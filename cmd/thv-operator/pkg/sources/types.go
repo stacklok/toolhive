@@ -117,11 +117,11 @@ func validateUpstreamFormatAndParse(data []byte) (*registry.Registry, error) {
 	}
 
 	for i, server := range upstreamServers {
-		if server.Server.Name == "" {
+		if server.Name == "" {
 			return nil, fmt.Errorf("server at index %d: name is required", i)
 		}
-		if server.Server.Description == "" {
-			return nil, fmt.Errorf("server at index %d (%s): description is required", i, server.Server.Name)
+		if server.Description == "" {
+			return nil, fmt.Errorf("server at index %d (%s): description is required", i, server.Name)
 		}
 	}
 
@@ -136,17 +136,17 @@ func validateUpstreamFormatAndParse(data []byte) (*registry.Registry, error) {
 	for _, upstreamServer := range upstreamServers {
 		serverMetadata, err := registry.ConvertUpstreamToToolhive(&upstreamServer)
 		if err != nil {
-			return nil, fmt.Errorf("failed to convert server %s: %w", upstreamServer.Server.Name, err)
+			return nil, fmt.Errorf("failed to convert server %s: %w", upstreamServer.Name, err)
 		}
 
 		// Add to appropriate map based on server type
 		switch server := serverMetadata.(type) {
 		case *registry.ImageMetadata:
-			toolhiveRegistry.Servers[upstreamServer.Server.Name] = server
+			toolhiveRegistry.Servers[upstreamServer.Name] = server
 		case *registry.RemoteServerMetadata:
-			toolhiveRegistry.RemoteServers[upstreamServer.Server.Name] = server
+			toolhiveRegistry.RemoteServers[upstreamServer.Name] = server
 		default:
-			return nil, fmt.Errorf("unknown server type for %s", upstreamServer.Server.Name)
+			return nil, fmt.Errorf("unknown server type for %s", upstreamServer.Name)
 		}
 	}
 

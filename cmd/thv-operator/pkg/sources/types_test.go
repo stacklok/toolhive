@@ -159,23 +159,20 @@ func TestDefaultSourceDataValidator_ValidateData(t *testing.T) {
 	}`)
 
 	validUpstreamData := []byte(`[{
-		"server": {
-			"name": "test-server",
-			"description": "A test server for validation",
-			"status": "Active",
-			"version_detail": {
-				"version": "1.0.0"
-			},
-			"packages": [{
-				"registry_name": "docker",
-				"name": "test/image",
-				"version": "latest"
-			}]
-		},
-		"x-publisher": {
-			"x-dev.toolhive": {
+		"name": "test-server",
+		"description": "A test server for validation",
+		"version": "1.0.0",
+		"packages": [{
+			"registryType": "oci",
+			"identifier": "test/image",
+			"version": "latest",
+			"transport": {
+				"type": "stdio"
+			}
+		}],
+		"_meta": {
+			"dev.toolhive": {
 				"tier": "Community",
-				"transport": "stdio",
 				"tools": ["test_tool"]
 			}
 		}
@@ -238,9 +235,8 @@ func TestDefaultSourceDataValidator_ValidateData(t *testing.T) {
 		{
 			name: "upstream server missing name",
 			data: []byte(`[{
-				"server": {
-					"description": "Test server"
-				}
+				"description": "Test server",
+				"version": "1.0.0"
 			}]`),
 			format:        mcpv1alpha1.RegistryFormatUpstream,
 			expectError:   true,
@@ -249,9 +245,8 @@ func TestDefaultSourceDataValidator_ValidateData(t *testing.T) {
 		{
 			name: "upstream server missing description",
 			data: []byte(`[{
-				"server": {
-					"name": "test-server"
-				}
+				"name": "test-server",
+				"version": "1.0.0"
 			}]`),
 			format:        mcpv1alpha1.RegistryFormatUpstream,
 			expectError:   true,

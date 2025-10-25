@@ -128,12 +128,12 @@ func TestTestRegistryBuilder_WithServer(t *testing.T) {
 			case mcpv1alpha1.RegistryFormatUpstream:
 				assert.Len(t, builder.upstreamData, 1)
 				serverDetail := builder.upstreamData[0]
-				assert.Equal(t, tt.expectedName, serverDetail.Server.Name)
-				assert.NotEmpty(t, serverDetail.Server.Description)
-				assert.Len(t, serverDetail.Server.Packages, 1)
-				pkg := serverDetail.Server.Packages[0]
-				assert.Equal(t, "docker", pkg.RegistryName)
-				assert.Equal(t, "test/image", pkg.Name)
+				assert.Equal(t, tt.expectedName, serverDetail.Name)
+				assert.NotEmpty(t, serverDetail.Description)
+				assert.Len(t, serverDetail.Packages, 1)
+				pkg := serverDetail.Packages[0]
+				assert.Equal(t, "oci", pkg.RegistryType)
+				assert.Equal(t, "test/image", pkg.Identifier)
 				assert.Equal(t, "latest", pkg.Version)
 			}
 		})

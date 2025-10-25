@@ -24,8 +24,14 @@ vars:
         echo "docker"
       fi
   KEYCLOAK_VERSION: '26.3.2'
-
-
+  VERSION:
+    sh: git describe --tags --always --dirty || echo "dev"
+  COMMIT:
+    sh: git rev-parse HEAD || echo "unknown"
+  BUILD_DATE: '{{now | date "2006-01-02T15:04:05Z" }}'
+  OPERATOR_IMAGE_NAME: ghcr.io/stacklok/toolhive/operator
+  PROXYRUNNER_IMAGE_NAME: ghcr.io/stacklok/toolhive/proxyrunner
+  
 tasks:
   kind-setup:
     desc: Setup a local Kind cluster
@@ -103,9 +109,42 @@ tasks:
       - go install -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -v ./cmd/thv-operator
 
   build-operator-image:
-    desc: Build the operator image with ko
+    desc: Build the operator image
     cmds:
-      - ko build --local -B ./cmd/thv-operator
+      - >
+        eval "{{.CONTAINER_RUNTIME}} build --load
+        -t {{.OPERATOR_IMAGE_NAME}}:{{.COMMIT}}
+        -t {{.OPERATOR_IMAGE_NAME}}:local
+        --build-arg CODEDIR=cmd/thv-operator
+        --build-arg VERSION={{.VERSION}}
+        --build-arg COMMIT={{.COMMIT}}
+        --build-arg BUILD_DATE={{.BUILD_DATE}}
+        --label name=\"toolhive-operator\"
+        --label vendor=\"Stacklok\"
+        --label maintainer=\"Stacklok\"
+        --label org.opencontainers.image.source=\"https://github.com/stacklok/toolhive\"
+        --label org.opencontainers.image.title=\"toolhive-operator\"
+        --label org.opencontainers.image.vendor=\"Stacklok\"
+        -f containers/operator/Dockerfile ."
+
+  build-proxyrunner-image:
+    desc: Build the proxyrunner image
+    cmds:
+      - >
+        eval "{{.CONTAINER_RUNTIME}} build --load
+        -t {{.PROXYRUNNER_IMAGE_NAME}}:{{.COMMIT}}
+        -t {{.PROXYRUNNER_IMAGE_NAME}}:local
+        --build-arg CODEDIR=cmd/thv-proxyrunner
+        --build-arg VERSION={{.VERSION}}
+        --build-arg COMMIT={{.COMMIT}}
+        --build-arg BUILD_DATE={{.BUILD_DATE}}
+        --label name=\"toolhive-proxyrunner\"
+        --label vendor=\"Stacklok\"
+        --label maintainer=\"Stacklok\"
+        --label org.opencontainers.image.source=\"https://github.com/stacklok/toolhive\"
+        --label org.opencontainers.image.title=\"toolhive-proxyrunner\"
+        --label org.opencontainers.image.vendor=\"Stacklok\"
+        -f containers/operator/Dockerfile ."
 
   operator-install-crds:
     desc: Install CRDs into the K8s cluster
@@ -132,11 +171,11 @@ tasks:
     vars:
       ENABLE_EXPERIMENTAL_FEATURES: '{{.ENABLE_EXPERIMENTAL_FEATURES | default "false"}}'
       REGISTRY_API_IMAGE: '{{.REGISTRY_API_IMAGE | default "ghcr.io/stacklok/thv-registry-api:latest"}}'
-      OPERATOR_IMAGE:
-        sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1
-      TOOLHIVE_IMAGE:
-        sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-proxyrunner | tail -n 1
+      OPERATOR_IMAGE: '{{.OPERATOR_IMAGE_NAME}}:{{.COMMIT}}'
+      TOOLHIVE_IMAGE: '{{.PROXYRUNNER_IMAGE_NAME}}:{{.COMMIT}}'
     cmds:
+      - task: build-operator-image
+      - task: build-proxyrunner-image
       - echo "Loading toolhive operator image {{.OPERATOR_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.OPERATOR_IMAGE}}
       - echo "Loading toolhive image {{.TOOLHIVE_IMAGE}} into kind..."

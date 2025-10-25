@@ -256,10 +256,28 @@ func (c *Client) DeployWorkload(
 		networkName = ""
 	}
 
-	// only remap if is not an auxiliary tool
-	newPortBindings, hostPort, err := generatePortBindings(labels, options.PortBindings)
-	if err != nil {
-		return 0, fmt.Errorf("failed to generate port bindings: %v", err)
+	// Handle port binding generation differently for host vs bridge networking
+	var hostPort int
+	var newPortBindings map[string][]runtime.PortBinding
+	if permissionConfig.NetworkMode == "host" {
+		// For host networking, the container binds directly to the host port
+		// The port was set in MCP_PORT environment variable by the transport layer
+		mcpPort, ok := envVars["MCP_PORT"]
+		if !ok {
+			return 0, fmt.Errorf("MCP_PORT not found in environment variables for host networking")
+		}
+		hostPort, err = strconv.Atoi(mcpPort)
+		if err != nil {
+			return 0, fmt.Errorf("failed to parse MCP_PORT for host networking: %v", err)
+		}
+		newPortBindings = options.PortBindings // Use as-is (should be empty for host networking)
+		logger.Infof("Host networking: container listening on port %d (from MCP_PORT), will return this port", hostPort)
+	} else {
+		// For bridge/default networking, generate random port mappings
+		newPortBindings, hostPort, err = generatePortBindings(labels, options.PortBindings)
+		if err != nil {
+			return 0, fmt.Errorf("failed to generate port bindings: %v", err)
+		}
 	}
 
 	// Add a label to the MCP server indicating network isolation.
@@ -1425,9 +1443,13 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 		return NewContainerError(err, "", err.Error())
 	}
 
-	// Setup port bindings
-	if err := setupPortBindings(hostConfig, portBindings); err != nil {
-		return NewContainerError(err, "", err.Error())
+	// Setup port bindings only for non-host networking
+	// Host networking mode is incompatible with port bindings as the container
+	// uses the host's network stack directly
+	if permissionConfig.NetworkMode != "host" {
+		if err := setupPortBindings(hostConfig, portBindings); err != nil {
+			return NewContainerError(err, "", err.Error())
+		}
 	}
 
 	// create mcp container

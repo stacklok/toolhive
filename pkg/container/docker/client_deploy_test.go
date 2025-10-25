@@ -308,3 +308,142 @@ func TestDeployWorkload_UnsupportedTransport_PropagatesError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported transport type")
 }
+
+func TestDeployWorkload_HostNetworking_UsesMCPPortAndSkipsExternalNetwork(t *testing.T) {
+	t.Parallel()
+
+	fops := &fakeDeployOps{}
+	c := newClientWithOps(fops)
+
+	opts := runtime.NewDeployWorkloadOptions()
+	opts.ExposedPorts = map[string]struct{}{"8080/tcp": {}}
+	// For host networking, port bindings should be empty (no mapping needed)
+	opts.PortBindings = map[string][]runtime.PortBinding{}
+
+	labels := map[string]string{}
+	envVars := map[string]string{
+		"MCP_PORT": "9876", // This port should be used as the host port
+		"EXISTING": "value",
+	}
+
+	// Create permission profile with host network mode
+	profile := &permissions.Profile{
+		Network: &permissions.NetworkPermissions{
+			Mode: "host",
+		},
+	}
+
+	hostPort, err := c.DeployWorkload(
+		t.Context(),
+		"ghcr.io/example/mcp:latest",
+		"hostnet",
+		[]string{"serve"},
+		envVars,
+		labels,
+		profile,
+		"sse",
+		opts,
+		false, // no network isolation (typical for host mode)
+	)
+	require.NoError(t, err)
+
+	// Verify host port comes from MCP_PORT environment variable
+	assert.Equal(t, 9876, hostPort)
+
+	// Verify external network creation was skipped
+	assert.False(t, fops.externalNetworksCalled, "external network creation should be skipped for host networking")
+
+	// Verify no auxiliary containers were created
+	assert.False(t, fops.dnsCalled, "DNS container should not be created for host networking")
+	assert.False(t, fops.egressCalled, "egress container should not be created for host networking")
+	assert.False(t, fops.ingressCalled, "ingress container should not be created for host networking")
+
+	// Verify MCP container was created with correct network mode
+	require.True(t, fops.mcpCalled)
+	require.NotNil(t, fops.mcpPermissionCfg)
+	assert.Equal(t, "host", fops.mcpPermissionCfg.NetworkMode)
+
+	// Port bindings should be empty for host networking
+	assert.Empty(t, fops.mcpPortBindings)
+
+	// Environment should include MCP_PORT
+	assert.Equal(t, "9876", fops.mcpEnvVars["MCP_PORT"])
+}
+
+func TestDeployWorkload_HostNetworking_ErrorsIfMCPPortMissing(t *testing.T) {
+	t.Parallel()
+
+	fops := &fakeDeployOps{}
+	c := newClientWithOps(fops)
+
+	opts := runtime.NewDeployWorkloadOptions()
+	opts.ExposedPorts = map[string]struct{}{"8080/tcp": {}}
+	opts.PortBindings = map[string][]runtime.PortBinding{}
+
+	envVars := map[string]string{
+		// MCP_PORT is missing
+		"EXISTING": "value",
+	}
+
+	profile := &permissions.Profile{
+		Network: &permissions.NetworkPermissions{
+			Mode: "host",
+		},
+	}
+
+	_, err := c.DeployWorkload(
+		t.Context(),
+		"ghcr.io/example/mcp:latest",
+		"hostnet-no-port",
+		[]string{"serve"},
+		envVars,
+		map[string]string{},
+		profile,
+		"sse",
+		opts,
+		false,
+	)
+
+	// Should error when MCP_PORT is missing for host networking
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MCP_PORT not found in environment variables for host networking")
+}
+
+func TestDeployWorkload_HostNetworking_ErrorsIfMCPPortInvalid(t *testing.T) {
+	t.Parallel()
+
+	fops := &fakeDeployOps{}
+	c := newClientWithOps(fops)
+
+	opts := runtime.NewDeployWorkloadOptions()
+	opts.ExposedPorts = map[string]struct{}{"8080/tcp": {}}
+	opts.PortBindings = map[string][]runtime.PortBinding{}
+
+	envVars := map[string]string{
+		"MCP_PORT": "not-a-number", // Invalid port value
+		"EXISTING": "value",
+	}
+
+	profile := &permissions.Profile{
+		Network: &permissions.NetworkPermissions{
+			Mode: "host",
+		},
+	}
+
+	_, err := c.DeployWorkload(
+		t.Context(),
+		"ghcr.io/example/mcp:latest",
+		"hostnet-bad-port",
+		[]string{"serve"},
+		envVars,
+		map[string]string{},
+		profile,
+		"sse",
+		opts,
+		false,
+	)
+
+	// Should error when MCP_PORT is not a valid number
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse MCP_PORT for host networking")
+}

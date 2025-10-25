@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-23T00:17:58Z",
+  "last_updated": "2025-10-25T00:17:28Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -472,9 +472,9 @@
         "list_icons"
       ],
       "metadata": {
-        "stars": 6584,
+        "stars": 6812,
         "pulls": 0,
-        "last_updated": "2025-10-05T02:31:59Z"
+        "last_updated": "2025-10-23T02:30:41Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -484,7 +484,7 @@
         "architecture",
         "visualization"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/aws-diagram:1.0.10",
+      "image": "ghcr.io/stacklok/dockyard/uvx/aws-diagram:1.0.11",
       "permissions": {
         "network": {
           "outbound": {}
@@ -523,9 +523,9 @@
         "recommend"
       ],
       "metadata": {
-        "stars": 6584,
+        "stars": 6812,
         "pulls": 0,
-        "last_updated": "2025-10-05T02:32:01Z"
+        "last_updated": "2025-10-23T02:30:42Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -601,7 +601,7 @@
         "aws-costs",
         "aws-pricing"
       ],
-      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:1.0.14",
+      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:1.0.15",
       "permissions": {
         "network": {
           "outbound": {
@@ -711,7 +711,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.9.6",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.9.8",
       "permissions": {
         "network": {
           "outbound": {
@@ -1064,9 +1064,9 @@
         "chroma_delete_documents"
       ],
       "metadata": {
-        "stars": 374,
+        "stars": 397,
         "pulls": 0,
-        "last_updated": "2025-10-05T02:32:00Z"
+        "last_updated": "2025-10-23T02:30:41Z"
       },
       "repository_url": "https://github.com/chroma-core/chroma-mcp",
       "tags": [
@@ -1202,7 +1202,7 @@
         "documentation",
         "code-examples"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.21",
+      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.26",
       "permissions": {
         "network": {
           "outbound": {
@@ -1385,9 +1385,9 @@
         "unstage_table"
       ],
       "metadata": {
-        "stars": 4,
+        "stars": 5,
         "pulls": 0,
-        "last_updated": "2025-10-05T02:32:00Z"
+        "last_updated": "2025-10-23T02:30:42Z"
       },
       "repository_url": "https://github.com/dolthub/dolt-mcp",
       "tags": [
@@ -3386,7 +3386,7 @@
         "gateway",
         "intelligent"
       ],
-      "image": "ghcr.io/stackloklabs/mcp-optimizer:0.0.1",
+      "image": "ghcr.io/stackloklabs/mcp-optimizer:0.0.4",
       "permissions": {
         "network": {
           "outbound": {}
@@ -3544,9 +3544,9 @@
         "find_underused_resource_classes"
       ],
       "metadata": {
-        "stars": 65,
+        "stars": 67,
         "pulls": 0,
-        "last_updated": "2025-10-05T02:32:01Z"
+        "last_updated": "2025-10-23T02:30:42Z"
       },
       "repository_url": "https://github.com/CircleCI-Public/mcp-server-circleci",
       "tags": [
@@ -3725,81 +3725,6 @@
           "required": false
         }
       ]
-    },
-    "meta-mcp": {
-      "description": "MCP server that acts as an intelligent intermediary between AI clients and multiple MCP servers",
-      "tier": "Official",
-      "status": "Active",
-      "transport": "streamable-http",
-      "tools": [
-        "find_tool",
-        "call_tool",
-        "list_tools",
-        "search_registry",
-        "install_server"
-      ],
-      "metadata": {
-        "stars": 0,
-        "pulls": 0,
-        "last_updated": "2025-10-13T02:32:37Z"
-      },
-      "repository_url": "https://github.com/StacklokLabs/mcp-optimizer",
-      "tags": [
-        "mcp",
-        "proxy",
-        "gateway",
-        "intelligent"
-      ],
-      "image": "ghcr.io/stackloklabs/mcp-optimizer:0.0.1",
-      "permissions": {
-        "network": {
-          "outbound": {}
-        }
-      },
-      "env_vars": [
-        {
-          "name": "ALLOWED_GROUPS",
-          "description": "Comma-separated list of ToolHive group names to filter tool lookups (default: no filtering)",
-          "required": false
-        },
-        {
-          "name": "MAX_TOOLS_TO_RETURN",
-          "description": "Number of tools to return from find_tool (default: 8)",
-          "required": false
-        },
-        {
-          "name": "TOOL_DISTANCE_THRESHOLD",
-          "description": "Distance threshold for tool similarity (default: 1.0)",
-          "required": false
-        },
-        {
-          "name": "MAX_TOOL_RESPONSE_TOKENS",
-          "description": "Maximum number of tokens to return from call_tool (default: no limit)",
-          "required": false
-        },
-        {
-          "name": "WORKLOAD_POLLING_INTERVAL",
-          "description": "Polling interval for running MCP servers (default: 60 seconds)",
-          "required": false
-        },
-        {
-          "name": "REGISTRY_POLLING_INTERVAL",
-          "description": "Polling interval for ToolHive registry (default: 24 hours)",
-          "required": false
-        },
-        {
-          "name": "RUNTIME_MODE",
-          "description": "Runtime mode for MCP servers (docker or k8s, default: docker)",
-          "required": false
-        }
-      ],
-      "provenance": {
-        "sigstore_url": "tuf-repo-cdn.sigstore.dev",
-        "repository_uri": "https://github.com/StacklokLabs/mcp-optimizer",
-        "signer_identity": "/.github/workflows/release.yml",
-        "runner_environment": "github-hosted",
-        "cert_issuer": "https://token.actions.githubusercontent.com"
-      }
     },
     "mongodb": {
       "description": "Provides support for interacting with MongoDB Databases and MongoDB Atlas.",
@@ -4954,7 +4879,7 @@
         "baas",
         "postgresql"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/supabase-mcp-server:0.5.6",
+      "image": "ghcr.io/stacklok/dockyard/npx/supabase-mcp-server:0.5.7",
       "permissions": {
         "network": {
           "outbound": {

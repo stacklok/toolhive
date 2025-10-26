@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-25T00:17:28Z",
+  "last_updated": "2025-10-26T00:19:40Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -130,9 +130,9 @@
         "example_GetAstronautsCurrentlyInSpace"
       ],
       "metadata": {
-        "stars": 210,
+        "stars": 222,
         "pulls": 0,
-        "last_updated": "2025-10-07T02:28:19Z"
+        "last_updated": "2025-10-25T02:30:07Z"
       },
       "repository_url": "https://github.com/apollographql/apollo-mcp-server",
       "tags": [
@@ -711,7 +711,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.9.8",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.9.9",
       "permissions": {
         "network": {
           "outbound": {
@@ -2063,9 +2063,9 @@
         "download_attachment"
       ],
       "metadata": {
-        "stars": 628,
-        "pulls": 18834,
-        "last_updated": "2025-10-07T02:28:19Z"
+        "stars": 674,
+        "pulls": 28226,
+        "last_updated": "2025-10-25T02:30:07Z"
       },
       "repository_url": "https://github.com/zereight/gitlab-mcp",
       "tags": [
@@ -3931,9 +3931,9 @@
         "API-create-a-comment"
       ],
       "metadata": {
-        "stars": 3277,
+        "stars": 3363,
         "pulls": 40073,
-        "last_updated": "2025-10-07T02:28:19Z"
+        "last_updated": "2025-10-25T02:30:08Z"
       },
       "repository_url": "https://github.com/makenotion/notion-mcp-server",
       "tags": [
@@ -4052,9 +4052,9 @@
         "get_block_info"
       ],
       "metadata": {
-        "stars": 67,
+        "stars": 68,
         "pulls": 0,
-        "last_updated": "2025-10-07T02:28:18Z"
+        "last_updated": "2025-10-25T02:30:05Z"
       },
       "repository_url": "https://github.com/Bankless/onchain-mcp",
       "tags": [
@@ -4213,9 +4213,9 @@
         "upsert-prompt"
       ],
       "metadata": {
-        "stars": 7169,
+        "stars": 7432,
         "pulls": 0,
-        "last_updated": "2025-10-07T02:28:18Z"
+        "last_updated": "2025-10-25T02:30:06Z"
       },
       "repository_url": "https://github.com/Arize-ai/phoenix",
       "tags": [
@@ -4226,7 +4226,7 @@
         "evaluation",
         "ai"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.17",
+      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.18",
       "permissions": {
         "network": {
           "outbound": {
@@ -4300,7 +4300,7 @@
         "browser",
         "navigate"
       ],
-      "image": "mcr.microsoft.com/playwright/mcp:v0.0.43",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.44",
       "target_port": 8931,
       "permissions": {
         "network": {

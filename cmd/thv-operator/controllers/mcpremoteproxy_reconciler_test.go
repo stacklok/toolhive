@@ -514,7 +514,7 @@ func TestMCPRemoteProxyStatusProgression(t *testing.T) {
 
 	// Verify status URL was set
 	assert.NotEmpty(t, updatedProxy.Status.URL)
-	expectedURL := createProxyServiceURL(proxy.Name, proxy.Namespace, proxy.Spec.Port)
+	expectedURL := createProxyServiceURL(proxy.Name, proxy.Namespace, int32(proxy.GetProxyPort()))
 	assert.Equal(t, expectedURL, updatedProxy.Status.URL)
 }
 

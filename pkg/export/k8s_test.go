@@ -48,7 +48,7 @@ func TestWriteK8sManifest(t *testing.T) {
 				assert.Equal(t, "ghcr.io/stacklok/mcp-server-github:latest", mcpServer.Spec.Image)
 				assert.Equal(t, "stdio", mcpServer.Spec.Transport)
 				assert.Equal(t, "sse", mcpServer.Spec.ProxyMode)
-				assert.Equal(t, int32(8080), mcpServer.Spec.Port)
+				assert.Equal(t, int32(8080), mcpServer.GetProxyPort())
 				assert.Equal(t, []string{"--verbose"}, mcpServer.Spec.Args)
 			},
 		},
@@ -65,8 +65,8 @@ func TestWriteK8sManifest(t *testing.T) {
 			validateFn: func(t *testing.T, mcpServer *v1alpha1.MCPServer) {
 				t.Helper()
 				assert.Equal(t, "sse", mcpServer.Spec.Transport)
-				assert.Equal(t, int32(8081), mcpServer.Spec.Port)
-				assert.Equal(t, int32(3000), mcpServer.Spec.TargetPort)
+				assert.Equal(t, int32(8081), mcpServer.GetProxyPort())
+				assert.Equal(t, int32(3000), mcpServer.GetMcpPort())
 			},
 		},
 		{

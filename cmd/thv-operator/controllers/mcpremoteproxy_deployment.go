@@ -253,7 +253,7 @@ func (r *MCPRemoteProxyReconciler) buildSecurityContexts(
 // buildContainerPorts builds container port configuration
 func (*MCPRemoteProxyReconciler) buildContainerPorts(proxy *mcpv1alpha1.MCPRemoteProxy) []corev1.ContainerPort {
 	return []corev1.ContainerPort{{
-		ContainerPort: proxy.Spec.Port,
+		ContainerPort: int32(proxy.GetProxyPort()),
 		Name:          "http",
 		Protocol:      corev1.ProtocolTCP,
 	}}
@@ -279,8 +279,8 @@ func (r *MCPRemoteProxyReconciler) serviceForMCPRemoteProxy(
 		Spec: corev1.ServiceSpec{
 			Selector: ls,
 			Ports: []corev1.ServicePort{{
-				Port:       proxy.Spec.Port,
-				TargetPort: intstr.FromInt(int(proxy.Spec.Port)),
+				Port:       int32(proxy.GetProxyPort()),
+				TargetPort: intstr.FromInt(int(proxy.GetProxyPort())),
 				Protocol:   corev1.ProtocolTCP,
 				Name:       "http",
 			}},

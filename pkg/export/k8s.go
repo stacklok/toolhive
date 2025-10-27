@@ -73,13 +73,13 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1alpha1.MCPServer, error)
 	// Set port if specified
 	if config.Port > 0 {
 		// #nosec G115 -- Port values are validated elsewhere, safe conversion
-		mcpServer.Spec.Port = int32(config.Port)
+		mcpServer.Spec.ProxyPort = int32(config.Port)
 	}
 
 	// Set target port if specified
 	if config.TargetPort > 0 {
 		// #nosec G115 -- Port values are validated elsewhere, safe conversion
-		mcpServer.Spec.TargetPort = int32(config.TargetPort)
+		mcpServer.Spec.McpPort = int32(config.TargetPort)
 	}
 
 	// Set proxy mode if transport is stdio

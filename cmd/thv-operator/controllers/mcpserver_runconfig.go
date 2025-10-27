@@ -82,11 +82,6 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		proxyHost = envHost
 	}
 
-	port := 8080
-	if m.Spec.Port != 0 {
-		port = int(m.Spec.Port)
-	}
-
 	// Helper functions to convert MCPServer spec to builder format
 	envVars := convertEnvVarsFromMCPServer(m.Spec.Env)
 	volumes := convertVolumesFromMCPServer(m.Spec.Volumes)
@@ -135,7 +130,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		runner.WithName(m.Name),
 		runner.WithImage(m.Spec.Image),
 		runner.WithCmdArgs(m.Spec.Args),
-		runner.WithTransportAndPorts(m.Spec.Transport, port, int(m.Spec.TargetPort)),
+		runner.WithTransportAndPorts(m.Spec.Transport, int(m.GetProxyPort()), int(m.GetMcpPort())),
 		runner.WithProxyMode(transporttypes.ProxyMode(proxyMode)),
 		runner.WithHost(proxyHost),
 		runner.WithTrustProxyHeaders(m.Spec.TrustProxyHeaders),

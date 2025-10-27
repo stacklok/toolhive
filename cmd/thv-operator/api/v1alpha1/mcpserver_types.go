@@ -69,13 +69,27 @@ type MCPServerSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +kubebuilder:default=8080
+	// Deprecated: Use ProxyPort instead
 	Port int32 `json:"port,omitempty"`
 
 	// TargetPort is the port that MCP server listens to
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +optional
+	// Deprecated: Use McpPort instead
 	TargetPort int32 `json:"targetPort,omitempty"`
+
+	// ProxyPort is the port to expose the proxy runner on
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +kubebuilder:default=8080
+	ProxyPort int32 `json:"proxyPort,omitempty"`
+
+	// McpPort is the port that MCP server listens to
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	McpPort int32 `json:"mcpPort,omitempty"`
 
 	// Args are additional arguments to pass to the MCP server
 	// +optional
@@ -725,9 +739,31 @@ func (m *MCPServer) GetOIDCConfig() *OIDCConfigRef {
 	return m.Spec.OIDCConfig
 }
 
-// GetPort returns the port of the MCPServer
-func (m *MCPServer) GetPort() int32 {
-	return m.Spec.Port
+// GetProxyPort returns the proxy port of the MCPServer
+func (m *MCPServer) GetProxyPort() int32 {
+	if m.Spec.ProxyPort > 0 {
+		return m.Spec.ProxyPort
+	}
+
+	// the below is deprecated and will be removed in a future version
+	// we need to keep it here to avoid breaking changes
+	if m.Spec.Port > 0 {
+		return m.Spec.Port
+	}
+
+	// default to 8080 if no port is specified
+	return 8080
+}
+
+// GetMcpPort returns the MCP port of the MCPServer
+func (m *MCPServer) GetMcpPort() int32 {
+	if m.Spec.McpPort > 0 {
+		return m.Spec.McpPort
+	}
+
+	// the below is deprecated and will be removed in a future version
+	// we need to keep it here to avoid breaking changes
+	return m.Spec.TargetPort
 }
 
 func init() {

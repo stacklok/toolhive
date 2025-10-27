@@ -9,8 +9,8 @@ spec:
   env:
   - name: TRANSPORT
     value: streamable-http
-  port: 8080
-  targetPort: 8080
+  proxyPort: 8080
+  mcpPort: 8080
   permissionProfile:
     type: builtin
     name: network

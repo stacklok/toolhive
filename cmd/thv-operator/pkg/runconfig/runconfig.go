@@ -1,4 +1,4 @@
-package controllers
+package runconfig
 
 import (
 	"context"
@@ -11,6 +11,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -23,20 +25,38 @@ import (
 )
 
 // defaultProxyHost is the default host for proxy binding
-const defaultProxyHost = "0.0.0.0"
+const DefaultProxyHost = "0.0.0.0"
 
 // defaultAPITimeout is the default timeout for Kubernetes API calls made during reconciliation
-const defaultAPITimeout = 15 * time.Second
+const DefaultAPITimeout = 15 * time.Second
+
+type RunConfig interface {
+	EnsureRunConfigConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error
+}
+
+type RunConfigBuilder struct {
+	Client    client.Client
+	Scheme    *runtime.Scheme
+	RunConfig *runner.RunConfig
+}
+
+// NewRunConfigBuilder creates a new RunConfigBuilder
+func NewRunConfigBuilder(client client.Client, scheme *runtime.Scheme) *RunConfigBuilder {
+	return &RunConfigBuilder{
+		Client: client,
+		Scheme: scheme,
+	}
+}
 
 // ensureRunConfigConfigMap ensures the RunConfig ConfigMap exists and is up to date
-func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
+func (r *RunConfigBuilder) EnsureRunConfigConfigMap(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
 	runConfig, err := r.createRunConfigFromMCPServer(m)
 	if err != nil {
 		return fmt.Errorf("failed to create RunConfig from MCPServer: %w", err)
 	}
 
 	// Validate the RunConfig before creating the ConfigMap
-	if err := r.validateRunConfig(ctx, runConfig); err != nil {
+	if err := validateRunConfig(ctx, runConfig); err != nil {
 		return fmt.Errorf("invalid RunConfig: %w", err)
 	}
 
@@ -76,8 +96,8 @@ func (r *MCPServerReconciler) ensureRunConfigConfigMap(ctx context.Context, m *m
 // This creates a RunConfig for serialization to ConfigMap, not for direct execution
 //
 //nolint:gocyclo
-func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPServer) (*runner.RunConfig, error) {
-	proxyHost := defaultProxyHost
+func (r *RunConfigBuilder) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPServer) (*runner.RunConfig, error) {
+	proxyHost := DefaultProxyHost
 	if envHost := os.Getenv("TOOLHIVE_PROXY_HOST"); envHost != "" {
 		proxyHost = envHost
 	}
@@ -94,7 +114,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 
 	if m.Spec.ToolConfigRef != nil {
 		// ToolConfigRef takes precedence over inline ToolsFilter
-		toolConfig, err := GetToolConfigForMCPServer(context.Background(), r.Client, m)
+		toolConfig, err := ctrlutil.GetToolConfigForMCPServer(context.Background(), r.Client, m)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)
 		}
@@ -166,10 +186,10 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	}
 
 	// Add telemetry configuration if specified
-	addTelemetryConfigOptions(&options, m.Spec.Telemetry, m.Name)
+	AddTelemetryConfigOptions(&options, m.Spec.Telemetry, m.Name)
 
 	// Add authorization configuration if specified
-	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultAPITimeout)
 	defer cancel()
 
 	if err := ctrlutil.AddAuthzConfigOptions(ctx, r.Client, m.Namespace, m.Spec.AuthzConfig, &options); err != nil {
@@ -186,7 +206,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	}
 
 	// Add audit configuration if specified
-	addAuditConfigOptions(&options, m.Spec.Audit)
+	AddAuditConfigOptions(&options, m.Spec.Audit)
 
 	// Check for Vault Agent Injection and add env-file-dir if needed
 	vaultDetected := false
@@ -225,6 +245,17 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	)
 }
 
+// hasVaultAgentInjection checks if Vault Agent Injection is enabled in the pod annotations
+func hasVaultAgentInjection(annotations map[string]string) bool {
+	if annotations == nil {
+		return false
+	}
+
+	// Check if vault.hashicorp.com/agent-inject annotation is present and set to "true"
+	value, exists := annotations["vault.hashicorp.com/agent-inject"]
+	return exists && value == "true"
+}
+
 // labelsForRunConfig returns labels for run config ConfigMap
 func labelsForRunConfig(mcpServerName string) map[string]string {
 	return map[string]string{
@@ -235,36 +266,36 @@ func labelsForRunConfig(mcpServerName string) map[string]string {
 }
 
 // validateRunConfig validates a RunConfig for operator-managed deployments
-func (r *MCPServerReconciler) validateRunConfig(ctx context.Context, config *runner.RunConfig) error {
+func validateRunConfig(ctx context.Context, config *runner.RunConfig) error {
 	if config == nil {
 		return fmt.Errorf("RunConfig cannot be nil")
 	}
 
-	if err := r.validateRequiredFields(config); err != nil {
+	if err := validateRequiredFields(config); err != nil {
 		return err
 	}
 
-	if err := r.validateTransportAndPorts(config); err != nil {
+	if err := validateTransportAndPorts(config); err != nil {
 		return err
 	}
 
-	if err := r.validateHost(config); err != nil {
+	if err := validateHost(config); err != nil {
 		return err
 	}
 
-	if err := r.validateEnvironmentVariables(config); err != nil {
+	if err := validateEnvironmentVariables(config); err != nil {
 		return err
 	}
 
-	if err := r.validateVolumeMounts(config); err != nil {
+	if err := validateVolumeMounts(config); err != nil {
 		return err
 	}
 
-	if err := r.validateSecrets(config); err != nil {
+	if err := validateSecrets(config); err != nil {
 		return err
 	}
 
-	if err := r.validateToolsFilter(config); err != nil {
+	if err := validateToolsFilter(config); err != nil {
 		return err
 	}
 
@@ -274,7 +305,7 @@ func (r *MCPServerReconciler) validateRunConfig(ctx context.Context, config *run
 }
 
 // validateRequiredFields validates required fields in the RunConfig
-func (*MCPServerReconciler) validateRequiredFields(config *runner.RunConfig) error {
+func validateRequiredFields(config *runner.RunConfig) error {
 	if config.Image == "" {
 		return fmt.Errorf("image is required")
 	}
@@ -291,7 +322,7 @@ func (*MCPServerReconciler) validateRequiredFields(config *runner.RunConfig) err
 }
 
 // validateTransportAndPorts validates transport type and associated port configuration
-func (*MCPServerReconciler) validateTransportAndPorts(config *runner.RunConfig) error {
+func validateTransportAndPorts(config *runner.RunConfig) error {
 	validTransports := []transporttypes.TransportType{
 		transporttypes.TransportTypeStdio,
 		transporttypes.TransportTypeSSE,
@@ -329,13 +360,13 @@ func (*MCPServerReconciler) validateTransportAndPorts(config *runner.RunConfig) 
 }
 
 // validateHost validates the host configuration
-func (*MCPServerReconciler) validateHost(config *runner.RunConfig) error {
+func validateHost(config *runner.RunConfig) error {
 	if config.Host == "" {
 		return nil
 	}
 
 	// Basic validation - could be enhanced with more sophisticated checks
-	if config.Host != defaultProxyHost && config.Host != "127.0.0.1" && config.Host != "localhost" {
+	if config.Host != DefaultProxyHost && config.Host != "127.0.0.1" && config.Host != "localhost" {
 		// For custom hosts, basic format check
 		if len(config.Host) == 0 || strings.Contains(config.Host, " ") {
 			return fmt.Errorf("invalid host format: %s", config.Host)
@@ -346,7 +377,7 @@ func (*MCPServerReconciler) validateHost(config *runner.RunConfig) error {
 }
 
 // validateEnvironmentVariables validates environment variable format
-func (*MCPServerReconciler) validateEnvironmentVariables(config *runner.RunConfig) error {
+func validateEnvironmentVariables(config *runner.RunConfig) error {
 	for key, value := range config.EnvVars {
 		if key == "" {
 			return fmt.Errorf("environment variable key cannot be empty")
@@ -365,7 +396,7 @@ func (*MCPServerReconciler) validateEnvironmentVariables(config *runner.RunConfi
 }
 
 // validateVolumeMounts validates volume mount format
-func (*MCPServerReconciler) validateVolumeMounts(config *runner.RunConfig) error {
+func validateVolumeMounts(config *runner.RunConfig) error {
 	for _, volume := range config.Volumes {
 		if volume == "" {
 			return fmt.Errorf("volume mount cannot be empty")
@@ -386,7 +417,7 @@ func (*MCPServerReconciler) validateVolumeMounts(config *runner.RunConfig) error
 }
 
 // validateSecrets validates secret format
-func (*MCPServerReconciler) validateSecrets(config *runner.RunConfig) error {
+func validateSecrets(config *runner.RunConfig) error {
 	for _, secret := range config.Secrets {
 		if secret == "" {
 			return fmt.Errorf("secret cannot be empty")
@@ -405,7 +436,7 @@ func (*MCPServerReconciler) validateSecrets(config *runner.RunConfig) error {
 }
 
 // validateToolsFilter validates tools filter format
-func (*MCPServerReconciler) validateToolsFilter(config *runner.RunConfig) error {
+func validateToolsFilter(config *runner.RunConfig) error {
 	for _, tool := range config.ToolsFilter {
 		if tool == "" {
 			return fmt.Errorf("tool filter cannot contain empty values")
@@ -447,7 +478,7 @@ func convertVolumesFromMCPServer(vols []mcpv1alpha1.Volume) []string {
 }
 
 // addTelemetryConfigOptions adds telemetry configuration options to the builder options
-func addTelemetryConfigOptions(
+func AddTelemetryConfigOptions(
 	options *[]runner.RunConfigBuilderOption,
 	telemetryConfig *mcpv1alpha1.TelemetryConfig,
 	mcpServerName string,
@@ -520,7 +551,7 @@ func addTelemetryConfigOptions(
 }
 
 // addAuditConfigOptions adds audit configuration options to the builder options
-func addAuditConfigOptions(
+func AddAuditConfigOptions(
 	options *[]runner.RunConfigBuilderOption,
 	auditConfig *mcpv1alpha1.AuditConfig,
 ) {

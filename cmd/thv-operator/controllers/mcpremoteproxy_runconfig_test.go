@@ -34,6 +34,13 @@ import (
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
+func createRunConfigTestScheme() *runtime.Scheme {
+	testScheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(testScheme)
+	_ = mcpv1alpha1.AddToScheme(testScheme)
+	return testScheme
+}
+
 // TestCreateRunConfigFromMCPRemoteProxy tests the conversion from MCPRemoteProxy to RunConfig
 func TestCreateRunConfigFromMCPRemoteProxy(t *testing.T) {
 	t.Parallel()

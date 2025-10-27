@@ -8,10 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -244,94 +242,6 @@ func (c *errorClient) List(ctx context.Context, list client.ObjectList, opts ...
 		return c.listError
 	}
 	return c.Client.List(ctx, list, opts...)
-}
-
-func TestGetToolConfigForMCPServer_ErrorScenarios(t *testing.T) {
-	t.Parallel()
-
-	t.Run("toolconfig not found returns formatted error", func(t *testing.T) {
-		t.Parallel()
-		ctx := t.Context()
-
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-
-		mcpServer := &mcpv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-server",
-				Namespace: "default",
-			},
-			Spec: mcpv1alpha1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-					Name: "missing-config",
-				},
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			Build()
-
-		config, err := GetToolConfigForMCPServer(ctx, fakeClient, mcpServer)
-		assert.Error(t, err)
-		assert.Nil(t, config)
-		assert.Contains(t, err.Error(), "MCPToolConfig missing-config not found")
-		assert.Contains(t, err.Error(), "namespace default")
-	})
-
-	t.Run("generic error is wrapped", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := t.Context()
-
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-
-		mcpServer := &mcpv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-server",
-				Namespace: "default",
-			},
-			Spec: mcpv1alpha1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-					Name: "test-config",
-				},
-			},
-		}
-
-		// Create a client that returns a generic error
-		fakeClient := &errorGetClient{
-			Client: fake.NewClientBuilder().
-				WithScheme(scheme).
-				Build(),
-			getError: errors.New("network error"),
-		}
-
-		config, err := GetToolConfigForMCPServer(ctx, fakeClient, mcpServer)
-		assert.Error(t, err)
-		assert.Nil(t, config)
-		assert.Contains(t, err.Error(), "failed to get MCPToolConfig")
-		assert.Contains(t, err.Error(), "network error")
-	})
-}
-
-// errorGetClient is a fake client that simulates Get errors
-type errorGetClient struct {
-	client.Client
-	getError error
-}
-
-func (c *errorGetClient) Get(_ context.Context, key client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
-	if c.getError != nil {
-		return c.getError
-	}
-	// Return not found error
-	return apierrors.NewNotFound(schema.GroupResource{
-		Group:    "toolhive.stacklok.dev",
-		Resource: "toolconfigs",
-	}, key.Name)
 }
 
 func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {

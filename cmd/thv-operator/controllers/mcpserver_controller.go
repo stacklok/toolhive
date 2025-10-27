@@ -34,6 +34,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
@@ -309,7 +310,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Ensure RunConfig ConfigMap exists and is up to date
-	if err := r.ensureRunConfigConfigMap(ctx, mcpServer); err != nil {
+	runConfigBuilder := runconfig.NewRunConfigBuilder(r.Client, r.Scheme)
+	if err := runConfigBuilder.EnsureRunConfigConfigMap(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to ensure RunConfig ConfigMap")
 		return ctrl.Result{}, err
 	}
@@ -792,7 +794,7 @@ func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1alph
 	}
 
 	// Get the referenced MCPToolConfig
-	toolConfig, err := GetToolConfigForMCPServer(ctx, r.Client, m)
+	toolConfig, err := ctrlutil.GetToolConfigForMCPServer(ctx, r.Client, m)
 	if err != nil {
 		return err
 	}
@@ -1703,17 +1705,6 @@ func labelsForInlineAuthzConfig(name string) map[string]string {
 	labels := labelsForMCPServer(name)
 	labels[authzLabelKey] = authzLabelValueInline
 	return labels
-}
-
-// hasVaultAgentInjection checks if Vault Agent Injection is enabled in the pod annotations
-func hasVaultAgentInjection(annotations map[string]string) bool {
-	if annotations == nil {
-		return false
-	}
-
-	// Check if vault.hashicorp.com/agent-inject annotation is present and set to "true"
-	value, exists := annotations["vault.hashicorp.com/agent-inject"]
-	return exists && value == "true"
 }
 
 // getToolhiveRunnerImage returns the image to use for the toolhive runner container

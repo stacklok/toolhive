@@ -1,4 +1,4 @@
-package controllers
+package runconfig
 
 import (
 	"context"
@@ -19,7 +19,6 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/authz"
-	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -582,7 +581,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			t.Parallel()
 
 			// Build reconciler; if test uses ConfigMap-based authz, provide a fake client with that ConfigMap
-			var r *MCPServerReconciler
+			var r *RunConfigBuilder
 			if tt.mcpServer != nil &&
 				tt.mcpServer.Spec.AuthzConfig != nil &&
 				tt.mcpServer.Spec.AuthzConfig.Type == mcpv1alpha1.AuthzConfigTypeConfigMap &&
@@ -620,9 +619,15 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 					WithRuntimeObjects(cm).
 					Build()
 
-				r = newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+				r = &RunConfigBuilder{
+					Client: fakeClient,
+					Scheme: scheme,
+				}
 			} else {
-				r = newTestMCPServerReconciler(nil, nil, kubernetes.PlatformKubernetes)
+				r = &RunConfigBuilder{
+					Client: nil,
+					Scheme: nil,
+				}
 			}
 
 			result, err := r.createRunConfigFromMCPServer(tt.mcpServer)
@@ -668,7 +673,10 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 		},
 	}
 
-	reconciler := newTestMCPServerReconciler(nil, nil, kubernetes.PlatformKubernetes)
+	reconciler := &RunConfigBuilder{
+		Client: nil,
+		Scheme: nil,
+	}
 
 	// Generate RunConfig and ConfigMap 10 times
 	var configMaps []*corev1.ConfigMap
@@ -834,7 +842,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			mcpServer: createTestMCPServerWithConfig("same-server", "default", "test:v1", nil),
 			existingCM: func() *corev1.ConfigMap {
 				// Create a ConfigMap with the same content that would be generated
-				r := newTestMCPServerReconciler(nil, nil, kubernetes.PlatformKubernetes)
+				r := NewRunConfigBuilder(nil, nil)
 				mcpServer := createTestMCPServerWithConfig("same-server", "default", "test:v1", nil)
 				runConfig, err := r.createRunConfigFromMCPServer(mcpServer)
 				if err != nil {
@@ -1088,10 +1096,9 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			}
 			fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithRuntimeObjects(objects...).Build()
 
-			reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+			runconfigBuilder := NewRunConfigBuilder(fakeClient, testScheme)
+			err := runconfigBuilder.EnsureRunConfigConfigMap(context.TODO(), tt.mcpServer)
 
-			// Execute the method under test
-			err := reconciler.ensureRunConfigConfigMap(context.TODO(), tt.mcpServer)
 			if tt.expectError {
 				assert.Error(t, err)
 				return
@@ -1176,9 +1183,9 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			WithRuntimeObjects(mcpServer, authzCM).
 			Build()
 
-		reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+		reconciler := NewRunConfigBuilder(fakeClient, testScheme)
 
-		err := reconciler.ensureRunConfigConfigMap(context.TODO(), mcpServer)
+		err := reconciler.EnsureRunConfigConfigMap(context.TODO(), mcpServer)
 		require.NoError(t, err)
 
 		// Fetch the generated runconfig ConfigMap
@@ -1297,8 +1304,7 @@ func TestValidateRunConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			r := newTestMCPServerReconciler(nil, nil, kubernetes.PlatformKubernetes)
-			err := r.validateRunConfig(t.Context(), tt.config)
+			err := validateRunConfig(t.Context(), tt.config)
 
 			if tt.expectErr {
 				assert.Error(t, err)
@@ -1330,17 +1336,14 @@ func TestEnsureRunConfigConfigMapCompleteFlow(t *testing.T) {
 	t.Parallel()
 	testScheme := createRunConfigTestScheme()
 	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
-	reconciler := &MCPServerReconciler{
-		Client: fakeClient,
-		Scheme: testScheme,
-	}
+	reconciler := NewRunConfigBuilder(fakeClient, testScheme)
 
 	// Step 1: Create initial MCPServer and ConfigMap
 	mcpServer := createTestMCPServerWithConfig("flow-server", "flow-ns", "test:v1", []mcpv1alpha1.EnvVar{
 		{Name: "ENV1", Value: "value1"},
 	})
 
-	err := reconciler.ensureRunConfigConfigMap(context.TODO(), mcpServer)
+	err := reconciler.EnsureRunConfigConfigMap(t.Context(), mcpServer)
 	require.NoError(t, err)
 
 	// Verify initial ConfigMap
@@ -1372,7 +1375,7 @@ func TestEnsureRunConfigConfigMapCompleteFlow(t *testing.T) {
 		{Name: "ENV2", Value: "value2"},
 	}
 
-	err = reconciler.ensureRunConfigConfigMap(context.TODO(), mcpServer)
+	err = reconciler.EnsureRunConfigConfigMap(t.Context(), mcpServer)
 	require.NoError(t, err)
 
 	// Verify ConfigMap was updated
@@ -1397,7 +1400,7 @@ func TestEnsureRunConfigConfigMapCompleteFlow(t *testing.T) {
 	assert.Equal(t, "value2", updatedRunConfig.EnvVars["ENV2"])
 
 	// Step 3: No-op update (same content)
-	err = reconciler.ensureRunConfigConfigMap(context.TODO(), mcpServer)
+	err = reconciler.EnsureRunConfigConfigMap(t.Context(), mcpServer)
 	require.NoError(t, err)
 
 	// Verify ConfigMap timestamp didn't change
@@ -1527,11 +1530,11 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 			testScheme := createRunConfigTestScheme()
 
 			fakeClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
-			reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+			reconciler := NewRunConfigBuilder(fakeClient, testScheme)
 
 			// Create initial MCPServer and ConfigMap
 			mcpServer := tt.initialServer()
-			err := reconciler.ensureRunConfigConfigMap(context.TODO(), mcpServer)
+			err := reconciler.EnsureRunConfigConfigMap(t.Context(), mcpServer)
 			require.NoError(t, err)
 
 			// Get initial ConfigMap
@@ -1548,7 +1551,7 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 			tt.modifyServer(mcpServer)
 
 			// Ensure ConfigMap is updated
-			err = reconciler.ensureRunConfigConfigMap(context.TODO(), mcpServer)
+			err = reconciler.EnsureRunConfigConfigMap(t.Context(), mcpServer)
 			require.NoError(t, err)
 
 			// Verify ConfigMap was updated
@@ -1675,10 +1678,10 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 				WithRuntimeObjects(tc.mcpServer).
 				Build()
 
-			reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
+			reconciler := NewRunConfigBuilder(fakeClient, testScheme)
 
 			// Execute the method under test
-			err := reconciler.ensureRunConfigConfigMap(context.TODO(), tc.mcpServer)
+			err := reconciler.EnsureRunConfigConfigMap(t.Context(), tc.mcpServer)
 			require.NoError(t, err)
 
 			// Verify the ConfigMap exists
@@ -1701,6 +1704,139 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 			// Verify basic RunConfig fields
 			assert.Equal(t, tc.mcpServer.Name, runConfig.Name)
 			assert.Equal(t, tc.mcpServer.Spec.Image, runConfig.Image)
+		})
+	}
+}
+
+// TestCreateRunConfigFromMCPServer_WithExternalAuth tests RunConfig generation with external auth
+func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		mcpServer    *mcpv1alpha1.MCPServer
+		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
+		clientSecret *corev1.Secret
+		expectError  bool
+		validate     func(*testing.T, *runner.RunConfig)
+	}{
+		{
+			name: "with external auth token exchange",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "external-auth-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "test:v1",
+					Transport: "stdio",
+					Port:      8080,
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "oauth-config",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oauth-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL: "https://oauth.example.com/token",
+						ClientID: "my-client-id",
+						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+							Name: "oauth-creds",
+							Key:  "client-secret",
+						},
+						Audience: "backend-api",
+						Scopes:   []string{"read", "write"},
+					},
+				},
+			},
+			clientSecret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oauth-creds",
+					Namespace: "default",
+				},
+				Data: map[string][]byte{
+					"client-secret": []byte("secret123"),
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, config *runner.RunConfig) {
+				t.Helper()
+				assert.Equal(t, "external-auth-server", config.Name)
+				assert.Equal(t, "test:v1", config.Image)
+
+				// Verify middleware config was added
+				assert.NotNil(t, config.MiddlewareConfigs)
+				assert.Len(t, config.MiddlewareConfigs, 1)
+				assert.Equal(t, "tokenexchange", config.MiddlewareConfigs[0].Type)
+
+				// Verify middleware parameters
+				var params map[string]interface{}
+				err := json.Unmarshal(config.MiddlewareConfigs[0].Parameters, &params)
+				require.NoError(t, err)
+
+				tokenExchangeConfig, ok := params["token_exchange_config"].(map[string]interface{})
+				require.True(t, ok)
+				assert.Equal(t, "https://oauth.example.com/token", tokenExchangeConfig["token_url"])
+				assert.Equal(t, "my-client-id", tokenExchangeConfig["client_id"])
+				assert.Equal(t, "backend-api", tokenExchangeConfig["audience"])
+			},
+		},
+		{
+			name: "external auth config not found returns error",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "broken-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "test:v1",
+					Transport: "stdio",
+					Port:      8080,
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "non-existent",
+					},
+				},
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			objects := []runtime.Object{tt.mcpServer}
+			if tt.externalAuth != nil {
+				objects = append(objects, tt.externalAuth)
+			}
+			if tt.clientSecret != nil {
+				objects = append(objects, tt.clientSecret)
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(objects...).
+				Build()
+
+			runConfigBuilder := NewRunConfigBuilder(fakeClient, scheme)
+			runConfig, err := runConfigBuilder.createRunConfigFromMCPServer(tt.mcpServer)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, runConfig)
+				if tt.validate != nil {
+					tt.validate(t, runConfig)
+				}
+			}
 		})
 	}
 }

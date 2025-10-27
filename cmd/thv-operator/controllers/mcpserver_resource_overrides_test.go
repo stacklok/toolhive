@@ -306,7 +306,7 @@ func TestResourceOverrides(t *testing.T) {
 
 			// Test deployment creation
 			ctx := context.Background()
-			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer)
+			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer, "test-checksum")
 			require.NotNil(t, deployment)
 
 			assert.Equal(t, tt.expectedDeploymentLabels, deployment.Labels)
@@ -564,7 +564,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 
 			// Create a deployment and manually set up its state to isolate proxy env testing
 			ctx := context.Background()
-			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer)
+			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer, "test-checksum")
 			require.NotNil(t, deployment)
 			require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 
@@ -575,7 +575,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 			deployment.Spec.Template.Spec.Containers[0].Image = getToolhiveRunnerImage()
 
 			// Test if deployment needs update - should correlate with env change expectation
-			needsUpdate := r.deploymentNeedsUpdate(context.Background(), deployment, tt.mcpServer)
+			needsUpdate := r.deploymentNeedsUpdate(context.Background(), deployment, tt.mcpServer, "test-checksum")
 
 			if tt.expectEnvChange {
 				assert.True(t, needsUpdate, "Expected deployment update due to proxy env change")

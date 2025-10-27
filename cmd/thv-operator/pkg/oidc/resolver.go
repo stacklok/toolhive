@@ -34,6 +34,7 @@ type OIDCConfig struct { //nolint:revive // Keeping OIDCConfig name for backward
 	JWKSAuthTokenPath  string
 	ResourceURL        string
 	JWKSAllowPrivateIP bool
+	InsecureAllowHTTP  bool
 }
 
 // OIDCConfigurable is an interface for resources that have OIDC configuration
@@ -183,9 +184,12 @@ func (r *resolver) resolveConfigMapConfig(
 	//nolint:gosec // This is just a config key name, not a credential
 	config.JWKSAuthTokenPath = getMapValue(configMap.Data, "jwksAuthTokenPath")
 
-	// Handle boolean value
+	// Handle boolean values
 	if v, exists := configMap.Data["jwksAllowPrivateIP"]; exists && v == "true" {
 		config.JWKSAllowPrivateIP = true
+	}
+	if v, exists := configMap.Data["insecureAllowHTTP"]; exists && v == "true" {
+		config.InsecureAllowHTTP = true
 	}
 
 	return config, nil
@@ -200,17 +204,25 @@ func (*resolver) resolveInlineConfig(
 		return nil, nil
 	}
 
+	// Don't embed ClientSecret in the config if ClientSecretRef is set
+	// The secret will be injected via environment variable instead
+	clientSecret := config.ClientSecret
+	if config.ClientSecretRef != nil {
+		clientSecret = ""
+	}
+
 	return &OIDCConfig{
 		Issuer:             config.Issuer,
 		Audience:           config.Audience,
 		JWKSURL:            config.JWKSURL,
 		IntrospectionURL:   config.IntrospectionURL,
 		ClientID:           config.ClientID,
-		ClientSecret:       config.ClientSecret,
+		ClientSecret:       clientSecret,
 		ThvCABundlePath:    config.ThvCABundlePath,
 		JWKSAuthTokenPath:  config.JWKSAuthTokenPath,
 		ResourceURL:        resourceURL,
 		JWKSAllowPrivateIP: config.JWKSAllowPrivateIP,
+		InsecureAllowHTTP:  config.InsecureAllowHTTP,
 	}, nil
 }
 

@@ -13,12 +13,13 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
 // deploymentForMCPRemoteProxy returns a MCPRemoteProxy Deployment object
 func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
-	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy, runConfigChecksum string,
 ) *appsv1.Deployment {
 	ls := labelsForMCPRemoteProxy(proxy.Name)
 	replicas := int32(1)
@@ -29,7 +30,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	env := r.buildEnvVarsForProxy(ctx, proxy)
 	resources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadata(ls, proxy)
-	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, proxy)
+	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, proxy, runConfigChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContexts(ctx, proxy)
 
 	dep := &appsv1.Deployment{
@@ -60,7 +61,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 						Resources:       resources,
 						Ports:           r.buildContainerPorts(proxy),
 						LivenessProbe:   ctrlutil.BuildHealthProbe("/health", "http", 30, 10, 5, 3),
-						ReadinessProbe:  ctrlutil.BuildHealthProbe("/health", "http", 5, 5, 3, 3),
+						ReadinessProbe:  ctrlutil.BuildHealthProbe("/health", "http", 15, 5, 3, 3),
 						SecurityContext: containerSecurityContext,
 					}},
 					Volumes:         volumes,
@@ -150,6 +151,19 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		}
 	}
 
+	// Add OIDC client secret environment variable if using inline config with secretRef
+	if proxy.Spec.OIDCConfig.Type == "inline" && proxy.Spec.OIDCConfig.Inline != nil {
+		oidcClientSecretEnvVar, err := ctrlutil.GenerateOIDCClientSecretEnvVar(
+			ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfig.Inline.ClientSecretRef,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate OIDC client secret environment variable")
+		} else if oidcClientSecretEnvVar != nil {
+			env = append(env, *oidcClientSecretEnvVar)
+		}
+	}
+
 	// Add user-specified environment variables
 	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
 		for _, envVar := range proxy.Spec.ResourceOverrides.ProxyDeployment.Env {
@@ -184,12 +198,23 @@ func (*MCPRemoteProxyReconciler) buildDeploymentMetadata(
 	return deploymentLabels, deploymentAnnotations
 }
 
-// buildPodTemplateMetadata builds pod template labels and annotations
+// buildPodTemplateMetadata builds pod template labels and annotations.
+//
+// The runConfigChecksum parameter must be a non-empty SHA256 hash of the RunConfig.
+// This checksum is added as an annotation to the pod template, which triggers
+// Kubernetes to perform a rolling update when the configuration changes.
+//
+// User-specified overrides from ResourceOverrides.PodTemplateMetadataOverrides
+// are merged after the checksum annotation is set.
 func (*MCPRemoteProxyReconciler) buildPodTemplateMetadata(
-	baseLabels map[string]string, proxy *mcpv1alpha1.MCPRemoteProxy,
+	baseLabels map[string]string, proxy *mcpv1alpha1.MCPRemoteProxy, runConfigChecksum string,
 ) (map[string]string, map[string]string) {
 	templateLabels := baseLabels
 	templateAnnotations := make(map[string]string)
+
+	// Add RunConfig checksum annotation to trigger pod rollout when config changes
+	// This is critical for ensuring pods restart with updated configuration
+	templateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(templateAnnotations, runConfigChecksum)
 
 	if proxy.Spec.ResourceOverrides != nil &&
 		proxy.Spec.ResourceOverrides.ProxyDeployment != nil &&

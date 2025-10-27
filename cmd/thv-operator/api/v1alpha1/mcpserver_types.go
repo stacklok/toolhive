@@ -465,8 +465,14 @@ type InlineOIDCConfig struct {
 	ClientID string `json:"clientId,omitempty"`
 
 	// ClientSecret is the client secret for introspection (optional)
+	// Deprecated: Use ClientSecretRef instead for better security
 	// +optional
 	ClientSecret string `json:"clientSecret,omitempty"`
+
+	// ClientSecretRef is a reference to a Kubernetes Secret containing the client secret
+	// If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence
+	// +optional
+	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
 	// ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests
 	// The file must be mounted into the pod (e.g., via ConfigMap or Secret volume)
@@ -483,6 +489,13 @@ type InlineOIDCConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	JWKSAllowPrivateIP bool `json:"jwksAllowPrivateIP"`
+
+	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+	// WARNING: This is insecure and should NEVER be used in production
+	// Only enable for local development, testing, or trusted internal networks
+	// +kubebuilder:default=false
+	// +optional
+	InsecureAllowHTTP bool `json:"insecureAllowHTTP"`
 }
 
 // AuthzConfigRef defines a reference to authorization configuration

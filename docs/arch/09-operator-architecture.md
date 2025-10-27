@@ -104,6 +104,20 @@ Defines a proxy for remote MCP servers with authentication, authorization, audit
 
 **Controller**: `cmd/thv-operator/controllers/mcpremoteproxy_controller.go`
 
+### MCPGroup
+
+Logically groups MCPServer resources together for organizational purposes.
+
+**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpgroup_types.go`
+
+MCPGroup resources allow grouping related MCP servers. Servers reference their group using the `groupRef` field in MCPServer spec. The group tracks member servers in its status.
+
+**Status fields** include phase (Ready, Pending, Failed), list of server names, and server count.
+
+**Referenced by MCPServer** using `spec.groupRef`.
+
+**Controller**: `cmd/thv-operator/controllers/mcpgroup_controller.go`
+
 For complete examples of all CRDs, see the [`examples/operator/mcp-servers/`](../../examples/operator/mcp-servers/) directory.
 
 ## Operator Components

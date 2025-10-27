@@ -260,10 +260,12 @@ _Appears in:_
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from |  |  |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint |  |  |
 | `clientId` _string_ | ClientID is the OIDC client ID |  |  |
-| `clientSecret` _string_ | ClientSecret is the client secret for introspection (optional) |  |  |
+| `clientSecret` _string_ | ClientSecret is the client secret for introspection (optional)<br />Deprecated: Use ClientSecretRef instead for better security |  |  |
+| `clientSecretRef` _[SecretKeyRef](#secretkeyref)_ | ClientSecretRef is a reference to a Kubernetes Secret containing the client secret<br />If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence |  |  |
 | `thvCABundlePath` _string_ | ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests<br />The file must be mounted into the pod (e.g., via ConfigMap or Secret volume) |  |  |
 | `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests<br />The file must be mounted into the pod (e.g., via Secret volume) |  |  |
 | `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses<br />Use with caution - only enable for trusted internal IDPs | false |  |
+| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing<br />WARNING: This is insecure and should NEVER be used in production<br />Only enable for local development, testing, or trusted internal networks | false |  |
 
 
 #### KubernetesOIDCConfig
@@ -1188,6 +1190,7 @@ SecretKeyRef is a reference to a key within a Secret
 
 
 _Appears in:_
+- [InlineOIDCConfig](#inlineoidcconfig)
 - [TokenExchangeConfig](#tokenexchangeconfig)
 
 | Field | Description | Default | Validation |

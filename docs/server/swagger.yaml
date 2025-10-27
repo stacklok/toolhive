@@ -61,6 +61,11 @@ components:
         clientSecret:
           description: ClientSecret is the optional OIDC client secret for introspection
           type: string
+        insecureAllowHTTP:
+          description: |-
+            InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+            WARNING: This is insecure and should NEVER be used in production
+          type: boolean
         introspectionURL:
           description: IntrospectionURL is the optional introspection endpoint for
             validating tokens
@@ -915,6 +920,16 @@ components:
     telemetry.Config:
       description: TelemetryConfig contains the OpenTelemetry configuration
       properties:
+        customAttributes:
+          additionalProperties:
+            type: string
+          description: |-
+            CustomAttributes contains custom resource attributes to be added to all telemetry signals.
+            These are parsed from CLI flags (--otel-custom-attributes) or environment variables
+            (OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.
+            We use map[string]string for proper JSON serialization instead of []attribute.KeyValue
+            which doesn't marshal/unmarshal correctly.
+          type: object
         enablePrometheusMetricsPath:
           description: |-
             EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint

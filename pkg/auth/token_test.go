@@ -467,7 +467,7 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("successful discovery", func(t *testing.T) {
 		t.Parallel()
-		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL, caCertPath, "", true)
+		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL, caCertPath, "", true, false)
 		if err != nil {
 			t.Fatalf("Expected no error but got %v", err)
 		}
@@ -484,7 +484,7 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("issuer with trailing slash", func(t *testing.T) {
 		t.Parallel()
-		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL+"/", caCertPath, "", true)
+		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL+"/", caCertPath, "", true, false)
 		if err != nil {
 			t.Fatalf("Expected no error but got %v", err)
 		}
@@ -496,7 +496,7 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("invalid issuer URL", func(t *testing.T) {
 		t.Parallel()
-		_, err := discoverOIDCConfiguration(ctx, "invalid-url", "", "", false)
+		_, err := discoverOIDCConfiguration(ctx, "invalid-url", "", "", false, false)
 		if err == nil {
 			t.Error("Expected error but got nil")
 		}
@@ -504,7 +504,7 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("non-existent endpoint", func(t *testing.T) {
 		t.Parallel()
-		_, err := discoverOIDCConfiguration(ctx, "https://non-existent-domain.example", "", "", false)
+		_, err := discoverOIDCConfiguration(ctx, "https://non-existent-domain.example", "", "", false, false)
 		if err == nil {
 			t.Error("Expected error but got nil")
 		}

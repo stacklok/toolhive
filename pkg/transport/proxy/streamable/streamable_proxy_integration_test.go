@@ -29,7 +29,6 @@ func getFreePort(t *testing.T) int {
 //
 //nolint:paralleltest // Test starts HTTP server
 func TestHTTPRequestIgnoresNotifications(t *testing.T) {
-<<<<<<< HEAD
 	t.Skip("Test incompatible with new SDK's streamable HTTP requirements - " +
 		"SDK requires both application/json and text/event-stream in Accept header, " +
 		"but proxy switches to SSE mode when text/event-stream is present. " +

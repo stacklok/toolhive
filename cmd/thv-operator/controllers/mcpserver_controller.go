@@ -1382,32 +1382,6 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			return true
 		}
 
-		// Check if the port has changed
-		portArg := fmt.Sprintf("--proxy-port=%d", mcpServer.GetProxyPort())
-		found = false
-		for _, arg := range container.Args {
-			if arg == portArg {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return true
-		}
-
-		// Check if the transport has changed
-		transportArg := fmt.Sprintf("--transport=%s", mcpServer.Spec.Transport)
-		found = false
-		for _, arg := range container.Args {
-			if arg == transportArg {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return true
-		}
-
 		// Check if the tools filter has changed (order-independent)
 		if !equalToolsFilter(mcpServer.Spec.ToolsFilter, container.Args) {
 			return true
@@ -1416,21 +1390,6 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		// Check if the container port has changed
 		if len(container.Ports) > 0 && container.Ports[0].ContainerPort != mcpServer.GetProxyPort() {
 			return true
-		}
-
-		// Check if the environment variables have changed (now passed as --env flags)
-		for _, envVar := range mcpServer.Spec.Env {
-			envArg := fmt.Sprintf("--env=%s=%s", envVar.Name, envVar.Value)
-			found := false
-			for _, arg := range container.Args {
-				if arg == envArg {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return true
-			}
 		}
 
 		// Check if the proxy environment variables have changed
@@ -1533,27 +1492,6 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		// Check if the resource requirements have changed
 		if !reflect.DeepEqual(container.Resources, resourceRequirementsForMCPServer(mcpServer)) {
 			return true
-		}
-
-		// Check if the mcpPort has changed
-		if mcpServer.Spec.McpPort != 0 {
-			mcpPortArg := fmt.Sprintf("--target-port=%d", mcpServer.Spec.McpPort)
-			found := false
-			for _, arg := range container.Args {
-				if arg == mcpPortArg {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return true
-			}
-		} else {
-			for _, arg := range container.Args {
-				if strings.HasPrefix(arg, "--target-port=") {
-					return true
-				}
-			}
 		}
 
 		// Check if OpenTelemetry arguments have changed

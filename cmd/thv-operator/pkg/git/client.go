@@ -3,7 +3,6 @@ package git
 import (
 	"context"
 	"fmt"
-	"runtime"
 
 	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-billy/v5/util"
@@ -35,7 +34,7 @@ func NewDefaultGitClient() *DefaultGitClient {
 }
 
 // Clone clones a repository with the given configuration
-func (c *DefaultGitClient) Clone(_ context.Context, config *CloneConfig) (*RepositoryInfo, error) {
+func (c *DefaultGitClient) Clone(ctx context.Context, config *CloneConfig) (*RepositoryInfo, error) {
 	// Prepare clone options (no authentication for initial version)
 	cloneOptions := &git.CloneOptions{
 		URL: config.URL,
@@ -74,7 +73,7 @@ func (c *DefaultGitClient) Clone(_ context.Context, config *CloneConfig) (*Repos
 	storerCache := cache.NewObjectLRUDefault()
 	storer := filesystem.NewStorage(storerFs, storerCache)
 
-	repo, err := git.Clone(storer, memFS, cloneOptions)
+	repo, err := git.CloneContext(ctx, storer, memFS, cloneOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to clone repository: %w", err)
 	}
@@ -181,8 +180,8 @@ func (*DefaultGitClient) Cleanup(ctx context.Context, repoInfo *RepositoryInfo) 
 	repoInfo.storerFilesystem = nil
 	repoInfo.Repository = nil
 
-	// 5. Force GC to reclaim memory
-	runtime.GC()
+	// // 5. Force GC to reclaim memory
+	// runtime.GC()
 	return nil
 }
 

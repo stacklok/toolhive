@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,24 +15,13 @@ func main() {
 	// Initialize the logger
 	logger.Initialize()
 
-	// Setup signal handling for graceful cleanup
-	setupSignalHandler()
+	// Create a context that will be canceled on signal
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+	defer cancel()
 
-	// Execute the root command
-	if err := app.NewRootCmd().Execute(); err != nil {
+	// Execute the root command with context
+	if err := app.NewRootCmd().ExecuteContext(ctx); err != nil {
 		logger.Errorf("Error executing command: %v", err)
 		os.Exit(1)
 	}
-}
-
-// setupSignalHandler configures signal handling to ensure graceful shutdown
-func setupSignalHandler() {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
-
-	go func() {
-		<-sigCh
-		logger.Debugf("Received signal, shutting down gracefully...")
-		os.Exit(0)
-	}()
 }

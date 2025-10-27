@@ -94,7 +94,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 
 	if m.Spec.ToolConfigRef != nil {
 		// ToolConfigRef takes precedence over inline ToolsFilter
-		toolConfig, err := GetToolConfigForMCPServer(context.Background(), r.Client, m)
+		toolConfig, err := ctrlutil.GetToolConfigForMCPServer(context.Background(), r.Client, m)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)
 		}

@@ -792,7 +792,7 @@ func (r *MCPServerReconciler) handleToolConfig(ctx context.Context, m *mcpv1alph
 	}
 
 	// Get the referenced MCPToolConfig
-	toolConfig, err := GetToolConfigForMCPServer(ctx, r.Client, m)
+	toolConfig, err := ctrlutil.GetToolConfigForMCPServer(ctx, r.Client, m)
 	if err != nil {
 		return err
 	}

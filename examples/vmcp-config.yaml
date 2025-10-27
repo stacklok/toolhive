@@ -1,0 +1,104 @@
+# Virtual MCP Server (vmcp) Configuration Example
+# This file demonstrates the configuration format for vmcp
+
+# Server configuration
+server:
+  # Address to listen on (host:port)
+  address: "localhost:8080"
+
+  # Transport type: "http" or "stdio"
+  transport: "http"
+
+  # Optional TLS configuration for HTTPS
+  tls:
+    enabled: false
+    cert_file: "/path/to/cert.pem"
+    key_file: "/path/to/key.pem"
+
+# Middleware configuration (applied to all backends by default)
+middleware:
+  # Authentication middleware
+  auth:
+    enabled: true
+    provider: "local"  # Options: "github", "local", "anonymous"
+    config:
+      # Provider-specific configuration
+      allowed_users:
+        - "user1"
+        - "user2"
+
+  # Authorization middleware (Cedar policies)
+  authz:
+    enabled: true
+    policy_file: "/path/to/policies.cedar"
+
+  # Audit logging middleware
+  audit:
+    enabled: true
+    log_file: "/var/log/vmcp/audit.log"
+    format: "json"  # Options: "json", "text"
+
+  # Telemetry middleware (OpenTelemetry)
+  telemetry:
+    enabled: true
+    otlp_endpoint: "http://localhost:4318"
+    metrics: true
+    traces: true
+
+# Backend MCP servers to aggregate
+backends:
+  # Example 1: Container-based MCP server (ToolHive-managed)
+  - name: "filesystem-server"
+    type: "container"
+    config:
+      image: "mcp/filesystem:latest"
+      env:
+        ROOT_PATH: "/data"
+    tool_prefix: "fs_"
+    resource_prefix: "fs://"
+
+  # Example 2: Direct stdio MCP server
+  - name: "git-server"
+    type: "stdio"
+    config:
+      command: "python"
+      args:
+        - "-m"
+        - "mcp_git"
+      working_dir: "/repos"
+    tool_prefix: "git_"
+    resource_prefix: "git://"
+
+  # Example 3: SSE-based MCP server (HTTP)
+  - name: "weather-server"
+    type: "sse"
+    config:
+      url: "http://localhost:9000/sse"
+      headers:
+        Authorization: "Bearer token123"
+    tool_prefix: "weather_"
+
+    # Per-backend middleware overrides
+    middleware:
+      auth:
+        enabled: false  # Disable auth for this specific backend
+      audit:
+        enabled: true
+        log_file: "/var/log/vmcp/weather-audit.log"
+
+  # Example 4: Another container-based server with different middleware
+  - name: "database-server"
+    type: "container"
+    config:
+      image: "mcp/postgres:latest"
+      env:
+        DB_HOST: "localhost"
+        DB_PORT: "5432"
+    tool_prefix: "db_"
+    resource_prefix: "db://"
+
+    # More restrictive authorization for database operations
+    middleware:
+      authz:
+        enabled: true
+        policy_file: "/path/to/database-policies.cedar"

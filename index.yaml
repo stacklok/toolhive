@@ -294,6 +294,16 @@ entries:
   toolhive-operator-crds:
   - apiVersion: v2
     appVersion: 0.0.1
+    created: "2025-10-27T10:16:09.844827512Z"
+    description: A Helm chart for installing the ToolHive Operator CRDs into Kubernetes.
+    digest: d48ba10892e138a701e3027003c8746adaf589c93d0b02eeb196cac4f870977c
+    name: toolhive-operator-crds
+    type: application
+    urls:
+    - https://github.com/stacklok/toolhive/releases/download/toolhive-operator-crds-0.0.46/toolhive-operator-crds-0.0.46.tgz
+    version: 0.0.46
+  - apiVersion: v2
+    appVersion: 0.0.1
     created: "2025-10-25T15:05:03.776742895Z"
     description: A Helm chart for installing the ToolHive Operator CRDs into Kubernetes.
     digest: 7c2d3b5c84fbceec752b497c2bb24a1ef6ea11464f796148edce04b064b7ea72
@@ -652,4 +662,4 @@ entries:
     urls:
     - https://github.com/stacklok/toolhive/releases/download/toolhive-operator-crds-0.0.7/toolhive-operator-crds-0.0.7.tgz
     version: 0.0.7
-generated: "2025-10-25T15:05:03.777113385Z"
+generated: "2025-10-27T10:16:09.845178177Z"

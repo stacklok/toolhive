@@ -129,7 +129,7 @@ conditions:
 **Options:**
 
 **Option 1 - HTTP Polling (Recommended):**
-- Registry API exposes `GET /api/v1/status` returning sync history, stored in the configured storage path
+- Registry API exposes `GET /registry/status` returning sync history, stored in the configured storage path
 - Controller polls every 60 seconds and updates `syncStatus`
 - Pros: Simple, no new CRDs, works for CLI and Kubernetes
 - Cons: 60-second status latency
@@ -142,7 +142,7 @@ conditions:
 
 **Option 3 - Remove syncStatus:**
 - Remove `syncStatus` from `MCPRegistry` entirely
-- Users query Registry API `GET /api/v1/status` directly for sync information
+- Users query Registry API `GET /registry/status` directly for sync information
 - Pros: Simplest implementation
 - Cons: Breaking change, loses kubectl visibility
 
@@ -172,7 +172,7 @@ conditions:
 
 ### Manual Sync
 
-- Registry API exposes `POST /api/v1/sync` endpoint
+- Registry API exposes `POST /registry/sync` endpoint
 - Controller calls endpoint when `toolhive.stacklok.dev/sync-trigger` annotation changes
 - Endpoint returns 202 (accepted) or 409 (sync in progress)
 - Sync result recorded in history
@@ -249,12 +249,12 @@ Controller continues managing `apiStatus` with no changes:
    - Store sync history in file at storage path
 
 7. **Add sync status endpoint**
-   - Implement `GET /api/v1/status` returning sync history
+   - Implement `GET /registry/status` returning sync history
    - Return format matching proposed JSON schema
    - Read from sync history file
 
 8. **Add manual sync endpoint**
-   - Implement `POST /api/v1/sync` for manual sync triggering
+   - Implement `POST /registry/sync` for manual sync triggering
    - Return 202 (accepted) or 409 (sync in progress)
    - Prevent concurrent syncs
 
@@ -272,12 +272,12 @@ Controller continues managing `apiStatus` with no changes:
     - Update Deployment spec to mount config ConfigMap at `/config/spec.yaml`
     - Update Deployment spec to mount emptyDir volume at `/data`
     - Add `--config /config/spec.yaml --storage-path /data` flags to registry-api container
-    - Add polling logic to call `GET /api/v1/status` every 60 seconds (depends on [selected update option](#sync-status-updates))
+    - Add polling logic to call `GET /registry/status` every 60 seconds (depends on [selected update option](#sync-status-updates))
     - Update `syncStatus` from polling results
 
 11. **Add manual sync trigger via API**
     - Detect `toolhive.stacklok.dev/sync-trigger` annotation changes
-    - Call `POST /api/v1/sync` on Registry API endpoint
+    - Call `POST /registry/sync` on Registry API endpoint
     - Update `lastManualSyncTrigger` after successful API call
 
 12. **Remove sync logic from operator**

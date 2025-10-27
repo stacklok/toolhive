@@ -348,27 +348,43 @@ func TestValidatingTransport_RoundTrip(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		url           string
-		expectError   bool
-		errorContains string
+		name              string
+		url               string
+		insecureAllowHTTP bool
+		expectError       bool
+		errorContains     string
 	}{
 		{
-			name:        "valid HTTPS URL",
-			url:         "https://example.com/test",
-			expectError: false,
+			name:              "valid HTTPS URL",
+			url:               "https://example.com/test",
+			insecureAllowHTTP: false,
+			expectError:       false,
 		},
 		{
-			name:          "HTTP URL (not HTTPS)",
-			url:           "http://example.com/test",
-			expectError:   true,
-			errorContains: "is not HTTPS scheme",
+			name:              "HTTP URL (not HTTPS)",
+			url:               "http://example.com/test",
+			insecureAllowHTTP: false,
+			expectError:       true,
+			errorContains:     "is not HTTPS scheme",
 		},
 		{
-			name:          "malformed URL",
-			url:           "not-a-url",
-			expectError:   true,
-			errorContains: "is not HTTPS scheme",
+			name:              "malformed URL",
+			url:               "not-a-url",
+			insecureAllowHTTP: false,
+			expectError:       true,
+			errorContains:     "is not HTTPS scheme",
+		},
+		{
+			name:              "HTTP URL allowed with InsecureAllowHTTP",
+			url:               "http://localhost:8080/test",
+			insecureAllowHTTP: true,
+			expectError:       false,
+		},
+		{
+			name:              "HTTPS URL still works with InsecureAllowHTTP",
+			url:               "https://example.com/test",
+			insecureAllowHTTP: true,
+			expectError:       false,
 		},
 	}
 
@@ -385,7 +401,8 @@ func TestValidatingTransport_RoundTrip(t *testing.T) {
 			}
 
 			transport := &ValidatingTransport{
-				Transport: mockTransport,
+				Transport:         mockTransport,
+				InsecureAllowHTTP: tt.insecureAllowHTTP,
 			}
 
 			req, err := http.NewRequest("GET", tt.url, nil)

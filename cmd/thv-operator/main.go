@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server" // Import for metricsserver
@@ -22,6 +24,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
@@ -75,10 +78,31 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Set up field indexing for MCPServer.Spec.GroupRef
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mcpv1alpha1.MCPServer{},
+		"spec.groupRef",
+		func(obj client.Object) []string {
+			mcpServer := obj.(*mcpv1alpha1.MCPServer)
+			if mcpServer.Spec.GroupRef == "" {
+				return nil
+			}
+			return []string{mcpServer.Spec.GroupRef}
+		},
+	); err != nil {
+		setupLog.Error(err, "unable to create field index for spec.groupRef")
+		os.Exit(1)
+	}
+
+	// Create a shared platform detector for all controllers
+	sharedPlatformDetector := ctrlutil.NewSharedPlatformDetector()
 	rec := &controllers.MCPServerReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		ImageValidation: validation.ImageValidationAlwaysAllow,
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		Recorder:         mgr.GetEventRecorderFor("mcpserver-controller"),
+		PlatformDetector: sharedPlatformDetector,
+		ImageValidation:  validation.ImageValidationAlwaysAllow,
 	}
 
 	if err = rec.SetupWithManager(mgr); err != nil {
@@ -86,14 +110,48 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Only register MCPRegistry controller if feature flag is enabled
-	if os.Getenv("ENABLE_EXPERIMENTAL_FEATURES") == "true" {
-		rec.ImageValidation = validation.ImageValidationRegistryEnforcing
+	// Register MCPToolConfig controller
+	if err = (&controllers.ToolConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MCPToolConfig")
+		os.Exit(1)
+	}
 
-		if err = (controllers.NewMCPRegistryReconciler(mgr.GetClient(), mgr.GetScheme())).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "MCPRegistry")
-			os.Exit(1)
-		}
+	// Register MCPExternalAuthConfig controller
+	if err = (&controllers.MCPExternalAuthConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MCPExternalAuthConfig")
+		os.Exit(1)
+	}
+
+	// Register MCPRemoteProxy controller
+	if err = (&controllers.MCPRemoteProxyReconciler{
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MCPRemoteProxy")
+		os.Exit(1)
+	}
+
+	// Only register MCPRegistry controller if feature flag is enabled
+	rec.ImageValidation = validation.ImageValidationRegistryEnforcing
+
+	if err = (controllers.NewMCPRegistryReconciler(mgr.GetClient(), mgr.GetScheme())).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MCPRegistry")
+		os.Exit(1)
+	}
+
+	// Set up MCPGroup controller
+	if err = (&controllers.MCPGroupReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MCPGroup")
+		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder
 

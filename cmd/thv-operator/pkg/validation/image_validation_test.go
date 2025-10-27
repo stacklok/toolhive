@@ -3,7 +3,6 @@ package validation
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -95,18 +94,6 @@ func TestNewImageValidator(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			// Save original env value
-			originalValue := os.Getenv("TOOLHIVE_EXPERIMENTAL_REGISTRY_ENFORCEMENT")
-			defer func() {
-				os.Setenv("TOOLHIVE_EXPERIMENTAL_REGISTRY_ENFORCEMENT", originalValue)
-			}()
-
-			// Set test env value
-			if tt.setupEnv {
-				os.Setenv("TOOLHIVE_EXPERIMENTAL_REGISTRY_ENFORCEMENT", tt.envValue)
-			} else {
-				os.Unsetenv("TOOLHIVE_EXPERIMENTAL_REGISTRY_ENFORCEMENT")
-			}
 
 			var validationType ImageValidation
 			if tt.envValue == "true" {

@@ -57,7 +57,7 @@ type HTTPSSEProxy struct {
 	host              string
 	port              int
 	containerName     string
-	middlewares       []types.MiddlewareFunction
+	middlewares       []types.NamedMiddleware
 	trustProxyHeaders bool
 
 	// HTTP server
@@ -92,7 +92,7 @@ func NewHTTPSSEProxy(
 	containerName string,
 	trustProxyHeaders bool,
 	prometheusHandler http.Handler,
-	middlewares ...types.MiddlewareFunction,
+	middlewares ...types.NamedMiddleware,
 ) *HTTPSSEProxy {
 	// Create a factory for SSE sessions
 	sseFactory := func(id string) session.Session {
@@ -121,10 +121,10 @@ func NewHTTPSSEProxy(
 }
 
 // applyMiddlewares applies a chain of middlewares to a handler
-func applyMiddlewares(handler http.Handler, middlewares ...types.MiddlewareFunction) http.Handler {
+func applyMiddlewares(handler http.Handler, middlewares ...types.NamedMiddleware) http.Handler {
 	// Apply middleware chain in reverse order (last middleware is applied first)
 	for i := len(middlewares) - 1; i >= 0; i-- {
-		handler = middlewares[i](handler)
+		handler = middlewares[i].Function(handler)
 	}
 	return handler
 }
@@ -206,7 +206,9 @@ func (p *HTTPSSEProxy) Stop(ctx context.Context) error {
 
 	// Stop the session manager cleanup routine
 	if p.sessionManager != nil {
-		p.sessionManager.Stop()
+		if err := p.sessionManager.Stop(); err != nil {
+			logger.Errorf("Failed to stop session manager: %v", err)
+		}
 	}
 
 	// Disconnect all active sessions
@@ -466,7 +468,9 @@ func (p *HTTPSSEProxy) removeClient(clientID string) {
 	}
 
 	// Remove the session from the manager
-	p.sessionManager.Delete(clientID)
+	if err := p.sessionManager.Delete(clientID); err != nil {
+		logger.Debugf("Failed to delete session %s: %v", clientID, err)
+	}
 
 	// Clean up closed clients map periodically (prevent memory leak)
 	p.closedClientsMutex.Lock()

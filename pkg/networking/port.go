@@ -141,3 +141,32 @@ func FindOrUsePort(port int) (int, error) {
 	}
 	return alt, nil
 }
+
+// ValidateCallbackPort validates that the specified callback port is available
+// for pre-registered clients (with clientID), it returns an error if
+// it's not available.
+func ValidateCallbackPort(callbackPort int, clientID string) error {
+	// If port is 0, we'll find an available port later, so no need to validate
+	if callbackPort == 0 {
+		return nil
+	}
+
+	// Check if this is a pre-registered client (has client credentials)
+	// For pre-registered clients, we need strict port checking
+	isPreRegisteredClient := IsPreRegisteredClient(clientID)
+
+	if isPreRegisteredClient {
+		// For pre-registered clients, the port must be available
+		// The user likely configured this port in their IdP/app
+		if !IsAvailable(callbackPort) {
+			return fmt.Errorf("OAuth callback port %d is not available - please choose a different port", callbackPort)
+		}
+	}
+
+	return nil
+}
+
+// IsPreRegisteredClient determines if the OAuth client is pre-registered (has client ID)
+func IsPreRegisteredClient(clientID string) bool {
+	return clientID != ""
+}

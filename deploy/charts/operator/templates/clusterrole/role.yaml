@@ -100,7 +100,10 @@ rules:
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
+  - mcpexternalauthconfigs
+  - mcpgroups
   - mcpregistries
+  - mcpremoteproxies
   - mcpservers
   - mcptoolconfigs
   verbs:
@@ -114,6 +117,8 @@ rules:
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
+  - mcpexternalauthconfigs/finalizers
+  - mcpgroups/finalizers
   - mcpregistries/finalizers
   - mcpservers/finalizers
   - mcptoolconfigs/finalizers
@@ -122,7 +127,10 @@ rules:
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
+  - mcpexternalauthconfigs/status
+  - mcpgroups/status
   - mcpregistries/status
+  - mcpremoteproxies/status
   - mcpservers/status
   - mcptoolconfigs/status
   verbs:

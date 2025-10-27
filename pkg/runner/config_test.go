@@ -576,7 +576,7 @@ func TestRunConfigBuilder(t *testing.T) {
 		WithAuditEnabled(false, ""),
 		WithLabels(nil),
 		WithGroup(""),
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, "", oidcClientID, "", "", "", "", false),
+		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, "", oidcClientID, "", "", "", "", false, false),
 		WithTelemetryConfig("", false, false, false, "", 0.1, nil, false, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
@@ -824,7 +824,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 				WithAuditEnabled(false, ""),
 				WithLabels(nil),
 				WithGroup(""),
-				WithOIDCConfig("", "", "", "", "", "", "", "", "", false),
+				WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false),
 				WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil),
 				WithToolsFilter(nil),
 				WithIgnoreConfig(&ignore.Config{
@@ -871,7 +871,7 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 		WithAuditEnabled(false, ""),
 		WithLabels(nil),
 		WithGroup(""),
-		WithOIDCConfig("", "", "", "", "", "", "", "", "", false),
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false),
 		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
@@ -884,7 +884,8 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 
 	// Verify that transport-specific environment variables were set correctly
 	assert.Equal(t, "sse", config.EnvVars["MCP_TRANSPORT"])
-	assert.Equal(t, "9000", config.EnvVars["MCP_PORT"])
+	// Verify that MCP_PORT was set to the actual target port (may differ from requested if port was busy)
+	assert.Equal(t, fmt.Sprintf("%d", config.TargetPort), config.EnvVars["MCP_PORT"])
 	assert.Equal(t, "value", config.EnvVars["USER_VAR"])
 }
 
@@ -923,7 +924,7 @@ func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 		WithAuditEnabled(false, ""),
 		WithLabels(nil),
 		WithGroup(""),
-		WithOIDCConfig("", "", "", "", "", "", "", "", "", false),
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false),
 		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
@@ -978,7 +979,7 @@ func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 		WithAuditEnabled(false, ""),
 		WithLabels(nil),
 		WithGroup(""),
-		WithOIDCConfig("", "", "", "", "", "", "", "", "", false),
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false),
 		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
@@ -1029,7 +1030,7 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 		WithAuditEnabled(false, ""),
 		WithLabels(nil),
 		WithGroup(""),
-		WithOIDCConfig("", "", "", "", "", "", "", "", "", false),
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false),
 		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
@@ -1102,7 +1103,7 @@ func TestRunConfigBuilder_FilesystemMCPScenario(t *testing.T) {
 		WithAuditEnabled(false, ""),
 		WithLabels(nil),
 		WithGroup(""),
-		WithOIDCConfig("", "", "", "", "", "", "", "", "", false),
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false),
 		WithTelemetryConfig("", false, false, false, "", 0, nil, false, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{

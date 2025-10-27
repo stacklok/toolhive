@@ -132,6 +132,25 @@ func findPodmanSocket() (string, error) {
 		logger.Debugf("Failed to check Podman socket at %s: %v", userSocketPath, err)
 	}
 
+	// Check TMPDIR for Podman Machine API sockets (macOS)
+	// The socket path follows the pattern: $TMPDIR/podman/<machine-name>-api.sock
+	if tmpDir := os.Getenv("TMPDIR"); tmpDir != "" {
+		podmanTmpDir := filepath.Join(tmpDir, "podman")
+		if _, err := os.Stat(podmanTmpDir); err == nil {
+			// Look for any -api.sock files (there may be multiple machines)
+			matches, err := filepath.Glob(filepath.Join(podmanTmpDir, "*-api.sock"))
+			if err == nil && len(matches) > 0 {
+				// Use the first available API socket
+				socketPath := matches[0]
+				logger.Debugf("Found Podman machine API socket at %s", socketPath)
+				return socketPath, nil
+			}
+			logger.Debugf("No Podman machine API sockets found in %s", podmanTmpDir)
+		} else {
+			logger.Debugf("Podman temp directory not found at %s: %v", podmanTmpDir, err)
+		}
+	}
+
 	return "", fmt.Errorf("podman socket not found in standard locations")
 }
 

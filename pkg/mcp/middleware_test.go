@@ -78,7 +78,7 @@ func TestCreateToolFilterMiddleware(t *testing.T) {
 				}
 			}(),
 			setupMock: func(mockRunner *mocks.MockMiddlewareRunner) {
-				mockRunner.EXPECT().AddMiddleware(gomock.Any()).Do(func(mw types.Middleware) {
+				mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Do(func(_ string, mw types.Middleware) {
 					_, ok := mw.(*ToolFilterMiddleware)
 					assert.True(t, ok, "Expected middleware to be of type *ToolFilterMiddleware")
 				})
@@ -98,7 +98,7 @@ func TestCreateToolFilterMiddleware(t *testing.T) {
 				}
 			}(),
 			setupMock: func(mockRunner *mocks.MockMiddlewareRunner) {
-				mockRunner.EXPECT().AddMiddleware(gomock.Any()).Do(func(mw types.Middleware) {
+				mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Do(func(_ string, mw types.Middleware) {
 					_, ok := mw.(*ToolFilterMiddleware)
 					assert.True(t, ok, "Expected middleware to be of type *ToolFilterMiddleware")
 				})
@@ -182,7 +182,7 @@ func TestCreateToolCallFilterMiddleware(t *testing.T) {
 				}
 			}(),
 			setupMock: func(mockRunner *mocks.MockMiddlewareRunner) {
-				mockRunner.EXPECT().AddMiddleware(gomock.Any()).Do(func(mw types.Middleware) {
+				mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Do(func(_ string, mw types.Middleware) {
 					_, ok := mw.(*ToolFilterMiddleware)
 					assert.True(t, ok, "Expected middleware to be of type *ToolFilterMiddleware")
 				})
@@ -202,7 +202,7 @@ func TestCreateToolCallFilterMiddleware(t *testing.T) {
 				}
 			}(),
 			setupMock: func(mockRunner *mocks.MockMiddlewareRunner) {
-				mockRunner.EXPECT().AddMiddleware(gomock.Any()).Do(func(mw types.Middleware) {
+				mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Do(func(_ string, mw types.Middleware) {
 					_, ok := mw.(*ToolFilterMiddleware)
 					assert.True(t, ok, "Expected middleware to be of type *ToolFilterMiddleware")
 				})

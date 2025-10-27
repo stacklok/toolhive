@@ -6,10 +6,7 @@ metadata:
 spec:
   image: docker.io/mcp/fetch
   transport: stdio
-  port: 8080
-  permissionProfile:
-    type: builtin
-    name: network
+  proxyPort: 8080
   oidcConfig:
     type: kubernetes
     kubernetes:

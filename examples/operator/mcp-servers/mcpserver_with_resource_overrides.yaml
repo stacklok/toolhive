@@ -6,10 +6,7 @@ metadata:
 spec:
   image: docker.io/mcp/github
   transport: stdio
-  port: 8080
-  permissionProfile:
-    type: builtin
-    name: network
+  proxyPort: 8080
   secrets:
     - name: github-token
       key: GITHUB_PERSONAL_ACCESS_TOKEN

@@ -61,6 +61,11 @@ components:
         clientSecret:
           description: ClientSecret is the optional OIDC client secret for introspection
           type: string
+        insecureAllowHTTP:
+          description: |-
+            InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+            WARNING: This is insecure and should NEVER be used in production
+          type: boolean
         introspectionURL:
           description: IntrospectionURL is the optional introspection endpoint for
             validating tokens
@@ -125,6 +130,8 @@ components:
       - AmpWindsurf
       - LMStudio
       - Goose
+      - Trae
+      - Continue
     client.MCPClientStatus:
       properties:
         client_type:
@@ -146,6 +153,8 @@ components:
           - AmpWindsurf
           - LMStudio
           - Goose
+          - Trae
+          - Continue
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -263,6 +272,11 @@ components:
       properties:
         inbound:
           $ref: '#/components/schemas/permissions.InboundNetworkPermissions'
+        mode:
+          description: |-
+            Mode specifies the network mode for the container (e.g., "host", "bridge", "none")
+            When empty, the default container runtime network mode is used
+          type: string
         outbound:
           $ref: '#/components/schemas/permissions.OutboundNetworkPermissions'
       type: object
@@ -676,30 +690,32 @@ components:
     runner.RemoteAuthConfig:
       description: RemoteAuthConfig contains OAuth configuration for remote MCP servers
       properties:
-        authorizeURL:
+        authorize_url:
           type: string
-        callbackPort:
+        callback_port:
           type: integer
-        clientID:
+        client_id:
           type: string
-        clientSecret:
+        client_secret:
           type: string
-        clientSecretFile:
+        client_secret_file:
           type: string
-        envVars:
+        env_vars:
           description: Environment variables for the client
           items:
             $ref: '#/components/schemas/registry.EnvVar'
           type: array
+          uniqueItems: false
         headers:
           description: Headers for HTTP requests
           items:
             $ref: '#/components/schemas/registry.Header'
           type: array
+          uniqueItems: false
         issuer:
           description: OAuth endpoint configuration (from registry)
           type: string
-        oauthParams:
+        oauth_params:
           additionalProperties:
             type: string
           description: OAuth parameters for server-specific customization
@@ -708,13 +724,16 @@ components:
           items:
             type: string
           type: array
-        skipBrowser:
+          uniqueItems: false
+        skip_browser:
           type: boolean
         timeout:
           example: 5m
           type: string
-        tokenURL:
+        token_url:
           type: string
+        use_pkce:
+          type: boolean
       type: object
     runner.RunConfig:
       properties:
@@ -901,6 +920,16 @@ components:
     telemetry.Config:
       description: TelemetryConfig contains the OpenTelemetry configuration
       properties:
+        customAttributes:
+          additionalProperties:
+            type: string
+          description: |-
+            CustomAttributes contains custom resource attributes to be added to all telemetry signals.
+            These are parsed from CLI flags (--otel-custom-attributes) or environment variables
+            (OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.
+            We use map[string]string for proper JSON serialization instead of []attribute.KeyValue
+            which doesn't marshal/unmarshal correctly.
+          type: object
         enablePrometheusMetricsPath:
           description: |-
             EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint
@@ -1035,6 +1064,8 @@ components:
             - AmpWindsurf
             - LMStudio
             - Goose
+            - Trae
+            - Continue
           type: array
           uniqueItems: false
       type: object
@@ -1085,6 +1116,8 @@ components:
           - AmpWindsurf
           - LMStudio
           - Goose
+          - Trae
+          - Continue
       type: object
     v1.createClientResponse:
       properties:
@@ -1113,6 +1146,8 @@ components:
           - AmpWindsurf
           - LMStudio
           - Goose
+          - Trae
+          - Continue
       type: object
     v1.createGroupRequest:
       properties:
@@ -2542,6 +2577,12 @@ paths:
               schema:
                 type: string
           description: Logs for the specified workload
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid workload name
         "404":
           content:
             application/json:
@@ -2549,6 +2590,42 @@ paths:
                 type: string
           description: Not Found
       summary: Get logs for a specific workload
+      tags:
+      - logs
+  /api/v1beta/workloads/{name}/proxy-logs:
+    get:
+      description: Retrieve proxy logs for a specific workload by name from the file
+        system.
+      parameters:
+      - description: Workload name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: string
+            text/plain:
+              schema:
+                type: string
+          description: Proxy logs for the specified workload
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid workload name
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Proxy logs not found for workload
+      summary: Get proxy logs for a specific workload
       tags:
       - logs
   /api/v1beta/workloads/{name}/restart:

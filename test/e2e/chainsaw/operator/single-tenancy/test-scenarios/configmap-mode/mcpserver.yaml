@@ -12,7 +12,7 @@ metadata:
 spec:
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
   transport: stdio
-  port: 8080
+  proxyPort: 8080
   serviceAccount: yardstick-custom-sa
   env:
   - name: TEST_ENV_VAR

@@ -668,7 +668,7 @@ func TestExtractResourceAndArguments(t *testing.T) {
 				params = json.RawMessage(tt.params)
 			}
 
-			resourceID, arguments := extractResourceAndArguments(tt.method, params)
+			resourceID, arguments, meta := extractResourceAndArguments(tt.method, params)
 
 			assert.Equal(t, tt.expectedResourceID, resourceID)
 			if tt.expectedArguments == nil {
@@ -676,6 +676,8 @@ func TestExtractResourceAndArguments(t *testing.T) {
 			} else {
 				assert.Equal(t, tt.expectedArguments, arguments)
 			}
+			// No _meta field in these test cases, so it should always be nil
+			assert.Nil(t, meta)
 		})
 	}
 }
@@ -689,6 +691,10 @@ func TestConvenienceFunctions(t *testing.T) {
 		ResourceID: "weather",
 		Arguments: map[string]interface{}{
 			"location": "NYC",
+		},
+		Meta: map[string]interface{}{
+			"progressToken": "abc123",
+			"traceparent":   "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
 		},
 	}
 	ctx := context.WithValue(context.Background(), MCPRequestContextKey, parsed)
@@ -708,11 +714,297 @@ func TestConvenienceFunctions(t *testing.T) {
 	}
 	assert.Equal(t, expected, arguments)
 
+	// Test GetMCPMeta
+	meta := GetMCPMeta(ctx)
+	expectedMeta := map[string]interface{}{
+		"progressToken": "abc123",
+		"traceparent":   "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+	}
+	assert.Equal(t, expectedMeta, meta)
+
 	// Test with empty context
 	emptyCtx := context.Background()
 	assert.Equal(t, "", GetMCPMethod(emptyCtx))
 	assert.Equal(t, "", GetMCPResourceID(emptyCtx))
 	assert.Nil(t, GetMCPArguments(emptyCtx))
+	assert.Nil(t, GetMCPMeta(emptyCtx))
+}
+
+func TestMetaFieldParsing(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		body         string
+		expectedMeta map[string]interface{}
+	}{
+		{
+			name: "progressToken in _meta",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 1,
+				"method": "tools/call",
+				"params": {
+					"name": "weather",
+					"arguments": {"location": "NYC"},
+					"_meta": {
+						"progressToken": "abc123"
+					}
+				}
+			}`,
+			expectedMeta: map[string]interface{}{
+				"progressToken": "abc123",
+			},
+		},
+		{
+			name: "traceparent in _meta",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 2,
+				"method": "resources/read",
+				"params": {
+					"uri": "file:///test.txt",
+					"_meta": {
+						"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+					}
+				}
+			}`,
+			expectedMeta: map[string]interface{}{
+				"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+			},
+		},
+		{
+			name: "multiple fields in _meta",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 3,
+				"method": "prompts/get",
+				"params": {
+					"name": "greeting",
+					"_meta": {
+						"progressToken": "xyz789",
+						"traceparent": "00-trace-id-span-id-01",
+						"custom.domain/key": "value",
+						"requestId": "req-123"
+					}
+				}
+			}`,
+			expectedMeta: map[string]interface{}{
+				"progressToken":     "xyz789",
+				"traceparent":       "00-trace-id-span-id-01",
+				"custom.domain/key": "value",
+				"requestId":         "req-123",
+			},
+		},
+		{
+			name: "nested objects in _meta",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 4,
+				"method": "tools/call",
+				"params": {
+					"name": "test",
+					"_meta": {
+						"nested": {
+							"deep": {
+								"value": "test"
+							}
+						}
+					}
+				}
+			}`,
+			expectedMeta: map[string]interface{}{
+				"nested": map[string]interface{}{
+					"deep": map[string]interface{}{
+						"value": "test",
+					},
+				},
+			},
+		},
+		{
+			name: "no _meta field",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 5,
+				"method": "tools/call",
+				"params": {
+					"name": "weather",
+					"arguments": {"location": "NYC"}
+				}
+			}`,
+			expectedMeta: nil,
+		},
+		{
+			name: "empty _meta object",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 6,
+				"method": "tools/list",
+				"params": {
+					"_meta": {}
+				}
+			}`,
+			expectedMeta: map[string]interface{}{},
+		},
+		{
+			name: "_meta with various value types",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 7,
+				"method": "initialize",
+				"params": {
+					"protocolVersion": "2024-11-05",
+					"clientInfo": {"name": "test"},
+					"_meta": {
+						"string": "value",
+						"number": 42,
+						"boolean": true,
+						"null": null,
+						"array": [1, 2, 3]
+					}
+				}
+			}`,
+			expectedMeta: map[string]interface{}{
+				"string":  "value",
+				"number":  float64(42),
+				"boolean": true,
+				"null":    nil,
+				"array":   []interface{}{float64(1), float64(2), float64(3)},
+			},
+		},
+		{
+			name: "_meta in notification (no id)",
+			body: `{
+				"jsonrpc": "2.0",
+				"method": "notifications/progress",
+				"params": {
+					"progressToken": "notify-123",
+					"progress": 50,
+					"_meta": {
+						"correlationId": "corr-456"
+					}
+				}
+			}`,
+			expectedMeta: map[string]interface{}{
+				"correlationId": "corr-456",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var capturedCtx context.Context
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedCtx = r.Context()
+				w.WriteHeader(http.StatusOK)
+			})
+
+			middleware := ParsingMiddleware(testHandler)
+			req := httptest.NewRequest("POST", "/messages", bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			middleware.ServeHTTP(w, req)
+
+			parsed := GetParsedMCPRequest(capturedCtx)
+			require.NotNil(t, parsed)
+
+			if tt.expectedMeta == nil {
+				assert.Nil(t, parsed.Meta)
+			} else {
+				assert.Equal(t, tt.expectedMeta, parsed.Meta)
+			}
+
+			// Also test the convenience function
+			meta := GetMCPMeta(capturedCtx)
+			if tt.expectedMeta == nil {
+				assert.Nil(t, meta)
+			} else {
+				assert.Equal(t, tt.expectedMeta, meta)
+			}
+		})
+	}
+}
+
+func TestMetaFieldInvalidTypes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		body          string
+		expectParsed  bool
+		expectNilMeta bool
+	}{
+		{
+			name: "_meta as string (invalid)",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 1,
+				"method": "tools/call",
+				"params": {
+					"name": "test",
+					"_meta": "should-be-object"
+				}
+			}`,
+			expectParsed:  true,
+			expectNilMeta: true,
+		},
+		{
+			name: "_meta as array (invalid)",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 2,
+				"method": "tools/call",
+				"params": {
+					"name": "test",
+					"_meta": ["should", "be", "object"]
+				}
+			}`,
+			expectParsed:  true,
+			expectNilMeta: true,
+		},
+		{
+			name: "_meta as number (invalid)",
+			body: `{
+				"jsonrpc": "2.0",
+				"id": 3,
+				"method": "tools/call",
+				"params": {
+					"name": "test",
+					"_meta": 123
+				}
+			}`,
+			expectParsed:  true,
+			expectNilMeta: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var capturedCtx context.Context
+			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedCtx = r.Context()
+				w.WriteHeader(http.StatusOK)
+			})
+
+			middleware := ParsingMiddleware(testHandler)
+			req := httptest.NewRequest("POST", "/messages", bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			middleware.ServeHTTP(w, req)
+
+			parsed := GetParsedMCPRequest(capturedCtx)
+			if tt.expectParsed {
+				require.NotNil(t, parsed)
+				if tt.expectNilMeta {
+					assert.Nil(t, parsed.Meta, "Expected Meta to be nil for invalid _meta type")
+				}
+			} else {
+				assert.Nil(t, parsed)
+			}
+		})
+	}
 }
 
 func TestShouldParseMCPRequest(t *testing.T) {
@@ -979,9 +1271,10 @@ func TestExtractResourceAndArgumentsNilParams(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			resourceID, arguments := extractResourceAndArguments(tt.method, nil)
+			resourceID, arguments, meta := extractResourceAndArguments(tt.method, nil)
 			assert.Equal(t, tt.expectedResourceID, resourceID)
 			assert.Nil(t, arguments)
+			assert.Nil(t, meta)
 		})
 	}
 }

@@ -13,6 +13,9 @@ const (
 
 	// RegistrySourceTypeGit is the type for registry data stored in Git repositories
 	RegistrySourceTypeGit = "git"
+
+	// RegistrySourceTypeAPI is the type for registry data fetched from API endpoints
+	RegistrySourceTypeAPI = "api"
 )
 
 // Registry formats
@@ -57,8 +60,8 @@ type MCPRegistrySpec struct {
 
 // MCPRegistrySource defines the source configuration for registry data
 type MCPRegistrySource struct {
-	// Type is the type of source (configmap, git)
-	// +kubebuilder:validation:Enum=configmap;git
+	// Type is the type of source (configmap, git, api)
+	// +kubebuilder:validation:Enum=configmap;git;api
 	// +kubebuilder:default=configmap
 	Type string `json:"type"`
 
@@ -76,6 +79,11 @@ type MCPRegistrySource struct {
 	// Only used when Type is "git"
 	// +optional
 	Git *GitSource `json:"git,omitempty"`
+
+	// API defines the API source configuration
+	// Only used when Type is "api"
+	// +optional
+	API *APISource `json:"api,omitempty"`
 }
 
 // ConfigMapSource defines ConfigMap source configuration
@@ -120,6 +128,23 @@ type GitSource struct {
 	// +kubebuilder:default=registry.json
 	// +optional
 	Path string `json:"path,omitempty"`
+}
+
+// APISource defines API source configuration for ToolHive Registry APIs
+// Phase 1: Supports ToolHive API endpoints (no pagination)
+// Phase 2: Will add support for upstream MCP Registry API with pagination
+type APISource struct {
+	// Endpoint is the base API URL (without path)
+	// The controller will append the appropriate paths:
+	// Phase 1 (ToolHive API):
+	//   - /v0/servers - List all servers (single response, no pagination)
+	//   - /v0/servers/{name} - Get specific server (future)
+	//   - /v0/info - Get registry metadata (future)
+	// Example: "http://my-registry-api.default.svc.cluster.local/api"
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern="^https?://.*"
+	Endpoint string `json:"endpoint"`
 }
 
 // SyncPolicy defines automatic synchronization behavior.
@@ -353,10 +378,9 @@ const (
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:scope=Namespaced,categories=toolhive
 //nolint:lll
-//+kubebuilder:validation:XValidation:rule="self.spec.source.type == 'configmap' ? has(self.spec.source.configmap) : (self.spec.source.type == 'git' ? has(self.spec.source.git) : true)",message="configMap field is required when source type is 'configmap', git field is required when source type is 'git'"
+//+kubebuilder:validation:XValidation:rule="self.spec.source.type == 'configmap' ? has(self.spec.source.configmap) : (self.spec.source.type == 'git' ? has(self.spec.source.git) : (self.spec.source.type == 'api' ? has(self.spec.source.api) : true))",message="configMap field is required when source type is 'configmap', git field is required when source type is 'git', api field is required when source type is 'api'"
 
 // MCPRegistry is the Schema for the mcpregistries API
-// ⚠️ Experimental API (v1alpha1) — subject to change.
 type MCPRegistry struct {
 	metav1.TypeMeta   `json:",inline"` // nolint:revive
 	metav1.ObjectMeta `json:"metadata,omitempty"`

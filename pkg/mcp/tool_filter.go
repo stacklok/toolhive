@@ -245,7 +245,10 @@ func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewar
 						next.ServeHTTP(w, r)
 						return
 					}
+
 					r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+					// TODO: find a reasonable way to test this
+					r.ContentLength = int64(len(bodyBytes))
 
 				// According to the current version of the MCP spec at
 				// https://modelcontextprotocol.io/specification/2025-06-18/schema#calltoolrequest

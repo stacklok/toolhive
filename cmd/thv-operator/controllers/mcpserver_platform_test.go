@@ -9,21 +9,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/rest"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
-
-// mockPlatformDetector is a mock implementation of PlatformDetector for testing
-type mockPlatformDetector struct {
-	platform kubernetes.Platform
-	err      error
-}
-
-func (m *mockPlatformDetector) DetectPlatform(_ *rest.Config) (kubernetes.Platform, error) {
-	return m.platform, m.err
-}
 
 func TestMCPServerReconciler_DetectPlatform_Success(t *testing.T) {
 	t.Skip("Platform detection requires in-cluster Kubernetes configuration - skipping for unit tests")
@@ -51,11 +41,12 @@ func TestMCPServerReconciler_DetectPlatform_Success(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			mockDetector := &mockPlatformDetector{
+				platform: tt.platform,
+				err:      nil,
+			}
 			reconciler := &MCPServerReconciler{
-				platformDetector: &mockPlatformDetector{
-					platform: tt.platform,
-					err:      nil,
-				},
+				PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
 			}
 
 			ctx := context.Background()
@@ -77,11 +68,12 @@ func TestMCPServerReconciler_DetectPlatform_Error(t *testing.T) {
 
 	t.Parallel()
 
+	mockDetector := &mockPlatformDetector{
+		platform: kubernetes.PlatformKubernetes,
+		err:      assert.AnError,
+	}
 	reconciler := &MCPServerReconciler{
-		platformDetector: &mockPlatformDetector{
-			platform: kubernetes.PlatformKubernetes,
-			err:      assert.AnError,
-		},
+		PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
 	}
 
 	ctx := context.Background()
@@ -105,27 +97,24 @@ func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
 	// Create reconciler with mock platform detector for Kubernetes
 	scheme := runtime.NewScheme()
 	_ = mcpv1alpha1.AddToScheme(scheme)
-	reconciler := &MCPServerReconciler{
-		Scheme: scheme,
-		platformDetector: &mockPlatformDetector{
-			platform: kubernetes.PlatformKubernetes,
-			err:      nil,
-		},
-		// Pre-set the detected platform to avoid calling detectPlatform which requires in-cluster config
-		detectedPlatform: kubernetes.PlatformKubernetes,
+	mockDetector := &mockPlatformDetector{
+		platform: kubernetes.PlatformKubernetes,
+		err:      nil,
 	}
-	// Simulate that platform detection has already been called
-	reconciler.platformOnce.Do(func() {})
+	reconciler := &MCPServerReconciler{
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
+	}
 
 	ctx := context.Background()
-	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer)
+	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
 
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
@@ -180,27 +169,24 @@ func TestMCPServerReconciler_DeploymentForMCPServer_OpenShift(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
 	// Create reconciler with mock platform detector for OpenShift
 	scheme := runtime.NewScheme()
 	_ = mcpv1alpha1.AddToScheme(scheme)
-	reconciler := &MCPServerReconciler{
-		Scheme: scheme,
-		platformDetector: &mockPlatformDetector{
-			platform: kubernetes.PlatformOpenShift,
-			err:      nil,
-		},
-		// Pre-set the detected platform to avoid calling detectPlatform which requires in-cluster config
-		detectedPlatform: kubernetes.PlatformOpenShift,
+	mockDetector := &mockPlatformDetector{
+		platform: kubernetes.PlatformOpenShift,
+		err:      nil,
 	}
-	// Simulate that platform detection has already been called
-	reconciler.platformOnce.Do(func() {})
+	reconciler := &MCPServerReconciler{
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
+	}
 
 	ctx := context.Background()
-	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer)
+	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
 
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
@@ -261,24 +247,24 @@ func TestMCPServerReconciler_DeploymentForMCPServer_PlatformDetectionError(t *te
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
 	// Create reconciler with mock platform detector that returns error
 	scheme := runtime.NewScheme()
 	_ = mcpv1alpha1.AddToScheme(scheme)
+	mockDetector := &mockPlatformDetector{
+		platform: kubernetes.PlatformKubernetes,
+		err:      assert.AnError,
+	}
 	reconciler := &MCPServerReconciler{
-		Scheme: scheme,
-		platformDetector: &mockPlatformDetector{
-			platform: kubernetes.PlatformKubernetes,
-			err:      assert.AnError,
-		},
-		// Don't pre-set the platform so it will try to detect and fall back to Kubernetes
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
 	}
 
 	ctx := context.Background()
-	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer)
+	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
 
 	require.NotNil(t, deployment, "Deployment should not be nil")
 

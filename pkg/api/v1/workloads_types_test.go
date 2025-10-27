@@ -157,7 +157,9 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 				AuthorizeURL: "https://oauth.example.com/auth",
 				TokenURL:     "https://oauth.example.com/token",
 				ClientID:     "test-client",
+				ClientSecret: "oauth-client-secret,target=oauth_secret",
 				Scopes:       []string{"read", "write"},
+				UsePKCE:      true,
 				OAuthParams:  map[string]string{"custom": "param"},
 				CallbackPort: 8081,
 			},
@@ -172,8 +174,43 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.Equal(t, "https://oauth.example.com/token", result.OAuthConfig.TokenURL)
 		assert.Equal(t, "test-client", result.OAuthConfig.ClientID)
 		assert.Equal(t, []string{"read", "write"}, result.OAuthConfig.Scopes)
+		assert.True(t, result.OAuthConfig.UsePKCE)
 		assert.Equal(t, map[string]string{"custom": "param"}, result.OAuthConfig.OAuthParams)
 		assert.Equal(t, 8081, result.OAuthConfig.CallbackPort)
+
+		// Verify that secret is parsed correctly from CLI format
+		require.NotNil(t, result.OAuthConfig.ClientSecret)
+		assert.Equal(t, "oauth-client-secret", result.OAuthConfig.ClientSecret.Name)
+		assert.Equal(t, "oauth_secret", result.OAuthConfig.ClientSecret.Target)
+	})
+
+	t.Run("with remote OAuth config without secret key (CLI case)", func(t *testing.T) {
+		t.Parallel()
+
+		runConfig := &runner.RunConfig{
+			Name: "test-workload",
+			RemoteAuthConfig: &runner.RemoteAuthConfig{
+				Issuer:       "https://oauth.example.com",
+				AuthorizeURL: "https://oauth.example.com/auth",
+				TokenURL:     "https://oauth.example.com/token",
+				ClientID:     "test-client",
+				ClientSecret: "actual-secret-value", // Plain text secret (CLI case)
+				Scopes:       []string{"read", "write"},
+				UsePKCE:      true,
+				OAuthParams:  map[string]string{"custom": "param"},
+				CallbackPort: 8081,
+			},
+		}
+
+		result := runConfigToCreateRequest(runConfig)
+
+		require.NotNil(t, result)
+		require.NotNil(t, result.OAuthConfig)
+		assert.Equal(t, "test-client", result.OAuthConfig.ClientID)
+		assert.True(t, result.OAuthConfig.UsePKCE)
+
+		// When no secret key is stored (CLI case), ClientSecret should be nil
+		assert.Nil(t, result.OAuthConfig.ClientSecret)
 	})
 
 	t.Run("with permission profile", func(t *testing.T) {

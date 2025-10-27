@@ -39,8 +39,8 @@ type Runner struct {
 	// middlewares is a slice of created middleware instances for cleanup
 	middlewares []types.Middleware
 
-	// middlewareFunctions is a slice of middleware functions to apply to the transport
-	middlewareFunctions []types.MiddlewareFunction
+	// namedMiddlewares is a slice of named middleware to apply to the transport
+	namedMiddlewares []types.NamedMiddleware
 
 	// authInfoHandler is the authentication info handler set by auth middleware
 	authInfoHandler http.Handler
@@ -60,10 +60,13 @@ func NewRunner(runConfig *RunConfig, statusManager statuses.StatusManager) *Runn
 	}
 }
 
-// AddMiddleware adds a middleware instance and its function to the runner
-func (r *Runner) AddMiddleware(middleware types.Middleware) {
+// AddMiddleware adds a middleware instance and its function to the runner with a name
+func (r *Runner) AddMiddleware(name string, middleware types.Middleware) {
 	r.middlewares = append(r.middlewares, middleware)
-	r.middlewareFunctions = append(r.middlewareFunctions, middleware.Handler())
+	r.namedMiddlewares = append(r.namedMiddlewares, types.NamedMiddleware{
+		Name:     name,
+		Function: middleware.Handler(),
+	})
 }
 
 // SetAuthInfoHandler sets the authentication info handler
@@ -126,8 +129,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
-	// Set all middleware functions and handlers on transport config
-	transportConfig.Middlewares = r.middlewareFunctions
+	// Set all named middleware and handlers on transport config
+	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
 	transportConfig.PrometheusHandler = r.prometheusHandler
 
@@ -139,8 +142,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to create transport: %v", err)
 	}
 
-	// Process secrets if provided
-	if len(r.Config.Secrets) > 0 {
+	// Process secrets if provided (regular secrets or RemoteAuthConfig.ClientSecret in CLI format)
+	hasRegularSecrets := len(r.Config.Secrets) > 0
+	hasRemoteAuthSecret := r.Config.RemoteAuthConfig != nil && r.Config.RemoteAuthConfig.ClientSecret != ""
+
+	logger.Debugf("Secret processing check: hasRegularSecrets=%v, hasRemoteAuthSecret=%v", hasRegularSecrets, hasRemoteAuthSecret)
+	if hasRemoteAuthSecret {
+		logger.Debugf("RemoteAuthConfig.ClientSecret: %s", r.Config.RemoteAuthConfig.ClientSecret)
+	}
+
+	if hasRegularSecrets || hasRemoteAuthSecret {
+		logger.Debugf("Calling WithSecrets to process secrets")
 		cfgprovider := config.NewDefaultProvider()
 		cfg := cfgprovider.GetConfig()
 
@@ -154,7 +166,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("error instantiating secret manager %v", err)
 		}
 
-		// Process secrets
+		// Process secrets (including RemoteAuthConfig.ClientSecret resolution)
 		if _, err = r.Config.WithSecrets(ctx, secretManager); err != nil {
 			return err
 		}
@@ -176,7 +188,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		// Set the token source on the HTTP transport
-		if httpTransport, ok := transportHandler.(interface{ SetTokenSource(*oauth2.TokenSource) }); ok {
+		if httpTransport, ok := transportHandler.(interface{ SetTokenSource(oauth2.TokenSource) }); ok {
 			httpTransport.SetTokenSource(tokenSource)
 		}
 
@@ -328,7 +340,7 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 // handleRemoteAuthentication handles authentication for remote MCP servers
-func (r *Runner) handleRemoteAuthentication(ctx context.Context) (*oauth2.TokenSource, error) {
+func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSource, error) {
 	if r.Config.RemoteAuthConfig == nil {
 		return nil, nil
 	}

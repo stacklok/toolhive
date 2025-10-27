@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
 type testContext struct {
@@ -32,12 +33,9 @@ func setupTest(name, namespace string) *testContext {
 	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
 	proxyRunnerNameForRBAC := fmt.Sprintf("%s-proxy-runner", name)
 	return &testContext{
-		mcpServer: mcpServer,
-		client:    fakeClient,
-		reconciler: &MCPServerReconciler{
-			Client: fakeClient,
-			Scheme: testScheme,
-		},
+		mcpServer:              mcpServer,
+		client:                 fakeClient,
+		reconciler:             newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes),
 		proxyRunnerNameForRBAC: proxyRunnerNameForRBAC,
 	}
 }
@@ -329,7 +327,7 @@ func createTestMCPServer(name, namespace string) *mcpv1alpha1.MCPServer {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 }

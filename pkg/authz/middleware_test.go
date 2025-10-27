@@ -18,9 +18,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
-	"github.com/stacklok/toolhive/pkg/testkit"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
+	"github.com/stacklok/toolhive/test/testkit"
 )
 
 func TestMiddleware(t *testing.T) {
@@ -321,7 +321,7 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		// Test CreateMiddleware
 		err = CreateMiddleware(middlewareConfig, mockRunner)
@@ -367,7 +367,7 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		// Test CreateMiddleware
 		err = CreateMiddleware(middlewareConfig, mockRunner)
@@ -404,7 +404,7 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		// Test CreateMiddleware - should succeed even with invalid path because ConfigData takes precedence
 		err = CreateMiddleware(middlewareConfig, mockRunner)

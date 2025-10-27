@@ -1,5 +1,5 @@
 # Use Alpine Linux 3.22.0 for minimal footprint
-FROM alpine:3.22.1
+FROM alpine:3.22.2
 
 # Install squid from edge repository and create necessary directories
 RUN echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories \

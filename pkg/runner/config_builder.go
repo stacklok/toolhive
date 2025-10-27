@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -40,6 +41,8 @@ type runConfigBuilder struct {
 	// Store ports separately for proper validation
 	port       int
 	targetPort int
+	// Store network mode to apply to permission profile after it's loaded
+	networkMode string
 	// Build context determines which validation and features are enabled
 	buildContext BuildContext
 }
@@ -226,6 +229,15 @@ func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	}
 }
 
+// WithNetworkMode sets the network mode for the container.
+// The network mode will be applied to the permission profile after it is loaded.
+func WithNetworkMode(networkMode string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.networkMode = networkMode
+		return nil
+	}
+}
+
 // WithK8sPodPatch sets the Kubernetes pod template patch
 func WithK8sPodPatch(patch string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
@@ -308,18 +320,20 @@ func WithOIDCConfig(
 	jwksAuthTokenFile string,
 	resourceURL string,
 	jwksAllowPrivateIP bool,
+	insecureAllowHTTP bool,
 ) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
 			oidcClientID != "" || oidcClientSecret != "" {
 			b.config.OIDCConfig = &auth.TokenValidatorConfig{
-				Issuer:           oidcIssuer,
-				Audience:         oidcAudience,
-				JWKSURL:          oidcJwksURL,
-				IntrospectionURL: oidcIntrospectionURL,
-				ClientID:         oidcClientID,
-				ClientSecret:     oidcClientSecret,
-				AllowPrivateIP:   jwksAllowPrivateIP,
+				Issuer:            oidcIssuer,
+				Audience:          oidcAudience,
+				JWKSURL:           oidcJwksURL,
+				IntrospectionURL:  oidcIntrospectionURL,
+				ClientID:          oidcClientID,
+				ClientSecret:      oidcClientSecret,
+				AllowPrivateIP:    jwksAllowPrivateIP,
+				InsecureAllowHTTP: insecureAllowHTTP,
 			}
 		}
 
@@ -341,7 +355,7 @@ func WithOIDCConfig(
 	}
 }
 
-// WithTelemetryConfig configures telemetry settings
+// WithTelemetryConfig configures telemetry settings (legacy - custom attributes handled via middleware)
 func WithTelemetryConfig(
 	otelEndpoint string,
 	otelEnablePrometheusMetricsPath bool,
@@ -430,6 +444,7 @@ func WithIgnoreConfig(ignoreConfig *ignore.Config) RunConfigBuilderOption {
 // WithMiddlewareFromFlags creates middleware configurations directly from flag values
 func WithMiddlewareFromFlags(
 	oidcConfig *auth.TokenValidatorConfig,
+	tokenExchangeConfig *tokenexchange.Config,
 	toolsFilter []string,
 	toolsOverride map[string]ToolOverride,
 	telemetryConfig *telemetry.Config,
@@ -456,7 +471,7 @@ func WithMiddlewareFromFlags(
 		middlewareConfigs = addToolFilterMiddlewares(middlewareConfigs, toolsFilter, toolsOverride)
 
 		// Add core middlewares (always present)
-		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig)
+		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig, tokenExchangeConfig)
 
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
@@ -520,7 +535,9 @@ func addToolFilterMiddlewares(
 
 // addCoreMiddlewares adds core middlewares that are always present
 func addCoreMiddlewares(
-	middlewareConfigs []types.MiddlewareConfig, oidcConfig *auth.TokenValidatorConfig,
+	middlewareConfigs []types.MiddlewareConfig,
+	oidcConfig *auth.TokenValidatorConfig,
+	tokenExchangeConfig *tokenexchange.Config,
 ) []types.MiddlewareConfig {
 	// Authentication middleware (always present)
 	authParams := auth.MiddlewareParams{
@@ -528,6 +545,18 @@ func addCoreMiddlewares(
 	}
 	if authConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, authParams); err == nil {
 		middlewareConfigs = append(middlewareConfigs, *authConfig)
+	}
+
+	// Token Exchange middleware (conditionally present)
+	if tokenExchangeConfig != nil {
+		tokenExchangeParams := tokenexchange.MiddlewareParams{
+			TokenExchangeConfig: tokenExchangeConfig,
+		}
+		if tokenExchangeMwConfig, err := types.NewMiddlewareConfig(tokenexchange.MiddlewareType, tokenExchangeParams); err == nil {
+			middlewareConfigs = append(middlewareConfigs, *tokenExchangeMwConfig)
+		} else {
+			logger.Warnf("Failed to create token exchange middleware config: %v", err)
+		}
 	}
 
 	// MCP Parser middleware (always present)
@@ -754,6 +783,16 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	c.PermissionProfile, err = b.loadPermissionProfile(imageMetadata)
 	if err != nil {
 		return err
+	}
+
+	// Apply network mode to permission profile if specified
+	if b.networkMode != "" {
+		// Ensure Network permissions struct exists
+		if c.PermissionProfile.Network == nil {
+			c.PermissionProfile.Network = &permissions.NetworkPermissions{}
+		}
+		c.PermissionProfile.Network.Mode = b.networkMode
+		logger.Infof("Setting network mode to '%s' on permission profile", b.networkMode)
 	}
 
 	// Process volume mounts

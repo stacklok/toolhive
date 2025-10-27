@@ -99,7 +99,7 @@ operator:
     # -- Go memory limits for the operator container
     gomeglimit: 150MiB
     # -- Go garbage collection percentage for the operator container
-    gogc: 75 # 75% heap growth before GC (as Go default)
+    gogc: 75  # 75% heap growth before GC (as Go default)
 
   # -- RBAC configuration for the operator
   rbac:

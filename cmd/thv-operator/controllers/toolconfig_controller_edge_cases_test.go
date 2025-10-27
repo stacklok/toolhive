@@ -244,23 +244,6 @@ func (c *errorClient) List(ctx context.Context, list client.ObjectList, opts ...
 	return c.Client.List(ctx, list, opts...)
 }
 
-// errorGetClient is a fake client that simulates Get errors
-type errorGetClient struct {
-	client.Client
-	getError error
-}
-
-func (c *errorGetClient) Get(_ context.Context, key client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
-	if c.getError != nil {
-		return c.getError
-	}
-	// Return not found error
-	return apierrors.NewNotFound(schema.GroupResource{
-		Group:    "toolhive.stacklok.dev",
-		Resource: "toolconfigs",
-	}, key.Name)
-}
-
 func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 	t.Parallel()
 

@@ -346,6 +346,8 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 			t.Parallel()
 
 			scheme := runtime.NewScheme()
+			assert.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			assert.NoError(t, corev1.AddToScheme(scheme))
 			objects := []runtime.Object{tt.mcpServer}
 			if tt.externalAuth != nil {
 				objects = append(objects, tt.externalAuth)

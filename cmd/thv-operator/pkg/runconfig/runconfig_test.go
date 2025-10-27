@@ -1811,7 +1811,7 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
+			scheme := createRunConfigTestScheme()
 			objects := []runtime.Object{tt.mcpServer}
 			if tt.externalAuth != nil {
 				objects = append(objects, tt.externalAuth)

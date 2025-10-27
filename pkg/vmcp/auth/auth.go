@@ -35,21 +35,12 @@ type IncomingAuthenticator interface {
 // This is responsible for obtaining and injecting appropriate credentials
 // for each backend based on its authentication strategy.
 //
-// Supported strategies (extensible):
-//   - pass_through: Forward client credentials unchanged
-//   - token_exchange: RFC 8693 token exchange for backend-specific tokens
-//   - client_credentials: OAuth 2.0 client credentials flow
-//   - service_account: Static service account credentials
-//   - header_injection: Inject static headers
-//   - oauth_proxy: Use an OAuth proxy for token management
+// The specific authentication strategies and their behavior will be defined
+// during implementation based on the design decisions documented in the
+// Virtual MCP Server proposal.
 type OutgoingAuthenticator interface {
 	// AuthenticateRequest adds authentication to an outgoing backend request.
 	// The strategy and metadata are provided in the BackendTarget.
-	//
-	// For token exchange, this:
-	//   1. Checks the token cache
-	//   2. Performs exchange if needed
-	//   3. Injects the token into the request
 	AuthenticateRequest(ctx context.Context, req *http.Request, strategy string, metadata map[string]any) error
 
 	// GetStrategy returns the authentication strategy handler for a given strategy name.

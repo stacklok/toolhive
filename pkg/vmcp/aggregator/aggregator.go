@@ -101,8 +101,7 @@ type ResolvedTool struct {
 	BackendID string
 
 	// ConflictResolutionApplied indicates which strategy was used.
-	// Examples: "prefix", "priority", "manual", "none"
-	ConflictResolutionApplied string
+	ConflictResolutionApplied vmcp.ConflictResolutionStrategy
 }
 
 // AggregatedCapabilities is the final unified view of all backend capabilities.

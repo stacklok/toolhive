@@ -25,7 +25,6 @@ vars:
       fi
   KEYCLOAK_VERSION: '26.3.2'
 
-
 tasks:
   kind-setup:
     desc: Setup a local Kind cluster
@@ -342,3 +341,47 @@ tasks:
       - echo "Keycloak will be available at http://localhost:8080"
       - echo "Use 'task keycloak:get-admin-creds' to get login credentials"
       - kubectl port-forward service/keycloak-dev-service -n keycloak 8080:8080 --kubeconfig kconfig.yaml
+
+  build-operator-image-ubi:
+    desc: Build the operator image
+    vars:
+      COMMIT:
+        sh: git rev-parse --short HEAD || echo "unknown"
+      BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
+    cmds:
+      - >
+        eval "{{.CONTAINER_RUNTIME}} build --load
+        -t ghcr.io/stacklok/toolhive/operator:local-ubi
+        --build-arg CODEDIR=cmd/thv-operator
+        --build-arg VERSION=local-ubi
+        --build-arg COMMIT={{.COMMIT}}
+        --build-arg BUILD_DATE={{.BUILD_DATE}}
+        --label name=\"toolhive-operator\"
+        --label vendor=\"Stacklok\"
+        --label maintainer=\"Stacklok\"
+        --label org.opencontainers.image.source=\"https://github.com/stacklok/toolhive\"
+        --label org.opencontainers.image.title=\"toolhive-operator\"
+        --label org.opencontainers.image.vendor=\"Stacklok\"
+        -f containers/operator/Dockerfile ."
+
+  build-proxyrunner-image-ubi:
+    desc: Build the proxyrunner image
+    vars:
+      COMMIT:
+        sh: git rev-parse --short HEAD || echo "unknown"
+      BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
+    cmds:
+      - >
+        eval "{{.CONTAINER_RUNTIME}} build --load
+        -t ghcr.io/stacklok/toolhive/proxyrunner:local-ubi
+        --build-arg CODEDIR=cmd/thv-proxyrunner
+        --build-arg VERSION=local-ubi
+        --build-arg COMMIT={{.COMMIT}}
+        --build-arg BUILD_DATE={{.BUILD_DATE}}
+        --label name=\"toolhive-proxyrunner\"
+        --label vendor=\"Stacklok\"
+        --label maintainer=\"Stacklok\"
+        --label org.opencontainers.image.source=\"https://github.com/stacklok/toolhive\"
+        --label org.opencontainers.image.title=\"toolhive-proxyrunner\"
+        --label org.opencontainers.image.vendor=\"Stacklok\"
+        -f containers/operator/Dockerfile ."

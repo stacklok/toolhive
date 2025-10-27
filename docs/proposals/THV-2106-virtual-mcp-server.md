@@ -139,11 +139,18 @@ Virtual MCP operates with two distinct, independent authentication boundaries:
    - **Configuration**: `incomingAuth` (K8s) / `incoming_auth` (CLI)
    - **Implementation**: Uses existing ToolHive auth middleware (OIDC, local, anonymous)
 
-2. **Outgoing Authentication** (Virtual MCP → Backends)
-   - **Purpose**: Per-backend token exchange for accessing backend services
-   - **Token Audience**: Backend-specific (e.g., `aud=github-api`, `aud=jira-api`)
+2. **Outgoing Authentication** (Virtual MCP → Backend APIs)
+   - **Purpose**: Per-backend token exchange for accessing **backend services' APIs directly**
+   - **Token Audience**: Backend API-specific (e.g., `aud=github-api`, `aud=google-workspace-api`)
    - **Configuration**: `outgoingAuth` (K8s) / `outgoing_auth` (CLI)
    - **Implementation**: RFC 8693 token exchange (references THV-2063)
+
+**Important Design Decision**: The exchanged tokens are meant for the **backend APIs** (GitHub API, Jira API, Google Workspace API), not for authenticating Virtual MCP to the backend MCP servers. Backend MCP servers receive properly scoped tokens that they use directly to call upstream APIs. This means:
+
+- **Backend MCP servers focus on business logic**, not authentication
+- **Tokens have API-specific audiences** (e.g., `aud=github-api` for GitHub's REST API)
+- **MCP servers pass tokens directly** to upstream API calls in the `Authorization` header
+- **Security relies on network isolation** and properly scoped API tokens
 
 ```mermaid
 graph TB
@@ -153,21 +160,28 @@ graph TB
         VMCPAuth[Virtual MCP<br/>Validates: aud=vmcp<br/>Enforces authz policies]
     end
 
-    subgraph "Auth Boundary #2: Virtual MCP → Backends"
+    subgraph "Auth Boundary #2: Virtual MCP → Backend APIs"
         TokenEx1[Token Exchange<br/>subject=vmcp-token<br/>audience=github-api]
-        TokenEx2[Token Exchange<br/>subject=vmcp-token<br/>audience=jira-api]
+        TokenEx2[Token Exchange<br/>subject=vmcp-token<br/>audience=google-workspace-api]
     end
 
-    subgraph "Backend Validation"
-        GitHub[GitHub MCP<br/>Validates: aud=github-api]
-        Jira[Jira MCP<br/>Validates: aud=jira-api]
+    subgraph "Backend MCP Servers (Focus on Business Logic)"
+        GitHub[GitHub MCP<br/>Receives: token with aud=github-api<br/>Uses token to call GitHub API]
+        GDocs[Google Docs MCP<br/>Receives: token with aud=google-workspace-api<br/>Uses token to call Google Workspace API]
+    end
+
+    subgraph "External APIs (Validate Tokens)"
+        GitHubAPI[GitHub API<br/>Validates: aud=github-api]
+        GoogleAPI[Google Workspace API<br/>Validates: aud=google-workspace-api]
     end
 
     Client --> VMCPAuth
     VMCPAuth --> TokenEx1
     VMCPAuth --> TokenEx2
-    TokenEx1 --> GitHub
-    TokenEx2 --> Jira
+    TokenEx1 -->|Token: aud=github-api| GitHub
+    TokenEx2 -->|Token: aud=google-workspace-api| GDocs
+    GitHub -->|API call with token| GitHubAPI
+    GDocs -->|API call with token| GoogleAPI
 ```
 
 ### Zero-Trust Security Model
@@ -176,19 +190,21 @@ Virtual MCP adheres to a zero-trust security architecture where compromising one
 
 **Security Properties:**
 
-1. **Backend Authentication Independence**: Each backend MCP server MUST enforce its own authentication and authorization, regardless of access method (direct or via Virtual MCP). This is a deployment requirement, not optional.
+1. **API-Level Authentication**: Backend APIs (GitHub API, Jira API, Google Workspace API) validate tokens independently. Each exchanged token has a backend API-specific audience (e.g., `aud=github-api`), ensuring the token can only be used with that specific API.
 
-2. **Token Exchange Per Backend**: Virtual MCP performs RFC 8693 token exchange independently for each backend, requesting tokens with backend-specific audiences. Each exchanged token is scoped only to its target backend.
+2. **Token Exchange Per Backend**: Virtual MCP performs RFC 8693 token exchange independently for each backend, requesting tokens with backend API-specific audiences. Each exchanged token is scoped only to its target API.
 
 3. **Defense in Depth**: Even if Virtual MCP is compromised:
    - Attacker must possess a valid user token (with `aud=vmcp`) to perform exchanges
-   - Backend servers independently validate audience, expiry, and signatures
-   - Each backend receives only tokens scoped for its specific audience
-   - Audit logs maintained at both Virtual MCP and backend levels
+   - Backend APIs independently validate audience, expiry, and signatures
+   - Each backend receives only tokens scoped for its specific API audience
+   - Audit logs maintained at both Virtual MCP and backend API levels
 
 4. **Credential Isolation**: Virtual MCP does not store long-lived credentials for backend APIs. It only stores OAuth client credentials for token exchange, which require a valid user token to be useful.
 
 5. **Network Isolation** (Recommended): Backend MCP servers SHOULD NOT be directly accessible outside their security boundary (e.g., not exposed via public LoadBalancer). Access SHOULD be routed through Virtual MCP or authenticated ingress.
+
+6. **MCP Server Simplicity**: Backend MCP servers focus on business logic and do not need to implement authentication/authorization. They receive pre-validated, properly scoped tokens from Virtual MCP that are ready to use with upstream APIs.
 
 **Security Boundaries Diagram:**
 
@@ -223,7 +239,8 @@ sequenceDiagram
     participant TokenMgr as Backend Token Manager
     participant Cache as Token Cache
     participant IDP as Identity Provider
-    participant Backend as Backend MCP
+    participant BackendMCP as Backend MCP Server
+    participant API as External API (e.g., GitHub)
 
     Client->>vMCP: Request + Bearer token (aud=vmcp)
     vMCP->>AuthMW: Validate incoming token
@@ -234,17 +251,54 @@ sequenceDiagram
     alt Cache hit (token valid)
         Cache-->>TokenMgr: Return cached token
     else Cache miss or expired
-        TokenMgr->>IDP: Token exchange request<br/>grant_type=token-exchange<br/>subject_token=vmcp-token<br/>audience=backend-api<br/>client_id=exchange-client
-        IDP->>IDP: Validate subject token<br/>Verify client permissions<br/>Check audience allowed
-        IDP-->>TokenMgr: Exchanged token (aud=backend-api)
+        TokenMgr->>IDP: Token exchange request<br/>subject_token=vmcp-token<br/>audience=github-api<br/>scopes=repo,read:org
+        IDP->>IDP: Validate subject token<br/>Issue token for GitHub API
+        IDP-->>TokenMgr: Exchanged token (aud=github-api)
         TokenMgr->>Cache: Store token with TTL
     end
 
-    TokenMgr->>Backend: Forward request + Bearer token (aud=backend-api)
-    Backend->>Backend: Validate backend token<br/>(signature, expiry, audience)
-    Backend-->>vMCP: Response
+    TokenMgr->>BackendMCP: Forward request + Bearer token (aud=github-api)
+    Note over BackendMCP: Backend MCP does NOT validate token<br/>Uses it directly for API calls
+    BackendMCP->>API: Call GitHub API with token (aud=github-api)
+    API->>API: Validate token (signature, expiry, audience)
+    API-->>BackendMCP: API Response
+    BackendMCP-->>vMCP: MCP Response
     vMCP-->>Client: Response
 ```
+
+### Example: Google Docs MCP Server Authentication
+
+To clarify the authentication model, consider a Google Docs MCP server example:
+
+**Setup:**
+- Client authenticates to Virtual MCP with token (`aud=vmcp`)
+- Virtual MCP configured with `outgoing_auth` for Google Docs backend
+- Google Docs MCP server needs to call Google Workspace APIs
+
+**Authentication Flow:**
+
+1. **Client → Virtual MCP**: Client sends request with `Authorization: Bearer <token_vmcp>`
+2. **Virtual MCP → IDP**: Exchanges token for Google Workspace API token:
+   ```
+   Token Exchange Request:
+   - subject_token: <token_vmcp>
+   - audience: "https://www.googleapis.com/auth/documents"
+   - scopes: ["https://www.googleapis.com/auth/documents"]
+   ```
+3. **IDP → Virtual MCP**: Returns token with `aud=https://www.googleapis.com/auth/documents`
+4. **Virtual MCP → Google Docs MCP**: Forwards request with `Authorization: Bearer <token_google_api>`
+5. **Google Docs MCP → Google API**: Uses token directly to call Google Docs API
+   ```
+   GET https://docs.googleapis.com/v1/documents/{documentId}
+   Authorization: Bearer <token_google_api>
+   ```
+6. **Google API**: Validates token (signature, audience, scopes) and returns document data
+
+**Key Points:**
+- The token has `aud=https://www.googleapis.com/auth/documents` (for Google's API)
+- Google Docs MCP server does NOT validate the token itself
+- Security relies on network isolation (Google Docs MCP not publicly accessible)
+- All audit logs at Google API level show the individual user identity
 
 ---
 
@@ -298,8 +352,8 @@ outgoing_auth:
         token_url: "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token"
         client_id: "vmcp-github-exchange"
         client_secret_env: "GITHUB_EXCHANGE_SECRET"
-        audience: "github-api"
-        scopes: ["repo", "read:org"]
+        audience: "github-api"  # ← Token audience for GitHub API, not github-mcp
+        scopes: ["repo", "read:org"]  # ← GitHub API scopes
         subject_token_type: "access_token"  # access_token | id_token
 
     jira:

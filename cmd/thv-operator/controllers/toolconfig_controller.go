@@ -227,4 +227,3 @@ func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mcpv1alpha1.MCPServer{}, toolConfigHandler).
 		Complete(r)
 }
-

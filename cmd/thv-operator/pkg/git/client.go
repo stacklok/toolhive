@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"fmt"
+	"runtime"
 
 	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-billy/v5/util"
@@ -181,7 +182,7 @@ func (*DefaultGitClient) Cleanup(ctx context.Context, repoInfo *RepositoryInfo) 
 	repoInfo.Repository = nil
 
 	// // 5. Force GC to reclaim memory
-	// runtime.GC()
+	runtime.GC()
 	return nil
 }
 

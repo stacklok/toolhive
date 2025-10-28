@@ -531,3 +531,14 @@ func addAuditConfigOptions(
 	// Add audit config to options with default config (no custom config path for now)
 	*options = append(*options, runner.WithAuditEnabled(auditConfig.Enabled, ""))
 }
+
+// hasVaultAgentInjection checks if Vault Agent Injection is enabled in the pod annotations
+func hasVaultAgentInjection(annotations map[string]string) bool {
+	if annotations == nil {
+		return false
+	}
+
+	// Check if vault.hashicorp.com/agent-inject annotation is present and set to "true"
+	value, exists := annotations["vault.hashicorp.com/agent-inject"]
+	return exists && value == "true"
+}

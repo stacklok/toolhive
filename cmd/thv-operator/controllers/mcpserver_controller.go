@@ -10,7 +10,6 @@ import (
 	"maps"
 	"os"
 	"reflect"
-	"slices"
 	"strings"
 	"time"
 
@@ -1382,55 +1381,9 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			return true
 		}
 
-		// Check if the port has changed
-		portArg := fmt.Sprintf("--proxy-port=%d", mcpServer.GetProxyPort())
-		found = false
-		for _, arg := range container.Args {
-			if arg == portArg {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return true
-		}
-
-		// Check if the transport has changed
-		transportArg := fmt.Sprintf("--transport=%s", mcpServer.Spec.Transport)
-		found = false
-		for _, arg := range container.Args {
-			if arg == transportArg {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return true
-		}
-
-		// Check if the tools filter has changed (order-independent)
-		if !equalToolsFilter(mcpServer.Spec.ToolsFilter, container.Args) {
-			return true
-		}
-
 		// Check if the container port has changed
 		if len(container.Ports) > 0 && container.Ports[0].ContainerPort != mcpServer.GetProxyPort() {
 			return true
-		}
-
-		// Check if the environment variables have changed (now passed as --env flags)
-		for _, envVar := range mcpServer.Spec.Env {
-			envArg := fmt.Sprintf("--env=%s=%s", envVar.Name, envVar.Value)
-			found := false
-			for _, arg := range container.Args {
-				if arg == envArg {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return true
-			}
 		}
 
 		// Check if the proxy environment variables have changed
@@ -1532,36 +1485,6 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 		// Check if the resource requirements have changed
 		if !reflect.DeepEqual(container.Resources, resourceRequirementsForMCPServer(mcpServer)) {
-			return true
-		}
-
-		// Check if the mcpPort has changed
-		if mcpServer.Spec.McpPort != 0 {
-			mcpPortArg := fmt.Sprintf("--target-port=%d", mcpServer.Spec.McpPort)
-			found := false
-			for _, arg := range container.Args {
-				if arg == mcpPortArg {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return true
-			}
-		} else {
-			for _, arg := range container.Args {
-				if strings.HasPrefix(arg, "--target-port=") {
-					return true
-				}
-			}
-		}
-
-		// Check if OpenTelemetry arguments have changed
-		var otelConfig *mcpv1alpha1.OpenTelemetryConfig
-		if mcpServer.Spec.Telemetry != nil {
-			otelConfig = mcpServer.Spec.Telemetry.OpenTelemetry
-		}
-		if !equalOpenTelemetryArgs(otelConfig, container.Args) {
 			return true
 		}
 	}
@@ -1705,17 +1628,6 @@ func labelsForInlineAuthzConfig(name string) map[string]string {
 	return labels
 }
 
-// hasVaultAgentInjection checks if Vault Agent Injection is enabled in the pod annotations
-func hasVaultAgentInjection(annotations map[string]string) bool {
-	if annotations == nil {
-		return false
-	}
-
-	// Check if vault.hashicorp.com/agent-inject annotation is present and set to "true"
-	value, exists := annotations["vault.hashicorp.com/agent-inject"]
-	return exists && value == "true"
-}
-
 // getToolhiveRunnerImage returns the image to use for the toolhive runner container
 func getToolhiveRunnerImage() string {
 	// Get the image from the environment variable or use a default
@@ -1725,103 +1637,6 @@ func getToolhiveRunnerImage() string {
 		image = "ghcr.io/stacklok/toolhive/proxyrunner:latest"
 	}
 	return image
-}
-
-// generateAuthzArgs generates authorization command-line arguments based on the configuration type
-func (*MCPServerReconciler) generateAuthzArgs(m *mcpv1alpha1.MCPServer) []string {
-	var args []string
-
-	if m.Spec.AuthzConfig == nil {
-		return args
-	}
-
-	// Validate that the configuration is properly set based on type
-	switch m.Spec.AuthzConfig.Type {
-	case mcpv1alpha1.AuthzConfigTypeConfigMap:
-		if m.Spec.AuthzConfig.ConfigMap == nil {
-			return args
-		}
-	case mcpv1alpha1.AuthzConfigTypeInline:
-		if m.Spec.AuthzConfig.Inline == nil {
-			return args
-		}
-	default:
-		return args
-	}
-
-	// Both ConfigMap and inline configurations use the same mounted path
-	authzConfigPath := fmt.Sprintf("/etc/toolhive/authz/%s", ctrlutil.DefaultAuthzKey)
-	args = append(args, fmt.Sprintf("--authz-config=%s", authzConfigPath))
-
-	return args
-}
-
-// generatePrometheusArgs generates Prometheus command-line arguments based on the configuration
-func (*MCPServerReconciler) generatePrometheusArgs(m *mcpv1alpha1.MCPServer) []string {
-	var args []string
-
-	if m.Spec.Telemetry == nil || m.Spec.Telemetry.Prometheus == nil {
-		return args
-	}
-
-	// Add Prometheus metrics path flag if Prometheus is enabled in telemetry config
-	if m.Spec.Telemetry.Prometheus.Enabled {
-		args = append(args, "--enable-prometheus-metrics-path")
-	}
-
-	return args
-}
-
-// generateOpenTelemetryArgs generates OpenTelemetry command-line arguments based on the configuration
-func (*MCPServerReconciler) generateOpenTelemetryArgs(m *mcpv1alpha1.MCPServer) []string {
-	var args []string
-
-	if m.Spec.Telemetry == nil || m.Spec.Telemetry.OpenTelemetry == nil {
-		return args
-	}
-
-	otel := m.Spec.Telemetry.OpenTelemetry
-
-	// Add endpoint
-	if otel.Endpoint != "" {
-		args = append(args, fmt.Sprintf("--otel-endpoint=%s", otel.Endpoint))
-	}
-
-	// Add service name
-	if otel.ServiceName != "" {
-		args = append(args, fmt.Sprintf("--otel-service-name=%s", otel.ServiceName))
-	}
-
-	// Add headers (multiple --otel-headers flags)
-	for _, header := range otel.Headers {
-		args = append(args, fmt.Sprintf("--otel-headers=%s", header))
-	}
-
-	// Add insecure flag
-	if otel.Insecure {
-		args = append(args, "--otel-insecure")
-	}
-
-	// Handle tracing configuration
-	if otel.Tracing != nil {
-		if otel.Tracing.Enabled {
-			args = append(args, "--otel-tracing-enabled=true")
-			args = append(args, fmt.Sprintf("--otel-tracing-sampling-rate=%s", otel.Tracing.SamplingRate))
-		} else {
-			args = append(args, "--otel-tracing-enabled=false")
-		}
-	}
-
-	// Handle metrics configuration
-	if otel.Metrics != nil {
-		if otel.Metrics.Enabled {
-			args = append(args, "--otel-metrics-enabled=true")
-		} else {
-			args = append(args, "--otel-metrics-enabled=false")
-		}
-	}
-
-	return args
 }
 
 // handleExternalAuthConfig validates and tracks the hash of the referenced MCPExternalAuthConfig.
@@ -1923,120 +1738,4 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
 		Complete(r)
-}
-
-// equalToolsFilter returns true when the desired toolsFilter slice and the
-// currently-applied `--tools=` argument in the container args represent the
-// same unordered set of tools.
-func equalToolsFilter(spec []string, args []string) bool {
-	// Build canonical form for spec
-	specCanon := canonicalToolsList(spec)
-
-	// Extract current tools argument (if any) from args
-	var currentArg string
-	for _, a := range args {
-		if strings.HasPrefix(a, "--tools=") {
-			currentArg = strings.TrimPrefix(a, "--tools=")
-			break
-		}
-	}
-
-	if specCanon == "" && currentArg == "" {
-		return true // both unset/empty
-	}
-
-	// Canonicalise current list
-	currentCanon := canonicalToolsList(strings.Split(strings.TrimSpace(currentArg), ","))
-	return specCanon == currentCanon
-}
-
-// canonicalToolsList sorts a slice and joins it with commas; empty slice yields "".
-func canonicalToolsList(list []string) string {
-	if len(list) == 0 || (len(list) == 1 && list[0] == "") {
-		return ""
-	}
-	cp := slices.Clone(list)
-	slices.Sort(cp)
-	return strings.Join(cp, ",")
-}
-
-// equalOpenTelemetryArgs checks if OpenTelemetry command-line arguments have changed
-func equalOpenTelemetryArgs(spec *mcpv1alpha1.OpenTelemetryConfig, args []string) bool {
-	if spec == nil {
-		return !hasOtelArgs(args)
-	}
-
-	return equalServiceName(spec, args) &&
-		equalHeaders(spec, args) &&
-		equalInsecureFlag(spec, args)
-}
-
-func hasOtelArgs(args []string) bool {
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "--otel-") {
-			return true
-		}
-	}
-	return false
-}
-
-func equalServiceName(spec *mcpv1alpha1.OpenTelemetryConfig, args []string) bool {
-	expectedArg := ""
-	if spec.ServiceName != "" {
-		expectedArg = fmt.Sprintf("--otel-service-name=%s", spec.ServiceName)
-	}
-
-	foundArg := ""
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "--otel-service-name=") {
-			foundArg = arg
-			break
-		}
-	}
-
-	return expectedArg == foundArg
-}
-
-func equalHeaders(spec *mcpv1alpha1.OpenTelemetryConfig, args []string) bool {
-	expectedCount := len(spec.Headers)
-	currentCount := countHeaderArgs(args)
-
-	if expectedCount != currentCount {
-		return false
-	}
-
-	return allHeadersPresent(spec.Headers, args)
-}
-
-func countHeaderArgs(args []string) int {
-	count := 0
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "--otel-headers=") {
-			count++
-		}
-	}
-	return count
-}
-
-func allHeadersPresent(expectedHeaders []string, args []string) bool {
-	for _, expectedHeader := range expectedHeaders {
-		expectedArg := fmt.Sprintf("--otel-headers=%s", expectedHeader)
-		if !contains(args, expectedArg) {
-			return false
-		}
-	}
-	return true
-}
-
-func equalInsecureFlag(spec *mcpv1alpha1.OpenTelemetryConfig, args []string) bool {
-	return spec.Insecure == contains(args, "--otel-insecure")
-}
-
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }

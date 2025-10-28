@@ -54,7 +54,7 @@ The controller currently handles two distinct concerns:
 1. Deployment management: Creates and maintains Registry API server Deployments and Services
 1. Data synchronization: Fetches, filters, and stores registry data in `ConfigMap`s
 
-After deployment, the controller does not communicate with the Registry API server—it only manages the `ConfigMap` containing registry data.
+After deploying the Registry API server, the controller does not communicate with it. Instead, the controller directly fetches registry data from the configured source (Git, ConfigMap, or remote API) and stores it in a `ConfigMap`. The deployed Registry API server reads from this same `ConfigMap` to serve requests from external clients.
 
 ### Status Reporting
 The MCPRegistry status tracks deployment, synchronization and storage state information.
@@ -128,7 +128,7 @@ conditions:
 
 **Options:**
 
-**Option 1 - HTTP Polling (Recommended):**
+**Option 1 - HTTP Polling:**
 - Registry API exposes `GET /registry/status` returning sync history, stored in the configured storage path
 - Controller polls every 60 seconds and updates `syncStatus`
 - Pros: Simple, no new CRDs, works for CLI and Kubernetes
@@ -146,7 +146,14 @@ conditions:
 - Pros: Simplest implementation
 - Cons: Breaking change, loses kubectl visibility
 
-**Recommendation:** Option 1 provides best balance of simplicity and functionality.
+**Option 4 - Hybrid polling (Recommended):**
+- Registry API exposes `GET /registry/status` returning sync history, stored in the configured storage path
+- Controller polls every 60 seconds and creates an instance of the new `SyncCompletionEvent` CRD on sync completion
+- Controller watches events and updates `MCPRegistry.status.syncStatus`
+- Pros: Anticipate changes for the final solution (option 2)
+- Cons: Adds CRD complexity, 60-second status latency
+
+**Recommendation:** Option 4 provides best balance of simplicity and functionality.
 
 **Status endpoint response:**
 ```json

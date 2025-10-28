@@ -25,6 +25,18 @@ func TestAddTelemetryConfigOptions(t *testing.T) {
 		expected  func(t *testing.T, config *runner.RunConfig)
 	}{
 		{
+			name: "with empty telemetry configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "disabled-telemetry-server",
+					Namespace: "test-ns",
+				},
+			},
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Nil(t, config.TelemetryConfig)
+			},
+		},
+		{
 			name: "with telemetry configuration",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{

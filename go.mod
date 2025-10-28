@@ -21,7 +21,7 @@ require (
 	github.com/lestrrat-go/jwx/v3 v3.0.12
 	github.com/mark3labs/mcp-go v0.42.0
 	github.com/olekukonko/tablewriter v1.1.0
-	github.com/onsi/ginkgo/v2 v2.27.1
+	github.com/onsi/ginkgo/v2 v2.27.2
 	github.com/onsi/gomega v1.38.2
 	github.com/ory/fosite v0.49.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
@@ -48,6 +48,7 @@ require (
 	golang.org/x/oauth2 v0.32.0
 	golang.org/x/sync v0.17.0
 	golang.org/x/term v0.36.0
+	golang.org/x/time v0.12.0
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.34.1
 	k8s.io/apimachinery v0.34.1
@@ -257,7 +258,6 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.38.0 // indirect
 	go.opentelemetry.io/otel/exporters/zipkin v1.21.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.7.1 // indirect
-	go.uber.org/automaxprocs v1.6.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
@@ -265,7 +265,6 @@ require (
 	golang.org/x/exp/event v0.0.0-20251002181428-27f1f14c8bb9 // indirect
 	golang.org/x/net v0.45.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
-	golang.org/x/time v0.12.0 // indirect
 	golang.org/x/tools v0.37.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect

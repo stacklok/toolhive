@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // getServerLogsArgs holds the arguments for getting server logs
@@ -14,11 +14,11 @@ type getServerLogsArgs struct {
 }
 
 // GetServerLogs gets logs from a running MCP server
-func (h *Handler) GetServerLogs(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (h *Handler) GetServerLogs(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Parse arguments using BindArguments
 	args := &getServerLogsArgs{}
-	if err := request.BindArguments(args); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to parse arguments: %v", err)), nil
+	if err := BindArguments(request, args); err != nil {
+		return NewToolResultError(fmt.Sprintf("Failed to parse arguments: %v", err)), nil
 	}
 
 	// Get logs
@@ -26,10 +26,10 @@ func (h *Handler) GetServerLogs(ctx context.Context, request mcp.CallToolRequest
 	if err != nil {
 		// Check if it's a not found error
 		if strings.Contains(err.Error(), "not found") {
-			return mcp.NewToolResultError(fmt.Sprintf("Server '%s' not found", args.Name)), nil
+			return NewToolResultError(fmt.Sprintf("Server '%s' not found", args.Name)), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to get server logs: %v", err)), nil
+		return NewToolResultError(fmt.Sprintf("Failed to get server logs: %v", err)), nil
 	}
 
-	return mcp.NewToolResultText(logs), nil
+	return NewToolResultText(logs), nil
 }

@@ -2,9 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/stacklok/toolhive/pkg/registry"
@@ -15,33 +16,33 @@ func TestParseRunServerArgs(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name     string
-		request  mcp.CallToolRequest
+		request  *mcp.CallToolRequest
 		expected *runServerArgs
 		wantErr  bool
 	}{
 		{
 			name: "valid args with all fields",
-			request: mcp.CallToolRequest{
-				Params: mcp.CallToolParams{
-					Arguments: map[string]interface{}{
-						"server": "test-server",
-						"name":   "custom-name",
-						"host":   "192.168.1.1",
-						"env": map[string]interface{}{
-							"KEY1": "value1",
-							"KEY2": "value2",
-						},
-						"secrets": []interface{}{
-							map[string]interface{}{
-								"name":   "github-token",
-								"target": "GITHUB_TOKEN",
-							},
-							map[string]interface{}{
-								"name":   "api-key",
-								"target": "API_KEY",
-							},
-						},
+			request: &mcp.CallToolRequest{
+				Params: &mcp.CallToolParamsRaw{
+					Arguments: json.RawMessage(`{
+					"server": "test-server",
+					"name":   "custom-name",
+					"host":   "192.168.1.1",
+					"env": {
+						"KEY1": "value1",
+						"KEY2": "value2"
 					},
+					"secrets": [
+						{
+							"name":   "github-token",
+							"target": "GITHUB_TOKEN"
+						},
+						{
+							"name":   "api-key",
+							"target": "API_KEY"
+						}
+					]
+					}`),
 				},
 			},
 			expected: &runServerArgs{
@@ -61,11 +62,11 @@ func TestParseRunServerArgs(t *testing.T) {
 		},
 		{
 			name: "minimal args - server only",
-			request: mcp.CallToolRequest{
-				Params: mcp.CallToolParams{
-					Arguments: map[string]interface{}{
-						"server": "test-server",
-					},
+			request: &mcp.CallToolRequest{
+				Params: &mcp.CallToolParamsRaw{
+					Arguments: json.RawMessage(`{
+						"server": "test-server"
+					}`),
 				},
 			},
 			expected: &runServerArgs{
@@ -79,12 +80,12 @@ func TestParseRunServerArgs(t *testing.T) {
 		},
 		{
 			name: "empty name defaults to server name",
-			request: mcp.CallToolRequest{
-				Params: mcp.CallToolParams{
-					Arguments: map[string]interface{}{
-						"server": "my-server",
-						"name":   "",
-					},
+			request: &mcp.CallToolRequest{
+				Params: &mcp.CallToolParamsRaw{
+					Arguments: json.RawMessage(`{
+					"server": "my-server",
+					"name":   ""
+				}`),
 				},
 			},
 			expected: &runServerArgs{
@@ -98,12 +99,12 @@ func TestParseRunServerArgs(t *testing.T) {
 		},
 		{
 			name: "empty host defaults to 127.0.0.1",
-			request: mcp.CallToolRequest{
-				Params: mcp.CallToolParams{
-					Arguments: map[string]interface{}{
-						"server": "test-server",
-						"host":   "",
-					},
+			request: &mcp.CallToolRequest{
+				Params: &mcp.CallToolParamsRaw{
+					Arguments: json.RawMessage(`{
+					"server": "test-server",
+					"host":   ""
+				}`),
 				},
 			},
 			expected: &runServerArgs{

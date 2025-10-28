@@ -38,4 +38,8 @@ var (
 	// ErrInvalidInput indicates invalid input parameters.
 	// Wrapping errors should specify which parameter is invalid and why.
 	ErrInvalidInput = errors.New("invalid input")
+
+	// ErrUnsupportedTransport indicates an unsupported MCP transport type.
+	// Wrapping errors should specify which transport type is not supported.
+	ErrUnsupportedTransport = errors.New("unsupported transport type")
 )

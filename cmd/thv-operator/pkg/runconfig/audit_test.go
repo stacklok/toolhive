@@ -23,6 +23,19 @@ func TestAddAuditConfigOptions(t *testing.T) {
 		expected  func(t *testing.T, config *runner.RunConfig)
 	}{
 		{
+			name: "with empty audit configuration",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "empty-audit-server",
+					Namespace: "test-ns",
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Nil(t, config.AuditConfig)
+			},
+		},
+		{
 			name: "with disabled audit configuration",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{

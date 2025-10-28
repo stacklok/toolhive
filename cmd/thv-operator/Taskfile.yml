@@ -25,6 +25,7 @@ vars:
       fi
   KEYCLOAK_VERSION: '26.3.2'
 
+
 tasks:
   kind-setup:
     desc: Setup a local Kind cluster
@@ -348,12 +349,14 @@ tasks:
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
+      SHA:  
+        sh: git rev-parse HEAD || echo "unknown"
     cmds:
       - >
         eval "{{.CONTAINER_RUNTIME}} build --load
-        -t ghcr.io/stacklok/toolhive/operator:local-ubi
+        -t ghcr.io/stacklok/toolhive/operator:{{.SHA}}-ubi
         --build-arg CODEDIR=cmd/thv-operator
-        --build-arg VERSION=local-ubi
+        --build-arg VERSION={{.SHA}}-ubi
         --build-arg COMMIT={{.COMMIT}}
         --build-arg BUILD_DATE={{.BUILD_DATE}}
         --label name=\"toolhive-operator\"
@@ -370,12 +373,14 @@ tasks:
       COMMIT:
         sh: git rev-parse --short HEAD || echo "unknown"
       BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
+      SHA:  
+        sh: git rev-parse HEAD || echo "unknown"
     cmds:
       - >
         eval "{{.CONTAINER_RUNTIME}} build --load
-        -t ghcr.io/stacklok/toolhive/proxyrunner:local-ubi
+        -t ghcr.io/stacklok/toolhive/proxyrunner:{{.SHA}}-ubi
         --build-arg CODEDIR=cmd/thv-proxyrunner
-        --build-arg VERSION=local-ubi
+        --build-arg VERSION={{.SHA}}-ubi
         --build-arg COMMIT={{.COMMIT}}
         --build-arg BUILD_DATE={{.BUILD_DATE}}
         --label name=\"toolhive-proxyrunner\"

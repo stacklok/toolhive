@@ -29,7 +29,7 @@ RUN CGO_ENABLED=0 LDFLAGS="-s -w \
 -X github.com/stacklok/toolhive/pkg/versions.BuildDate=${BUILD_DATE} \
 -X github.com/stacklok/toolhive/pkg/versions.BuildType=release" \
 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
-go build -o main ./${CODEDIR}/main.go
+go build -ldflags "${LDFLAGS}" -o main ./${CODEDIR}/main.go
 
 # Use micro base image to package the binary
 FROM registry.access.redhat.com/ubi10/ubi-micro:10.0

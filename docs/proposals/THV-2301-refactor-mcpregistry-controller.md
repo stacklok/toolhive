@@ -179,9 +179,9 @@ conditions:
 
 ### Manual Sync
 
-- Registry API exposes `POST /registry/sync` endpoint
+- Registry API exposes `PUT /registry/sync` endpoint
 - Controller calls endpoint when `toolhive.stacklok.dev/sync-trigger` annotation changes
-- Endpoint returns 202 (accepted) or 409 (sync in progress)
+- Endpoint returns 201 (created) or 409 (sync in progress)
 - Sync result recorded in history
 
 ### Sync Failure Handling

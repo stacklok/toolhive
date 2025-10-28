@@ -249,8 +249,11 @@ func TestDefaultAggregator_ResolveConflicts(t *testing.T) {
 		assert.Contains(t, resolved.Tools, "tool1")
 		assert.Contains(t, resolved.Tools, "tool2")
 		assert.Contains(t, resolved.Tools, "shared_tool")
-		// Shared tool should have one backend (first encountered)
-		assert.Equal(t, "backend1", resolved.Tools["shared_tool"].BackendID)
+		// Shared tool should have one backend (whichever was encountered first in map iteration)
+		// Map iteration order is non-deterministic, so accept either backend
+		sharedToolBackend := resolved.Tools["shared_tool"].BackendID
+		assert.True(t, sharedToolBackend == "backend1" || sharedToolBackend == "backend2",
+			"shared_tool should belong to either backend1 or backend2, got: %s", sharedToolBackend)
 	})
 
 	t.Run("no conflicts", func(t *testing.T) {

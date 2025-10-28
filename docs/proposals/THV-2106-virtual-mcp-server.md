@@ -123,6 +123,8 @@ Elicitation steps use JSON Schema to define the structure of requested data (lim
 
 Subsequent steps can reference elicitation results through template expansion and use the `condition` field to execute conditionally based on user responses. The `on_decline` and `on_cancel` handlers control workflow behavior for non-acceptance scenarios.
 
+Eliciation steps will have a default timeout (to be determined) and can be configured with a timeout value. When a timeout is reached, it will be considered a **cancel** response.
+
 ---
 
 ## Authentication Architecture

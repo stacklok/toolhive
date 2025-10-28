@@ -12,9 +12,7 @@ COPY go.sum go.sum
 # and so that source changes don't invalidate our downloaded layer
 RUN go mod download
 
-ARG TARGETOS \ 
-TARGETARCH \
-CODEDIR \
+ARG CODEDIR \
 VERSION \
 COMMIT \
 BUILD_DATE
@@ -28,11 +26,10 @@ RUN CGO_ENABLED=0 LDFLAGS="-s -w \
 -X github.com/stacklok/toolhive/pkg/versions.Commit=${COMMIT} \
 -X github.com/stacklok/toolhive/pkg/versions.BuildDate=${BUILD_DATE} \
 -X github.com/stacklok/toolhive/pkg/versions.BuildType=release" \
-GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
-go build -ldflags "${LDFLAGS}" -o main ./${CODEDIR}/main.go
+GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o main ./${CODEDIR}/main.go
 
 # Use micro base image to package the binary
-FROM registry.access.redhat.com/ubi10/ubi-micro:10.0
+FROM  --platform=linux/amd64 registry.access.redhat.com/ubi10/ubi-micro:10.0
 
 COPY --from=builder /workspace/main /
 COPY LICENSE /licenses/LICENSE

@@ -965,22 +965,20 @@ This ensures proper token isolation per (user, backend) pair while maintaining p
 
 **Phase 1 (MVP)**: Basic aggregation
 - Group-based workload discovery
-- Tool aggregation with filter and override support
 - Simple request routing
+- Per-backend authentication strategies
 - Pass-through authentication
+- Token exchange support
 
 **Phase 2**: Advanced features
 - Composite tool execution
 - Elicitation support in composite tools
-- Per-backend authentication strategies
-- Token exchange support
-- Failover and load balancing
 
 **Phase 3**: Enterprise features
-- Dynamic configuration updates
-- Multi-group support
+- Tool aggregation with filter and override support
 - Advanced routing strategies
 - Comprehensive observability
+- Failover and load balancing
 
 ## Benefits
 

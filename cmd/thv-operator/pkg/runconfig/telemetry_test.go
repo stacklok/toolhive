@@ -32,6 +32,7 @@ func TestAddTelemetryConfigOptions(t *testing.T) {
 					Namespace: "test-ns",
 				},
 			},
+			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Nil(t, config.TelemetryConfig)
 			},

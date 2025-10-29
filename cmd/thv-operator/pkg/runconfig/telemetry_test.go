@@ -211,3 +211,32 @@ func TestAddTelemetryConfigOptions(t *testing.T) {
 		})
 	}
 }
+
+// TestAddTelemetryConfigOptions_NilOptions tests that the function handles nil options gracefully
+func TestAddTelemetryConfigOptions_NilOptions(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	telemetryConfig := &mcpv1alpha1.TelemetryConfig{
+		OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
+			Enabled:     true,
+			Endpoint:    "otel-collector:4317",
+			ServiceName: "test-service",
+			Tracing: &mcpv1alpha1.OpenTelemetryTracingConfig{
+				Enabled:      true,
+				SamplingRate: "0.1",
+			},
+			Metrics: &mcpv1alpha1.OpenTelemetryMetricsConfig{
+				Enabled: true,
+			},
+		},
+		Prometheus: &mcpv1alpha1.PrometheusConfig{
+			Enabled: true,
+		},
+	}
+
+	// Test with nil options pointer - should not panic
+	assert.NotPanics(t, func() {
+		AddTelemetryConfigOptions(ctx, nil, telemetryConfig, "test-server")
+	}, "AddTelemetryConfigOptions should not panic with nil options")
+}

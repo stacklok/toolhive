@@ -487,8 +487,16 @@ func (l *YAMLLoader) transformCompositeTools(raw []*rawCompositeTool) ([]*Compos
 
 		// Transform parameters
 		for name, paramMap := range rawTool.Parameters {
+			typeVal, ok := paramMap["type"]
+			if !ok {
+				return nil, fmt.Errorf("tool %s, parameter %s: missing 'type' field", rawTool.Name, name)
+			}
+			typeStr, ok := typeVal.(string)
+			if !ok {
+				return nil, fmt.Errorf("tool %s, parameter %s: 'type' field must be a string", rawTool.Name, name)
+			}
 			param := ParameterSchema{
-				Type: paramMap["type"].(string),
+				Type: typeStr,
 			}
 			if def, ok := paramMap["default"]; ok {
 				param.Default = def
@@ -529,6 +537,9 @@ func (*YAMLLoader) transformWorkflowStep(raw *rawWorkflowStep) (*WorkflowStepCon
 			return nil, fmt.Errorf("invalid timeout: %w", err)
 		}
 		step.Timeout = timeout
+	} else if raw.Type == "elicitation" {
+		// Set default timeout for elicitation steps
+		step.Timeout = 5 * time.Minute
 	}
 
 	if raw.OnError != nil {

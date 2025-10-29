@@ -275,6 +275,40 @@ token_cache:
 			wantErr: true,
 			errMsg:  "invalid ttl_offset",
 		},
+		{
+			name: "composite tool with missing parameter type",
+			yaml: `
+name: test-vmcp
+group: test-group
+
+incoming_auth:
+  type: anonymous
+
+outgoing_auth:
+  source: inline
+  default:
+    type: pass_through
+
+aggregation:
+  conflict_resolution: prefix
+  conflict_resolution_config:
+    prefix_format: "{workload}_"
+
+composite_tools:
+  - name: test_tool
+    description: Test tool
+    timeout: 5m
+    parameters:
+      param1:
+        default: "value"
+    steps:
+      - id: step1
+        type: tool
+        tool: some.tool
+`,
+			wantErr: true,
+			errMsg:  "missing 'type' field",
+		},
 	}
 
 	for _, tt := range tests {

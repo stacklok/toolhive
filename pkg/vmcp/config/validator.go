@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
@@ -474,9 +473,7 @@ func (*DefaultValidator) validateStepType(step *WorkflowStepConfig, index int) e
 		if len(step.Schema) == 0 {
 			return fmt.Errorf("step[%d].schema is required for elicitation steps", index)
 		}
-		if step.Timeout <= 0 {
-			step.Timeout = 5 * time.Minute // Default elicitation timeout
-		}
+		// Note: timeout validation is optional - defaults are set during loading
 	}
 
 	return nil

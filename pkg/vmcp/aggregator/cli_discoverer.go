@@ -28,7 +28,7 @@ func NewCLIBackendDiscoverer(workloadsManager workloads.Manager, groupsManager g
 }
 
 // Discover finds all backend workloads in the specified group.
-// Returns only healthy/running backends.
+// Returns all accessible backends with their health status marked based on workload status.
 // The groupRef is the group name (e.g., "engineering-team").
 func (d *cliBackendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vmcp.Backend, error) {
 	logger.Infof("Discovering backends in group %s", groupRef)
@@ -49,24 +49,18 @@ func (d *cliBackendDiscoverer) Discover(ctx context.Context, groupRef string) ([
 	}
 
 	if len(workloadNames) == 0 {
-		logger.Warnf("No workloads found in group %s", groupRef)
-		return nil, ErrNoBackendsFound
+		logger.Infof("No workloads found in group %s", groupRef)
+		return []vmcp.Backend{}, nil
 	}
 
-	logger.Debugf("Found %d workloads in group %s, filtering for healthy backends", len(workloadNames), groupRef)
+	logger.Debugf("Found %d workloads in group %s, discovering backends", len(workloadNames), groupRef)
 
-	// Query each workload and filter for healthy ones
+	// Query each workload and convert to backend
 	var backends []vmcp.Backend
 	for _, name := range workloadNames {
 		workload, err := d.workloadsManager.GetWorkload(ctx, name)
 		if err != nil {
 			logger.Warnf("Failed to get workload %s: %v, skipping", name, err)
-			continue
-		}
-
-		// Only include running workloads
-		if workload.Status != rt.WorkloadStatusRunning {
-			logger.Debugf("Skipping workload %s with status %s", name, workload.Status)
 			continue
 		}
 
@@ -76,16 +70,20 @@ func (d *cliBackendDiscoverer) Discover(ctx context.Context, groupRef string) ([
 			continue
 		}
 
+		// Map workload status to backend health status
+		healthStatus := mapWorkloadStatusToHealth(workload.Status)
+
 		// Convert core.Workload to vmcp.Backend
 		backend := vmcp.Backend{
 			ID:            name,
 			Name:          name,
 			BaseURL:       workload.URL,
 			TransportType: workload.TransportType.String(),
-			HealthStatus:  vmcp.BackendHealthy,
+			HealthStatus:  healthStatus,
 			Metadata: map[string]string{
-				"group":     groupRef,
-				"tool_type": workload.ToolType,
+				"group":           groupRef,
+				"tool_type":       workload.ToolType,
+				"workload_status": string(workload.Status),
 			},
 		}
 
@@ -95,14 +93,31 @@ func (d *cliBackendDiscoverer) Discover(ctx context.Context, groupRef string) ([
 		}
 
 		backends = append(backends, backend)
-		logger.Debugf("Discovered backend %s: %s (%s)", backend.ID, backend.BaseURL, backend.TransportType)
+		logger.Debugf("Discovered backend %s: %s (%s) with health status %s",
+			backend.ID, backend.BaseURL, backend.TransportType, backend.HealthStatus)
 	}
 
 	if len(backends) == 0 {
-		logger.Warnf("No healthy backends found in group %s", groupRef)
-		return nil, ErrNoBackendsFound
+		logger.Infof("No accessible backends found in group %s (all workloads lack URLs)", groupRef)
+		return []vmcp.Backend{}, nil
 	}
 
-	logger.Infof("Discovered %d healthy backends in group %s", len(backends), groupRef)
+	logger.Infof("Discovered %d backends in group %s", len(backends), groupRef)
 	return backends, nil
+}
+
+// mapWorkloadStatusToHealth converts a workload status to a backend health status.
+func mapWorkloadStatusToHealth(status rt.WorkloadStatus) vmcp.BackendHealthStatus {
+	switch status {
+	case rt.WorkloadStatusRunning:
+		return vmcp.BackendHealthy
+	case rt.WorkloadStatusUnhealthy:
+		return vmcp.BackendUnhealthy
+	case rt.WorkloadStatusStopped, rt.WorkloadStatusError, rt.WorkloadStatusStopping, rt.WorkloadStatusRemoving:
+		return vmcp.BackendUnhealthy
+	case rt.WorkloadStatusStarting, rt.WorkloadStatusUnknown:
+		return vmcp.BackendUnknown
+	default:
+		return vmcp.BackendUnknown
+	}
 }

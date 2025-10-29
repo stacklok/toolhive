@@ -178,7 +178,7 @@ func TestContentInterfaceHandling(t *testing.T) {
 			if textContent, ok := mcp.AsTextContent(content); ok {
 				key := textKey
 				if textIndex > 0 {
-					key = "text_" + string(rune('0'+textIndex))
+					key = fmt.Sprintf("text_%d", textIndex)
 				}
 				resultMap[key] = textContent.Text
 				textIndex++
@@ -210,12 +210,12 @@ func TestContentInterfaceHandling(t *testing.T) {
 			if textContent, ok := mcp.AsTextContent(content); ok {
 				key := textKey
 				if textIndex > 0 {
-					key = "text_" + string(rune('0'+textIndex))
+					key = fmt.Sprintf("text_%d", textIndex)
 				}
 				resultMap[key] = textContent.Text
 				textIndex++
 			} else if imageContent, ok := mcp.AsImageContent(content); ok {
-				key := "image_" + string(rune('0'+imageIndex))
+				key := fmt.Sprintf("image_%d", imageIndex)
 				resultMap[key] = imageContent.Data
 				imageIndex++
 			}
@@ -517,7 +517,7 @@ func TestMultipleContentItemsHandling(t *testing.T) {
 			if textContent, ok := mcp.AsTextContent(content); ok {
 				key := textKey
 				if textIndex > 0 {
-					key = "text_" + string(rune('0'+textIndex))
+					key = fmt.Sprintf("text_%d", textIndex)
 				}
 				resultMap[key] = textContent.Text
 				textIndex++
@@ -549,7 +549,7 @@ func TestMultipleContentItemsHandling(t *testing.T) {
 		imageIndex := 0
 		for _, content := range toolResult.Content {
 			if imageContent, ok := mcp.AsImageContent(content); ok {
-				key := "image_" + string(rune('0'+imageIndex))
+				key := fmt.Sprintf("image_%d", imageIndex)
 				resultMap[key] = imageContent.Data
 				imageIndex++
 			}

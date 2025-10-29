@@ -97,7 +97,7 @@ func TestCLIBackendDiscoverer_Discover(t *testing.T) {
 		assert.Equal(t, "sse", backends[1].TransportType)
 	})
 
-	t.Run("filters out stopped workloads", func(t *testing.T) {
+	t.Run("discovers workloads with different statuses", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
@@ -143,8 +143,12 @@ func TestCLIBackendDiscoverer_Discover(t *testing.T) {
 		backends, err := discoverer.Discover(context.Background(), groupName)
 
 		require.NoError(t, err)
-		assert.Len(t, backends, 1)
+		assert.Len(t, backends, 2)
 		assert.Equal(t, "running-workload", backends[0].ID)
+		assert.Equal(t, vmcp.BackendHealthy, backends[0].HealthStatus)
+		assert.Equal(t, "stopped-workload", backends[1].ID)
+		assert.Equal(t, vmcp.BackendUnhealthy, backends[1].HealthStatus)
+		assert.Equal(t, "stopped", backends[1].Metadata["workload_status"])
 	})
 
 	t.Run("filters out workloads without URL", func(t *testing.T) {
@@ -197,6 +201,53 @@ func TestCLIBackendDiscoverer_Discover(t *testing.T) {
 		assert.Equal(t, "workload1", backends[0].ID)
 	})
 
+	t.Run("returns empty list when all workloads lack URLs", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockWorkloads := workloadmocks.NewMockManager(ctrl)
+		mockGroups := mocks.NewMockManager(ctrl)
+
+		groupName := testGroupName
+
+		mockGroups.EXPECT().
+			Exists(gomock.Any(), groupName).
+			Return(true, nil)
+
+		mockWorkloads.EXPECT().
+			ListWorkloadsInGroup(gomock.Any(), groupName).
+			Return([]string{"workload1", "workload2"}, nil)
+
+		workload1 := core.Workload{
+			Name:   "workload1",
+			Status: runtime.WorkloadStatusRunning,
+			URL:    "", // No URL
+			Group:  groupName,
+		}
+
+		workload2 := core.Workload{
+			Name:   "workload2",
+			Status: runtime.WorkloadStatusStopped,
+			URL:    "", // No URL
+			Group:  groupName,
+		}
+
+		mockWorkloads.EXPECT().
+			GetWorkload(gomock.Any(), "workload1").
+			Return(workload1, nil)
+
+		mockWorkloads.EXPECT().
+			GetWorkload(gomock.Any(), "workload2").
+			Return(workload2, nil)
+
+		discoverer := NewCLIBackendDiscoverer(mockWorkloads, mockGroups)
+		backends, err := discoverer.Discover(context.Background(), groupName)
+
+		require.NoError(t, err)
+		assert.Empty(t, backends)
+	})
+
 	t.Run("returns error when group does not exist", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
@@ -243,7 +294,7 @@ func TestCLIBackendDiscoverer_Discover(t *testing.T) {
 		assert.Contains(t, err.Error(), "failed to check if group exists")
 	})
 
-	t.Run("returns ErrNoBackendsFound when group is empty", func(t *testing.T) {
+	t.Run("returns empty list when group is empty", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
@@ -264,12 +315,11 @@ func TestCLIBackendDiscoverer_Discover(t *testing.T) {
 		discoverer := NewCLIBackendDiscoverer(mockWorkloads, mockGroups)
 		backends, err := discoverer.Discover(context.Background(), groupName)
 
-		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrNoBackendsFound)
-		assert.Nil(t, backends)
+		require.NoError(t, err)
+		assert.Empty(t, backends)
 	})
 
-	t.Run("returns ErrNoBackendsFound when all workloads are unhealthy", func(t *testing.T) {
+	t.Run("discovers all workloads regardless of health status", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
@@ -288,17 +338,19 @@ func TestCLIBackendDiscoverer_Discover(t *testing.T) {
 			Return([]string{"stopped1", "error1"}, nil)
 
 		stoppedWorkload := core.Workload{
-			Name:   "stopped1",
-			Status: runtime.WorkloadStatusStopped,
-			URL:    "http://localhost:8080/mcp",
-			Group:  groupName,
+			Name:          "stopped1",
+			Status:        runtime.WorkloadStatusStopped,
+			URL:           "http://localhost:8080/mcp",
+			TransportType: types.TransportTypeStreamableHTTP,
+			Group:         groupName,
 		}
 
 		errorWorkload := core.Workload{
-			Name:   "error1",
-			Status: runtime.WorkloadStatusError,
-			URL:    "http://localhost:8081/mcp",
-			Group:  groupName,
+			Name:          "error1",
+			Status:        runtime.WorkloadStatusError,
+			URL:           "http://localhost:8081/mcp",
+			TransportType: types.TransportTypeSSE,
+			Group:         groupName,
 		}
 
 		mockWorkloads.EXPECT().
@@ -312,9 +364,10 @@ func TestCLIBackendDiscoverer_Discover(t *testing.T) {
 		discoverer := NewCLIBackendDiscoverer(mockWorkloads, mockGroups)
 		backends, err := discoverer.Discover(context.Background(), groupName)
 
-		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrNoBackendsFound)
-		assert.Nil(t, backends)
+		require.NoError(t, err)
+		assert.Len(t, backends, 2)
+		assert.Equal(t, vmcp.BackendUnhealthy, backends[0].HealthStatus)
+		assert.Equal(t, vmcp.BackendUnhealthy, backends[1].HealthStatus)
 	})
 
 	t.Run("gracefully handles workload get failures", func(t *testing.T) {

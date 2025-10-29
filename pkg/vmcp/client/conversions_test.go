@@ -14,8 +14,6 @@ import (
 // Since we can't easily mock the mark3labs client, we test the conversion patterns
 // that our code uses to transform MCP SDK types to vmcp domain types.
 
-const textKey = "text"
-
 func TestToolInputSchemaConversion(t *testing.T) {
 	t.Parallel()
 

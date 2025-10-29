@@ -53,12 +53,6 @@ func withLabels(labels map[string]string) func(*core.Workload) {
 	}
 }
 
-func withGroup(group string) func(*core.Workload) {
-	return func(w *core.Workload) {
-		w.Group = group
-	}
-}
-
 func newTestBackend(id string, opts ...func(*vmcp.Backend)) vmcp.Backend {
 	b := vmcp.Backend{
 		ID:            id,
@@ -85,19 +79,13 @@ func withBackendTransport(transport string) func(*vmcp.Backend) {
 	}
 }
 
-func withHealthStatus(status vmcp.BackendHealthStatus) func(*vmcp.Backend) {
-	return func(b *vmcp.Backend) {
-		b.HealthStatus = status
-	}
-}
-
 func withBackendName(name string) func(*vmcp.Backend) {
 	return func(b *vmcp.Backend) {
 		b.Name = name
 	}
 }
 
-func newTestCapabilityList(backendID string, opts ...func(*vmcp.CapabilityList)) *vmcp.CapabilityList {
+func newTestCapabilityList(opts ...func(*vmcp.CapabilityList)) *vmcp.CapabilityList {
 	caps := &vmcp.CapabilityList{
 		Tools:            []vmcp.Tool{},
 		Resources:        []vmcp.Resource{},

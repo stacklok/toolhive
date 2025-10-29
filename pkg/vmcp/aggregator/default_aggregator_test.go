@@ -24,7 +24,7 @@ func TestDefaultAggregator_QueryCapabilities(t *testing.T) {
 		mockClient := mocks.NewMockBackendClient(ctrl)
 		backend := newTestBackend("backend1", withBackendName("Backend 1"))
 
-		expectedCaps := newTestCapabilityList("backend1",
+		expectedCaps := newTestCapabilityList(
 			withTools(newTestTool("test_tool", "backend1")),
 			withResources(newTestResource("test://resource", "backend1")),
 			withPrompts(newTestPrompt("test_prompt", "backend1")),
@@ -81,8 +81,8 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 				withBackendTransport("sse")),
 		}
 
-		caps1 := newTestCapabilityList("backend1", withTools(newTestTool("tool1", "backend1")))
-		caps2 := newTestCapabilityList("backend2", withTools(newTestTool("tool2", "backend2")))
+		caps1 := newTestCapabilityList(withTools(newTestTool("tool1", "backend1")))
+		caps2 := newTestCapabilityList(withTools(newTestTool("tool2", "backend2")))
 
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps1, nil)
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps2, nil)
@@ -107,7 +107,7 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 			newTestBackend("backend2", withBackendURL("http://localhost:8081")),
 		}
 
-		caps1 := newTestCapabilityList("backend1", withTools(newTestTool("tool1", "backend1")))
+		caps1 := newTestCapabilityList(withTools(newTestTool("tool1", "backend1")))
 
 		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).
 			DoAndReturn(func(_ context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
@@ -316,12 +316,12 @@ func TestDefaultAggregator_AggregateCapabilities(t *testing.T) {
 				withBackendTransport("sse")),
 		}
 
-		caps1 := newTestCapabilityList("backend1",
+		caps1 := newTestCapabilityList(
 			withTools(newTestTool("tool1", "backend1")),
 			withResources(newTestResource("test://resource1", "backend1")),
 			withLogging(true))
 
-		caps2 := newTestCapabilityList("backend2",
+		caps2 := newTestCapabilityList(
 			withTools(newTestTool("tool2", "backend2")),
 			withSampling(true))
 

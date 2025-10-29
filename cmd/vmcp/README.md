@@ -1,19 +1,21 @@
 # Virtual MCP Server (vmcp)
 
-The Virtual MCP Server (vmcp) is a standalone binary that aggregates multiple MCP (Model Context Protocol) servers into a single unified interface. It provides a secure, observable, and controlled way to expose multiple MCP servers through a single endpoint.
+The Virtual MCP Server (vmcp) is a standalone binary that aggregates multiple MCP (Model Context Protocol) servers from a ToolHive group into a single unified interface. It acts as an aggregation proxy that consolidates tools, resources, and prompts from all workloads in the group.
+
+**Reference**: See [THV-2106 Virtual MCP Server Proposal](/docs/proposals/THV-2106-virtual-mcp-server.md) for complete design details.
 
 ## Features
 
-- **Tool Aggregation**: Combine tools from multiple MCP servers into a single interface
-- **Resource Aggregation**: Aggregate resources from different sources
-- **Prompt Aggregation**: Unified access to prompts from multiple backends
-- **Middleware Integration**: Reuses ToolHive's security and middleware infrastructure
-  - Authentication (GitHub, local, anonymous)
-  - Authorization (Cedar policies)
-  - Audit logging
-  - Telemetry (OpenTelemetry)
-- **Per-Backend Configuration**: Apply different middleware settings to individual backends
-- **Namespace Management**: Optional prefixes for tools and resources to avoid naming conflicts
+- **Group-Based Backend Management**: References an existing ToolHive group for automatic workload discovery
+- **Tool Aggregation**: Combines tools from multiple MCP servers with conflict resolution (prefix, priority, or manual)
+- **Resource & Prompt Aggregation**: Unified access to resources and prompts from all backends
+- **Two Authentication Boundaries**:
+  - **Incoming Auth** (Client → Virtual MCP): OIDC, local, or anonymous authentication
+  - **Outgoing Auth** (Virtual MCP → Backend APIs): RFC 8693 token exchange for backend API access
+- **Per-Backend Token Exchange**: Different authentication strategies per backend (pass_through, token_exchange, service_account)
+- **Authorization**: Cedar policy-based access control
+- **Operational Features**: Circuit breakers, health checks, timeout management, failure handling
+- **Future**: Composite tools with elicitation support for multi-step workflows
 
 ## Installation
 
@@ -63,99 +65,86 @@ vmcp version
 
 vmcp uses a YAML configuration file to define:
 
-1. **Server Settings**: Address, transport type, TLS configuration
-2. **Middleware Chain**: Authentication, authorization, audit, telemetry
-3. **Backend Servers**: List of MCP servers to aggregate
+1. **Group Reference**: ToolHive group containing MCP server workloads
+2. **Incoming Authentication**: Client → Virtual MCP authentication boundary
+3. **Outgoing Authentication**: Virtual MCP → Backend API token exchange
+4. **Tool Aggregation**: Conflict resolution and filtering strategies
+5. **Operational Settings**: Timeouts, health checks, circuit breakers
 
 See [examples/vmcp-config.yaml](../../examples/vmcp-config.yaml) for a complete example.
 
-## Backend Types
+## Authentication Model
 
-vmcp supports three types of MCP server backends:
+Virtual MCP implements **two independent authentication boundaries**:
 
-1. **Container**: ToolHive-managed containerized MCP servers
-   ```yaml
-   type: "container"
-   config:
-     image: "mcp/server:latest"
-     env:
-       VAR: "value"
-   ```
+### 1. Incoming Authentication (Client → Virtual MCP)
 
-2. **Stdio**: Direct stdio communication with MCP servers
-   ```yaml
-   type: "stdio"
-   config:
-     command: "node"
-     args: ["server.js"]
-     working_dir: "/app"
-   ```
+Validates client requests to Virtual MCP using tokens with `aud=vmcp`:
 
-3. **SSE**: HTTP-based Server-Sent Events connection
-   ```yaml
-   type: "sse"
-   config:
-     url: "http://localhost:9000/sse"
-     headers:
-       Authorization: "Bearer token"
-   ```
-
-## Middleware
-
-vmcp reuses ToolHive's middleware components:
-
-### Authentication
-
-Supports multiple authentication providers:
-- **GitHub**: OAuth-based authentication with GitHub
-- **Local**: File-based user authentication
-- **Anonymous**: No authentication (for development)
-
-### Authorization
-
-Uses Cedar policy language for fine-grained access control:
 ```yaml
-authz:
-  enabled: true
-  policy_file: "/path/to/policies.cedar"
+incoming_auth:
+  type: oidc
+  oidc:
+    issuer: "https://keycloak.example.com/realms/myrealm"
+    client_id: "vmcp-client"
+    audience: "vmcp"  # Token must have aud=vmcp
 ```
 
-### Audit Logging
+### 2. Outgoing Authentication (Virtual MCP → Backend APIs)
 
-Logs all MCP operations for compliance and security:
+Performs **RFC 8693 token exchange** to obtain backend API-specific tokens. These tokens are NOT for authenticating to backend MCP servers, but for the backend MCP servers to use when calling upstream APIs (GitHub API, Jira API, etc.):
+
 ```yaml
-audit:
-  enabled: true
-  log_file: "/var/log/vmcp/audit.log"
-  format: "json"
+outgoing_auth:
+  backends:
+    github:
+      type: token_exchange
+      token_exchange:
+        audience: "github-api"  # Token for GitHub API
+        scopes: ["repo", "read:org"]  # GitHub API scopes
 ```
 
-### Telemetry
+**Key Point**: Backend MCP servers receive pre-validated tokens and use them directly to call external APIs. They don't validate tokens themselves—security relies on network isolation and properly scoped API tokens.
 
-OpenTelemetry integration for metrics and traces:
+## Tool Aggregation & Conflict Resolution
+
+Virtual MCP aggregates tools from all workloads in the group and provides three strategies for handling naming conflicts:
+
+### 1. Prefix Strategy (Default)
+
+Automatically prefixes all tool names with the workload identifier:
+
 ```yaml
-telemetry:
-  enabled: true
-  otlp_endpoint: "http://localhost:4318"
-  metrics: true
-  traces: true
+aggregation:
+  conflict_resolution: prefix
+  conflict_resolution_config:
+    prefix_format: "{workload}_"  # github_create_pr, jira_create_pr
 ```
 
-## Per-Backend Middleware
+### 2. Priority Strategy
 
-Override global middleware settings for specific backends:
+First workload in priority order wins; conflicting tools from others are dropped:
 
 ```yaml
-backends:
-  - name: "public-api"
-    type: "sse"
-    config:
-      url: "http://api.example.com/sse"
-    middleware:
-      auth:
-        enabled: false  # Public API, no auth needed
-      audit:
-        enabled: true   # But still audit all requests
+aggregation:
+  conflict_resolution: priority
+  conflict_resolution_config:
+    priority_order: ["github", "jira", "slack"]
+```
+
+### 3. Manual Strategy
+
+Explicitly define overrides for all tools:
+
+```yaml
+aggregation:
+  conflict_resolution: manual
+  tools:
+    - workload: "github"
+      overrides:
+        create_pr:
+          name: "gh_create_pr"
+          description: "Create a GitHub pull request"
 ```
 
 ## Architecture

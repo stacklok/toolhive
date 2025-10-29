@@ -1,104 +1,169 @@
-# Virtual MCP Server (vmcp) Configuration Example
-# This file demonstrates the configuration format for vmcp
+# Virtual MCP Server Configuration Example
+# References: docs/proposals/THV-2106-virtual-mcp-server.md
 
-# Server configuration
-server:
-  # Address to listen on (host:port)
-  address: "localhost:8080"
+# Virtual MCP metadata
+name: "engineering-vmcp"
+group: "engineering-team"  # Reference to ToolHive group
 
-  # Transport type: "http" or "stdio"
-  transport: "http"
+# ===== INCOMING AUTHENTICATION (Client → Virtual MCP) =====
+incoming_auth:
+  type: oidc  # oidc | anonymous | local
+  oidc:
+    issuer: "https://keycloak.example.com/realms/myrealm"
+    client_id: "vmcp-client"
+    client_secret_env: "VMCP_CLIENT_SECRET"  # Read from environment variable
+    audience: "vmcp"  # Token must have aud=vmcp
+    scopes: ["openid", "profile", "email"]
 
-  # Optional TLS configuration for HTTPS
-  tls:
-    enabled: false
-    cert_file: "/path/to/cert.pem"
-    key_file: "/path/to/key.pem"
-
-# Middleware configuration (applied to all backends by default)
-middleware:
-  # Authentication middleware
-  auth:
-    enabled: true
-    provider: "local"  # Options: "github", "local", "anonymous"
-    config:
-      # Provider-specific configuration
-      allowed_users:
-        - "user1"
-        - "user2"
-
-  # Authorization middleware (Cedar policies)
+  # Optional: Authorization policies (Cedar)
   authz:
-    enabled: true
-    policy_file: "/path/to/policies.cedar"
+    type: cedar
+    policies:
+      - |
+        permit(
+          principal,
+          action == Action::"tools/call",
+          resource
+        );
 
-  # Audit logging middleware
-  audit:
-    enabled: true
-    log_file: "/var/log/vmcp/audit.log"
-    format: "json"  # Options: "json", "text"
+# ===== OUTGOING AUTHENTICATION (Virtual MCP → Backend APIs) =====
+outgoing_auth:
+  # Configuration source (CLI only supports 'inline')
+  source: inline  # inline (CLI only)
 
-  # Telemetry middleware (OpenTelemetry)
-  telemetry:
-    enabled: true
-    otlp_endpoint: "http://localhost:4318"
-    metrics: true
-    traces: true
+  # Default behavior for backends without explicit config
+  default:
+    type: pass_through  # pass_through | error
 
-# Backend MCP servers to aggregate
-backends:
-  # Example 1: Container-based MCP server (ToolHive-managed)
-  - name: "filesystem-server"
-    type: "container"
-    config:
-      image: "mcp/filesystem:latest"
-      env:
-        ROOT_PATH: "/data"
-    tool_prefix: "fs_"
-    resource_prefix: "fs://"
+  # Per-backend authentication configurations
+  # IMPORTANT: These tokens are for backend APIs (e.g., github-api, jira-api),
+  # NOT for authenticating Virtual MCP to backend MCP servers.
+  # Backend MCP servers receive properly scoped tokens and use them to call upstream APIs.
+  backends:
+    github:
+      type: token_exchange
+      token_exchange:
+        # RFC 8693 token exchange for GitHub API access
+        token_url: "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token"
+        client_id: "vmcp-github-exchange"
+        client_secret_env: "GITHUB_EXCHANGE_SECRET"
+        audience: "github-api"  # Token audience for GitHub API
+        scopes: ["repo", "read:org"]  # GitHub API scopes
+        subject_token_type: "access_token"  # access_token | id_token
 
-  # Example 2: Direct stdio MCP server
-  - name: "git-server"
-    type: "stdio"
-    config:
-      command: "python"
-      args:
-        - "-m"
-        - "mcp_git"
-      working_dir: "/repos"
-    tool_prefix: "git_"
-    resource_prefix: "git://"
+    jira:
+      type: token_exchange
+      token_exchange:
+        token_url: "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token"
+        client_id: "vmcp-jira-exchange"
+        client_secret_env: "JIRA_EXCHANGE_SECRET"
+        audience: "jira-api"  # Token audience for Jira API
+        scopes: ["read:jira-work", "write:jira-work"]
 
-  # Example 3: SSE-based MCP server (HTTP)
-  - name: "weather-server"
-    type: "sse"
-    config:
-      url: "http://localhost:9000/sse"
-      headers:
-        Authorization: "Bearer token123"
-    tool_prefix: "weather_"
+    slack:
+      type: service_account
+      service_account:
+        credentials_env: "SLACK_BOT_TOKEN"
+        header_name: "Authorization"
+        header_format: "Bearer {token}"
 
-    # Per-backend middleware overrides
-    middleware:
-      auth:
-        enabled: false  # Disable auth for this specific backend
-      audit:
-        enabled: true
-        log_file: "/var/log/vmcp/weather-audit.log"
+    internal-db:
+      type: pass_through  # Forward client token unchanged
 
-  # Example 4: Another container-based server with different middleware
-  - name: "database-server"
-    type: "container"
-    config:
-      image: "mcp/postgres:latest"
-      env:
-        DB_HOST: "localhost"
-        DB_PORT: "5432"
-    tool_prefix: "db_"
-    resource_prefix: "db://"
+# ===== TOKEN CACHING =====
+token_cache:
+  provider: memory  # memory | redis | custom
+  config:
+    max_entries: 1000
+    ttl_offset: "5m"  # Refresh tokens 5 minutes before expiry
 
-    # More restrictive authorization for database operations
-    middleware:
-      authz:
-        enabled: true
-        policy_file: "/path/to/database-policies.cedar"
+# ===== TOOL AGGREGATION =====
+aggregation:
+  # Conflict resolution strategy
+  conflict_resolution: prefix  # prefix | priority | manual
+
+  # Conflict resolution details
+  conflict_resolution_config:
+    # For 'prefix' strategy: prefix format
+    prefix_format: "{workload}_"  # Options: {workload}, {workload}_, {workload}., custom-prefix-
+
+    # For 'priority' strategy: explicit ordering (commented out)
+    # priority_order: ["github", "jira", "slack"]
+
+  # Tool filtering and overrides (per workload in the group)
+  tools:
+    - workload: "github"
+      filter: ["create_pr", "merge_pr", "list_issues"]
+      overrides:
+        create_pr:
+          name: "gh_create_pr"
+          description: "Create a GitHub pull request"
+
+    - workload: "jira"
+      overrides:
+        create_issue:
+          name: "jira_create_issue"
+          description: "Create a Jira issue"
+
+# ===== OPERATIONAL SETTINGS =====
+operational:
+  timeouts:
+    default: 30s
+    per_workload:
+      github: 45s
+      jira: 30s
+
+  # Failure handling
+  failure_handling:
+    # Backend unavailability
+    health_check_interval: 30s
+    unhealthy_threshold: 3  # Mark unhealthy after N failures
+
+    # Partial failures
+    partial_failure_mode: fail  # fail | best_effort
+
+    # Circuit breaker
+    circuit_breaker:
+      enabled: true
+      failure_threshold: 5
+      timeout: 60s
+
+# ===== COMPOSITE TOOLS (Phase 2 - Future Feature) =====
+# Composite tools enable multi-step workflows with elicitation support
+# composite_tools:
+#   - name: "deploy_and_notify"
+#     description: "Deploy PR with user confirmation and notification"
+#     parameters:
+#       pr_number: {type: "integer"}
+#     timeout: "30m"
+#
+#     steps:
+#       - id: "merge"
+#         tool: "github.merge_pr"
+#         arguments: {pr: "{{.params.pr_number}}"}
+#         on_error:
+#           action: "abort"  # abort | continue | retry
+#
+#       - id: "confirm_deploy"
+#         type: "elicitation"
+#         message: "PR {{.params.pr_number}} merged. Proceed with deployment?"
+#         schema:
+#           type: "object"
+#           properties:
+#             environment:
+#               type: "string"
+#               enum: ["staging", "production"]
+#         depends_on: ["merge"]
+#         timeout: "5m"
+#         on_decline:
+#           action: "skip_remaining"
+#         on_cancel:
+#           action: "abort"
+#
+#       - id: "deploy"
+#         tool: "kubernetes.deploy"
+#         arguments:
+#           pr: "{{.params.pr_number}}"
+#           environment: "{{.steps.confirm_deploy.content.environment}}"
+#         depends_on: ["confirm_deploy"]
+#         condition: "{{.steps.confirm_deploy.action == 'accept'}}"

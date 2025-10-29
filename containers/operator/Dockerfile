@@ -1,5 +1,5 @@
 # Build the binary
-FROM registry.access.redhat.com/ubi10/go-toolset:1.24 as builder
+FROM registry.access.redhat.com/ubi10/go-toolset:1.24.6-1761711009 as builder
 
 USER root
 

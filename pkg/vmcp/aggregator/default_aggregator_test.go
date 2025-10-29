@@ -313,8 +313,27 @@ func TestDefaultAggregator_MergeCapabilities(t *testing.T) {
 			SupportsSampling: false,
 		}
 
+		// Create registry with test backends
+		backends := []vmcp.Backend{
+			{
+				ID:            "backend1",
+				Name:          "Backend 1",
+				BaseURL:       "http://backend1:8080",
+				TransportType: "streamable-http",
+				HealthStatus:  vmcp.BackendHealthy,
+			},
+			{
+				ID:            "backend2",
+				Name:          "Backend 2",
+				BaseURL:       "http://backend2:8080",
+				TransportType: "sse",
+				HealthStatus:  vmcp.BackendHealthy,
+			},
+		}
+		registry := vmcp.NewImmutableRegistry(backends)
+
 		agg := NewDefaultAggregator(nil)
-		aggregated, err := agg.MergeCapabilities(context.Background(), resolved)
+		aggregated, err := agg.MergeCapabilities(context.Background(), resolved, registry)
 
 		require.NoError(t, err)
 		assert.Len(t, aggregated.Tools, 2)
@@ -329,6 +348,22 @@ func TestDefaultAggregator_MergeCapabilities(t *testing.T) {
 		assert.Contains(t, aggregated.RoutingTable.Tools, "tool2")
 		assert.Contains(t, aggregated.RoutingTable.Resources, "test://resource1")
 		assert.Contains(t, aggregated.RoutingTable.Prompts, "prompt1")
+
+		// Verify routing table has full backend information
+		tool1Target := aggregated.RoutingTable.Tools["tool1"]
+		assert.NotNil(t, tool1Target)
+		assert.Equal(t, "backend1", tool1Target.WorkloadID)
+		assert.Equal(t, "Backend 1", tool1Target.WorkloadName)
+		assert.Equal(t, "http://backend1:8080", tool1Target.BaseURL)
+		assert.Equal(t, "streamable-http", tool1Target.TransportType)
+		assert.Equal(t, vmcp.BackendHealthy, tool1Target.HealthStatus)
+
+		tool2Target := aggregated.RoutingTable.Tools["tool2"]
+		assert.NotNil(t, tool2Target)
+		assert.Equal(t, "backend2", tool2Target.WorkloadID)
+		assert.Equal(t, "Backend 2", tool2Target.WorkloadName)
+		assert.Equal(t, "http://backend2:8080", tool2Target.BaseURL)
+		assert.Equal(t, "sse", tool2Target.TransportType)
 
 		// Check metadata
 		assert.Equal(t, 2, aggregated.Metadata.ToolCount)

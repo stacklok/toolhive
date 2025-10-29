@@ -97,18 +97,18 @@ func (mr *MockAggregatorMockRecorder) AggregateCapabilities(ctx, backends any) *
 }
 
 // MergeCapabilities mocks base method.
-func (m *MockAggregator) MergeCapabilities(ctx context.Context, resolved *aggregator.ResolvedCapabilities) (*aggregator.AggregatedCapabilities, error) {
+func (m *MockAggregator) MergeCapabilities(ctx context.Context, resolved *aggregator.ResolvedCapabilities, registry vmcp.BackendRegistry) (*aggregator.AggregatedCapabilities, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MergeCapabilities", ctx, resolved)
+	ret := m.ctrl.Call(m, "MergeCapabilities", ctx, resolved, registry)
 	ret0, _ := ret[0].(*aggregator.AggregatedCapabilities)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // MergeCapabilities indicates an expected call of MergeCapabilities.
-func (mr *MockAggregatorMockRecorder) MergeCapabilities(ctx, resolved any) *gomock.Call {
+func (mr *MockAggregatorMockRecorder) MergeCapabilities(ctx, resolved, registry any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MergeCapabilities", reflect.TypeOf((*MockAggregator)(nil).MergeCapabilities), ctx, resolved)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MergeCapabilities", reflect.TypeOf((*MockAggregator)(nil).MergeCapabilities), ctx, resolved, registry)
 }
 
 // QueryAllCapabilities mocks base method.

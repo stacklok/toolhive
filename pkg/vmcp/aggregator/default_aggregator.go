@@ -172,9 +172,11 @@ func (*defaultAggregator) ResolveConflicts(
 }
 
 // MergeCapabilities creates the final unified capability view and routing table.
+// Uses the backend registry to populate full BackendTarget information for routing.
 func (*defaultAggregator) MergeCapabilities(
-	_ context.Context,
+	ctx context.Context,
 	resolved *ResolvedCapabilities,
+	registry vmcp.BackendRegistry,
 ) (*AggregatedCapabilities, error) {
 	logger.Debugf("Merging capabilities into final view")
 
@@ -195,25 +197,45 @@ func (*defaultAggregator) MergeCapabilities(
 			BackendID:   resolvedTool.BackendID,
 		})
 
-		// Add to routing table (we'll need to look up the backend target)
-		// For now, we'll create a minimal target with just the backend ID
-		// In a full implementation, we'd need to store backend targets during discovery
-		routingTable.Tools[resolvedTool.ResolvedName] = &vmcp.BackendTarget{
-			WorkloadID: resolvedTool.BackendID,
+		// Look up full backend information from registry
+		backend := registry.Get(ctx, resolvedTool.BackendID)
+		if backend == nil {
+			logger.Warnf("Backend %s not found in registry for tool %s, creating minimal target",
+				resolvedTool.BackendID, resolvedTool.ResolvedName)
+			routingTable.Tools[resolvedTool.ResolvedName] = &vmcp.BackendTarget{
+				WorkloadID: resolvedTool.BackendID,
+			}
+		} else {
+			// Use the backendToTarget helper from registry package
+			routingTable.Tools[resolvedTool.ResolvedName] = vmcp.BackendToTarget(backend)
 		}
 	}
 
 	// Add resources to routing table
 	for _, resource := range resolved.Resources {
-		routingTable.Resources[resource.URI] = &vmcp.BackendTarget{
-			WorkloadID: resource.BackendID,
+		backend := registry.Get(ctx, resource.BackendID)
+		if backend == nil {
+			logger.Warnf("Backend %s not found in registry for resource %s, creating minimal target",
+				resource.BackendID, resource.URI)
+			routingTable.Resources[resource.URI] = &vmcp.BackendTarget{
+				WorkloadID: resource.BackendID,
+			}
+		} else {
+			routingTable.Resources[resource.URI] = vmcp.BackendToTarget(backend)
 		}
 	}
 
 	// Add prompts to routing table
 	for _, prompt := range resolved.Prompts {
-		routingTable.Prompts[prompt.Name] = &vmcp.BackendTarget{
-			WorkloadID: prompt.BackendID,
+		backend := registry.Get(ctx, prompt.BackendID)
+		if backend == nil {
+			logger.Warnf("Backend %s not found in registry for prompt %s, creating minimal target",
+				prompt.BackendID, prompt.Name)
+			routingTable.Prompts[prompt.Name] = &vmcp.BackendTarget{
+				WorkloadID: prompt.BackendID,
+			}
+		} else {
+			routingTable.Prompts[prompt.Name] = vmcp.BackendToTarget(backend)
 		}
 	}
 
@@ -241,26 +263,31 @@ func (*defaultAggregator) MergeCapabilities(
 }
 
 // AggregateCapabilities is a convenience method that performs the full aggregation pipeline:
-// 1. Query all backends
-// 2. Resolve conflicts
-// 3. Merge into final view
+// 1. Create backend registry
+// 2. Query all backends
+// 3. Resolve conflicts
+// 4. Merge into final view with full backend information
 func (a *defaultAggregator) AggregateCapabilities(ctx context.Context, backends []vmcp.Backend) (*AggregatedCapabilities, error) {
 	logger.Infof("Starting capability aggregation for %d backends", len(backends))
 
-	// Step 1: Query all backends
+	// Step 1: Create registry from discovered backends
+	registry := vmcp.NewImmutableRegistry(backends)
+	logger.Debugf("Created backend registry with %d backends", registry.Count())
+
+	// Step 2: Query all backends
 	capabilities, err := a.QueryAllCapabilities(ctx, backends)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query backends: %w", err)
 	}
 
-	// Step 2: Resolve conflicts
+	// Step 3: Resolve conflicts
 	resolved, err := a.ResolveConflicts(ctx, capabilities)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve conflicts: %w", err)
 	}
 
-	// Step 3: Merge into final view
-	aggregated, err := a.MergeCapabilities(ctx, resolved)
+	// Step 4: Merge into final view with full backend information
+	aggregated, err := a.MergeCapabilities(ctx, resolved, registry)
 	if err != nil {
 		return nil, fmt.Errorf("failed to merge capabilities: %w", err)
 	}

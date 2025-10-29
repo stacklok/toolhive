@@ -45,7 +45,12 @@ type Aggregator interface {
 	ResolveConflicts(ctx context.Context, capabilities map[string]*BackendCapabilities) (*ResolvedCapabilities, error)
 
 	// MergeCapabilities creates the final unified capability view and routing table.
-	MergeCapabilities(ctx context.Context, resolved *ResolvedCapabilities) (*AggregatedCapabilities, error)
+	// Uses the backend registry to populate full BackendTarget information for routing.
+	MergeCapabilities(
+		ctx context.Context,
+		resolved *ResolvedCapabilities,
+		registry vmcp.BackendRegistry,
+	) (*AggregatedCapabilities, error)
 
 	// AggregateCapabilities is a convenience method that performs the full aggregation pipeline:
 	// 1. Query all backends

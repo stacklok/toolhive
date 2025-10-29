@@ -66,7 +66,7 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 	return nil
 }
 
-func (v *DefaultValidator) validateBasicFields(cfg *Config) error {
+func (*DefaultValidator) validateBasicFields(cfg *Config) error {
 	if cfg.Name == "" {
 		return fmt.Errorf("name is required")
 	}
@@ -123,7 +123,7 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 	return nil
 }
 
-func (v *DefaultValidator) validateAuthz(authz *AuthzConfig) error {
+func (*DefaultValidator) validateAuthz(authz *AuthzConfig) error {
 	validTypes := []string{"cedar", "none"}
 	if !contains(validTypes, authz.Type) {
 		return fmt.Errorf("type must be one of: %s", strings.Join(validTypes, ", "))
@@ -164,12 +164,15 @@ func (v *DefaultValidator) validateOutgoingAuth(auth *OutgoingAuthConfig) error 
 	return nil
 }
 
-func (v *DefaultValidator) validateBackendAuthStrategy(name string, strategy *BackendAuthStrategy) error {
+func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *BackendAuthStrategy) error {
 	if strategy == nil {
 		return fmt.Errorf("strategy is nil")
 	}
 
-	validTypes := []string{"pass_through", "token_exchange", "client_credentials", "service_account", "header_injection", "oauth_proxy"}
+	validTypes := []string{
+		"pass_through", "token_exchange", "client_credentials",
+		"service_account", "header_injection", "oauth_proxy",
+	}
 	if !contains(validTypes, strategy.Type) {
 		return fmt.Errorf("type must be one of: %s", strings.Join(validTypes, ", "))
 	}
@@ -221,6 +224,15 @@ func (v *DefaultValidator) validateAggregation(agg *AggregationConfig) error {
 		return fmt.Errorf("conflict_resolution_config is required")
 	}
 
+	if err := v.validateConflictStrategy(agg); err != nil {
+		return err
+	}
+
+	return v.validateToolConfigurations(agg.Tools)
+}
+
+// validateConflictStrategy validates strategy-specific configuration
+func (*DefaultValidator) validateConflictStrategy(agg *AggregationConfig) error {
 	switch agg.ConflictResolution {
 	case vmcp.ConflictStrategyPrefix:
 		if agg.ConflictResolutionConfig.PrefixFormat == "" {
@@ -239,9 +251,13 @@ func (v *DefaultValidator) validateAggregation(agg *AggregationConfig) error {
 		}
 	}
 
-	// Validate tool configurations
+	return nil
+}
+
+// validateToolConfigurations validates tool override configurations
+func (v *DefaultValidator) validateToolConfigurations(tools []*WorkloadToolConfig) error {
 	workloadNames := make(map[string]bool)
-	for i, tool := range agg.Tools {
+	for i, tool := range tools {
 		if tool.Workload == "" {
 			return fmt.Errorf("tools[%d].workload is required", i)
 		}
@@ -251,29 +267,36 @@ func (v *DefaultValidator) validateAggregation(agg *AggregationConfig) error {
 		}
 		workloadNames[tool.Workload] = true
 
-		// Validate overrides
-		for toolName, override := range tool.Overrides {
-			if override.Name == "" && override.Description == "" {
-				return fmt.Errorf("tools[%d].overrides.%s: at least one of name or description must be specified", i, toolName)
-			}
+		if err := v.validateToolOverrides(tool.Overrides, i); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-func (v *DefaultValidator) validateTokenCache(cache *TokenCacheConfig) error {
+// validateToolOverrides validates individual tool overrides
+func (*DefaultValidator) validateToolOverrides(overrides map[string]*ToolOverride, toolIndex int) error {
+	for toolName, override := range overrides {
+		if override.Name == "" && override.Description == "" {
+			return fmt.Errorf("tools[%d].overrides.%s: at least one of name or description must be specified", toolIndex, toolName)
+		}
+	}
+	return nil
+}
+
+func (*DefaultValidator) validateTokenCache(cache *TokenCacheConfig) error {
 	if cache == nil {
 		return nil // Token cache is optional
 	}
 
-	validProviders := []string{"memory", "redis"}
+	validProviders := []string{CacheProviderMemory, CacheProviderRedis}
 	if !contains(validProviders, cache.Provider) {
 		return fmt.Errorf("token_cache.provider must be one of: %s", strings.Join(validProviders, ", "))
 	}
 
 	switch cache.Provider {
-	case "memory":
+	case CacheProviderMemory:
 		if cache.Memory == nil {
 			return fmt.Errorf("token_cache.memory is required when provider is 'memory'")
 		}
@@ -284,7 +307,7 @@ func (v *DefaultValidator) validateTokenCache(cache *TokenCacheConfig) error {
 			return fmt.Errorf("token_cache.memory.ttl_offset cannot be negative")
 		}
 
-	case "redis":
+	case CacheProviderRedis:
 		if cache.Redis == nil {
 			return fmt.Errorf("token_cache.redis is required when provider is 'redis'")
 		}
@@ -327,7 +350,7 @@ func (v *DefaultValidator) validateOperational(ops *OperationalConfig) error {
 	return nil
 }
 
-func (v *DefaultValidator) validateFailureHandling(fh *FailureHandlingConfig) error {
+func (*DefaultValidator) validateFailureHandling(fh *FailureHandlingConfig) error {
 	if fh.HealthCheckInterval <= 0 {
 		return fmt.Errorf("health_check_interval must be positive")
 	}
@@ -393,63 +416,95 @@ func (v *DefaultValidator) validateCompositeTools(tools []*CompositeToolConfig) 
 	return nil
 }
 
-func (v *DefaultValidator) validateWorkflowSteps(toolName string, steps []*WorkflowStepConfig) error {
+func (v *DefaultValidator) validateWorkflowSteps(_ string, steps []*WorkflowStepConfig) error {
 	stepIDs := make(map[string]bool)
 
 	for i, step := range steps {
-		// Validate step ID
-		if step.ID == "" {
-			return fmt.Errorf("step[%d].id is required", i)
+		if err := v.validateStepBasics(step, i, stepIDs); err != nil {
+			return err
 		}
 
-		if stepIDs[step.ID] {
-			return fmt.Errorf("duplicate step ID: %s", step.ID)
-		}
-		stepIDs[step.ID] = true
-
-		// Validate step type
-		validTypes := []string{"tool", "elicitation"}
-		if !contains(validTypes, step.Type) {
-			return fmt.Errorf("step[%d].type must be one of: %s", i, strings.Join(validTypes, ", "))
+		if err := v.validateStepType(step, i); err != nil {
+			return err
 		}
 
-		// Validate type-specific requirements
-		switch step.Type {
-		case "tool":
-			if step.Tool == "" {
-				return fmt.Errorf("step[%d].tool is required for tool steps", i)
-			}
-
-		case "elicitation":
-			if step.Message == "" {
-				return fmt.Errorf("step[%d].message is required for elicitation steps", i)
-			}
-			if step.Schema == nil || len(step.Schema) == 0 {
-				return fmt.Errorf("step[%d].schema is required for elicitation steps", i)
-			}
-			if step.Timeout <= 0 {
-				step.Timeout = 5 * time.Minute // Default elicitation timeout
-			}
+		if err := v.validateStepDependencies(step, i, stepIDs); err != nil {
+			return err
 		}
 
-		// Validate dependencies
-		for _, depID := range step.DependsOn {
-			if !stepIDs[depID] {
-				return fmt.Errorf("step[%d].depends_on references non-existent step: %s", i, depID)
-			}
+		if err := v.validateStepErrorHandling(step, i); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateStepBasics validates basic step requirements (ID uniqueness)
+func (*DefaultValidator) validateStepBasics(step *WorkflowStepConfig, index int, stepIDs map[string]bool) error {
+	if step.ID == "" {
+		return fmt.Errorf("step[%d].id is required", index)
+	}
+
+	if stepIDs[step.ID] {
+		return fmt.Errorf("duplicate step ID: %s", step.ID)
+	}
+	stepIDs[step.ID] = true
+
+	return nil
+}
+
+// validateStepType validates step type and type-specific requirements
+func (*DefaultValidator) validateStepType(step *WorkflowStepConfig, index int) error {
+	validTypes := []string{"tool", "elicitation"}
+	if !contains(validTypes, step.Type) {
+		return fmt.Errorf("step[%d].type must be one of: %s", index, strings.Join(validTypes, ", "))
+	}
+
+	switch step.Type {
+	case "tool":
+		if step.Tool == "" {
+			return fmt.Errorf("step[%d].tool is required for tool steps", index)
 		}
 
-		// Validate error handling
-		if step.OnError != nil {
-			validActions := []string{"abort", "continue", "retry"}
-			if !contains(validActions, step.OnError.Action) {
-				return fmt.Errorf("step[%d].on_error.action must be one of: %s", i, strings.Join(validActions, ", "))
-			}
-
-			if step.OnError.Action == "retry" && step.OnError.RetryCount <= 0 {
-				return fmt.Errorf("step[%d].on_error.retry_count must be positive for retry action", i)
-			}
+	case "elicitation":
+		if step.Message == "" {
+			return fmt.Errorf("step[%d].message is required for elicitation steps", index)
 		}
+		if len(step.Schema) == 0 {
+			return fmt.Errorf("step[%d].schema is required for elicitation steps", index)
+		}
+		if step.Timeout <= 0 {
+			step.Timeout = 5 * time.Minute // Default elicitation timeout
+		}
+	}
+
+	return nil
+}
+
+// validateStepDependencies validates step dependency references
+func (*DefaultValidator) validateStepDependencies(step *WorkflowStepConfig, index int, stepIDs map[string]bool) error {
+	for _, depID := range step.DependsOn {
+		if !stepIDs[depID] {
+			return fmt.Errorf("step[%d].depends_on references non-existent step: %s", index, depID)
+		}
+	}
+	return nil
+}
+
+// validateStepErrorHandling validates step error handling configuration
+func (*DefaultValidator) validateStepErrorHandling(step *WorkflowStepConfig, index int) error {
+	if step.OnError == nil {
+		return nil
+	}
+
+	validActions := []string{"abort", "continue", "retry"}
+	if !contains(validActions, step.OnError.Action) {
+		return fmt.Errorf("step[%d].on_error.action must be one of: %s", index, strings.Join(validActions, ", "))
+	}
+
+	if step.OnError.Action == "retry" && step.OnError.RetryCount <= 0 {
+		return fmt.Errorf("step[%d].on_error.retry_count must be positive for retry action", index)
 	}
 
 	return nil

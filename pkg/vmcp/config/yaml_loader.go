@@ -71,14 +71,14 @@ type rawIncomingAuth struct {
 }
 
 type rawOutgoingAuth struct {
-	Source  string                              `yaml:"source"`
-	Default *rawBackendAuthStrategy             `yaml:"default"`
+	Source   string                             `yaml:"source"`
+	Default  *rawBackendAuthStrategy            `yaml:"default"`
 	Backends map[string]*rawBackendAuthStrategy `yaml:"backends"`
 }
 
 type rawBackendAuthStrategy struct {
-	Type          string                 `yaml:"type"`
-	TokenExchange *rawTokenExchangeAuth  `yaml:"token_exchange"`
+	Type           string                 `yaml:"type"`
+	TokenExchange  *rawTokenExchangeAuth  `yaml:"token_exchange"`
 	ServiceAccount *rawServiceAccountAuth `yaml:"service_account"`
 }
 
@@ -98,9 +98,9 @@ type rawServiceAccountAuth struct {
 }
 
 type rawAggregation struct {
-	ConflictResolution       string                        `yaml:"conflict_resolution"`
-	ConflictResolutionConfig *rawConflictResolutionConfig  `yaml:"conflict_resolution_config"`
-	Tools                    []*rawWorkloadToolConfig      `yaml:"tools"`
+	ConflictResolution       string                       `yaml:"conflict_resolution"`
+	ConflictResolutionConfig *rawConflictResolutionConfig `yaml:"conflict_resolution_config"`
+	Tools                    []*rawWorkloadToolConfig     `yaml:"tools"`
 }
 
 type rawConflictResolutionConfig struct {
@@ -109,8 +109,8 @@ type rawConflictResolutionConfig struct {
 }
 
 type rawWorkloadToolConfig struct {
-	Workload  string                     `yaml:"workload"`
-	Filter    []string                   `yaml:"filter"`
+	Workload  string                      `yaml:"workload"`
+	Filter    []string                    `yaml:"filter"`
 	Overrides map[string]*rawToolOverride `yaml:"overrides"`
 }
 
@@ -157,18 +157,18 @@ type rawCompositeTool struct {
 }
 
 type rawWorkflowStep struct {
-	ID         string            `yaml:"id"`
-	Type       string            `yaml:"type"`
-	Tool       string            `yaml:"tool"`
-	Arguments  map[string]any    `yaml:"arguments"`
-	Condition  string            `yaml:"condition"`
-	DependsOn  []string          `yaml:"depends_on"`
-	OnError    *rawStepErrorHandling `yaml:"on_error"`
-	Message    string            `yaml:"message"`
-	Schema     map[string]any    `yaml:"schema"`
-	Timeout    string            `yaml:"timeout"`
-	OnDecline  *rawElicitationResponse `yaml:"on_decline"`
-	OnCancel   *rawElicitationResponse `yaml:"on_cancel"`
+	ID        string                  `yaml:"id"`
+	Type      string                  `yaml:"type"`
+	Tool      string                  `yaml:"tool"`
+	Arguments map[string]any          `yaml:"arguments"`
+	Condition string                  `yaml:"condition"`
+	DependsOn []string                `yaml:"depends_on"`
+	OnError   *rawStepErrorHandling   `yaml:"on_error"`
+	Message   string                  `yaml:"message"`
+	Schema    map[string]any          `yaml:"schema"`
+	Timeout   string                  `yaml:"timeout"`
+	OnDecline *rawElicitationResponse `yaml:"on_decline"`
+	OnCancel  *rawElicitationResponse `yaml:"on_cancel"`
 }
 
 type rawStepErrorHandling struct {
@@ -239,7 +239,7 @@ func (l *YAMLLoader) transformToConfig(raw *rawConfig) (*Config, error) {
 	return cfg, nil
 }
 
-func (l *YAMLLoader) transformIncomingAuth(raw *rawIncomingAuth) (*IncomingAuthConfig, error) {
+func (*YAMLLoader) transformIncomingAuth(raw *rawIncomingAuth) (*IncomingAuthConfig, error) {
 	cfg := &IncomingAuthConfig{
 		Type: raw.Type,
 	}
@@ -295,7 +295,7 @@ func (l *YAMLLoader) transformOutgoingAuth(raw *rawOutgoingAuth) (*OutgoingAuthC
 	return cfg, nil
 }
 
-func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*BackendAuthStrategy, error) {
+func (*YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*BackendAuthStrategy, error) {
 	strategy := &BackendAuthStrategy{
 		Type:     raw.Type,
 		Metadata: make(map[string]any),
@@ -314,12 +314,12 @@ func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (
 		}
 
 		strategy.Metadata = map[string]any{
-			"token_url":           raw.TokenExchange.TokenURL,
-			"client_id":           raw.TokenExchange.ClientID,
-			"client_secret":       clientSecret,
-			"audience":            raw.TokenExchange.Audience,
-			"scopes":              raw.TokenExchange.Scopes,
-			"subject_token_type":  raw.TokenExchange.SubjectTokenType,
+			"token_url":          raw.TokenExchange.TokenURL,
+			"client_id":          raw.TokenExchange.ClientID,
+			"client_secret":      clientSecret,
+			"audience":           raw.TokenExchange.Audience,
+			"scopes":             raw.TokenExchange.Scopes,
+			"subject_token_type": raw.TokenExchange.SubjectTokenType,
 		}
 
 	case "service_account":
@@ -334,21 +334,25 @@ func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (
 		}
 
 		strategy.Metadata = map[string]any{
-			"credentials":   credentials,
+			"credentials":     credentials,
 			"credentials_env": raw.ServiceAccount.CredentialsEnv,
-			"header_name":   raw.ServiceAccount.HeaderName,
-			"header_format": raw.ServiceAccount.HeaderFormat,
+			"header_name":     raw.ServiceAccount.HeaderName,
+			"header_format":   raw.ServiceAccount.HeaderFormat,
 		}
 	}
 
 	return strategy, nil
 }
 
-func (l *YAMLLoader) transformAggregation(raw *rawAggregation) (*AggregationConfig, error) {
+// transformAggregation transforms raw aggregation configuration.
+// Error return is maintained for consistency with other transform methods and future validation.
+//
+//nolint:unparam // error return kept for interface consistency
+func (*YAMLLoader) transformAggregation(raw *rawAggregation) (*AggregationConfig, error) {
 	strategy := vmcp.ConflictResolutionStrategy(raw.ConflictResolution)
 
 	cfg := &AggregationConfig{
-		ConflictResolution: strategy,
+		ConflictResolution:       strategy,
 		ConflictResolutionConfig: &ConflictResolutionConfig{},
 	}
 
@@ -377,13 +381,13 @@ func (l *YAMLLoader) transformAggregation(raw *rawAggregation) (*AggregationConf
 	return cfg, nil
 }
 
-func (l *YAMLLoader) transformTokenCache(raw *rawTokenCache) (*TokenCacheConfig, error) {
+func (*YAMLLoader) transformTokenCache(raw *rawTokenCache) (*TokenCacheConfig, error) {
 	cfg := &TokenCacheConfig{
 		Provider: raw.Provider,
 	}
 
 	switch raw.Provider {
-	case "memory":
+	case CacheProviderMemory:
 		ttlOffset, err := time.ParseDuration(raw.Config.TTLOffset)
 		if err != nil {
 			return nil, fmt.Errorf("invalid ttl_offset: %w", err)
@@ -394,7 +398,7 @@ func (l *YAMLLoader) transformTokenCache(raw *rawTokenCache) (*TokenCacheConfig,
 			TTLOffset:  ttlOffset,
 		}
 
-	case "redis":
+	case CacheProviderRedis:
 		ttlOffset, err := time.ParseDuration(raw.Config.TTLOffset)
 		if err != nil {
 			return nil, fmt.Errorf("invalid ttl_offset: %w", err)
@@ -412,7 +416,7 @@ func (l *YAMLLoader) transformTokenCache(raw *rawTokenCache) (*TokenCacheConfig,
 	return cfg, nil
 }
 
-func (l *YAMLLoader) transformOperational(raw *rawOperational) (*OperationalConfig, error) {
+func (*YAMLLoader) transformOperational(raw *rawOperational) (*OperationalConfig, error) {
 	cfg := &OperationalConfig{}
 
 	// Transform timeouts
@@ -507,7 +511,7 @@ func (l *YAMLLoader) transformCompositeTools(raw []*rawCompositeTool) ([]*Compos
 	return tools, nil
 }
 
-func (l *YAMLLoader) transformWorkflowStep(raw *rawWorkflowStep) (*WorkflowStepConfig, error) {
+func (*YAMLLoader) transformWorkflowStep(raw *rawWorkflowStep) (*WorkflowStepConfig, error) {
 	step := &WorkflowStepConfig{
 		ID:        raw.ID,
 		Type:      raw.Type,

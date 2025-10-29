@@ -9,6 +9,7 @@ import (
 )
 
 func TestValidator_ValidateBasicFields(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		cfg     *Config
@@ -79,6 +80,7 @@ func TestValidator_ValidateBasicFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			v := NewValidator()
 			err := v.Validate(tt.cfg)
 
@@ -97,6 +99,7 @@ func TestValidator_ValidateBasicFields(t *testing.T) {
 }
 
 func TestValidator_ValidateIncomingAuth(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		auth    *IncomingAuthConfig
@@ -157,6 +160,7 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			v := NewValidator()
 			err := v.validateIncomingAuth(tt.auth)
 
@@ -175,6 +179,7 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 }
 
 func TestValidator_ValidateOutgoingAuth(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		auth    *OutgoingAuthConfig
@@ -199,9 +204,9 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 					"github": {
 						Type: "token_exchange",
 						Metadata: map[string]any{
-							"token_url":   "https://example.com/token",
-							"client_id":   "test-client",
-							"audience":    "github-api",
+							"token_url": "https://example.com/token",
+							"client_id": "test-client",
+							"audience":  "github-api",
 						},
 					},
 				},
@@ -235,7 +240,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 				Source: "inline",
 				Backends: map[string]*BackendAuthStrategy{
 					"github": {
-						Type:     "token_exchange",
+						Type: "token_exchange",
 						Metadata: map[string]any{
 							"client_id": "test-client",
 							// Missing token_url and audience
@@ -250,6 +255,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			v := NewValidator()
 			err := v.validateOutgoingAuth(tt.auth)
 
@@ -268,6 +274,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 }
 
 func TestValidator_ValidateAggregation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		agg     *AggregationConfig
@@ -297,7 +304,7 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 		{
 			name: "valid manual strategy",
 			agg: &AggregationConfig{
-				ConflictResolution: vmcp.ConflictStrategyManual,
+				ConflictResolution:       vmcp.ConflictStrategyManual,
 				ConflictResolutionConfig: &ConflictResolutionConfig{},
 				Tools: []*WorkloadToolConfig{
 					{
@@ -315,7 +322,7 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 		{
 			name: "prefix strategy missing format",
 			agg: &AggregationConfig{
-				ConflictResolution: vmcp.ConflictStrategyPrefix,
+				ConflictResolution:       vmcp.ConflictStrategyPrefix,
 				ConflictResolutionConfig: &ConflictResolutionConfig{},
 			},
 			wantErr: true,
@@ -324,7 +331,7 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 		{
 			name: "priority strategy missing order",
 			agg: &AggregationConfig{
-				ConflictResolution: vmcp.ConflictStrategyPriority,
+				ConflictResolution:       vmcp.ConflictStrategyPriority,
 				ConflictResolutionConfig: &ConflictResolutionConfig{},
 			},
 			wantErr: true,
@@ -333,7 +340,7 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 		{
 			name: "manual strategy missing overrides",
 			agg: &AggregationConfig{
-				ConflictResolution: vmcp.ConflictStrategyManual,
+				ConflictResolution:       vmcp.ConflictStrategyManual,
 				ConflictResolutionConfig: &ConflictResolutionConfig{},
 			},
 			wantErr: true,
@@ -343,6 +350,7 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			v := NewValidator()
 			err := v.validateAggregation(tt.agg)
 
@@ -361,6 +369,7 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 }
 
 func TestValidator_ValidateTokenCache(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		cache   *TokenCacheConfig
@@ -375,7 +384,7 @@ func TestValidator_ValidateTokenCache(t *testing.T) {
 		{
 			name: "valid memory cache",
 			cache: &TokenCacheConfig{
-				Provider: "memory",
+				Provider: CacheProviderMemory,
 				Memory: &MemoryCacheConfig{
 					MaxEntries: 1000,
 					TTLOffset:  5 * time.Minute,
@@ -405,7 +414,7 @@ func TestValidator_ValidateTokenCache(t *testing.T) {
 		{
 			name: "memory cache with negative max entries",
 			cache: &TokenCacheConfig{
-				Provider: "memory",
+				Provider: CacheProviderMemory,
 				Memory: &MemoryCacheConfig{
 					MaxEntries: -1,
 				},
@@ -417,6 +426,7 @@ func TestValidator_ValidateTokenCache(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			v := NewValidator()
 			err := v.validateTokenCache(tt.cache)
 
@@ -435,6 +445,7 @@ func TestValidator_ValidateTokenCache(t *testing.T) {
 }
 
 func TestValidator_ValidateCompositeTools(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		tools   []*CompositeToolConfig
@@ -517,6 +528,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			v := NewValidator()
 			err := v.validateCompositeTools(tt.tools)
 

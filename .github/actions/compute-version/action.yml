@@ -1,0 +1,26 @@
+name: 'Compute Version Number'
+description: 'Computes a semantic version string based on the branch/tag context'
+outputs:
+  tag:
+    description: 'The computed version tag'
+    value: ${{ steps.version-string.outputs.tag }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Compute version number
+      id: version-string
+      shell: bash
+      run: |
+        if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          # For main branch, use semver with -dev suffix
+          echo "tag=0.0.1-dev.$GITHUB_RUN_NUMBER_$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+        elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          # For tags, use the tag as is (assuming it's semver)
+          TAG="${{ github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+        else
+          # For other branches, use branch name and run number
+          BRANCH="${{ github.ref_name }}"
+          echo "tag=0.0.1-$BRANCH.$GITHUB_RUN_NUMBER_$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+        fi
+

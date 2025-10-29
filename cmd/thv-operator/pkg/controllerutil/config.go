@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"hash/fnv"
 
-	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/dump"
 	"sigs.k8s.io/controller-runtime/pkg/client"

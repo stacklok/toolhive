@@ -321,8 +321,12 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 
 	// Create the transparent proxy
 	t.proxy = transparent.NewTransparentProxy(
-		t.host, t.proxyPort, t.containerName, targetURI,
-		t.prometheusHandler, t.authInfoHandler,
+		t.host,
+		t.proxyPort,
+		t.containerName,
+		targetURI,
+		t.prometheusHandler,
+		t.authInfoHandler,
 		t.remoteURL == "",
 		t.remoteURL != "",
 		string(t.transportType),

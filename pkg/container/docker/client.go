@@ -291,12 +291,12 @@ func (c *Client) DeployWorkload(
 		return 0, nil
 	}
 
+	firstPortInt, err := extractFirstPort(options)
+	if err != nil {
+		return 0, err // extractFirstPort already wraps the error with context.
+	}
 	if isolateNetwork {
 		// just extract the first exposed port
-		firstPortInt, err := extractFirstPort(options)
-		if err != nil {
-			return 0, err // extractFirstPort already wraps the error with context.
-		}
 		hostPort, err = c.ops.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig,
 			permissionProfile.Network)
 		if err != nil {
@@ -304,7 +304,20 @@ func (c *Client) DeployWorkload(
 		}
 	}
 
-	return hostPort, nil
+	// NOTE: this is a hack to get the final port for the workload.
+	// The intended behavior is the following
+	// * if network is "bridge" (default) and network isolation is not enabled, then
+	//   the Proxy should use the Docker assigned port
+	// * if network is "bridge" (default) and network isolation is enabled, then
+	//   the Proxy should use the egress container port
+	// * if network is "host", then the Proxy should use the MCP server port
+	//
+	// The last case is not supported in VM-based installations like Docker Desktop.
+	// Unfortunately, there's no reliable way to know if the user is using a VM-based
+	// installation and we assume that Linux installations are Docker Engine installations.
+	finalPort := calculateFinalPort(hostPort, firstPortInt, permissionConfig.NetworkMode)
+
+	return finalPort, nil
 }
 
 // ListWorkloads lists workloads
@@ -1314,6 +1327,9 @@ func (c *Client) createContainer(
 	if err != nil {
 		return "", NewContainerError(err, "", fmt.Sprintf("failed to create container: %v", err))
 	}
+	if resp.Warnings != nil {
+		logger.Debugf("Container creation warnings: %v", resp.Warnings)
+	}
 
 	// Start the container
 	err = c.api.ContainerStart(ctx, resp.ID, container.StartOptions{})
@@ -1386,10 +1402,21 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 	return dnsContainerId, dnsContainerIP, nil
 }
 
-func (c *Client) createMcpContainer(ctx context.Context, name string, networkName string, image string, command []string,
-	envVars map[string]string, labels map[string]string, attachStdio bool, permissionConfig *runtime.PermissionConfig,
-	additionalDNS string, exposedPorts map[string]struct{}, portBindings map[string][]runtime.PortBinding,
-	isolateNetwork bool) error {
+func (c *Client) createMcpContainer(
+	ctx context.Context,
+	name string,
+	networkName string,
+	image string,
+	command []string,
+	envVars map[string]string,
+	labels map[string]string,
+	attachStdio bool,
+	permissionConfig *runtime.PermissionConfig,
+	additionalDNS string,
+	exposedPorts map[string]struct{},
+	portBindings map[string][]runtime.PortBinding,
+	isolateNetwork bool,
+) error {
 	// Create container configuration
 	config := &container.Config{
 		Image:        image,

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-28T00:17:31Z",
+  "last_updated": "2025-10-29T00:18:44Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1123,9 +1123,9 @@
         "create_project"
       ],
       "metadata": {
-        "stars": 407,
+        "stars": 442,
         "pulls": 273,
-        "last_updated": "2025-10-10T02:29:32Z"
+        "last_updated": "2025-10-28T02:31:26Z"
       },
       "repository_url": "https://github.com/GoogleCloudPlatform/cloud-run-mcp",
       "tags": [
@@ -5574,7 +5574,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-10-09T02:29:15Z"
+        "last_updated": "2025-10-28T02:31:25Z"
       },
       "tags": [
         "remote",
@@ -5677,7 +5677,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-10-09T02:29:15Z"
+        "last_updated": "2025-10-28T02:31:25Z"
       },
       "tags": [
         "remote",
@@ -5731,7 +5731,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-10-09T02:29:15Z"
+        "last_updated": "2025-10-28T02:31:25Z"
       },
       "tags": [
         "remote",
@@ -5765,9 +5765,9 @@
         "get_abstract_syntax_tree"
       ],
       "metadata": {
-        "stars": 585,
+        "stars": 601,
         "pulls": 0,
-        "last_updated": "2025-10-10T02:29:32Z"
+        "last_updated": "2025-10-28T02:31:26Z"
       },
       "repository_url": "https://github.com/semgrep/mcp",
       "tags": [

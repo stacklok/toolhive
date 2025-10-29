@@ -38,4 +38,20 @@ var (
 	// ErrInvalidInput indicates invalid input parameters.
 	// Wrapping errors should specify which parameter is invalid and why.
 	ErrInvalidInput = errors.New("invalid input")
+
+	// ErrUnsupportedTransport indicates an unsupported MCP transport type.
+	// Wrapping errors should specify which transport type is not supported.
+	ErrUnsupportedTransport = errors.New("unsupported transport type")
+
+	// ErrToolExecutionFailed indicates an MCP tool execution failed (domain error).
+	// This represents the tool running but returning an error result (IsError=true in MCP).
+	// These errors should be forwarded to the client transparently as the LLM needs to see them.
+	// Wrapping errors should include the tool name and error message from MCP.
+	ErrToolExecutionFailed = errors.New("tool execution failed")
+
+	// ErrBackendUnavailable indicates a backend MCP server is unreachable (operational error).
+	// This represents infrastructure issues (network down, server not responding, etc.).
+	// These errors may be retried, circuit-broken, or handled differently from domain errors.
+	// Wrapping errors should include the backend ID and underlying cause.
+	ErrBackendUnavailable = errors.New("backend unavailable")
 )

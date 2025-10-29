@@ -11,6 +11,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
+// Token cache provider types
+const (
+	// CacheProviderMemory represents in-memory token cache provider
+	CacheProviderMemory = "memory"
+	// CacheProviderRedis represents Redis token cache provider
+	CacheProviderRedis = "redis"
+)
+
 // Config is the unified configuration model for Virtual MCP Server.
 // This is platform-agnostic and used by both CLI and Kubernetes deployments.
 //

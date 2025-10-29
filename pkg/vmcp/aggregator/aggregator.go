@@ -29,17 +29,34 @@ type BackendDiscoverer interface {
 //  1. Query: Fetch capabilities from each backend
 //  2. Conflict Resolution: Handle duplicate tool/resource/prompt names
 //  3. Merging: Create final unified capability view and routing table
+//
+//go:generate mockgen -destination=mocks/mock_interfaces.go -package=mocks -source=aggregator.go BackendDiscoverer Aggregator ConflictResolver ToolFilter ToolOverride
 type Aggregator interface {
 	// QueryCapabilities queries a backend for its MCP capabilities.
 	// Returns the raw capabilities (tools, resources, prompts) from the backend.
 	QueryCapabilities(ctx context.Context, backend vmcp.Backend) (*BackendCapabilities, error)
+
+	// QueryAllCapabilities queries all backends for their capabilities in parallel.
+	// Handles backend failures gracefully (logs and continues with remaining backends).
+	QueryAllCapabilities(ctx context.Context, backends []vmcp.Backend) (map[string]*BackendCapabilities, error)
 
 	// ResolveConflicts applies conflict resolution strategy to handle
 	// duplicate capability names across backends.
 	ResolveConflicts(ctx context.Context, capabilities map[string]*BackendCapabilities) (*ResolvedCapabilities, error)
 
 	// MergeCapabilities creates the final unified capability view and routing table.
-	MergeCapabilities(ctx context.Context, resolved *ResolvedCapabilities) (*AggregatedCapabilities, error)
+	// Uses the backend registry to populate full BackendTarget information for routing.
+	MergeCapabilities(
+		ctx context.Context,
+		resolved *ResolvedCapabilities,
+		registry vmcp.BackendRegistry,
+	) (*AggregatedCapabilities, error)
+
+	// AggregateCapabilities is a convenience method that performs the full aggregation pipeline:
+	// 1. Query all backends
+	// 2. Resolve conflicts
+	// 3. Merge into final view
+	AggregateCapabilities(ctx context.Context, backends []vmcp.Backend) (*AggregatedCapabilities, error)
 }
 
 // BackendCapabilities contains the raw capabilities from a single backend.

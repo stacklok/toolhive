@@ -69,36 +69,6 @@ vmcp uses a YAML configuration file to define:
 
 See [examples/vmcp-config.yaml](../../examples/vmcp-config.yaml) for a complete example.
 
-### Basic Configuration Example
-
-```yaml
-server:
-  address: "localhost:8080"
-  transport: "http"
-
-middleware:
-  auth:
-    enabled: true
-    provider: "local"
-  audit:
-    enabled: true
-    log_file: "/var/log/vmcp/audit.log"
-
-backends:
-  - name: "filesystem"
-    type: "container"
-    config:
-      image: "mcp/filesystem:latest"
-    tool_prefix: "fs_"
-
-  - name: "git"
-    type: "stdio"
-    config:
-      command: "python"
-      args: ["-m", "mcp_git"]
-    tool_prefix: "git_"
-```
-
 ## Backend Types
 
 vmcp supports three types of MCP server backends:

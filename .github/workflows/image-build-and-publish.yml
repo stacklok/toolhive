@@ -258,7 +258,8 @@ jobs:
           tags: ${{ steps.ubi-meta.outputs.tags }}
           build-args: |
             CODEDIR=cmd/thv-operator
-            VERSION=${{ steps.version-string.outputs.tag }}-ubi
+            TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+            VERSION=$TAG-ubi
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
           labels: ${{ steps.ubi-meta.outputs.labels }}
@@ -369,7 +370,8 @@ jobs:
           tags: ${{ steps.ubi-meta.outputs.tags }}
           build-args: |
             CODEDIR=cmd/thv-proxyrunner
-            VERSION=${{ steps.version-string.outputs.tag }}
+            TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+            VERSION=$TAG-ubi
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
           labels: ${{ steps.ubi-meta.outputs.labels }}

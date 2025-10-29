@@ -22,51 +22,22 @@ func TestDefaultAggregator_QueryCapabilities(t *testing.T) {
 		defer ctrl.Finish()
 
 		mockClient := mocks.NewMockBackendClient(ctrl)
-		backend := vmcp.Backend{
-			ID:            "backend1",
-			Name:          "Backend 1",
-			BaseURL:       "http://localhost:8080",
-			TransportType: "streamable-http",
-			HealthStatus:  vmcp.BackendHealthy,
-		}
+		backend := newTestBackend("backend1", withBackendName("Backend 1"))
 
-		expectedCaps := &vmcp.CapabilityList{
-			Tools: []vmcp.Tool{
-				{
-					Name:        "test_tool",
-					Description: "A test tool",
-					InputSchema: map[string]any{"type": "object"},
-					BackendID:   "backend1",
-				},
-			},
-			Resources: []vmcp.Resource{
-				{
-					URI:       "test://resource",
-					Name:      "Test Resource",
-					BackendID: "backend1",
-				},
-			},
-			Prompts: []vmcp.Prompt{
-				{
-					Name:      "test_prompt",
-					BackendID: "backend1",
-				},
-			},
-			SupportsLogging:  true,
-			SupportsSampling: false,
-		}
+		expectedCaps := newTestCapabilityList("backend1",
+			withTools(newTestTool("test_tool", "backend1")),
+			withResources(newTestResource("test://resource", "backend1")),
+			withPrompts(newTestPrompt("test_prompt", "backend1")),
+			withLogging(true))
 
-		mockClient.EXPECT().
-			ListCapabilities(gomock.Any(), gomock.Any()).
-			Return(expectedCaps, nil).
-			Times(1)
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(expectedCaps, nil)
 
 		agg := NewDefaultAggregator(mockClient)
 		result, err := agg.QueryCapabilities(context.Background(), backend)
 
 		require.NoError(t, err)
 		assert.Equal(t, "backend1", result.BackendID)
-		assert.Len(t, result.Tools, 1)
+		require.Len(t, result.Tools, 1)
 		assert.Equal(t, "test_tool", result.Tools[0].Name)
 		assert.Len(t, result.Resources, 1)
 		assert.Len(t, result.Prompts, 1)
@@ -80,17 +51,10 @@ func TestDefaultAggregator_QueryCapabilities(t *testing.T) {
 		defer ctrl.Finish()
 
 		mockClient := mocks.NewMockBackendClient(ctrl)
-		backend := vmcp.Backend{
-			ID:            "backend1",
-			Name:          "Backend 1",
-			BaseURL:       "http://localhost:8080",
-			TransportType: "streamable-http",
-		}
+		backend := newTestBackend("backend1", withBackendName("Backend 1"))
 
-		mockClient.EXPECT().
-			ListCapabilities(gomock.Any(), gomock.Any()).
-			Return(nil, errors.New("connection failed")).
-			Times(1)
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).
+			Return(nil, errors.New("connection failed"))
 
 		agg := NewDefaultAggregator(mockClient)
 		result, err := agg.QueryCapabilities(context.Background(), backend)
@@ -111,47 +75,23 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 
 		mockClient := mocks.NewMockBackendClient(ctrl)
 		backends := []vmcp.Backend{
-			{
-				ID:            "backend1",
-				Name:          "Backend 1",
-				BaseURL:       "http://localhost:8080",
-				TransportType: "streamable-http",
-			},
-			{
-				ID:            "backend2",
-				Name:          "Backend 2",
-				BaseURL:       "http://localhost:8081",
-				TransportType: "sse",
-			},
+			newTestBackend("backend1", withBackendName("Backend 1")),
+			newTestBackend("backend2", withBackendName("Backend 2"),
+				withBackendURL("http://localhost:8081"),
+				withBackendTransport("sse")),
 		}
 
-		caps1 := &vmcp.CapabilityList{
-			Tools: []vmcp.Tool{
-				{Name: "tool1", BackendID: "backend1"},
-			},
-		}
+		caps1 := newTestCapabilityList("backend1", withTools(newTestTool("tool1", "backend1")))
+		caps2 := newTestCapabilityList("backend2", withTools(newTestTool("tool2", "backend2")))
 
-		caps2 := &vmcp.CapabilityList{
-			Tools: []vmcp.Tool{
-				{Name: "tool2", BackendID: "backend2"},
-			},
-		}
-
-		mockClient.EXPECT().
-			ListCapabilities(gomock.Any(), gomock.Any()).
-			Return(caps1, nil).
-			Times(1)
-
-		mockClient.EXPECT().
-			ListCapabilities(gomock.Any(), gomock.Any()).
-			Return(caps2, nil).
-			Times(1)
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps1, nil)
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps2, nil)
 
 		agg := NewDefaultAggregator(mockClient)
 		result, err := agg.QueryAllCapabilities(context.Background(), backends)
 
 		require.NoError(t, err)
-		assert.Len(t, result, 2)
+		require.Len(t, result, 2)
 		assert.Contains(t, result, "backend1")
 		assert.Contains(t, result, "backend2")
 	})
@@ -163,35 +103,27 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 
 		mockClient := mocks.NewMockBackendClient(ctrl)
 		backends := []vmcp.Backend{
-			{ID: "backend1", BaseURL: "http://localhost:8080", TransportType: "streamable-http"},
-			{ID: "backend2", BaseURL: "http://localhost:8081", TransportType: "streamable-http"},
+			newTestBackend("backend1"),
+			newTestBackend("backend2", withBackendURL("http://localhost:8081")),
 		}
 
-		caps1 := &vmcp.CapabilityList{
-			Tools: []vmcp.Tool{{Name: "tool1", BackendID: "backend1"}},
-		}
+		caps1 := newTestCapabilityList("backend1", withTools(newTestTool("tool1", "backend1")))
 
-		// Mock will be called twice - we need to handle both backends
-		// Use DoAndReturn to make one succeed and one fail based on the target
-		mockClient.EXPECT().
-			ListCapabilities(gomock.Any(), gomock.Any()).
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).
 			DoAndReturn(func(_ context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
-				// Backend1 succeeds, backend2 fails
 				if target.WorkloadID == "backend1" {
 					return caps1, nil
 				}
 				return nil, errors.New("connection timeout")
-			}).
-			Times(2)
+			}).Times(2)
 
 		agg := NewDefaultAggregator(mockClient)
 		result, err := agg.QueryAllCapabilities(context.Background(), backends)
 
-		// Should succeed with partial results
 		require.NoError(t, err)
-		assert.Len(t, result, 1)
-		assert.Contains(t, result, "backend1", "backend1 should have succeeded")
-		assert.NotContains(t, result, "backend2", "backend2 should have failed")
+		require.Len(t, result, 1)
+		assert.Contains(t, result, "backend1")
+		assert.NotContains(t, result, "backend2")
 	})
 
 	t.Run("all backends fail", func(t *testing.T) {
@@ -200,14 +132,10 @@ func TestDefaultAggregator_QueryAllCapabilities(t *testing.T) {
 		defer ctrl.Finish()
 
 		mockClient := mocks.NewMockBackendClient(ctrl)
-		backends := []vmcp.Backend{
-			{ID: "backend1", BaseURL: "http://localhost:8080", TransportType: "streamable-http"},
-		}
+		backends := []vmcp.Backend{newTestBackend("backend1")}
 
-		mockClient.EXPECT().
-			ListCapabilities(gomock.Any(), gomock.Any()).
-			Return(nil, errors.New("connection failed")).
-			Times(1)
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).
+			Return(nil, errors.New("connection failed"))
 
 		agg := NewDefaultAggregator(mockClient)
 		result, err := agg.QueryAllCapabilities(context.Background(), backends)
@@ -382,36 +310,23 @@ func TestDefaultAggregator_AggregateCapabilities(t *testing.T) {
 
 		mockClient := mocks.NewMockBackendClient(ctrl)
 		backends := []vmcp.Backend{
-			{ID: "backend1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "streamable-http"},
-			{ID: "backend2", Name: "Backend 2", BaseURL: "http://localhost:8081", TransportType: "sse"},
+			newTestBackend("backend1", withBackendName("Backend 1")),
+			newTestBackend("backend2", withBackendName("Backend 2"),
+				withBackendURL("http://localhost:8081"),
+				withBackendTransport("sse")),
 		}
 
-		caps1 := &vmcp.CapabilityList{
-			Tools: []vmcp.Tool{
-				{Name: "tool1", Description: "Tool 1", BackendID: "backend1", InputSchema: map[string]any{"type": "object"}},
-			},
-			Resources: []vmcp.Resource{
-				{URI: "test://resource1", Name: "Resource 1", BackendID: "backend1"},
-			},
-			SupportsLogging: true,
-		}
+		caps1 := newTestCapabilityList("backend1",
+			withTools(newTestTool("tool1", "backend1")),
+			withResources(newTestResource("test://resource1", "backend1")),
+			withLogging(true))
 
-		caps2 := &vmcp.CapabilityList{
-			Tools: []vmcp.Tool{
-				{Name: "tool2", Description: "Tool 2", BackendID: "backend2", InputSchema: map[string]any{"type": "object"}},
-			},
-			SupportsSampling: true,
-		}
+		caps2 := newTestCapabilityList("backend2",
+			withTools(newTestTool("tool2", "backend2")),
+			withSampling(true))
 
-		mockClient.EXPECT().
-			ListCapabilities(gomock.Any(), gomock.Any()).
-			Return(caps1, nil).
-			Times(1)
-
-		mockClient.EXPECT().
-			ListCapabilities(gomock.Any(), gomock.Any()).
-			Return(caps2, nil).
-			Times(1)
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps1, nil)
+		mockClient.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).Return(caps2, nil)
 
 		agg := NewDefaultAggregator(mockClient)
 		result, err := agg.AggregateCapabilities(context.Background(), backends)

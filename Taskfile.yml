@@ -4,9 +4,6 @@ includes:
   operator:
     taskfile: ./cmd/thv-operator/Taskfile.yml
     flatten: true
-  registry-api:
-    taskfile: ./cmd/thv-registry-api/Taskfile.yml
-    flatten: true
 
 tasks:
   docs:
@@ -15,7 +12,7 @@ tasks:
     cmds:
       - rm -rf docs/cli/*
       - go run cmd/help/main.go --dir docs/cli
-      - swag init -g pkg/api/server.go --v3.1 -o docs/server --exclude ./cmd/thv-registry-api
+      - swag init -g pkg/api/server.go --v3.1 -o docs/server
 
   swagger-install:
     desc: Install the swag tool for OpenAPI/Swagger generation
@@ -174,6 +171,37 @@ tasks:
     cmds:
       - go install -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -v ./cmd/thv
 
+  build-vmcp:
+    desc: Build the vmcp binary
+    deps: [gen]
+    vars:
+      VERSION:
+        sh: git describe --tags --always --dirty --match "v*" || echo "dev"
+      COMMIT:
+        sh: git rev-parse --short HEAD || echo "unknown"
+      BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
+    cmds:
+      - cmd: mkdir -p bin
+        platforms: [linux, darwin]
+      - cmd: go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/vmcp ./cmd/vmcp
+        platforms: [linux, darwin]
+      - cmd: cmd.exe /c mkdir bin
+        platforms: [windows]
+        ignore_error: true
+      - cmd: go build -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -o bin/vmcp.exe ./cmd/vmcp
+        platforms: [windows]
+
+  install-vmcp:
+    desc: Install the vmcp binary to GOPATH/bin
+    vars:
+      VERSION:
+        sh: git describe --tags --always --dirty --match "v*" || echo "dev"
+      COMMIT:
+        sh: git rev-parse --short HEAD || echo "unknown"
+      BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
+    cmds:
+      - go install -ldflags "-s -w -X github.com/stacklok/toolhive/pkg/versions.Version={{.VERSION}} -X github.com/stacklok/toolhive/pkg/versions.Commit={{.COMMIT}} -X github.com/stacklok/toolhive/pkg/versions.BuildDate={{.BUILD_DATE}}" -v ./cmd/vmcp
+
   all:
     desc: Run linting, tests, and build
     deps: [lint, test, build]
@@ -189,6 +217,12 @@ tasks:
     cmds:
       - ko build --local --bare ./cmd/thv
 
+  build-vmcp-image:
+    desc: Build the vmcp image with ko
+    env:
+      KO_DOCKER_REPO: ghcr.io/stacklok/toolhive/vmcp
+    cmds:
+      - ko build --local --bare ./cmd/vmcp
 
   build-egress-proxy:
     desc: Build the egress proxy container image
@@ -196,5 +230,5 @@ tasks:
       - docker build --load -t ghcr.io/stacklok/toolhive/egress-proxy:local containers/egress-proxy/
 
   build-all-images:
-    desc: Build all container images (main app and egress proxy)
-    deps: [build-image, build-egress-proxy]
+    desc: Build all container images (main app, vmcp, and egress proxy)
+    deps: [build-image, build-vmcp-image, build-egress-proxy]

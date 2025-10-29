@@ -168,6 +168,14 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid target URI: %w", err)
 	}
 
+	// Validate OAuth callback port availability
+	if err := networking.ValidateCallbackPort(
+		remoteAuthFlags.RemoteAuthCallbackPort,
+		remoteAuthFlags.RemoteAuthClientID,
+	); err != nil {
+		return err
+	}
+
 	// Select a port for the HTTP proxy (host port)
 	port, err := networking.FindOrUsePort(proxyPort)
 	if err != nil {
@@ -176,7 +184,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	logger.Infof("Using host port: %d", port)
 
 	// Handle OAuth authentication to the remote server if needed
-	var tokenSource *oauth2.TokenSource
+	var tokenSource oauth2.TokenSource
 	var oauthConfig *oauth.Config
 	var introspectionURL string
 
@@ -200,7 +208,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create middlewares slice for incoming request authentication
-	var middlewares []types.MiddlewareFunction
+	var middlewares []types.NamedMiddleware
 
 	// Get OIDC configuration if enabled (for protecting the proxy endpoint)
 	var oidcConfig *auth.TokenValidatorConfig
@@ -229,7 +237,10 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %v", err)
 	}
-	middlewares = append(middlewares, authMiddleware)
+	middlewares = append(middlewares, types.NamedMiddleware{
+		Name:     "auth",
+		Function: authMiddleware,
+	})
 
 	// Add OAuth token injection or token exchange middleware for outgoing requests
 	if err := addExternalTokenMiddleware(&middlewares, tokenSource); err != nil {
@@ -360,10 +371,10 @@ func resolveClientSecret() (string, error) {
 }
 
 // createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests
-func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.MiddlewareFunction {
+func createTokenInjectionMiddleware(tokenSource oauth2.TokenSource) types.MiddlewareFunction {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token, err := (*tokenSource).Token()
+			token, err := tokenSource.Token()
 			if err != nil {
 				http.Error(w, "Unable to retrieve OAuth token", http.StatusUnauthorized)
 				return
@@ -376,7 +387,7 @@ func createTokenInjectionMiddleware(tokenSource *oauth2.TokenSource) types.Middl
 }
 
 // addExternalTokenMiddleware adds token exchange or token injection middleware to the middleware chain
-func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSource *oauth2.TokenSource) error {
+func addExternalTokenMiddleware(middlewares *[]types.NamedMiddleware, tokenSource oauth2.TokenSource) error {
 	if remoteAuthFlags.TokenExchangeURL != "" {
 		// Use token exchange middleware when token exchange is configured
 		tokenExchangeConfig, err := remoteAuthFlags.BuildTokenExchangeConfig()
@@ -391,7 +402,7 @@ func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSo
 		var tokenExchangeMiddleware types.MiddlewareFunction
 		if tokenSource != nil {
 			// Create middleware using TokenSource - middleware handles token selection
-			tokenExchangeMiddleware, err = tokenexchange.CreateMiddlewareFromTokenSource(*tokenExchangeConfig, *tokenSource)
+			tokenExchangeMiddleware, err = tokenexchange.CreateMiddlewareFromTokenSource(*tokenExchangeConfig, tokenSource)
 			if err != nil {
 				return fmt.Errorf("failed to create token exchange middleware: %v", err)
 			}
@@ -402,11 +413,17 @@ func addExternalTokenMiddleware(middlewares *[]types.MiddlewareFunction, tokenSo
 				return fmt.Errorf("failed to create token exchange middleware: %v", err)
 			}
 		}
-		*middlewares = append(*middlewares, tokenExchangeMiddleware)
+		*middlewares = append(*middlewares, types.NamedMiddleware{
+			Name:     "token-exchange",
+			Function: tokenExchangeMiddleware,
+		})
 	} else if tokenSource != nil {
 		// Fallback to direct token injection when no token exchange is configured
 		tokenMiddleware := createTokenInjectionMiddleware(tokenSource)
-		*middlewares = append(*middlewares, tokenMiddleware)
+		*middlewares = append(*middlewares, types.NamedMiddleware{
+			Name:     "token-injection",
+			Function: tokenMiddleware,
+		})
 	}
 	return nil
 }

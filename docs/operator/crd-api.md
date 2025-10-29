@@ -9,8 +9,14 @@
 Package v1alpha1 contains API Schema definitions for the toolhive v1alpha1 API group
 
 ### Resource Types
+- [MCPExternalAuthConfig](#mcpexternalauthconfig)
+- [MCPExternalAuthConfigList](#mcpexternalauthconfiglist)
+- [MCPGroup](#mcpgroup)
+- [MCPGroupList](#mcpgrouplist)
 - [MCPRegistry](#mcpregistry)
 - [MCPRegistryList](#mcpregistrylist)
+- [MCPRemoteProxy](#mcpremoteproxy)
+- [MCPRemoteProxyList](#mcpremoteproxylist)
 - [MCPServer](#mcpserver)
 - [MCPServerList](#mcpserverlist)
 - [MCPToolConfig](#mcptoolconfig)
@@ -37,6 +43,24 @@ _Appears in:_
 | `Ready` | APIPhaseReady means API is ready to serve requests<br /> |
 | `Unhealthy` | APIPhaseUnhealthy means API is deployed but not healthy<br /> |
 | `Error` | APIPhaseError means API deployment failed<br /> |
+
+
+#### APISource
+
+
+
+APISource defines API source configuration for ToolHive Registry APIs
+Phase 1: Supports ToolHive API endpoints (no pagination)
+Phase 2: Will add support for upstream MCP Registry API with pagination
+
+
+
+_Appears in:_
+- [MCPRegistrySource](#mcpregistrysource)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `endpoint` _string_ | Endpoint is the base API URL (without path)<br />The controller will append the appropriate paths:<br />Phase 1 (ToolHive API):<br />  - /v0/servers - List all servers (single response, no pagination)<br />  - /v0/servers/\{name\} - Get specific server (future)<br />  - /v0/info - Get registry metadata (future)<br />Example: "http://my-registry-api.default.svc.cluster.local/api" |  | MinLength: 1 <br />Pattern: `^https?://.*` <br />Required: \{\} <br /> |
 
 
 #### APIStatus
@@ -67,6 +91,7 @@ AuditConfig defines audit logging configuration for the MCP server
 
 
 _Appears in:_
+- [MCPRemoteProxySpec](#mcpremoteproxyspec)
 - [MCPServerSpec](#mcpserverspec)
 
 | Field | Description | Default | Validation |
@@ -83,6 +108,7 @@ AuthzConfigRef defines a reference to authorization configuration
 
 
 _Appears in:_
+- [MCPRemoteProxySpec](#mcpremoteproxyspec)
 - [MCPServerSpec](#mcpserverspec)
 
 | Field | Description | Default | Validation |
@@ -161,6 +187,24 @@ _Appears in:_
 | `value` _string_ | Value of the environment variable |  | Required: \{\} <br /> |
 
 
+#### ExternalAuthConfigRef
+
+
+
+ExternalAuthConfigRef defines a reference to a MCPExternalAuthConfig resource.
+The referenced MCPExternalAuthConfig must be in the same namespace as the MCPServer.
+
+
+
+_Appears in:_
+- [MCPRemoteProxySpec](#mcpremoteproxyspec)
+- [MCPServerSpec](#mcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the MCPExternalAuthConfig resource |  | Required: \{\} <br /> |
+
+
 #### GitSource
 
 
@@ -216,10 +260,12 @@ _Appears in:_
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from |  |  |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint |  |  |
 | `clientId` _string_ | ClientID is the OIDC client ID |  |  |
-| `clientSecret` _string_ | ClientSecret is the client secret for introspection (optional) |  |  |
+| `clientSecret` _string_ | ClientSecret is the client secret for introspection (optional)<br />Deprecated: Use ClientSecretRef instead for better security |  |  |
+| `clientSecretRef` _[SecretKeyRef](#secretkeyref)_ | ClientSecretRef is a reference to a Kubernetes Secret containing the client secret<br />If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence |  |  |
 | `thvCABundlePath` _string_ | ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests<br />The file must be mounted into the pod (e.g., via ConfigMap or Secret volume) |  |  |
 | `jwksAuthTokenPath` _string_ | JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests<br />The file must be mounted into the pod (e.g., via Secret volume) |  |  |
 | `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses<br />Use with caution - only enable for trusted internal IDPs | false |  |
+| `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing<br />WARNING: This is insecure and should NEVER be used in production<br />Only enable for local development, testing, or trusted internal networks | false |  |
 
 
 #### KubernetesOIDCConfig
@@ -242,6 +288,184 @@ _Appears in:_
 | `jwksUrl` _string_ | JWKSURL is the URL to fetch the JWKS from<br />If empty, OIDC discovery will be used to automatically determine the JWKS URL |  |  |
 | `introspectionUrl` _string_ | IntrospectionURL is the URL for token introspection endpoint<br />If empty, OIDC discovery will be used to automatically determine the introspection URL |  |  |
 | `useClusterAuth` _boolean_ | UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token<br />When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification<br />and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication<br />Defaults to true if not specified |  |  |
+
+
+#### MCPExternalAuthConfig
+
+
+
+MCPExternalAuthConfig is the Schema for the mcpexternalauthconfigs API.
+MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
+MCPServer resources within the same namespace. Cross-namespace references
+are not supported for security and isolation reasons.
+
+
+
+_Appears in:_
+- [MCPExternalAuthConfigList](#mcpexternalauthconfiglist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPExternalAuthConfig` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[MCPExternalAuthConfigSpec](#mcpexternalauthconfigspec)_ |  |  |  |
+| `status` _[MCPExternalAuthConfigStatus](#mcpexternalauthconfigstatus)_ |  |  |  |
+
+
+#### MCPExternalAuthConfigList
+
+
+
+MCPExternalAuthConfigList contains a list of MCPExternalAuthConfig
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPExternalAuthConfigList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[MCPExternalAuthConfig](#mcpexternalauthconfig) array_ |  |  |  |
+
+
+#### MCPExternalAuthConfigSpec
+
+
+
+MCPExternalAuthConfigSpec defines the desired state of MCPExternalAuthConfig.
+MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
+MCPServer resources in the same namespace.
+
+
+
+_Appears in:_
+- [MCPExternalAuthConfig](#mcpexternalauthconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _string_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange] <br />Required: \{\} <br /> |
+| `tokenExchange` _[TokenExchangeConfig](#tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  |  |
+
+
+#### MCPExternalAuthConfigStatus
+
+
+
+MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
+
+
+
+_Appears in:_
+- [MCPExternalAuthConfig](#mcpexternalauthconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPExternalAuthConfig.<br />It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server. |  |  |
+| `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  |  |
+| `referencingServers` _string array_ | ReferencingServers is a list of MCPServer resources that reference this MCPExternalAuthConfig<br />This helps track which servers need to be reconciled when this config changes |  |  |
+
+
+#### MCPGroup
+
+
+
+MCPGroup is the Schema for the mcpgroups API
+
+
+
+_Appears in:_
+- [MCPGroupList](#mcpgrouplist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPGroup` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[MCPGroupSpec](#mcpgroupspec)_ |  |  |  |
+| `status` _[MCPGroupStatus](#mcpgroupstatus)_ |  |  |  |
+
+
+#### MCPGroupList
+
+
+
+MCPGroupList contains a list of MCPGroup
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPGroupList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[MCPGroup](#mcpgroup) array_ |  |  |  |
+
+
+#### MCPGroupPhase
+
+_Underlying type:_ _string_
+
+MCPGroupPhase represents the lifecycle phase of an MCPGroup
+
+_Validation:_
+- Enum: [Ready Pending Failed]
+
+_Appears in:_
+- [MCPGroupStatus](#mcpgroupstatus)
+
+| Field | Description |
+| --- | --- |
+| `Ready` | MCPGroupPhaseReady indicates the MCPGroup is ready<br /> |
+| `Pending` | MCPGroupPhasePending indicates the MCPGroup is pending<br /> |
+| `Failed` | MCPGroupPhaseFailed indicates the MCPGroup has failed<br /> |
+
+
+#### MCPGroupSpec
+
+
+
+MCPGroupSpec defines the desired state of MCPGroup
+
+
+
+_Appears in:_
+- [MCPGroup](#mcpgroup)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `description` _string_ | Description provides human-readable context |  |  |
+
+
+#### MCPGroupStatus
+
+
+
+MCPGroupStatus defines observed state
+
+
+
+_Appears in:_
+- [MCPGroup](#mcpgroup)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `phase` _[MCPGroupPhase](#mcpgroupphase)_ | Phase indicates current state | Pending | Enum: [Ready Pending Failed] <br /> |
+| `servers` _string array_ | Servers lists server names in this group |  |  |
+| `serverCount` _integer_ | ServerCount is the number of servers |  |  |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent observations |  |  |
 
 
 #### MCPRegistry
@@ -320,10 +544,11 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type is the type of source (configmap, git) | configmap | Enum: [configmap git] <br /> |
+| `type` _string_ | Type is the type of source (configmap, git, api) | configmap | Enum: [configmap git api] <br /> |
 | `format` _string_ | Format is the data format (toolhive, upstream) | toolhive | Enum: [toolhive upstream] <br /> |
 | `configmap` _[ConfigMapSource](#configmapsource)_ | ConfigMap defines the ConfigMap source configuration<br />Only used when Type is "configmap" |  |  |
 | `git` _[GitSource](#gitsource)_ | Git defines the Git repository source configuration<br />Only used when Type is "git" |  |  |
+| `api` _[APISource](#apisource)_ | API defines the API source configuration<br />Only used when Type is "api" |  |  |
 
 
 #### MCPRegistrySpec
@@ -367,6 +592,119 @@ _Appears in:_
 | `storageRef` _[StorageReference](#storagereference)_ | StorageRef is a reference to the internal storage location |  |  |
 | `lastManualSyncTrigger` _string_ | LastManualSyncTrigger tracks the last processed manual sync annotation value<br />Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation |  |  |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRegistry's state |  |  |
+
+
+#### MCPRemoteProxy
+
+
+
+MCPRemoteProxy is the Schema for the mcpremoteproxies API
+It enables proxying remote MCP servers with authentication, authorization, audit logging, and tool filtering
+
+
+
+_Appears in:_
+- [MCPRemoteProxyList](#mcpremoteproxylist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPRemoteProxy` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[MCPRemoteProxySpec](#mcpremoteproxyspec)_ |  |  |  |
+| `status` _[MCPRemoteProxyStatus](#mcpremoteproxystatus)_ |  |  |  |
+
+
+#### MCPRemoteProxyList
+
+
+
+MCPRemoteProxyList contains a list of MCPRemoteProxy
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPRemoteProxyList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[MCPRemoteProxy](#mcpremoteproxy) array_ |  |  |  |
+
+
+#### MCPRemoteProxyPhase
+
+_Underlying type:_ _string_
+
+MCPRemoteProxyPhase is a label for the condition of a MCPRemoteProxy at the current time
+
+_Validation:_
+- Enum: [Pending Ready Failed Terminating]
+
+_Appears in:_
+- [MCPRemoteProxyStatus](#mcpremoteproxystatus)
+
+| Field | Description |
+| --- | --- |
+| `Pending` | MCPRemoteProxyPhasePending means the proxy is being created<br /> |
+| `Ready` | MCPRemoteProxyPhaseReady means the proxy is ready and operational<br /> |
+| `Failed` | MCPRemoteProxyPhaseFailed means the proxy failed to start or encountered an error<br /> |
+| `Terminating` | MCPRemoteProxyPhaseTerminating means the proxy is being deleted<br /> |
+
+
+#### MCPRemoteProxySpec
+
+
+
+MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
+
+
+
+_Appears in:_
+- [MCPRemoteProxy](#mcpremoteproxy)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `remoteURL` _string_ | RemoteURL is the URL of the remote MCP server to proxy |  | Pattern: `^https?://` <br />Required: \{\} <br /> |
+| `port` _integer_ | Port is the port to expose the MCP proxy on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
+| `transport` _string_ | Transport is the transport method for the remote proxy (sse or streamable-http) | streamable-http | Enum: [sse streamable-http] <br /> |
+| `oidcConfig` _[OIDCConfigRef](#oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the proxy<br />This validates incoming tokens from clients. Required for proxy mode. |  | Required: \{\} <br /> |
+| `externalAuthConfigRef` _[ExternalAuthConfigRef](#externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.<br />When specified, the proxy will exchange validated incoming tokens for remote service tokens.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy. |  |  |
+| `authzConfig` _[AuthzConfigRef](#authzconfigref)_ | AuthzConfig defines authorization policy configuration for the proxy |  |  |
+| `audit` _[AuditConfig](#auditconfig)_ | Audit defines audit logging configuration for the proxy |  |  |
+| `toolConfigRef` _[ToolConfigRef](#toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this allows filtering and overriding tools from the remote MCP server. |  |  |
+| `telemetry` _[TelemetryConfig](#telemetryconfig)_ | Telemetry defines observability configuration for the proxy |  |  |
+| `resources` _[ResourceRequirements](#resourcerequirements)_ | Resources defines the resource requirements for the proxy container |  |  |
+| `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false |  |
+| `resourceOverrides` _[ResourceOverrides](#resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  |  |
+
+
+#### MCPRemoteProxyStatus
+
+
+
+MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
+
+
+
+_Appears in:_
+- [MCPRemoteProxy](#mcpremoteproxy)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `phase` _[MCPRemoteProxyPhase](#mcpremoteproxyphase)_ | Phase is the current phase of the MCPRemoteProxy |  | Enum: [Pending Ready Failed Terminating] <br /> |
+| `url` _string_ | URL is the internal cluster URL where the proxy can be accessed |  |  |
+| `externalURL` _string_ | ExternalURL is the external URL where the proxy can be accessed (if exposed externally) |  |  |
+| `observedGeneration` _integer_ | ObservedGeneration reflects the generation of the most recently observed MCPRemoteProxy |  |  |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPRemoteProxy's state |  |  |
+| `toolConfigHash` _string_ | ToolConfigHash stores the hash of the referenced ToolConfig for change detection |  |  |
+| `externalAuthConfigHash` _string_ | ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec |  |  |
+| `message` _string_ | Message provides additional information about the current phase |  |  |
 
 
 #### MCPServer
@@ -447,8 +785,10 @@ _Appears in:_
 | `image` _string_ | Image is the container image for the MCP server |  | Required: \{\} <br /> |
 | `transport` _string_ | Transport is the transport method for the MCP server (stdio, streamable-http or sse) | stdio | Enum: [stdio streamable-http sse] <br /> |
 | `proxyMode` _string_ | ProxyMode is the proxy mode for stdio transport (sse or streamable-http)<br />This setting is only used when Transport is "stdio" | sse | Enum: [sse streamable-http] <br /> |
-| `port` _integer_ | Port is the port to expose the MCP server on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
-| `targetPort` _integer_ | TargetPort is the port that MCP server listens to |  | Maximum: 65535 <br />Minimum: 1 <br /> |
+| `port` _integer_ | Port is the port to expose the MCP server on<br />Deprecated: Use ProxyPort instead | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
+| `targetPort` _integer_ | TargetPort is the port that MCP server listens to<br />Deprecated: Use McpPort instead |  | Maximum: 65535 <br />Minimum: 1 <br /> |
+| `proxyPort` _integer_ | ProxyPort is the port to expose the proxy runner on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
+| `mcpPort` _integer_ | McpPort is the port that MCP server listens to |  | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `args` _string array_ | Args are additional arguments to pass to the MCP server |  |  |
 | `env` _[EnvVar](#envvar) array_ | Env are environment variables to set in the MCP server container |  |  |
 | `volumes` _[Volume](#volume) array_ | Volumes are volumes to mount in the MCP server container |  |  |
@@ -456,15 +796,17 @@ _Appears in:_
 | `secrets` _[SecretRef](#secretref) array_ | Secrets are references to secrets to mount in the MCP server container |  |  |
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the MCP server.<br />If not specified, a ServiceAccount will be created automatically and used by the MCP server. |  |  |
 | `permissionProfile` _[PermissionProfileRef](#permissionprofileref)_ | PermissionProfile defines the permission profile to use |  |  |
-| `podTemplateSpec` _[PodTemplateSpec](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#podtemplatespec-v1-core)_ | PodTemplateSpec defines the pod template to use for the MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the MCP server runs in, you must specify<br />the `mcp` container name in the PodTemplateSpec. |  |  |
+| `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the MCP server runs in, you must specify<br />the `mcp` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br /> |
 | `resourceOverrides` _[ResourceOverrides](#resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  |  |
 | `oidcConfig` _[OIDCConfigRef](#oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration for the MCP server |  |  |
 | `authzConfig` _[AuthzConfigRef](#authzconfigref)_ | AuthzConfig defines authorization policy configuration for the MCP server |  |  |
 | `audit` _[AuditConfig](#auditconfig)_ | Audit defines audit logging configuration for the MCP server |  |  |
 | `tools` _string array_ | ToolsFilter is the filter on tools applied to the MCP server<br />Deprecated: Use ToolConfigRef instead |  |  |
 | `toolConfigRef` _[ToolConfigRef](#toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPServer.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this takes precedence over the inline ToolsFilter field. |  |  |
+| `externalAuthConfigRef` _[ExternalAuthConfigRef](#externalauthconfigref)_ | ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.<br />The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer. |  |  |
 | `telemetry` _[TelemetryConfig](#telemetryconfig)_ | Telemetry defines observability configuration for the MCP server |  |  |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false |  |
+| `groupRef` _string_ | GroupRef is the name of the MCPGroup this server belongs to<br />Must reference an existing MCPGroup in the same namespace |  |  |
 
 
 #### MCPServerStatus
@@ -482,6 +824,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPServer's state |  |  |
 | `toolConfigHash` _string_ | ToolConfigHash stores the hash of the referenced ToolConfig for change detection |  |  |
+| `externalAuthConfigHash` _string_ | ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec |  |  |
 | `url` _string_ | URL is the URL where the MCP server can be accessed |  |  |
 | `phase` _[MCPServerPhase](#mcpserverphase)_ | Phase is the current phase of the MCPServer |  | Enum: [Pending Running Failed Terminating] <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  |  |
@@ -599,6 +942,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `mode` _string_ | Mode specifies the network mode for the container (e.g., "host", "bridge", "none")<br />When empty, the default container runtime network mode is used |  |  |
 | `outbound` _[OutboundNetworkPermissions](#outboundnetworkpermissions)_ | Outbound defines the outbound network permissions |  |  |
 
 
@@ -611,6 +955,7 @@ OIDCConfigRef defines a reference to OIDC configuration
 
 
 _Appears in:_
+- [MCPRemoteProxySpec](#mcpremoteproxyspec)
 - [MCPServerSpec](#mcpserverspec)
 
 | Field | Description | Default | Validation |
@@ -811,6 +1156,7 @@ ResourceOverrides defines overrides for annotations and labels on created resour
 
 
 _Appears in:_
+- [MCPRemoteProxySpec](#mcpremoteproxyspec)
 - [MCPServerSpec](#mcpserverspec)
 
 | Field | Description | Default | Validation |
@@ -828,12 +1174,31 @@ ResourceRequirements describes the compute resource requirements
 
 
 _Appears in:_
+- [MCPRemoteProxySpec](#mcpremoteproxyspec)
 - [MCPServerSpec](#mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `limits` _[ResourceList](#resourcelist)_ | Limits describes the maximum amount of compute resources allowed |  |  |
 | `requests` _[ResourceList](#resourcelist)_ | Requests describes the minimum amount of compute resources required |  |  |
+
+
+#### SecretKeyRef
+
+
+
+SecretKeyRef is a reference to a key within a Secret
+
+
+
+_Appears in:_
+- [InlineOIDCConfig](#inlineoidcconfig)
+- [TokenExchangeConfig](#tokenexchangeconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the secret |  | Required: \{\} <br /> |
+| `key` _string_ | Key is the key within the secret |  | Required: \{\} <br /> |
 
 
 #### SecretRef
@@ -957,12 +1322,37 @@ TelemetryConfig defines observability configuration for the MCP server
 
 
 _Appears in:_
+- [MCPRemoteProxySpec](#mcpremoteproxyspec)
 - [MCPServerSpec](#mcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `openTelemetry` _[OpenTelemetryConfig](#opentelemetryconfig)_ | OpenTelemetry defines OpenTelemetry configuration |  |  |
 | `prometheus` _[PrometheusConfig](#prometheusconfig)_ | Prometheus defines Prometheus-specific configuration |  |  |
+
+
+#### TokenExchangeConfig
+
+
+
+TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
+This configuration is used to exchange incoming authentication tokens for tokens
+that can be used with external services.
+The structure matches the tokenexchange.Config from pkg/auth/tokenexchange/middleware.go
+
+
+
+_Appears in:_
+- [MCPExternalAuthConfigSpec](#mcpexternalauthconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `tokenUrl` _string_ | TokenURL is the OAuth 2.0 token endpoint URL for token exchange |  | Required: \{\} <br /> |
+| `clientId` _string_ | ClientID is the OAuth 2.0 client identifier |  | Required: \{\} <br /> |
+| `clientSecretRef` _[SecretKeyRef](#secretkeyref)_ | ClientSecretRef is a reference to a secret containing the OAuth 2.0 client secret |  | Required: \{\} <br /> |
+| `audience` _string_ | Audience is the target audience for the exchanged token |  | Required: \{\} <br /> |
+| `scopes` _string array_ | Scopes is a list of OAuth 2.0 scopes to request for the exchanged token |  |  |
+| `externalTokenHeaderName` _string_ | ExternalTokenHeaderName is the name of the custom header to use for the exchanged token.<br />If set, the exchanged token will be added to this custom header (e.g., "X-Upstream-Token").<br />If empty or not set, the exchanged token will replace the Authorization header (default behavior). |  |  |
 
 
 #### ToolConfigRef
@@ -975,6 +1365,7 @@ The referenced MCPToolConfig must be in the same namespace as the MCPServer.
 
 
 _Appears in:_
+- [MCPRemoteProxySpec](#mcpremoteproxyspec)
 - [MCPServerSpec](#mcpserverspec)
 
 | Field | Description | Default | Validation |

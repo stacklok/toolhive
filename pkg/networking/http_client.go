@@ -38,13 +38,14 @@ func protectedDialerControl(_, address string, _ syscall.RawConn) error {
 
 // ValidatingTransport is for validating URLs prior to request
 type ValidatingTransport struct {
-	Transport http.RoundTripper
+	Transport         http.RoundTripper
+	InsecureAllowHTTP bool
 }
 
 // RoundTrip validates the request URL prior to forwarding
 func (t *ValidatingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Skip validation if INSECURE_DISABLE_URL_VALIDATION is set
-	if strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true") {
+	// Skip validation if INSECURE_DISABLE_URL_VALIDATION is set or if InsecureAllowHTTP is true
+	if strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true") || t.InsecureAllowHTTP {
 		return t.Transport.RoundTrip(req)
 	}
 
@@ -92,6 +93,7 @@ type HttpClientBuilder struct {
 	caCertPath            string
 	authTokenFile         string
 	allowPrivate          bool
+	insecureAllowHTTP     bool
 }
 
 // NewHttpClientBuilder returns a new HttpClientBuilder
@@ -118,6 +120,13 @@ func (b *HttpClientBuilder) WithTokenFromFile(path string) *HttpClientBuilder {
 // WithPrivateIPs allows connections to private IP addresses
 func (b *HttpClientBuilder) WithPrivateIPs(allow bool) *HttpClientBuilder {
 	b.allowPrivate = allow
+	return b
+}
+
+// WithInsecureAllowHTTP allows HTTP (non-HTTPS) URLs
+// WARNING: This is insecure and should NEVER be used in production
+func (b *HttpClientBuilder) WithInsecureAllowHTTP(allow bool) *HttpClientBuilder {
+	b.insecureAllowHTTP = allow
 	return b
 }
 
@@ -155,7 +164,8 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 
 	// Start with validation transport
 	var clientTransport http.RoundTripper = &ValidatingTransport{
-		Transport: transport,
+		Transport:         transport,
+		InsecureAllowHTTP: b.insecureAllowHTTP,
 	}
 
 	// Add auth transport if token file is provided using oauth2.Transport

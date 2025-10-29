@@ -124,7 +124,7 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	}
 
 	// Add middleware to runner
-	runner.AddMiddleware(tokenExchangeMw)
+	runner.AddMiddleware(config.Type, tokenExchangeMw)
 
 	return nil
 }

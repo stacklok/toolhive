@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauth"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -203,7 +204,43 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 		config.SchemaVersion = CurrentSchemaVersion
 	}
 
+	// Migrate plain text OAuth client secrets to CLI format
+	if err := migrateOAuthClientSecret(&config); err != nil {
+		return nil, fmt.Errorf("failed to migrate OAuth client secret: %w", err)
+	}
+
 	return &config, nil
+}
+
+// migrateOAuthClientSecret migrates plain text OAuth client secrets to CLI format
+// This handles the transition from storing plain text secrets to CLI format references
+func migrateOAuthClientSecret(config *RunConfig) error {
+	if config.RemoteAuthConfig == nil || config.RemoteAuthConfig.ClientSecret == "" {
+		return nil // No OAuth config or no client secret to migrate
+	}
+
+	// Check if the client secret is already in CLI format
+	if _, err := secrets.ParseSecretParameter(config.RemoteAuthConfig.ClientSecret); err == nil {
+		return nil // Already in CLI format, no migration needed
+	}
+
+	// The client secret is in plain text format - migrate it
+	cliFormatSecret, err := oauth.ProcessOAuthClientSecret(config.Name, config.RemoteAuthConfig.ClientSecret)
+	if err != nil {
+		return fmt.Errorf("failed to process OAuth client secret: %w", err)
+	}
+
+	// Update the RunConfig to use the CLI format reference
+	config.RemoteAuthConfig.ClientSecret = cliFormatSecret
+
+	// Save the migrated RunConfig back to disk so migration only happens once
+	if err := config.SaveState(context.Background()); err != nil {
+		// Log error without potentially sensitive details - only log error type and message
+		logger.Warnf("Failed to save migrated RunConfig for workload %s: %s", config.Name, err.Error())
+		// Don't fail the migration - the secret is already stored and the config is updated in memory
+	}
+
+	return nil
 }
 
 // NewRunConfig creates a new RunConfig with default values
@@ -305,13 +342,17 @@ func (c *RunConfig) WithEnvironmentVariables(envVars map[string]string) (*RunCon
 
 // ValidateSecrets checks if the secrets can be parsed and are valid
 func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.Provider) error {
-	if len(c.Secrets) == 0 {
-		return nil // No secrets to validate
+	if len(c.Secrets) > 0 {
+		_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+		if err != nil {
+			return fmt.Errorf("failed to get secrets: %w", err)
+		}
 	}
-
-	_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
-	if err != nil {
-		return fmt.Errorf("failed to get secrets: %w", err)
+	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.ClientSecret != "" {
+		_, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.ClientSecret)
+		if err != nil {
+			return fmt.Errorf("failed to get secrets: %w", err)
+		}
 	}
 
 	return nil
@@ -319,23 +360,37 @@ func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.P
 
 // WithSecrets processes secrets and adds them to environment variables
 func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provider) (*RunConfig, error) {
-	if len(c.Secrets) == 0 {
-		return c, nil // No secrets to process
+	// Process regular secrets if provided
+	if len(c.Secrets) > 0 {
+		secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+		if err != nil {
+			return c, fmt.Errorf("failed to get secrets: %v", err)
+		}
+
+		// Initialize EnvVars if it's nil
+		if c.EnvVars == nil {
+			c.EnvVars = make(map[string]string)
+		}
+
+		// Add secret variables to environment variables
+		for key, value := range secretVariables {
+			c.EnvVars[key] = value
+		}
 	}
 
-	secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
-	if err != nil {
-		return c, fmt.Errorf("failed to get secrets: %v", err)
-	}
-
-	// Initialize EnvVars if it's nil
-	if c.EnvVars == nil {
-		c.EnvVars = make(map[string]string)
-	}
-
-	// Add secret variables to environment variables
-	for key, value := range secretVariables {
-		c.EnvVars[key] = value
+	// Process RemoteAuthConfig.ClientSecret if it's in CLI format
+	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.ClientSecret != "" {
+		// Check if it's in CLI format (contains ",target=")
+		if secretParam, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.ClientSecret); err == nil {
+			// It's in CLI format, resolve the actual secret value
+			actualSecret, err := secretManager.GetSecret(ctx, secretParam.Name)
+			if err != nil {
+				return c, fmt.Errorf("failed to resolve OAuth client secret '%s': %w", secretParam.Name, err)
+			}
+			// Replace the CLI format string with the actual secret value
+			c.RemoteAuthConfig.ClientSecret = actualSecret
+		}
+		// If it's not in CLI format (plain text), leave it as is
 	}
 
 	return c, nil
@@ -438,27 +493,86 @@ func LoadState(ctx context.Context, name string) (*RunConfig, error) {
 
 // RemoteAuthConfig holds configuration for remote authentication
 type RemoteAuthConfig struct {
-	ClientID         string
-	ClientSecret     string
-	ClientSecretFile string
-	Scopes           []string
-	SkipBrowser      bool
-	Timeout          time.Duration `swaggertype:"string" example:"5m"`
-	CallbackPort     int
+	ClientID         string        `json:"client_id,omitempty" yaml:"client_id,omitempty"`
+	ClientSecret     string        `json:"client_secret,omitempty" yaml:"client_secret,omitempty"`
+	ClientSecretFile string        `json:"client_secret_file,omitempty" yaml:"client_secret_file,omitempty"`
+	Scopes           []string      `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+	SkipBrowser      bool          `json:"skip_browser,omitempty" yaml:"skip_browser,omitempty"`
+	Timeout          time.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty" swaggertype:"string" example:"5m"`
+	CallbackPort     int           `json:"callback_port,omitempty" yaml:"callback_port,omitempty"`
+	UsePKCE          bool          `json:"use_pkce" yaml:"use_pkce"`
 
 	// OAuth endpoint configuration (from registry)
-	Issuer       string
-	AuthorizeURL string
-	TokenURL     string
+	Issuer       string `json:"issuer,omitempty" yaml:"issuer,omitempty"`
+	AuthorizeURL string `json:"authorize_url,omitempty" yaml:"authorize_url,omitempty"`
+	TokenURL     string `json:"token_url,omitempty" yaml:"token_url,omitempty"`
 
 	// Headers for HTTP requests
-	Headers []*registry.Header
+	Headers []*registry.Header `json:"headers,omitempty" yaml:"headers,omitempty"`
 
 	// Environment variables for the client
-	EnvVars []*registry.EnvVar
+	EnvVars []*registry.EnvVar `json:"env_vars,omitempty" yaml:"env_vars,omitempty"`
 
 	// OAuth parameters for server-specific customization
-	OAuthParams map[string]string
+	OAuthParams map[string]string `json:"oauth_params,omitempty" yaml:"oauth_params,omitempty"`
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for backward compatibility
+// This handles both the old PascalCase format and the new snake_case format
+func (r *RemoteAuthConfig) UnmarshalJSON(data []byte) error {
+	// Parse the JSON to check which format is being used
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	// Check if this is the old PascalCase format by looking for old field name
+	// if one old field is present, then it's the old format
+	if _, isOld := raw["ClientID"]; isOld {
+		// Unmarshal using old PascalCase format
+		var oldFormat struct {
+			ClientID         string             `json:"ClientID,omitempty"`
+			ClientSecret     string             `json:"ClientSecret,omitempty"`
+			ClientSecretFile string             `json:"ClientSecretFile,omitempty"`
+			Scopes           []string           `json:"Scopes,omitempty"`
+			SkipBrowser      bool               `json:"SkipBrowser,omitempty"`
+			Timeout          time.Duration      `json:"Timeout,omitempty"`
+			CallbackPort     int                `json:"CallbackPort,omitempty"`
+			UsePKCE          bool               `json:"UsePKCE,omitempty"`
+			Issuer           string             `json:"Issuer,omitempty"`
+			AuthorizeURL     string             `json:"AuthorizeURL,omitempty"`
+			TokenURL         string             `json:"TokenURL,omitempty"`
+			Headers          []*registry.Header `json:"Headers,omitempty"`
+			EnvVars          []*registry.EnvVar `json:"EnvVars,omitempty"`
+			OAuthParams      map[string]string  `json:"OAuthParams,omitempty"`
+		}
+
+		if err := json.Unmarshal(data, &oldFormat); err != nil {
+			return fmt.Errorf("failed to unmarshal RemoteAuthConfig in old format: %w", err)
+		}
+
+		// Copy from old format to new format
+		r.ClientID = oldFormat.ClientID
+		r.ClientSecret = oldFormat.ClientSecret
+		r.ClientSecretFile = oldFormat.ClientSecretFile
+		r.Scopes = oldFormat.Scopes
+		r.SkipBrowser = oldFormat.SkipBrowser
+		r.Timeout = oldFormat.Timeout
+		r.CallbackPort = oldFormat.CallbackPort
+		r.UsePKCE = oldFormat.UsePKCE
+		r.Issuer = oldFormat.Issuer
+		r.AuthorizeURL = oldFormat.AuthorizeURL
+		r.TokenURL = oldFormat.TokenURL
+		r.Headers = oldFormat.Headers
+		r.EnvVars = oldFormat.EnvVars
+		r.OAuthParams = oldFormat.OAuthParams
+		return nil
+	}
+
+	// Use the new snake_case format
+	type Alias RemoteAuthConfig
+	alias := (*Alias)(r)
+	return json.Unmarshal(data, alias)
 }
 
 // ToolOverride represents a tool override.

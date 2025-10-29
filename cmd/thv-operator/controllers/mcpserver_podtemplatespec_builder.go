@@ -1,21 +1,36 @@
 package controllers
 
 import (
+	"encoding/json"
+	"fmt"
+
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
 // MCPServerPodTemplateSpecBuilder provides an interface for building PodTemplateSpec patches for MCP Servers
 type MCPServerPodTemplateSpecBuilder struct {
-	spec *corev1.PodTemplateSpec
+	spec            *corev1.PodTemplateSpec
+	hasUserTemplate bool // Track if we started with user-provided template
 }
 
 // NewMCPServerPodTemplateSpecBuilder creates a new builder, optionally starting with a user-provided template
-func NewMCPServerPodTemplateSpecBuilder(userTemplate *corev1.PodTemplateSpec) *MCPServerPodTemplateSpecBuilder {
+// Returns an error if the provided raw extension cannot be unmarshaled into a valid PodTemplateSpec
+func NewMCPServerPodTemplateSpecBuilder(userTemplateRaw *runtime.RawExtension) (*MCPServerPodTemplateSpecBuilder, error) {
 	var spec *corev1.PodTemplateSpec
-	if userTemplate != nil {
-		spec = userTemplate.DeepCopy()
+	hasUserTemplate := false
+
+	if userTemplateRaw != nil && userTemplateRaw.Raw != nil {
+		// Try to unmarshal the raw extension into a PodTemplateSpec
+		var userTemplate corev1.PodTemplateSpec
+		if err := json.Unmarshal(userTemplateRaw.Raw, &userTemplate); err != nil {
+			// Return error if unmarshaling fails - this indicates invalid PodTemplateSpec data
+			return nil, fmt.Errorf("failed to unmarshal PodTemplateSpec: %w", err)
+		}
+		spec = (&userTemplate).DeepCopy()
+		hasUserTemplate = true
 	} else {
 		spec = &corev1.PodTemplateSpec{
 			Spec: corev1.PodSpec{
@@ -24,7 +39,10 @@ func NewMCPServerPodTemplateSpecBuilder(userTemplate *corev1.PodTemplateSpec) *M
 		}
 	}
 
-	return &MCPServerPodTemplateSpecBuilder{spec: spec}
+	return &MCPServerPodTemplateSpecBuilder{
+		spec:            spec,
+		hasUserTemplate: hasUserTemplate,
+	}, nil
 }
 
 // WithServiceAccount sets the service account name
@@ -102,6 +120,17 @@ func (b *MCPServerPodTemplateSpecBuilder) Build() *corev1.PodTemplateSpec {
 
 // isEmpty checks if the builder contains any meaningful customizations
 func (b *MCPServerPodTemplateSpecBuilder) isEmpty() bool {
-	return b.spec.Spec.ServiceAccountName == "" &&
-		len(b.spec.Spec.Containers) == 0
+	// Check if spec has any meaningful customizations
+	spec := b.spec.Spec
+
+	return spec.ServiceAccountName == "" &&
+		len(spec.Containers) == 0 &&
+		len(spec.Volumes) == 0 &&
+		len(spec.InitContainers) == 0 &&
+		len(spec.Tolerations) == 0 &&
+		len(spec.NodeSelector) == 0 &&
+		spec.Affinity == nil &&
+		spec.SecurityContext == nil &&
+		spec.PriorityClassName == "" &&
+		len(spec.ImagePullSecrets) == 0
 }

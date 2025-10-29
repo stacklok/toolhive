@@ -2,13 +2,18 @@ package discovery
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 )
 
 func init() {
@@ -421,4 +426,326 @@ func TestDeriveIssuerFromURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPerformOAuthFlow_PortBehavior(t *testing.T) {
+	t.Parallel()
+
+	// Test dynamic registration with available port
+	t.Run("dynamic registration with available port", func(t *testing.T) {
+		t.Parallel()
+
+		config := &OAuthFlowConfig{
+			ClientID:     "", // No client ID triggers dynamic registration
+			ClientSecret: "",
+			CallbackPort: 0, // Use 0 to find an available port
+			Scopes:       []string{"openid"},
+		}
+
+		// Create a mock OIDC discovery server
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/.well-known/openid_configuration") {
+				// Return OIDC discovery document
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{
+					"issuer": "https://example.com",
+					"authorization_endpoint": "https://example.com/auth",
+					"token_endpoint": "https://example.com/token",
+					"registration_endpoint": "https://example.com/register"
+				}`))
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/register") {
+				// Return dynamic registration response
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				w.Write([]byte(`{
+					"client_id": "dynamic-client-id",
+					"client_secret": "dynamic-client-secret"
+				}`))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		ctx := context.Background()
+		_, err := PerformOAuthFlow(ctx, server.URL, config)
+
+		// For successful cases, we expect the OAuth flow to fail later
+		// (since we're not actually completing the full flow), but the
+		// port resolution should work correctly
+		if err != nil {
+			// Check if it's a port-related error (which we don't want)
+			if strings.Contains(err.Error(), "not available") {
+				t.Errorf("Unexpected port availability error: %v", err)
+			}
+		}
+	})
+
+	// Test dynamic registration with unavailable port - should fallback
+	t.Run("dynamic registration with unavailable port - should fallback", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a listener to make a port unavailable
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer listener.Close()
+		unavailablePort := listener.Addr().(*net.TCPAddr).Port
+
+		config := &OAuthFlowConfig{
+			ClientID:     "", // No client ID triggers dynamic registration
+			ClientSecret: "",
+			CallbackPort: unavailablePort, // Use the unavailable port
+			Scopes:       []string{"openid"},
+		}
+
+		// Create a mock OIDC discovery server
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/.well-known/openid_configuration") {
+				// Return OIDC discovery document
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{
+					"issuer": "https://example.com",
+					"authorization_endpoint": "https://example.com/auth",
+					"token_endpoint": "https://example.com/token",
+					"registration_endpoint": "https://example.com/register"
+				}`))
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/register") {
+				// Return dynamic registration response
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				w.Write([]byte(`{
+					"client_id": "dynamic-client-id",
+					"client_secret": "dynamic-client-secret"
+				}`))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		ctx := context.Background()
+		_, err = PerformOAuthFlow(ctx, server.URL, config)
+
+		// Should not fail due to port unavailability (should fallback)
+		if err != nil {
+			// Check if it's a port-related error (which we don't want for dynamic registration)
+			if strings.Contains(err.Error(), "not available") {
+				t.Errorf("Dynamic registration should allow port fallback, but got port error: %v", err)
+			}
+		}
+	})
+
+	// Test pre-registered client with available port
+	t.Run("pre-registered client with available port", func(t *testing.T) {
+		t.Parallel()
+
+		config := &OAuthFlowConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			CallbackPort: 0, // Use 0 to find an available port
+			Scopes:       []string{"openid"},
+		}
+
+		// Create a mock OIDC discovery server
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/.well-known/openid_configuration") {
+				// Return OIDC discovery document
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{
+					"issuer": "https://example.com",
+					"authorization_endpoint": "https://example.com/auth",
+					"token_endpoint": "https://example.com/token",
+					"registration_endpoint": "https://example.com/register"
+				}`))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		ctx := context.Background()
+		_, err := PerformOAuthFlow(ctx, server.URL, config)
+
+		// For successful cases, we expect the OAuth flow to fail later
+		// (since we're not actually completing the full flow), but the
+		// port resolution should work correctly
+		if err != nil {
+			// Check if it's a port-related error (which we don't want)
+			if strings.Contains(err.Error(), "not available") {
+				t.Errorf("Unexpected port availability error: %v", err)
+			}
+		}
+	})
+
+	// Test pre-registered client with unavailable port - should fail
+	t.Run("pre-registered client with unavailable port - should fail", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a listener to make a port unavailable
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer listener.Close()
+		unavailablePort := listener.Addr().(*net.TCPAddr).Port
+
+		config := &OAuthFlowConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			CallbackPort: unavailablePort, // Use the unavailable port
+			Scopes:       []string{"openid"},
+		}
+
+		// Create a mock OIDC discovery server
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/.well-known/openid_configuration") {
+				// Return OIDC discovery document
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{
+					"issuer": "https://example.com",
+					"authorization_endpoint": "https://example.com/auth",
+					"token_endpoint": "https://example.com/token",
+					"registration_endpoint": "https://example.com/register"
+				}`))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		// Verify the port is actually unavailable
+		if networking.IsAvailable(config.CallbackPort) {
+			t.Fatalf("Test setup error: Expected port %d to be unavailable, but it's available", config.CallbackPort)
+		}
+
+		ctx := context.Background()
+		_, err = PerformOAuthFlow(ctx, server.URL, config)
+
+		// Should fail due to port unavailability
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not available")
+	})
+}
+
+func TestPerformOAuthFlow_PortFallbackBehavior(t *testing.T) {
+	t.Parallel()
+
+	// Test that dynamic registration allows port fallback
+	t.Run("dynamic registration port fallback", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a listener to make a port unavailable
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer listener.Close()
+		unavailablePort := listener.Addr().(*net.TCPAddr).Port
+
+		config := &OAuthFlowConfig{
+			ClientID:     "", // No client ID triggers dynamic registration
+			ClientSecret: "",
+			CallbackPort: unavailablePort,
+			Scopes:       []string{"openid"},
+		}
+
+		// Create a mock OIDC discovery server
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/.well-known/openid_configuration") {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{
+					"issuer": "https://example.com",
+					"authorization_endpoint": "https://example.com/auth",
+					"token_endpoint": "https://example.com/token",
+					"registration_endpoint": "https://example.com/register"
+				}`))
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/register") {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				w.Write([]byte(`{
+					"client_id": "dynamic-client-id",
+					"client_secret": "dynamic-client-secret"
+				}`))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		ctx := context.Background()
+		_, err = PerformOAuthFlow(ctx, server.URL, config)
+
+		// Should not fail due to port unavailability
+		// (it may fail later in the OAuth flow, but not due to port issues)
+		if err != nil && strings.Contains(err.Error(), "not available") {
+			t.Errorf("Dynamic registration should allow port fallback, but got port error: %v", err)
+		}
+	})
+
+	// Test that pre-registered clients fail on unavailable ports
+	t.Run("pre-registered client strict port checking", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a listener to make a port unavailable
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer listener.Close()
+		unavailablePort := listener.Addr().(*net.TCPAddr).Port
+
+		config := &OAuthFlowConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			CallbackPort: unavailablePort,
+			Scopes:       []string{"openid"},
+		}
+
+		ctx := context.Background()
+		_, err = PerformOAuthFlow(ctx, "https://example.com", config)
+
+		// Should fail due to port unavailability
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not available")
+	})
+}
+
+// TestPerformOAuthFlow_PortCheckingOnly tests just the port checking logic
+// without going through the full OAuth flow
+func TestPerformOAuthFlow_PortCheckingOnly(t *testing.T) {
+	t.Parallel()
+
+	// Test that pre-registered clients fail on unavailable ports
+	t.Run("pre-registered client strict port checking", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a listener to make a port unavailable
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer listener.Close()
+
+		unavailablePort := listener.Addr().(*net.TCPAddr).Port
+
+		config := &OAuthFlowConfig{
+			ClientID:     "test-client",
+			ClientSecret: "test-secret",
+			CallbackPort: unavailablePort,
+			Scopes:       []string{"openid"},
+		}
+
+		// Test the port checking logic directly
+		if shouldDynamicallyRegisterClient(config) {
+			t.Error("Expected shouldDynamicallyRegisterClient to return false for pre-registered client")
+		}
+
+		// This should fail because the port is unavailable
+		if networking.IsAvailable(config.CallbackPort) {
+			t.Errorf("Expected port %d to be unavailable, but IsAvailable returned true", config.CallbackPort)
+		}
+	})
 }

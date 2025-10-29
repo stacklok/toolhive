@@ -46,7 +46,7 @@ type TransparentProxy struct {
 	server *http.Server
 
 	// Middleware chain
-	middlewares []types.MiddlewareFunction
+	middlewares []types.NamedMiddleware
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -90,7 +90,7 @@ func NewTransparentProxy(
 	enableHealthCheck bool,
 	isRemote bool,
 	transportType string,
-	middlewares ...types.MiddlewareFunction,
+	middlewares ...types.NamedMiddleware,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
 		host:              host,
@@ -106,11 +106,14 @@ func NewTransparentProxy(
 		transportType:     transportType,
 	}
 
-	// Create MCP pinger and health checker only if enabled
+	// Create health checker always for Kubernetes probes
+	// For remote proxies, pass nil pinger since we can't ping authenticated servers
+	// For local proxies, create pinger to check MCP server status
+	var mcpPinger healthcheck.MCPPinger
 	if enableHealthCheck {
-		mcpPinger := NewMCPPinger(targetURI)
-		proxy.healthChecker = healthcheck.NewHealthChecker("sse", mcpPinger)
+		mcpPinger = NewMCPPinger(targetURI)
 	}
+	proxy.healthChecker = healthcheck.NewHealthChecker(transportType, mcpPinger)
 
 	return proxy
 }
@@ -327,9 +330,8 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// Apply middleware chain in reverse order (last middleware is applied first)
 	var finalHandler http.Handler = handler
 	for i := len(p.middlewares) - 1; i >= 0; i-- {
-		finalHandler = p.middlewares[i](finalHandler)
-		// TODO: we should really log the middleware name here
-		logger.Infof("Applied middleware %d", i+1)
+		finalHandler = p.middlewares[i].Function(finalHandler)
+		logger.Infof("Applied middleware: %s", p.middlewares[i].Name)
 	}
 
 	// Add the proxy handler for all paths except /health
@@ -362,15 +364,18 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	if p.authInfoHandler != nil {
 		// Create a handler that routes .well-known requests
 		wellKnownHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/.well-known/oauth-protected-resource":
+			// Per RFC 9728, match /.well-known/oauth-protected-resource and any subpaths
+			// e.g., /.well-known/oauth-protected-resource/mcp
+			if strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource") {
 				p.authInfoHandler.ServeHTTP(w, r)
-			default:
+			} else {
 				http.NotFound(w, r)
 			}
 		})
 		mux.Handle("/.well-known/", wellKnownHandler)
 		logger.Info("Well-known discovery endpoints enabled at /.well-known/ (no middlewares)")
+	} else {
+		logger.Info("No auth info handler provided; skipping /.well-known/ endpoint")
 	}
 
 	// Create the server

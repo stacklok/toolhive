@@ -57,7 +57,7 @@ type HTTPSSEProxy struct {
 	host              string
 	port              int
 	containerName     string
-	middlewares       []types.MiddlewareFunction
+	middlewares       []types.NamedMiddleware
 	trustProxyHeaders bool
 
 	// HTTP server
@@ -92,7 +92,7 @@ func NewHTTPSSEProxy(
 	containerName string,
 	trustProxyHeaders bool,
 	prometheusHandler http.Handler,
-	middlewares ...types.MiddlewareFunction,
+	middlewares ...types.NamedMiddleware,
 ) *HTTPSSEProxy {
 	// Create a factory for SSE sessions
 	sseFactory := func(id string) session.Session {
@@ -121,10 +121,10 @@ func NewHTTPSSEProxy(
 }
 
 // applyMiddlewares applies a chain of middlewares to a handler
-func applyMiddlewares(handler http.Handler, middlewares ...types.MiddlewareFunction) http.Handler {
+func applyMiddlewares(handler http.Handler, middlewares ...types.NamedMiddleware) http.Handler {
 	// Apply middleware chain in reverse order (last middleware is applied first)
 	for i := len(middlewares) - 1; i >= 0; i-- {
-		handler = middlewares[i](handler)
+		handler = middlewares[i].Function(handler)
 	}
 	return handler
 }

@@ -24,6 +24,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
@@ -91,8 +92,9 @@ var _ = BeforeSuite(func() {
 
 	// Register the MCPServer controller
 	err = (&controllers.MCPServerReconciler{
-		Client: k8sManager.GetClient(),
-		Scheme: k8sManager.GetScheme(),
+		Client:           k8sManager.GetClient(),
+		Scheme:           k8sManager.GetScheme(),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 

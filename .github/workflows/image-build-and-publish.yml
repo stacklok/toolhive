@@ -51,7 +51,7 @@ jobs:
         uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       - name: Build and Push Image to GHCR
         env:
@@ -62,12 +62,12 @@ jobs:
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
           TAGS="-t $TAG"
-          
+
           # Add latest tag only if building from a tag
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAGS="$TAGS -t latest"
           fi
-          
+
           KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare $TAGS ./cmd/thv \
             --image-label=org.opencontainers.image.source=https://github.com/stacklok/toolhive,org.opencontainers.image.title="toolhive",org.opencontainers.image.vendor=Stacklok
 
@@ -78,7 +78,7 @@ jobs:
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
-          
+
           # Sign the latest tag if building from a tag
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest
@@ -149,7 +149,7 @@ jobs:
 
       - name: Install Cosign
         if: startsWith(github.ref, 'refs/tags/')
-        uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       - name: Sign container image
         if: startsWith(github.ref, 'refs/tags/')
@@ -213,8 +213,23 @@ jobs:
       - name: Setup ko
         uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Extract UBI metadata
+        id: ubi-meta
+        uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5.8.0
+        with:
+          images: ${{ env.BASE_REPO }}
+          tags: |
+            type=raw,value=${{ steps.version-string.outputs.tag }}-ubi
+          labels: |
+            name=toolhive-operator
+            vendor=Stacklok
+            maintainer=Stacklok
+
       - name: Install Cosign
-        uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       - name: Build and Push Image to GHCR
         env:
@@ -225,23 +240,40 @@ jobs:
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
           TAGS="-t $TAG"
-          
+
           # Add latest tag only if building from a tag
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAGS="$TAGS -t latest"
           fi
-          
+
           KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare $TAGS ./cmd/thv-operator \
             --image-label=org.opencontainers.image.source=https://github.com/stacklok/toolhive,org.opencontainers.image.title="toolhive-operator",org.opencontainers.image.vendor=Stacklok
+
+      - name: Build and Push UBI Image to GHCR
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          file: containers/operator/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.ubi-meta.outputs.tags }}
+          build-args: |
+            CODEDIR=cmd/thv-operator
+            TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+            VERSION=$TAG-ubi
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+          labels: ${{ steps.ubi-meta.outputs.labels }}
 
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          UBI_TAG=$(echo "${{ steps.version-string.outputs.tag }}-ubi" | sed 's/+/_/g')
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
-          
+          cosign sign -y $BASE_REPO:$UBI_TAG
+
           # Sign the latest tag if building from a tag
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest
@@ -293,8 +325,23 @@ jobs:
       - name: Setup ko
         uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Extract UBI metadata
+        id: ubi-meta
+        uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5.8.0
+        with:
+          images: ${{ env.BASE_REPO }}
+          tags: |
+            type=raw,value=${{ steps.version-string.outputs.tag }}-ubi
+          labels: |
+            name=toolhive-proxyrunner
+            vendor=Stacklok
+            maintainer=Stacklok
+
       - name: Install Cosign
-        uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       - name: Build and Push Image to GHCR
         env:
@@ -305,14 +352,109 @@ jobs:
         run: |
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
           TAGS="-t $TAG"
-          
           # Add latest tag only if building from a tag
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAGS="$TAGS -t latest"
           fi
-          
           KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare $TAGS ./cmd/thv-proxyrunner \
             --image-label=org.opencontainers.image.source=https://github.com/stacklok/toolhive,org.opencontainers.image.title="toolhive-proxyrunner",org.opencontainers.image.vendor=Stacklok
+
+      - name: Build and Push UBI Image to GHCR
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          file: containers/operator/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.ubi-meta.outputs.tags }}
+          build-args: |
+            CODEDIR=cmd/thv-proxyrunner
+            TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+            VERSION=$TAG-ubi
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+          labels: ${{ steps.ubi-meta.outputs.labels }}
+
+      - name: Sign Image with Cosign
+        # This step uses the identity token to provision an ephemeral certificate
+        # against the sigstore community Fulcio instance.
+        run: |
+          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          UBI_TAG=$(echo "${{ steps.version-string.outputs.tag }}-ubi" | sed 's/+/_/g')
+          # Sign the ko image
+          cosign sign -y $BASE_REPO:$TAG
+          cosign sign -y $BASE_REPO:$UBI_TAG
+
+          # Sign the latest tag if building from a tag
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            cosign sign -y $BASE_REPO:latest
+          fi
+
+  vmcp-image-build-and-publish:
+    name: Build and Publish Virtual MCP Server Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+
+    env:
+      BASE_REPO: "ghcr.io/stacklok/toolhive/vmcp"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Compute version number
+        id: version-string
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            # For main branch, use semver with -dev suffix
+            echo "tag=0.0.1-dev.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # For tags, use the tag as is (assuming it's semver)
+            TAG="${{ github.ref_name }}"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          else
+            # For other branches, use branch name and run number
+            BRANCH="${{ github.ref_name }}"
+            echo "tag=0.0.1-$BRANCH.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup ko
+        uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Build and Push Image to GHCR
+        env:
+          VERSION: ${{ steps.version-string.outputs.tag }}
+          COMMIT: ${{ github.sha }}
+          BUILD_DATE: ${{ github.event.head_commit.timestamp }}
+          KO_CONFIG_PATH: ${{ github.workspace }}/.github/ko-ci.yml
+        run: |
+          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          TAGS="-t $TAG"
+
+          # Add latest tag only if building from a tag
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAGS="$TAGS -t latest"
+          fi
+
+          KO_DOCKER_REPO=$BASE_REPO ko build --platform=linux/amd64,linux/arm64 --bare $TAGS ./cmd/vmcp \
+            --image-label=org.opencontainers.image.source=https://github.com/stacklok/toolhive,org.opencontainers.image.title="toolhive-vmcp",org.opencontainers.image.vendor=Stacklok
 
       - name: Sign Image with Cosign
         # This step uses the identity token to provision an ephemeral certificate
@@ -321,7 +463,7 @@ jobs:
           TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
-          
+
           # Sign the latest tag if building from a tag
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest

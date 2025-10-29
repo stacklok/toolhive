@@ -13,6 +13,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -141,7 +142,28 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			// Verify there's exactly one container (the toolhive proxy runner)
 			Expect(deployment.Spec.Template.Spec.Containers).To(HaveLen(1))
 
+			templateSpec := deployment.Spec.Template.Spec
+
+			foundRunconfigVolume := false
+			for _, v := range templateSpec.Volumes {
+				if v.Name == "runconfig" && v.ConfigMap != nil && v.ConfigMap.Name == (mcpServerName+"-runconfig") {
+					foundRunconfigVolume = true
+					break
+				}
+			}
+			Expect(foundRunconfigVolume).To(BeTrue(), "Deployment should have a volume sourced from runconfig ConfigMap")
+
 			container := deployment.Spec.Template.Spec.Containers[0]
+
+			// Verify that the runconfig ConfigMap is mounted as a volume
+			foundRunconfigMount := false
+			for _, vm := range container.VolumeMounts {
+				if vm.Name == "runconfig" && vm.MountPath == "/etc/runconfig" {
+					foundRunconfigMount = true
+					break
+				}
+			}
+			Expect(foundRunconfigMount).To(BeTrue(), "runconfig ConfigMap should be mounted at /etc/runconfig")
 
 			// Verify container name and image
 			Expect(container.Name).To(Equal("toolhive"))
@@ -168,29 +190,12 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			// Verify container args contain the required parameters
 			Expect(container.Args).To(ContainElement("run"))
 			Expect(container.Args).To(ContainElement("--foreground=true"))
-			Expect(container.Args).To(ContainElement(fmt.Sprintf("--proxy-port=%d", mcpServer.Spec.Port)))
-			Expect(container.Args).To(ContainElement(fmt.Sprintf("--name=%s", mcpServerName)))
-			Expect(container.Args).To(ContainElement(fmt.Sprintf("--transport=%s", mcpServer.Spec.Transport)))
-			Expect(container.Args).To(ContainElement(fmt.Sprintf("--proxy-mode=%s", mcpServer.Spec.ProxyMode)))
 			Expect(container.Args).To(ContainElement(mcpServer.Spec.Image))
-
-			// Verify that user args are appended after "--"
-			dashIndex := -1
-			for i, arg := range container.Args {
-				if arg == "--" {
-					dashIndex = i
-					break
-				}
-			}
-			if len(mcpServer.Spec.Args) > 0 {
-				Expect(dashIndex).To(BeNumerically(">=", 0))
-				Expect(container.Args[dashIndex+1:]).To(ContainElement("--verbose"))
-			}
 
 			// Verify container ports
 			Expect(container.Ports).To(HaveLen(1))
 			Expect(container.Ports[0].Name).To(Equal("http"))
-			Expect(container.Ports[0].ContainerPort).To(Equal(mcpServer.Spec.Port))
+			Expect(container.Ports[0].ContainerPort).To(Equal(mcpServer.GetProxyPort()))
 			Expect(container.Ports[0].Protocol).To(Equal(corev1.ProtocolTCP))
 
 			// Verify probes
@@ -206,6 +211,26 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			Expect(container.ReadinessProbe.InitialDelaySeconds).To(Equal(int32(5)))
 			Expect(container.ReadinessProbe.PeriodSeconds).To(Equal(int32(5)))
 
+		})
+
+		It("Should create the RunConfig ConfigMap", func() {
+
+			// Wait for Service to be created (using the correct naming pattern)
+			configMap := &corev1.ConfigMap{}
+			configMapName := mcpServerName + "-runconfig"
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: namespace,
+				}, configMap)
+			}, timeout, interval).Should(Succeed())
+
+			// Verify owner reference is set correctly
+			verifyOwnerReference(configMap.OwnerReferences, createdMCPServer, "ConfigMap")
+
+			// Verify Service configuration
+			Expect(configMap.Data).To(HaveKey("runconfig.json"))
+			Expect(configMap.Annotations).To(HaveKey("toolhive.stacklok.dev/content-checksum"))
 		})
 
 		It("Should create a Service for the MCPServer Proxy", func() {
@@ -306,7 +331,6 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 					return err
 				}
 				mcpServer.Spec.Image = "example/mcp-server:v2"
-				mcpServer.Spec.Port = 9090
 				return k8sClient.Update(ctx, mcpServer)
 			}, timeout, interval).Should(Succeed())
 
@@ -322,17 +346,129 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				container := deployment.Spec.Template.Spec.Containers[0]
 				// Check if the new image is in the args
 				hasNewImage := false
-				hasNewPort := false
 				for _, arg := range container.Args {
 					if arg == "example/mcp-server:v2" {
 						hasNewImage = true
 					}
-					if arg == "--proxy-port=9090" {
-						hasNewPort = true
+				}
+				return hasNewImage
+			}, timeout, interval).Should(BeTrue())
+		})
+	})
+
+	Context("When creating an MCPServer with invalid PodTemplateSpec", Ordered, func() {
+		var (
+			namespace     string
+			mcpServerName string
+			mcpServer     *mcpv1alpha1.MCPServer
+		)
+
+		BeforeAll(func() {
+			namespace = "default"
+			mcpServerName = "test-invalid-podtemplate"
+
+			// Create namespace if it doesn't exist
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			// Define the MCPServer resource with invalid PodTemplateSpec
+			mcpServer = &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
+					Transport: "stdio",
+					Port:      8080,
+					// Invalid PodTemplateSpec - containers should be an array, not a string
+					PodTemplateSpec: &runtime.RawExtension{
+						Raw: []byte(`{"spec": {"containers": "invalid-not-an-array"}}`),
+					},
+				},
+			}
+
+			// Create the MCPServer
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+		})
+
+		AfterAll(func() {
+			// Clean up the MCPServer
+			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
+		})
+
+		It("Should set PodTemplateValid condition to False", func() {
+			// Wait for the status to be updated with the invalid condition
+			Eventually(func() bool {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+
+				// Check for PodTemplateValid condition
+				for _, cond := range updatedMCPServer.Status.Conditions {
+					if cond.Type == "PodTemplateValid" {
+						return cond.Status == metav1.ConditionFalse &&
+							cond.Reason == "InvalidPodTemplateSpec"
 					}
 				}
-				return hasNewImage && hasNewPort
+				return false
 			}, timeout, interval).Should(BeTrue())
+
+			// Verify the condition message contains expected text
+			updatedMCPServer := &mcpv1alpha1.MCPServer{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      mcpServerName,
+				Namespace: namespace,
+			}, updatedMCPServer)).Should(Succeed())
+
+			var foundCondition *metav1.Condition
+			for i, cond := range updatedMCPServer.Status.Conditions {
+				if cond.Type == "PodTemplateValid" {
+					foundCondition = &updatedMCPServer.Status.Conditions[i]
+					break
+				}
+			}
+
+			Expect(foundCondition).NotTo(BeNil())
+			Expect(foundCondition.Message).To(ContainSubstring("Failed to parse PodTemplateSpec"))
+			Expect(foundCondition.Message).To(ContainSubstring("Deployment blocked until fixed"))
+		})
+
+		It("Should not create a Deployment for invalid MCPServer", func() {
+			// Verify that no deployment was created
+			deployment := &appsv1.Deployment{}
+			Consistently(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, deployment)
+				return err != nil
+			}, time.Second*5, interval).Should(BeTrue())
+		})
+
+		It("Should have Failed phase in status", func() {
+			updatedMCPServer := &mcpv1alpha1.MCPServer{}
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+				return updatedMCPServer.Status.Phase == mcpv1alpha1.MCPServerPhaseFailed
+			}, timeout, interval).Should(BeTrue())
+
+			Expect(updatedMCPServer.Status.Message).To(ContainSubstring("Invalid PodTemplateSpec"))
 		})
 	})
 })

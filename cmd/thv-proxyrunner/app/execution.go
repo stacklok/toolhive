@@ -66,6 +66,7 @@ func runWithFlagsBasedConfig(
 			runFlags.runJWKSAuthTokenFile,
 			runFlags.runResourceURL,
 			runFlags.runJWKSAllowPrivateIP,
+			false,
 		),
 		runner.WithTelemetryConfig(
 			runFlags.runOtelEndpoint,

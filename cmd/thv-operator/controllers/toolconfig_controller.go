@@ -3,13 +3,11 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"hash/fnv"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/dump"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -18,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
 const (
@@ -129,18 +128,7 @@ func (r *ToolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 // calculateConfigHash calculates a hash of the MCPToolConfig spec using Kubernetes utilities
 func (*ToolConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPToolConfigSpec) string {
-	// Use k8s.io/apimachinery/pkg/util/dump.ForHash which is designed for
-	// generating consistent string representations for hashing in Kubernetes
-	hashString := dump.ForHash(spec)
-
-	// Use FNV-1a hash which is commonly used in Kubernetes for fast hashing
-	// See: https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/controller_utils.go
-	hasher := fnv.New32a()
-	// Write returns an error only if the underlying writer returns an error,
-	// which never happens for hash.Hash implementations
-	//nolint:errcheck
-	_, _ = hasher.Write([]byte(hashString))
-	return fmt.Sprintf("%x", hasher.Sum32())
+	return ctrlutil.CalculateConfigHash(spec)
 }
 
 // handleDeletion handles the deletion of a MCPToolConfig
@@ -192,21 +180,13 @@ func (r *ToolConfigReconciler) findReferencingMCPServers(
 	ctx context.Context,
 	toolConfig *mcpv1alpha1.MCPToolConfig,
 ) ([]mcpv1alpha1.MCPServer, error) {
-	// List all MCPServers in the same namespace
-	mcpServerList := &mcpv1alpha1.MCPServerList{}
-	if err := r.List(ctx, mcpServerList, client.InNamespace(toolConfig.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
-	}
-
-	// Filter MCPServers that reference this MCPToolConfig
-	var referencingServers []mcpv1alpha1.MCPServer
-	for _, server := range mcpServerList.Items {
-		if server.Spec.ToolConfigRef != nil && server.Spec.ToolConfigRef.Name == toolConfig.Name {
-			referencingServers = append(referencingServers, server)
-		}
-	}
-
-	return referencingServers, nil
+	return ctrlutil.FindReferencingMCPServers(ctx, r.Client, toolConfig.Namespace, toolConfig.Name,
+		func(server *mcpv1alpha1.MCPServer) *string {
+			if server.Spec.ToolConfigRef != nil {
+				return &server.Spec.ToolConfigRef.Name
+			}
+			return nil
+		})
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -246,33 +226,4 @@ func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// Watch for MCPServers and reconcile the MCPToolConfig when they change
 		Watches(&mcpv1alpha1.MCPServer{}, toolConfigHandler).
 		Complete(r)
-}
-
-// GetToolConfigForMCPServer retrieves the MCPToolConfig referenced by an MCPServer
-func GetToolConfigForMCPServer(
-	ctx context.Context,
-	c client.Client,
-	mcpServer *mcpv1alpha1.MCPServer,
-) (*mcpv1alpha1.MCPToolConfig, error) {
-	if mcpServer.Spec.ToolConfigRef == nil {
-		// We throw an error because in this case you assume there is a ToolConfig
-		// but there isn't one referenced.
-		return nil, fmt.Errorf("MCPServer %s does not reference a MCPToolConfig", mcpServer.Name)
-	}
-
-	toolConfig := &mcpv1alpha1.MCPToolConfig{}
-	err := c.Get(ctx, types.NamespacedName{
-		Name:      mcpServer.Spec.ToolConfigRef.Name,
-		Namespace: mcpServer.Namespace, // Same namespace as MCPServer
-	}, toolConfig)
-
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return nil, fmt.Errorf("MCPToolConfig %s not found in namespace %s",
-				mcpServer.Spec.ToolConfigRef.Name, mcpServer.Namespace)
-		}
-		return nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)
-	}
-
-	return toolConfig, nil
 }

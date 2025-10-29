@@ -201,12 +201,24 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 	var oAuthConfig remoteOAuthConfig
 	var headers []*registry.Header
 	if runConfig.RemoteAuthConfig != nil {
+		// Parse ClientSecret from CLI format to SecretParameter (for details API)
+		var clientSecretParam *secrets.SecretParameter
+		if runConfig.RemoteAuthConfig.ClientSecret != "" {
+			// Parse the CLI format: "<name>,target=<target>"
+			if secretParam, err := secrets.ParseSecretParameter(runConfig.RemoteAuthConfig.ClientSecret); err == nil {
+				clientSecretParam = &secretParam
+			}
+			// Ignore invalid secrets rather than failing the entire conversion
+		}
+
 		oAuthConfig = remoteOAuthConfig{
 			Issuer:       runConfig.RemoteAuthConfig.Issuer,
 			AuthorizeURL: runConfig.RemoteAuthConfig.AuthorizeURL,
 			TokenURL:     runConfig.RemoteAuthConfig.TokenURL,
 			ClientID:     runConfig.RemoteAuthConfig.ClientID,
+			ClientSecret: clientSecretParam,
 			Scopes:       runConfig.RemoteAuthConfig.Scopes,
+			UsePKCE:      runConfig.RemoteAuthConfig.UsePKCE,
 			OAuthParams:  runConfig.RemoteAuthConfig.OAuthParams,
 			CallbackPort: runConfig.RemoteAuthConfig.CallbackPort,
 			SkipBrowser:  runConfig.RemoteAuthConfig.SkipBrowser,

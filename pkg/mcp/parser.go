@@ -35,6 +35,9 @@ type ParsedMCPRequest struct {
 	ResourceID string
 	// Arguments contains the extracted arguments for the operation
 	Arguments map[string]interface{}
+	// Meta contains the _meta field from the request params for protocol-level metadata
+	// such as progress tokens, trace IDs, or custom namespaced metadata
+	Meta map[string]interface{}
 	// IsRequest indicates if this is a JSON-RPC request (vs response or notification)
 	IsRequest bool
 	// IsBatch indicates if this is a batch request
@@ -143,8 +146,8 @@ func parseMCPRequest(bodyBytes []byte) *ParsedMCPRequest {
 		return nil
 	}
 
-	// Extract resource ID and arguments based on the method
-	resourceID, arguments := extractResourceAndArguments(req.Method, req.Params)
+	// Extract resource ID, arguments, and meta based on the method
+	resourceID, arguments, meta := extractResourceAndArguments(req.Method, req.Params)
 
 	// Determine the ID - will be nil for notifications
 	var id interface{}
@@ -158,12 +161,13 @@ func parseMCPRequest(bodyBytes []byte) *ParsedMCPRequest {
 		Params:     req.Params,
 		ResourceID: resourceID,
 		Arguments:  arguments,
+		Meta:       meta,
 		IsRequest:  true,
 		IsBatch:    false, // TODO: Add batch request support if needed
 	}
 }
 
-// extractResourceAndArguments extracts the resource ID and arguments from the JSON-RPC params
+// extractResourceAndArguments extracts the resource ID, arguments, and _meta field from the JSON-RPC params
 // based on the MCP method type.
 // methodHandler defines a function type for handling specific MCP methods
 type methodHandler func(map[string]interface{}) (string, map[string]interface{})
@@ -202,17 +206,26 @@ var staticResourceIDs = map[string]string{
 	"notifications/tools/list_changed":     "tools",
 }
 
-func extractResourceAndArguments(method string, params json.RawMessage) (string, map[string]interface{}) {
+func extractResourceAndArguments(method string, params json.RawMessage) (string, map[string]interface{}, map[string]interface{}) {
 	if params == nil {
-		return getStaticResourceID(method), nil
+		return getStaticResourceID(method), nil, nil
 	}
 
 	var paramsMap map[string]interface{}
 	if err := json.Unmarshal(params, &paramsMap); err != nil {
-		return getStaticResourceID(method), nil
+		return getStaticResourceID(method), nil, nil
 	}
 
-	return processMethodWithHandler(method, paramsMap)
+	// Extract _meta field if present
+	var meta map[string]interface{}
+	if metaRaw, ok := paramsMap["_meta"]; ok {
+		if metaMap, ok := metaRaw.(map[string]interface{}); ok {
+			meta = metaMap
+		}
+	}
+
+	resourceID, arguments := processMethodWithHandler(method, paramsMap)
+	return resourceID, arguments, meta
 }
 
 // getStaticResourceID returns the static resource ID for methods that don't need parameter parsing
@@ -425,6 +438,15 @@ func GetMCPResourceID(ctx context.Context) string {
 func GetMCPArguments(ctx context.Context) map[string]interface{} {
 	if parsed := GetParsedMCPRequest(ctx); parsed != nil {
 		return parsed.Arguments
+	}
+	return nil
+}
+
+// GetMCPMeta is a convenience function to get the MCP _meta field from the context.
+// Returns nil if no parsed request is available or if _meta field is not present.
+func GetMCPMeta(ctx context.Context) map[string]interface{} {
+	if parsed := GetParsedMCPRequest(ctx); parsed != nil {
+		return parsed.Meta
 	}
 	return nil
 }

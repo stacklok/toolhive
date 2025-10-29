@@ -1,14 +1,20 @@
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // Condition types for MCPServer
 const (
 	// ConditionImageValidated indicates whether this image is fine to be used
 	ConditionImageValidated = "ImageValidated"
+
+	// ConditionGroupRefValidated indicates whether the GroupRef is valid
+	ConditionGroupRefValidated = "GroupRefValidated"
+
+	// ConditionPodTemplateValid indicates whether the PodTemplateSpec is valid
+	ConditionPodTemplateValid = "PodTemplateValid"
 )
 
 const (
@@ -20,6 +26,25 @@ const (
 	ConditionReasonImageValidationError = "ImageValidationError"
 	// ConditionReasonImageValidationSkipped indicates image validation was skipped
 	ConditionReasonImageValidationSkipped = "ImageValidationSkipped"
+)
+
+const (
+	// ConditionReasonGroupRefValidated indicates the GroupRef is valid
+	ConditionReasonGroupRefValidated = "GroupRefIsValid"
+
+	// ConditionReasonGroupRefNotFound indicates the GroupRef is invalid
+	ConditionReasonGroupRefNotFound = "GroupRefNotFound"
+
+	// ConditionReasonGroupRefNotReady indicates the referenced MCPGroup is not in the Ready state
+	ConditionReasonGroupRefNotReady = "GroupRefNotReady"
+)
+
+const (
+	// ConditionReasonPodTemplateValid indicates PodTemplateSpec validation succeeded
+	ConditionReasonPodTemplateValid = "ValidPodTemplateSpec"
+
+	// ConditionReasonPodTemplateInvalid indicates PodTemplateSpec validation failed
+	ConditionReasonPodTemplateInvalid = "InvalidPodTemplateSpec"
 )
 
 // MCPServerSpec defines the desired state of MCPServer
@@ -44,13 +69,27 @@ type MCPServerSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +kubebuilder:default=8080
+	// Deprecated: Use ProxyPort instead
 	Port int32 `json:"port,omitempty"`
 
 	// TargetPort is the port that MCP server listens to
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +optional
+	// Deprecated: Use McpPort instead
 	TargetPort int32 `json:"targetPort,omitempty"`
+
+	// ProxyPort is the port to expose the proxy runner on
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +kubebuilder:default=8080
+	ProxyPort int32 `json:"proxyPort,omitempty"`
+
+	// McpPort is the port that MCP server listens to
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	McpPort int32 `json:"mcpPort,omitempty"`
 
 	// Args are additional arguments to pass to the MCP server
 	// +optional
@@ -85,8 +124,11 @@ type MCPServerSpec struct {
 	// This allows for customizing the pod configuration beyond what is provided by the other fields.
 	// Note that to modify the specific container the MCP server runs in, you must specify
 	// the `mcp` container name in the PodTemplateSpec.
+	// This field accepts a PodTemplateSpec object as JSON/YAML.
 	// +optional
-	PodTemplateSpec *corev1.PodTemplateSpec `json:"podTemplateSpec,omitempty"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
 
 	// ResourceOverrides allows overriding annotations and labels for resources created by the operator
 	// +optional
@@ -116,6 +158,11 @@ type MCPServerSpec struct {
 	// +optional
 	ToolConfigRef *ToolConfigRef `json:"toolConfigRef,omitempty"`
 
+	// ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.
+	// The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer.
+	// +optional
+	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
+
 	// Telemetry defines observability configuration for the MCP server
 	// +optional
 	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
@@ -126,6 +173,11 @@ type MCPServerSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	TrustProxyHeaders bool `json:"trustProxyHeaders,omitempty"`
+
+	// GroupRef is the name of the MCPGroup this server belongs to
+	// Must reference an existing MCPGroup in the same namespace
+	// +optional
+	GroupRef string `json:"groupRef,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -298,6 +350,11 @@ type PermissionProfileSpec struct {
 
 // NetworkPermissions defines the network permissions for an MCP server
 type NetworkPermissions struct {
+	// Mode specifies the network mode for the container (e.g., "host", "bridge", "none")
+	// When empty, the default container runtime network mode is used
+	// +optional
+	Mode string `json:"mode,omitempty"`
+
 	// Outbound defines the outbound network permissions
 	// +optional
 	Outbound *OutboundNetworkPermissions `json:"outbound,omitempty"`
@@ -422,8 +479,14 @@ type InlineOIDCConfig struct {
 	ClientID string `json:"clientId,omitempty"`
 
 	// ClientSecret is the client secret for introspection (optional)
+	// Deprecated: Use ClientSecretRef instead for better security
 	// +optional
 	ClientSecret string `json:"clientSecret,omitempty"`
+
+	// ClientSecretRef is a reference to a Kubernetes Secret containing the client secret
+	// If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence
+	// +optional
+	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
 	// ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests
 	// The file must be mounted into the pod (e.g., via ConfigMap or Secret volume)
@@ -440,6 +503,13 @@ type InlineOIDCConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	JWKSAllowPrivateIP bool `json:"jwksAllowPrivateIP"`
+
+	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+	// WARNING: This is insecure and should NEVER be used in production
+	// Only enable for local development, testing, or trusted internal networks
+	// +kubebuilder:default=false
+	// +optional
+	InsecureAllowHTTP bool `json:"insecureAllowHTTP"`
 }
 
 // AuthzConfigRef defines a reference to authorization configuration
@@ -476,6 +546,14 @@ type ConfigMapAuthzRef struct {
 // The referenced MCPToolConfig must be in the same namespace as the MCPServer.
 type ToolConfigRef struct {
 	// Name is the name of the MCPToolConfig resource in the same namespace
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+}
+
+// ExternalAuthConfigRef defines a reference to a MCPExternalAuthConfig resource.
+// The referenced MCPExternalAuthConfig must be in the same namespace as the MCPServer.
+type ExternalAuthConfigRef struct {
+	// Name is the name of the MCPExternalAuthConfig resource
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 }
@@ -587,6 +665,10 @@ type MCPServerStatus struct {
 	// +optional
 	ToolConfigHash string `json:"toolConfigHash,omitempty"`
 
+	// ExternalAuthConfigHash is the hash of the referenced MCPExternalAuthConfig spec
+	// +optional
+	ExternalAuthConfigHash string `json:"externalAuthConfigHash,omitempty"`
+
 	// URL is the URL where the MCP server can be accessed
 	// +optional
 	URL string `json:"url,omitempty"`
@@ -640,6 +722,48 @@ type MCPServerList struct {
 	metav1.TypeMeta `json:",inline"` // nolint:revive
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []MCPServer `json:"items"`
+}
+
+// GetName returns the name of the MCPServer
+func (m *MCPServer) GetName() string {
+	return m.Name
+}
+
+// GetNamespace returns the namespace of the MCPServer
+func (m *MCPServer) GetNamespace() string {
+	return m.Namespace
+}
+
+// GetOIDCConfig returns the OIDC configuration reference
+func (m *MCPServer) GetOIDCConfig() *OIDCConfigRef {
+	return m.Spec.OIDCConfig
+}
+
+// GetProxyPort returns the proxy port of the MCPServer
+func (m *MCPServer) GetProxyPort() int32 {
+	if m.Spec.ProxyPort > 0 {
+		return m.Spec.ProxyPort
+	}
+
+	// the below is deprecated and will be removed in a future version
+	// we need to keep it here to avoid breaking changes
+	if m.Spec.Port > 0 {
+		return m.Spec.Port
+	}
+
+	// default to 8080 if no port is specified
+	return 8080
+}
+
+// GetMcpPort returns the MCP port of the MCPServer
+func (m *MCPServer) GetMcpPort() int32 {
+	if m.Spec.McpPort > 0 {
+		return m.Spec.McpPort
+	}
+
+	// the below is deprecated and will be removed in a future version
+	// we need to keep it here to avoid breaking changes
+	return m.Spec.TargetPort
 }
 
 func init() {

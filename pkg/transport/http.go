@@ -36,7 +36,7 @@ type HTTPTransport struct {
 	containerName     string
 	deployer          rt.Deployer
 	debug             bool
-	middlewares       []types.MiddlewareFunction
+	middlewares       []types.NamedMiddleware
 	prometheusHandler http.Handler
 	authInfoHandler   http.Handler
 
@@ -44,7 +44,7 @@ type HTTPTransport struct {
 	remoteURL string
 
 	// tokenSource is the OAuth token source for remote authentication
-	tokenSource *oauth2.TokenSource
+	tokenSource oauth2.TokenSource
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -71,7 +71,7 @@ func NewHTTPTransport(
 	targetHost string,
 	authInfoHandler http.Handler,
 	prometheusHandler http.Handler,
-	middlewares ...types.MiddlewareFunction,
+	middlewares ...types.NamedMiddleware,
 ) *HTTPTransport {
 	if host == "" {
 		host = LocalhostIPv4
@@ -103,7 +103,7 @@ func (t *HTTPTransport) SetRemoteURL(remoteURL string) {
 }
 
 // SetTokenSource sets the OAuth token source for remote authentication
-func (t *HTTPTransport) SetTokenSource(tokenSource *oauth2.TokenSource) {
+func (t *HTTPTransport) SetTokenSource(tokenSource oauth2.TokenSource) {
 	t.tokenSource = tokenSource
 }
 
@@ -112,7 +112,7 @@ func (t *HTTPTransport) createTokenInjectionMiddleware() types.MiddlewareFunctio
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if t.tokenSource != nil {
-				token, err := (*t.tokenSource).Token()
+				token, err := t.tokenSource.Token()
 				if err != nil {
 					logger.Warnf("Unable to retrieve OAuth token: %v", err)
 					// Continue without token rather than failing
@@ -305,7 +305,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	}
 
 	// Create middlewares slice
-	var middlewares []types.MiddlewareFunction
+	var middlewares []types.NamedMiddleware
 
 	// Add the transport's existing middlewares
 	middlewares = append(middlewares, t.middlewares...)
@@ -313,13 +313,20 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 	// Add OAuth token injection middleware for remote authentication if we have a token source
 	if t.remoteURL != "" && t.tokenSource != nil {
 		tokenMiddleware := t.createTokenInjectionMiddleware()
-		middlewares = append(middlewares, tokenMiddleware)
+		middlewares = append(middlewares, types.NamedMiddleware{
+			Name:     "oauth-token-injection",
+			Function: tokenMiddleware,
+		})
 	}
 
 	// Create the transparent proxy
 	t.proxy = transparent.NewTransparentProxy(
-		t.host, t.proxyPort, t.containerName, targetURI,
-		t.prometheusHandler, t.authInfoHandler,
+		t.host,
+		t.proxyPort,
+		t.containerName,
+		targetURI,
+		t.prometheusHandler,
+		t.authInfoHandler,
 		t.remoteURL == "",
 		t.remoteURL != "",
 		string(t.transportType),

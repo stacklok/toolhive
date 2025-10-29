@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -36,7 +37,7 @@ type HTTPProxy struct {
 	containerName     string
 	shutdownCh        chan struct{}
 	prometheusHandler http.Handler
-	middlewares       []types.MiddlewareFunction
+	middlewares       []types.NamedMiddleware
 
 	// Message channel for sending JSON-RPC to the container (from HTTP -> runner)
 	messageCh chan jsonrpc2.Message
@@ -51,6 +52,9 @@ type HTTPProxy struct {
 	// Map of compositeKey(sessID|idKey) -> original client JSON-RPC ID to restore before replying
 	idRestore sync.Map // map[string]jsonrpc2.ID
 
+	// Health checker
+	healthChecker *healthcheck.HealthChecker
+
 	server   *http.Server
 	stopOnce sync.Once
 }
@@ -61,12 +65,12 @@ func NewHTTPProxy(
 	port int,
 	containerName string,
 	prometheusHandler http.Handler,
-	middlewares ...types.MiddlewareFunction,
+	middlewares ...types.NamedMiddleware,
 ) *HTTPProxy {
 	// Use typed Streamable sessions
 	sFactory := func(id string) session.Session { return session.NewStreamableSession(id) }
 
-	return &HTTPProxy{
+	proxy := &HTTPProxy{
 		host:              host,
 		port:              port,
 		containerName:     containerName,
@@ -77,12 +81,23 @@ func NewHTTPProxy(
 		responseCh:        make(chan jsonrpc2.Message, 100),
 		sessionManager:    session.NewManager(session.DefaultSessionTTL, sFactory),
 	}
+
+	// Create health checker without MCP pinger
+	// Streamable transport doesn't support MCP ping, so health check only verifies proxy is running
+	proxy.healthChecker = healthcheck.NewHealthChecker(string(types.TransportTypeStreamableHTTP), nil)
+
+	return proxy
 }
 
 // Start starts the HTTPProxy server.
 func (p *HTTPProxy) Start(_ context.Context) error {
 	mux := http.NewServeMux()
 	mux.Handle(StreamableHTTPEndpoint, p.applyMiddlewares(http.HandlerFunc(p.handleStreamableRequest)))
+
+	// Add health check endpoint (no middlewares)
+	if p.healthChecker != nil {
+		mux.Handle("/health", p.healthChecker)
+	}
 
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
@@ -543,7 +558,7 @@ func (p *HTTPProxy) doRequest(ctx context.Context, sessID string, req *jsonrpc2.
 
 func (p *HTTPProxy) applyMiddlewares(handler http.Handler) http.Handler {
 	for i := len(p.middlewares) - 1; i >= 0; i-- {
-		handler = p.middlewares[i](handler)
+		handler = p.middlewares[i].Function(handler)
 	}
 	return handler
 }

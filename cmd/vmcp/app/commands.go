@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 var rootCmd = &cobra.Command{
@@ -120,10 +121,47 @@ This command checks:
 			}
 
 			logger.Infof("Validating configuration: %s", configPath)
-			// TODO: Validate configuration
-			// This will be implemented in a future PR when pkg/vmcp is added
 
-			return fmt.Errorf("validate command not yet implemented")
+			// Load configuration from YAML
+			loader := config.NewYAMLLoader(configPath)
+			cfg, err := loader.Load()
+			if err != nil {
+				logger.Errorf("Failed to load configuration: %v", err)
+				return fmt.Errorf("configuration loading failed: %w", err)
+			}
+
+			logger.Debugf("Configuration loaded successfully, performing validation...")
+
+			// Validate configuration
+			validator := config.NewValidator()
+			if err := validator.Validate(cfg); err != nil {
+				logger.Errorf("Configuration validation failed: %v", err)
+				return fmt.Errorf("validation failed: %w", err)
+			}
+
+			logger.Infof("✓ Configuration is valid")
+			logger.Infof("  Name: %s", cfg.Name)
+			logger.Infof("  Group: %s", cfg.GroupRef)
+			logger.Infof("  Incoming Auth: %s", cfg.IncomingAuth.Type)
+			logger.Infof("  Outgoing Auth: %s (source: %s)",
+				func() string {
+					if len(cfg.OutgoingAuth.Backends) > 0 {
+						return fmt.Sprintf("%d backends configured", len(cfg.OutgoingAuth.Backends))
+					}
+					return "default only"
+				}(),
+				cfg.OutgoingAuth.Source)
+			logger.Infof("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution)
+
+			if cfg.TokenCache != nil {
+				logger.Infof("  Token Cache: %s", cfg.TokenCache.Provider)
+			}
+
+			if len(cfg.CompositeTools) > 0 {
+				logger.Infof("  Composite Tools: %d defined", len(cfg.CompositeTools))
+			}
+
+			return nil
 		},
 	}
 }

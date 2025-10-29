@@ -165,12 +165,14 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		}
 	}
 
-	// Add telemetry configuration if specified
-	runconfig.AddTelemetryConfigOptions(&options, m.Spec.Telemetry, m.Name)
-
-	// Add authorization configuration if specified
+	// Create context for API operations
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()
+
+	// Add telemetry configuration if specified
+	runconfig.AddTelemetryConfigOptions(ctx, &options, m.Spec.Telemetry, m.Name)
+
+	// Add authorization configuration if specified
 
 	if err := ctrlutil.AddAuthzConfigOptions(ctx, r.Client, m.Namespace, m.Spec.AuthzConfig, &options); err != nil {
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)

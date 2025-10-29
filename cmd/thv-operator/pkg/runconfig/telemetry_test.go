@@ -155,6 +155,42 @@ func TestAddTelemetryConfigOptions(t *testing.T) {
 				assert.Equal(t, "", config.TelemetryConfig.Endpoint)
 			},
 		},
+		{
+			name: "with invalid sampling rate - uses default",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "invalid-sampling-rate-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     testImage,
+					Transport: stdioTransport,
+					ProxyPort: 8080,
+					Telemetry: &mcpv1alpha1.TelemetryConfig{
+						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
+							Enabled:  true,
+							Endpoint: "otel-collector:4317",
+							Tracing: &mcpv1alpha1.OpenTelemetryTracingConfig{
+								Enabled:      true,
+								SamplingRate: "invalid-rate", // Invalid value
+							},
+						},
+					},
+				},
+			},
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "invalid-sampling-rate-server", config.Name)
+
+				// Verify telemetry config is set
+				assert.NotNil(t, config.TelemetryConfig)
+
+				// Check that invalid sampling rate defaults to 0.05
+				assert.Equal(t, 0.05, config.TelemetryConfig.SamplingRate)
+				assert.True(t, config.TelemetryConfig.TracingEnabled)
+				assert.Equal(t, "otel-collector:4317", config.TelemetryConfig.Endpoint)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -165,7 +201,8 @@ func TestAddTelemetryConfigOptions(t *testing.T) {
 				runner.WithName(tt.mcpServer.Name),
 				runner.WithImage(tt.mcpServer.Spec.Image),
 			}
-			AddTelemetryConfigOptions(&options, tt.mcpServer.Spec.Telemetry, tt.mcpServer.Name)
+			ctx := context.Background()
+			AddTelemetryConfigOptions(ctx, &options, tt.mcpServer.Spec.Telemetry, tt.mcpServer.Name)
 
 			rc, err := runner.NewOperatorRunConfigBuilder(context.Background(), nil, nil, nil, options...)
 			assert.NoError(t, err)

@@ -191,6 +191,8 @@ type HealthChecker interface {
 // BackendClient abstracts MCP protocol communication with backend servers.
 // This interface handles the protocol-level details of calling backend MCP servers,
 // supporting multiple transport types (HTTP, SSE, stdio, streamable-http).
+//
+//go:generate mockgen -destination=mocks/mock_backend_client.go -package=mocks -source=types.go BackendClient HealthChecker
 type BackendClient interface {
 	// CallTool invokes a tool on the backend MCP server.
 	// Returns the tool output or an error.

@@ -187,7 +187,8 @@ func CreateTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 	}
 }
 
-func TestFindClientConfigs(t *testing.T) { // Cant run in parallel because it uses global logger
+//nolint:paralleltest // This test modifies global logger
+func TestFindClientConfigs(t *testing.T) { // Can't run in parallel because it uses global logger
 	// Setup a temporary home directory for testing
 	tempHome := t.TempDir()
 
@@ -280,12 +281,12 @@ func initializeTest(t *testing.T) *observer.ObservedLogs {
 	}
 
 	core, observedLogs := observer.New(level)
-	logger := zap.New(core)
+	testLogger := zap.New(core)
 
 	// Save original logger for restoring
 	originalLogger := zap.L()
 
-	zap.ReplaceGlobals(logger)
+	zap.ReplaceGlobals(testLogger)
 
 	// Restore original logger
 	t.Cleanup(func() {

@@ -6,6 +6,7 @@ package client
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -221,12 +222,25 @@ func (h *httpBackendClient) CallTool(
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("tool call failed on backend %s: %w", target.WorkloadID, err)
+		// Network/connection errors are operational errors
+		return nil, fmt.Errorf("%w: tool call failed on backend %s: %v", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
 	}
 
-	// Check if the tool call returned an error
+	// Check if the tool call returned an error (MCP domain error)
 	if result.IsError {
-		return nil, fmt.Errorf("tool %s returned error on backend %s", toolName, target.WorkloadID)
+		// Extract error message from content for logging and forwarding
+		var errorMsg string
+		if len(result.Content) > 0 {
+			if textContent, ok := mcp.AsTextContent(result.Content[0]); ok {
+				errorMsg = textContent.Text
+			}
+		}
+		if errorMsg == "" {
+			errorMsg = "unknown error"
+		}
+		logger.Warnf("Tool %s on backend %s returned error: %s", toolName, target.WorkloadID, errorMsg)
+		// Wrap with ErrToolExecutionFailed so router can forward transparently to client
+		return nil, fmt.Errorf("%w: %s on backend %s: %s", vmcp.ErrToolExecutionFailed, toolName, target.WorkloadID, errorMsg)
 	}
 
 	// Convert result contents to a map
@@ -235,7 +249,7 @@ func (h *httpBackendClient) CallTool(
 	if len(result.Content) > 0 {
 		textIndex := 0
 		imageIndex := 0
-		for _, content := range result.Content {
+		for i, content := range result.Content {
 			// Try to convert to TextContent
 			if textContent, ok := mcp.AsTextContent(content); ok {
 				key := "text"
@@ -249,8 +263,11 @@ func (h *httpBackendClient) CallTool(
 				key := fmt.Sprintf("image_%d", imageIndex)
 				resultMap[key] = imageContent.Data
 				imageIndex++
+			} else {
+				// Log unsupported content types for tracking
+				logger.Debugf("Unsupported content type at index %d from tool %s on backend %s: %T",
+					i, toolName, target.WorkloadID, content)
 			}
-			// TODO: Handle other content types (audio, resource)
 		}
 	}
 
@@ -286,9 +303,16 @@ func (h *httpBackendClient) ReadResource(ctx context.Context, target *vmcp.Backe
 		if textContent, ok := mcp.AsTextResourceContents(content); ok {
 			data = append(data, []byte(textContent.Text)...)
 		} else if blobContent, ok := mcp.AsBlobResourceContents(content); ok {
-			// Blob is base64-encoded, decode it
-			// For now, just append the blob as-is (base64 string)
-			data = append(data, []byte(blobContent.Blob)...)
+			// Blob is base64-encoded per MCP spec, decode it to bytes
+			decoded, err := base64.StdEncoding.DecodeString(blobContent.Blob)
+			if err != nil {
+				logger.Warnf("Failed to decode base64 blob from resource %s on backend %s: %v",
+					uri, target.WorkloadID, err)
+				// Append raw blob as fallback
+				data = append(data, []byte(blobContent.Blob)...)
+			} else {
+				data = append(data, decoded...)
+			}
 		}
 	}
 

@@ -80,17 +80,18 @@ func (d *cliBackendDiscoverer) Discover(ctx context.Context, groupRef string) ([
 			BaseURL:       workload.URL,
 			TransportType: workload.TransportType.String(),
 			HealthStatus:  healthStatus,
-			Metadata: map[string]string{
-				"group":           groupRef,
-				"tool_type":       workload.ToolType,
-				"workload_status": string(workload.Status),
-			},
+			Metadata:      make(map[string]string),
 		}
 
-		// Copy labels to metadata
+		// Copy user labels to metadata first
 		for k, v := range workload.Labels {
 			backend.Metadata[k] = v
 		}
+
+		// Set system metadata (these override user labels to prevent conflicts)
+		backend.Metadata["group"] = groupRef
+		backend.Metadata["tool_type"] = workload.ToolType
+		backend.Metadata["workload_status"] = string(workload.Status)
 
 		backends = append(backends, backend)
 		logger.Debugf("Discovered backend %s: %s (%s) with health status %s",

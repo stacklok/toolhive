@@ -72,6 +72,36 @@ func (c *toolMiddlewareConfig) getToolListOverride(toolName string) (*toolOverri
 // middleware.
 type ToolMiddlewareOption func(*toolMiddlewareConfig) error
 
+// SimpleTool represents a minimal tool with name and description.
+// This is used by ApplyToolFiltering to work with tools in a generic way.
+type SimpleTool struct {
+	Name        string
+	Description string
+}
+
+// ApplyToolFiltering applies filtering and overriding to a list of tools.
+// This is the core logic used by both the HTTP middleware and other components
+// that need to apply the same filtering/overriding behavior.
+//
+// Returns the filtered and overridden tools.
+func ApplyToolFiltering(opts []ToolMiddlewareOption, tools []SimpleTool) ([]SimpleTool, error) {
+	config := &toolMiddlewareConfig{
+		filterTools:          make(map[string]struct{}),
+		actualToUserOverride: make(map[string]toolOverrideEntry),
+		userToActualOverride: make(map[string]toolOverrideEntry),
+	}
+
+	// Apply options to build config
+	for _, opt := range opts {
+		if err := opt(config); err != nil {
+			return nil, err
+		}
+	}
+
+	// Use the shared core logic
+	return applyFilteringAndOverrides(config, tools), nil
+}
+
 // WithToolsFilter is a function that can be used to configure the tool
 // middleware to use a filter list of tools.
 func WithToolsFilter(toolsFilter ...string) ToolMiddlewareOption {
@@ -448,7 +478,10 @@ func processToolsListResponse(
 	toolsListResponse toolsListResponse,
 	w io.Writer,
 ) error {
-	filteredTools := []map[string]any{}
+	// Convert to SimpleTool format for shared processing
+	simpleTools := make([]SimpleTool, 0, len(*toolsListResponse.Result.Tools))
+	toolMaps := make([]map[string]any, 0, len(*toolsListResponse.Result.Tools))
+
 	for _, tool := range *toolsListResponse.Result.Tools {
 		// NOTE: the spec does not allow for name to be missing.
 		toolName, ok := tool["name"].(string)
@@ -461,22 +494,37 @@ func processToolsListResponse(
 			return errToolNameNotFound
 		}
 
-		// If the tool is overridden, we need to use the override name and description.
-		if entry, ok := config.getToolListOverride(toolName); ok {
-			if entry.OverrideName != "" {
-				tool["name"] = entry.OverrideName
-			}
-			if entry.OverrideDescription != "" {
-				tool["description"] = entry.OverrideDescription
-			}
-			toolName = entry.OverrideName
-		}
+		// Get description if present (optional in MCP spec)
+		description, _ := tool["description"].(string)
 
-		// If the tool is in the filter, we add it to the filtered tools list.
-		// Note that lookup is done using the user-known name, which might be
-		// different from the actual tool name.
-		if config.isToolInFilter(toolName) {
-			filteredTools = append(filteredTools, tool)
+		simpleTools = append(simpleTools, SimpleTool{
+			Name:        toolName,
+			Description: description,
+		})
+		toolMaps = append(toolMaps, tool)
+	}
+
+	// Apply the shared filtering/override logic
+	processedTools := applyFilteringAndOverrides(config, simpleTools)
+
+	// Build the filtered response by matching processed tools with their original maps
+	filteredTools := make([]map[string]any, 0, len(processedTools))
+	for _, processed := range processedTools {
+		// Find the original tool map by matching names
+		for i, simple := range simpleTools {
+			if simple.Name == processed.Name || simple.Name == findOriginalName(config, processed.Name) {
+				// Clone the original map and update name/description
+				toolCopy := make(map[string]any, len(toolMaps[i]))
+				for k, v := range toolMaps[i] {
+					toolCopy[k] = v
+				}
+				toolCopy["name"] = processed.Name
+				if processed.Description != "" {
+					toolCopy["description"] = processed.Description
+				}
+				filteredTools = append(filteredTools, toolCopy)
+				break
+			}
 		}
 	}
 
@@ -486,6 +534,46 @@ func processToolsListResponse(
 	}
 
 	return nil
+}
+
+// applyFilteringAndOverrides is the core logic for filtering and overriding tools.
+// This implements the exact same logic as before but is now extracted for reuse.
+func applyFilteringAndOverrides(config *toolMiddlewareConfig, tools []SimpleTool) []SimpleTool {
+	result := make([]SimpleTool, 0, len(tools))
+	for _, tool := range tools {
+		description := tool.Description
+
+		// If the tool is overridden, we need to use the override name and description.
+		if entry, ok := config.getToolListOverride(tool.Name); ok {
+			if entry.OverrideName != "" {
+				tool.Name = entry.OverrideName
+			}
+			if entry.OverrideDescription != "" {
+				description = entry.OverrideDescription
+			}
+		}
+
+		// If the tool is in the filter, we add it to the filtered tools list.
+		// Note that lookup is done using the user-known name (tool.Name after override).
+		if config.isToolInFilter(tool.Name) {
+			result = append(result, SimpleTool{
+				Name:        tool.Name,
+				Description: description,
+			})
+		}
+	}
+	return result
+}
+
+// findOriginalName attempts to find the original tool name before override.
+func findOriginalName(config *toolMiddlewareConfig, overriddenName string) string {
+	// Iterate through overrides to find reverse mapping
+	for actualName, entry := range config.actualToUserOverride {
+		if entry.OverrideName == overriddenName {
+			return actualName
+		}
+	}
+	return overriddenName
 }
 
 // toolCallFix mimics a sum type in Go. The actual types represent the

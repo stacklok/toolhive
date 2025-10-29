@@ -9,19 +9,37 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // defaultAggregator implements the Aggregator interface for capability aggregation.
 // It queries backends in parallel, handles failures gracefully, and merges capabilities.
 type defaultAggregator struct {
-	backendClient vmcp.BackendClient
-	// TODO: Add conflict resolver, tool filter, tool override
+	backendClient    vmcp.BackendClient
+	conflictResolver ConflictResolver
+	toolConfigMap    map[string]*config.WorkloadToolConfig // Maps backend ID to tool config
 }
 
 // NewDefaultAggregator creates a new default aggregator implementation.
-func NewDefaultAggregator(backendClient vmcp.BackendClient) Aggregator {
+// conflictResolver handles tool name conflicts across backends.
+// workloadConfigs specifies per-backend tool filtering and overrides.
+func NewDefaultAggregator(
+	backendClient vmcp.BackendClient,
+	conflictResolver ConflictResolver,
+	workloadConfigs []*config.WorkloadToolConfig,
+) Aggregator {
+	// Build tool config map for quick lookup by backend ID
+	toolConfigMap := make(map[string]*config.WorkloadToolConfig)
+	for _, wlConfig := range workloadConfigs {
+		if wlConfig != nil {
+			toolConfigMap[wlConfig.Workload] = wlConfig
+		}
+	}
+
 	return &defaultAggregator{
-		backendClient: backendClient,
+		backendClient:    backendClient,
+		conflictResolver: conflictResolver,
+		toolConfigMap:    toolConfigMap,
 	}
 }
 
@@ -46,17 +64,20 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 		return nil, fmt.Errorf("%w: %s: %v", ErrBackendQueryFailed, backend.ID, err)
 	}
 
+	// Apply per-backend tool filtering and overrides (before conflict resolution)
+	processedTools := processBackendTools(ctx, backend.ID, capabilities.Tools, a.toolConfigMap[backend.ID])
+
 	// Convert to BackendCapabilities
 	result := &BackendCapabilities{
 		BackendID:        backend.ID,
-		Tools:            capabilities.Tools,
+		Tools:            processedTools,
 		Resources:        capabilities.Resources,
 		Prompts:          capabilities.Prompts,
 		SupportsLogging:  capabilities.SupportsLogging,
 		SupportsSampling: capabilities.SupportsSampling,
 	}
 
-	logger.Debugf("Backend %s: %d tools, %d resources, %d prompts",
+	logger.Debugf("Backend %s: %d tools (after filtering/overrides), %d resources, %d prompts",
 		backend.ID, len(result.Tools), len(result.Resources), len(result.Prompts))
 
 	return result, nil
@@ -113,51 +134,59 @@ func (a *defaultAggregator) QueryAllCapabilities(
 
 // ResolveConflicts applies conflict resolution strategy to handle
 // duplicate capability names across backends.
-func (*defaultAggregator) ResolveConflicts(
-	_ context.Context,
+func (a *defaultAggregator) ResolveConflicts(
+	ctx context.Context,
 	capabilities map[string]*BackendCapabilities,
 ) (*ResolvedCapabilities, error) {
 	logger.Debugf("Resolving conflicts across %d backends", len(capabilities))
 
-	// For Phase 1 (Issue #148), we'll implement basic conflict resolution
-	// Just collect all capabilities without resolving conflicts yet
-	// Conflict resolution will be implemented in a future phase
+	// Group tools by backend for conflict resolution
+	toolsByBackend := make(map[string][]vmcp.Tool)
+	for backendID, caps := range capabilities {
+		toolsByBackend[backendID] = caps.Tools
+	}
 
+	// Use the configured conflict resolver to resolve tool conflicts
+	var resolvedTools map[string]*ResolvedTool
+	var err error
+
+	if a.conflictResolver != nil {
+		resolvedTools, err = a.conflictResolver.ResolveToolConflicts(ctx, toolsByBackend)
+		if err != nil {
+			return nil, fmt.Errorf("conflict resolution failed: %w", err)
+		}
+	} else {
+		// Fallback: no conflict resolution (first wins, log warnings)
+		logger.Warnf("No conflict resolver configured, using fallback (first wins)")
+		resolvedTools = make(map[string]*ResolvedTool)
+		for backendID, tools := range toolsByBackend {
+			for _, tool := range tools {
+				if existing, exists := resolvedTools[tool.Name]; exists {
+					logger.Warnf("Tool name conflict: %s exists in both %s and %s (keeping first)",
+						tool.Name, existing.BackendID, backendID)
+					continue
+				}
+				resolvedTools[tool.Name] = &ResolvedTool{
+					ResolvedName: tool.Name,
+					OriginalName: tool.Name,
+					Description:  tool.Description,
+					InputSchema:  tool.InputSchema,
+					BackendID:    backendID,
+				}
+			}
+		}
+	}
+
+	// Build resolved capabilities
 	resolved := &ResolvedCapabilities{
-		Tools:     make(map[string]*ResolvedTool),
+		Tools:     resolvedTools,
 		Resources: []vmcp.Resource{},
 		Prompts:   []vmcp.Prompt{},
 	}
 
-	// Collect all tools (for now, without conflict resolution)
-	// Later, we'll add prefix/priority/manual strategies
-	for backendID, caps := range capabilities {
-		for _, tool := range caps.Tools {
-			// For now, just use the tool name as-is
-			// In future phases, we'll apply prefixing or priority rules
-			resolvedName := tool.Name
-
-			// If there's a conflict, log a warning (but don't fail)
-			if existing, exists := resolved.Tools[resolvedName]; exists {
-				logger.Warnf("Tool name conflict: %s exists in both %s and %s (keeping first)",
-					resolvedName, existing.BackendID, backendID)
-				continue
-			}
-
-			resolved.Tools[resolvedName] = &ResolvedTool{
-				ResolvedName: resolvedName,
-				OriginalName: tool.Name,
-				Description:  tool.Description,
-				InputSchema:  tool.InputSchema,
-				BackendID:    tool.BackendID,
-				// ConflictResolutionApplied will be set in future phases
-			}
-		}
-
-		// Collect resources (URIs should be globally unique)
+	// Collect resources and prompts (no conflict resolution for these yet)
+	for _, caps := range capabilities {
 		resolved.Resources = append(resolved.Resources, caps.Resources...)
-
-		// Collect prompts
 		resolved.Prompts = append(resolved.Prompts, caps.Prompts...)
 
 		// Aggregate logging/sampling support (OR logic - enabled if any backend supports)
@@ -239,6 +268,24 @@ func (*defaultAggregator) MergeCapabilities(
 		}
 	}
 
+	// Count conflicts resolved (tools that had their names changed)
+	conflictsResolved := 0
+	for _, resolvedTool := range resolved.Tools {
+		if resolvedTool.ResolvedName != resolvedTool.OriginalName {
+			conflictsResolved++
+		}
+	}
+
+	// Determine conflict strategy used
+	conflictStrategy := vmcp.ConflictStrategyPrefix // Default
+	if len(resolved.Tools) > 0 {
+		// Get strategy from first tool (all tools use same strategy)
+		for _, tool := range resolved.Tools {
+			conflictStrategy = tool.ConflictResolutionApplied
+			break
+		}
+	}
+
 	// Create final aggregated view
 	aggregated := &AggregatedCapabilities{
 		Tools:            tools,
@@ -252,7 +299,8 @@ func (*defaultAggregator) MergeCapabilities(
 			ToolCount:         len(tools),
 			ResourceCount:     len(resolved.Resources),
 			PromptCount:       len(resolved.Prompts),
-			ConflictsResolved: 0, // Will be tracked in future phases
+			ConflictsResolved: conflictsResolved,
+			ConflictStrategy:  conflictStrategy,
 		},
 	}
 

@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
+	"net/http"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -15,6 +17,25 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+)
+
+const (
+	// maxResponseSize is the maximum size in bytes for HTTP responses from backend MCP servers.
+	// This protects against DoS attacks via memory exhaustion from malicious or compromised backends.
+	//
+	// The MCP specification does not define size limits, so we enforce a reasonable limit
+	// to prevent unbounded memory allocation during JSON deserialization.
+	//
+	// Value: 100 MB
+	// Rationale:
+	//   - Allows large tool outputs, resources, and capability lists
+	//   - Prevents memory exhaustion (a single large response could OOM the process)
+	//   - Applied at HTTP transport layer before JSON deserialization
+	//   - Backends needing larger responses should use pagination or streaming
+	//
+	// Note: This limit is enforced per HTTP response, not per MCP request.
+	// A tools/list response with 1000 tools would be limited to 100MB total.
+	maxResponseSize = 100 * 1024 * 1024 // 100 MB
 )
 
 // httpBackendClient implements vmcp.BackendClient using mark3labs/mcp-go HTTP client.
@@ -33,8 +54,35 @@ func NewHTTPBackendClient() vmcp.BackendClient {
 	}
 }
 
+// roundTripperFunc is a function adapter for http.RoundTripper.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+// RoundTrip implements http.RoundTripper interface.
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 // defaultClientFactory creates mark3labs MCP clients for different transport types.
 func defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
+	// Create HTTP client with response size limits for DoS protection
+	httpClient := &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			resp, err := http.DefaultTransport.RoundTrip(req)
+			if err != nil {
+				return nil, err
+			}
+			// Wrap response body with size limit
+			resp.Body = struct {
+				io.Reader
+				io.Closer
+			}{
+				Reader: io.LimitReader(resp.Body, maxResponseSize),
+				Closer: resp.Body,
+			}
+			return resp, nil
+		}),
+	}
+
 	var c *client.Client
 	var err error
 
@@ -44,6 +92,7 @@ func defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*cli
 			target.BaseURL,
 			transport.WithHTTPTimeout(0),
 			transport.WithContinuousListening(),
+			transport.WithHTTPBasicClient(httpClient),
 			// TODO: Add authentication header injection via WithHTTPHeaderFunc
 			// This will be implemented when we add OutgoingAuthenticator support
 		)
@@ -52,7 +101,10 @@ func defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*cli
 		}
 
 	case "sse":
-		c, err = client.NewSSEMCPClient(target.BaseURL)
+		c, err = client.NewSSEMCPClient(
+			target.BaseURL,
+			transport.WithHTTPClient(httpClient),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create SSE client: %w", err)
 		}

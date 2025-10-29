@@ -74,8 +74,8 @@ func processBackendTools(
 	}
 
 	// Convert back to vmcp.Tool, preserving InputSchema and BackendID
-	result := make([]vmcp.Tool, len(processed))
-	for i, simpleTool := range processed {
+	result := make([]vmcp.Tool, 0, len(processed))
+	for _, simpleTool := range processed {
 		// Find the original tool name (before any override)
 		originalName := simpleTool.Name
 		if revName, wasOverridden := reverseOverrideMap[simpleTool.Name]; wasOverridden {
@@ -83,15 +83,21 @@ func processBackendTools(
 		}
 
 		// Look up the original tool to preserve InputSchema and BackendID
-		originalTool := originalToolsByName[originalName]
+		originalTool, exists := originalToolsByName[originalName]
+		if !exists {
+			// This should not happen unless there's a bug in the filtering logic,
+			// but skip the tool rather than panicking
+			logger.Warnf("Tool %s not found in original tools map for backend %s, skipping", originalName, backendID)
+			continue
+		}
 
 		// Construct the result tool with processed name/description but original schema
-		result[i] = vmcp.Tool{
+		result = append(result, vmcp.Tool{
 			Name:        simpleTool.Name,        // Use the processed (potentially overridden) name
 			Description: simpleTool.Description, // Use the processed (potentially overridden) description
 			InputSchema: originalTool.InputSchema,
 			BackendID:   backendID, // Use the backendID parameter (source of truth)
-		}
+		})
 	}
 
 	return result

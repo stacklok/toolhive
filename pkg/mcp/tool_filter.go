@@ -508,6 +508,10 @@ func processToolsListResponse(
 	processedTools := applyFilteringAndOverrides(config, simpleTools)
 
 	// Build the filtered response by matching processed tools with their original maps
+	// Note: This is O(n²) complexity, but acceptable because:
+	// - Tool lists are typically small (< 100 tools per backend)
+	// - Only runs once during tool list retrieval (not in hot path)
+	// - Inner loop breaks early on match
 	filteredTools := make([]map[string]any, 0, len(processedTools))
 	for _, processed := range processedTools {
 		// Find the original tool map by matching names

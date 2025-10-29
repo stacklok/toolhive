@@ -163,8 +163,14 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 		// Conflict detected - choose the highest priority backend
 		winner := r.selectWinner(candidates)
 		if winner == nil {
-			// All candidates are from backends not in priority list
-			logger.Warnf("Tool %s exists in multiple backends but none are in priority order, skipping", toolName)
+			// All candidates are from backends not in priority list - drop all of them
+			// This is intentional: priority strategy requires explicit priority ordering
+			backendIDs := make([]string, len(candidates))
+			for i, c := range candidates {
+				backendIDs[i] = c.BackendID
+			}
+			logger.Warnf("Tool %s exists in multiple backends %v but none are in priority order, dropping all",
+				toolName, backendIDs)
 			droppedTools += len(candidates)
 			continue
 		}

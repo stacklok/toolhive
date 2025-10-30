@@ -160,9 +160,6 @@ type AggregationMetadata struct {
 	// PromptCount is the total number of prompts.
 	PromptCount int
 
-	// ConflictsResolved is the number of conflicts that were resolved.
-	ConflictsResolved int
-
 	// ConflictStrategy is the strategy used for conflict resolution.
 	ConflictStrategy vmcp.ConflictResolutionStrategy
 }

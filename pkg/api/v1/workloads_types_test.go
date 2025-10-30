@@ -246,6 +246,33 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.Empty(t, result.Secrets)
 	})
 
+	t.Run("with tools override", func(t *testing.T) {
+		t.Parallel()
+
+		runConfig := &runner.RunConfig{
+			Name: "test-workload",
+			ToolsOverride: map[string]runner.ToolOverride{
+				"fetch": {
+					Name:        "fetch_custom",
+					Description: "Custom fetch description",
+				},
+				"read": {
+					Name: "read_file",
+				},
+			},
+		}
+
+		result := runConfigToCreateRequest(runConfig)
+
+		require.NotNil(t, result)
+		require.NotNil(t, result.ToolsOverride)
+		assert.Len(t, result.ToolsOverride, 2)
+		assert.Equal(t, "fetch_custom", result.ToolsOverride["fetch"].Name)
+		assert.Equal(t, "Custom fetch description", result.ToolsOverride["fetch"].Description)
+		assert.Equal(t, "read_file", result.ToolsOverride["read"].Name)
+		assert.Empty(t, result.ToolsOverride["read"].Description)
+	})
+
 	t.Run("nil runConfig", func(t *testing.T) {
 		t.Parallel()
 

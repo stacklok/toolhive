@@ -228,6 +228,18 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 
 	authzConfigPath := ""
 
+	// Convert ToolsOverride from runner.ToolOverride to API toolOverride
+	var toolsOverride map[string]toolOverride
+	if runConfig.ToolsOverride != nil {
+		toolsOverride = make(map[string]toolOverride, len(runConfig.ToolsOverride))
+		for key, override := range runConfig.ToolsOverride {
+			toolsOverride[key] = toolOverride{
+				Name:        override.Name,
+				Description: override.Description,
+			}
+		}
+	}
+
 	return &createRequest{
 		updateRequest: updateRequest{
 			Image:             runConfig.Image,
@@ -246,6 +258,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			NetworkIsolation:  runConfig.IsolateNetwork,
 			TrustProxyHeaders: runConfig.TrustProxyHeaders,
 			ToolsFilter:       runConfig.ToolsFilter,
+			ToolsOverride:     toolsOverride,
 			Group:             runConfig.Group,
 			URL:               runConfig.RemoteURL,
 			OAuthConfig:       oAuthConfig,

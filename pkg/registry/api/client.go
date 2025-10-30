@@ -139,7 +139,9 @@ func (c *mcpRegistryClient) ListServers(ctx context.Context, opts *ListOptions) 
 }
 
 // fetchServersPage fetches a single page of servers
-func (c *mcpRegistryClient) fetchServersPage(ctx context.Context, cursor string, opts *ListOptions) ([]*v0.ServerJSON, string, error) {
+func (c *mcpRegistryClient) fetchServersPage(
+	ctx context.Context, cursor string, opts *ListOptions,
+) ([]*v0.ServerJSON, string, error) {
 	endpoint := fmt.Sprintf("%s/v0/servers", c.baseURL)
 
 	// Build query parameters

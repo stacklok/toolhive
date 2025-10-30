@@ -3,14 +3,16 @@ package registry
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
-	"github.com/modelcontextprotocol/registry/pkg/model"
 
 	"github.com/stacklok/toolhive/pkg/registry/api"
 )
+
+// NOTE: Using converters from converters.go (same package) to avoid circular dependency.
+// This is a TEMPORARY solution - converters are copied from toolhive-registry.
+// TODO: Move types to toolhive-registry and import converters as a library.
 
 // APIRegistryProvider provides registry data from an MCP Registry API endpoint
 // It queries the API on-demand for each operation, ensuring fresh data.
@@ -108,7 +110,7 @@ func (p *APIRegistryProvider) GetServer(name string) (ServerMetadata, error) {
 	// Find exact match
 	for _, server := range servers {
 		// Extract simple name from reverse-DNS format
-		simpleName := extractAPIServerName(server.Name)
+		simpleName := ExtractServerName(server.Name)
 		if simpleName == name || server.Name == name {
 			return ConvertServerJSON(server)
 		}
@@ -144,18 +146,9 @@ func (p *APIRegistryProvider) ListServers() ([]ServerMetadata, error) {
 	return ConvertServersToMetadata(servers)
 }
 
-// extractAPIServerName extracts the simple name from a reverse-DNS format name
-// e.g., "io.github.user/weather" -> "weather"
-func extractAPIServerName(reverseDNSName string) string {
-	// Find the last slash
-	idx := strings.LastIndex(reverseDNSName, "/")
-	if idx == -1 {
-		return reverseDNSName
-	}
-	return reverseDNSName[idx+1:]
-}
-
 // ConvertServerJSON converts an MCP Registry API ServerJSON to ToolHive ServerMetadata
+// Uses converters from converters.go (same package)
+// Note: Only handles OCI packages and remote servers, skips npm/pypi by design
 func ConvertServerJSON(serverJSON *v0.ServerJSON) (ServerMetadata, error) {
 	if serverJSON == nil {
 		return nil, fmt.Errorf("serverJSON is nil")
@@ -165,7 +158,7 @@ func ConvertServerJSON(serverJSON *v0.ServerJSON) (ServerMetadata, error) {
 	// Remote servers have the 'remotes' field populated
 	// Container servers have the 'packages' field populated
 	if len(serverJSON.Remotes) > 0 {
-		return convertAPIToRemoteServer(serverJSON)
+		return ServerJSONToRemoteServerMetadata(serverJSON)
 	}
 
 	// Check if server has packages
@@ -174,77 +167,13 @@ func ConvertServerJSON(serverJSON *v0.ServerJSON) (ServerMetadata, error) {
 		return nil, fmt.Errorf("server %s has no packages or remotes, skipping", serverJSON.Name)
 	}
 
-	return convertAPIToImageMetadata(serverJSON)
-}
-
-// convertAPIToRemoteServer converts a ServerJSON with remotes to RemoteServerMetadata
-func convertAPIToRemoteServer(serverJSON *v0.ServerJSON) (*RemoteServerMetadata, error) {
-	if len(serverJSON.Remotes) == 0 {
-		return nil, fmt.Errorf("no remotes found in server")
-	}
-
-	remote := serverJSON.Remotes[0] // Use first remote (Transport type)
-
-	metadata := &RemoteServerMetadata{
-		BaseServerMetadata: BaseServerMetadata{
-			Name:          extractAPIServerName(serverJSON.Name),
-			Description:   serverJSON.Description,
-			Tier:          "Community", // Default tier
-			Status:        "active",    // Default status
-			Transport:     convertAPITransport(remote),
-			Tools:         []string{},
-			RepositoryURL: getAPIRepositoryURL(serverJSON.Repository),
-			Tags:          []string{},
-		},
-		URL:     remote.URL,
-		Headers: convertAPIHeaders(remote.Headers),
-	}
-
-	return metadata, nil
-}
-
-// convertAPIToImageMetadata converts a ServerJSON with packages to ImageMetadata
-func convertAPIToImageMetadata(serverJSON *v0.ServerJSON) (*ImageMetadata, error) {
-	if len(serverJSON.Packages) == 0 {
-		return nil, fmt.Errorf("no packages found in server")
-	}
-
-	// Find OCI package
-	var ociPackage *model.Package
-	for i := range serverJSON.Packages {
-		pkg := &serverJSON.Packages[i]
-		if pkg.RegistryType == "oci" || pkg.RegistryType == "docker" {
-			ociPackage = pkg
-			break
-		}
-	}
-
-	if ociPackage == nil {
-		// Fall back to first package
-		ociPackage = &serverJSON.Packages[0]
-	}
-
-	image := formatAPIImageName(ociPackage)
-
-	metadata := &ImageMetadata{
-		BaseServerMetadata: BaseServerMetadata{
-			Name:          extractAPIServerName(serverJSON.Name),
-			Description:   serverJSON.Description,
-			Tier:          "Community", // Default tier
-			Status:        "active",    // Default status
-			Transport:     "stdio",     // Default transport for container servers
-			Tools:         []string{},
-			RepositoryURL: getAPIRepositoryURL(serverJSON.Repository),
-			Tags:          []string{},
-		},
-		Image: image,
-	}
-
-	return metadata, nil
+	// ServerJSONToImageMetadata only handles OCI packages, will error on npm/pypi
+	return ServerJSONToImageMetadata(serverJSON)
 }
 
 // ConvertServersToMetadata converts a slice of ServerJSON to a slice of ServerMetadata
 // Skips servers that cannot be converted (e.g., incomplete entries)
+// Uses official converters from toolhive-registry package
 func ConvertServersToMetadata(servers []*v0.ServerJSON) ([]ServerMetadata, error) {
 	result := make([]ServerMetadata, 0, len(servers))
 
@@ -259,57 +188,4 @@ func ConvertServersToMetadata(servers []*v0.ServerJSON) ([]ServerMetadata, error
 	}
 
 	return result, nil
-}
-
-// Helper functions for conversion
-
-func convertAPITransport(transport model.Transport) string {
-	switch transport.Type {
-	case "sse":
-		return "sse"
-	case "streamable-http":
-		return "streamable-http"
-	default:
-		return "stdio"
-	}
-}
-
-func getAPIRepositoryURL(repo *model.Repository) string {
-	if repo != nil {
-		return repo.URL
-	}
-	return ""
-}
-
-func convertAPIHeaders(headers []model.KeyValueInput) []*Header {
-	result := make([]*Header, 0, len(headers))
-	for _, h := range headers {
-		result = append(result, &Header{
-			Name:        h.Name,
-			Description: h.Description,
-			Required:    h.IsRequired,
-			Secret:      h.IsSecret,
-		})
-	}
-	return result
-}
-
-func formatAPIImageName(pkg *model.Package) string {
-	switch pkg.RegistryType {
-	case "docker", "oci":
-		// For OCI, the Identifier already contains the full image reference
-		return pkg.Identifier
-	case "npm":
-		if pkg.Version != "" {
-			return fmt.Sprintf("npx://%s@%s", pkg.Identifier, pkg.Version)
-		}
-		return fmt.Sprintf("npx://%s", pkg.Identifier)
-	case "pypi":
-		if pkg.Version != "" {
-			return fmt.Sprintf("uvx://%s@%s", pkg.Identifier, pkg.Version)
-		}
-		return fmt.Sprintf("uvx://%s", pkg.Identifier)
-	default:
-		return pkg.Identifier
-	}
 }

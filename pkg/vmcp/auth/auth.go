@@ -10,6 +10,7 @@
 package auth
 
 //go:generate mockgen -destination=mocks/mock_token_authenticator.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/auth TokenAuthenticator
+//go:generate mockgen -destination=mocks/mock_strategy.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/auth Strategy
 
 import (
 	"context"

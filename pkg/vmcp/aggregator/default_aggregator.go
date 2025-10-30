@@ -268,7 +268,12 @@ func (*defaultAggregator) MergeCapabilities(
 		}
 	}
 
-	// Count conflicts resolved (tools that had their names changed)
+	// Count conflicts resolved (tools that had their names changed).
+	// A "resolved conflict" means we renamed a tool to prevent/resolve a naming collision.
+	// For example:
+	// - Prefix strategy: "create_issue" → "github_create_issue" (preventive)
+	// - Manual strategy: "create_issue" → "gh_create_issue" (explicit override)
+	// - Priority strategy: No renames, just drops lower-priority duplicates
 	conflictsResolved := 0
 	for _, resolvedTool := range resolved.Tools {
 		if resolvedTool.ResolvedName != resolvedTool.OriginalName {

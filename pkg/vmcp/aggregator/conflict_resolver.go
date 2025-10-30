@@ -58,7 +58,10 @@ func (r *PrefixConflictResolver) ResolveToolConflicts(
 				continue
 			}
 
-			// Track if we actually resolved a conflict
+			// Track if we renamed this tool (which means we resolved/prevented a potential conflict).
+			// The prefix strategy proactively renames ALL tools to prevent conflicts,
+			// so any tool with a changed name counts as a "resolved conflict".
+			// Example: "create_issue" → "github_create_issue" prevents future collisions.
 			if tool.Name != resolvedName {
 				conflictsResolved++
 			}
@@ -239,6 +242,9 @@ type ManualConflictResolver struct {
 }
 
 // NewManualConflictResolver creates a new manual conflict resolver.
+// Note: This resolver validates that overrides don't create NEW conflicts.
+// If two tools are both overridden to the same name, ResolveToolConflicts
+// will return an error ("collision after override").
 func NewManualConflictResolver(workloadConfigs []*config.WorkloadToolConfig) (*ManualConflictResolver, error) {
 	overrides := make(map[string]*config.ToolOverride)
 

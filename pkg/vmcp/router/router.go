@@ -5,6 +5,8 @@
 // routing strategies for load balancing.
 package router
 
+//go:generate mockgen -destination=mocks/mock_router.go -package=mocks -source=router.go Router RoutingStrategy SessionAffinityProvider
+
 import (
 	"context"
 	"fmt"

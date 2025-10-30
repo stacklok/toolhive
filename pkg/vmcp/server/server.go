@@ -21,6 +21,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
 
+const (
+	// defaultReadHeaderTimeout prevents slowloris attacks by limiting time to read request headers.
+	defaultReadHeaderTimeout = 10 * time.Second
+
+	// defaultShutdownTimeout is the maximum time to wait for graceful shutdown.
+	defaultShutdownTimeout = 10 * time.Second
+)
+
 // Config holds the Virtual MCP Server configuration.
 type Config struct {
 	// Name is the server name exposed in MCP protocol
@@ -154,7 +162,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.httpServer = &http.Server{
 		Addr:              addr,
 		Handler:           streamableServer,
-		ReadHeaderTimeout: 10 * time.Second, // Security: prevent slow loris attacks
+		ReadHeaderTimeout: defaultReadHeaderTimeout,
 	}
 
 	logger.Infof("Starting Virtual MCP Server at %s%s", addr, s.config.EndpointPath)
@@ -186,7 +194,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	logger.Info("Stopping Virtual MCP Server")
 
 	// Create shutdown context with timeout
-	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(ctx, defaultShutdownTimeout)
 	defer cancel()
 
 	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
@@ -246,7 +254,7 @@ func (s *Server) registerResource(resource vmcp.Resource) error {
 	// Register with MCP server
 	s.mcpServer.AddResource(mcpResource, handler)
 
-	logger.Debugf("Registered resource: %s", resource.URI)
+	logger.Debugf("Registered resource: %s (MIME: %s)", resource.URI, resource.MimeType)
 	return nil
 }
 
@@ -364,11 +372,22 @@ func (s *Server) createResourceHandler(uri string) func(
 			return nil, fmt.Errorf("resource read failed: %w", err)
 		}
 
+		// Get resource MIME type from aggregated capabilities
+		mimeType := "application/octet-stream" // Default for unknown resources
+		if s.aggregatedCapabilities != nil {
+			for _, res := range s.aggregatedCapabilities.Resources {
+				if res.URI == uri && res.MimeType != "" {
+					mimeType = res.MimeType
+					break
+				}
+			}
+		}
+
 		// Convert to MCP ResourceContents
 		contents := []mcp.ResourceContents{
 			mcp.TextResourceContents{
 				URI:      uri,
-				MIMEType: "text/plain",
+				MIMEType: mimeType,
 				Text:     string(data),
 			},
 		}

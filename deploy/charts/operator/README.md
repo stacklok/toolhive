@@ -1,7 +1,7 @@
 
 # ToolHive Operator Helm Chart
 
-![Version: 0.3.4](https://img.shields.io/badge/Version-0.3.4-informational?style=flat-square)
+![Version: 0.3.5](https://img.shields.io/badge/Version-0.3.5-informational?style=flat-square)
 ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square)
 
 A Helm chart for deploying the ToolHive Operator into Kubernetes.
@@ -95,8 +95,8 @@ The command removes all the Kubernetes components associated with the chart and 
 | operator.toolhiveRunnerImage | string | `"ghcr.io/stacklok/toolhive/proxyrunner:v0.5.0"` | Image to use for Toolhive runners |
 | operator.volumeMounts | list | `[]` | Additional volume mounts on the operator container |
 | operator.volumes | list | `[]` | Additional volumes to mount on the operator pod |
-| registryAPI | object | `{"image":"ghcr.io/stacklok/thv-registry-api:latest","serviceAccount":{"annotations":{},"automountServiceAccountToken":true,"labels":{},"name":"toolhive-registry-api"}}` | All values for the registry API deployment and associated resources |
-| registryAPI.image | string | `"ghcr.io/stacklok/thv-registry-api:latest"` | Container image for the registry API |
+| registryAPI | object | `{"image":"ghcr.io/stacklok/thv-registry-api:0.1.0","serviceAccount":{"annotations":{},"automountServiceAccountToken":true,"labels":{},"name":"toolhive-registry-api"}}` | All values for the registry API deployment and associated resources |
+| registryAPI.image | string | `"ghcr.io/stacklok/thv-registry-api:0.1.0"` | Container image for the registry API |
 | registryAPI.serviceAccount | object | `{"annotations":{},"automountServiceAccountToken":true,"labels":{},"name":"toolhive-registry-api"}` | Service account configuration for the registry API |
 | registryAPI.serviceAccount.annotations | object | `{}` | Annotations to add to the registry API service account |
 | registryAPI.serviceAccount.automountServiceAccountToken | bool | `true` | Automatically mount a ServiceAccount's API credentials |

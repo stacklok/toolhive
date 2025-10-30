@@ -13,6 +13,8 @@ const (
 	RegistryTypeFile = "file"
 	// RegistryTypeURL represents a remote URL registry
 	RegistryTypeURL = "url"
+	// RegistryTypeAPI represents an MCP Registry API endpoint
+	RegistryTypeAPI = "api"
 )
 
 // DetectRegistryType determines if input is a URL or file path and returns cleaned path
@@ -95,10 +97,61 @@ func setRegistryFile(provider Provider, registryPath string) error {
 	return nil
 }
 
+// setRegistryAPI validates and sets an MCP Registry API URL using the provided provider
+func setRegistryAPI(provider Provider, apiURL string, allowPrivateRegistryIp bool) error {
+	parsedURL, err := neturl.Parse(apiURL)
+	if err != nil {
+		return fmt.Errorf("invalid registry API URL: %w", err)
+	}
+
+	if allowPrivateRegistryIp {
+		// we validate either https or http URLs
+		if parsedURL.Scheme != networking.HttpScheme && parsedURL.Scheme != networking.HttpsScheme {
+			return fmt.Errorf("registry API URL must start with http:// or https:// when allowing private IPs")
+		}
+	} else {
+		// we just allow https
+		if parsedURL.Scheme != networking.HttpsScheme {
+			return fmt.Errorf("registry API URL must start with https:// when not allowing private IPs")
+		}
+	}
+
+	if !allowPrivateRegistryIp {
+		registryClient, err := networking.NewHttpClientBuilder().Build()
+		if err != nil {
+			return fmt.Errorf("failed to create HTTP client: %w", err)
+		}
+		// Try to fetch the /openapi.yaml endpoint to validate
+		openapiURL := apiURL
+		if !strings.HasSuffix(apiURL, "/") {
+			openapiURL += "/"
+		}
+		openapiURL += "openapi.yaml"
+		_, err = registryClient.Get(openapiURL)
+		if err != nil && strings.Contains(fmt.Sprint(err), networking.ErrPrivateIpAddress) {
+			return err
+		}
+	}
+
+	// Update the configuration
+	err = provider.UpdateConfig(func(c *Config) {
+		c.RegistryApiUrl = apiURL
+		c.RegistryUrl = ""       // Clear static registry URL when setting API URL
+		c.LocalRegistryPath = "" // Clear local path when setting API URL
+		c.AllowPrivateRegistryIp = allowPrivateRegistryIp
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	return nil
+}
+
 // unsetRegistry resets registry configuration to defaults using the provided provider
 func unsetRegistry(provider Provider) error {
 	err := provider.UpdateConfig(func(c *Config) {
 		c.RegistryUrl = ""
+		c.RegistryApiUrl = ""
 		c.LocalRegistryPath = ""
 		c.AllowPrivateRegistryIp = false
 	})
@@ -111,6 +164,11 @@ func unsetRegistry(provider Provider) error {
 // getRegistryConfig returns current registry configuration using the provided provider
 func getRegistryConfig(provider Provider) (url, localPath string, allowPrivateIP bool, registryType string) {
 	cfg := provider.GetConfig()
+
+	// Check API URL first (highest priority for live data)
+	if cfg.RegistryApiUrl != "" {
+		return cfg.RegistryApiUrl, "", cfg.AllowPrivateRegistryIp, RegistryTypeAPI
+	}
 
 	if cfg.RegistryUrl != "" {
 		return cfg.RegistryUrl, "", cfg.AllowPrivateRegistryIp, RegistryTypeURL

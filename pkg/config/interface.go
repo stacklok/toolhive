@@ -14,6 +14,7 @@ type Provider interface {
 
 	// Registry operations
 	SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error
+	SetRegistryAPI(apiURL string, allowPrivateRegistryIp bool) error
 	SetRegistryFile(registryPath string) error
 	UnsetRegistry() error
 	GetRegistryConfig() (url, localPath string, allowPrivateIP bool, registryType string)
@@ -50,6 +51,11 @@ func (*DefaultProvider) LoadOrCreateConfig() (*Config, error) {
 // SetRegistryURL validates and sets a registry URL
 func (d *DefaultProvider) SetRegistryURL(registryURL string, allowPrivateRegistryIp bool) error {
 	return setRegistryURL(d, registryURL, allowPrivateRegistryIp)
+}
+
+// SetRegistryAPI validates and sets an MCP Registry API endpoint
+func (d *DefaultProvider) SetRegistryAPI(apiURL string, allowPrivateRegistryIp bool) error {
+	return setRegistryAPI(d, apiURL, allowPrivateRegistryIp)
 }
 
 // SetRegistryFile validates and sets a local registry file
@@ -118,6 +124,11 @@ func (p *PathProvider) SetRegistryURL(registryURL string, allowPrivateRegistryIp
 	return setRegistryURL(p, registryURL, allowPrivateRegistryIp)
 }
 
+// SetRegistryAPI validates and sets an MCP Registry API endpoint
+func (p *PathProvider) SetRegistryAPI(apiURL string, allowPrivateRegistryIp bool) error {
+	return setRegistryAPI(p, apiURL, allowPrivateRegistryIp)
+}
+
 // SetRegistryFile validates and sets a local registry file
 func (p *PathProvider) SetRegistryFile(registryPath string) error {
 	return setRegistryFile(p, registryPath)
@@ -176,6 +187,11 @@ func (*KubernetesProvider) LoadOrCreateConfig() (*Config, error) {
 
 // SetRegistryURL is a no-op for Kubernetes environments
 func (*KubernetesProvider) SetRegistryURL(_ string, _ bool) error {
+	return nil
+}
+
+// SetRegistryAPI is a no-op for Kubernetes environments
+func (*KubernetesProvider) SetRegistryAPI(_ string, _ bool) error {
 	return nil
 }
 

@@ -321,19 +321,124 @@ Remote registries can be configured in the ToolHive configuration file to fetch 
 
 **Implementation**: `pkg/registry/provider.go`, `pkg/registry/provider_local.go`, `pkg/registry/provider_remote.go`, `pkg/registry/factory.go`
 
-### Registry Priority
+### API Registry Provider
 
-When multiple registries configured:
+ToolHive supports live MCP Registry API endpoints that implement the official [MCP Registry API v0.1 specification](https://registry.modelcontextprotocol.io/docs). This enables on-demand querying of servers from dynamic registry APIs.
 
-1. **Custom registries** (in order added)
-2. **Built-in registry**
+**Key differences from Remote Registry:**
+- **On-demand queries**: Fetches servers as needed, not bulk download
+- **Live data**: Always queries the latest data from the API
+- **Standard protocol**: Uses official MCP Registry API specification
+- **Pagination support**: Handles large registries via cursor-based pagination
+- **Search capabilities**: Supports server search via API queries
 
-First match wins. Use registry namespacing to avoid conflicts:
+**Set API registry:**
 ```bash
-thv run custom-registry/server-name
+thv config set-registry-api https://registry.example.com
 ```
 
-**Implementation**: `pkg/registry/provider.go`, `pkg/registry/provider_local.go`, `pkg/registry/provider_remote.go`, `pkg/registry/factory.go`
+**With private IP support:**
+```bash
+thv config set-registry-api https://registry.internal.company.com --allow-private-ip
+```
+
+**Check current registry:**
+```bash
+thv config get-registry
+# Output: Current registry: https://registry.example.com (API endpoint)
+```
+
+**Unset API registry:**
+```bash
+thv config unset-registry
+```
+
+**API Requirements:**
+
+The API endpoint must implement:
+- `GET /v0/servers` - List all servers with pagination
+- `GET /v0/servers/:name` - Get specific server by reverse-DNS name
+- `GET /v0/servers?search=<query>` - Search servers
+- `GET /openapi.yaml` - OpenAPI specification (version 1.0.0)
+
+**Response format:**
+
+Servers are returned in the upstream [MCP Registry format](https://github.com/modelcontextprotocol/registry):
+
+```json
+{
+  "server": {
+    "name": "io.github.example/weather",
+    "description": "Weather information MCP server",
+    "packages": [
+      {
+        "registry_type": "oci",
+        "identifier": "ghcr.io/example/weather-mcp:v1.0.0",
+        "version": "v1.0.0"
+      }
+    ],
+    "remotes": [],
+    "repository": {
+      "type": "git",
+      "url": "https://github.com/example/weather-mcp"
+    }
+  }
+}
+```
+
+**Type conversion:**
+
+ToolHive automatically converts upstream MCP Registry types to internal format:
+
+- **Container servers**: `packages` with `registry_type: "oci"` → `ImageMetadata`
+- **Remote servers**: `remotes` with SSE/HTTP transport → `RemoteServerMetadata`
+- **Package formats**:
+  - `oci`/`docker` → Docker image reference
+  - `npm` → `npx://<package>@<version>`
+  - `pypi` → `uvx://<package>@<version>`
+
+**Implementation**:
+- `pkg/registry/api/client.go` - MCP Registry API client
+- `pkg/registry/provider_api.go` - API provider implementation with type conversion
+- `pkg/config/registry.go` - Configuration methods (`setRegistryAPI`)
+- `pkg/registry/factory.go` - Provider factory with API support
+- `cmd/thv/app/config.go` - CLI commands
+
+**Use cases:**
+- Connect to official MCP Registry at https://registry.modelcontextprotocol.io
+- Point to organization's private MCP Registry API
+- Use third-party registry services
+- Dynamic server catalogs that update frequently
+
+### Registry Priority
+
+When multiple registries configured, ToolHive uses this priority order:
+
+1. **API Registry** (if configured) - Highest priority for live data
+2. **Remote Registry** (if configured) - Static remote registry URL
+3. **Local Registry** (if configured) - Custom local file
+4. **Built-in Registry** - Default embedded registry
+
+The factory selects the first configured registry type in this order. To switch between registry types, use the appropriate CLI command:
+
+```bash
+# Set API registry (highest priority)
+thv config set-registry-api https://registry.example.com
+
+# Set remote registry (if no API registry configured)
+thv config set-registry https://example.com/registry.json
+
+# Set local registry (if no API/remote registry configured)
+thv config set-registry /path/to/registry.json
+
+# Check current registry configuration
+thv config get-registry
+
+# Remove custom registry (fall back to built-in)
+thv config unset-registry
+```
+
+**Implementation**: `pkg/registry/factory.go`, `pkg/registry/provider.go`, `pkg/registry/provider_local.go`, `pkg/registry/provider_remote.go`, `pkg/registry/provider_api.go`
 
 ## Registry API Server
 

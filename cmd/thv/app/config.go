@@ -56,6 +56,22 @@ Examples:
 	RunE: setRegistryCmdFunc,
 }
 
+var setRegistryAPICmd = &cobra.Command{
+	Use:   "set-registry-api <api-url>",
+	Short: "Set the MCP Registry API endpoint",
+	Long: `Set the MCP Registry API endpoint that implements the MCP Registry API v0.1 specification.
+This enables on-demand querying of servers from a live registry API.
+
+The API endpoint must implement the official MCP Registry API specification from
+https://registry.modelcontextprotocol.io/docs
+
+Examples:
+  thv config set-registry-api https://registry.example.com           # API endpoint
+  thv config set-registry-api https://api.example.com --allow-private-ip  # With private IP support`,
+	Args: cobra.ExactArgs(1),
+	RunE: setRegistryAPICmdFunc,
+}
+
 var getRegistryCmd = &cobra.Command{
 	Use:   "get-registry",
 	Short: "Get the currently configured registry",
@@ -96,6 +112,14 @@ func init() {
 		"p",
 		false,
 		"Allow setting the registry URL, even if it references a private IP address",
+	)
+	configCmd.AddCommand(setRegistryAPICmd)
+	setRegistryAPICmd.Flags().BoolVarP(
+		&allowPrivateRegistryIp,
+		"allow-private-ip",
+		"p",
+		false,
+		"Allow setting the registry API URL, even if it references a private IP address",
 	)
 	configCmd.AddCommand(getRegistryCmd)
 	configCmd.AddCommand(unsetRegistryCmd)
@@ -183,11 +207,31 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 	}
 }
 
+func setRegistryAPICmdFunc(_ *cobra.Command, args []string) error {
+	apiURL := args[0]
+	provider := config.NewDefaultProvider()
+
+	err := provider.SetRegistryAPI(apiURL, allowPrivateRegistryIp)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Successfully set registry API endpoint: %s\n", apiURL)
+	if allowPrivateRegistryIp {
+		fmt.Print("Successfully enabled use of private IP addresses for the registry API\n")
+		fmt.Print("Caution: allowing registry API URLs containing private IP addresses may decrease your security.\n" +
+			"Make sure you trust any registry APIs you configure with ToolHive.\n")
+	}
+	return nil
+}
+
 func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 	provider := config.NewDefaultProvider()
 	url, localPath, _, registryType := provider.GetRegistryConfig()
 
 	switch registryType {
+	case config.RegistryTypeAPI:
+		fmt.Printf("Current registry: %s (API endpoint)\n", url)
 	case config.RegistryTypeURL:
 		fmt.Printf("Current registry: %s (remote URL)\n", url)
 	case config.RegistryTypeFile:

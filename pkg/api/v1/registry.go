@@ -25,6 +25,8 @@ const (
 	RegistryTypeFile RegistryType = "file"
 	// RegistryTypeURL represents a remote URL registry
 	RegistryTypeURL RegistryType = "url"
+	// RegistryTypeAPI represents an MCP Registry API endpoint
+	RegistryTypeAPI RegistryType = "api"
 	// RegistryTypeDefault represents a built-in registry
 	RegistryTypeDefault RegistryType = "default"
 )
@@ -37,6 +39,11 @@ func (rr *RegistryRoutes) getRegistryInfo() (RegistryType, string) {
 // getRegistryInfoWithProvider returns the registry type and the source using the provided config provider
 func getRegistryInfoWithProvider(configProvider config.Provider) (RegistryType, string) {
 	cfg := configProvider.GetConfig()
+
+	// Check API URL first (highest priority for live data)
+	if cfg.RegistryApiUrl != "" {
+		return RegistryTypeAPI, cfg.RegistryApiUrl
+	}
 
 	if cfg.RegistryUrl != "" {
 		return RegistryTypeURL, cfg.RegistryUrl

@@ -169,12 +169,14 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		options = append(options, runner.WithToolsOverride(toolsOverride))
 	}
 
-	// Add telemetry configuration if specified
-	runconfig.AddTelemetryConfigOptions(&options, proxy.Spec.Telemetry, proxy.Name)
-
-	// Add authorization configuration if specified
+	// Create context for API operations
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()
+
+	// Add telemetry configuration if specified
+	runconfig.AddTelemetryConfigOptions(ctx, &options, proxy.Spec.Telemetry, proxy.Name)
+
+	// Add authorization configuration if specified
 
 	if err := ctrlutil.AddAuthzConfigOptions(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig, &options); err != nil {
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)

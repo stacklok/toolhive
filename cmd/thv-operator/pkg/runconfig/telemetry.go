@@ -2,8 +2,11 @@
 package runconfig
 
 import (
+	"context"
 	"strconv"
 	"strings"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -11,6 +14,7 @@ import (
 
 // AddTelemetryConfigOptions adds telemetry configuration options to the builder options
 func AddTelemetryConfigOptions(
+	ctx context.Context,
 	options *[]runner.RunConfigBuilderOption,
 	telemetryConfig *mcpv1alpha1.TelemetryConfig,
 	mcpServerName string,
@@ -53,6 +57,12 @@ func AddTelemetryConfigOptions(
 				// Parse sampling rate string to float64
 				if rate, err := strconv.ParseFloat(otel.Tracing.SamplingRate, 64); err == nil {
 					otelSamplingRate = rate
+				} else {
+					logger := log.FromContext(ctx)
+					logger.Error(err, "Failed to parse sampling rate, using default",
+						"samplingRate", otel.Tracing.SamplingRate,
+						"default", otelSamplingRate,
+						"mcpServer", mcpServerName)
 				}
 			}
 		}
@@ -66,6 +76,10 @@ func AddTelemetryConfigOptions(
 	// Process Prometheus configuration
 	if telemetryConfig.Prometheus != nil {
 		otelEnablePrometheusMetricsPath = telemetryConfig.Prometheus.Enabled
+	}
+
+	if options == nil {
+		return
 	}
 
 	// Add telemetry config to options

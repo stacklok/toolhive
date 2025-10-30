@@ -26,19 +26,7 @@ jobs:
 
       - name: Compute version number
         id: version-string
-        run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            # For main branch, use semver with -dev suffix
-            echo "tag=0.0.1-dev.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # For tags, use the tag as is (assuming it's semver)
-            TAG="${{ github.ref_name }}"
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          else
-            # For other branches, use branch name and run number
-            BRANCH="${{ github.ref_name }}"
-            echo "tag=0.0.1-$BRANCH.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          fi
+        uses: ./.github/actions/compute-version
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
@@ -60,7 +48,7 @@ jobs:
           BUILD_DATE: ${{ github.event.head_commit.timestamp }}
           KO_CONFIG_PATH: ${{ github.workspace }}/.github/ko-ci.yml
         run: |
-          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          TAG=${{ steps.version-string.outputs.tag }}
           TAGS="-t $TAG"
 
           # Add latest tag only if building from a tag
@@ -75,7 +63,7 @@ jobs:
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
         run: |
-          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          TAG=${{ steps.version-string.outputs.tag }}
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
 
@@ -101,19 +89,7 @@ jobs:
 
       - name: Compute version number
         id: version-string
-        run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            # For main branch, use semver with -dev suffix
-            echo "tag=0.0.1-dev.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # For tags, use the tag as is (assuming it's semver)
-            TAG="${{ github.ref_name }}"
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          else
-            # For other branches, use branch name and run number
-            BRANCH="${{ github.ref_name }}"
-            echo "tag=0.0.1-$BRANCH.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          fi
+        uses: ./.github/actions/compute-version
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
@@ -154,7 +130,7 @@ jobs:
       - name: Sign container image
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          TAG=${{ steps.version-string.outputs.tag }}
           cosign sign -y $BASE_REPO:$TAG
           cosign sign -y $BASE_REPO:latest
 
@@ -189,19 +165,7 @@ jobs:
 
       - name: Compute version number
         id: version-string
-        run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            # For main branch, use semver with -dev suffix
-            echo "tag=0.0.1-dev.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # For tags, use the tag as is (assuming it's semver)
-            TAG="${{ github.ref_name }}"
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          else
-            # For other branches, use branch name and run number
-            BRANCH="${{ github.ref_name }}"
-            echo "tag=0.0.1-$BRANCH.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          fi
+        uses: ./.github/actions/compute-version
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
@@ -238,7 +202,7 @@ jobs:
           BUILD_DATE: ${{ github.event.head_commit.timestamp }}
           KO_CONFIG_PATH: ${{ github.workspace }}/.github/ko-ci.yml
         run: |
-          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          TAG=${{ steps.version-string.outputs.tag }}
           TAGS="-t $TAG"
 
           # Add latest tag only if building from a tag
@@ -258,8 +222,7 @@ jobs:
           tags: ${{ steps.ubi-meta.outputs.tags }}
           build-args: |
             CODEDIR=cmd/thv-operator
-            TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
-            VERSION=$TAG-ubi
+            VERSION=${{ steps.version-string.outputs.tag }}-ubi
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
           labels: ${{ steps.ubi-meta.outputs.labels }}
@@ -268,8 +231,8 @@ jobs:
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
         run: |
-          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
-          UBI_TAG=$(echo "${{ steps.version-string.outputs.tag }}-ubi" | sed 's/+/_/g')
+          TAG=${{ steps.version-string.outputs.tag }}
+          UBI_TAG="${{ steps.version-string.outputs.tag }}-ubi"
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
           cosign sign -y $BASE_REPO:$UBI_TAG
@@ -301,19 +264,7 @@ jobs:
 
       - name: Compute version number
         id: version-string
-        run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            # For main branch, use semver with -dev suffix
-            echo "tag=0.0.1-dev.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            # For tags, use the tag as is (assuming it's semver)
-            TAG="${{ github.ref_name }}"
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          else
-            # For other branches, use branch name and run number
-            BRANCH="${{ github.ref_name }}"
-            echo "tag=0.0.1-$BRANCH.$GITHUB_RUN_NUMBER+$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          fi
+        uses: ./.github/actions/compute-version
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
@@ -350,7 +301,7 @@ jobs:
           BUILD_DATE: ${{ github.event.head_commit.timestamp }}
           KO_CONFIG_PATH: ${{ github.workspace }}/.github/ko-ci.yml
         run: |
-          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
+          TAG=${{ steps.version-string.outputs.tag }}
           TAGS="-t $TAG"
           # Add latest tag only if building from a tag
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
@@ -368,8 +319,7 @@ jobs:
           tags: ${{ steps.ubi-meta.outputs.tags }}
           build-args: |
             CODEDIR=cmd/thv-proxyrunner
-            TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
-            VERSION=$TAG-ubi
+            VERSION=${{ steps.version-string.outputs.tag }}-ubi
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
           labels: ${{ steps.ubi-meta.outputs.labels }}
@@ -378,8 +328,8 @@ jobs:
         # This step uses the identity token to provision an ephemeral certificate
         # against the sigstore community Fulcio instance.
         run: |
-          TAG=$(echo "${{ steps.version-string.outputs.tag }}" | sed 's/+/_/g')
-          UBI_TAG=$(echo "${{ steps.version-string.outputs.tag }}-ubi" | sed 's/+/_/g')
+          TAG=${{ steps.version-string.outputs.tag }}
+          UBI_TAG="${{ steps.version-string.outputs.tag }}-ubi"
           # Sign the ko image
           cosign sign -y $BASE_REPO:$TAG
           cosign sign -y $BASE_REPO:$UBI_TAG

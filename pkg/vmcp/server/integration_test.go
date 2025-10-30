@@ -2,7 +2,10 @@ package server_test
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -181,6 +184,44 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 
 	// Validate server address
 	assert.Equal(t, "127.0.0.1:4484", srv.Address())
+
+	// Step 7: Start server and validate it's running
+	serverCtx, cancelServer := context.WithCancel(ctx)
+	t.Cleanup(cancelServer)
+
+	// Start server in background
+	serverErrCh := make(chan error, 1)
+	go func() {
+		if err := srv.Start(serverCtx); err != nil && err != context.Canceled {
+			serverErrCh <- err
+		}
+	}()
+
+	// Wait for server to be ready by checking if the port is listening
+	serverReady := false
+	for i := 0; i < 10; i++ {
+		conn, err := net.DialTimeout("tcp", srv.Address(), 100*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			serverReady = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Check if server failed to start
+	select {
+	case err := <-serverErrCh:
+		t.Fatalf("Server failed to start: %v", err)
+	default:
+		// Server is running
+	}
+
+	require.True(t, serverReady, fmt.Sprintf("Server did not start listening on %s within timeout", srv.Address()))
+
+	// Clean up: stop the server
+	cancelServer()
+	time.Sleep(100 * time.Millisecond) // Give server time to shutdown
 }
 
 // TestIntegration_ConflictResolutionStrategies tests that different

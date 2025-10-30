@@ -25,6 +25,18 @@ const (
 	// defaultReadHeaderTimeout prevents slowloris attacks by limiting time to read request headers.
 	defaultReadHeaderTimeout = 10 * time.Second
 
+	// defaultReadTimeout is the maximum duration for reading the entire request, including body.
+	defaultReadTimeout = 30 * time.Second
+
+	// defaultWriteTimeout is the maximum duration before timing out writes of the response.
+	defaultWriteTimeout = 30 * time.Second
+
+	// defaultIdleTimeout is the maximum amount of time to wait for the next request when keep-alive's are enabled.
+	defaultIdleTimeout = 120 * time.Second
+
+	// defaultMaxHeaderBytes is the maximum size of request headers in bytes (1 MB).
+	defaultMaxHeaderBytes = 1 << 20
+
 	// defaultShutdownTimeout is the maximum time to wait for graceful shutdown.
 	defaultShutdownTimeout = 10 * time.Second
 )
@@ -163,6 +175,10 @@ func (s *Server) Start(ctx context.Context) error {
 		Addr:              addr,
 		Handler:           streamableServer,
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
+		ReadTimeout:       defaultReadTimeout,
+		WriteTimeout:      defaultWriteTimeout,
+		IdleTimeout:       defaultIdleTimeout,
+		MaxHeaderBytes:    defaultMaxHeaderBytes,
 	}
 
 	logger.Infof("Starting Virtual MCP Server at %s%s", addr, s.config.EndpointPath)

@@ -107,6 +107,33 @@ linters:
       - linters:
           - lll
         path: .golangci.yml
+      # These are auto-generated, so it makes no sense including them.
+      - linters:
+          - dupl
+          - errcheck
+          - gci
+          - gocyclo
+          - gosec
+          - lll
+        path: (.*)mock_(.+)\.go
+      # These are auto-generated, so it makes no sense including them.
+      - linters:
+          - dupl
+          - errcheck
+          - gci
+          - gocyclo
+          - gosec
+          - lll
+        path: (.*)zz_generated\.deepcopy\.go
+      # This is auto-generated, so it makes no sense including it.
+      - linters:
+          - dupl
+          - errcheck
+          - gci
+          - gocyclo
+          - gosec
+          - lll
+        path: docs/server/docs.go
     paths:
       - third_party$
       - builtin$

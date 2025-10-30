@@ -42,7 +42,6 @@ func (r *PrefixConflictResolver) ResolveToolConflicts(
 	logger.Debugf("Resolving conflicts using prefix strategy (format: %s)", r.PrefixFormat)
 
 	resolved := make(map[string]*ResolvedTool)
-	conflictsResolved := 0
 
 	for backendID, tools := range toolsByBackend {
 		for _, tool := range tools {
@@ -54,16 +53,7 @@ func (r *PrefixConflictResolver) ResolveToolConflicts(
 				// This should be extremely rare with prefixing, but handle it
 				logger.Warnf("Collision after prefixing: %s from %s conflicts with %s from %s",
 					resolvedName, backendID, existing.ResolvedName, existing.BackendID)
-				conflictsResolved++
 				continue
-			}
-
-			// Track if we renamed this tool (which means we resolved/prevented a potential conflict).
-			// The prefix strategy proactively renames ALL tools to prevent conflicts,
-			// so any tool with a changed name counts as a "resolved conflict".
-			// Example: "create_issue" → "github_create_issue" prevents future collisions.
-			if tool.Name != resolvedName {
-				conflictsResolved++
 			}
 
 			resolved[resolvedName] = &ResolvedTool{
@@ -77,8 +67,7 @@ func (r *PrefixConflictResolver) ResolveToolConflicts(
 		}
 	}
 
-	logger.Infof("Prefix strategy resolved %d potential conflicts, created %d unique tools",
-		conflictsResolved, len(resolved))
+	logger.Infof("Prefix strategy created %d unique tools", len(resolved))
 
 	return resolved, nil
 }

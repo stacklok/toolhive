@@ -13,8 +13,9 @@ import (
 	context "context"
 	reflect "reflect"
 
-	secrets "github.com/stacklok/toolhive/pkg/secrets"
 	gomock "go.uber.org/mock/gomock"
+
+	secrets "github.com/stacklok/toolhive/pkg/secrets"
 )
 
 // MockProvider is a mock of Provider interface.

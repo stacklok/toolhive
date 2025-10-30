@@ -85,6 +85,10 @@ type Identity struct {
 	Email string
 
 	// Groups are the groups this identity belongs to.
+	//
+	// NOTE: This field is intentionally NOT populated by OIDCIncomingAuthenticator.
+	// Authorization logic MUST extract groups from the Claims map, as group claim
+	// names vary by provider (e.g., "groups", "roles", "cognito:groups").
 	Groups []string
 
 	// Claims contains additional claims from the auth token.

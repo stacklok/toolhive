@@ -106,12 +106,13 @@ func (o *OIDCIncomingAuthenticator) Middleware() func(http.Handler) http.Handler
 }
 
 // claimsToIdentity converts JWT claims to an Identity structure.
-// It extracts only the universal JWT fields (sub, name, email) and stores
-// all claims in the Claims map. Groups extraction is left to authorization
-// logic that can interpret provider-specific claim structures.
 //
-// Returns an error if the required 'sub' claim is missing or invalid, as mandated
-// by OpenID Connect Core 1.0 specification section 5.1.
+// Groups are intentionally NOT extracted here because:
+// - OIDC providers use different claim names ("groups", "roles", etc.)
+// - Group extraction is an authorization concern, not authentication
+// - Authorization policies access groups via the Claims map
+//
+// Returns an error if the required 'sub' claim is missing or invalid.
 func claimsToIdentity(claims jwt.MapClaims) (*Identity, error) {
 	identity := &Identity{
 		Claims: make(map[string]any),

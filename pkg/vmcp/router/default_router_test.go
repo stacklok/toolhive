@@ -57,6 +57,17 @@ func TestDefaultRouter_RouteTool(t *testing.T) {
 			expectError:   true,
 			errorContains: "routing table not initialized",
 		},
+		{
+			name: "routing table tools map is nil",
+			setupTable: &vmcp.RoutingTable{
+				Tools:     nil, // nil map
+				Resources: make(map[string]*vmcp.BackendTarget),
+				Prompts:   make(map[string]*vmcp.BackendTarget),
+			},
+			toolName:      "test_tool",
+			expectError:   true,
+			errorContains: "routing table tools map not initialized",
+		},
 	}
 
 	for _, tt := range tests {
@@ -134,6 +145,17 @@ func TestDefaultRouter_RouteResource(t *testing.T) {
 			expectError:   true,
 			errorContains: "routing table not initialized",
 		},
+		{
+			name: "routing table resources map is nil",
+			setupTable: &vmcp.RoutingTable{
+				Tools:     make(map[string]*vmcp.BackendTarget),
+				Resources: nil, // nil map
+				Prompts:   make(map[string]*vmcp.BackendTarget),
+			},
+			uri:           "file:///test",
+			expectError:   true,
+			errorContains: "routing table resources map not initialized",
+		},
 	}
 
 	for _, tt := range tests {
@@ -210,6 +232,17 @@ func TestDefaultRouter_RoutePrompt(t *testing.T) {
 			promptName:    "test",
 			expectError:   true,
 			errorContains: "routing table not initialized",
+		},
+		{
+			name: "routing table prompts map is nil",
+			setupTable: &vmcp.RoutingTable{
+				Tools:     make(map[string]*vmcp.BackendTarget),
+				Resources: make(map[string]*vmcp.BackendTarget),
+				Prompts:   nil, // nil map
+			},
+			promptName:    "test",
+			expectError:   true,
+			errorContains: "routing table prompts map not initialized",
 		},
 	}
 

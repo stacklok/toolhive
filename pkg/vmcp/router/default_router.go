@@ -36,6 +36,10 @@ func (r *defaultRouter) RouteTool(_ context.Context, toolName string) (*vmcp.Bac
 		return nil, fmt.Errorf("routing table not initialized")
 	}
 
+	if r.routingTable.Tools == nil {
+		return nil, fmt.Errorf("routing table tools map not initialized")
+	}
+
 	target, exists := r.routingTable.Tools[toolName]
 	if !exists {
 		logger.Debugf("Tool not found in routing table: %s", toolName)
@@ -55,6 +59,10 @@ func (r *defaultRouter) RouteResource(_ context.Context, uri string) (*vmcp.Back
 		return nil, fmt.Errorf("routing table not initialized")
 	}
 
+	if r.routingTable.Resources == nil {
+		return nil, fmt.Errorf("routing table resources map not initialized")
+	}
+
 	target, exists := r.routingTable.Resources[uri]
 	if !exists {
 		logger.Debugf("Resource not found in routing table: %s", uri)
@@ -72,6 +80,10 @@ func (r *defaultRouter) RoutePrompt(_ context.Context, name string) (*vmcp.Backe
 
 	if r.routingTable == nil {
 		return nil, fmt.Errorf("routing table not initialized")
+	}
+
+	if r.routingTable.Prompts == nil {
+		return nil, fmt.Errorf("routing table prompts map not initialized")
 	}
 
 	target, exists := r.routingTable.Prompts[name]

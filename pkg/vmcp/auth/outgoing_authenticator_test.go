@@ -8,10 +8,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/mocks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/mocks"
 )
 
 type testContextKey struct{}
@@ -164,6 +165,7 @@ func TestDefaultOutgoingAuthenticator_AuthenticateRequest(t *testing.T) {
 		auth := NewDefaultOutgoingAuthenticator()
 		strategy := mocks.NewMockStrategy(ctrl)
 		strategy.EXPECT().Name().Return("bearer").AnyTimes()
+		strategy.EXPECT().Validate(gomock.Any()).Return(nil)
 		strategy.EXPECT().Authenticate(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 			func(_ context.Context, req *http.Request, _ map[string]any) error {
 				// Add a header to verify the request was modified
@@ -201,6 +203,7 @@ func TestDefaultOutgoingAuthenticator_AuthenticateRequest(t *testing.T) {
 		strategyErr := errors.New("authentication failed")
 		strategy := mocks.NewMockStrategy(ctrl)
 		strategy.EXPECT().Name().Return("bearer").AnyTimes()
+		strategy.EXPECT().Validate(gomock.Any()).Return(nil)
 		strategy.EXPECT().Authenticate(gomock.Any(), gomock.Any(), gomock.Any()).Return(strategyErr)
 		require.NoError(t, auth.RegisterStrategy("bearer", strategy))
 
@@ -223,6 +226,7 @@ func TestDefaultOutgoingAuthenticator_AuthenticateRequest(t *testing.T) {
 
 		strategy := mocks.NewMockStrategy(ctrl)
 		strategy.EXPECT().Name().Return("bearer").AnyTimes()
+		strategy.EXPECT().Validate(gomock.Any()).Return(nil)
 		strategy.EXPECT().Authenticate(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 			func(ctx context.Context, _ *http.Request, metadata map[string]any) error {
 				receivedCtx = ctx
@@ -245,6 +249,35 @@ func TestDefaultOutgoingAuthenticator_AuthenticateRequest(t *testing.T) {
 		assert.NotNil(t, receivedCtx)
 		assert.Equal(t, "test-value", receivedCtx.Value(testKey))
 		assert.Equal(t, metadata, receivedMetadata)
+	})
+
+	t.Run("validates metadata before authentication", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		auth := NewDefaultOutgoingAuthenticator()
+		strategy := mocks.NewMockStrategy(ctrl)
+		strategy.EXPECT().Name().Return("test-strategy").AnyTimes()
+
+		require.NoError(t, auth.RegisterStrategy("test-strategy", strategy))
+
+		req := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+		metadata := map[string]any{"invalid": "data"}
+
+		// Expect Validate to be called and return error
+		strategy.EXPECT().
+			Validate(metadata).
+			Return(errors.New("invalid metadata"))
+
+		// Authenticate should NOT be called if validation fails
+		// (no EXPECT for Authenticate)
+
+		err := auth.AuthenticateRequest(context.Background(), req, "test-strategy", metadata)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid metadata for strategy")
+		assert.Contains(t, err.Error(), "test-strategy")
 	})
 }
 
@@ -320,6 +353,7 @@ func TestDefaultOutgoingAuthenticator_ConcurrentAccess(t *testing.T) {
 
 		strategy := mocks.NewMockStrategy(ctrl)
 		strategy.EXPECT().Name().Return("bearer").AnyTimes()
+		strategy.EXPECT().Validate(gomock.Any()).Return(nil).AnyTimes()
 		strategy.EXPECT().Authenticate(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 			func(_ context.Context, req *http.Request, _ map[string]any) error {
 				authMu.Lock()

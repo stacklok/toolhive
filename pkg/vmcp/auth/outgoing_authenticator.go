@@ -108,6 +108,7 @@ func (a *DefaultOutgoingAuthenticator) GetStrategy(name string) (Strategy, error
 //
 // Returns an error if:
 //   - The strategy is not found
+//   - The metadata validation fails
 //   - The strategy's Authenticate method fails
 func (a *DefaultOutgoingAuthenticator) AuthenticateRequest(
 	ctx context.Context,
@@ -118,6 +119,11 @@ func (a *DefaultOutgoingAuthenticator) AuthenticateRequest(
 	strategy, err := a.GetStrategy(strategyName)
 	if err != nil {
 		return err
+	}
+
+	// Validate metadata before using it
+	if err := strategy.Validate(metadata); err != nil {
+		return fmt.Errorf("invalid metadata for strategy %q: %w", strategyName, err)
 	}
 
 	return strategy.Authenticate(ctx, req, metadata)

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-29T00:18:44Z",
+  "last_updated": "2025-10-29T11:39:51Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -711,7 +711,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:0.9.9",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:1.0.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -1798,7 +1798,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.17.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.18.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -1858,10 +1858,8 @@
       "tools": [
         "add_comment_to_pending_review",
         "add_issue_comment",
-        "add_sub_issue",
         "assign_copilot_to_issue",
         "create_branch",
-        "create_issue",
         "create_or_update_file",
         "create_pull_request",
         "create_repository",
@@ -1869,8 +1867,6 @@
         "fork_repository",
         "get_commit",
         "get_file_contents",
-        "get_issue",
-        "get_issue_comments",
         "get_label",
         "get_latest_release",
         "get_me",
@@ -1878,28 +1874,26 @@
         "get_tag",
         "get_team_members",
         "get_teams",
+        "issue_read",
+        "issue_write",
         "list_branches",
         "list_commits",
         "list_issue_types",
         "list_issues",
-        "list_label",
         "list_pull_requests",
         "list_releases",
-        "list_sub_issues",
         "list_tags",
         "merge_pull_request",
         "pull_request_read",
         "pull_request_review_write",
         "push_files",
-        "remove_sub_issue",
-        "reprioritize_sub_issue",
         "request_copilot_review",
         "search_code",
         "search_issues",
         "search_pull_requests",
         "search_repositories",
         "search_users",
-        "update_issue",
+        "sub_issue_write",
         "update_pull_request",
         "update_pull_request_branch"
       ],
@@ -1922,7 +1916,7 @@
         "update",
         "issues"
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.19.1",
+      "image": "ghcr.io/github/github-mcp-server:v0.20.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -2629,9 +2623,9 @@
         "pg_upgrade"
       ],
       "metadata": {
-        "stars": 69,
+        "stars": 70,
         "pulls": 0,
-        "last_updated": "2025-10-11T02:26:18Z"
+        "last_updated": "2025-10-29T02:33:59Z"
       },
       "repository_url": "https://github.com/heroku/heroku-mcp-server",
       "tags": [
@@ -3768,7 +3762,7 @@
         "data",
         "query"
       ],
-      "image": "docker.io/mongodb/mongodb-mcp-server:1.1.0",
+      "image": "docker.io/mongodb/mongodb-mcp-server:1.2.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -4632,7 +4626,6 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "analyze_issue_with_seer",
         "find_dsns",
         "find_organizations",
         "find_projects",
@@ -4660,7 +4653,7 @@
         "error-tracking",
         "observability"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.18.0",
+      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.19.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -4976,6 +4969,7 @@
         "get_latest_provider_version",
         "get_module_details",
         "get_policy_details",
+        "get_provider_capabilities",
         "get_provider_details",
         "search_modules",
         "search_policies",
@@ -5002,7 +4996,7 @@
         "gcp",
         "azure"
       ],
-      "image": "docker.io/hashicorp/terraform-mcp-server:0.3.1",
+      "image": "docker.io/hashicorp/terraform-mcp-server:0.3.2",
       "permissions": {
         "network": {
           "outbound": {
@@ -5396,7 +5390,7 @@
       "metadata": {
         "stars": 3,
         "pulls": 0,
-        "last_updated": "2025-10-11T02:26:18Z"
+        "last_updated": "2025-10-29T02:34:00Z"
       },
       "repository_url": "https://github.com/alpic-ai/kiwi-mcp-server-public",
       "tags": [
@@ -5810,7 +5804,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-10-10T02:29:32Z"
+        "last_updated": "2025-10-29T02:33:58Z"
       },
       "tags": [
         "remote",
@@ -5841,9 +5835,9 @@
         "get_service_info"
       ],
       "metadata": {
-        "stars": 82,
+        "stars": 84,
         "pulls": 0,
-        "last_updated": "2025-10-10T02:29:32Z"
+        "last_updated": "2025-10-29T02:33:59Z"
       },
       "repository_url": "https://github.com/square/square-mcp-server",
       "tags": [
@@ -5899,7 +5893,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-10-10T02:29:32Z"
+        "last_updated": "2025-10-29T02:33:59Z"
       },
       "tags": [
         "remote",

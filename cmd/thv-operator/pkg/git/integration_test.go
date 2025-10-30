@@ -60,20 +60,12 @@ func TestDefaultGitClient_FullWorkflow(t *testing.T) {
 		t.Fatalf("Failed to commit: %v", err)
 	}
 
-	// Create a clone destination directory
-	cloneDir, err := os.MkdirTemp("", "git-clone-*")
-	if err != nil {
-		t.Fatalf("Failed to create clone temp dir: %v", err)
-	}
-	defer os.RemoveAll(cloneDir)
-
 	// Test the full workflow
 	client := NewDefaultGitClient()
 
 	// Clone the repository
 	config := &CloneConfig{
-		URL:       sourceRepoDir, // Use local path for testing
-		Directory: cloneDir,
+		URL: sourceRepoDir, // Use local path for testing
 	}
 
 	repoInfo, err := client.Clone(context.Background(), config)
@@ -105,15 +97,9 @@ func TestDefaultGitClient_FullWorkflow(t *testing.T) {
 	}
 
 	// Test Cleanup
-	err = client.Cleanup(repoInfo)
+	err = client.Cleanup(context.Background(), repoInfo)
 	if err != nil {
 		t.Fatalf("Failed to cleanup: %v", err)
-	}
-
-	// Verify directory was removed
-	_, err = os.Stat(cloneDir)
-	if !os.IsNotExist(err) {
-		t.Error("Expected clone directory to be removed")
 	}
 }
 
@@ -193,17 +179,10 @@ func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 	}
 
 	// Clone the feature branch
-	cloneDir, err := os.MkdirTemp("", "git-clone-branch-*")
-	if err != nil {
-		t.Fatalf("Failed to create clone temp dir: %v", err)
-	}
-	defer os.RemoveAll(cloneDir)
-
 	client := NewDefaultGitClient()
 	config := &CloneConfig{
-		URL:       sourceRepoDir,
-		Branch:    "feature",
-		Directory: cloneDir,
+		URL:    sourceRepoDir,
+		Branch: "feature",
 	}
 
 	repoInfo, err := client.Clone(context.Background(), config)
@@ -230,7 +209,7 @@ func TestDefaultGitClient_CloneWithBranch(t *testing.T) {
 	}
 
 	// Clean up
-	err = client.Cleanup(repoInfo)
+	err = client.Cleanup(context.Background(), repoInfo)
 	if err != nil {
 		t.Fatalf("Failed to cleanup: %v", err)
 	}
@@ -302,17 +281,10 @@ func TestDefaultGitClient_CloneWithCommit(t *testing.T) {
 	}
 
 	// Clone at the first commit
-	cloneDir, err := os.MkdirTemp("", "git-clone-commit-*")
-	if err != nil {
-		t.Fatalf("Failed to create clone temp dir: %v", err)
-	}
-	defer os.RemoveAll(cloneDir)
-
 	client := NewDefaultGitClient()
 	config := &CloneConfig{
-		URL:       sourceRepoDir,
-		Commit:    firstCommit.String(),
-		Directory: cloneDir,
+		URL:    sourceRepoDir,
+		Commit: firstCommit.String(),
 	}
 
 	repoInfo, err := client.Clone(context.Background(), config)
@@ -336,7 +308,7 @@ func TestDefaultGitClient_CloneWithCommit(t *testing.T) {
 	}
 
 	// Clean up
-	err = client.Cleanup(repoInfo)
+	err = client.Cleanup(context.Background(), repoInfo)
 	if err != nil {
 		t.Fatalf("Failed to cleanup: %v", err)
 	}

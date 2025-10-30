@@ -89,10 +89,17 @@ operator:
   resources:
     limits:
       cpu: 500m
-      memory: 384Mi
+      memory: 512Mi
     requests:
       cpu: 10m
-      memory: 192Mi
+      memory: 256Mi
+  
+  # -- Go memory limits and garbage collection percentage for the operator container
+  gc:
+    # -- Go memory limits for the operator container
+    gomeglimit: 300MiB
+    # -- Go garbage collection percentage for the operator container
+    gogc: 75  # 75% heap growth before GC (as Go default)
 
   # -- RBAC configuration for the operator
   rbac:

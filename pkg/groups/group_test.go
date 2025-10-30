@@ -87,14 +87,14 @@ func TestManager_Create(t *testing.T) {
 			groupName:   "MyGroup",
 			setupMock:   func(_ *mocks.MockStore) {}, // validation fails before store access
 			expectError: true,
-			errorMsg:    "invalid group name",
+			errorMsg:    "must be lowercase",
 		},
 		{
 			name:        "invalid name - mixed case",
 			groupName:   "DefAult",
 			setupMock:   func(_ *mocks.MockStore) {}, // validation fails before store access
 			expectError: true,
-			errorMsg:    "invalid group name",
+			errorMsg:    "must be lowercase",
 		},
 	}
 

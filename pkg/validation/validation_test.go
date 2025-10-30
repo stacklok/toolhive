@@ -16,33 +16,36 @@ func TestValidateGroupName(t *testing.T) {
 		expectErr bool
 	}{
 		// ✅ Valid cases
-		{"valid_simple_name", "TeamAlpha", false},
-		{"valid_with_spaces", "Team Alpha", false},
-		{"valid_with_dash_and_underscore", "Team-Alpha_123", false},
+		{"valid_simple_name", "teamalpha", false},
+		{"valid_with_spaces", "team alpha", false},
+		{"valid_with_dash_and_underscore", "team-alpha_123", false},
 
 		// ❌ Empty or whitespace-only
 		{"empty_string", "", true},
 		{"only_spaces", "    ", true},
 
 		// ❌ Invalid characters
-		{"invalid_special_characters", "Team@Alpha!", true},
+		{"invalid_special_characters", "team@alpha!", true},
 		{"invalid_unicode", "团队🚀", true},
 
 		// ❌ Null byte
-		{"null_byte", "Team\x00Alpha", true},
+		{"null_byte", "team\x00alpha", true},
 
 		// ❌ Leading/trailing whitespace
-		{"leading_space", " TeamAlpha", true},
-		{"trailing_space", "TeamAlpha ", true},
+		{"leading_space", " teamalpha", true},
+		{"trailing_space", "teamalpha ", true},
 
 		// ❌ Consecutive spaces
-		{"consecutive_spaces_middle", "Team  Alpha", true},
-		{"consecutive_spaces_start", "  TeamAlpha", true},
-		{"consecutive_spaces_end", "TeamAlpha  ", true},
+		{"consecutive_spaces_middle", "team  alpha", true},
+		{"consecutive_spaces_start", "  teamalpha", true},
+		{"consecutive_spaces_end", "teamalpha  ", true},
+
+		// ❌ Uppercase letters
+		{"uppercase_letters", "TeamAlpha", true},
 
 		// ✅ Borderline valid
-		{"single_char", "T", false},
-		{"max_typical", "Alpha Team 2025 - Squad_01", false},
+		{"single_char", "t", false},
+		{"max_typical", "alpha team 2025 - squad_01", false},
 	}
 
 	for _, tc := range tests {

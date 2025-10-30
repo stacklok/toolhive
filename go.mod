@@ -1,6 +1,6 @@
 module github.com/stacklok/toolhive
 
-go 1.24.6
+go 1.24.9
 
 require (
 	github.com/1password/onepassword-sdk-go v0.3.1

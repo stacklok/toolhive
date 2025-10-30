@@ -9,9 +9,13 @@
 // registered at runtime.
 package auth
 
+//go:generate mockgen -destination=mocks/mock_token_authenticator.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/auth TokenAuthenticator
+
 import (
 	"context"
 	"net/http"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // IncomingAuthenticator handles authentication for clients connecting to the virtual MCP server.
@@ -91,6 +95,19 @@ type Identity struct {
 
 	// Metadata stores additional identity information.
 	Metadata map[string]string
+}
+
+// TokenAuthenticator validates JWT tokens and provides HTTP middleware for authentication.
+// This interface abstracts the token validation functionality from pkg/auth to enable
+// testing with mocks while the concrete *auth.TokenValidator implementation satisfies
+// this interface in production.
+type TokenAuthenticator interface {
+	// ValidateToken validates a token string and returns the claims.
+	ValidateToken(ctx context.Context, tokenString string) (jwt.MapClaims, error)
+
+	// Middleware returns an HTTP middleware function that validates tokens
+	// from the Authorization header and injects claims into the request context.
+	Middleware(next http.Handler) http.Handler
 }
 
 // Authorizer handles authorization decisions.

@@ -11,9 +11,12 @@ import (
 // DefaultOutgoingAuthenticator is a thread-safe implementation of OutgoingAuthenticator
 // that maintains a registry of authentication strategies.
 //
+// Thread-safety: Safe for concurrent calls to RegisterStrategy and AuthenticateRequest.
+// Strategy implementations must be thread-safe as they are called concurrently.
+// It uses sync.RWMutex for thread-safety as HTTP servers are inherently concurrent.
+//
 // This authenticator supports dynamic registration of strategies and dispatches
 // authentication requests to the appropriate strategy based on the strategy name.
-// It uses sync.RWMutex for thread-safety as HTTP servers are inherently concurrent.
 //
 // Example usage:
 //

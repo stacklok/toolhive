@@ -15,6 +15,7 @@ import (
 
 var errToolNameNotFound = errors.New("tool name not found")
 var errBug = errors.New("there's a bug")
+var errKeepBuffering = errors.New("keep buffering")
 
 // toolOverrideEntry is a struct that represents a tool override entry.
 type toolOverrideEntry struct {
@@ -334,11 +335,17 @@ func (rw *toolFilterWriter) Flush() {
 		}
 
 		var b bytes.Buffer
-		if err := processBuffer(rw.config, rw.buffer, mimeType, &b); err != nil {
+		err := processBuffer(rw.config, rw.buffer, mimeType, &b)
+		if err == errKeepBuffering {
+			logger.Debugf("Buffered %d so far, keep buffering...", len(rw.buffer))
+			return
+		}
+		if err != nil {
 			logger.Errorf("Error flushing response: %v", err)
 		}
 
-		_, err := rw.ResponseWriter.Write(b.Bytes())
+		logger.Debugf("Flushing %d bytes...", len(b.Bytes()))
+		_, err = rw.ResponseWriter.Write(b.Bytes())
 		if err != nil {
 			logger.Errorf("Error writing buffer: %v", err)
 		}
@@ -408,12 +415,17 @@ func processEventStream(
 	buffer []byte,
 	w io.Writer,
 ) error {
+	if len(buffer) > 1 && buffer[len(buffer)-1] != '\n' && buffer[len(buffer)-1] != '\r' {
+		return errKeepBuffering
+	}
+
+	// NOTE: this looks uglier, but is more efficient than scanning the whole buffer
 	var linesep []byte
-	if bytes.Contains(buffer, []byte("\r\n")) {
+	if len(buffer) >= 2 && bytes.Equal(buffer[len(buffer)-2:], []byte("\r\n")) {
 		linesep = []byte("\r\n")
-	} else if bytes.Contains(buffer, []byte("\n")) {
+	} else if len(buffer) >= 1 && buffer[len(buffer)-1] == '\n' {
 		linesep = []byte("\n")
-	} else if bytes.Contains(buffer, []byte("\r")) {
+	} else if len(buffer) >= 1 && buffer[len(buffer)-1] == '\r' {
 		linesep = []byte("\r")
 	} else {
 		return fmt.Errorf("unsupported separator: %s", string(buffer))

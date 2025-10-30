@@ -9,6 +9,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -24,6 +27,8 @@ type streamableServer struct {
 	toolsListResponse string
 	tools             map[string]tooldef
 	clientType        clientType
+	withProxy         bool
+	connHangDuration  time.Duration
 }
 
 var _ TestMCPServer = (*streamableServer)(nil)
@@ -52,6 +57,16 @@ func (s *streamableServer) SetClientType(clientType clientType) error {
 		return fmt.Errorf("client type already set")
 	}
 	s.clientType = clientType
+	return nil
+}
+
+func (s *streamableServer) SetWithProxy() error {
+	s.withProxy = true
+	return nil
+}
+
+func (s *streamableServer) SetConnectionHang(duration time.Duration) error {
+	s.connHangDuration = duration
 	return nil
 }
 
@@ -175,6 +190,7 @@ func (s *streamableEventStreamClient) ToolsCall(name string) ([]byte, error) {
 func NewStreamableTestServer(
 	options ...TestMCPServerOption,
 ) (*httptest.Server, TestMCPClient, error) {
+	var testServer *httptest.Server
 	server := &streamableServer{}
 
 	for _, option := range options {
@@ -188,33 +204,75 @@ func NewStreamableTestServer(
 
 	router := chi.NewRouter()
 
-	// Apply middleware
-	allMiddlewares := append(
-		[]func(http.Handler) http.Handler{
-			middleware.RequestID,
-			middleware.Recoverer,
-		},
-		server.middlewares...,
-	)
-	router.Use(allMiddlewares...)
+	// If the server is not configured to use a proxy, apply the middlewares to
+	// the router directly.
+	if !server.withProxy {
+		allMiddlewares := append(
+			[]func(http.Handler) http.Handler{
+				middleware.RequestID,
+				middleware.Recoverer,
+			},
+			server.middlewares...,
+		)
+		router.Use(allMiddlewares...)
+	}
 
 	router.Post("/mcp-json", server.mcpJSONHandler)
 	router.Post("/mcp-sse", server.mcpEventStreamHandler)
 
-	httpServer := httptest.NewServer(router)
+	// Start backend test server
+	backendServer := httptest.NewServer(router)
+
+	// By default, use the backend test server directly.
+	testServer = backendServer
+
+	// If the server is configured to use a proxy,create a reverse proxy to
+	// the backend test server.
+	if server.withProxy {
+		backendURL, err := url.Parse(backendServer.URL)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to parse backend URL: %w", err)
+		}
+
+		// Create a reverse proxy to the backend test server.
+		// Ideally, this would use ToolHive reverse proxy, but
+		// it is too tightly coupled with containers and needs
+		// to be refactored.
+		proxy := httputil.NewSingleHostReverseProxy(backendURL)
+		proxy.FlushInterval = -1
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			proxy.ServeHTTP(w, r)
+		})
+
+		// Apply middleware chain in reverse order (last middleware is applied first)
+		allMiddlewares := append(
+			[]func(http.Handler) http.Handler{
+				middleware.RequestID,
+				middleware.Recoverer,
+			},
+			server.middlewares...,
+		)
+		var finalHandler http.Handler = handler
+		for _, mw := range allMiddlewares {
+			finalHandler = mw(finalHandler)
+		}
+
+		proxyServer := httptest.NewServer(finalHandler)
+		testServer = proxyServer
+	}
 
 	switch server.clientType {
 	case clientTypeJSON:
-		return httpServer, &streamableJSONClient{
-			server: httpServer,
+		return testServer, &streamableJSONClient{
+			server: testServer,
 		}, nil
 	case clientTypeSSE:
-		return httpServer, &streamableEventStreamClient{
-			server: httpServer,
+		return testServer, &streamableEventStreamClient{
+			server: testServer,
 		}, nil
 	default:
-		return httpServer, &streamableJSONClient{
-			server: httpServer,
+		return testServer, &streamableJSONClient{
+			server: testServer,
 		}, nil
 	}
 }
@@ -270,8 +328,13 @@ func (s *streamableServer) mcpJSONHandler(w http.ResponseWriter, r *http.Request
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
+
+	if s.connHangDuration != 0 {
+		time.Sleep(s.connHangDuration)
+	}
 }
 
+//nolint:gocyclo
 func (s *streamableServer) mcpEventStreamHandler(w http.ResponseWriter, r *http.Request) {
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
@@ -315,13 +378,41 @@ func (s *streamableServer) mcpEventStreamHandler(w http.ResponseWriter, r *http.
 		response = "failed to generate response"
 	}
 
-	if _, err := w.Write([]byte("event: random-stuff\ndata: " + response + "\n\n")); err != nil {
+	if _, err := w.Write([]byte("event: random-stuff\ndata: " + response)); err != nil {
 		http.Error(w, "Error writing response", http.StatusInternalServerError)
 		return
 	}
 
-	// Flush if available
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
+	if s.connHangDuration == 0 {
+		_, err := w.Write([]byte("\n\n"))
+		if err != nil {
+			http.Error(w, "Error writing response", http.StatusInternalServerError)
+			return
+		}
+
+		// Flush if available
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	} else {
+		// Flush if available
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+
+		if s.connHangDuration != 0 {
+			time.Sleep(s.connHangDuration)
+		}
+
+		_, err := w.Write([]byte("\n\n"))
+		if err != nil {
+			http.Error(w, "Error writing response", http.StatusInternalServerError)
+			return
+		}
+
+		// Flush if available
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
 	}
 }

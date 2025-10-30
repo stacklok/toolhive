@@ -11,12 +11,18 @@ import (
 // PriorityConflictResolver implements priority-based conflict resolution.
 // The first backend in the priority order wins; conflicting tools from
 // lower-priority backends are dropped.
+//
+// For backends not in the priority list, conflicts are resolved using
+// prefix strategy as a fallback (prevents data loss).
 type PriorityConflictResolver struct {
 	// PriorityOrder defines the priority of backends (first has highest priority).
 	PriorityOrder []string
 
 	// priorityMap is a map from backend ID to its priority index.
 	priorityMap map[string]int
+
+	// prefixResolver is used as fallback for backends not in priority list.
+	prefixResolver *PrefixConflictResolver
 }
 
 // NewPriorityConflictResolver creates a new priority-based conflict resolver.
@@ -35,8 +41,9 @@ func NewPriorityConflictResolver(priorityOrder []string) (*PriorityConflictResol
 	}
 
 	return &PriorityConflictResolver{
-		PriorityOrder: priorityOrder,
-		priorityMap:   priorityMap,
+		PriorityOrder:  priorityOrder,
+		priorityMap:    priorityMap,
+		prefixResolver: NewPrefixConflictResolver("{workload}_"), // Fallback for unmapped backends
 	}, nil
 }
 
@@ -73,15 +80,27 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 		// Conflict detected - choose the highest priority backend
 		winner := r.selectWinner(candidates)
 		if winner == nil {
-			// All candidates are from backends not in priority list - drop all of them
-			// This is intentional: priority strategy requires explicit priority ordering
+			// All candidates are from backends not in priority list
+			// Use prefix strategy as fallback to avoid data loss
 			backendIDs := make([]string, len(candidates))
 			for i, c := range candidates {
 				backendIDs[i] = c.BackendID
 			}
-			logger.Warnf("Tool %s exists in multiple backends %v but none are in priority order, dropping all",
+			logger.Debugf("Tool %s exists in backends %v not in priority order, using prefix fallback",
 				toolName, backendIDs)
-			droppedTools += len(candidates)
+
+			// Apply prefix strategy to these unmapped backends
+			for _, candidate := range candidates {
+				prefixedName := r.prefixResolver.applyPrefix(candidate.BackendID, toolName)
+				resolved[prefixedName] = &ResolvedTool{
+					ResolvedName:              prefixedName,
+					OriginalName:              toolName,
+					Description:               candidate.Tool.Description,
+					InputSchema:               candidate.Tool.InputSchema,
+					BackendID:                 candidate.BackendID,
+					ConflictResolutionApplied: vmcp.ConflictStrategyPrefix, // Fallback used prefix
+				}
+			}
 			continue
 		}
 
@@ -104,8 +123,12 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 		}
 	}
 
-	logger.Infof("Priority strategy: %d unique tools, %d conflicting tools dropped",
-		len(resolved), droppedTools)
+	if droppedTools > 0 {
+		logger.Infof("Priority strategy: %d unique tools, %d conflicting tools dropped",
+			len(resolved), droppedTools)
+	} else {
+		logger.Infof("Priority strategy: %d unique tools", len(resolved))
+	}
 
 	return resolved, nil
 }

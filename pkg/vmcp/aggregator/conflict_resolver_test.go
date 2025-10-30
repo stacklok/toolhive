@@ -118,7 +118,8 @@ func TestPriorityConflictResolver(t *testing.T) {
 		priorityOrder  []string
 		toolsByBackend map[string][]vmcp.Tool
 		wantCount      int
-		wantWinners    map[string]string // tool name -> expected backend ID
+		wantWinners    map[string]string                          // tool name -> expected backend ID
+		wantStrategies map[string]vmcp.ConflictResolutionStrategy // tool name -> expected strategy (optional)
 		wantErr        bool
 	}{
 		{
@@ -178,6 +179,32 @@ func TestPriorityConflictResolver(t *testing.T) {
 			},
 		},
 		{
+			name:          "backends not in priority with conflict use prefix fallback",
+			priorityOrder: []string{"github"},
+			toolsByBackend: map[string][]vmcp.Tool{
+				"github": {
+					{Name: "create_issue", Description: "GitHub issue"},
+				},
+				"slack": {
+					{Name: "send_message", Description: "Slack message"},
+				},
+				"teams": {
+					{Name: "send_message", Description: "Teams message"},
+				},
+			},
+			wantCount: 3, // All tools included, conflicting ones prefixed
+			wantWinners: map[string]string{
+				"create_issue":       "github", // In priority list
+				"slack_send_message": "slack",  // Not in priority, prefixed
+				"teams_send_message": "teams",  // Not in priority, prefixed
+			},
+			wantStrategies: map[string]vmcp.ConflictResolutionStrategy{
+				"create_issue":       vmcp.ConflictStrategyPriority, // Priority strategy used
+				"slack_send_message": vmcp.ConflictStrategyPrefix,   // Prefix fallback used
+				"teams_send_message": vmcp.ConflictStrategyPrefix,   // Prefix fallback used
+			},
+		},
+		{
 			name:          "empty priority order",
 			priorityOrder: []string{},
 			toolsByBackend: map[string][]vmcp.Tool{
@@ -223,8 +250,18 @@ func TestPriorityConflictResolver(t *testing.T) {
 					t.Errorf("tool %q from %q, want %q", toolName, tool.BackendID, expectedBackendID)
 				}
 
-				if tool.ConflictResolutionApplied != vmcp.ConflictStrategyPriority {
-					t.Errorf("tool %q has wrong strategy", toolName)
+				// Check strategy if specified
+				if tt.wantStrategies != nil {
+					if expectedStrategy, hasExpectedStrategy := tt.wantStrategies[toolName]; hasExpectedStrategy {
+						if tool.ConflictResolutionApplied != expectedStrategy {
+							t.Errorf("tool %q has strategy %q, want %q", toolName, tool.ConflictResolutionApplied, expectedStrategy)
+						}
+					}
+				} else {
+					// Default: expect priority strategy
+					if tool.ConflictResolutionApplied != vmcp.ConflictStrategyPriority {
+						t.Errorf("tool %q has wrong strategy %q, want %q", toolName, tool.ConflictResolutionApplied, vmcp.ConflictStrategyPriority)
+					}
 				}
 			}
 		})

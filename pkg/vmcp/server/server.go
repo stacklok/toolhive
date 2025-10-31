@@ -585,8 +585,11 @@ func (*Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	// Always send 200 OK - even if JSON encoding fails below, the server is responding
 	w.WriteHeader(http.StatusOK)
 
+	// Encode response. If this fails (extremely unlikely for simple map[string]string),
+	// the 200 OK status has already been sent above.
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		logger.Errorf("Failed to encode health response: %v", err)
 	}

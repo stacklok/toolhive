@@ -1,8 +1,10 @@
 package git
 
 import (
-	"context"
 	"testing"
+
+	"github.com/go-logr/logr"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // TestDefaultGitClient_CloneSpecificCommit_RealRepo tests cloning a specific commit from a real repository
@@ -13,7 +15,7 @@ func TestDefaultGitClient_CloneSpecificCommit_RealRepo(t *testing.T) {
 	}
 
 	client := NewDefaultGitClient()
-	ctx := context.Background()
+	ctx := log.IntoContext(t.Context(), logr.Discard())
 
 	// Test with a known commit from a public repository
 	config := &CloneConfig{
@@ -37,7 +39,7 @@ func TestDefaultGitClient_CloneSpecificCommit_RealRepo(t *testing.T) {
 	}
 
 	// Clean up
-	err = client.Cleanup(context.Background(), repoInfo)
+	err = client.Cleanup(ctx, repoInfo)
 	if err != nil {
 		t.Fatalf("Failed to cleanup: %v", err)
 	}
@@ -51,7 +53,7 @@ func TestDefaultGitClient_CloneInvalidCommit(t *testing.T) {
 	}
 
 	client := NewDefaultGitClient()
-	ctx := context.Background()
+	ctx := log.IntoContext(t.Context(), logr.Discard())
 
 	// Test with an invalid commit hash
 	config := &CloneConfig{
@@ -63,7 +65,7 @@ func TestDefaultGitClient_CloneInvalidCommit(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for invalid commit hash, got nil")
 		if repoInfo != nil {
-			client.Cleanup(context.Background(), repoInfo)
+			client.Cleanup(ctx, repoInfo)
 		}
 	}
 

@@ -12,6 +12,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
@@ -260,12 +261,24 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Create router
 	rtr := vmcprouter.NewDefaultRouter()
 
+	// Setup authentication middleware
+	logger.Infof("Setting up incoming authentication (type: %s)", cfg.IncomingAuth.Type)
+
+	authMiddleware, authInfoHandler, err := vmcpauth.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth)
+	if err != nil {
+		return fmt.Errorf("failed to create authentication middleware: %w", err)
+	}
+
+	logger.Infof("Incoming authentication configured: %s", cfg.IncomingAuth.Type)
+
 	// Create server configuration
 	serverCfg := &vmcpserver.Config{
-		Name:    cfg.Name,
-		Version: getVersion(),
-		Host:    "127.0.0.1", // TODO: Make configurable
-		Port:    4483,        // TODO: Make configurable
+		Name:            cfg.Name,
+		Version:         getVersion(),
+		Host:            "127.0.0.1", // TODO: Make configurable
+		Port:            4483,        // TODO: Make configurable
+		AuthMiddleware:  authMiddleware,
+		AuthInfoHandler: authInfoHandler,
 	}
 
 	// Create server

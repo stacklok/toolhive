@@ -113,6 +113,27 @@ spec:
           headerFormat: "Bearer {token}"
 ```
 
+**Example (mixed mode)**:
+```yaml
+spec:
+  outgoingAuth:
+    source: mixed
+    default:
+      type: pass_through
+    backends:
+      # Override specific backends while others use discovery
+      slack:
+        type: service_account
+        serviceAccount:
+          credentialsRef:
+            name: slack-bot-override
+            key: token
+          headerName: Authorization
+          headerFormat: "Bearer {token}"
+      # Other backends (github, jira, etc.) will automatically
+      # discover auth config from their MCPServer.spec.externalAuthConfigRef
+```
+
 #### BackendAuthConfig
 
 **Fields**:
@@ -160,6 +181,28 @@ spec:
     conflictResolution: priority
     conflictResolutionConfig:
       priorityOrder: ["github", "jira", "slack"]
+```
+
+**Example (manual strategy)**:
+```yaml
+spec:
+  aggregation:
+    conflictResolution: manual
+    tools:
+      - workload: github
+        filter: ["create_pr", "merge_pr", "list_repos"]
+        overrides:
+          create_pr:
+            name: github_create_pr
+            description: "Create a pull request in GitHub"
+      - workload: jira
+        filter: ["create_issue", "update_issue"]
+        overrides:
+          create_issue:
+            name: jira_create_issue
+            description: "Create an issue in Jira"
+      # All tool name conflicts must be explicitly resolved via overrides
+      # Runtime validation ensures no unresolved conflicts exist
 ```
 
 #### WorkloadToolConfig

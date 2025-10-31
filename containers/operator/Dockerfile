@@ -1,13 +1,7 @@
 # Build the binary
-FROM registry.access.redhat.com/ubi10/ubi:10.0 as builder
+FROM golang as builder
 
 USER root
-
-# As per https://discussion.fedoraproject.org/t/fedora-doesnt-provide-latest-version-of-go/146930/9
-WORKDIR /etc/yum.repos.d
-RUN dnf install -y wget
-RUN wget https://copr.fedorainfracloud.org/coprs/g/go-sig/golang-rawhide/repo/epel-10/group_go-sig-golang-rawhide-epel-10.repo
-RUN dnf install -y golang
 
 WORKDIR /workspace
 

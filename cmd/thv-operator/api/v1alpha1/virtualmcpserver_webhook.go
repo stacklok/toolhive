@@ -1,11 +1,45 @@
 package v1alpha1
 
 import (
+	"context"
 	"fmt"
+
+	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
+// SetupWebhookWithManager registers the webhook with the manager
+func (r *VirtualMCPServer) SetupWebhookWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewWebhookManagedBy(mgr).
+		For(r).
+		Complete()
+}
+
+//nolint:lll // kubebuilder webhook marker cannot be split
+// +kubebuilder:webhook:path=/validate-toolhive-stacklok-dev-v1alpha1-virtualmcpserver,mutating=false,failurePolicy=fail,sideEffects=None,groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=create;update,versions=v1alpha1,name=vvirtualmcpserver.kb.io,admissionReviewVersions=v1
+
+var _ webhook.CustomValidator = &VirtualMCPServer{}
+
+// ValidateCreate implements webhook.CustomValidator
+func (r *VirtualMCPServer) ValidateCreate(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
+	return nil, r.Validate()
+}
+
+// ValidateUpdate implements webhook.CustomValidator
+func (r *VirtualMCPServer) ValidateUpdate(_ context.Context, _ runtime.Object, _ runtime.Object) (admission.Warnings, error) {
+	return nil, r.Validate()
+}
+
+// ValidateDelete implements webhook.CustomValidator
+func (*VirtualMCPServer) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
+	// No validation needed on delete
+	return nil, nil
+}
+
 // Validate performs validation for VirtualMCPServer
-// This method can be called by the controller during reconciliation
+// This method can be called by the controller during reconciliation or by the webhook
 func (r *VirtualMCPServer) Validate() error {
 	// Validate GroupRef is set (required field)
 	if r.Spec.GroupRef.Name == "" {

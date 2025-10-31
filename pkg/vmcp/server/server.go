@@ -69,6 +69,15 @@ type Config struct {
 	// SessionTTL is the session time-to-live duration (default: 30 minutes)
 	// Sessions inactive for this duration will be automatically cleaned up
 	SessionTTL time.Duration
+
+	// AuthMiddleware is the optional authentication middleware to apply to MCP routes.
+	// If nil, no authentication is required.
+	// This should be a composed middleware chain (e.g., TokenValidator → IdentityMiddleware).
+	AuthMiddleware func(http.Handler) http.Handler
+
+	// AuthInfoHandler is the optional handler for /.well-known/oauth-protected-resource endpoint.
+	// Exposes OIDC discovery information about the protected resource.
+	AuthInfoHandler http.Handler
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -222,17 +231,25 @@ func (s *Server) Start(ctx context.Context) error {
 		server.WithSessionIdManager(sessionAdapter),
 	)
 
-	// Create HTTP mux with health/ping endpoints
+	// Create HTTP mux with separated authenticated and unauthenticated routes
 	mux := http.NewServeMux()
 
-	// Health endpoint
+	// Unauthenticated health endpoints
 	mux.HandleFunc("/health", s.handleHealth)
-
-	// Ping endpoint (alias for health)
 	mux.HandleFunc("/ping", s.handleHealth)
 
-	// MCP endpoint (all other paths)
-	mux.Handle("/", streamableServer)
+	// Optional auth info endpoint (unauthenticated, exposes OIDC discovery info)
+	if s.config.AuthInfoHandler != nil {
+		mux.Handle("/.well-known/oauth-protected-resource", s.config.AuthInfoHandler)
+	}
+
+	// MCP endpoint - apply authentication if configured
+	var mcpHandler http.Handler = streamableServer
+	if s.config.AuthMiddleware != nil {
+		mcpHandler = s.config.AuthMiddleware(streamableServer)
+		logger.Info("Authentication middleware enabled for MCP endpoints")
+	}
+	mux.Handle("/", mcpHandler)
 
 	// Create HTTP server
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)

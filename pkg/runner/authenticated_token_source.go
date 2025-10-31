@@ -2,156 +2,171 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 )
 
-// AuthenticatedTokenSource wraps an OAuth2 TokenSource and monitors authentication failures.
-// It marks workloads as unauthenticated when tokens are expired and cannot be refreshed.
+// AuthenticatedTokenSource is a wrapper around an oauth2.TokenSource that will mark the workload as unauthenticated
+// if the token retrieval fails.
 type AuthenticatedTokenSource struct {
-	// tokenSource is the underlying OAuth2 token source
-	tokenSource oauth2.TokenSource
+	tokenSource    oauth2.TokenSource
+	workloadName   string
+	statusManager  statuses.StatusManager
+	monitoringCtx  context.Context
+	stopMonitoring chan struct{}
+	stopOnce       sync.Once
 
-	// statusManager is used to update workload status
-	statusManager statuses.StatusManager
-
-	// workloadName is the name of the workload to update
-	workloadName string
-
-	// Background monitoring
-	stopMonitoring   chan struct{}
-	monitoringCtx    context.Context
-	monitoringCancel context.CancelFunc
+	timer      *time.Timer
+	backoff    time.Duration
+	maxBackoff time.Duration
 }
 
-// NewAuthenticatedTokenSource creates a new authenticated token source wrapper
+// NewAuthenticatedTokenSource creates a new AuthenticatedTokenSource.
 func NewAuthenticatedTokenSource(
+	ctx context.Context,
 	tokenSource oauth2.TokenSource,
-	statusManager statuses.StatusManager,
 	workloadName string,
+	statusMgr statuses.StatusManager,
 ) *AuthenticatedTokenSource {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	ats := &AuthenticatedTokenSource{
-		tokenSource:      tokenSource,
-		statusManager:    statusManager,
-		workloadName:     workloadName,
-		stopMonitoring:   make(chan struct{}),
-		monitoringCtx:    ctx,
-		monitoringCancel: cancel,
+	return &AuthenticatedTokenSource{
+		tokenSource:    tokenSource,
+		workloadName:   workloadName,
+		statusManager:  statusMgr,
+		monitoringCtx:  ctx,
+		stopMonitoring: make(chan struct{}),
 	}
-
-	// Start background monitoring
-	go ats.startBackgroundMonitoring()
-
-	return ats
 }
 
-// Token retrieves a token from the underlying token source
-// If token retrieval fails, it immediately marks the workload as unauthenticated
+// Token retrieves a token from the token source and will mark the workload as unauthenticated
+// if the token retrieval fails.
 func (ats *AuthenticatedTokenSource) Token() (*oauth2.Token, error) {
-	token, err := ats.tokenSource.Token()
+	tok, err := ats.tokenSource.Token()
 	if err != nil {
-		// Token retrieval failed - mark as unauthenticated immediately
-		// Check if not already unauthenticated to avoid unnecessary writes
-		wl, getErr := ats.statusManager.GetWorkload(context.Background(), ats.workloadName)
-		if getErr != nil || wl.Status != rt.WorkloadStatusUnauthenticated {
+		if isAuthenticationError(err) {
 			ats.markAsUnauthenticated(fmt.Sprintf("Token retrieval failed: %v", err))
 		}
 		return nil, err
 	}
-	return token, nil
+	return tok, nil
 }
 
-// startBackgroundMonitoring starts the background monitoring goroutine
 func (ats *AuthenticatedTokenSource) startBackgroundMonitoring() {
-	// Start with an immediate check to get the initial token
-	ats.checkTokenValidity()
+	if ats.timer == nil {
+		ats.timer = time.NewTimer(time.Millisecond) // kick immediately
+	}
+	if ats.backoff == 0 {
+		ats.backoff = time.Second
+	}
+	if ats.maxBackoff == 0 {
+		ats.maxBackoff = 2 * time.Minute
+	}
+	go ats.monitorLoop()
 }
 
-// scheduleNextCheck schedules the next token check using time.AfterFunc
-func (ats *AuthenticatedTokenSource) scheduleNextCheck(token *oauth2.Token) {
-	now := time.Now()
-	expiry := token.Expiry
-
-	// If expiry is zero, do not schedule
-	if expiry.IsZero() {
-		return
-	}
-
-	// Schedule check for when token expires
-	waitTime := expiry.Sub(now)
-	if waitTime <= 0 {
-		waitTime = time.Second
-	}
-	time.AfterFunc(waitTime, func() {
-		// Check if monitoring is still active
+func (ats *AuthenticatedTokenSource) monitorLoop() {
+	for {
 		select {
 		case <-ats.monitoringCtx.Done():
+			ats.stopTimer()
 			return
 		case <-ats.stopMonitoring:
+			ats.stopTimer()
 			return
+		case <-ats.timer.C:
+			shouldStop, next := ats.onTick()
+			if shouldStop {
+				ats.stopTimer()
+				return
+			}
+			ats.resetTimer(next)
+		}
+	}
+}
+func (ats *AuthenticatedTokenSource) stopTimer() {
+	if ats.timer != nil && !ats.timer.Stop() {
+		select {
+		case <-ats.timer.C:
 		default:
-			ats.checkTokenValidity()
 		}
-	})
+	}
 }
 
-// checkTokenValidity checks if we have a valid token, marks as unauthenticated if not
-// and schedules the next check when the token expires.
-func (ats *AuthenticatedTokenSource) checkTokenValidity() {
-	// Let OAuth2 library handle token validation and refresh automatically
-	token, err := ats.tokenSource.Token()
+func (ats *AuthenticatedTokenSource) resetTimer(d time.Duration) {
+	ats.stopTimer()
+	ats.timer.Reset(d)
+}
+
+// onTick returns (shouldStop bool, nextDelay time.Duration)
+func (ats *AuthenticatedTokenSource) onTick() (bool, time.Duration) {
+	tok, err := ats.tokenSource.Token()
 	if err != nil {
-		// No valid token available. If not already unauthenticated, mark it.
-		workload, getErr := ats.statusManager.GetWorkload(context.Background(), ats.workloadName)
-		if getErr != nil || workload.Status != rt.WorkloadStatusUnauthenticated {
+		// Hard OAuth failure → flip & stop
+		if isAuthenticationError(err) {
 			ats.markAsUnauthenticated(fmt.Sprintf("No valid token: %v", err))
+			return true, 0
 		}
-		return
+		// Transient → backoff and retry
+		if ats.backoff == 0 {
+			ats.backoff = time.Second
+		}
+		d := ats.backoff
+		ats.backoff *= 2
+		if ats.maxBackoff > 0 && (ats.backoff == 0 || ats.backoff > ats.maxBackoff) {
+			ats.backoff = ats.maxBackoff
+		}
+		return false, d
 	}
 
-	// If the token we obtained is already expired, treat as unauthenticated
-	if token.Expiry.IsZero() || !token.Expiry.After(time.Now()) {
-		ats.markAsUnauthenticated("Token already expired")
-		return
+	// Success → schedule next check
+	ats.backoff = time.Second
+	if tok.Expiry.IsZero() {
+		// no expiry → nothing to monitor
+		return true, 0
 	}
-
-	// Schedule next check when this token expires
-	ats.scheduleNextCheck(token)
+	wait := time.Until(tok.Expiry)
+	if wait < time.Second {
+		wait = time.Second
+	}
+	return false, wait
 }
 
-// markAsUnauthenticated marks the workload as unauthenticated
+// markAsUnauthenticated consults StatusManager; only writes if not already unauthenticated.
+// Always stops the monitor (idempotently).
 func (ats *AuthenticatedTokenSource) markAsUnauthenticated(reason string) {
-
-	// Set workload status to unauthenticated
-	if setErr := ats.statusManager.SetWorkloadStatus(
+	_ = ats.statusManager.SetWorkloadStatus(
 		context.Background(),
 		ats.workloadName,
 		rt.WorkloadStatusUnauthenticated,
 		reason,
-	); setErr != nil {
-		logger.Errorf("Failed to set workload %s status to unauthenticated: %v", ats.workloadName, setErr)
-	}
+	)
+	ats.stopOnce.Do(func() { close(ats.stopMonitoring) })
 }
 
-// StopMonitoring stops the background monitoring.
-// This method is idempotent and safe to call multiple times.
-func (ats *AuthenticatedTokenSource) StopMonitoring() {
-	// Cancel the context first
-	ats.monitoringCancel()
-
-	// Safely close the channel only if it hasn't been closed already
-	select {
-	case <-ats.stopMonitoring:
-		// Channel already closed, nothing to do
-	default:
-		close(ats.stopMonitoring)
+func isAuthenticationError(err error) bool {
+	var r *oauth2.RetrieveError
+	if errors.As(err, &r) {
+		if r.Response != nil {
+			switch r.Response.StatusCode {
+			case http.StatusUnauthorized, http.StatusBadRequest:
+				return true
+			}
+		}
+		body := strings.ToLower(string(r.Body))
+		if strings.Contains(body, "invalid_grant") ||
+			strings.Contains(body, "invalid_client") ||
+			strings.Contains(body, "invalid_token") {
+			return true
+		}
 	}
+
+	return false
 }

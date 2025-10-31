@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 )
 
 const (
@@ -57,6 +58,8 @@ type TestMCPServer interface {
 	SetMiddlewares(middlewares ...func(http.Handler) http.Handler) error
 	AddTool(tool tooldef) error
 	SetClientType(clientType clientType) error
+	SetWithProxy() error
+	SetConnectionHang(duration time.Duration) error
 }
 
 // TestMCPServerOption is a function that can be used to configure a test MCP server.
@@ -105,6 +108,22 @@ func WithJSONClientType() TestMCPServerOption {
 func WithSSEClientType() TestMCPServerOption {
 	return func(s TestMCPServer) error {
 		return s.SetClientType(clientTypeSSE)
+	}
+}
+
+// WithWithProxy configures the test MCP server to stay behind a reverse proxy.
+func WithWithProxy() TestMCPServerOption {
+	return func(s TestMCPServer) error {
+		return s.SetWithProxy()
+	}
+}
+
+// WithConnectionHang configures the test MCP server to hang the connection
+// after sending the tools list response. This is useful to test the client's
+// ability to handle a hanging connection.
+func WithConnectionHang(duration time.Duration) TestMCPServerOption {
+	return func(s TestMCPServer) error {
+		return s.SetConnectionHang(duration)
 	}
 }
 

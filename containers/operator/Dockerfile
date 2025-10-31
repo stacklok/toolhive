@@ -1,5 +1,5 @@
 # Build the binary
-FROM registry.access.redhat.com/ubi10/ubi:10.0 as builder
+FROM registry.access.redhat.com/ubi10/ubi:10.0-1760519443 as builder
 
 USER root
 

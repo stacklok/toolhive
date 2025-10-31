@@ -867,23 +867,13 @@ func (v *TokenValidator) buildWWWAuthenticate(includeError bool, errDescription 
 // Middleware creates an HTTP middleware that validates JWT tokens.
 func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Get the token from the Authorization header
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
+		// Extract the bearer token from the Authorization header
+		tokenString, err := ExtractBearerToken(r)
+		if err != nil {
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(false, ""))
-			http.Error(w, "Authorization header required", http.StatusUnauthorized)
+			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
-
-		// Check if the Authorization header has the Bearer prefix
-		if !strings.HasPrefix(authHeader, "Bearer ") {
-			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(false, ""))
-			http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
-			return
-		}
-
-		// Extract the token
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 
 		// Validate the token
 		claims, err := v.ValidateToken(r.Context(), tokenString)

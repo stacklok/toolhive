@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/oauth2"
@@ -313,16 +312,9 @@ func createTokenExchangeMiddleware(
 				tokenProvider = subjectTokenProvider
 			} else {
 				// otherwise, extract token from incoming request's Authorization header
-				authHeader := r.Header.Get("Authorization")
-				if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-					logger.Debug("No valid Bearer token found, proceeding without token exchange")
-					next.ServeHTTP(w, r)
-					return
-				}
-
-				subjectToken := strings.TrimPrefix(authHeader, "Bearer ")
-				if subjectToken == "" {
-					logger.Debug("Empty Bearer token, proceeding without token exchange")
+				subjectToken, err := auth.ExtractBearerToken(r)
+				if err != nil {
+					logger.Debugf("No valid Bearer token found (%v), proceeding without token exchange", err)
 					next.ServeHTTP(w, r)
 					return
 				}

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -100,16 +101,32 @@ func (p *APIRegistryProvider) GetServer(name string) (ServerMetadata, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Try to find server by searching (since API uses reverse-DNS names)
-	// First try direct lookup by assuming simple name
-	servers, err := p.client.SearchServers(ctx, name)
-	if err != nil {
-		return nil, fmt.Errorf("failed to search for server %s: %w", name, err)
+	// Try direct API lookup first (supports both reverse-DNS and simple names)
+	// Build potential reverse-DNS name
+	reverseDNSName := BuildReverseDNSName(name)
+
+	// Try the reverse-DNS format first
+	serverJSON, err := p.client.GetServer(ctx, reverseDNSName)
+	if err == nil {
+		return ConvertServerJSON(serverJSON)
 	}
 
-	// Find exact match
+	// If that failed and the name is already in reverse-DNS format, try as-is
+	if reverseDNSName != name {
+		serverJSON, err = p.client.GetServer(ctx, name)
+		if err == nil {
+			return ConvertServerJSON(serverJSON)
+		}
+	}
+
+	// Fall back to search for backward compatibility
+	servers, err := p.client.SearchServers(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find server %s: %w", name, err)
+	}
+
+	// Find exact match in search results
 	for _, server := range servers {
-		// Extract simple name from reverse-DNS format
 		simpleName := ExtractServerName(server.Name)
 		if simpleName == name || server.Name == name {
 			return ConvertServerJSON(server)
@@ -146,6 +163,23 @@ func (p *APIRegistryProvider) ListServers() ([]ServerMetadata, error) {
 	return ConvertServersToMetadata(servers)
 }
 
+// GetImageServer returns a specific container server by name (overrides BaseProvider)
+// This override is necessary because BaseProvider.GetImageServer calls p.GetServer,
+// which would call BaseProvider.GetServer instead of APIRegistryProvider.GetServer
+func (p *APIRegistryProvider) GetImageServer(name string) (*ImageMetadata, error) {
+	server, err := p.GetServer(name)
+	if err != nil {
+		return nil, err
+	}
+
+	// Type assert to ImageMetadata
+	if img, ok := server.(*ImageMetadata); ok {
+		return img, nil
+	}
+
+	return nil, fmt.Errorf("server %s is not a container server", name)
+}
+
 // ConvertServerJSON converts an MCP Registry API ServerJSON to ToolHive ServerMetadata
 // Uses converters from converters.go (same package)
 // Note: Only handles OCI packages and remote servers, skips npm/pypi by design
@@ -157,18 +191,28 @@ func ConvertServerJSON(serverJSON *v0.ServerJSON) (ServerMetadata, error) {
 	// Determine if this is a remote server or container-based server
 	// Remote servers have the 'remotes' field populated
 	// Container servers have the 'packages' field populated
-	if len(serverJSON.Remotes) > 0 {
-		return ServerJSONToRemoteServerMetadata(serverJSON)
-	}
+	var result ServerMetadata
+	var err error
 
-	// Check if server has packages
-	if len(serverJSON.Packages) == 0 {
+	if len(serverJSON.Remotes) > 0 {
+		result, err = ServerJSONToRemoteServerMetadata(serverJSON)
+	} else if len(serverJSON.Packages) == 0 {
 		// Skip servers without packages or remotes (incomplete entries)
 		return nil, fmt.Errorf("server %s has no packages or remotes, skipping", serverJSON.Name)
+	} else {
+		// ServerJSONToImageMetadata only handles OCI packages, will error on npm/pypi
+		result, err = ServerJSONToImageMetadata(serverJSON)
 	}
 
-	// ServerJSONToImageMetadata only handles OCI packages, will error on npm/pypi
-	return ServerJSONToImageMetadata(serverJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	// TEMPORARY DEBUG: Print after conversion
+	afterJSON, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Printf("\n=== AFTER CONVERSION ===\n%s\n", string(afterJSON))
+
+	return result, nil
 }
 
 // ConvertServersToMetadata converts a slice of ServerJSON to a slice of ServerMetadata

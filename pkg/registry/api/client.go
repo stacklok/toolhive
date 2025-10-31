@@ -24,6 +24,7 @@ type Client interface {
 	ListServers(ctx context.Context, opts *ListOptions) ([]*v0.ServerJSON, error)
 
 	// SearchServers searches for servers matching the query string
+	// Always returns the latest version of each server
 	SearchServers(ctx context.Context, query string) ([]*v0.ServerJSON, error)
 
 	// ValidateEndpoint validates that the endpoint implements the MCP Registry API
@@ -72,10 +73,11 @@ func NewClient(baseURL string, allowPrivateIp bool) (Client, error) {
 }
 
 // GetServer retrieves a single server by its reverse-DNS name
+// Always returns the latest version
 func (c *mcpRegistryClient) GetServer(ctx context.Context, name string) (*v0.ServerJSON, error) {
 	// URL encode the server name to handle special characters
 	encodedName := url.PathEscape(name)
-	endpoint := fmt.Sprintf("%s/v0/servers/%s", c.baseURL, encodedName)
+	endpoint := fmt.Sprintf("%s/v0/servers/%s/versions/latest", c.baseURL, encodedName)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -102,12 +104,16 @@ func (c *mcpRegistryClient) GetServer(ctx context.Context, name string) (*v0.Ser
 }
 
 // ListServers retrieves all servers with automatic pagination handling
+// Defaults to returning only the latest version of each server
 func (c *mcpRegistryClient) ListServers(ctx context.Context, opts *ListOptions) ([]*v0.ServerJSON, error) {
 	if opts == nil {
-		opts = &ListOptions{Limit: 100}
+		opts = &ListOptions{Limit: 100, Version: "latest"}
 	}
 	if opts.Limit == 0 {
 		opts.Limit = 100
+	}
+	if opts.Version == "" {
+		opts.Version = "latest"
 	}
 
 	var allServers []*v0.ServerJSON
@@ -194,8 +200,14 @@ func (c *mcpRegistryClient) fetchServersPage(
 }
 
 // SearchServers searches for servers matching the query string
+// Always returns the latest version of each server
 func (c *mcpRegistryClient) SearchServers(ctx context.Context, query string) ([]*v0.ServerJSON, error) {
-	endpoint := fmt.Sprintf("%s/v0/servers?search=%s", c.baseURL, url.QueryEscape(query))
+	// Build query parameters - always include version=latest
+	params := url.Values{}
+	params.Add("search", query)
+	params.Add("version", "latest")
+
+	endpoint := fmt.Sprintf("%s/v0/servers?%s", c.baseURL, params.Encode())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {

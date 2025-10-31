@@ -74,11 +74,20 @@ func (d *cliBackendDiscoverer) Discover(ctx context.Context, groupRef string) ([
 		healthStatus := mapWorkloadStatusToHealth(workload.Status)
 
 		// Convert core.Workload to vmcp.Backend
+		// Use ProxyMode instead of TransportType to reflect how ToolHive is exposing the workload.
+		// For stdio MCP servers, ToolHive proxies them via SSE or streamable-http.
+		// ProxyMode tells us which transport the vmcp client should use.
+		transportType := workload.ProxyMode
+		if transportType == "" {
+			// Fallback to TransportType if ProxyMode is not set (for direct transports)
+			transportType = workload.TransportType.String()
+		}
+
 		backend := vmcp.Backend{
 			ID:            name,
 			Name:          name,
 			BaseURL:       workload.URL,
-			TransportType: workload.TransportType.String(),
+			TransportType: transportType,
 			HealthStatus:  healthStatus,
 			Metadata:      make(map[string]string),
 		}

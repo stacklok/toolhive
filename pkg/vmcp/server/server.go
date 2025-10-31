@@ -103,6 +103,11 @@ type Server struct {
 	// The mark3labs SDK calls our sessionIDAdapter, which delegates to this manager.
 	// The SDK does NOT manage sessions itself - it only provides the interface.
 	sessionManager *session.Manager
+
+	// Ready channel signals when the server is ready to accept connections.
+	// Closed once the listener is created and serving.
+	ready     chan struct{}
+	readyOnce sync.Once
 }
 
 // New creates a new Virtual MCP Server instance.
@@ -148,6 +153,7 @@ func New(
 		router:         rt,
 		backendClient:  backendClient,
 		sessionManager: sessionManager,
+		ready:          make(chan struct{}),
 	}
 }
 
@@ -261,6 +267,11 @@ func (s *Server) Start(ctx context.Context) error {
 			errCh <- fmt.Errorf("HTTP server error: %w", err)
 		}
 	}()
+
+	// Signal that the server is ready (listener created and serving started)
+	s.readyOnce.Do(func() {
+		close(s.ready)
+	})
 
 	// Wait for either context cancellation or server error
 	select {
@@ -599,4 +610,10 @@ func (*Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // This is useful for testing and monitoring.
 func (s *Server) SessionManager() *session.Manager {
 	return s.sessionManager
+}
+
+// Ready returns a channel that is closed when the server is ready to accept connections.
+// This is useful for testing and synchronization.
+func (s *Server) Ready() <-chan struct{} {
+	return s.ready
 }

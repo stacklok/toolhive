@@ -336,7 +336,7 @@ func (rw *toolFilterWriter) Flush() {
 
 		var b bytes.Buffer
 		err := processBuffer(rw.config, rw.buffer, mimeType, &b)
-		if err == errKeepBuffering {
+		if errors.Is(err, errKeepBuffering) {
 			logger.Debugf("Buffered %d so far, keep buffering...", len(rw.buffer))
 			return
 		}
@@ -386,7 +386,11 @@ func processBuffer(
 	switch mimeType {
 	case "application/json":
 		var toolsListResponse toolsListResponse
+		var syntaxError *json.SyntaxError
 		err := json.Unmarshal(buffer, &toolsListResponse)
+		if errors.As(err, &syntaxError) {
+			return fmt.Errorf("%w: %v", errKeepBuffering, err)
+		}
 		if err == nil && toolsListResponse.Result.Tools != nil {
 			return processToolsListResponse(config, toolsListResponse, w)
 		}
@@ -416,7 +420,7 @@ func processEventStream(
 	w io.Writer,
 ) error {
 	if len(buffer) > 1 && buffer[len(buffer)-1] != '\n' && buffer[len(buffer)-1] != '\r' {
-		return errKeepBuffering
+		return fmt.Errorf("%w: %v", errKeepBuffering, "event separator not found")
 	}
 
 	// NOTE: this looks uglier, but is more efficient than scanning the whole buffer

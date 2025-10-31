@@ -30,9 +30,9 @@ spec:
       jsonPath: .status.validationStatus
       name: Status
       type: string
-    - description: Referencing servers
+    - description: Refs
       jsonPath: .status.referencingVirtualServers[*]
-      name: References
+      name: Refs
       type: integer
     - description: Age
       jsonPath: .metadata.creationTimestamp

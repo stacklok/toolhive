@@ -113,83 +113,29 @@ func (r *VirtualMCPCompositeToolDefinition) validateSteps() error {
 	}
 
 	// Third pass: validate dependencies don't create cycles
-	if err := r.validateDependencyCycles(stepIndices); err != nil {
-		return err
-	}
-
-	return nil
+	return r.validateDependencyCycles()
 }
 
 // validateStep validates a single workflow step
 func (r *VirtualMCPCompositeToolDefinition) validateStep(index int, step WorkflowStep, stepIDs map[string]bool) error {
-	// Validate step type
-	stepType := step.Type
-	if stepType == "" {
-		stepType = WorkflowStepTypeToolCall // default
+	if err := r.validateStepType(index, step); err != nil {
+		return err
 	}
 
-	validTypes := map[string]bool{
-		WorkflowStepTypeToolCall:     true,
-		WorkflowStepTypeElicitation:  true,
-	}
-	if !validTypes[stepType] {
-		return fmt.Errorf("spec.steps[%d].type must be one of: tool_call, elicitation", index)
+	if err := r.validateStepTemplates(index, step); err != nil {
+		return err
 	}
 
-	// Validate type-specific fields
-	if stepType == WorkflowStepTypeToolCall {
-		if step.Tool == "" {
-			return fmt.Errorf("spec.steps[%d].tool is required when type is tool_call", index)
-		}
-
-		// Validate tool name format (workload.tool_name)
-		if !isValidToolReference(step.Tool) {
-			return fmt.Errorf("spec.steps[%d].tool must be in format 'workload.tool_name'", index)
-		}
+	if err := r.validateStepDependencies(index, step, stepIDs); err != nil {
+		return err
 	}
 
-	if stepType == WorkflowStepTypeElicitation {
-		if step.Message == "" {
-			return fmt.Errorf("spec.steps[%d].message is required when type is elicitation", index)
-		}
-	}
-
-	// Validate arguments contain valid templates
-	for argName, argValue := range step.Arguments {
-		if err := validateTemplate(argValue); err != nil {
-			return fmt.Errorf("spec.steps[%d].arguments[%s]: invalid template: %v", index, argName, err)
-		}
-	}
-
-	// Validate condition template
-	if step.Condition != "" {
-		if err := validateTemplate(step.Condition); err != nil {
-			return fmt.Errorf("spec.steps[%d].condition: invalid template: %v", index, err)
-		}
-	}
-
-	// Validate message template for elicitation
-	if step.Message != "" {
-		if err := validateTemplate(step.Message); err != nil {
-			return fmt.Errorf("spec.steps[%d].message: invalid template: %v", index, err)
-		}
-	}
-
-	// Validate dependsOn references exist
-	for _, depID := range step.DependsOn {
-		if !stepIDs[depID] {
-			return fmt.Errorf("spec.steps[%d].dependsOn references unknown step %q", index, depID)
-		}
-	}
-
-	// Validate error handling
 	if step.OnError != nil {
 		if err := r.validateErrorHandling(index, step.OnError); err != nil {
 			return err
 		}
 	}
 
-	// Validate timeout format
 	if step.Timeout != "" {
 		if err := validateDuration(step.Timeout); err != nil {
 			return fmt.Errorf("spec.steps[%d].timeout: %v", index, err)
@@ -199,8 +145,72 @@ func (r *VirtualMCPCompositeToolDefinition) validateStep(index int, step Workflo
 	return nil
 }
 
+// validateStepType validates step type and type-specific required fields
+func (*VirtualMCPCompositeToolDefinition) validateStepType(index int, step WorkflowStep) error {
+	stepType := step.Type
+	if stepType == "" {
+		stepType = WorkflowStepTypeToolCall // default
+	}
+
+	validTypes := map[string]bool{
+		WorkflowStepTypeToolCall:    true,
+		WorkflowStepTypeElicitation: true,
+	}
+	if !validTypes[stepType] {
+		return fmt.Errorf("spec.steps[%d].type must be one of: tool_call, elicitation", index)
+	}
+
+	if stepType == WorkflowStepTypeToolCall {
+		if step.Tool == "" {
+			return fmt.Errorf("spec.steps[%d].tool is required when type is tool_call", index)
+		}
+		if !isValidToolReference(step.Tool) {
+			return fmt.Errorf("spec.steps[%d].tool must be in format 'workload.tool_name'", index)
+		}
+	}
+
+	if stepType == WorkflowStepTypeElicitation && step.Message == "" {
+		return fmt.Errorf("spec.steps[%d].message is required when type is elicitation", index)
+	}
+
+	return nil
+}
+
+// validateStepTemplates validates all template fields in a step
+func (*VirtualMCPCompositeToolDefinition) validateStepTemplates(index int, step WorkflowStep) error {
+	for argName, argValue := range step.Arguments {
+		if err := validateTemplate(argValue); err != nil {
+			return fmt.Errorf("spec.steps[%d].arguments[%s]: invalid template: %v", index, argName, err)
+		}
+	}
+
+	if step.Condition != "" {
+		if err := validateTemplate(step.Condition); err != nil {
+			return fmt.Errorf("spec.steps[%d].condition: invalid template: %v", index, err)
+		}
+	}
+
+	if step.Message != "" {
+		if err := validateTemplate(step.Message); err != nil {
+			return fmt.Errorf("spec.steps[%d].message: invalid template: %v", index, err)
+		}
+	}
+
+	return nil
+}
+
+// validateStepDependencies validates step dependencies reference existing steps
+func (*VirtualMCPCompositeToolDefinition) validateStepDependencies(index int, step WorkflowStep, stepIDs map[string]bool) error {
+	for _, depID := range step.DependsOn {
+		if !stepIDs[depID] {
+			return fmt.Errorf("spec.steps[%d].dependsOn references unknown step %q", index, depID)
+		}
+	}
+	return nil
+}
+
 // validateErrorHandling validates error handling configuration
-func (r *VirtualMCPCompositeToolDefinition) validateErrorHandling(stepIndex int, errorHandling *ErrorHandling) error {
+func (*VirtualMCPCompositeToolDefinition) validateErrorHandling(stepIndex int, errorHandling *ErrorHandling) error {
 	if errorHandling.Action == "" {
 		return nil // Action is optional, defaults to "abort"
 	}
@@ -224,7 +234,7 @@ func (r *VirtualMCPCompositeToolDefinition) validateErrorHandling(stepIndex int,
 }
 
 // validateDependencyCycles validates that step dependencies don't create cycles
-func (r *VirtualMCPCompositeToolDefinition) validateDependencyCycles(stepIndices map[string]int) error {
+func (r *VirtualMCPCompositeToolDefinition) validateDependencyCycles() error {
 	// Build adjacency list for dependency graph
 	graph := make(map[string][]string)
 	for _, step := range r.Spec.Steps {

@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os/signal"
 	"syscall"
@@ -19,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/transport"
+	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -372,18 +372,7 @@ func resolveClientSecret() (string, error) {
 
 // createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests
 func createTokenInjectionMiddleware(tokenSource oauth2.TokenSource) types.MiddlewareFunction {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token, err := tokenSource.Token()
-			if err != nil {
-				http.Error(w, "Unable to retrieve OAuth token", http.StatusUnauthorized)
-				return
-			}
-
-			r.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token.AccessToken))
-			next.ServeHTTP(w, r)
-		})
-	}
+	return middleware.CreateTokenInjectionMiddleware(tokenSource)
 }
 
 // addExternalTokenMiddleware adds token exchange or token injection middleware to the middleware chain

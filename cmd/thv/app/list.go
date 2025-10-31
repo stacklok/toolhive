@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -139,11 +140,17 @@ func printTextOutput(workloadList []core.Workload) {
 
 	// Print workload information
 	for _, c := range workloadList {
+		// Highlight unauthenticated workloads with a warning indicator
+		status := string(c.Status)
+		if c.Status == rt.WorkloadStatusUnauthenticated {
+			status = "⚠️  " + status
+		}
+
 		// Print workload information
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
 			c.Name,
 			c.Package,
-			c.Status,
+			status,
 			c.URL,
 			c.Port,
 			c.ToolType,

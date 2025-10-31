@@ -49,6 +49,9 @@ type Runner struct {
 	prometheusHandler http.Handler
 
 	statusManager statuses.StatusManager
+
+	// authenticatedTokenSource is the wrapped token source for remote workloads with authentication monitoring
+	authenticatedTokenSource *AuthenticatedTokenSource
 }
 
 // NewRunner creates a new Runner with the provided configuration
@@ -185,6 +188,12 @@ func (r *Runner) Run(ctx context.Context) error {
 		tokenSource, err := r.handleRemoteAuthentication(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to authenticate to remote server: %w", err)
+		}
+
+		// Wrap the token source with authentication monitoring for remote workloads
+		if tokenSource != nil {
+			r.authenticatedTokenSource = NewAuthenticatedTokenSource(tokenSource, r.statusManager, r.Config.BaseName)
+			tokenSource = r.authenticatedTokenSource
 		}
 
 		// Set the token source on the HTTP transport
@@ -378,5 +387,11 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 			lastErr = err
 		}
 	}
+
+	// Stop background authentication monitoring for remote workloads
+	if r.authenticatedTokenSource != nil {
+		r.authenticatedTokenSource.StopMonitoring()
+	}
+
 	return lastErr
 }

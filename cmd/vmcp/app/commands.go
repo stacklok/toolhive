@@ -2,13 +2,21 @@
 package app
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
+	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
+	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var rootCmd = &cobra.Command{
@@ -74,18 +82,7 @@ func newServeCmd() *cobra.Command {
 The server will read the configuration file specified by --config flag and start
 listening for MCP client connections. It will aggregate tools, resources, and prompts
 from all configured backend MCP servers.`,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			configPath := viper.GetString("config")
-			if configPath == "" {
-				return fmt.Errorf("no configuration file specified, use --config flag")
-			}
-
-			logger.Infof("Loading configuration from: %s", configPath)
-			// TODO: Load configuration and start server
-			// This will be implemented in a future PR when pkg/vmcp is added
-
-			return fmt.Errorf("serve command not yet implemented")
-		},
+		RunE: runServe,
 	}
 }
 
@@ -170,4 +167,117 @@ This command checks:
 func getVersion() string {
 	// This will be replaced with actual version info using ldflags
 	return "dev"
+}
+
+// runServe implements the serve command logic
+func runServe(cmd *cobra.Command, _ []string) error {
+	ctx := cmd.Context()
+	configPath := viper.GetString("config")
+
+	if configPath == "" {
+		return fmt.Errorf("no configuration file specified, use --config flag")
+	}
+
+	logger.Infof("Loading configuration from: %s", configPath)
+
+	// Load configuration from YAML
+	loader := config.NewYAMLLoader(configPath)
+	cfg, err := loader.Load()
+	if err != nil {
+		logger.Errorf("Failed to load configuration: %v", err)
+		return fmt.Errorf("configuration loading failed: %w", err)
+	}
+
+	// Validate configuration
+	validator := config.NewValidator()
+	if err := validator.Validate(cfg); err != nil {
+		logger.Errorf("Configuration validation failed: %v", err)
+		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	logger.Infof("Configuration loaded and validated successfully")
+	logger.Infof("  Name: %s", cfg.Name)
+	logger.Infof("  Group: %s", cfg.GroupRef)
+	logger.Infof("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution)
+
+	// Initialize managers for backend discovery
+	logger.Info("Initializing workload and group managers")
+	workloadsManager, err := workloads.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create workloads manager: %w", err)
+	}
+
+	groupsManager, err := groups.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to create groups manager: %w", err)
+	}
+
+	// Create backend discoverer
+	discoverer := aggregator.NewCLIBackendDiscoverer(workloadsManager, groupsManager)
+
+	// Discover backends from the configured group
+	logger.Infof("Discovering backends in group: %s", cfg.GroupRef)
+	backends, err := discoverer.Discover(ctx, cfg.GroupRef)
+	if err != nil {
+		return fmt.Errorf("failed to discover backends: %w", err)
+	}
+
+	if len(backends) == 0 {
+		return fmt.Errorf("no backends found in group %s", cfg.GroupRef)
+	}
+
+	logger.Infof("Discovered %d backends", len(backends))
+
+	// Create backend client
+	backendClient := vmcpclient.NewHTTPBackendClient()
+
+	// Create conflict resolver based on configuration
+	// Use the factory method that handles all strategies
+	conflictResolver, err := aggregator.NewConflictResolver(cfg.Aggregation)
+	if err != nil {
+		return fmt.Errorf("failed to create conflict resolver: %w", err)
+	}
+
+	// Create aggregator
+	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools)
+
+	// Aggregate capabilities from all backends with timeout
+	logger.Info("Aggregating capabilities from backends")
+	aggCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	capabilities, err := agg.AggregateCapabilities(aggCtx, backends)
+	if err != nil {
+		return fmt.Errorf("failed to aggregate capabilities: %w", err)
+	}
+
+	logger.Infof("Aggregated %d tools, %d resources, %d prompts from %d backends",
+		capabilities.Metadata.ToolCount,
+		capabilities.Metadata.ResourceCount,
+		capabilities.Metadata.PromptCount,
+		capabilities.Metadata.BackendCount)
+
+	// Create router
+	rtr := vmcprouter.NewDefaultRouter()
+
+	// Create server configuration
+	serverCfg := &vmcpserver.Config{
+		Name:    cfg.Name,
+		Version: getVersion(),
+		Host:    "127.0.0.1", // TODO: Make configurable
+		Port:    4483,        // TODO: Make configurable
+	}
+
+	// Create server
+	srv := vmcpserver.New(serverCfg, rtr, backendClient)
+
+	// Register capabilities
+	logger.Info("Registering capabilities with server")
+	if err := srv.RegisterCapabilities(ctx, capabilities); err != nil {
+		return fmt.Errorf("failed to register capabilities: %w", err)
+	}
+
+	// Start server (blocks until shutdown signal)
+	logger.Infof("Starting Virtual MCP Server at %s", srv.Address())
+	return srv.Start(ctx)
 }

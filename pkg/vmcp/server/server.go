@@ -7,15 +7,19 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
@@ -39,6 +43,10 @@ const (
 
 	// defaultShutdownTimeout is the maximum time to wait for graceful shutdown.
 	defaultShutdownTimeout = 10 * time.Second
+
+	// defaultSessionTTL is the default session time-to-live duration.
+	// Sessions that are inactive for this duration will be automatically cleaned up.
+	defaultSessionTTL = 30 * time.Minute
 )
 
 // Config holds the Virtual MCP Server configuration.
@@ -57,6 +65,10 @@ type Config struct {
 
 	// EndpointPath is the MCP endpoint path (default: "/mcp")
 	EndpointPath string
+
+	// SessionTTL is the session time-to-live duration (default: 30 minutes)
+	// Sessions inactive for this duration will be automatically cleaned up
+	SessionTTL time.Duration
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -69,6 +81,10 @@ type Server struct {
 	// HTTP server for Streamable HTTP transport
 	httpServer *http.Server
 
+	// Network listener (tracks actual bound port when using port 0)
+	listener   net.Listener
+	listenerMu sync.RWMutex
+
 	// Router for forwarding requests to backends
 	router router.Router
 
@@ -77,6 +93,16 @@ type Server struct {
 
 	// Aggregated capabilities (cached)
 	aggregatedCapabilities *aggregator.AggregatedCapabilities
+
+	// Session manager for tracking MCP protocol sessions
+	// This is ToolHive's session.Manager (pkg/transport/session) - the same component
+	// used by streamable proxy for MCP session tracking. It handles:
+	//   - Session storage and retrieval
+	//   - TTL-based cleanup of inactive sessions
+	//   - Session lifecycle management
+	// The mark3labs SDK calls our sessionIDAdapter, which delegates to this manager.
+	// The SDK does NOT manage sessions itself - it only provides the interface.
+	sessionManager *session.Manager
 }
 
 // New creates a new Virtual MCP Server instance.
@@ -101,6 +127,9 @@ func New(
 	if cfg.Version == "" {
 		cfg.Version = "0.1.0"
 	}
+	if cfg.SessionTTL == 0 {
+		cfg.SessionTTL = defaultSessionTTL
+	}
 
 	// Create mark3labs MCP server
 	mcpServer := server.NewMCPServer(
@@ -110,11 +139,15 @@ func New(
 		server.WithLogging(),
 	)
 
+	// Create session manager for Streamable HTTP sessions
+	sessionManager := session.NewTypedManager(cfg.SessionTTL, session.SessionTypeStreamable)
+
 	return &Server{
-		config:        cfg,
-		mcpServer:     mcpServer,
-		router:        rt,
-		backendClient: backendClient,
+		config:         cfg,
+		mcpServer:      mcpServer,
+		router:         rt,
+		backendClient:  backendClient,
+		sessionManager: sessionManager,
 	}
 }
 
@@ -126,6 +159,14 @@ func (s *Server) RegisterCapabilities(ctx context.Context, capabilities *aggrega
 
 	// Cache the aggregated capabilities
 	s.aggregatedCapabilities = capabilities
+
+	// Note: MCP protocol initialization is handled automatically by the mark3labs SDK.
+	// When an MCP client sends an 'initialize' request:
+	//   - SDK returns server name and version (from NewMCPServer constructor)
+	//   - SDK auto-discovers capabilities from tools/resources/prompts registered below
+	//   - SDK calls sessionIDAdapter.Generate() to create session ID if client didn't provide one
+	//   - Session is stored and managed by ToolHive's session.Manager (not SDK)
+	// No custom initialize handler is needed or exposed by the SDK.
 
 	// Update router with routing table
 	if err := s.router.UpdateRoutingTable(ctx, capabilities.RoutingTable); err != nil {
@@ -163,17 +204,35 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("capabilities not registered, call RegisterCapabilities first")
 	}
 
-	// Create Streamable HTTP server
+	// Create session adapter to expose ToolHive's session.Manager via SDK interface
+	// Sessions are ENTIRELY managed by ToolHive's session.Manager (storage, TTL, cleanup).
+	// The SDK only calls our Generate/Validate/Terminate methods during MCP protocol flows.
+	sessionAdapter := newSessionIDAdapter(s.sessionManager)
+
+	// Create Streamable HTTP server with ToolHive session management
 	streamableServer := server.NewStreamableHTTPServer(
 		s.mcpServer,
 		server.WithEndpointPath(s.config.EndpointPath),
+		server.WithSessionIdManager(sessionAdapter),
 	)
+
+	// Create HTTP mux with health/ping endpoints
+	mux := http.NewServeMux()
+
+	// Health endpoint
+	mux.HandleFunc("/health", s.handleHealth)
+
+	// Ping endpoint (alias for health)
+	mux.HandleFunc("/ping", s.handleHealth)
+
+	// MCP endpoint (all other paths)
+	mux.Handle("/", streamableServer)
 
 	// Create HTTP server
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 	s.httpServer = &http.Server{
 		Addr:              addr,
-		Handler:           streamableServer,
+		Handler:           mux,
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
 		ReadTimeout:       defaultReadTimeout,
 		WriteTimeout:      defaultWriteTimeout,
@@ -181,12 +240,24 @@ func (s *Server) Start(ctx context.Context) error {
 		MaxHeaderBytes:    defaultMaxHeaderBytes,
 	}
 
-	logger.Infof("Starting Virtual MCP Server at %s%s", addr, s.config.EndpointPath)
+	// Create listener (allows port 0 to bind to random available port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to create listener: %w", err)
+	}
+
+	s.listenerMu.Lock()
+	s.listener = listener
+	s.listenerMu.Unlock()
+
+	actualAddr := listener.Addr().String()
+	logger.Infof("Starting Virtual MCP Server at %s%s", actualAddr, s.config.EndpointPath)
+	logger.Infof("Health endpoints available at %s/health and %s/ping", actualAddr, actualAddr)
 
 	// Start server in background
 	errCh := make(chan error, 1)
 	go func() {
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("HTTP server error: %w", err)
 		}
 	}()
@@ -203,26 +274,58 @@ func (s *Server) Start(ctx context.Context) error {
 
 // Stop gracefully stops the Virtual MCP Server.
 func (s *Server) Stop(ctx context.Context) error {
-	if s.httpServer == nil {
-		return nil
-	}
-
 	logger.Info("Stopping Virtual MCP Server")
 
-	// Create shutdown context with timeout
-	shutdownCtx, cancel := context.WithTimeout(ctx, defaultShutdownTimeout)
-	defer cancel()
+	var errs []error
 
-	if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("failed to shutdown HTTP server: %w", err)
+	// Stop HTTP server
+	if s.httpServer != nil {
+		// Create shutdown context with timeout
+		shutdownCtx, cancel := context.WithTimeout(ctx, defaultShutdownTimeout)
+		defer cancel()
+
+		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to shutdown HTTP server: %w", err))
+		}
+	}
+
+	// Close listener
+	s.listenerMu.Lock()
+	listener := s.listener
+	s.listener = nil
+	s.listenerMu.Unlock()
+
+	if listener != nil {
+		if err := listener.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close listener: %w", err))
+		}
+	}
+
+	// Stop session manager
+	if s.sessionManager != nil {
+		if err := s.sessionManager.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop session manager: %w", err))
+		}
+	}
+
+	if len(errs) > 0 {
+		logger.Errorf("Errors during shutdown: %v", errs)
+		return errors.Join(errs...)
 	}
 
 	logger.Info("Virtual MCP Server stopped")
 	return nil
 }
 
-// Address returns the server's listen address.
+// Address returns the server's actual listen address.
+// If the server is started with port 0, this returns the actual bound port.
 func (s *Server) Address() string {
+	s.listenerMu.RLock()
+	defer s.listenerMu.RUnlock()
+
+	if s.listener != nil {
+		return s.listener.Addr().String()
+	}
 	return fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 }
 
@@ -464,4 +567,36 @@ func (s *Server) createPromptHandler(promptName string) func(
 
 		return result, nil
 	}
+}
+
+// handleHealth handles /health and /ping HTTP requests.
+// Returns 200 OK if the server is running and able to respond.
+//
+// Security Note: This endpoint is unauthenticated and intentionally minimal.
+// It only confirms the HTTP server is responding. No version information,
+// session counts, or operational metrics are exposed to prevent information
+// disclosure in multi-tenant scenarios.
+//
+// For operational monitoring, implement an authenticated /metrics endpoint
+// that requires proper authorization.
+func (*Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	response := map[string]string{
+		"status": "ok",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	// Always send 200 OK - even if JSON encoding fails below, the server is responding
+	w.WriteHeader(http.StatusOK)
+
+	// Encode response. If this fails (extremely unlikely for simple map[string]string),
+	// the 200 OK status has already been sent above.
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		logger.Errorf("Failed to encode health response: %v", err)
+	}
+}
+
+// SessionManager returns the session manager instance.
+// This is useful for testing and monitoring.
+func (s *Server) SessionManager() *session.Manager {
+	return s.sessionManager
 }

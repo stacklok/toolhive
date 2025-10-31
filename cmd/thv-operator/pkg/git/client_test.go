@@ -1,8 +1,10 @@
 package git
 
 import (
-	"context"
 	"testing"
+
+	"github.com/go-logr/logr"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func TestNewDefaultGitClient(t *testing.T) {
@@ -21,7 +23,7 @@ func TestNewDefaultGitClient(t *testing.T) {
 func TestDefaultGitClient_Clone_InvalidURL(t *testing.T) {
 	t.Parallel()
 	client := NewDefaultGitClient()
-	ctx := context.Background()
+	ctx := log.IntoContext(t.Context(), logr.Discard())
 
 	config := &CloneConfig{
 		URL: "invalid-url",
@@ -39,7 +41,7 @@ func TestDefaultGitClient_Clone_InvalidURL(t *testing.T) {
 func TestDefaultGitClient_Clone_NonExistentRepo(t *testing.T) {
 	t.Parallel()
 	client := NewDefaultGitClient()
-	ctx := context.Background()
+	ctx := log.IntoContext(t.Context(), logr.Discard())
 
 	config := &CloneConfig{
 		URL: "https://github.com/nonexistent/nonexistent.git",
@@ -58,7 +60,7 @@ func TestDefaultGitClient_Cleanup_NilRepoInfo(t *testing.T) {
 	t.Parallel()
 	client := NewDefaultGitClient()
 
-	err := client.Cleanup(context.Background(), nil)
+	err := client.Cleanup(log.IntoContext(t.Context(), logr.Discard()), nil)
 	if err == nil {
 		t.Errorf("Expected error for nil repoInfo, got nil")
 	}
@@ -71,7 +73,7 @@ func TestDefaultGitClient_Cleanup_NilRepository(t *testing.T) {
 		Repository: nil,
 	}
 
-	err := client.Cleanup(context.Background(), repoInfo)
+	err := client.Cleanup(log.IntoContext(t.Context(), logr.Discard()), repoInfo)
 	if err == nil {
 		t.Errorf("Expected error for nil repository, got nil")
 	}

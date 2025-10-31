@@ -34,6 +34,8 @@ func TestClaimsToIdentity(t *testing.T) {
 			token:   "test-token",
 			wantErr: false,
 			checkFunc: func(t *testing.T, identity *Identity) {
+				t.Helper()
+
 				assert.Equal(t, "user123", identity.Subject)
 				assert.Equal(t, "John Doe", identity.Name)
 				assert.Equal(t, "john@example.com", identity.Email)
@@ -50,6 +52,8 @@ func TestClaimsToIdentity(t *testing.T) {
 			token:   "test-token",
 			wantErr: false,
 			checkFunc: func(t *testing.T, identity *Identity) {
+				t.Helper()
+
 				assert.Equal(t, "user123", identity.Subject)
 				assert.Empty(t, identity.Name)
 				assert.Empty(t, identity.Email)
@@ -92,6 +96,8 @@ func TestClaimsToIdentity(t *testing.T) {
 			token:   "test-token",
 			wantErr: false,
 			checkFunc: func(t *testing.T, identity *Identity) {
+				t.Helper()
+
 				assert.Equal(t, "user123", identity.Subject)
 				assert.Empty(t, identity.Groups, "Groups should not be extracted to Identity.Groups")
 				assert.Contains(t, identity.Claims, "groups", "Groups should remain in Claims map")
@@ -149,6 +155,8 @@ func TestIdentityMiddleware(t *testing.T) {
 			expectedStatus: http.StatusOK,
 			expectIdentity: true,
 			checkIdentity: func(t *testing.T, identity *Identity) {
+				t.Helper()
+
 				assert.Equal(t, "user123", identity.Subject)
 				assert.Equal(t, "Alice", identity.Name)
 				assert.Equal(t, "alice@example.com", identity.Email)
@@ -190,6 +198,8 @@ func TestIdentityMiddleware(t *testing.T) {
 			expectedStatus: http.StatusOK,
 			expectIdentity: true,
 			checkIdentity: func(t *testing.T, identity *Identity) {
+				t.Helper()
+
 				assert.Equal(t, "user123", identity.Subject)
 				assert.Empty(t, identity.Token, "Token should be empty when header is missing")
 			},

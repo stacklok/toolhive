@@ -16,10 +16,10 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		cfg            *config.IncomingAuthConfig
-		wantErr        bool
-		errContains    string
+		name            string
+		cfg             *config.IncomingAuthConfig
+		wantErr         bool
+		errContains     string
 		checkMiddleware func(t *testing.T, middleware func(http.Handler) http.Handler, authInfo http.Handler)
 	}{
 		{
@@ -44,6 +44,8 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 			},
 			wantErr: false,
 			checkMiddleware: func(t *testing.T, middleware func(http.Handler) http.Handler, authInfo http.Handler) {
+				t.Helper()
+
 				require.NotNil(t, middleware, "middleware should not be nil")
 				assert.Nil(t, authInfo, "local auth should not have authInfo handler")
 
@@ -71,6 +73,8 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 			},
 			wantErr: false,
 			checkMiddleware: func(t *testing.T, middleware func(http.Handler) http.Handler, authInfo http.Handler) {
+				t.Helper()
+
 				require.NotNil(t, middleware, "middleware should not be nil")
 				assert.Nil(t, authInfo, "anonymous auth should not have authInfo handler")
 

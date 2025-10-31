@@ -107,8 +107,6 @@ func newLocalAuthMiddleware(ctx context.Context) (func(http.Handler) http.Handle
 		return nil, nil, fmt.Errorf("failed to create local authentication middleware: %w", err)
 	}
 
-	logger.Info("Local user authentication configured")
-
 	return authMw, authInfo, nil
 }
 
@@ -116,8 +114,6 @@ func newLocalAuthMiddleware(ctx context.Context) (func(http.Handler) http.Handle
 // Calls pkg/auth.AnonymousMiddleware directly since GetAuthenticationMiddleware doesn't support anonymous.
 func newAnonymousAuthMiddleware() (func(http.Handler) http.Handler, http.Handler, error) {
 	logger.Info("Creating anonymous authentication middleware")
-
-	logger.Info("Anonymous authentication configured")
 
 	return auth.AnonymousMiddleware, nil, nil
 }

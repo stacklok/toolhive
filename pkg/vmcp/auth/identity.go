@@ -35,11 +35,13 @@ func IdentityMiddleware(next http.Handler) http.Handler {
 		// Extract original token for passthrough scenarios
 		token, err := auth.ExtractBearerToken(r)
 		if err != nil {
+			// this is expected with local or anonymous middleware. The only loss of
+			// functionality is that passthrough won't work
 			logger.Warnf("Claims present but token extraction failed: %v", err)
 			token = ""
 		}
 
-		// Convert Claims → Identity
+		// Convert Claims to Identity
 		identity, err := claimsToIdentity(claims, token)
 		if err != nil {
 			logger.Errorf("Failed to convert claims to identity: %v", err)

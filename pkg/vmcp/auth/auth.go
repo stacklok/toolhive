@@ -1,15 +1,15 @@
-// Package auth provides authentication interfaces for Virtual MCP Server.
+// Package auth provides authentication for Virtual MCP Server.
 //
-// This package defines two authentication boundaries:
-//  1. IncomingAuthenticator - validates client requests to virtual MCP
-//  2. OutgoingAuthenticator - authenticates virtual MCP to backend servers
+// This package defines:
+//   - Identity: Domain type representing an authenticated user/service
+//   - Claims → Identity conversion (incoming authentication)
+//   - OutgoingAuthenticator: Authenticates vMCP to backend servers
+//   - Strategy: Pluggable authentication strategies for backends
 //
-// The package supports extensible authentication strategies through the
-// Strategy interface, enabling custom authentication mechanisms to be
-// registered at runtime.
+// Incoming authentication uses pkg/auth.TokenValidator + IdentityMiddleware
+// to validate OIDC tokens and convert Claims to Identity.
 package auth
 
-//go:generate mockgen -destination=mocks/mock_token_authenticator.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/auth TokenAuthenticator
 //go:generate mockgen -destination=mocks/mock_strategy.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/auth Strategy
 
 import (
@@ -17,26 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-
-	"github.com/golang-jwt/jwt/v5"
 )
-
-// IncomingAuthenticator handles authentication for clients connecting to the virtual MCP server.
-// This validates the incoming request and extracts identity information.
-//
-// The virtual MCP server supports multiple incoming auth strategies:
-//   - OIDC: OAuth 2.0 / OpenID Connect
-//   - Local: Local authentication (for development)
-//   - Anonymous: No authentication required
-type IncomingAuthenticator interface {
-	// Authenticate validates the incoming HTTP request and returns identity information.
-	// Returns an error if authentication fails.
-	Authenticate(ctx context.Context, r *http.Request) (*Identity, error)
-
-	// Middleware returns an HTTP middleware that can be applied to routes.
-	// This integrates with ToolHive's existing middleware patterns.
-	Middleware() func(http.Handler) http.Handler
-}
 
 // OutgoingAuthenticator handles authentication to backend MCP servers.
 // This is responsible for obtaining and injecting appropriate credentials
@@ -154,19 +135,6 @@ func (i *Identity) MarshalJSON() ([]byte, error) {
 		TokenType: i.TokenType,
 		Metadata:  i.Metadata,
 	})
-}
-
-// TokenAuthenticator validates JWT tokens and provides HTTP middleware for authentication.
-// This interface abstracts the token validation functionality from pkg/auth to enable
-// testing with mocks while the concrete *auth.TokenValidator implementation satisfies
-// this interface in production.
-type TokenAuthenticator interface {
-	// ValidateToken validates a token string and returns the claims.
-	ValidateToken(ctx context.Context, tokenString string) (jwt.MapClaims, error)
-
-	// Middleware returns an HTTP middleware function that validates tokens
-	// from the Authorization header and injects claims into the request context.
-	Middleware(next http.Handler) http.Handler
 }
 
 // Authorizer handles authorization decisions.

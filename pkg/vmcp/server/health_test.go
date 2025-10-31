@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
@@ -30,11 +31,15 @@ func createTestServer(t *testing.T) *server.Server {
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
 	rt := router.NewDefaultRouter()
 
+	// Find an available port for parallel test execution
+	port := networking.FindAvailable()
+	require.NotZero(t, port, "Failed to find available port")
+
 	srv := server.New(&server.Config{
 		Name:    "test-vmcp",
 		Version: "1.0.0",
 		Host:    "127.0.0.1",
-		Port:    0, // Random port for parallel tests
+		Port:    port,
 	}, rt, mockBackendClient)
 
 	// Register minimal capabilities
@@ -54,17 +59,28 @@ func createTestServer(t *testing.T) *server.Server {
 	require.NoError(t, err)
 
 	// Start server in background
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = srv.Start(ctx) }()
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
 
-	// Wait for server to start
-	time.Sleep(100 * time.Millisecond)
+	errCh := make(chan error, 1)
+	go func() {
+		if err := srv.Start(ctx); err != nil {
+			errCh <- err
+		}
+	}()
 
-	// Cleanup
-	t.Cleanup(func() {
-		cancel()
-		time.Sleep(50 * time.Millisecond)
-	})
+	// Wait for server to be ready (with timeout)
+	select {
+	case <-srv.Ready():
+		// Server is ready to accept connections
+	case err := <-errCh:
+		t.Fatalf("Server failed to start: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Server did not become ready within 5s (address: %s)", srv.Address())
+	}
+
+	// Give the HTTP server a moment to start accepting connections
+	time.Sleep(10 * time.Millisecond)
 
 	return srv
 }

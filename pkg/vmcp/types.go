@@ -58,6 +58,9 @@ const (
 
 	// BackendUnknown indicates the backend health status is unknown.
 	BackendUnknown BackendHealthStatus = "unknown"
+
+	// BackendUnauthenticated indicates the backend is not authenticated.
+	BackendUnauthenticated BackendHealthStatus = "unauthenticated"
 )
 
 // Backend represents a discovered backend MCP server workload.

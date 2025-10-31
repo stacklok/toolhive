@@ -55,9 +55,11 @@ func (a *sessionIDAdapter) Generate() string {
 		// Generate another ID and try once more
 		sessionID = uuid.New().String()
 		if err := a.manager.AddWithID(sessionID); err != nil {
-			// Log but return the ID anyway - the SDK will use it
-			// If storage is truly broken, validation will catch it
-			logger.Errorf("Failed to create session %s on retry: %v", sessionID, err)
+			// Session storage is broken - return empty string as sentinel value.
+			// The SDK will check for empty string and not send Mcp-Session-Id header,
+			// causing subsequent client requests to fail validation gracefully.
+			logger.Errorf("Failed to create session %s on retry: %v - returning empty session ID", sessionID, err)
+			return ""
 		}
 	}
 

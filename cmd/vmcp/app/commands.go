@@ -2,7 +2,9 @@
 package app
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -239,9 +241,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Create aggregator
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools)
 
-	// Aggregate capabilities from all backends
+	// Aggregate capabilities from all backends with timeout
 	logger.Info("Aggregating capabilities from backends")
-	capabilities, err := agg.AggregateCapabilities(ctx, backends)
+	aggCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	capabilities, err := agg.AggregateCapabilities(aggCtx, backends)
 	if err != nil {
 		return fmt.Errorf("failed to aggregate capabilities: %w", err)
 	}

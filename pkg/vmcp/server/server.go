@@ -10,7 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -78,6 +80,10 @@ type Server struct {
 
 	// HTTP server for Streamable HTTP transport
 	httpServer *http.Server
+
+	// Network listener (tracks actual bound port when using port 0)
+	listener   net.Listener
+	listenerMu sync.RWMutex
 
 	// Router for forwarding requests to backends
 	router router.Router
@@ -234,13 +240,24 @@ func (s *Server) Start(ctx context.Context) error {
 		MaxHeaderBytes:    defaultMaxHeaderBytes,
 	}
 
-	logger.Infof("Starting Virtual MCP Server at %s%s", addr, s.config.EndpointPath)
-	logger.Infof("Health endpoints available at %s/health and %s/ping", addr, addr)
+	// Create listener (allows port 0 to bind to random available port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to create listener: %w", err)
+	}
+
+	s.listenerMu.Lock()
+	s.listener = listener
+	s.listenerMu.Unlock()
+
+	actualAddr := listener.Addr().String()
+	logger.Infof("Starting Virtual MCP Server at %s%s", actualAddr, s.config.EndpointPath)
+	logger.Infof("Health endpoints available at %s/health and %s/ping", actualAddr, actualAddr)
 
 	// Start server in background
 	errCh := make(chan error, 1)
 	go func() {
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("HTTP server error: %w", err)
 		}
 	}()
@@ -272,6 +289,18 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
+	// Close listener
+	s.listenerMu.Lock()
+	listener := s.listener
+	s.listener = nil
+	s.listenerMu.Unlock()
+
+	if listener != nil {
+		if err := listener.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close listener: %w", err))
+		}
+	}
+
 	// Stop session manager
 	if s.sessionManager != nil {
 		if err := s.sessionManager.Stop(); err != nil {
@@ -288,8 +317,15 @@ func (s *Server) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Address returns the server's listen address.
+// Address returns the server's actual listen address.
+// If the server is started with port 0, this returns the actual bound port.
 func (s *Server) Address() string {
+	s.listenerMu.RLock()
+	defer s.listenerMu.RUnlock()
+
+	if s.listener != nil {
+		return s.listener.Addr().String()
+	}
 	return fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 }
 

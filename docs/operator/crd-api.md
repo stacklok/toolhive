@@ -21,6 +21,8 @@ Package v1alpha1 contains API Schema definitions for the toolhive v1alpha1 API g
 - [MCPServerList](#mcpserverlist)
 - [MCPToolConfig](#mcptoolconfig)
 - [MCPToolConfigList](#mcptoolconfiglist)
+- [VirtualMCPCompositeToolDefinition](#virtualmcpcompositetooldefinition)
+- [VirtualMCPCompositeToolDefinitionList](#virtualmcpcompositetooldefinitionlist)
 - [VirtualMCPServer](#virtualmcpserver)
 - [VirtualMCPServerList](#virtualmcpserverlist)
 
@@ -82,6 +84,8 @@ _Appears in:_
 | `message` _string_ | Message provides additional information about the API status |  |  |
 | `endpoint` _string_ | Endpoint is the URL where the API is accessible |  |  |
 | `readySince` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | ReadySince is the timestamp when the API became ready |  |  |
+
+
 
 
 #### AggregationConfig
@@ -194,6 +198,22 @@ _Appears in:_
 | `timeout` _string_ | Timeout is the duration to wait before attempting to close the circuit | 60s |  |
 
 
+#### CompositeToolDefinitionRef
+
+
+
+CompositeToolDefinitionRef references a VirtualMCPCompositeToolDefinition resource
+
+
+
+_Appears in:_
+- [VirtualMCPServerSpec](#virtualmcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the VirtualMCPCompositeToolDefinition resource in the same namespace |  | Required: \{\} <br /> |
+
+
 #### CompositeToolSpec
 
 
@@ -302,6 +322,8 @@ _Appears in:_
 | `status` _string_ | Status is the current status of the backend |  | Enum: [ready degraded unavailable] <br /> |
 | `lastHealthCheck` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastHealthCheck is the timestamp of the last health check |  |  |
 | `url` _string_ | URL is the URL of the backend MCPServer |  |  |
+
+
 
 
 #### EnvVar
@@ -1308,6 +1330,7 @@ ParameterSpec defines a parameter for a composite tool
 
 _Appears in:_
 - [CompositeToolSpec](#compositetoolspec)
+- [VirtualMCPCompositeToolDefinitionSpec](#virtualmcpcompositetooldefinitionspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1478,6 +1501,26 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `limits` _[ResourceList](#resourcelist)_ | Limits describes the maximum amount of compute resources allowed |  |  |
 | `requests` _[ResourceList](#resourcelist)_ | Requests describes the minimum amount of compute resources required |  |  |
+
+
+#### RetryPolicy
+
+
+
+RetryPolicy defines retry behavior for workflow steps
+
+
+
+_Appears in:_
+- [AdvancedWorkflowStep](#advancedworkflowstep)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `maxRetries` _integer_ | MaxRetries is the maximum number of retry attempts | 3 | Maximum: 10 <br />Minimum: 1 <br /> |
+| `backoffStrategy` _string_ | BackoffStrategy defines the backoff strategy<br />- fixed: Fixed delay between retries<br />- exponential: Exponential backoff | exponential | Enum: [fixed exponential] <br /> |
+| `initialDelay` _string_ | InitialDelay is the initial delay before first retry | 1s | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m))+$` <br /> |
+| `maxDelay` _string_ | MaxDelay is the maximum delay between retries | 30s | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m))+$` <br /> |
+| `retryableErrors` _string array_ | RetryableErrors defines which errors should trigger retry<br />If empty, all errors are retryable<br />Supports regex patterns |  |  |
 
 
 #### SecretKeyRef
@@ -1746,6 +1789,110 @@ _Appears in:_
 | `description` _string_ | Description is the redefined description of the tool |  |  |
 
 
+#### ValidationStatus
+
+_Underlying type:_ _string_
+
+ValidationStatus represents the validation state of a workflow
+
+_Validation:_
+- Enum: [Valid Invalid Unknown]
+
+_Appears in:_
+- [VirtualMCPCompositeToolDefinitionStatus](#virtualmcpcompositetooldefinitionstatus)
+
+| Field | Description |
+| --- | --- |
+| `Valid` | ValidationStatusValid indicates the workflow is valid<br /> |
+| `Invalid` | ValidationStatusInvalid indicates the workflow has validation errors<br /> |
+| `Unknown` | ValidationStatusUnknown indicates validation hasn't been performed yet<br /> |
+
+
+#### VirtualMCPCompositeToolDefinition
+
+
+
+VirtualMCPCompositeToolDefinition is the Schema for the virtualmcpcompositetooldefinitions API
+VirtualMCPCompositeToolDefinition defines reusable composite workflows that can be referenced
+by multiple VirtualMCPServer instances
+
+
+
+_Appears in:_
+- [VirtualMCPCompositeToolDefinitionList](#virtualmcpcompositetooldefinitionlist)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `VirtualMCPCompositeToolDefinition` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[VirtualMCPCompositeToolDefinitionSpec](#virtualmcpcompositetooldefinitionspec)_ |  |  |  |
+| `status` _[VirtualMCPCompositeToolDefinitionStatus](#virtualmcpcompositetooldefinitionstatus)_ |  |  |  |
+
+
+#### VirtualMCPCompositeToolDefinitionList
+
+
+
+VirtualMCPCompositeToolDefinitionList contains a list of VirtualMCPCompositeToolDefinition
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `VirtualMCPCompositeToolDefinitionList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  |  |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[VirtualMCPCompositeToolDefinition](#virtualmcpcompositetooldefinition) array_ |  |  |  |
+
+
+#### VirtualMCPCompositeToolDefinitionSpec
+
+
+
+VirtualMCPCompositeToolDefinitionSpec defines the desired state of VirtualMCPCompositeToolDefinition
+
+
+
+_Appears in:_
+- [VirtualMCPCompositeToolDefinition](#virtualmcpcompositetooldefinition)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the workflow name exposed as a composite tool |  | MaxLength: 64 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$` <br />Required: \{\} <br /> |
+| `description` _string_ | Description is a human-readable description of the workflow |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `parameters` _object (keys:string, values:[ParameterSpec](#parameterspec))_ | Parameters defines the input parameter schema for the workflow<br />Each key is a parameter name, each value is the parameter specification |  |  |
+| `steps` _[WorkflowStep](#workflowstep) array_ | Steps defines the workflow step definitions<br />Steps are executed sequentially in Phase 1<br />Phase 2 will support DAG execution via dependsOn |  | MinItems: 1 <br />Required: \{\} <br /> |
+| `timeout` _string_ | Timeout is the overall workflow timeout<br />Defaults to 30m if not specified | 30m | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m\|h))+$` <br /> |
+| `failureMode` _string_ | FailureMode defines the failure handling strategy<br />- abort: Stop execution on first failure (default)<br />- continue: Continue executing remaining steps<br />- best_effort: Try all steps, report partial success | abort | Enum: [abort continue best_effort] <br /> |
+
+
+#### VirtualMCPCompositeToolDefinitionStatus
+
+
+
+VirtualMCPCompositeToolDefinitionStatus defines the observed state of VirtualMCPCompositeToolDefinition
+
+
+
+_Appears in:_
+- [VirtualMCPCompositeToolDefinition](#virtualmcpcompositetooldefinition)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `validationStatus` _[ValidationStatus](#validationstatus)_ | ValidationStatus indicates the validation state of the workflow<br />- Valid: Workflow structure is valid<br />- Invalid: Workflow has validation errors |  | Enum: [Valid Invalid Unknown] <br /> |
+| `validationErrors` _string array_ | ValidationErrors contains validation error messages if ValidationStatus is Invalid |  |  |
+| `referencingVirtualServers` _string array_ | ReferencingVirtualServers lists VirtualMCPServer resources that reference this workflow<br />This helps track which servers need to be reconciled when this workflow changes |  |  |
+| `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this VirtualMCPCompositeToolDefinition<br />It corresponds to the resource's generation, which is updated on mutation by the API Server |  |  |
+| `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the workflow's state |  |  |
+
+
 #### VirtualMCPServer
 
 
@@ -1827,6 +1974,7 @@ _Appears in:_
 | `outgoingAuth` _[OutgoingAuthConfig](#outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend MCPServers |  |  |
 | `aggregation` _[AggregationConfig](#aggregationconfig)_ | Aggregation defines tool aggregation and conflict resolution strategies |  |  |
 | `compositeTools` _[CompositeToolSpec](#compositetoolspec) array_ | CompositeTools defines inline composite tool definitions<br />For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead |  |  |
+| `compositeToolRefs` _[CompositeToolDefinitionRef](#compositetooldefinitionref) array_ | CompositeToolRefs references VirtualMCPCompositeToolDefinition resources<br />for complex, reusable workflows |  |  |
 | `tokenCache` _[TokenCacheConfig](#tokencacheconfig)_ | TokenCache configures token caching behavior |  |  |
 | `operational` _[OperationalConfig](#operationalconfig)_ | Operational defines operational settings like timeouts and health checks |  |  |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br /> |
@@ -1883,6 +2031,7 @@ WorkflowStep defines a step in a composite tool workflow
 
 _Appears in:_
 - [CompositeToolSpec](#compositetoolspec)
+- [VirtualMCPCompositeToolDefinitionSpec](#virtualmcpcompositetooldefinitionspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |

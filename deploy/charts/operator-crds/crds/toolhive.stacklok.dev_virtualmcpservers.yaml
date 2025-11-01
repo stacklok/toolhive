@@ -156,6 +156,22 @@ spec:
                       type: object
                     type: array
                 type: object
+              compositeToolRefs:
+                description: |-
+                  CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
+                  for complex, reusable workflows
+                items:
+                  description: CompositeToolDefinitionRef references a VirtualMCPCompositeToolDefinition
+                    resource
+                  properties:
+                    name:
+                      description: Name is the name of the VirtualMCPCompositeToolDefinition
+                        resource in the same namespace
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
               compositeTools:
                 description: |-
                   CompositeTools defines inline composite tool definitions

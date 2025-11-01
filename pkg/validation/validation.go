@@ -9,10 +9,10 @@ import (
 	"golang.org/x/net/http/httpguts"
 )
 
-var validGroupNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-\s]+$`)
+var validGroupNameRegex = regexp.MustCompile(`^[a-z0-9_\-\s]+$`)
 
 // ValidateGroupName validates that a group name only contains allowed characters:
-// alphanumeric, underscore, dash, and space.
+// lowercase alphanumeric, underscore, dash, and space.
 // It also enforces no leading/trailing/consecutive spaces and disallows null bytes.
 func ValidateGroupName(name string) error {
 	if name == "" || strings.TrimSpace(name) == "" {
@@ -24,9 +24,14 @@ func ValidateGroupName(name string) error {
 		return fmt.Errorf("group name cannot contain null bytes")
 	}
 
+	// Enforce lowercase-only group names
+	if name != strings.ToLower(name) {
+		return fmt.Errorf("group name must be lowercase")
+	}
+
 	// Validate characters
 	if !validGroupNameRegex.MatchString(name) {
-		return fmt.Errorf("group name can only contain alphanumeric characters, underscores, dashes, and spaces: %q", name)
+		return fmt.Errorf("group name can only contain lowercase alphanumeric characters, underscores, dashes, and spaces: %q", name)
 	}
 
 	// Check for leading/trailing whitespace

@@ -9,9 +9,16 @@
 // registered at runtime.
 package auth
 
+//go:generate mockgen -destination=mocks/mock_token_authenticator.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/auth TokenAuthenticator
+//go:generate mockgen -destination=mocks/mock_strategy.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/auth Strategy
+
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // IncomingAuthenticator handles authentication for clients connecting to the virtual MCP server.
@@ -78,6 +85,10 @@ type Identity struct {
 	Email string
 
 	// Groups are the groups this identity belongs to.
+	//
+	// NOTE: This field is intentionally NOT populated by OIDCIncomingAuthenticator.
+	// Authorization logic MUST extract groups from the Claims map, as group claim
+	// names vary by provider (e.g., "groups", "roles", "cognito:groups").
 	Groups []string
 
 	// Claims contains additional claims from the auth token.
@@ -91,6 +102,71 @@ type Identity struct {
 
 	// Metadata stores additional identity information.
 	Metadata map[string]string
+}
+
+// String returns a string representation of the Identity with sensitive fields redacted.
+// This prevents accidental token leakage when the Identity is logged or printed.
+func (i *Identity) String() string {
+	if i == nil {
+		return "<nil>"
+	}
+
+	token := "REDACTED"
+	if i.Token == "" {
+		token = "<empty>"
+	}
+
+	return fmt.Sprintf("Identity{Subject:%q, Name:%q, Email:%q, Groups:%v, Token:%s, TokenType:%q}",
+		i.Subject, i.Name, i.Email, i.Groups, token, i.TokenType)
+}
+
+// MarshalJSON implements json.Marshaler to redact sensitive fields during JSON serialization.
+// This prevents accidental token leakage in structured logs, API responses, or audit logs.
+func (i *Identity) MarshalJSON() ([]byte, error) {
+	if i == nil {
+		return []byte("null"), nil
+	}
+
+	// Create a safe representation with lowercase field names and redacted token
+	type SafeIdentity struct {
+		Subject   string            `json:"subject"`
+		Name      string            `json:"name"`
+		Email     string            `json:"email"`
+		Groups    []string          `json:"groups"`
+		Claims    map[string]any    `json:"claims"`
+		Token     string            `json:"token"`
+		TokenType string            `json:"tokenType"`
+		Metadata  map[string]string `json:"metadata"`
+	}
+
+	token := i.Token
+	if token != "" {
+		token = "REDACTED"
+	}
+
+	return json.Marshal(&SafeIdentity{
+		Subject:   i.Subject,
+		Name:      i.Name,
+		Email:     i.Email,
+		Groups:    i.Groups,
+		Claims:    i.Claims,
+		Token:     token,
+		TokenType: i.TokenType,
+		Metadata:  i.Metadata,
+	})
+}
+
+// TokenAuthenticator validates JWT tokens and provides HTTP middleware for authentication.
+// This interface abstracts the token validation functionality from pkg/auth to enable
+// testing with mocks while the concrete *auth.TokenValidator implementation satisfies
+// this interface in production.
+type TokenAuthenticator interface {
+	// ValidateToken validates a token string and returns the claims.
+	ValidateToken(ctx context.Context, tokenString string) (jwt.MapClaims, error)
+
+	// Middleware returns an HTTP middleware function that validates tokens
+	// from the Authorization header and injects claims into the request context.
+	Middleware(next http.Handler) http.Handler
 }
 
 // Authorizer handles authorization decisions.

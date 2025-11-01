@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-10-31T00:17:57Z",
+  "last_updated": "2025-11-01T00:19:51Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1334,6 +1334,49 @@
         "8000"
       ]
     },
+    "database-toolbox": {
+      "description": "Database operations MCP server with connection pooling, authentication, and observability",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "set_during_runtime"
+      ],
+      "metadata": {
+        "stars": 10919,
+        "pulls": 2408,
+        "last_updated": "2025-10-14T02:29:24Z"
+      },
+      "repository_url": "https://github.com/googleapis/genai-toolbox",
+      "tags": [
+        "database",
+        "sql",
+        "postgresql",
+        "mysql",
+        "sqlite",
+        "mongodb",
+        "redis",
+        "connection-pooling",
+        "authentication",
+        "observability",
+        "toolbox",
+        "genai",
+        "mcp-server"
+      ],
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.18.0",
+      "target_port": 5000,
+      "permissions": {
+        "network": {
+          "outbound": {
+            "insecure_allow_all": true
+          }
+        }
+      },
+      "args": [
+        "--address",
+        "0.0.0.0"
+      ]
+    },
     "dolt": {
       "description": "Git-like version control for SQL databases with branching, merging, and data versioning",
       "tier": "Official",
@@ -1772,9 +1815,9 @@
       ]
     },
     "genai-toolbox": {
-      "description": "Database operations MCP server with connection pooling, authentication, and observability",
+      "description": "Will be removed soon. Please use database-toolbox instead.",
       "tier": "Official",
-      "status": "Active",
+      "status": "Deprecated",
       "transport": "sse",
       "tools": [
         "set_during_runtime"
@@ -3022,9 +3065,9 @@
         "refine_ui"
       ],
       "metadata": {
-        "stars": 3791,
+        "stars": 3861,
         "pulls": 128,
-        "last_updated": "2025-10-12T02:30:54Z"
+        "last_updated": "2025-10-31T02:32:12Z"
       },
       "repository_url": "https://github.com/21st-dev/magic-mcp",
       "tags": [
@@ -3078,9 +3121,9 @@
         "run_chdb_select_query"
       ],
       "metadata": {
-        "stars": 556,
+        "stars": 576,
         "pulls": 81,
-        "last_updated": "2025-10-13T02:32:36Z"
+        "last_updated": "2025-10-31T02:32:13Z"
       },
       "repository_url": "https://github.com/ClickHouse/mcp-clickhouse",
       "tags": [
@@ -3168,9 +3211,9 @@
         "dynamic_tools_from_ide"
       ],
       "metadata": {
-        "stars": 925,
+        "stars": 924,
         "pulls": 77,
-        "last_updated": "2025-10-12T02:30:55Z"
+        "last_updated": "2025-10-31T02:32:12Z"
       },
       "repository_url": "https://github.com/JetBrains/mcp-jetbrains",
       "tags": [
@@ -3230,9 +3273,9 @@
         "enable_features"
       ],
       "metadata": {
-        "stars": 740,
+        "stars": 773,
         "pulls": 141,
-        "last_updated": "2025-10-12T02:30:55Z"
+        "last_updated": "2025-10-31T02:32:12Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -3297,9 +3340,9 @@
         "write_neo4j_cypher"
       ],
       "metadata": {
-        "stars": 742,
+        "stars": 773,
         "pulls": 91,
-        "last_updated": "2025-10-13T02:32:36Z"
+        "last_updated": "2025-10-31T02:32:13Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [

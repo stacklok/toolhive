@@ -36,6 +36,9 @@ const (
 	WorkloadStatusRemoving WorkloadStatus = "removing"
 	// WorkloadStatusUnknown indicates that the workload status is unknown.
 	WorkloadStatusUnknown WorkloadStatus = "unknown"
+	// WorkloadStatusUnauthenticated indicates that the workload is running but
+	// cannot authenticate with the remote MCP server (e.g., expired refresh token).
+	WorkloadStatusUnauthenticated WorkloadStatus = "unauthenticated"
 )
 
 // ContainerInfo represents information about a container

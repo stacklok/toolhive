@@ -37,6 +37,7 @@ A **workload** is the fundamental deployment unit in ToolHive. It represents eve
 - `removing` - Workload is being deleted
 - `error` - Workload encountered an error
 - `unhealthy` - Workload is running but unhealthy
+- `unauthenticated` - Remote workload cannot authenticate (expired tokens)
 
 **Implementation:**
 - Interface: `pkg/workloads/manager.go`

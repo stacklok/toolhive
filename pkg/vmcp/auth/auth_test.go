@@ -14,11 +14,11 @@ func TestIdentity_String(t *testing.T) {
 	testCases := []struct {
 		name        string
 		identity    *Identity
-		contains    []string
+		expected    string
 		notContains []string
 	}{
 		{
-			name: "redacts_token",
+			name: "shows_subject_and_redacts_token",
 			identity: &Identity{
 				Subject:   "user@example.com",
 				Name:      "Test User",
@@ -27,30 +27,25 @@ func TestIdentity_String(t *testing.T) {
 				Token:     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.sensitive-token-data",
 				TokenType: "Bearer",
 			},
-			contains: []string{
-				"Subject:\"user@example.com\"",
-				"Name:\"Test User\"",
-				"Token:REDACTED",
-				"TokenType:\"Bearer\"",
-			},
+			expected: `Identity{Subject:"user@example.com"}`,
 			notContains: []string{
 				"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
 				"sensitive-token-data",
 			},
 		},
 		{
-			name: "shows_empty_token",
+			name: "shows_subject_only",
 			identity: &Identity{
 				Subject: "user@example.com",
 				Token:   "",
 			},
-			contains:    []string{"Token:<empty>"},
-			notContains: []string{"REDACTED"},
+			expected:    `Identity{Subject:"user@example.com"}`,
+			notContains: []string{},
 		},
 		{
 			name:        "handles_nil_identity",
 			identity:    nil,
-			contains:    []string{"<nil>"},
+			expected:    "<nil>",
 			notContains: []string{},
 		},
 	}
@@ -61,9 +56,7 @@ func TestIdentity_String(t *testing.T) {
 
 			result := tc.identity.String()
 
-			for _, expected := range tc.contains {
-				assert.Contains(t, result, expected)
-			}
+			assert.Equal(t, tc.expected, result)
 
 			for _, forbidden := range tc.notContains {
 				assert.NotContains(t, result, forbidden)

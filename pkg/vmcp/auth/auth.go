@@ -92,13 +92,7 @@ func (i *Identity) String() string {
 		return "<nil>"
 	}
 
-	token := "REDACTED"
-	if i.Token == "" {
-		token = "<empty>"
-	}
-
-	return fmt.Sprintf("Identity{Subject:%q, Name:%q, Email:%q, Groups:%v, Token:%s, TokenType:%q}",
-		i.Subject, i.Name, i.Email, i.Groups, token, i.TokenType)
+	return fmt.Sprintf("Identity{Subject:%q}", i.Subject)
 }
 
 // MarshalJSON implements json.Marshaler to redact sensitive fields during JSON serialization.

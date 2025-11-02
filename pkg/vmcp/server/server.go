@@ -18,6 +18,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -238,9 +239,11 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/ping", s.handleHealth)
 
-	// Optional auth info endpoint (unauthenticated, exposes OIDC discovery info)
-	if s.config.AuthInfoHandler != nil {
-		mux.Handle("/.well-known/oauth-protected-resource", s.config.AuthInfoHandler)
+	// Optional .well-known discovery endpoints (unauthenticated, RFC 9728 compliant)
+	// Handles /.well-known/oauth-protected-resource and subpaths (e.g., /mcp)
+	if wellKnownHandler := auth.NewWellKnownHandler(s.config.AuthInfoHandler); wellKnownHandler != nil {
+		mux.Handle("/.well-known/", wellKnownHandler)
+		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/")
 	}
 
 	// MCP endpoint - apply authentication if configured

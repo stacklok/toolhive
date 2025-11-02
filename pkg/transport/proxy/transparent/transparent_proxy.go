@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/session"
@@ -354,29 +355,19 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		mux.Handle("/metrics", p.prometheusHandler)
 		logger.Info("Prometheus metrics endpoint enabled at /metrics")
 	}
+
+	// Add .well-known discovery endpoints if auth info handler is provided (no middlewares, RFC 9728 compliant)
+	// Handles /.well-known/oauth-protected-resource and subpaths (e.g., /mcp)
+	if wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler); wellKnownHandler != nil {
+		mux.Handle("/.well-known/", wellKnownHandler)
+		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/ (no middlewares)")
+	}
+
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", p.host, p.port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 	p.listener = ln
-
-	// Add .well-known path space handler if auth info handler is provided (no middlewares)
-	if p.authInfoHandler != nil {
-		// Create a handler that routes .well-known requests
-		wellKnownHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Per RFC 9728, match /.well-known/oauth-protected-resource and any subpaths
-			// e.g., /.well-known/oauth-protected-resource/mcp
-			if strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource") {
-				p.authInfoHandler.ServeHTTP(w, r)
-			} else {
-				http.NotFound(w, r)
-			}
-		})
-		mux.Handle("/.well-known/", wellKnownHandler)
-		logger.Info("Well-known discovery endpoints enabled at /.well-known/ (no middlewares)")
-	} else {
-		logger.Info("No auth info handler provided; skipping /.well-known/ endpoint")
-	}
 
 	// Create the server
 	p.server = &http.Server{

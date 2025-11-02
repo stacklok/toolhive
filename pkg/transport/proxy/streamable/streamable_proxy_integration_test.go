@@ -31,7 +31,7 @@ func getFreePort(t *testing.T) int {
 func TestHTTPRequestIgnoresNotifications(t *testing.T) {
 	// Get an available port dynamically
 	port := getFreePort(t)
-	proxy := NewHTTPProxy("localhost", port, "test-container", nil)
+	proxy := NewHTTPProxy("localhost", port, nil)
 	ctx := context.Background()
 
 	// Start the proxy server

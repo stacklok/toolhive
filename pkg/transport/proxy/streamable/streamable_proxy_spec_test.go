@@ -19,7 +19,7 @@ import (
 func startProxyWithBackend(t *testing.T, port int) (*HTTPProxy, context.Context, context.CancelFunc) {
 	t.Helper()
 
-	proxy := NewHTTPProxy("127.0.0.1", port, "test-container", nil)
+	proxy := NewHTTPProxy("127.0.0.1", port, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	require.NoError(t, proxy.Start(ctx), "proxy start")
@@ -53,7 +53,7 @@ func TestGETReturns405(t *testing.T) {
 	t.Parallel()
 
 	const port = 8101
-	proxy := NewHTTPProxy("127.0.0.1", port, "test-container", nil)
+	proxy := NewHTTPProxy("127.0.0.1", port, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -140,7 +140,7 @@ func TestPOSTNotificationOnlyAccepted(t *testing.T) {
 
 	const port = 8104
 	// No backend needed for notification-only submission, but starting is fine.
-	proxy := NewHTTPProxy("127.0.0.1", port, "test-container", nil)
+	proxy := NewHTTPProxy("127.0.0.1", port, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, proxy.Start(ctx), "proxy start")
@@ -168,7 +168,7 @@ func TestBatchOnlyNotificationsAccepted(t *testing.T) {
 	t.Parallel()
 
 	const port = 8105
-	proxy := NewHTTPProxy("127.0.0.1", port, "test-container", nil)
+	proxy := NewHTTPProxy("127.0.0.1", port, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	require.NoError(t, proxy.Start(ctx), "proxy start")

@@ -37,10 +37,9 @@ import (
 //nolint:revive // Intentionally named TransparentProxy despite package name
 type TransparentProxy struct {
 	// Basic configuration
-	host          string
-	port          int
-	containerName string
-	targetURI     string
+	host      string
+	port      int
+	targetURI string
 
 	// HTTP server
 	server *http.Server
@@ -83,7 +82,6 @@ type TransparentProxy struct {
 func NewTransparentProxy(
 	host string,
 	port int,
-	containerName string,
 	targetURI string,
 	prometheusHandler http.Handler,
 	authInfoHandler http.Handler,
@@ -95,7 +93,6 @@ func NewTransparentProxy(
 	proxy := &TransparentProxy{
 		host:              host,
 		port:              port,
-		containerName:     containerName,
 		targetURI:         targetURI,
 		middlewares:       middlewares,
 		shutdownCh:        make(chan struct{}),
@@ -128,7 +125,7 @@ func (p *TransparentProxy) setServerInitialized() {
 		p.mutex.Lock()
 		p.IsServerInitialized = true
 		p.mutex.Unlock()
-		logger.Infof("Server was initialized successfully for %s", p.containerName)
+		logger.Infof("Server was initialized successfully for %s", p.targetURI)
 	}
 }
 
@@ -219,7 +216,7 @@ func (t *tracingTransport) detectInitialize(body []byte) bool {
 		return false
 	}
 	if rpc.Method == "initialize" {
-		logger.Infof("Detected initialize method call for %s", t.p.containerName)
+		logger.Infof("Detected initialize method call for %s", t.p.targetURI)
 		return true
 	}
 	return false
@@ -419,24 +416,24 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 	for {
 		select {
 		case <-parentCtx.Done():
-			logger.Infof("Context cancelled, stopping health monitor for %s", p.containerName)
+			logger.Infof("Context cancelled, stopping health monitor for %s", p.targetURI)
 			return
 		case <-p.shutdownCh:
-			logger.Infof("Shutdown initiated, stopping health monitor for %s", p.containerName)
+			logger.Infof("Shutdown initiated, stopping health monitor for %s", p.targetURI)
 			return
 		case <-ticker.C:
 			// Perform health check only if mcp server has been initialized
 			if p.IsServerInitialized {
 				alive := p.healthChecker.CheckHealth(parentCtx)
 				if alive.Status != healthcheck.StatusHealthy {
-					logger.Infof("Health check failed for %s; initiating proxy shutdown", p.containerName)
+					logger.Infof("Health check failed for %s; initiating proxy shutdown", p.targetURI)
 					if err := p.Stop(parentCtx); err != nil {
-						logger.Errorf("Failed to stop proxy for %s: %v", p.containerName, err)
+						logger.Errorf("Failed to stop proxy for %s: %v", p.targetURI, err)
 					}
 					return
 				}
 			} else {
-				logger.Infof("MCP server not initialized yet, skipping health check for %s", p.containerName)
+				logger.Infof("MCP server not initialized yet, skipping health check for %s", p.targetURI)
 			}
 		}
 	}
@@ -457,7 +454,7 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 			logger.Warnf("Error during proxy shutdown: %v", err)
 			return err
 		}
-		logger.Infof("Server for %s stopped successfully", p.containerName)
+		logger.Infof("Server for %s stopped successfully", p.targetURI)
 		p.server = nil
 	}
 

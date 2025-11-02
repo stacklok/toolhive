@@ -34,7 +34,6 @@ const (
 type HTTPProxy struct {
 	host              string
 	port              int
-	containerName     string
 	shutdownCh        chan struct{}
 	prometheusHandler http.Handler
 	middlewares       []types.NamedMiddleware
@@ -63,7 +62,6 @@ type HTTPProxy struct {
 func NewHTTPProxy(
 	host string,
 	port int,
-	containerName string,
 	prometheusHandler http.Handler,
 	middlewares ...types.NamedMiddleware,
 ) *HTTPProxy {
@@ -73,7 +71,6 @@ func NewHTTPProxy(
 	proxy := &HTTPProxy{
 		host:              host,
 		port:              port,
-		containerName:     containerName,
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
 		middlewares:       middlewares,
@@ -113,7 +110,7 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 	go p.dispatchResponses()
 
 	go func() {
-		logger.Infof("Streamable HTTP proxy started for container %s on port %d", p.containerName, p.port)
+		logger.Infof("Streamable HTTP proxy started on port %d", p.port)
 		logger.Infof("Streamable HTTP endpoint: http://%s:%d%s", p.host, p.port, StreamableHTTPEndpoint)
 		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Errorf("Streamable HTTP server error: %v", err)

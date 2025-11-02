@@ -15,12 +15,11 @@ import (
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestNewHTTPProxy(t *testing.T) {
-	proxy := NewHTTPProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPProxy("localhost", 8080, nil)
 
 	assert.NotNil(t, proxy)
 	assert.Equal(t, "localhost", proxy.host)
 	assert.Equal(t, 8080, proxy.port)
-	assert.Equal(t, "test-container", proxy.containerName)
 	assert.NotNil(t, proxy.messageCh)
 	assert.NotNil(t, proxy.responseCh)
 }
@@ -29,7 +28,7 @@ func TestNewHTTPProxy(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestProxyChannelCommunication(t *testing.T) {
-	proxy := NewHTTPProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPProxy("localhost", 8080, nil)
 	ctx := context.Background()
 
 	// Test that we can send a message to the destination
@@ -67,7 +66,7 @@ func TestProxyChannelCommunication(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestSendMessageToDestination(t *testing.T) {
-	proxy := NewHTTPProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPProxy("localhost", 8080, nil)
 
 	// Create a test message
 	msg, err := jsonrpc2.NewCall(jsonrpc2.StringID("test"), "test.method", nil)
@@ -90,7 +89,7 @@ func TestSendMessageToDestination(t *testing.T) {
 //
 //nolint:paralleltest // Test modifies shared proxy state
 func TestSendMessageToDestination_ChannelFull(t *testing.T) {
-	proxy := NewHTTPProxy("localhost", 8080, "test-container", nil)
+	proxy := NewHTTPProxy("localhost", 8080, nil)
 
 	// Fill the channel
 	for i := 0; i < 100; i++ {
@@ -109,7 +108,7 @@ func TestSendMessageToDestination_ChannelFull(t *testing.T) {
 //
 //nolint:paralleltest // Test starts/stops HTTP server
 func TestStartStop(t *testing.T) {
-	proxy := NewHTTPProxy("localhost", 0, "test-container", nil) // Use port 0 for auto-assignment
+	proxy := NewHTTPProxy("localhost", 0, nil) // Use port 0 for auto-assignment
 	ctx := context.Background()
 
 	// Start the proxy

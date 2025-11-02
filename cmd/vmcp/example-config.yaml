@@ -30,6 +30,7 @@ incoming_auth:
   #   client_id: "vmcp-client"
   #   client_secret_env: "VMCP_CLIENT_SECRET"
   #   audience: "vmcp"
+  #   resource: "http://localhost:4483/mcp"
   #   scopes: ["openid", "profile", "email"]
 
 # ===== OUTGOING AUTHENTICATION (Virtual MCP → Backends) =====

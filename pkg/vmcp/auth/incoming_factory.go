@@ -77,11 +77,16 @@ func newOIDCAuthMiddleware(
 
 	logger.Info("Creating OIDC incoming authentication middleware")
 
+	// Use Resource field if specified, otherwise fall back to Audience
+	if oidcCfg.Resource == "" {
+		logger.Warn("No Resource defined in OIDC configuration")
+	}
+
 	oidcConfig := &auth.TokenValidatorConfig{
 		Issuer:      oidcCfg.Issuer,
 		ClientID:    oidcCfg.ClientID,
 		Audience:    oidcCfg.Audience,
-		ResourceURL: oidcCfg.Audience,
+		ResourceURL: oidcCfg.Resource,
 	}
 
 	// Reuse pkg/auth.GetAuthenticationMiddleware for OIDC
@@ -90,8 +95,8 @@ func newOIDCAuthMiddleware(
 		return nil, nil, fmt.Errorf("failed to create OIDC authentication middleware: %w", err)
 	}
 
-	logger.Infof("OIDC authentication configured (issuer: %s, client_id: %s)",
-		oidcCfg.Issuer, oidcCfg.ClientID)
+	logger.Infof("OIDC authentication configured (issuer: %s, client_id: %s, resource: %s)",
+		oidcCfg.Issuer, oidcCfg.ClientID, oidcCfg.Resource)
 
 	return authMw, authInfo, nil
 }

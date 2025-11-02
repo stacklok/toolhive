@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-01T00:19:51Z",
+  "last_updated": "2025-11-02T00:19:12Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -916,9 +916,9 @@
         "browserbase_stagehand_observe"
       ],
       "metadata": {
-        "stars": 2712,
+        "stars": 2757,
         "pulls": 133,
-        "last_updated": "2025-10-14T02:29:23Z"
+        "last_updated": "2025-11-01T02:32:39Z"
       },
       "repository_url": "https://github.com/browserbase/mcp-server-browserbase",
       "tags": [
@@ -2370,9 +2370,9 @@
         "webSearch"
       ],
       "metadata": {
-        "stars": 365,
+        "stars": 369,
         "pulls": 109,
-        "last_updated": "2025-10-13T02:32:37Z"
+        "last_updated": "2025-11-01T02:32:38Z"
       },
       "repository_url": "https://github.com/graphlit/graphlit-mcp-server",
       "tags": [
@@ -3417,9 +3417,9 @@
         "list_memories"
       ],
       "metadata": {
-        "stars": 742,
+        "stars": 777,
         "pulls": 105,
-        "last_updated": "2025-10-13T02:32:37Z"
+        "last_updated": "2025-11-01T02:32:38Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -3488,9 +3488,9 @@
         "install_server"
       ],
       "metadata": {
-        "stars": 0,
+        "stars": 3,
         "pulls": 0,
-        "last_updated": "2025-10-13T02:32:37Z"
+        "last_updated": "2025-11-01T02:32:39Z"
       },
       "repository_url": "https://github.com/StacklokLabs/mcp-optimizer",
       "tags": [
@@ -3745,9 +3745,9 @@
         "provision_neon_auth"
       ],
       "metadata": {
-        "stars": 485,
+        "stars": 500,
         "pulls": 55,
-        "last_updated": "2025-10-14T02:29:22Z"
+        "last_updated": "2025-11-01T02:32:39Z"
       },
       "repository_url": "https://github.com/neondatabase-labs/mcp-server-neon",
       "tags": [
@@ -4416,7 +4416,7 @@
         "browser",
         "navigate"
       ],
-      "image": "mcr.microsoft.com/playwright/mcp:v0.0.44",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.45",
       "target_port": 8931,
       "permissions": {
         "network": {
@@ -4964,13 +4964,13 @@
         "execute_sql",
         "generate_typescript_types",
         "get_advisors",
-        "get_anon_key",
         "get_cost",
         "get_edge_function",
         "get_logs",
         "get_organization",
         "get_project",
         "get_project_url",
+        "get_publishable_keys",
         "list_branches",
         "list_edge_functions",
         "list_extensions",
@@ -4998,7 +4998,7 @@
         "baas",
         "postgresql"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/supabase-mcp-server:0.5.7",
+      "image": "ghcr.io/stacklok/dockyard/npx/supabase-mcp-server:0.5.9",
       "permissions": {
         "network": {
           "outbound": {

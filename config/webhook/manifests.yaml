@@ -10,6 +10,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-toolhive-stacklok-dev-v1alpha1-virtualmcpcompositetooldefinition
+  failurePolicy: Fail
+  name: vvirtualmcpcompositetooldefinition.kb.io
+  rules:
+  - apiGroups:
+    - toolhive.stacklok.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - virtualmcpcompositetooldefinitions
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-toolhive-stacklok-dev-v1alpha1-virtualmcpserver
   failurePolicy: Fail
   name: vvirtualmcpserver.kb.io

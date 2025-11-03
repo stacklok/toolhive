@@ -76,7 +76,8 @@ func TestDefaultClientFactory_UnsupportedTransport(t *testing.T) {
 				TransportType: tc.transportType,
 			}
 
-			_, err := defaultClientFactory(context.Background(), target)
+			backendClient := NewHTTPBackendClient(nil).(*httpBackendClient)
+			_, err := backendClient.defaultClientFactory(context.Background(), target)
 
 			require.Error(t, err)
 			assert.ErrorIs(t, err, vmcp.ErrUnsupportedTransport)

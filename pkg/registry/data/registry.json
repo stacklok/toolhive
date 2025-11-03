@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-02T00:19:12Z",
+  "last_updated": "2025-11-03T00:19:04Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -696,9 +696,9 @@
         "workbooks"
       ],
       "metadata": {
-        "stars": 1166,
+        "stars": 1170,
         "pulls": 1809,
-        "last_updated": "2025-10-15T02:30:46Z"
+        "last_updated": "2025-11-02T02:34:09Z"
       },
       "repository_url": "https://github.com/Azure/azure-mcp",
       "tags": [
@@ -1343,9 +1343,9 @@
         "set_during_runtime"
       ],
       "metadata": {
-        "stars": 10919,
+        "stars": 11251,
         "pulls": 2408,
-        "last_updated": "2025-10-14T02:29:24Z"
+        "last_updated": "2025-11-02T02:34:09Z"
       },
       "repository_url": "https://github.com/googleapis/genai-toolbox",
       "tags": [
@@ -1823,9 +1823,9 @@
         "set_during_runtime"
       ],
       "metadata": {
-        "stars": 10919,
+        "stars": 11251,
         "pulls": 2408,
-        "last_updated": "2025-10-14T02:29:24Z"
+        "last_updated": "2025-11-02T02:34:09Z"
       },
       "repository_url": "https://github.com/googleapis/genai-toolbox",
       "tags": [
@@ -3594,9 +3594,9 @@
         "box_metadata_template_create_tool"
       ],
       "metadata": {
-        "stars": 81,
+        "stars": 82,
         "pulls": 52,
-        "last_updated": "2025-10-14T02:29:24Z"
+        "last_updated": "2025-11-02T02:34:09Z"
       },
       "repository_url": "https://github.com/box-community/mcp-server-box",
       "tags": [
@@ -5040,9 +5040,9 @@
         "tavily-map"
       ],
       "metadata": {
-        "stars": 829,
+        "stars": 880,
         "pulls": 80,
-        "last_updated": "2025-10-14T02:29:23Z"
+        "last_updated": "2025-11-02T02:34:09Z"
       },
       "repository_url": "https://github.com/tavily-ai/tavily-mcp",
       "tags": [
@@ -5611,6 +5611,31 @@
         "homepage": "https://modelcontextprotocol.io"
       },
       "url": "https://modelcontextprotocol.io/mcp"
+    },
+    "mermaid": {
+      "description": "The Mermaid MCP Server enables AI assistants to create, validate, and render Mermaid diagrams seamlessly",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "sse",
+      "tools": [
+        "validate_and_render_mermaid_diagram"
+      ],
+      "metadata": {
+        "stars": 0,
+        "pulls": 0,
+        "last_updated": "2025-10-31T22:51:30Z"
+      },
+      "tags": [
+        "remote",
+        "diagrams",
+        "visualization",
+        "mermaid"
+      ],
+      "custom_metadata": {
+        "author": "Mermaid",
+        "homepage": "https://docs.mermaidchart.com/ai/mcp-server"
+      },
+      "url": "https://mcp.mermaidchart.com/sse"
     },
     "monday": {
       "description": "Monday.com's official remote MCP server for project and workflow management",

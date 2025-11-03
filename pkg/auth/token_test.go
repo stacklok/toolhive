@@ -242,8 +242,8 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 
 	// Create a test handler
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Get the claims from the context using the proper key type
-		claims, ok := r.Context().Value(ClaimsContextKey{}).(jwt.MapClaims)
+		// Get the claims from the context using the helper function
+		claims, ok := GetClaimsFromContext(r.Context())
 		if !ok {
 			t.Errorf("Failed to get claims from context")
 			http.Error(w, "Failed to get claims from context", http.StatusInternalServerError)
@@ -1281,6 +1281,7 @@ func TestMiddleware_WWWAuthenticate_WithMockIntrospection(t *testing.T) {
 		case "good":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"active": true,
+				"sub":    "test-user",
 				"exp":    float64(time.Now().Add(60 * time.Second).Unix()),
 				"iss":    issuer,
 			})

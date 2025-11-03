@@ -819,8 +819,7 @@ func (v *TokenValidator) ValidateToken(ctx context.Context, tokenString string) 
 	return claims, nil
 }
 
-// ClaimsContextKey is the key used to store claims in the request context.
-type ClaimsContextKey struct{}
+// Note: ClaimsContextKey is now defined in context.go
 
 // buildWWWAuthenticate builds a RFC 6750 / RFC 9728 compliant value for the
 // WWW-Authenticate header. It always includes realm and, if set, resource_metadata.
@@ -864,7 +863,7 @@ func (v *TokenValidator) buildWWWAuthenticate(includeError bool, errDescription 
 	return "Bearer " + strings.Join(parts, ", ")
 }
 
-// Middleware creates an HTTP middleware that validates JWT tokens.
+// Middleware creates an HTTP middleware that validates JWT tokens and creates Identity.
 func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Extract the bearer token from the Authorization header
@@ -883,8 +882,16 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Add the claims to the request context using a proper key type
-		ctx := context.WithValue(r.Context(), ClaimsContextKey{}, claims)
+		// Convert claims to Identity
+		identity, err := claimsToIdentity(claims, tokenString)
+		if err != nil {
+			logger.Errorf("Failed to convert claims to identity: %v", err)
+			http.Error(w, "Invalid authentication claims", http.StatusUnauthorized)
+			return
+		}
+
+		// Add the Identity to the request context
+		ctx := WithIdentity(r.Context(), identity)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

@@ -113,7 +113,8 @@ func TestGetClaimsFromContext(t *testing.T) {
 		"iss": "test-issuer",
 		"aud": "test-audience",
 	}
-	ctx := context.WithValue(context.Background(), ClaimsContextKey{}, claims)
+	identity := &Identity{Subject: "testuser", Claims: claims}
+	ctx := WithIdentity(context.Background(), identity)
 
 	retrievedClaims, ok := GetClaimsFromContext(ctx)
 	require.True(t, ok, "Expected to retrieve claims from context")
@@ -181,7 +182,8 @@ func TestGetClaimsFromContextWithDifferentClaimTypes(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			ctx := context.WithValue(context.Background(), ClaimsContextKey{}, tc.claims)
+			identity := &Identity{Subject: "test-user", Claims: tc.claims}
+			ctx := WithIdentity(context.Background(), identity)
 			retrievedClaims, ok := GetClaimsFromContext(ctx)
 
 			require.True(t, ok, "Expected to retrieve claims from context")

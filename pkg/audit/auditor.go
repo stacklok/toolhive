@@ -315,26 +315,26 @@ func (*Auditor) getClientIP(r *http.Request) string {
 func (*Auditor) extractSubjects(r *http.Request) map[string]string {
 	subjects := make(map[string]string)
 
-	// Extract user information from JWT claims
-	if claims, ok := auth.GetClaimsFromContext(r.Context()); ok {
-		if sub, ok := claims["sub"].(string); ok && sub != "" {
-			subjects[SubjectKeyUserID] = sub
+	// Extract user information from Identity
+	if identity, ok := auth.IdentityFromContext(r.Context()); ok {
+		if identity.Subject != "" {
+			subjects[SubjectKeyUserID] = identity.Subject
 		}
 
-		if name, ok := claims["name"].(string); ok && name != "" {
-			subjects[SubjectKeyUser] = name
-		} else if preferredUsername, ok := claims["preferred_username"].(string); ok && preferredUsername != "" {
+		if identity.Name != "" {
+			subjects[SubjectKeyUser] = identity.Name
+		} else if preferredUsername, ok := identity.Claims["preferred_username"].(string); ok && preferredUsername != "" {
 			subjects[SubjectKeyUser] = preferredUsername
-		} else if email, ok := claims["email"].(string); ok && email != "" {
-			subjects[SubjectKeyUser] = email
+		} else if identity.Email != "" {
+			subjects[SubjectKeyUser] = identity.Email
 		}
 
 		// Add client information if available
-		if clientName, ok := claims["client_name"].(string); ok && clientName != "" {
+		if clientName, ok := identity.Claims["client_name"].(string); ok && clientName != "" {
 			subjects[SubjectKeyClientName] = clientName
 		}
 
-		if clientVersion, ok := claims["client_version"].(string); ok && clientVersion != "" {
+		if clientVersion, ok := identity.Claims["client_version"].(string); ok && clientVersion != "" {
 			subjects[SubjectKeyClientVersion] = clientVersion
 		}
 	}

@@ -130,7 +130,7 @@ func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (aut
 // defaultClientFactory creates mark3labs MCP clients for different transport types.
 func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
 	// Build transport chain: size limit → authentication → HTTP
-	var baseTransport http.RoundTripper = http.DefaultTransport
+	var baseTransport = http.DefaultTransport
 
 	// Resolve authentication strategy ONCE at client creation time
 	authStrategy, err := h.resolveAuthStrategy(target)

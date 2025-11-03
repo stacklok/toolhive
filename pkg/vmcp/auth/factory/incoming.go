@@ -1,4 +1,4 @@
-package auth
+package factory
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
+	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -59,7 +60,7 @@ func NewIncomingAuthMiddleware(
 	// Compose: AuthMiddleware → IdentityMiddleware
 	// All auth types create Claims in context; IdentityMiddleware converts Claims → Identity
 	composed := func(next http.Handler) http.Handler {
-		return baseAuthMiddleware(IdentityMiddleware(next))
+		return baseAuthMiddleware(vmcpauth.IdentityMiddleware(next))
 	}
 
 	return composed, authInfoHandler, nil

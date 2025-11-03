@@ -1,4 +1,4 @@
-package auth
+package factory
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -51,7 +52,7 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 
 				// Test that middleware creates identity
 				testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					identity, ok := IdentityFromContext(r.Context())
+					identity, ok := vmcpauth.IdentityFromContext(r.Context())
 					require.True(t, ok, "identity should be in context")
 					require.NotNil(t, identity, "identity should not be nil")
 					assert.NotEmpty(t, identity.Subject, "identity subject should not be empty")
@@ -80,7 +81,7 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 
 				// Test that middleware creates identity
 				testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					identity, ok := IdentityFromContext(r.Context())
+					identity, ok := vmcpauth.IdentityFromContext(r.Context())
 					require.True(t, ok, "identity should be in context")
 					require.NotNil(t, identity, "identity should not be nil")
 					assert.Equal(t, "anonymous", identity.Subject, "anonymous user should have 'anonymous' subject")

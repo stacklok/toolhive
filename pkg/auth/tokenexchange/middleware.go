@@ -295,13 +295,16 @@ func createTokenExchangeMiddleware(
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Get claims from the auth middleware
-			claims, ok := r.Context().Value(auth.ClaimsContextKey{}).(jwt.MapClaims)
+			// Get identity from the auth middleware
+			identity, ok := auth.IdentityFromContext(r.Context())
 			if !ok {
-				logger.Debug("No claims found in context, proceeding without token exchange")
+				logger.Debug("No identity found in context, proceeding without token exchange")
 				next.ServeHTTP(w, r)
 				return
 			}
+
+			// Extract claims from identity for token exchange
+			claims := jwt.MapClaims(identity.Claims)
 
 			var tokenProvider SubjectTokenProvider
 

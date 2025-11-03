@@ -886,6 +886,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		identity, err := claimsToIdentity(claims, tokenString)
 		if err != nil {
 			logger.Errorf("Failed to convert claims to identity: %v", err)
+			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(true, err.Error()))
 			http.Error(w, "Invalid authentication claims", http.StatusUnauthorized)
 			return
 		}

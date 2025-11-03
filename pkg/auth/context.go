@@ -64,7 +64,7 @@ func GetClaimsFromContext(ctx context.Context) (jwt.MapClaims, bool) {
 	}
 
 	// Get Identity and return its Claims
-	if identity, ok := IdentityFromContext(ctx); ok {
+	if identity, ok := IdentityFromContext(ctx); ok && identity != nil {
 		if identity.Claims != nil {
 			return jwt.MapClaims(identity.Claims), true
 		}

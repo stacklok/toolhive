@@ -19,6 +19,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"time"
 )
 
@@ -236,4 +239,77 @@ func simpleError(message string) string {
 	}
 
 	return string(payload)
+}
+
+func wrapBackendWithProxy(
+	backendURLString string,
+	allMiddlewares []func(http.Handler) http.Handler,
+) (*httptest.Server, error) {
+	backendURL, err := url.Parse(backendURLString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse backend URL: %w", err)
+	}
+
+	// Create a reverse proxy to the backend test server.
+	// Ideally, this would use ToolHive reverse proxy, but
+	// it is too tightly coupled with containers and needs
+	// to be refactored.
+	proxy := httputil.NewSingleHostReverseProxy(backendURL)
+	proxy.FlushInterval = -1
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxy.ServeHTTP(w, r)
+	})
+
+	// Apply middleware chain in reverse order (last middleware is applied first)
+	var finalHandler http.Handler = handler
+	for _, mw := range allMiddlewares {
+		finalHandler = mw(finalHandler)
+	}
+
+	proxyServer := httptest.NewServer(finalHandler)
+	return proxyServer, nil
+}
+
+func singleFlushResponse(
+	response []byte,
+	w http.ResponseWriter,
+) {
+	_, err := w.Write(response)
+	if err != nil {
+		http.Error(w, "Error writing response", http.StatusInternalServerError)
+		return
+	}
+
+	// Flush if available
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func staggeredFlushResponse(
+	response []byte,
+	w http.ResponseWriter,
+	connHangDuration time.Duration,
+) {
+	splitIndex := len(response) / 2
+	if _, err := w.Write([]byte(response[:splitIndex])); err != nil {
+		http.Error(w, "Error writing response", http.StatusInternalServerError)
+		return
+	}
+
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	time.Sleep(connHangDuration)
+
+	_, err := w.Write([]byte(response[splitIndex:]))
+	if err != nil {
+		http.Error(w, "Error writing response", http.StatusInternalServerError)
+		return
+	}
+
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }

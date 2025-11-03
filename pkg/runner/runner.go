@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
+	"github.com/stacklok/toolhive/pkg/runtime"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -145,11 +146,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set proxy mode for stdio transport
 	transportConfig.ProxyMode = r.Config.ProxyMode
 
-	transportHandler, err := transport.NewFactory().Create(transportConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create transport: %v", err)
-	}
-
 	// Process secrets if provided (regular secrets or RemoteAuthConfig.ClientSecret in CLI format)
 	hasRegularSecrets := len(r.Config.Secrets) > 0
 	hasRemoteAuthSecret := r.Config.RemoteAuthConfig != nil && r.Config.RemoteAuthConfig.ClientSecret != ""
@@ -183,7 +179,48 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set up the transport
 	logger.Infof("Setting up %s transport...", r.Config.Transport)
 
-	// For remote MCP servers, set the remote URL on HTTP transports before setup
+	// Prepare transport options based on workload type
+	var transportOpts []transport.Option
+	var setupResult *runtime.SetupResult
+
+	if r.Config.RemoteURL == "" {
+		// For local workloads, deploy the container using runtime.Setup first
+		result, err := runtime.Setup(
+			ctx,
+			r.Config.Transport,
+			r.Config.Deployer,
+			r.Config.ContainerName,
+			r.Config.Image,
+			r.Config.CmdArgs,
+			r.Config.EnvVars,
+			r.Config.ContainerLabels,
+			r.Config.PermissionProfile,
+			r.Config.K8sPodTemplatePatch,
+			r.Config.IsolateNetwork,
+			r.Config.IgnoreConfig,
+			r.Config.Host,
+			r.Config.TargetPort,
+			r.Config.TargetHost,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to set up workload: %v", err)
+		}
+		setupResult = result
+
+		// Configure the transport with the setup results using options
+		transportOpts = append(transportOpts, transport.WithContainerName(setupResult.ContainerName))
+		if setupResult.TargetURI != "" {
+			transportOpts = append(transportOpts, transport.WithTargetURI(setupResult.TargetURI))
+		}
+	}
+
+	// Create transport with options
+	transportHandler, err := transport.NewFactory().Create(transportConfig, transportOpts...)
+	if err != nil {
+		return fmt.Errorf("failed to create transport: %v", err)
+	}
+
+	// For remote MCP servers, set the remote URL on HTTP transports
 	if r.Config.RemoteURL != "" {
 		if httpTransport, ok := transportHandler.(interface{ SetRemoteURL(string) }); ok {
 			httpTransport.SetRemoteURL(r.Config.RemoteURL)
@@ -209,17 +246,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		if httpTransport, ok := transportHandler.(interface{ SetTokenSource(oauth2.TokenSource) }); ok {
 			httpTransport.SetTokenSource(tokenSource)
 		}
-
-		// For remote workloads, we don't need a deployer
-		r.Config.Deployer = nil
-	}
-
-	if err := transportHandler.Setup(
-		ctx, r.Config.Deployer, r.Config.ContainerName, r.Config.Image, r.Config.CmdArgs,
-		r.Config.EnvVars, r.Config.ContainerLabels, r.Config.PermissionProfile, r.Config.K8sPodTemplatePatch,
-		r.Config.IsolateNetwork, r.Config.IgnoreConfig,
-	); err != nil {
-		return fmt.Errorf("failed to set up transport: %v", err)
 	}
 
 	// Start the transport (which also starts the container and monitoring)

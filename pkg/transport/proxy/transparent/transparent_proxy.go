@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/session"
@@ -37,10 +38,9 @@ import (
 //nolint:revive // Intentionally named TransparentProxy despite package name
 type TransparentProxy struct {
 	// Basic configuration
-	host          string
-	port          int
-	containerName string
-	targetURI     string
+	host      string
+	port      int
+	targetURI string
 
 	// HTTP server
 	server *http.Server
@@ -83,7 +83,6 @@ type TransparentProxy struct {
 func NewTransparentProxy(
 	host string,
 	port int,
-	containerName string,
 	targetURI string,
 	prometheusHandler http.Handler,
 	authInfoHandler http.Handler,
@@ -95,7 +94,6 @@ func NewTransparentProxy(
 	proxy := &TransparentProxy{
 		host:              host,
 		port:              port,
-		containerName:     containerName,
 		targetURI:         targetURI,
 		middlewares:       middlewares,
 		shutdownCh:        make(chan struct{}),
@@ -128,7 +126,7 @@ func (p *TransparentProxy) setServerInitialized() {
 		p.mutex.Lock()
 		p.IsServerInitialized = true
 		p.mutex.Unlock()
-		logger.Infof("Server was initialized successfully for %s", p.containerName)
+		logger.Infof("Server was initialized successfully for %s", p.targetURI)
 	}
 }
 
@@ -219,7 +217,7 @@ func (t *tracingTransport) detectInitialize(body []byte) bool {
 		return false
 	}
 	if rpc.Method == "initialize" {
-		logger.Infof("Detected initialize method call for %s", t.p.containerName)
+		logger.Infof("Detected initialize method call for %s", t.p.targetURI)
 		return true
 	}
 	return false
@@ -354,29 +352,19 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		mux.Handle("/metrics", p.prometheusHandler)
 		logger.Info("Prometheus metrics endpoint enabled at /metrics")
 	}
+
+	// Add .well-known discovery endpoints if auth info handler is provided (no middlewares, RFC 9728 compliant)
+	// Handles /.well-known/oauth-protected-resource and subpaths (e.g., /mcp)
+	if wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler); wellKnownHandler != nil {
+		mux.Handle("/.well-known/", wellKnownHandler)
+		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/ (no middlewares)")
+	}
+
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", p.host, p.port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 	p.listener = ln
-
-	// Add .well-known path space handler if auth info handler is provided (no middlewares)
-	if p.authInfoHandler != nil {
-		// Create a handler that routes .well-known requests
-		wellKnownHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Per RFC 9728, match /.well-known/oauth-protected-resource and any subpaths
-			// e.g., /.well-known/oauth-protected-resource/mcp
-			if strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource") {
-				p.authInfoHandler.ServeHTTP(w, r)
-			} else {
-				http.NotFound(w, r)
-			}
-		})
-		mux.Handle("/.well-known/", wellKnownHandler)
-		logger.Info("Well-known discovery endpoints enabled at /.well-known/ (no middlewares)")
-	} else {
-		logger.Info("No auth info handler provided; skipping /.well-known/ endpoint")
-	}
 
 	// Create the server
 	p.server = &http.Server{
@@ -419,24 +407,24 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 	for {
 		select {
 		case <-parentCtx.Done():
-			logger.Infof("Context cancelled, stopping health monitor for %s", p.containerName)
+			logger.Infof("Context cancelled, stopping health monitor for %s", p.targetURI)
 			return
 		case <-p.shutdownCh:
-			logger.Infof("Shutdown initiated, stopping health monitor for %s", p.containerName)
+			logger.Infof("Shutdown initiated, stopping health monitor for %s", p.targetURI)
 			return
 		case <-ticker.C:
 			// Perform health check only if mcp server has been initialized
 			if p.IsServerInitialized {
 				alive := p.healthChecker.CheckHealth(parentCtx)
 				if alive.Status != healthcheck.StatusHealthy {
-					logger.Infof("Health check failed for %s; initiating proxy shutdown", p.containerName)
+					logger.Infof("Health check failed for %s; initiating proxy shutdown", p.targetURI)
 					if err := p.Stop(parentCtx); err != nil {
-						logger.Errorf("Failed to stop proxy for %s: %v", p.containerName, err)
+						logger.Errorf("Failed to stop proxy for %s: %v", p.targetURI, err)
 					}
 					return
 				}
 			} else {
-				logger.Infof("MCP server not initialized yet, skipping health check for %s", p.containerName)
+				logger.Infof("MCP server not initialized yet, skipping health check for %s", p.targetURI)
 			}
 		}
 	}
@@ -457,7 +445,7 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 			logger.Warnf("Error during proxy shutdown: %v", err)
 			return err
 		}
-		logger.Infof("Server for %s stopped successfully", p.containerName)
+		logger.Infof("Server for %s stopped successfully", p.targetURI)
 		p.server = nil
 	}
 

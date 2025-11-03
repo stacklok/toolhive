@@ -21,6 +21,8 @@ tasks:
 
   mock-install:
     desc: Install the mockgen tool for mock generation
+    status:
+      - which mockgen
     cmds:
       - go install go.uber.org/mock/mockgen@latest
 

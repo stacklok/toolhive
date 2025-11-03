@@ -9,8 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/http/httputil"
-	"net/url"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -225,28 +223,10 @@ func NewSSETestServer(
 	// If the server is configured to use a proxy,create a reverse proxy to
 	// the backend test server.
 	if server.withProxy {
-		backendURL, err := url.Parse(backendServer.URL)
+		proxyServer, err := wrapBackendWithProxy(backendServer.URL, allMiddlewares)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to parse backend URL: %w", err)
+			return nil, nil, fmt.Errorf("failed to wrap backend with proxy: %w", err)
 		}
-
-		// Create a reverse proxy to the backend test server.
-		// Ideally, this would use ToolHive reverse proxy, but
-		// it is too tightly coupled with containers and needs
-		// to be refactored.
-		proxy := httputil.NewSingleHostReverseProxy(backendURL)
-		proxy.FlushInterval = -1
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			proxy.ServeHTTP(w, r)
-		})
-
-		// Apply middleware chain in reverse order (last middleware is applied first)
-		var finalHandler http.Handler = handler
-		for _, mw := range allMiddlewares {
-			finalHandler = mw(finalHandler)
-		}
-
-		proxyServer := httptest.NewServer(finalHandler)
 		testServer = proxyServer
 	}
 
@@ -319,7 +299,7 @@ func (s *sseServer) sseHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 
 	// Get flusher for streaming responses
-	flusher, ok := w.(http.Flusher)
+	_, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
 		return
@@ -356,17 +336,11 @@ func (s *sseServer) sseHandler(w http.ResponseWriter, _ *http.Request) {
 					response = "failed to generate response"
 				}
 
-				if _, err := w.Write([]byte("event: random-stuff\ndata: " + response + "\n\n")); err != nil {
-					http.Error(w, "Error writing response", http.StatusInternalServerError)
-					return
+				if s.connHangDuration == 0 {
+					singleFlushResponse([]byte("event: random-stuff\ndata: "+response+"\n\n"), w)
+				} else {
+					staggeredFlushResponse([]byte("event: random-stuff\ndata: "+response+"\n\n"), w, s.connHangDuration)
 				}
-			}
-
-			// Flush the response immediately
-			flusher.Flush()
-
-			if s.connHangDuration != 0 {
-				time.Sleep(s.connHangDuration)
 			}
 		}
 	}

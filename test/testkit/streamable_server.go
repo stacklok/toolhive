@@ -9,8 +9,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/http/httputil"
-	"net/url"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -202,18 +200,19 @@ func NewStreamableTestServer(
 	// This precompiles the tools list response based on the provided tools
 	server.toolsListResponse = makeToolsList(server.tools)
 
+	allMiddlewares := append(
+		[]func(http.Handler) http.Handler{
+			middleware.RequestID,
+			middleware.Recoverer,
+		},
+		server.middlewares...,
+	)
+
 	router := chi.NewRouter()
 
 	// If the server is not configured to use a proxy, apply the middlewares to
 	// the router directly.
 	if !server.withProxy {
-		allMiddlewares := append(
-			[]func(http.Handler) http.Handler{
-				middleware.RequestID,
-				middleware.Recoverer,
-			},
-			server.middlewares...,
-		)
 		router.Use(allMiddlewares...)
 	}
 
@@ -229,35 +228,10 @@ func NewStreamableTestServer(
 	// If the server is configured to use a proxy,create a reverse proxy to
 	// the backend test server.
 	if server.withProxy {
-		backendURL, err := url.Parse(backendServer.URL)
+		proxyServer, err := wrapBackendWithProxy(backendServer.URL, allMiddlewares)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to parse backend URL: %w", err)
+			return nil, nil, fmt.Errorf("failed to wrap backend with proxy: %w", err)
 		}
-
-		// Create a reverse proxy to the backend test server.
-		// Ideally, this would use ToolHive reverse proxy, but
-		// it is too tightly coupled with containers and needs
-		// to be refactored.
-		proxy := httputil.NewSingleHostReverseProxy(backendURL)
-		proxy.FlushInterval = -1
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			proxy.ServeHTTP(w, r)
-		})
-
-		// Apply middleware chain in reverse order (last middleware is applied first)
-		allMiddlewares := append(
-			[]func(http.Handler) http.Handler{
-				middleware.RequestID,
-				middleware.Recoverer,
-			},
-			server.middlewares...,
-		)
-		var finalHandler http.Handler = handler
-		for _, mw := range allMiddlewares {
-			finalHandler = mw(finalHandler)
-		}
-
-		proxyServer := httptest.NewServer(finalHandler)
 		testServer = proxyServer
 	}
 
@@ -277,7 +251,10 @@ func NewStreamableTestServer(
 	}
 }
 
-func (s *streamableServer) mcpJSONHandler(w http.ResponseWriter, r *http.Request) {
+func (s *streamableServer) mcpJSONHandler(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -319,23 +296,18 @@ func (s *streamableServer) mcpJSONHandler(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write([]byte(response)); err != nil {
-		http.Error(w, "Error writing response", http.StatusInternalServerError)
-		return
-	}
 
-	// Flush if available
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
-
-	if s.connHangDuration != 0 {
-		time.Sleep(s.connHangDuration)
+	if s.connHangDuration == 0 {
+		singleFlushResponse([]byte(response), w)
+	} else {
+		staggeredFlushResponse([]byte(response), w, s.connHangDuration)
 	}
 }
 
-//nolint:gocyclo
-func (s *streamableServer) mcpEventStreamHandler(w http.ResponseWriter, r *http.Request) {
+func (s *streamableServer) mcpEventStreamHandler(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -378,41 +350,11 @@ func (s *streamableServer) mcpEventStreamHandler(w http.ResponseWriter, r *http.
 		response = "failed to generate response"
 	}
 
-	if _, err := w.Write([]byte("event: random-stuff\ndata: " + response)); err != nil {
-		http.Error(w, "Error writing response", http.StatusInternalServerError)
-		return
-	}
+	response = "event: random-stuff\ndata: " + response + "\n\n"
 
 	if s.connHangDuration == 0 {
-		_, err := w.Write([]byte("\n\n"))
-		if err != nil {
-			http.Error(w, "Error writing response", http.StatusInternalServerError)
-			return
-		}
-
-		// Flush if available
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
+		singleFlushResponse([]byte(response), w)
 	} else {
-		// Flush if available
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-
-		if s.connHangDuration != 0 {
-			time.Sleep(s.connHangDuration)
-		}
-
-		_, err := w.Write([]byte("\n\n"))
-		if err != nil {
-			http.Error(w, "Error writing response", http.StatusInternalServerError)
-			return
-		}
-
-		// Flush if available
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
+		staggeredFlushResponse([]byte(response), w, s.connHangDuration)
 	}
 }

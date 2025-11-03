@@ -1,13 +1,7 @@
 # Build the binary
-FROM registry.access.redhat.com/ubi10/ubi:10.0 as builder
+FROM golang as builder
 
 USER root
-
-# As per https://discussion.fedoraproject.org/t/fedora-doesnt-provide-latest-version-of-go/146930/9
-WORKDIR /etc/yum.repos.d
-RUN dnf install -y wget
-RUN wget https://copr.fedorainfracloud.org/coprs/g/go-sig/golang-rawhide/repo/epel-10/group_go-sig-golang-rawhide-epel-10.repo
-RUN dnf install -y golang
 
 WORKDIR /workspace
 
@@ -35,7 +29,7 @@ RUN CGO_ENABLED=0 LDFLAGS="-s -w \
 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o main ./${CODEDIR}/main.go
 
 # Use micro base image to package the binary
-FROM  --platform=linux/amd64 registry.access.redhat.com/ubi10/ubi-micro:10.0
+FROM  --platform=linux/amd64 registry.access.redhat.com/ubi10/ubi-minimal:10.0-1758699349
 
 COPY --from=builder /workspace/main /
 COPY LICENSE /licenses/LICENSE

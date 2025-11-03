@@ -103,7 +103,7 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 // defaultClientFactory creates mark3labs MCP clients for different transport types.
 func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
 	// Build transport chain: size limit → authentication → HTTP
-	var baseTransport http.RoundTripper = http.DefaultTransport
+	var baseTransport = http.DefaultTransport
 
 	// Add authentication layer if authenticator is configured
 	if h.authenticator != nil {

@@ -12,7 +12,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
-	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
@@ -213,8 +213,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to create groups manager: %w", err)
 	}
 
+	// Create outgoing authentication registry from configuration
+	logger.Info("Initializing outgoing authentication")
+	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, cfg.OutgoingAuth)
+	if err != nil {
+		return fmt.Errorf("failed to create outgoing authentication registry: %w", err)
+	}
+
 	// Create backend discoverer
-	discoverer := aggregator.NewCLIBackendDiscoverer(workloadsManager, groupsManager)
+	discoverer := aggregator.NewCLIBackendDiscoverer(workloadsManager, groupsManager, cfg.OutgoingAuth)
 
 	// Discover backends from the configured group
 	logger.Infof("Discovering backends in group: %s", cfg.GroupRef)
@@ -230,7 +237,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	logger.Infof("Discovered %d backends", len(backends))
 
 	// Create backend client
-	backendClient := vmcpclient.NewHTTPBackendClient()
+	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
+	if err != nil {
+		return fmt.Errorf("failed to create backend client: %w", err)
+	}
 
 	// Create conflict resolver based on configuration
 	// Use the factory method that handles all strategies
@@ -264,7 +274,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Setup authentication middleware
 	logger.Infof("Setting up incoming authentication (type: %s)", cfg.IncomingAuth.Type)
 
-	authMiddleware, authInfoHandler, err := vmcpauth.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth)
+	authMiddleware, authInfoHandler, err := factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}

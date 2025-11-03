@@ -124,7 +124,7 @@ func mapWorkloadStatusToHealth(status rt.WorkloadStatus) vmcp.BackendHealthStatu
 	case rt.WorkloadStatusUnhealthy:
 		return vmcp.BackendUnhealthy
 	case rt.WorkloadStatusStopped, rt.WorkloadStatusError, rt.WorkloadStatusStopping, rt.WorkloadStatusRemoving:
-		return vmcp.BackendUnauthenticated
+		return vmcp.BackendUnhealthy
 	case rt.WorkloadStatusStarting, rt.WorkloadStatusUnknown:
 		return vmcp.BackendUnknown
 	case rt.WorkloadStatusUnauthenticated:

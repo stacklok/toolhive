@@ -53,7 +53,6 @@ type VirtualMCPCompositeToolDefinitionStatus struct {
 	// ValidationStatus indicates the validation state of the workflow
 	// - Valid: Workflow structure is valid
 	// - Invalid: Workflow has validation errors
-	// +kubebuilder:validation:Enum=Valid;Invalid;Unknown
 	// +optional
 	ValidationStatus ValidationStatus `json:"validationStatus,omitempty"`
 

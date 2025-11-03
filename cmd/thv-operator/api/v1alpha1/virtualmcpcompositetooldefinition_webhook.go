@@ -2,10 +2,13 @@ package v1alpha1
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 	"text/template"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -98,25 +101,62 @@ func (r *VirtualMCPCompositeToolDefinition) Validate() error {
 	return nil
 }
 
-// validateParameters validates the parameter schema
+// validateParameters validates the parameter schema using JSON Schema validation
 func (r *VirtualMCPCompositeToolDefinition) validateParameters() error {
+	if len(r.Spec.Parameters) == 0 {
+		return nil // No parameters to validate
+	}
+
+	// Build a JSON Schema object from the parameters
+	// Parameters map to a JSON Schema "properties" object
+	properties := make(map[string]interface{})
+	var required []string
+
 	for paramName, param := range r.Spec.Parameters {
 		if param.Type == "" {
 			return fmt.Errorf("spec.parameters[%s].type is required", paramName)
 		}
 
-		// Validate parameter type
-		validTypes := map[string]bool{
-			"string":  true,
-			"integer": true,
-			"number":  true,
-			"boolean": true,
-			"array":   true,
-			"object":  true,
+		// Build a JSON Schema property definition
+		property := map[string]interface{}{
+			"type": param.Type,
 		}
-		if !validTypes[param.Type] {
-			return fmt.Errorf("spec.parameters[%s].type must be one of: string, integer, number, boolean, array, object", paramName)
+
+		if param.Description != "" {
+			property["description"] = param.Description
 		}
+
+		if param.Default != "" {
+			// Parse default value based on type
+			property["default"] = param.Default
+		}
+
+		if param.Required {
+			required = append(required, paramName)
+		}
+
+		properties[paramName] = property
+	}
+
+	// Construct a full JSON Schema document
+	schemaDoc := map[string]interface{}{
+		"type":       "object",
+		"properties": properties,
+	}
+
+	if len(required) > 0 {
+		schemaDoc["required"] = required
+	}
+
+	// Marshal to JSON
+	schemaJSON, err := json.Marshal(schemaDoc)
+	if err != nil {
+		return fmt.Errorf("spec.parameters: failed to marshal schema: %v", err)
+	}
+
+	// Validate using JSON Schema validator
+	if err := validateJSONSchema(schemaJSON); err != nil {
+		return fmt.Errorf("spec.parameters: invalid JSON Schema: %v", err)
 	}
 
 	return nil
@@ -232,6 +272,13 @@ func (*VirtualMCPCompositeToolDefinition) validateStepTemplates(index int, step 
 		}
 	}
 
+	// Validate JSON Schema for elicitation steps
+	if step.Schema != nil {
+		if err := validateJSONSchema(step.Schema.Raw); err != nil {
+			return fmt.Errorf("spec.steps[%d].schema: invalid JSON Schema: %v", index, err)
+		}
+	}
+
 	return nil
 }
 
@@ -319,6 +366,69 @@ func validateTemplate(tmpl string) error {
 		return fmt.Errorf("invalid template syntax: %v", err)
 	}
 	return nil
+}
+
+// validateJSONSchema validates that the provided bytes contain a valid JSON Schema
+func validateJSONSchema(schemaBytes []byte) error {
+	if len(schemaBytes) == 0 {
+		return nil // Empty schema is allowed
+	}
+
+	// Parse the schema JSON
+	var schemaDoc interface{}
+	if err := json.Unmarshal(schemaBytes, &schemaDoc); err != nil {
+		return fmt.Errorf("failed to parse JSON: %v", err)
+	}
+
+	// Compile the schema to validate it's a valid JSON Schema
+	compiler := jsonschema.NewCompiler()
+	schemaID := "schema://validation"
+	if err := compiler.AddResource(schemaID, schemaDoc); err != nil {
+		return formatJSONSchemaError(err)
+	}
+
+	if _, err := compiler.Compile(schemaID); err != nil {
+		return formatJSONSchemaError(err)
+	}
+
+	return nil
+}
+
+// formatJSONSchemaError formats JSON Schema validation errors for better readability
+func formatJSONSchemaError(err error) error {
+	if validationErr, ok := err.(*jsonschema.ValidationError); ok {
+		var errorMessages []string
+		collectJSONSchemaErrors(validationErr, &errorMessages)
+		if len(errorMessages) > 0 {
+			return fmt.Errorf("%s", strings.Join(errorMessages, "; "))
+		}
+	}
+	return err
+}
+
+// collectJSONSchemaErrors recursively collects all validation error messages
+func collectJSONSchemaErrors(err *jsonschema.ValidationError, messages *[]string) {
+	if err == nil {
+		return
+	}
+
+	// If this error has causes, recurse into them
+	if len(err.Causes) > 0 {
+		for _, cause := range err.Causes {
+			collectJSONSchemaErrors(cause, messages)
+		}
+		return
+	}
+
+	// This is a leaf error - format it
+	output := err.BasicOutput()
+	if output != nil && output.Error != nil {
+		errorMsg := output.Error.String()
+		if output.InstanceLocation != "" {
+			errorMsg = fmt.Sprintf("%s at '%s'", errorMsg, output.InstanceLocation)
+		}
+		*messages = append(*messages, errorMsg)
+	}
 }
 
 // validateDuration validates duration format (e.g., "30s", "5m", "1h")

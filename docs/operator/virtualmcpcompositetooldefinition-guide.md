@@ -150,14 +150,17 @@ Define execution order using `dependsOn`:
 spec:
   steps:
     - id: step1
+      type: tool_call
       tool: workload.tool_a
 
     - id: step2
+      type: tool_call
       tool: workload.tool_b
       dependsOn:
         - step1
 
     - id: step3
+      type: tool_call
       tool: workload.tool_c
       dependsOn:
         - step1

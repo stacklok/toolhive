@@ -288,19 +288,14 @@ spec:
                   type: string
                 type: array
               validationStatus:
-                allOf:
-                - enum:
-                  - Valid
-                  - Invalid
-                  - Unknown
-                - enum:
-                  - Valid
-                  - Invalid
-                  - Unknown
                 description: |-
                   ValidationStatus indicates the validation state of the workflow
                   - Valid: Workflow structure is valid
                   - Invalid: Workflow has validation errors
+                enum:
+                - Valid
+                - Invalid
+                - Unknown
                 type: string
             type: object
         type: object

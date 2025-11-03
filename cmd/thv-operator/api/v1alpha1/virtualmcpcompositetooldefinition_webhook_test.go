@@ -151,7 +151,7 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.parameters[environment].type must be one of: string, integer, number, boolean, array, object",
+			errMsg:  "spec.parameters: invalid JSON Schema",
 		},
 		{
 			name: "missing step ID",
@@ -241,6 +241,44 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "spec.steps[0].message is required when type is elicitation",
+		},
+		{
+			name: "invalid JSON Schema in elicitation step",
+			ctd: &VirtualMCPCompositeToolDefinition{
+				Spec: VirtualMCPCompositeToolDefinitionSpec{
+					Name:        "interactive_deploy",
+					Description: "Deploy with user confirmation",
+					Steps: []WorkflowStep{
+						{
+							ID:      "confirm",
+							Type:    WorkflowStepTypeElicitation,
+							Message: "Confirm deployment?",
+							Schema:  &runtime.RawExtension{Raw: []byte(`{"type": "invalid_json_schema_type"}`)},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.steps[0].schema: invalid JSON Schema",
+		},
+		{
+			name: "malformed JSON in elicitation step schema",
+			ctd: &VirtualMCPCompositeToolDefinition{
+				Spec: VirtualMCPCompositeToolDefinitionSpec{
+					Name:        "interactive_deploy",
+					Description: "Deploy with user confirmation",
+					Steps: []WorkflowStep{
+						{
+							ID:      "confirm",
+							Type:    WorkflowStepTypeElicitation,
+							Message: "Confirm deployment?",
+							Schema:  &runtime.RawExtension{Raw: []byte(`{invalid json}`)},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.steps[0].schema: invalid JSON Schema",
 		},
 		{
 			name: "valid workflow with dependencies",

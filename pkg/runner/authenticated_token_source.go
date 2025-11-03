@@ -139,8 +139,7 @@ func (ats *AuthenticatedTokenSource) onTick() (bool, time.Duration) {
 	return false, wait
 }
 
-// markAsUnauthenticated consults StatusManager; only writes if not already unauthenticated.
-// Always stops the monitor (idempotently).
+// markAsUnauthenticated marks the workload as unauthenticated.
 func (ats *AuthenticatedTokenSource) markAsUnauthenticated(reason string) {
 	_ = ats.statusManager.SetWorkloadStatus(
 		context.Background(),

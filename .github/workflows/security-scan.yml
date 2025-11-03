@@ -57,3 +57,17 @@ jobs:
         if: always()
         with:
           sarif_file: 'trivy-config-results.sarif'
+
+  govulncheck:
+    name: Go Vulnerability Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: ''
+          go-version-file: go.mod
+          go-package: ./...

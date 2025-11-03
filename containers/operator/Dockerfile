@@ -1,5 +1,5 @@
 # Build the binary
-FROM registry.access.redhat.com/ubi10/go-toolset:1.24 as builder
+FROM golang as builder
 
 USER root
 
@@ -29,7 +29,7 @@ RUN CGO_ENABLED=0 LDFLAGS="-s -w \
 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o main ./${CODEDIR}/main.go
 
 # Use micro base image to package the binary
-FROM  --platform=linux/amd64 registry.access.redhat.com/ubi10/ubi-micro:10.0
+FROM  --platform=linux/amd64 registry.access.redhat.com/ubi10/ubi-minimal:10.0-1758699349
 
 COPY --from=builder /workspace/main /
 COPY LICENSE /licenses/LICENSE

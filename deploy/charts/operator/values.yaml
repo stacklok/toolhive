@@ -94,6 +94,13 @@ operator:
       cpu: 10m
       memory: 64Mi
 
+  # -- Go memory limits and garbage collection percentage for the operator container
+  gc:
+    # -- Go memory limits for the operator container
+    gomeglimit: 150MiB
+    # -- Go garbage collection percentage for the operator container
+    gogc: 75  # 75% heap growth before GC (as Go default)
+
   # -- RBAC configuration for the operator
   rbac:
     # -- Scope of the RBAC configuration.
@@ -184,7 +191,7 @@ operator:
 # -- All values for the registry API deployment and associated resources
 registryAPI:
   # -- Container image for the registry API
-  image: "ghcr.io/stacklok/thv-registry-api:latest"
+  image: "ghcr.io/stacklok/thv-registry-api:0.1.0"
   # -- Service account configuration for the registry API
   serviceAccount:
     # -- Automatically mount a ServiceAccount's API credentials

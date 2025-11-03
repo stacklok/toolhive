@@ -3,8 +3,11 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -609,4 +612,116 @@ func TestNewToolCallMappingMiddleware_ErrorCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSSEBufferFlushes(t *testing.T) {
+	t.Parallel()
+	middlewares := []func(http.Handler) http.Handler{}
+
+	opts := []ToolMiddlewareOption{
+		WithToolsFilter("MyFoo"),
+		WithToolsOverride("Foo", "MyFoo", ""),
+	}
+
+	// Create the middleware
+	toolsListmiddleware, err := NewListToolsMappingMiddleware(opts...)
+	assert.NoError(t, err)
+	toolsCallMiddleware, err := NewToolCallMappingMiddleware(opts...)
+	assert.NoError(t, err)
+
+	middlewares = append(middlewares,
+		toolsCallMiddleware,
+		toolsListmiddleware,
+	)
+
+	// Create test server
+	serverOpts := []testkit.TestMCPServerOption{
+		testkit.WithSSEClientType(),
+		testkit.WithConnectionHang(10 * time.Second),
+		testkit.WithMiddlewares(middlewares...),
+		testkit.WithWithProxy(),
+		testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+	}
+
+	for i := 0; i < 100; i++ {
+		opt := testkit.WithTool(
+			fmt.Sprintf("Foo%d", i),
+			strings.Repeat("A", 10*1024),
+			func() string { return fmt.Sprintf("Foo%d", i) },
+		)
+		serverOpts = append(serverOpts, opt)
+	}
+
+	server, client, err := testkit.NewStreamableTestServer(
+		serverOpts...,
+	)
+	require.NoError(t, err)
+	defer server.Close()
+
+	// Make request
+	respBody, err := client.ToolsList()
+	require.NoError(t, err)
+
+	var response toolsListResponse
+	err = json.NewDecoder(bytes.NewReader(respBody)).Decode(&response)
+	require.NoError(t, err)
+	require.NotNil(t, response.Result)
+	require.NotNil(t, response.Result.Tools)
+	require.Len(t, *response.Result.Tools, 1)
+}
+
+func TestJSONBufferFlushes(t *testing.T) {
+	t.Parallel()
+	middlewares := []func(http.Handler) http.Handler{}
+
+	opts := []ToolMiddlewareOption{
+		WithToolsFilter("MyFoo"),
+		WithToolsOverride("Foo", "MyFoo", ""),
+	}
+
+	// Create the middleware
+	toolsListmiddleware, err := NewListToolsMappingMiddleware(opts...)
+	assert.NoError(t, err)
+	toolsCallMiddleware, err := NewToolCallMappingMiddleware(opts...)
+	assert.NoError(t, err)
+
+	middlewares = append(middlewares,
+		toolsCallMiddleware,
+		toolsListmiddleware,
+	)
+
+	// Create test server
+	serverOpts := []testkit.TestMCPServerOption{
+		testkit.WithJSONClientType(),
+		testkit.WithConnectionHang(10 * time.Second),
+		testkit.WithMiddlewares(middlewares...),
+		testkit.WithWithProxy(),
+		testkit.WithTool("Foo", "Foo tool", func() string { return "Foo" }),
+	}
+
+	for i := 0; i < 100; i++ {
+		opt := testkit.WithTool(
+			fmt.Sprintf("Foo%d", i),
+			strings.Repeat("A", 10*1024),
+			func() string { return fmt.Sprintf("Foo%d", i) },
+		)
+		serverOpts = append(serverOpts, opt)
+	}
+
+	server, client, err := testkit.NewStreamableTestServer(
+		serverOpts...,
+	)
+	require.NoError(t, err)
+	defer server.Close()
+
+	// Make request
+	respBody, err := client.ToolsList()
+	require.NoError(t, err)
+
+	var response toolsListResponse
+	err = json.NewDecoder(bytes.NewReader(respBody)).Decode(&response)
+	require.NoError(t, err)
+	require.NotNil(t, response.Result)
+	require.NotNil(t, response.Result.Tools)
+	require.Len(t, *response.Result.Tools, 1)
 }

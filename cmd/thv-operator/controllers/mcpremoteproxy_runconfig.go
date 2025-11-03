@@ -15,6 +15,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	runconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig"
 	configMapChecksum "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -168,12 +169,14 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		options = append(options, runner.WithToolsOverride(toolsOverride))
 	}
 
-	// Add telemetry configuration if specified
-	addTelemetryConfigOptions(&options, proxy.Spec.Telemetry, proxy.Name)
-
-	// Add authorization configuration if specified
+	// Create context for API operations
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()
+
+	// Add telemetry configuration if specified
+	runconfig.AddTelemetryConfigOptions(ctx, &options, proxy.Spec.Telemetry, proxy.Name)
+
+	// Add authorization configuration if specified
 
 	if err := ctrlutil.AddAuthzConfigOptions(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig, &options); err != nil {
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
@@ -192,7 +195,7 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	}
 
 	// Add audit configuration if specified
-	addAuditConfigOptions(&options, proxy.Spec.Audit)
+	runconfig.AddAuditConfigOptions(&options, proxy.Spec.Audit)
 
 	// Use the RunConfigBuilder for operator context
 	// Deployer is nil for remote proxies because they connect to external services

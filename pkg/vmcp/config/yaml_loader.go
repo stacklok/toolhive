@@ -62,6 +62,7 @@ type rawIncomingAuth struct {
 		ClientID        string   `yaml:"client_id"`
 		ClientSecretEnv string   `yaml:"client_secret_env"`
 		Audience        string   `yaml:"audience"`
+		Resource        string   `yaml:"resource"`
 		Scopes          []string `yaml:"scopes"`
 	} `yaml:"oidc"`
 	Authz *struct {
@@ -256,6 +257,7 @@ func (*YAMLLoader) transformIncomingAuth(raw *rawIncomingAuth) (*IncomingAuthCon
 			ClientID:     raw.OIDC.ClientID,
 			ClientSecret: clientSecret,
 			Audience:     raw.OIDC.Audience,
+			Resource:     raw.OIDC.Resource,
 			Scopes:       raw.OIDC.Scopes,
 		}
 	}

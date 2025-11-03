@@ -14,9 +14,6 @@ import (
 	http "net/http"
 	reflect "reflect"
 
-	runtime "github.com/stacklok/toolhive/pkg/container/runtime"
-	ignore "github.com/stacklok/toolhive/pkg/ignore"
-	permissions "github.com/stacklok/toolhive/pkg/permissions"
 	types "github.com/stacklok/toolhive/pkg/transport/types"
 	gomock "go.uber.org/mock/gomock"
 	jsonrpc2 "golang.org/x/exp/jsonrpc2"
@@ -251,20 +248,6 @@ func (m *MockTransport) ProxyPort() int {
 func (mr *MockTransportMockRecorder) ProxyPort() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProxyPort", reflect.TypeOf((*MockTransport)(nil).ProxyPort))
-}
-
-// Setup mocks base method.
-func (m *MockTransport) Setup(ctx context.Context, arg1 runtime.Deployer, containerName, image string, cmdArgs []string, envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string, isolateNetwork bool, ignoreConfig *ignore.Config) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Setup", ctx, arg1, containerName, image, cmdArgs, envVars, labels, permissionProfile, k8sPodTemplatePatch, isolateNetwork, ignoreConfig)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// Setup indicates an expected call of Setup.
-func (mr *MockTransportMockRecorder) Setup(ctx, arg1, containerName, image, cmdArgs, envVars, labels, permissionProfile, k8sPodTemplatePatch, isolateNetwork, ignoreConfig any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Setup", reflect.TypeOf((*MockTransport)(nil).Setup), ctx, arg1, containerName, image, cmdArgs, envVars, labels, permissionProfile, k8sPodTemplatePatch, isolateNetwork, ignoreConfig)
 }
 
 // Start mocks base method.

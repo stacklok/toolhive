@@ -1,35 +1,23 @@
-// Package auth provides authentication interfaces for Virtual MCP Server.
+// Package auth provides authentication for Virtual MCP Server.
 //
-// This package defines two authentication boundaries:
-//  1. IncomingAuthenticator - validates client requests to virtual MCP
-//  2. OutgoingAuthenticator - authenticates virtual MCP to backend servers
+// This package defines:
+//   - Identity: Domain type representing an authenticated user/service
+//   - Claims → Identity conversion (incoming authentication)
+//   - OutgoingAuthenticator: Authenticates vMCP to backend servers
+//   - Strategy: Pluggable authentication strategies for backends
 //
-// The package supports extensible authentication strategies through the
-// Strategy interface, enabling custom authentication mechanisms to be
-// registered at runtime.
+// Incoming authentication uses pkg/auth.TokenValidator + IdentityMiddleware
+// to validate OIDC tokens and convert Claims to Identity.
 package auth
+
+//go:generate mockgen -destination=mocks/mock_strategy.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/auth Strategy
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 )
-
-// IncomingAuthenticator handles authentication for clients connecting to the virtual MCP server.
-// This validates the incoming request and extracts identity information.
-//
-// The virtual MCP server supports multiple incoming auth strategies:
-//   - OIDC: OAuth 2.0 / OpenID Connect
-//   - Local: Local authentication (for development)
-//   - Anonymous: No authentication required
-type IncomingAuthenticator interface {
-	// Authenticate validates the incoming HTTP request and returns identity information.
-	// Returns an error if authentication fails.
-	Authenticate(ctx context.Context, r *http.Request) (*Identity, error)
-
-	// Middleware returns an HTTP middleware that can be applied to routes.
-	// This integrates with ToolHive's existing middleware patterns.
-	Middleware() func(http.Handler) http.Handler
-}
 
 // OutgoingAuthenticator handles authentication to backend MCP servers.
 // This is responsible for obtaining and injecting appropriate credentials
@@ -78,6 +66,10 @@ type Identity struct {
 	Email string
 
 	// Groups are the groups this identity belongs to.
+	//
+	// NOTE: This field is intentionally NOT populated by OIDCIncomingAuthenticator.
+	// Authorization logic MUST extract groups from the Claims map, as group claim
+	// names vary by provider (e.g., "groups", "roles", "cognito:groups").
 	Groups []string
 
 	// Claims contains additional claims from the auth token.
@@ -91,6 +83,52 @@ type Identity struct {
 
 	// Metadata stores additional identity information.
 	Metadata map[string]string
+}
+
+// String returns a string representation of the Identity with sensitive fields redacted.
+// This prevents accidental token leakage when the Identity is logged or printed.
+func (i *Identity) String() string {
+	if i == nil {
+		return "<nil>"
+	}
+
+	return fmt.Sprintf("Identity{Subject:%q}", i.Subject)
+}
+
+// MarshalJSON implements json.Marshaler to redact sensitive fields during JSON serialization.
+// This prevents accidental token leakage in structured logs, API responses, or audit logs.
+func (i *Identity) MarshalJSON() ([]byte, error) {
+	if i == nil {
+		return []byte("null"), nil
+	}
+
+	// Create a safe representation with lowercase field names and redacted token
+	type SafeIdentity struct {
+		Subject   string            `json:"subject"`
+		Name      string            `json:"name"`
+		Email     string            `json:"email"`
+		Groups    []string          `json:"groups"`
+		Claims    map[string]any    `json:"claims"`
+		Token     string            `json:"token"`
+		TokenType string            `json:"tokenType"`
+		Metadata  map[string]string `json:"metadata"`
+	}
+
+	token := i.Token
+	if token != "" {
+		token = "REDACTED"
+	}
+
+	return json.Marshal(&SafeIdentity{
+		Subject:   i.Subject,
+		Name:      i.Name,
+		Email:     i.Email,
+		Groups:    i.Groups,
+		Claims:    i.Claims,
+		Token:     token,
+		TokenType: i.TokenType,
+		Metadata:  i.Metadata,
+	})
 }
 
 // Authorizer handles authorization decisions.

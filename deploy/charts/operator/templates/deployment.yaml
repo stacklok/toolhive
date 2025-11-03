@@ -43,6 +43,10 @@ spec:
           ports:
             {{- toYaml .Values.operator.ports | nindent 12 }}
           env:
+          - name: GOMEMLIMIT
+            value: {{ .Values.operator.gc.gomeglimit | quote }}
+          - name: GOGC
+            value: {{ .Values.operator.gc.gogc | quote }}
           # Always use structured JSON logs in Kubernetes (not configurable)
           - name: UNSTRUCTURED_LOGS
             value: "false"

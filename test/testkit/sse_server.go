@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -22,6 +23,8 @@ type sseServer struct {
 	toolsListResponse string
 	tools             map[string]tooldef
 	clientType        clientType
+	withProxy         bool
+	connHangDuration  time.Duration
 }
 
 var _ TestMCPServer = (*sseServer)(nil)
@@ -50,6 +53,16 @@ func (s *sseServer) SetClientType(clientType clientType) error {
 		return fmt.Errorf("client type already set")
 	}
 	s.clientType = clientType
+	return nil
+}
+
+func (s *sseServer) SetWithProxy() error {
+	s.withProxy = true
+	return nil
+}
+
+func (s *sseServer) SetConnectionHang(duration time.Duration) error {
+	s.connHangDuration = duration
 	return nil
 }
 
@@ -147,6 +160,7 @@ func (s *sseEventStreamClient) ToolsCall(name string) ([]byte, error) {
 func NewSSETestServer(
 	options ...TestMCPServerOption,
 ) (*httptest.Server, TestMCPClient, error) {
+	var testServer *httptest.Server
 	commandChannel := make(chan string, 10)
 
 	server := &sseServer{
@@ -164,9 +178,6 @@ func NewSSETestServer(
 		server.toolsListResponse = makeToolsList(server.tools)
 	}
 
-	router := chi.NewRouter()
-
-	// Apply middleware
 	allMiddlewares := append(
 		[]func(http.Handler) http.Handler{
 			middleware.RequestID,
@@ -174,18 +185,25 @@ func NewSSETestServer(
 		},
 		server.middlewares...,
 	)
-	router.Use(allMiddlewares...)
+
+	router := chi.NewRouter()
+
+	// If the server is not configured to use a proxy, apply the middlewares to
+	// the router directly.
+	if !server.withProxy {
+		router.Use(allMiddlewares...)
+	}
 
 	router.Post("/command", server.commandHandler)
 	router.Get("/sse", server.sseHandler)
 
-	httpServer := httptest.NewServer(router)
-
+	// Start backend test server
+	backendServer := httptest.NewServer(router)
 	clientCommandChannel := make(chan []byte, 1)
 	go func() {
 		defer close(clientCommandChannel)
 
-		resp, err := httpServer.Client().Get(httpServer.URL + "/sse")
+		resp, err := backendServer.Client().Get(backendServer.URL + "/sse")
 		if err != nil {
 			return
 		}
@@ -199,17 +217,30 @@ func NewSSETestServer(
 		clientCommandChannel <- body
 	}()
 
+	// By default, use the backend test server directly.
+	testServer = backendServer
+
+	// If the server is configured to use a proxy,create a reverse proxy to
+	// the backend test server.
+	if server.withProxy {
+		proxyServer, err := wrapBackendWithProxy(backendServer.URL, allMiddlewares)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to wrap backend with proxy: %w", err)
+		}
+		testServer = proxyServer
+	}
+
 	switch server.clientType {
 	case clientTypeJSON:
 		return nil, nil, fmt.Errorf("client type JSON not supported for SSE server")
 	case clientTypeSSE:
-		return httpServer, &sseEventStreamClient{
-			server:         httpServer,
+		return testServer, &sseEventStreamClient{
+			server:         testServer,
 			commandChannel: clientCommandChannel,
 		}, nil
 	default:
-		return httpServer, &sseEventStreamClient{
-			server:         httpServer,
+		return testServer, &sseEventStreamClient{
+			server:         testServer,
 			commandChannel: clientCommandChannel,
 		}, nil
 	}
@@ -268,7 +299,7 @@ func (s *sseServer) sseHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 
 	// Get flusher for streaming responses
-	flusher, ok := w.(http.Flusher)
+	_, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
 		return
@@ -305,14 +336,12 @@ func (s *sseServer) sseHandler(w http.ResponseWriter, _ *http.Request) {
 					response = "failed to generate response"
 				}
 
-				if _, err := w.Write([]byte("event: random-stuff\ndata: " + response + "\n\n")); err != nil {
-					http.Error(w, "Error writing response", http.StatusInternalServerError)
-					return
+				if s.connHangDuration == 0 {
+					singleFlushResponse([]byte("event: random-stuff\ndata: "+response+"\n\n"), w)
+				} else {
+					staggeredFlushResponse([]byte("event: random-stuff\ndata: "+response+"\n\n"), w, s.connHangDuration)
 				}
 			}
-
-			// Flush the response immediately
-			flusher.Flush()
 		}
 	}
 }

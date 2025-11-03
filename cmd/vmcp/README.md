@@ -6,16 +6,25 @@ The Virtual MCP Server (vmcp) is a standalone binary that aggregates multiple MC
 
 ## Features
 
-- **Group-Based Backend Management**: References an existing ToolHive group for automatic workload discovery
-- **Tool Aggregation**: Combines tools from multiple MCP servers with conflict resolution (prefix, priority, or manual)
-- **Resource & Prompt Aggregation**: Unified access to resources and prompts from all backends
-- **Two Authentication Boundaries**:
-  - **Incoming Auth** (Client → Virtual MCP): OIDC, local, or anonymous authentication
-  - **Outgoing Auth** (Virtual MCP → Backend APIs): RFC 8693 token exchange for backend API access
-- **Per-Backend Token Exchange**: Different authentication strategies per backend (pass_through, token_exchange, service_account)
-- **Authorization**: Cedar policy-based access control
-- **Operational Features**: Circuit breakers, health checks, timeout management, failure handling
-- **Future**: Composite tools with elicitation support for multi-step workflows
+### Implemented (Phase 1)
+- ✅ **Group-Based Backend Management**: Automatic workload discovery from ToolHive groups
+- ✅ **Tool Aggregation**: Combines tools from multiple MCP servers with conflict resolution (prefix, priority, manual)
+- ✅ **Resource & Prompt Aggregation**: Unified access to resources and prompts from all backends
+- ✅ **Request Routing**: Intelligent routing of tool/resource/prompt requests to correct backends
+- ✅ **Session Management**: MCP protocol session tracking with TTL-based cleanup
+- ✅ **Health Endpoints**: `/health` and `/ping` for service monitoring
+- ✅ **Configuration Validation**: `vmcp validate` command for config verification
+
+### In Progress
+- 🚧 **Incoming Authentication** (Issue #165): OIDC, local, anonymous authentication
+- 🚧 **Outgoing Authentication** (Issue #160): RFC 8693 token exchange for backend API access
+- 🚧 **Token Caching**: Memory and Redis cache providers
+- 🚧 **Health Monitoring** (Issue #166): Circuit breakers, backend health checks
+
+### Future (Phase 2+)
+- 📋 **Authorization**: Cedar policy-based access control
+- 📋 **Composite Tools**: Multi-step workflows with elicitation support
+- 📋 **Advanced Routing**: Load balancing, failover strategies
 
 ## Installation
 
@@ -37,6 +46,48 @@ task build-vmcp-image
 
 # Or pull from GitHub Container Registry
 docker pull ghcr.io/stacklok/toolhive/vmcp:latest
+```
+
+## Quick Start
+
+```bash
+# 1. Create a ToolHive group
+thv group create my-team
+
+# 2. Run some MCP servers in the group
+thv run github --name github-mcp --group my-team
+thv run fetch --name fetch-mcp --group my-team
+
+# 3. Create a vmcp configuration file (see example-config.yaml)
+cat > vmcp-config.yaml <<EOF
+name: "my-vmcp"
+group: "my-team"
+incoming_auth:
+  type: anonymous
+outgoing_auth:
+  source: inline
+  default:
+    type: pass_through
+aggregation:
+  conflict_resolution: prefix
+  conflict_resolution_config:
+    prefix_format: "{workload}_"
+EOF
+
+# 4. Validate the configuration
+vmcp validate --config vmcp-config.yaml
+
+# 5. Start the Virtual MCP Server
+vmcp serve --config vmcp-config.yaml
+
+# 6. Test the health endpoint
+curl http://127.0.0.1:4483/health
+# {"status":"ok"}
+
+# 7. Connect your MCP client to http://127.0.0.1:4483/mcp
+# The client will see aggregated tools from all backends:
+#   - github-mcp_create_issue, github-mcp_list_repos, ...
+#   - fetch-mcp_fetch, ...
 ```
 
 ## Usage

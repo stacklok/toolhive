@@ -1,7 +1,7 @@
 
 # ToolHive Operator Helm Chart
 
-![Version: 0.3.2](https://img.shields.io/badge/Version-0.3.2-informational?style=flat-square)
+![Version: 0.3.5](https://img.shields.io/badge/Version-0.3.5-informational?style=flat-square)
 ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square)
 
 A Helm chart for deploying the ToolHive Operator into Kubernetes.
@@ -53,7 +53,7 @@ The command removes all the Kubernetes components associated with the chart and 
 |-----|-------------|------|---------|
 | fullnameOverride | string | `"toolhive-operator"` | Provide a fully-qualified name override for resources |
 | nameOverride | string | `""` | Override the name of the chart |
-| operator | object | `{"affinity":{},"autoscaling":{"enabled":false,"maxReplicas":100,"minReplicas":1,"targetCPUUtilizationPercentage":80},"containerSecurityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}},"env":{},"features":{"experimental":false},"image":"ghcr.io/stacklok/toolhive/operator:v0.5.0","imagePullPolicy":"IfNotPresent","imagePullSecrets":[],"leaderElectionRole":{"binding":{"name":"toolhive-operator-leader-election-rolebinding"},"name":"toolhive-operator-leader-election-role","rules":[{"apiGroups":[""],"resources":["configmaps"],"verbs":["get","list","watch","create","update","patch","delete"]},{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["get","list","watch","create","update","patch","delete"]},{"apiGroups":[""],"resources":["events"],"verbs":["create","patch"]}]},"livenessProbe":{"httpGet":{"path":"/healthz","port":"health"},"initialDelaySeconds":15,"periodSeconds":20},"nodeSelector":{},"podAnnotations":{},"podLabels":{},"podSecurityContext":{"runAsNonRoot":true},"ports":[{"containerPort":8080,"name":"metrics","protocol":"TCP"},{"containerPort":8081,"name":"health","protocol":"TCP"}],"proxyHost":"0.0.0.0","rbac":{"allowedNamespaces":[],"scope":"cluster"},"readinessProbe":{"httpGet":{"path":"/readyz","port":"health"},"initialDelaySeconds":5,"periodSeconds":10},"replicaCount":1,"resources":{"limits":{"cpu":"500m","memory":"128Mi"},"requests":{"cpu":"10m","memory":"64Mi"}},"serviceAccount":{"annotations":{},"automountServiceAccountToken":true,"create":true,"labels":{},"name":"toolhive-operator"},"tolerations":[],"toolhiveRunnerImage":"ghcr.io/stacklok/toolhive/proxyrunner:v0.5.0","volumeMounts":[],"volumes":[]}` | All values for the operator deployment and associated resources |
+| operator | object | `{"affinity":{},"autoscaling":{"enabled":false,"maxReplicas":100,"minReplicas":1,"targetCPUUtilizationPercentage":80},"containerSecurityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}},"env":{},"features":{"experimental":false},"gc":{"gogc":75,"gomeglimit":"150MiB"},"image":"ghcr.io/stacklok/toolhive/operator:v0.5.0","imagePullPolicy":"IfNotPresent","imagePullSecrets":[],"leaderElectionRole":{"binding":{"name":"toolhive-operator-leader-election-rolebinding"},"name":"toolhive-operator-leader-election-role","rules":[{"apiGroups":[""],"resources":["configmaps"],"verbs":["get","list","watch","create","update","patch","delete"]},{"apiGroups":["coordination.k8s.io"],"resources":["leases"],"verbs":["get","list","watch","create","update","patch","delete"]},{"apiGroups":[""],"resources":["events"],"verbs":["create","patch"]}]},"livenessProbe":{"httpGet":{"path":"/healthz","port":"health"},"initialDelaySeconds":15,"periodSeconds":20},"nodeSelector":{},"podAnnotations":{},"podLabels":{},"podSecurityContext":{"runAsNonRoot":true},"ports":[{"containerPort":8080,"name":"metrics","protocol":"TCP"},{"containerPort":8081,"name":"health","protocol":"TCP"}],"proxyHost":"0.0.0.0","rbac":{"allowedNamespaces":[],"scope":"cluster"},"readinessProbe":{"httpGet":{"path":"/readyz","port":"health"},"initialDelaySeconds":5,"periodSeconds":10},"replicaCount":1,"resources":{"limits":{"cpu":"500m","memory":"128Mi"},"requests":{"cpu":"10m","memory":"64Mi"}},"serviceAccount":{"annotations":{},"automountServiceAccountToken":true,"create":true,"labels":{},"name":"toolhive-operator"},"tolerations":[],"toolhiveRunnerImage":"ghcr.io/stacklok/toolhive/proxyrunner:v0.5.0","volumeMounts":[],"volumes":[]}` | All values for the operator deployment and associated resources |
 | operator.affinity | object | `{}` | Affinity settings for the operator pod |
 | operator.autoscaling | object | `{"enabled":false,"maxReplicas":100,"minReplicas":1,"targetCPUUtilizationPercentage":80}` | Configuration for horizontal pod autoscaling |
 | operator.autoscaling.enabled | bool | `false` | Enable autoscaling for the operator |
@@ -62,6 +62,9 @@ The command removes all the Kubernetes components associated with the chart and 
 | operator.autoscaling.targetCPUUtilizationPercentage | int | `80` | Target CPU utilization percentage for autoscaling |
 | operator.containerSecurityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}}` | Container security context settings for the operator |
 | operator.env | object | `{}` | Environment variables to set in the operator container |
+| operator.gc | object | `{"gogc":75,"gomeglimit":"150MiB"}` | Go memory limits and garbage collection percentage for the operator container |
+| operator.gc.gogc | int | `75` | Go garbage collection percentage for the operator container |
+| operator.gc.gomeglimit | string | `"150MiB"` | Go memory limits for the operator container |
 | operator.image | string | `"ghcr.io/stacklok/toolhive/operator:v0.5.0"` | Container image for the operator |
 | operator.imagePullPolicy | string | `"IfNotPresent"` | Image pull policy for the operator container |
 | operator.imagePullSecrets | list | `[]` | List of image pull secrets to use |
@@ -92,8 +95,8 @@ The command removes all the Kubernetes components associated with the chart and 
 | operator.toolhiveRunnerImage | string | `"ghcr.io/stacklok/toolhive/proxyrunner:v0.5.0"` | Image to use for Toolhive runners |
 | operator.volumeMounts | list | `[]` | Additional volume mounts on the operator container |
 | operator.volumes | list | `[]` | Additional volumes to mount on the operator pod |
-| registryAPI | object | `{"image":"ghcr.io/stacklok/thv-registry-api:latest","serviceAccount":{"annotations":{},"automountServiceAccountToken":true,"labels":{},"name":"toolhive-registry-api"}}` | All values for the registry API deployment and associated resources |
-| registryAPI.image | string | `"ghcr.io/stacklok/thv-registry-api:latest"` | Container image for the registry API |
+| registryAPI | object | `{"image":"ghcr.io/stacklok/thv-registry-api:0.1.0","serviceAccount":{"annotations":{},"automountServiceAccountToken":true,"labels":{},"name":"toolhive-registry-api"}}` | All values for the registry API deployment and associated resources |
+| registryAPI.image | string | `"ghcr.io/stacklok/thv-registry-api:0.1.0"` | Container image for the registry API |
 | registryAPI.serviceAccount | object | `{"annotations":{},"automountServiceAccountToken":true,"labels":{},"name":"toolhive-registry-api"}` | Service account configuration for the registry API |
 | registryAPI.serviceAccount.annotations | object | `{}` | Annotations to add to the registry API service account |
 | registryAPI.serviceAccount.automountServiceAccountToken | bool | `true` | Automatically mount a ServiceAccount's API credentials |

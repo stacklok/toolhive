@@ -81,6 +81,11 @@ type OIDCConfig struct {
 	// Audience is the required token audience.
 	Audience string
 
+	// Resource is the OAuth 2.0 resource indicator (RFC 8707).
+	// Used in WWW-Authenticate header and OAuth discovery metadata (RFC 9728).
+	// If not specified, defaults to Audience.
+	Resource string
+
 	// Scopes are the required OAuth scopes.
 	Scopes []string
 }

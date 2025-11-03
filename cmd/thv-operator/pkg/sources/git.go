@@ -4,9 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
+	"runtime"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -77,27 +75,19 @@ func (*GitSourceHandler) Validate(source *mcpv1alpha1.MCPRegistrySource) error {
 }
 
 // FetchRegistry retrieves registry data from the Git repository
-func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*FetchResult, error) {
+func (h *GitSourceHandler) fetchRegistryData(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) ([]byte, error) {
 
 	// Validate source configuration
 	if err := h.Validate(&mcpRegistry.Spec.Source); err != nil {
 		return nil, fmt.Errorf("source validation failed: %w", err)
 	}
 
-	// Create temporary directory for cloning
-	tempDir, err := os.MkdirTemp("", "mcpregistry-git-*")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
-	}
-	defer os.RemoveAll(tempDir)
-
 	// Prepare clone configuration
 	cloneConfig := &git.CloneConfig{
-		URL:       mcpRegistry.Spec.Source.Git.Repository,
-		Branch:    mcpRegistry.Spec.Source.Git.Branch,
-		Tag:       mcpRegistry.Spec.Source.Git.Tag,
-		Commit:    mcpRegistry.Spec.Source.Git.Commit,
-		Directory: tempDir,
+		URL:    mcpRegistry.Spec.Source.Git.Repository,
+		Branch: mcpRegistry.Spec.Source.Git.Branch,
+		Tag:    mcpRegistry.Spec.Source.Git.Tag,
+		Commit: mcpRegistry.Spec.Source.Git.Commit,
 	}
 
 	// Clone the repository with timing and metrics
@@ -109,6 +99,9 @@ func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1
 		"tag", cloneConfig.Tag,
 		"commit", cloneConfig.Commit)
 
+	// Capture memory stats before operation
+	var memBefore runtime.MemStats
+	runtime.ReadMemStats(&memBefore)
 	repoInfo, err := h.gitClient.Clone(ctx, cloneConfig)
 	cloneDuration := time.Since(startTime)
 
@@ -119,27 +112,18 @@ func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1
 		return nil, fmt.Errorf("failed to clone repository: %w", err)
 	}
 
-	// Calculate directory size and object count
-	dirSize, objectCount, sizeErr := calculateDirectoryMetrics(tempDir)
-	if sizeErr != nil {
-		logger.Error(sizeErr, "Failed to calculate directory metrics")
-		dirSize = 0
-		objectCount = 0
-	}
-
 	logger.Info("Git clone completed",
 		"repository", cloneConfig.URL,
 		"duration", cloneDuration.String(),
-		"directory_size_mb", fmt.Sprintf("%.2f", float64(dirSize)/(1024*1024)),
-		"object_count", objectCount,
 		"branch", repoInfo.Branch)
 
 	// Ensure cleanup
 	defer func() {
-		if cleanupErr := h.gitClient.Cleanup(repoInfo); cleanupErr != nil {
+		if cleanupErr := h.gitClient.Cleanup(ctx, repoInfo); cleanupErr != nil {
 			// Log error but don't fail the operation
 			log.FromContext(ctx).Error(cleanupErr, "Failed to cleanup repository")
 		}
+		logMemoryStatsAfterOperation(ctx, &memBefore)
 	}()
 
 	// Get file content from repository
@@ -153,68 +137,35 @@ func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1
 		return nil, fmt.Errorf("failed to get file %s from repository: %w", filePath, err)
 	}
 
+	return registryData, nil
+}
+
+// FetchRegistry retrieves registry data from the Git repository
+func (h *GitSourceHandler) FetchRegistry(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*FetchResult, error) {
+
+	registryData, err := h.fetchRegistryData(ctx, mcpRegistry)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch registry data: %w", err)
+	}
+
 	// Validate and parse registry data
 	reg, err := h.validator.ValidateData(registryData, mcpRegistry.Spec.Source.Format)
 	if err != nil {
 		return nil, fmt.Errorf("registry data validation failed: %w", err)
 	}
 
-	// Calculate hash using the same method as CurrentHash for consistency
-	hash, err := h.CurrentHash(ctx, mcpRegistry)
-	if err != nil {
-		return nil, fmt.Errorf("failed to calculate hash: %w", err)
-	}
+	// Calculate hash using the SHA256 hash of the registry data
+	hash := fmt.Sprintf("%x", sha256.Sum256(registryData))
 
 	// Create and return fetch result with pre-calculated hash
 	return NewFetchResult(reg, hash, mcpRegistry.Spec.Source.Format), nil
 }
 
-// CurrentHash returns the current hash of the source data without performing a full fetch
+// CurrentHash returns the current hash of the source data after fetching the registry data
 func (h *GitSourceHandler) CurrentHash(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (string, error) {
-	// Validate source configuration
-	if err := h.Validate(&mcpRegistry.Spec.Source); err != nil {
-		return "", fmt.Errorf("source validation failed: %w", err)
-	}
-
-	// Create temporary directory for cloning
-	tempDir, err := os.MkdirTemp("", "mcpregistry-git-hash-*")
+	registryData, err := h.fetchRegistryData(ctx, mcpRegistry)
 	if err != nil {
-		return "", fmt.Errorf("failed to create temporary directory: %w", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Prepare clone configuration
-	cloneConfig := &git.CloneConfig{
-		URL:       mcpRegistry.Spec.Source.Git.Repository,
-		Branch:    mcpRegistry.Spec.Source.Git.Branch,
-		Tag:       mcpRegistry.Spec.Source.Git.Tag,
-		Commit:    mcpRegistry.Spec.Source.Git.Commit,
-		Directory: tempDir,
-	}
-
-	// Clone the repository
-	repoInfo, err := h.gitClient.Clone(ctx, cloneConfig)
-	if err != nil {
-		return "", fmt.Errorf("failed to clone repository: %w", err)
-	}
-
-	// Ensure cleanup
-	defer func() {
-		if cleanupErr := h.gitClient.Cleanup(repoInfo); cleanupErr != nil {
-			// Log error but don't fail the operation
-			fmt.Printf("Warning: failed to cleanup repository: %v\n", cleanupErr)
-		}
-	}()
-
-	// Get file content from repository
-	filePath := mcpRegistry.Spec.Source.Git.Path
-	if filePath == "" {
-		filePath = DefaultRegistryDataFile
-	}
-
-	registryData, err := h.gitClient.GetFileContent(repoInfo, filePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to get file %s from repository: %w", filePath, err)
+		return "", fmt.Errorf("failed to fetch registry data: %w", err)
 	}
 
 	// Compute and return hash of the data
@@ -222,24 +173,38 @@ func (h *GitSourceHandler) CurrentHash(ctx context.Context, mcpRegistry *mcpv1al
 	return hash, nil
 }
 
-// calculateDirectoryMetrics calculates the total size and file count of a directory
-func calculateDirectoryMetrics(dirPath string) (totalSize int64, fileCount int, err error) {
-	err = filepath.WalkDir(dirPath, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
+// logMemoryStatsAfterOperation logs the memory stats after an operation
+func logMemoryStatsAfterOperation(ctx context.Context, memBefore *runtime.MemStats) {
+	// Log memory stats after cleanup and GC
+	var memAfter runtime.MemStats
+	runtime.ReadMemStats(&memAfter)
 
-		if !d.IsDir() {
-			fileCount++
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			totalSize += info.Size()
-		}
+	// Calculate delta in MB with proper signed arithmetic
+	allocAfterMB := memAfter.Alloc / (1024 * 1024)
+	allocBeforeMB := memBefore.Alloc / (1024 * 1024)
+	var deltaMB int64
+	if allocAfterMB >= allocBeforeMB {
+		// #nosec G115 -- Memory delta in MB will never exceed int64 max
+		deltaMB = int64(allocAfterMB - allocBeforeMB)
+	} else {
+		// #nosec G115 -- Memory delta in MB will never exceed int64 max
+		deltaMB = -int64(allocBeforeMB - allocAfterMB)
+	}
 
-		return nil
-	})
+	// Calculate additional memory metrics for container memory debugging
+	// These help explain the difference between Go heap and container RSS
+	sysMB := memAfter.Sys / (1024 * 1024)                   // Total memory from OS
+	heapAllocMB := memAfter.HeapAlloc / (1024 * 1024)       // Bytes allocated on heap
+	heapSysMB := memAfter.HeapSys / (1024 * 1024)           // Bytes obtained from OS for heap
+	heapReleasedMB := memAfter.HeapReleased / (1024 * 1024) // Bytes returned to OS
+	heapIdleMB := memAfter.HeapIdle / (1024 * 1024)         // Bytes in idle spans
 
-	return totalSize, fileCount, err
+	log.FromContext(ctx).Info("Memory stats after operation",
+		"alloc_mb", allocAfterMB,
+		"delta_mb", deltaMB,
+		"sys_mb", sysMB,
+		"heap_alloc_mb", heapAllocMB,
+		"heap_sys_mb", heapSysMB,
+		"heap_idle_mb", heapIdleMB,
+		"heap_released_mb", heapReleasedMB)
 }

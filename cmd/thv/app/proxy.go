@@ -253,8 +253,11 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Create the transparent proxy with middlewares
 	proxy := transparent.NewTransparentProxy(
-		proxyHost, port, serverName, proxyTargetURI,
-		nil, authInfoHandler,
+		proxyHost,
+		port,
+		proxyTargetURI,
+		nil,
+		authInfoHandler,
 		false,
 		false, // isRemote
 		"",

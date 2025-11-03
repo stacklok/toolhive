@@ -8,6 +8,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -16,14 +17,23 @@ import (
 type cliBackendDiscoverer struct {
 	workloadsManager workloads.Manager
 	groupsManager    groups.Manager
+	authConfig       *config.OutgoingAuthConfig
 }
 
 // NewCLIBackendDiscoverer creates a new CLI-based backend discoverer.
 // It discovers workloads from Docker/Podman containers managed by ToolHive.
-func NewCLIBackendDiscoverer(workloadsManager workloads.Manager, groupsManager groups.Manager) BackendDiscoverer {
+//
+// The authConfig parameter configures authentication for discovered backends.
+// If nil, backends will have no authentication configured.
+func NewCLIBackendDiscoverer(
+	workloadsManager workloads.Manager,
+	groupsManager groups.Manager,
+	authConfig *config.OutgoingAuthConfig,
+) BackendDiscoverer {
 	return &cliBackendDiscoverer{
 		workloadsManager: workloadsManager,
 		groupsManager:    groupsManager,
+		authConfig:       authConfig,
 	}
 }
 
@@ -92,6 +102,16 @@ func (d *cliBackendDiscoverer) Discover(ctx context.Context, groupRef string) ([
 			Metadata:      make(map[string]string),
 		}
 
+		// Apply authentication configuration if provided
+		if d.authConfig != nil {
+			authStrategy, authMetadata := d.resolveAuthConfig(name)
+			backend.AuthStrategy = authStrategy
+			backend.AuthMetadata = authMetadata
+			if authStrategy != "" {
+				logger.Debugf("Backend %s configured with auth strategy: %s", name, authStrategy)
+			}
+		}
+
 		// Copy user labels to metadata first
 		for k, v := range workload.Labels {
 			backend.Metadata[k] = v
@@ -114,6 +134,29 @@ func (d *cliBackendDiscoverer) Discover(ctx context.Context, groupRef string) ([
 
 	logger.Infof("Discovered %d backends in group %s", len(backends), groupRef)
 	return backends, nil
+}
+
+// resolveAuthConfig determines the authentication strategy and metadata for a backend.
+// It checks for backend-specific configuration first, then falls back to default.
+func (d *cliBackendDiscoverer) resolveAuthConfig(backendID string) (string, map[string]any) {
+	if d.authConfig == nil {
+		return "", nil
+	}
+
+	// Check for backend-specific configuration
+	if strategy, exists := d.authConfig.Backends[backendID]; exists && strategy != nil {
+		logger.Debugf("Using backend-specific auth strategy for %s: %s", backendID, strategy.Type)
+		return strategy.Type, strategy.Metadata
+	}
+
+	// Fall back to default configuration
+	if d.authConfig.Default != nil {
+		logger.Debugf("Using default auth strategy for %s: %s", backendID, d.authConfig.Default.Type)
+		return d.authConfig.Default.Type, d.authConfig.Default.Metadata
+	}
+
+	// No authentication configured
+	return "", nil
 }
 
 // mapWorkloadStatusToHealth converts a workload status to a backend health status.

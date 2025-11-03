@@ -3,16 +3,17 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -186,27 +187,14 @@ func CreateTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 	}
 }
 
-func TestFindClientConfigs(t *testing.T) {
-	t.Parallel()
-	logger.Initialize()
-
+//nolint:paralleltest // This test modifies global logger
+func TestFindClientConfigs(t *testing.T) { // Can't run in parallel because it uses global logger
 	// Setup a temporary home directory for testing
 	tempHome := t.TempDir()
 
 	t.Run("InvalidConfigFileFormat", func(t *testing.T) {
-		t.Parallel() // Now we can use parallel since we don't modify global state
-		// Set up environment for unstructured logs and capture stderr before initializing logger
-		originalUnstructuredLogs := os.Getenv("UNSTRUCTURED_LOGS")
-		os.Setenv("UNSTRUCTURED_LOGS", "true")
-		defer os.Setenv("UNSTRUCTURED_LOGS", originalUnstructuredLogs)
-
-		// Capture log output to verify error logging
-		originalStderr := os.Stderr
-		r, w, _ := os.Pipe()
-		os.Stderr = w
-
-		// Re-initialize logger to use the captured stderr
-		logger.Initialize()
+		// Initialize in-memory test logger
+		observerLogs := initializeTest(t)
 
 		// Create an invalid JSON file
 		invalidPath := filepath.Join(tempHome, ".cursor", "invalid.json")
@@ -266,19 +254,46 @@ func TestFindClientConfigs(t *testing.T) {
 		// We expect 1 config (VSCode) since cursor with invalid JSON should be skipped
 		assert.Len(t, configs, 1, "Should find configs for valid clients only, skipping invalid ones")
 
-		// Restore stderr and capture log output
-		w.Close()
-		os.Stderr = originalStderr
+		// Read all log entries
+		var sb strings.Builder
+		for _, entry := range observerLogs.All() {
+			sb.WriteString(entry.Message)
+		}
 
-		var capturedOutput bytes.Buffer
-		io.Copy(&capturedOutput, r)
-		logOutput := capturedOutput.String()
+		logOutput := sb.String()
 
 		// Verify that the error was logged
 		assert.Contains(t, logOutput, "Unable to process client config for cursor", "Should log warning about cursor client config")
 		assert.Contains(t, logOutput, "failed to validate config file format", "Should log the specific validation error")
 		assert.Contains(t, logOutput, "cursor", "Should mention cursor in the error message")
 	})
+}
+
+func initializeTest(t *testing.T) *observer.ObservedLogs {
+	t.Helper()
+
+	// Set log level based on current debug flag
+	var level zap.AtomicLevel
+	if viper.GetBool("debug") {
+		level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	} else {
+		level = zap.NewAtomicLevelAt(zap.InfoLevel)
+	}
+
+	core, observedLogs := observer.New(level)
+	testLogger := zap.New(core)
+
+	// Save original logger for restoring
+	originalLogger := zap.L()
+
+	zap.ReplaceGlobals(testLogger)
+
+	// Restore original logger
+	t.Cleanup(func() {
+		zap.ReplaceGlobals(originalLogger)
+	})
+
+	return observedLogs
 }
 
 func TestSuccessfulClientConfigOperations(t *testing.T) {

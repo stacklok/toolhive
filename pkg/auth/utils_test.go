@@ -121,15 +121,16 @@ func TestGetClaimsFromContext(t *testing.T) {
 	assert.Equal(t, "testuser", retrievedClaims["sub"])
 	assert.Equal(t, "test-issuer", retrievedClaims["iss"])
 
-	// Test with no claims in context
+	// Test with no identity in context
 	emptyCtx := context.Background()
 	_, ok = GetClaimsFromContext(emptyCtx)
 	assert.False(t, ok, "Expected no claims to be found in empty context")
 
-	// Test with wrong type in context
-	wrongCtx := context.WithValue(context.Background(), ClaimsContextKey{}, "not-claims")
-	_, ok = GetClaimsFromContext(wrongCtx)
-	assert.False(t, ok, "Expected no claims to be found when wrong type is in context")
+	// Test with identity that has nil claims
+	identityWithNilClaims := &Identity{Subject: "testuser", Claims: nil}
+	ctxWithNilClaims := WithIdentity(context.Background(), identityWithNilClaims)
+	_, ok = GetClaimsFromContext(ctxWithNilClaims)
+	assert.False(t, ok, "Expected no claims to be found when identity has nil claims")
 
 	// Test with nil context - we intentionally pass nil to test the nil check
 	//nolint:staticcheck // SA1012: Testing nil context handling is intentional

@@ -819,8 +819,6 @@ func (v *TokenValidator) ValidateToken(ctx context.Context, tokenString string) 
 	return claims, nil
 }
 
-// Note: ClaimsContextKey is now defined in context.go
-
 // buildWWWAuthenticate builds a RFC 6750 / RFC 9728 compliant value for the
 // WWW-Authenticate header. It always includes realm and, if set, resource_metadata.
 // If includeError is true, it appends error="invalid_token" and an optional description.

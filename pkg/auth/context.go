@@ -15,11 +15,6 @@ import (
 // as each empty struct type is distinct even if they have the same name in different packages.
 type IdentityContextKey struct{}
 
-// ClaimsContextKey is the legacy key used to store JWT claims in the context.
-// This is maintained for backward compatibility but deprecated in favor of IdentityContextKey.
-// New code should use WithIdentity/IdentityFromContext instead.
-type ClaimsContextKey struct{}
-
 // WithIdentity stores an Identity in the context.
 // If identity is nil, the original context is returned unchanged.
 //

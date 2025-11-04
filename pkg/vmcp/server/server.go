@@ -366,13 +366,18 @@ func (s *Server) Address() string {
 //nolint:unparam // Error return kept for future extensibility
 func (s *Server) registerTool(tool vmcp.Tool) error {
 	// Convert vmcp.Tool to mcp.Tool
+	// Note: tool.InputSchema is already a complete JSON Schema (map[string]any)
+	// containing type, properties, required, etc. We marshal it to JSON and
+	// use RawInputSchema to avoid double-nesting the schema structure.
+	schemaJSON, err := json.Marshal(tool.InputSchema)
+	if err != nil {
+		return fmt.Errorf("failed to marshal input schema for tool %s: %w", tool.Name, err)
+	}
+
 	mcpTool := mcp.Tool{
-		Name:        tool.Name,
-		Description: tool.Description,
-		InputSchema: mcp.ToolInputSchema{
-			Type:       "object",
-			Properties: tool.InputSchema,
-		},
+		Name:           tool.Name,
+		Description:    tool.Description,
+		RawInputSchema: schemaJSON,
 	}
 
 	// Create handler that routes to backend

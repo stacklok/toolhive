@@ -6,8 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"golang.org/x/oauth2"
+
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
 
 // StatusUpdater is an interface for updating workload authentication status.

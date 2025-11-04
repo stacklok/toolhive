@@ -66,7 +66,13 @@ type statusManagerAdapter struct {
 	sm statuses.StatusManager
 }
 
-func (a *statusManagerAdapter) SetWorkloadStatus(ctx context.Context, workloadName string, status rt.WorkloadStatus, reason string) error {
+func (a *statusManagerAdapter) SetWorkloadStatus(
+	ctx context.Context,
+	workloadName string,
+	status rt.WorkloadStatus,
+	reason string,
+) error {
+	logger.Debugf("Setting workload status: %s, %s, %s", workloadName, status, reason)
 	return a.sm.SetWorkloadStatus(ctx, workloadName, status, reason)
 }
 

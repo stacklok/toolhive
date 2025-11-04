@@ -132,7 +132,8 @@ func (ctx *WorkflowContext) GetLastStepOutput() map[string]any {
 	return lastOutput
 }
 
-// Clone creates a deep copy of the workflow context.
+// Clone creates a shallow copy of the workflow context.
+// Maps and step results are cloned, but nested values within maps are shared.
 // This is useful for testing and validation.
 func (ctx *WorkflowContext) Clone() *WorkflowContext {
 	clone := &WorkflowContext{

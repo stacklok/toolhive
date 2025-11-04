@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cenkalti/backoff/v5"
+
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
@@ -239,7 +241,7 @@ func (e *workflowEngine) executeToolStep(
 	return e.handleToolStepSuccess(step, workflowCtx, output, retryCount)
 }
 
-// callToolWithRetry calls a tool with retry logic.
+// callToolWithRetry calls a tool with retry logic using exponential backoff.
 func (e *workflowEngine) callToolWithRetry(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -247,30 +249,37 @@ func (e *workflowEngine) callToolWithRetry(
 	args map[string]any,
 	_ *WorkflowContext,
 ) (map[string]any, int, error) {
-	maxRetries, retryDelay := e.getRetryConfig(step)
+	maxRetries, initialDelay := e.getRetryConfig(step)
 
-	var output map[string]any
-	var err error
+	// Configure exponential backoff
+	expBackoff := backoff.NewExponentialBackOff()
+	expBackoff.InitialInterval = initialDelay
+	expBackoff.MaxInterval = 60 * initialDelay // Cap at 60x the initial delay
+	expBackoff.Reset()
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		// Wait before retry (skip on first attempt)
-		if attempt > 0 {
-			if waitErr := e.waitForRetry(ctx, step.ID, attempt, maxRetries, retryDelay); waitErr != nil {
-				return nil, attempt, waitErr
-			}
+	attemptCount := 0
+	operation := func() (map[string]any, error) {
+		attemptCount++
+		output, err := e.backendClient.CallTool(ctx, target, step.Tool, args)
+		if err != nil {
+			logger.Warnf("Tool call failed for step %s (attempt %d/%d): %v",
+				step.ID, attemptCount, maxRetries+1, err)
+			return nil, err
 		}
-
-		// Attempt tool call
-		output, err = e.backendClient.CallTool(ctx, target, step.Tool, args)
-		if err == nil {
-			return output, attempt, nil
-		}
-
-		logger.Warnf("Tool call failed for step %s (attempt %d/%d): %v",
-			step.ID, attempt+1, maxRetries+1, err)
+		return output, nil
 	}
 
-	return nil, maxRetries, err
+	// Execute with retry
+	// Safe conversion: maxRetries is capped by maxRetryCount constant (10)
+	output, err := backoff.Retry(ctx, operation,
+		backoff.WithBackOff(expBackoff),
+		backoff.WithMaxTries(uint(maxRetries+1)), // #nosec G115 -- +1 because it includes the initial attempt
+		backoff.WithNotify(func(_ error, duration time.Duration) {
+			logger.Debugf("Retrying step %s after %v", step.ID, duration)
+		}),
+	)
+
+	return output, attemptCount - 1, err // Return retry count (attempts - 1)
 }
 
 // getRetryConfig extracts retry configuration from step.
@@ -294,36 +303,6 @@ func (*workflowEngine) getRetryConfig(step *WorkflowStep) (int, time.Duration) {
 	}
 
 	return retries, retryDelay
-}
-
-// waitForRetry waits before retrying with exponential backoff.
-func (*workflowEngine) waitForRetry(
-	ctx context.Context,
-	stepID string,
-	attempt int,
-	maxRetries int,
-	baseDelay time.Duration,
-) error {
-	// Calculate backoff delay
-	backoffMultiplier := 1
-	if attempt > 1 {
-		backoffMultiplier = 1 << (attempt - 1)
-	}
-	delay := baseDelay * time.Duration(backoffMultiplier)
-
-	logger.Debugf("Retrying step %s after %v (attempt %d/%d)",
-		stepID, delay, attempt, maxRetries)
-
-	// Wait with cancellation support
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("context cancelled during retry: %w", ctx.Err())
-	}
 }
 
 // handleToolStepFailure handles a failed tool step.

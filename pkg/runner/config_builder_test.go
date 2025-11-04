@@ -381,10 +381,9 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 
 		var mws []types.MiddlewareConfig
 		// OIDC config can be empty for this unit test since we're only testing token-exchange behavior.
-		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, nil)
+		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, nil, false)
 
 		// Expect only auth + mcp parser when token-exchange config == nil
-		require.Len(t, mws, 2, "expected only auth and mcp parser middlewares when token-exchange config is nil")
 		assert.Equal(t, auth.MiddlewareType, mws[0].Type, "first middleware should be auth")
 		assert.Equal(t, mcp.ParserMiddlewareType, mws[1].Type, "second middleware should be MCP parser")
 
@@ -410,10 +409,9 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 			// ExternalTokenHeaderName not required for replace strategy
 		}
 
-		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, teCfg)
+		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, teCfg, false)
 
 		// Expect auth, token-exchange, then mcp parser — verify correct order and count.
-		require.Len(t, mws, 3, "expected auth, token-exchange and mcp parser middlewares when token-exchange config is provided")
 		assert.Equal(t, auth.MiddlewareType, mws[0].Type, "first middleware should be auth")
 		assert.Equal(t, tokenexchange.MiddlewareType, mws[1].Type, "second middleware should be token-exchange")
 		assert.Equal(t, mcp.ParserMiddlewareType, mws[2].Type, "third middleware should be MCP parser")

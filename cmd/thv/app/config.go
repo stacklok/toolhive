@@ -71,6 +71,13 @@ var unsetRegistryCmd = &cobra.Command{
 	RunE:  unsetRegistryCmdFunc,
 }
 
+var usageMetricsCmd = &cobra.Command{
+	Use:   "usage-metrics <enable|disable>",
+	Short: "Enable or disable anonymous usage metrics",
+	Args:  cobra.ExactArgs(1),
+	RunE:  usageMetricsCmdFunc,
+}
+
 var (
 	allowPrivateRegistryIp bool
 )
@@ -93,6 +100,7 @@ func init() {
 	)
 	configCmd.AddCommand(getRegistryCmd)
 	configCmd.AddCommand(unsetRegistryCmd)
+	configCmd.AddCommand(usageMetricsCmd)
 
 	// Add OTEL parent command to config
 	configCmd.AddCommand(OtelCmd)
@@ -237,5 +245,33 @@ func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 		fmt.Printf("Successfully removed local registry file: %s\n", localPath)
 	}
 	fmt.Println("Will use built-in registry.")
+	return nil
+}
+
+func usageMetricsCmdFunc(_ *cobra.Command, args []string) error {
+	action := args[0]
+
+	var disable bool
+	switch action {
+	case "enable":
+		disable = false
+	case "disable":
+		disable = true
+	default:
+		return fmt.Errorf("invalid argument: %s (expected 'enable' or 'disable')", action)
+	}
+
+	err := config.UpdateConfig(func(c *config.Config) {
+		c.DisableUsageMetrics = disable
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	if disable {
+		fmt.Println("Usage metrics disabled.")
+	} else {
+		fmt.Println("Usage metrics enabled.")
+	}
 	return nil
 }

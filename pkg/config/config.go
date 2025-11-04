@@ -32,6 +32,7 @@ type Config struct {
 	CACertificatePath      string              `yaml:"ca_certificate_path,omitempty"`
 	OTEL                   OpenTelemetryConfig `yaml:"otel,omitempty"`
 	DefaultGroupMigration  bool                `yaml:"default_group_migration,omitempty"`
+	DisableUsageMetrics    bool                `yaml:"disable_usage_metrics,omitempty"`
 }
 
 // Secrets contains the settings for secrets management.

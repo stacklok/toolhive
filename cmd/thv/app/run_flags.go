@@ -492,6 +492,10 @@ func configureMiddlewareAndOptions(
 ) ([]runner.RunConfigBuilderOption, error) {
 	var opts []runner.RunConfigBuilderOption
 
+	// Load application config for global settings
+	configProvider := cfg.NewDefaultProvider()
+	appConfig := configProvider.GetConfig()
+
 	// Configure middleware from flags
 	tokenExchangeConfig, err := runFlags.RemoteAuthFlags.BuildTokenExchangeConfig()
 	if err != nil {
@@ -513,6 +517,7 @@ func configureMiddlewareAndOptions(
 			runFlags.AuditConfig,
 			serverName,
 			transportType,
+			appConfig.DisableUsageMetrics,
 		),
 	)
 

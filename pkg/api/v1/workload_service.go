@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -222,6 +223,10 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		transportType = serverMetadata.GetTransport()
 	}
 
+	// Load application config for global settings
+	configProvider := config.NewDefaultProvider()
+	appConfig := configProvider.GetConfig()
+
 	// Configure middleware from flags
 	options = append(options,
 		runner.WithMiddlewareFromFlags(
@@ -235,6 +240,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 			"",
 			req.Name,
 			transportType,
+			appConfig.DisableUsageMetrics,
 		),
 	)
 

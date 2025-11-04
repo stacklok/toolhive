@@ -56,6 +56,23 @@ func TestDefaultOutgoingAuthRegistry_RegisterStrategy(t *testing.T) {
 		assert.Contains(t, err.Error(), "strategy cannot be nil")
 	})
 
+	t.Run("register strategy name mismatch fails", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		registry := NewDefaultOutgoingAuthRegistry()
+		strategy := mocks.NewMockStrategy(ctrl)
+		strategy.EXPECT().Name().Return("actual_name").AnyTimes()
+
+		err := registry.RegisterStrategy("different_name", strategy)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "strategy name mismatch")
+		assert.Contains(t, err.Error(), "different_name")
+		assert.Contains(t, err.Error(), "actual_name")
+	})
+
 	t.Run("register duplicate name fails", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)

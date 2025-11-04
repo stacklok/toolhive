@@ -50,24 +50,6 @@ func IdentityFromContext(ctx context.Context) (*Identity, bool) {
 	return identity, ok
 }
 
-// GetClaimsFromContext retrieves the claims from Identity in the request context.
-// This is a helper function for backward compatibility with code that expects MapClaims.
-// New code should use IdentityFromContext and access the Claims field directly.
-func GetClaimsFromContext(ctx context.Context) (jwt.MapClaims, bool) {
-	if ctx == nil {
-		return nil, false
-	}
-
-	// Get Identity and return its Claims
-	if identity, ok := IdentityFromContext(ctx); ok && identity != nil {
-		if identity.Claims != nil {
-			return jwt.MapClaims(identity.Claims), true
-		}
-	}
-
-	return nil, false
-}
-
 // claimsToIdentity converts JWT claims to Identity struct.
 // It requires the 'sub' claim per OIDC Core 1.0 spec § 5.1.
 // The original token can be provided for passthrough scenarios.

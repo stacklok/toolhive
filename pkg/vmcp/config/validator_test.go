@@ -187,32 +187,60 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 		errMsg  string
 	}{
 		{
-			name: "valid inline source with pass_through default",
+			name: "valid inline source with unauthenticated default",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
 				Default: &BackendAuthStrategy{
-					Type: "pass_through",
+					Type: "unauthenticated",
 				},
 			},
 			wantErr: false,
 		},
 		{
-			name: "valid token_exchange backend",
+			name: "valid header_injection backend",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
 				Backends: map[string]*BackendAuthStrategy{
 					"github": {
-						Type: "token_exchange",
+						Type: "header_injection",
 						Metadata: map[string]any{
-							"token_url": "https://example.com/token",
-							"client_id": "test-client",
-							"audience":  "github-api",
+							"header_name": "Authorization",
+							"api_key":     "secret-token",
 						},
 					},
 				},
 			},
 			wantErr: false,
 		},
+		// TODO: Uncomment when pass_through strategy is implemented
+		// {
+		// 	name: "valid inline source with pass_through default",
+		// 	auth: &OutgoingAuthConfig{
+		// 		Source: "inline",
+		// 		Default: &BackendAuthStrategy{
+		// 			Type: "pass_through",
+		// 		},
+		// 	},
+		// 	wantErr: false,
+		// },
+		// TODO: Uncomment when token_exchange strategy is implemented
+		// {
+		// 	name: "valid token_exchange backend",
+		// 	auth: &OutgoingAuthConfig{
+		// 		Source: "inline",
+		// 		Backends: map[string]*BackendAuthStrategy{
+		// 			"github": {
+		// 				Type: "token_exchange",
+		// 				Metadata: map[string]any{
+		// 					"token_url": "https://example.com/token",
+		// 					"client_id": "test-client",
+		// 					"audience":  "github-api",
+		// 				},
+		// 			},
+		// 		},
+		// 	},
+		// 	wantErr: false,
+		// },
 		{
 			name: "invalid source",
 			auth: &OutgoingAuthConfig{
@@ -234,23 +262,24 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			wantErr: true,
 			errMsg:  "type must be one of",
 		},
-		{
-			name: "token_exchange missing required metadata",
-			auth: &OutgoingAuthConfig{
-				Source: "inline",
-				Backends: map[string]*BackendAuthStrategy{
-					"github": {
-						Type: "token_exchange",
-						Metadata: map[string]any{
-							"client_id": "test-client",
-							// Missing token_url and audience
-						},
-					},
-				},
-			},
-			wantErr: true,
-			errMsg:  "token_exchange requires metadata field",
-		},
+		// TODO: Uncomment when token_exchange strategy is implemented
+		// {
+		// 	name: "token_exchange missing required metadata",
+		// 	auth: &OutgoingAuthConfig{
+		// 		Source: "inline",
+		// 		Backends: map[string]*BackendAuthStrategy{
+		// 			"github": {
+		// 				Type: "token_exchange",
+		// 				Metadata: map[string]any{
+		// 					"client_id": "test-client",
+		// 					// Missing token_url and audience
+		// 				},
+		// 			},
+		// 		},
+		// 	},
+		// 	wantErr: true,
+		// 	errMsg:  "token_exchange requires metadata field",
+		// },
 	}
 
 	for _, tt := range tests {

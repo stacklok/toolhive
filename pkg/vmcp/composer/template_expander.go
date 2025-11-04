@@ -9,10 +9,6 @@ import (
 	"text/template"
 )
 
-// Note: context.Context is included in function signatures for future use
-// (e.g., for cancellation of long-running template expansion).
-// Currently unused but maintained for interface compatibility.
-
 const (
 	// maxTemplateDepth is the maximum recursion depth for template expansion.
 	// This prevents stack overflow from deeply nested objects.
@@ -80,6 +76,11 @@ func (e *defaultTemplateExpander) expandValueWithDepth(
 	workflowCtx *WorkflowContext,
 	depth int,
 ) (any, error) {
+	// Check context cancellation before proceeding
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled during template expansion: %w", err)
+	}
+
 	// Prevent stack overflow from deeply nested templates
 	if depth > maxTemplateDepth {
 		return nil, fmt.Errorf("template expansion depth limit exceeded: %d", maxTemplateDepth)
@@ -121,10 +122,15 @@ func (e *defaultTemplateExpander) expandValueWithDepth(
 
 // expandString expands a single template string.
 func (e *defaultTemplateExpander) expandString(
-	_ context.Context,
+	ctx context.Context,
 	tmplStr string,
 	workflowCtx *WorkflowContext,
 ) (string, error) {
+	// Check context cancellation before expensive template operations
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("context cancelled before template expansion: %w", err)
+	}
+
 	// Create template context with params and steps
 	tmplCtx := map[string]any{
 		"params": workflowCtx.Params,
@@ -180,7 +186,7 @@ func (*defaultTemplateExpander) buildStepsContext(workflowCtx *WorkflowContext) 
 // EvaluateCondition evaluates a condition template to a boolean.
 // The condition string must evaluate to "true" or "false".
 func (e *defaultTemplateExpander) EvaluateCondition(
-	_ context.Context,
+	ctx context.Context,
 	condition string,
 	workflowCtx *WorkflowContext,
 ) (bool, error) {
@@ -189,7 +195,7 @@ func (e *defaultTemplateExpander) EvaluateCondition(
 	}
 
 	// Expand the condition as a template
-	result, err := e.expandString(context.TODO(), condition, workflowCtx)
+	result, err := e.expandString(ctx, condition, workflowCtx)
 	if err != nil {
 		return false, fmt.Errorf("failed to evaluate condition: %w", err)
 	}

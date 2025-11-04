@@ -1,0 +1,23 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: test-vmcp-controller
+  namespace: toolhive-system
+spec:
+  groupRef:
+    name: test-group-controller
+  incomingAuth:
+    oidcConfig:
+      type: inline
+      inline:
+        issuer: https://auth.example.com
+        audience: virtual-mcp-controller
+    authz:
+      model: rbac
+  outgoingAuth:
+    source: discovered
+  aggregation:
+    conflictResolution: prefix
+  operational:
+    logLevel: info
+    healthCheckInterval: 30s

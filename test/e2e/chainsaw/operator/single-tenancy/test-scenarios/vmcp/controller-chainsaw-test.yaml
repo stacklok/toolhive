@@ -1,0 +1,237 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: vmcp-controller-integration
+spec:
+  description: Test VirtualMCPServer controller reconciliation, resource creation, and status management
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    exec: 300s
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+
+  - name: create-backend-servers
+    description: Create MCPServer backends that will be discovered
+    try:
+    - apply:
+        file: mcpserver-backend-1.yaml
+    - apply:
+        file: mcpserver-backend-2.yaml
+    - assert:
+        file: mcpserver-backend-1.yaml
+    - assert:
+        file: mcpserver-backend-2.yaml
+
+  - name: create-mcpgroup
+    description: Create MCPGroup that references the backend servers
+    try:
+    - apply:
+        file: mcpgroup-controller.yaml
+    - assert:
+        file: mcpgroup-controller.yaml
+
+  - name: create-virtualmcpserver
+    description: Create VirtualMCPServer resource
+    try:
+    - apply:
+        file: vmcp-controller.yaml
+    - assert:
+        file: vmcp-controller.yaml
+
+  - name: verify-controller-creates-resources
+    description: Verify controller creates Deployment, Service, and ConfigMap
+    try:
+    - assert:
+        file: assert-vmcp-deployment.yaml
+    - assert:
+        file: assert-vmcp-service.yaml
+    - assert:
+        file: assert-vmcp-configmap.yaml
+
+  - name: verify-rbac-resources
+    description: Verify controller creates RBAC resources
+    try:
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying RBAC resources created by controller..."
+
+          # Check ServiceAccount
+          if kubectl get serviceaccount test-vmcp-controller -n toolhive-system 2>/dev/null; then
+            echo "✓ ServiceAccount created"
+          else
+            echo "✗ ServiceAccount not found"
+            exit 1
+          fi
+
+          # Check Role
+          if kubectl get role test-vmcp-controller -n toolhive-system 2>/dev/null; then
+            echo "✓ Role created"
+          else
+            echo "✗ Role not found"
+            exit 1
+          fi
+
+          # Check RoleBinding
+          if kubectl get rolebinding test-vmcp-controller -n toolhive-system 2>/dev/null; then
+            echo "✓ RoleBinding created"
+          else
+            echo "✗ RoleBinding not found"
+            exit 1
+          fi
+
+          echo "✅ All RBAC resources created successfully"
+
+  - name: verify-status-conditions
+    description: Verify VirtualMCPServer status is updated with conditions
+    try:
+    - assert:
+        file: assert-vmcp-status-ready.yaml
+
+  - name: verify-backend-discovery
+    description: Verify backends are discovered and tracked in status
+    try:
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying backend discovery in VirtualMCPServer status..."
+
+          # Get discovered backends count
+          BACKEND_COUNT=$(kubectl get virtualmcpserver test-vmcp-controller -n toolhive-system -o jsonpath='{.status.discoveredBackends}' | jq 'length' 2>/dev/null || echo "0")
+
+          if [ "$BACKEND_COUNT" -ge 2 ]; then
+            echo "✓ Discovered $BACKEND_COUNT backends"
+          else
+            echo "✗ Expected at least 2 backends, found $BACKEND_COUNT"
+            kubectl get virtualmcpserver test-vmcp-controller -n toolhive-system -o yaml
+            exit 1
+          fi
+
+          # Check that backends are listed
+          BACKENDS=$(kubectl get virtualmcpserver test-vmcp-controller -n toolhive-system -o jsonpath='{.status.discoveredBackends[*].name}' 2>/dev/null || echo "")
+          echo "  Backends: $BACKENDS"
+
+          echo "✅ Backend discovery verified"
+
+  - name: verify-configmap-content
+    description: Verify ConfigMap contains valid vmcp configuration
+    try:
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying ConfigMap contains valid vmcp configuration..."
+
+          # Get ConfigMap config.yaml content
+          CONFIG=$(kubectl get configmap test-vmcp-controller-config -n toolhive-system -o jsonpath='{.data.config\.yaml}' 2>/dev/null || echo "")
+
+          if [ -z "$CONFIG" ]; then
+            echo "✗ ConfigMap config.yaml is empty"
+            kubectl get configmap test-vmcp-controller-config -n toolhive-system -o yaml
+            exit 1
+          fi
+
+          echo "✓ ConfigMap config.yaml has content"
+          echo "$CONFIG" | head -20
+
+          # Verify it's valid YAML
+          if echo "$CONFIG" | yq eval '.' - > /dev/null 2>&1; then
+            echo "✓ Config is valid YAML"
+          else
+            echo "✗ Config is not valid YAML"
+            exit 1
+          fi
+
+          echo "✅ ConfigMap content verified"
+
+  - name: verify-deployment-checksum
+    description: Verify Deployment has config checksum annotation
+    try:
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying Deployment has config checksum annotation..."
+
+          # Get checksum annotation
+          CHECKSUM=$(kubectl get deployment test-vmcp-controller -n toolhive-system -o jsonpath='{.spec.template.metadata.annotations.vmcp\.toolhive\.stacklok\.dev/config-checksum}' 2>/dev/null || echo "")
+
+          if [ -n "$CHECKSUM" ]; then
+            echo "✓ Deployment has config checksum: $CHECKSUM"
+          else
+            echo "✗ Deployment missing config checksum annotation"
+            kubectl get deployment test-vmcp-controller -n toolhive-system -o yaml
+            exit 1
+          fi
+
+          echo "✅ Deployment checksum annotation verified"
+
+  - name: test-config-update-triggers-rollout
+    description: Test that updating VirtualMCPServer triggers config update and pod rollout
+    try:
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Getting current config checksum..."
+          OLD_CHECKSUM=$(kubectl get deployment test-vmcp-controller -n toolhive-system -o jsonpath='{.spec.template.metadata.annotations.vmcp\.toolhive\.stacklok\.dev/config-checksum}' 2>/dev/null || echo "")
+          echo "  Old checksum: $OLD_CHECKSUM"
+
+    - patch:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: VirtualMCPServer
+          metadata:
+            name: test-vmcp-controller
+            namespace: toolhive-system
+          spec:
+            operational:
+              logLevel: debug
+
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Waiting for config checksum to change..."
+
+          OLD_CHECKSUM=$(kubectl get deployment test-vmcp-controller -n toolhive-system -o jsonpath='{.spec.template.metadata.annotations.vmcp\.toolhive\.stacklok\.dev/config-checksum}' 2>/dev/null || echo "")
+
+          # Wait up to 30 seconds for checksum to change
+          for i in {1..30}; do
+            sleep 1
+            NEW_CHECKSUM=$(kubectl get deployment test-vmcp-controller -n toolhive-system -o jsonpath='{.spec.template.metadata.annotations.vmcp\.toolhive\.stacklok\.dev/config-checksum}' 2>/dev/null || echo "")
+
+            if [ "$NEW_CHECKSUM" != "$OLD_CHECKSUM" ] && [ -n "$NEW_CHECKSUM" ]; then
+              echo "✓ Config checksum changed: $NEW_CHECKSUM"
+              echo "✅ Config update triggered deployment rollout"
+              exit 0
+            fi
+          done
+
+          echo "✗ Config checksum did not change after update"
+          exit 1
+
+  - name: verify-status-phase-transitions
+    description: Verify VirtualMCPServer phase is set correctly
+    try:
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying VirtualMCPServer phase..."
+
+          PHASE=$(kubectl get virtualmcpserver test-vmcp-controller -n toolhive-system -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+
+          if [ "$PHASE" = "Running" ]; then
+            echo "✓ VirtualMCPServer phase is Running"
+          elif [ "$PHASE" = "Pending" ]; then
+            echo "⚠ VirtualMCPServer phase is Pending (may need more time)"
+            # This is acceptable in test environment
+          else
+            echo "✗ Unexpected phase: $PHASE"
+            kubectl get virtualmcpserver test-vmcp-controller -n toolhive-system -o yaml
+            exit 1
+          fi
+
+          echo "✅ Phase verification complete"

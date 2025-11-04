@@ -1,0 +1,13 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: backend-1
+  namespace: toolhive-system
+  labels:
+    app: mcp-backend-1
+spec:
+  type: stdio
+  command: /usr/bin/mcp-backend-1
+  env:
+    - name: DEBUG
+      value: "true"

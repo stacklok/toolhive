@@ -538,7 +538,7 @@ func TestResolveAuthStrategy(t *testing.T) {
 			target: &vmcp.BackendTarget{
 				WorkloadID:   "backend-1",
 				AuthStrategy: "header_injection",
-				AuthMetadata: map[string]any{"header_name": "X-API-Key", "api_key": "test-key"},
+				AuthMetadata: map[string]any{"header_name": "X-API-Key", "header_value": "test-key"},
 			},
 			setupRegistry: func() auth.OutgoingAuthRegistry {
 				registry := auth.NewDefaultOutgoingAuthRegistry()

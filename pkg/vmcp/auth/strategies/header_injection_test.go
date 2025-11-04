@@ -30,8 +30,8 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		{
 			name: "sets X-API-Key header correctly",
 			metadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     "secret-key-123",
+				"header_name":  "X-API-Key",
+				"header_value": "secret-key-123",
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -42,8 +42,8 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		{
 			name: "sets Authorization header with API key",
 			metadata: map[string]any{
-				"header_name": "Authorization",
-				"api_key":     "ApiKey my-secret-key",
+				"header_name":  "Authorization",
+				"header_value": "ApiKey my-secret-key",
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -54,8 +54,8 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		{
 			name: "sets custom header name",
 			metadata: map[string]any{
-				"header_name": "X-Custom-Auth-Token",
-				"api_key":     "custom-token-value",
+				"header_name":  "X-Custom-Auth-Token",
+				"header_value": "custom-token-value",
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -64,10 +64,10 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 			},
 		},
 		{
-			name: "handles complex API key values",
+			name: "handles complex header values",
 			metadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.test",
+				"header_name":  "X-API-Key",
+				"header_value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.test",
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -77,10 +77,10 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 			},
 		},
 		{
-			name: "handles API key with special characters",
+			name: "handles header value with special characters",
 			metadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     "key-with-!@#$%^&*()-_=+[]{}|;:,.<>?",
+				"header_name":  "X-API-Key",
+				"header_value": "key-with-!@#$%^&*()-_=+[]{}|;:,.<>?",
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -91,10 +91,10 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		{
 			name: "ignores additional metadata fields",
 			metadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     "my-key",
-				"extra_field": "ignored",
-				"another":     123,
+				"header_name":  "X-API-Key",
+				"header_value": "my-key",
+				"extra_field":  "ignored",
+				"another":      123,
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -105,7 +105,7 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		{
 			name: "returns error when header_name is missing",
 			metadata: map[string]any{
-				"api_key": "my-key",
+				"header_value": "my-key",
 			},
 			expectError:   true,
 			errorContains: "header_name required",
@@ -113,8 +113,8 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		{
 			name: "returns error when header_name is empty string",
 			metadata: map[string]any{
-				"header_name": "",
-				"api_key":     "my-key",
+				"header_name":  "",
+				"header_value": "my-key",
 			},
 			expectError:   true,
 			errorContains: "header_name required",
@@ -122,37 +122,37 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		{
 			name: "returns error when header_name is not a string",
 			metadata: map[string]any{
-				"header_name": 123,
-				"api_key":     "my-key",
+				"header_name":  123,
+				"header_value": "my-key",
 			},
 			expectError:   true,
 			errorContains: "header_name required",
 		},
 		{
-			name: "returns error when api_key is missing",
+			name: "returns error when header_value is missing",
 			metadata: map[string]any{
 				"header_name": "X-API-Key",
 			},
 			expectError:   true,
-			errorContains: "api_key required",
+			errorContains: "header_value required",
 		},
 		{
 			name: "returns error when api_key is empty string",
 			metadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     "",
+				"header_name":  "X-API-Key",
+				"header_value": "",
 			},
 			expectError:   true,
-			errorContains: "api_key required",
+			errorContains: "header_value required",
 		},
 		{
-			name: "returns error when api_key is not a string",
+			name: "returns error when header_value is not a string",
 			metadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     123,
+				"header_name":  "X-API-Key",
+				"header_value": 123,
 			},
 			expectError:   true,
-			errorContains: "api_key required",
+			errorContains: "header_value required",
 		},
 		{
 			name:          "returns error when metadata is nil",
@@ -177,8 +177,8 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		{
 			name: "overwrites existing header value",
 			metadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     "new-key",
+				"header_name":  "X-API-Key",
+				"header_value": "new-key",
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -188,10 +188,10 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 			},
 		},
 		{
-			name: "handles very long API keys",
+			name: "handles very long header values",
 			metadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     string(make([]byte, 10000)) + "very-long-key",
+				"header_name":  "X-API-Key",
+				"header_value": string(make([]byte, 10000)) + "very-long-key",
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -203,8 +203,8 @@ func TestHeaderInjectionStrategy_Authenticate(t *testing.T) {
 		{
 			name: "handles case-sensitive header names",
 			metadata: map[string]any{
-				"header_name": "x-api-key", // lowercase
-				"api_key":     "my-key",
+				"header_name":  "x-api-key", // lowercase
+				"header_value": "my-key",
 			},
 			expectError: false,
 			checkHeader: func(t *testing.T, req *http.Request) {
@@ -257,33 +257,33 @@ func TestHeaderInjectionStrategy_Validate(t *testing.T) {
 		{
 			name: "valid metadata with all required fields",
 			metadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     "secret-key",
+				"header_name":  "X-API-Key",
+				"header_value": "secret-key",
 			},
 			expectError: false,
 		},
 		{
 			name: "valid with extra metadata fields",
 			metadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     "secret-key",
-				"extra":       "ignored",
-				"count":       123,
+				"header_name":  "X-API-Key",
+				"header_value": "secret-key",
+				"extra":        "ignored",
+				"count":        123,
 			},
 			expectError: false,
 		},
 		{
 			name: "valid with different header name",
 			metadata: map[string]any{
-				"header_name": "Authorization",
-				"api_key":     "Bearer token",
+				"header_name":  "Authorization",
+				"header_value": "Bearer token",
 			},
 			expectError: false,
 		},
 		{
 			name: "returns error when header_name is missing",
 			metadata: map[string]any{
-				"api_key": "secret-key",
+				"header_value": "secret-key",
 			},
 			expectError:   true,
 			errorContains: "header_name required",
@@ -291,8 +291,8 @@ func TestHeaderInjectionStrategy_Validate(t *testing.T) {
 		{
 			name: "returns error when header_name is empty",
 			metadata: map[string]any{
-				"header_name": "",
-				"api_key":     "secret-key",
+				"header_name":  "",
+				"header_value": "secret-key",
 			},
 			expectError:   true,
 			errorContains: "header_name required",
@@ -300,8 +300,8 @@ func TestHeaderInjectionStrategy_Validate(t *testing.T) {
 		{
 			name: "returns error when header_name is not a string",
 			metadata: map[string]any{
-				"header_name": 123,
-				"api_key":     "secret-key",
+				"header_name":  123,
+				"header_value": "secret-key",
 			},
 			expectError:   true,
 			errorContains: "header_name required",
@@ -309,46 +309,46 @@ func TestHeaderInjectionStrategy_Validate(t *testing.T) {
 		{
 			name: "returns error when header_name is a boolean",
 			metadata: map[string]any{
-				"header_name": true,
-				"api_key":     "secret-key",
+				"header_name":  true,
+				"header_value": "secret-key",
 			},
 			expectError:   true,
 			errorContains: "header_name required",
 		},
 		{
-			name: "returns error when api_key is missing",
+			name: "returns error when header_value is missing",
 			metadata: map[string]any{
 				"header_name": "X-API-Key",
 			},
 			expectError:   true,
-			errorContains: "api_key required",
+			errorContains: "header_value required",
 		},
 		{
-			name: "returns error when api_key is empty",
+			name: "returns error when header_value is empty",
 			metadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     "",
+				"header_name":  "X-API-Key",
+				"header_value": "",
 			},
 			expectError:   true,
-			errorContains: "api_key required",
+			errorContains: "header_value required",
 		},
 		{
-			name: "returns error when api_key is not a string",
+			name: "returns error when header_value is not a string",
 			metadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     123,
+				"header_name":  "X-API-Key",
+				"header_value": 123,
 			},
 			expectError:   true,
-			errorContains: "api_key required",
+			errorContains: "header_value required",
 		},
 		{
-			name: "returns error when api_key is a map",
+			name: "returns error when header_value is a map",
 			metadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     map[string]any{"nested": "value"},
+				"header_name":  "X-API-Key",
+				"header_value": map[string]any{"nested": "value"},
 			},
 			expectError:   true,
-			errorContains: "api_key required",
+			errorContains: "header_value required",
 		},
 		{
 			name:          "returns error when metadata is nil",
@@ -365,8 +365,8 @@ func TestHeaderInjectionStrategy_Validate(t *testing.T) {
 		{
 			name: "returns error when both fields are wrong type",
 			metadata: map[string]any{
-				"header_name": 123,
-				"api_key":     false,
+				"header_name":  123,
+				"header_value": false,
 			},
 			expectError:   true,
 			errorContains: "header_name required",
@@ -374,17 +374,17 @@ func TestHeaderInjectionStrategy_Validate(t *testing.T) {
 		{
 			name: "returns error for whitespace in header_name",
 			metadata: map[string]any{
-				"header_name": "X-Custom Header",
-				"api_key":     "key",
+				"header_name":  "X-Custom Header",
+				"header_value": "key",
 			},
 			expectError:   true,
 			errorContains: "invalid header_name",
 		},
 		{
-			name: "accepts unicode in api_key",
+			name: "accepts unicode in header_value",
 			metadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     "key-with-unicode-日本語",
+				"header_name":  "X-API-Key",
+				"header_value": "key-with-unicode-日本語",
 			},
 			expectError: false,
 		},

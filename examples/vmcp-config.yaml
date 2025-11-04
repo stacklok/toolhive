@@ -48,7 +48,7 @@ outgoing_auth:
       type: header_injection
       header_injection:
         header_name: "Authorization"
-        api_key: "${GITHUB_API_TOKEN}"  # Read from environment variable
+        header_value: "${GITHUB_API_TOKEN}"  # Read from environment variable
 
     # TODO: Uncomment when token_exchange strategy is implemented
     # github:

@@ -204,8 +204,8 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 					"github": {
 						Type: "header_injection",
 						Metadata: map[string]any{
-							"header_name": "Authorization",
-							"api_key":     "secret-token",
+							"header_name":  "Authorization",
+							"header_value": "secret-token",
 						},
 					},
 				},

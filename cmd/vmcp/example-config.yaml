@@ -51,7 +51,7 @@ outgoing_auth:
   #     type: header_injection
   #     header_injection:
   #       header_name: "Authorization"
-  #       api_key: "${GITHUB_API_TOKEN}"
+  #       header_value: "${GITHUB_API_TOKEN}"
   #
   #   # TODO: Uncomment when token_exchange is implemented
   #   # jira:

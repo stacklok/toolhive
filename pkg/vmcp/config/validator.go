@@ -196,9 +196,12 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *Backend
 		}
 
 	case "header_injection":
-		// Header injection requires header name and value/format
+		// Header injection requires header name and value
 		if _, ok := strategy.Metadata["header_name"]; !ok {
 			return fmt.Errorf("header_injection requires metadata field: header_name")
+		}
+		if _, ok := strategy.Metadata["header_value"]; !ok {
+			return fmt.Errorf("header_injection requires metadata field: header_value")
 		}
 	}
 

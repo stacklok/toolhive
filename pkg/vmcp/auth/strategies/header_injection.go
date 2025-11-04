@@ -18,7 +18,7 @@ import (
 //
 // Required metadata fields:
 //   - header_name: The HTTP header name to use (e.g., "X-API-Key", "Authorization")
-//   - api_key: The header value to inject (can be an API key, token, or any value)
+//   - header_value: The header value to inject (can be an API key, token, or any value)
 //
 // This strategy is appropriate when:
 //   - The backend requires a static header value for authentication
@@ -44,37 +44,37 @@ func (*HeaderInjectionStrategy) Name() string {
 // Authenticate injects the header value from metadata into the request header.
 //
 // This method:
-//  1. Validates that header_name and api_key are present in metadata
+//  1. Validates that header_name and header_value are present in metadata
 //  2. Sets the specified header with the provided value
 //
 // Parameters:
 //   - ctx: Request context (currently unused, reserved for future secret resolution)
 //   - req: The HTTP request to authenticate
-//   - metadata: Strategy-specific configuration containing header_name and api_key
+//   - metadata: Strategy-specific configuration containing header_name and header_value
 //
 // Returns an error if:
 //   - header_name is missing or empty
-//   - api_key is missing or empty
+//   - header_value is missing or empty
 func (*HeaderInjectionStrategy) Authenticate(_ context.Context, req *http.Request, metadata map[string]any) error {
 	headerName, ok := metadata["header_name"].(string)
 	if !ok || headerName == "" {
 		return fmt.Errorf("header_name required in metadata")
 	}
 
-	apiKey, ok := metadata["api_key"].(string)
-	if !ok || apiKey == "" {
-		return fmt.Errorf("api_key required in metadata")
+	headerValue, ok := metadata["header_value"].(string)
+	if !ok || headerValue == "" {
+		return fmt.Errorf("header_value required in metadata")
 	}
 
 	// TODO: Future enhancement - resolve secret references
-	// if strings.HasPrefix(apiKey, "${SECRET_REF:") {
-	//     apiKey, err = s.secretResolver.Resolve(ctx, apiKey)
+	// if strings.HasPrefix(headerValue, "${SECRET_REF:") {
+	//     headerValue, err = s.secretResolver.Resolve(ctx, headerValue)
 	//     if err != nil {
 	//         return fmt.Errorf("failed to resolve secret reference: %w", err)
 	//     }
 	// }
 
-	req.Header.Set(headerName, apiKey)
+	req.Header.Set(headerName, headerValue)
 	return nil
 }
 
@@ -82,9 +82,9 @@ func (*HeaderInjectionStrategy) Authenticate(_ context.Context, req *http.Reques
 //
 // This method verifies that:
 //   - header_name is present and non-empty
-//   - api_key is present and non-empty
+//   - header_value is present and non-empty
 //   - header_name is a valid HTTP header name (prevents CRLF injection)
-//   - api_key is a valid HTTP header value (prevents CRLF injection)
+//   - header_value is a valid HTTP header value (prevents CRLF injection)
 //
 // This validation is typically called during configuration parsing to fail fast
 // if the strategy is misconfigured.
@@ -94,9 +94,9 @@ func (*HeaderInjectionStrategy) Validate(metadata map[string]any) error {
 		return fmt.Errorf("header_name required in metadata")
 	}
 
-	apiKey, ok := metadata["api_key"].(string)
-	if !ok || apiKey == "" {
-		return fmt.Errorf("api_key required in metadata")
+	headerValue, ok := metadata["header_value"].(string)
+	if !ok || headerValue == "" {
+		return fmt.Errorf("header_value required in metadata")
 	}
 
 	// Validate header name to prevent injection attacks
@@ -104,9 +104,9 @@ func (*HeaderInjectionStrategy) Validate(metadata map[string]any) error {
 		return fmt.Errorf("invalid header_name: %w", err)
 	}
 
-	// Validate API key value to prevent injection attacks
-	if err := validation.ValidateHTTPHeaderValue(apiKey); err != nil {
-		return fmt.Errorf("invalid api_key: %w", err)
+	// Validate header value to prevent injection attacks
+	if err := validation.ValidateHTTPHeaderValue(headerValue); err != nil {
+		return fmt.Errorf("invalid header_value: %w", err)
 	}
 
 	return nil

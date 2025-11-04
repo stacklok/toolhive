@@ -18,15 +18,11 @@ import (
 //   - "local": Local OS user authentication
 //   - "anonymous": Anonymous user (no authentication required)
 //
-// All auth types are composed with IdentityMiddleware to provide consistent
-// Identity context injection.
-//
-// Flow (all types):
-//  1. AuthMiddleware validates/creates Claims and stores in context
-//  2. IdentityMiddleware converts Claims → Identity and stores in context
+// All middleware types now directly create and inject Identity into the context,
+// eliminating the need for a separate conversion layer.
 //
 // Returns:
-//   - Composed middleware function (AuthMiddleware → IdentityMiddleware)
+//   - Authentication middleware function
 //   - AuthInfo handler (for /.well-known/oauth-protected-resource endpoint, may be nil)
 //   - Error if middleware creation fails
 func NewIncomingAuthMiddleware(
@@ -37,17 +33,17 @@ func NewIncomingAuthMiddleware(
 		return nil, nil, fmt.Errorf("incoming auth config is required")
 	}
 
-	var baseAuthMiddleware func(http.Handler) http.Handler
+	var authMiddleware func(http.Handler) http.Handler
 	var authInfoHandler http.Handler
 	var err error
 
 	switch cfg.Type {
 	case "oidc":
-		baseAuthMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC)
+		authMiddleware, authInfoHandler, err = newOIDCAuthMiddleware(ctx, cfg.OIDC)
 	case "local":
-		baseAuthMiddleware, authInfoHandler, err = newLocalAuthMiddleware(ctx)
+		authMiddleware, authInfoHandler, err = newLocalAuthMiddleware(ctx)
 	case "anonymous":
-		baseAuthMiddleware, authInfoHandler, err = newAnonymousAuthMiddleware()
+		authMiddleware, authInfoHandler, err = newAnonymousAuthMiddleware()
 	default:
 		return nil, nil, fmt.Errorf("unsupported incoming auth type: %s (supported: oidc, local, anonymous)", cfg.Type)
 	}
@@ -56,17 +52,12 @@ func NewIncomingAuthMiddleware(
 		return nil, nil, err
 	}
 
-	// Compose: AuthMiddleware → IdentityMiddleware
-	// All auth types create Claims in context; IdentityMiddleware converts Claims → Identity
-	composed := func(next http.Handler) http.Handler {
-		return baseAuthMiddleware(IdentityMiddleware(next))
-	}
-
-	return composed, authInfoHandler, nil
+	return authMiddleware, authInfoHandler, nil
 }
 
 // newOIDCAuthMiddleware creates OIDC authentication middleware.
 // Reuses pkg/auth.GetAuthenticationMiddleware for OIDC token validation.
+// The middleware now directly creates Identity in context (no separate conversion needed).
 func newOIDCAuthMiddleware(
 	ctx context.Context,
 	oidcCfg *config.OIDCConfig,
@@ -89,7 +80,7 @@ func newOIDCAuthMiddleware(
 		ResourceURL: oidcCfg.Resource,
 	}
 
-	// Reuse pkg/auth.GetAuthenticationMiddleware for OIDC
+	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity
 	authMw, authInfo, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create OIDC authentication middleware: %w", err)
@@ -103,10 +94,12 @@ func newOIDCAuthMiddleware(
 
 // newLocalAuthMiddleware creates local OS user authentication middleware.
 // Reuses pkg/auth.GetAuthenticationMiddleware with nil config to trigger local auth mode.
+// The middleware now directly creates Identity in context (no separate conversion needed).
 func newLocalAuthMiddleware(ctx context.Context) (func(http.Handler) http.Handler, http.Handler, error) {
 	logger.Info("Creating local user authentication middleware")
 
 	// Passing nil to GetAuthenticationMiddleware triggers local auth mode
+	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity
 	authMw, authInfo, err := auth.GetAuthenticationMiddleware(ctx, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create local authentication middleware: %w", err)

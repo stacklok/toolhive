@@ -2,14 +2,13 @@
 package auth
 
 import (
-	"context"
 	"net/http"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// LocalUserMiddleware creates an HTTP middleware that sets up local user claims.
+// LocalUserMiddleware creates an HTTP middleware that sets up local user identity.
 // This allows specifying a local username while still bypassing authentication.
 //
 // This middleware is useful for development and testing scenarios where you want
@@ -30,9 +29,18 @@ func LocalUserMiddleware(username string) func(http.Handler) http.Handler {
 				"name":  "Local User: " + username,
 			}
 
-			// Add the local user claims to the request context using the same key
-			// as the JWT middleware for consistency
-			ctx := context.WithValue(r.Context(), ClaimsContextKey{}, claims)
+			// Create Identity from claims
+			identity := &Identity{
+				Subject:   username,
+				Name:      "Local User: " + username,
+				Email:     username + "@localhost",
+				Claims:    claims,
+				Token:     "", // No token for local auth
+				TokenType: "Bearer",
+			}
+
+			// Add the Identity to the request context
+			ctx := WithIdentity(r.Context(), identity)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

@@ -113,22 +113,24 @@ func TestGetClaimsFromContext(t *testing.T) {
 		"iss": "test-issuer",
 		"aud": "test-audience",
 	}
-	ctx := context.WithValue(context.Background(), ClaimsContextKey{}, claims)
+	identity := &Identity{Subject: "testuser", Claims: claims}
+	ctx := WithIdentity(context.Background(), identity)
 
 	retrievedClaims, ok := GetClaimsFromContext(ctx)
 	require.True(t, ok, "Expected to retrieve claims from context")
 	assert.Equal(t, "testuser", retrievedClaims["sub"])
 	assert.Equal(t, "test-issuer", retrievedClaims["iss"])
 
-	// Test with no claims in context
+	// Test with no identity in context
 	emptyCtx := context.Background()
 	_, ok = GetClaimsFromContext(emptyCtx)
 	assert.False(t, ok, "Expected no claims to be found in empty context")
 
-	// Test with wrong type in context
-	wrongCtx := context.WithValue(context.Background(), ClaimsContextKey{}, "not-claims")
-	_, ok = GetClaimsFromContext(wrongCtx)
-	assert.False(t, ok, "Expected no claims to be found when wrong type is in context")
+	// Test with identity that has nil claims
+	identityWithNilClaims := &Identity{Subject: "testuser", Claims: nil}
+	ctxWithNilClaims := WithIdentity(context.Background(), identityWithNilClaims)
+	_, ok = GetClaimsFromContext(ctxWithNilClaims)
+	assert.False(t, ok, "Expected no claims to be found when identity has nil claims")
 
 	// Test with nil context - we intentionally pass nil to test the nil check
 	//nolint:staticcheck // SA1012: Testing nil context handling is intentional
@@ -181,7 +183,8 @@ func TestGetClaimsFromContextWithDifferentClaimTypes(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			ctx := context.WithValue(context.Background(), ClaimsContextKey{}, tc.claims)
+			identity := &Identity{Subject: "test-user", Claims: tc.claims}
+			ctx := WithIdentity(context.Background(), identity)
 			retrievedClaims, ok := GetClaimsFromContext(ctx)
 
 			require.True(t, ok, "Expected to retrieve claims from context")

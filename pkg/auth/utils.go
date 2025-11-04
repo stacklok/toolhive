@@ -8,8 +8,6 @@ import (
 	"os/user"
 	"strings"
 
-	"github.com/golang-jwt/jwt/v5"
-
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -57,19 +55,6 @@ func ExtractBearerToken(r *http.Request) (string, error) {
 	}
 
 	return tokenString, nil
-}
-
-// GetClaimsFromContext retrieves the claims from the request context.
-// This is a helper function that can be used by authorization policies
-// to access the claims regardless of which middleware was used (JWT, anonymous, or local).
-//
-// Returns the claims and a boolean indicating whether claims were found.
-func GetClaimsFromContext(ctx context.Context) (jwt.MapClaims, bool) {
-	if ctx == nil {
-		return nil, false
-	}
-	claims, ok := ctx.Value(ClaimsContextKey{}).(jwt.MapClaims)
-	return claims, ok
 }
 
 // GetAuthenticationMiddleware returns the appropriate authentication middleware based on the configuration.

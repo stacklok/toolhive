@@ -1,22 +1,20 @@
 // Package auth provides authentication for Virtual MCP Server.
 //
 // This package defines:
-//   - Identity: Domain type representing an authenticated user/service
-//   - Claims → Identity conversion (incoming authentication)
 //   - OutgoingAuthenticator: Authenticates vMCP to backend servers
 //   - Strategy: Pluggable authentication strategies for backends
 //
-// Incoming authentication uses pkg/auth.TokenValidator + IdentityMiddleware
-// to validate OIDC tokens and convert Claims to Identity.
+// Incoming authentication uses pkg/auth middleware (OIDC, local, anonymous)
+// which directly creates pkg/auth.Identity in context.
 package auth
 
 //go:generate mockgen -destination=mocks/mock_strategy.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/auth Strategy
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"net/http"
+
+	"github.com/stacklok/toolhive/pkg/auth"
 )
 
 // OutgoingAuthenticator handles authentication to backend MCP servers.
@@ -54,92 +52,15 @@ type Strategy interface {
 	Validate(metadata map[string]any) error
 }
 
-// Identity represents an authenticated user or service account.
-type Identity struct {
-	// Subject is the unique identifier for the principal.
-	Subject string
-
-	// Name is the human-readable name.
-	Name string
-
-	// Email is the email address (if available).
-	Email string
-
-	// Groups are the groups this identity belongs to.
-	//
-	// NOTE: This field is intentionally NOT populated by OIDCIncomingAuthenticator.
-	// Authorization logic MUST extract groups from the Claims map, as group claim
-	// names vary by provider (e.g., "groups", "roles", "cognito:groups").
-	Groups []string
-
-	// Claims contains additional claims from the auth token.
-	Claims map[string]any
-
-	// Token is the original authentication token (for pass-through).
-	Token string
-
-	// TokenType is the type of token (e.g., "Bearer", "JWT").
-	TokenType string
-
-	// Metadata stores additional identity information.
-	Metadata map[string]string
-}
-
-// String returns a string representation of the Identity with sensitive fields redacted.
-// This prevents accidental token leakage when the Identity is logged or printed.
-func (i *Identity) String() string {
-	if i == nil {
-		return "<nil>"
-	}
-
-	return fmt.Sprintf("Identity{Subject:%q}", i.Subject)
-}
-
-// MarshalJSON implements json.Marshaler to redact sensitive fields during JSON serialization.
-// This prevents accidental token leakage in structured logs, API responses, or audit logs.
-func (i *Identity) MarshalJSON() ([]byte, error) {
-	if i == nil {
-		return []byte("null"), nil
-	}
-
-	// Create a safe representation with lowercase field names and redacted token
-	type SafeIdentity struct {
-		Subject   string            `json:"subject"`
-		Name      string            `json:"name"`
-		Email     string            `json:"email"`
-		Groups    []string          `json:"groups"`
-		Claims    map[string]any    `json:"claims"`
-		Token     string            `json:"token"`
-		TokenType string            `json:"tokenType"`
-		Metadata  map[string]string `json:"metadata"`
-	}
-
-	token := i.Token
-	if token != "" {
-		token = "REDACTED"
-	}
-
-	return json.Marshal(&SafeIdentity{
-		Subject:   i.Subject,
-		Name:      i.Name,
-		Email:     i.Email,
-		Groups:    i.Groups,
-		Claims:    i.Claims,
-		Token:     token,
-		TokenType: i.TokenType,
-		Metadata:  i.Metadata,
-	})
-}
-
 // Authorizer handles authorization decisions.
 // This integrates with ToolHive's existing Cedar-based authorization.
 type Authorizer interface {
 	// Authorize checks if an identity is authorized to perform an action on a resource.
-	Authorize(ctx context.Context, identity *Identity, action string, resource string) error
+	Authorize(ctx context.Context, identity *auth.Identity, action string, resource string) error
 
 	// AuthorizeToolCall checks if an identity can call a specific tool.
-	AuthorizeToolCall(ctx context.Context, identity *Identity, toolName string) error
+	AuthorizeToolCall(ctx context.Context, identity *auth.Identity, toolName string) error
 
 	// AuthorizeResourceAccess checks if an identity can access a specific resource.
-	AuthorizeResourceAccess(ctx context.Context, identity *Identity, resourceURI string) error
+	AuthorizeResourceAccess(ctx context.Context, identity *auth.Identity, resourceURI string) error
 }

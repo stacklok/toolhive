@@ -232,11 +232,15 @@ func (*defaultAggregator) MergeCapabilities(
 			logger.Warnf("Backend %s not found in registry for tool %s, creating minimal target",
 				resolvedTool.BackendID, resolvedTool.ResolvedName)
 			routingTable.Tools[resolvedTool.ResolvedName] = &vmcp.BackendTarget{
-				WorkloadID: resolvedTool.BackendID,
+				WorkloadID:             resolvedTool.BackendID,
+				OriginalCapabilityName: resolvedTool.OriginalName,
 			}
 		} else {
 			// Use the backendToTarget helper from registry package
-			routingTable.Tools[resolvedTool.ResolvedName] = vmcp.BackendToTarget(backend)
+			target := vmcp.BackendToTarget(backend)
+			// Store the original tool name for forwarding to backend
+			target.OriginalCapabilityName = resolvedTool.OriginalName
+			routingTable.Tools[resolvedTool.ResolvedName] = target
 		}
 	}
 
@@ -247,10 +251,14 @@ func (*defaultAggregator) MergeCapabilities(
 			logger.Warnf("Backend %s not found in registry for resource %s, creating minimal target",
 				resource.BackendID, resource.URI)
 			routingTable.Resources[resource.URI] = &vmcp.BackendTarget{
-				WorkloadID: resource.BackendID,
+				WorkloadID:             resource.BackendID,
+				OriginalCapabilityName: resource.URI,
 			}
 		} else {
-			routingTable.Resources[resource.URI] = vmcp.BackendToTarget(backend)
+			target := vmcp.BackendToTarget(backend)
+			// Store the original resource URI for forwarding to backend
+			target.OriginalCapabilityName = resource.URI
+			routingTable.Resources[resource.URI] = target
 		}
 	}
 
@@ -261,10 +269,14 @@ func (*defaultAggregator) MergeCapabilities(
 			logger.Warnf("Backend %s not found in registry for prompt %s, creating minimal target",
 				prompt.BackendID, prompt.Name)
 			routingTable.Prompts[prompt.Name] = &vmcp.BackendTarget{
-				WorkloadID: prompt.BackendID,
+				WorkloadID:             prompt.BackendID,
+				OriginalCapabilityName: prompt.Name,
 			}
 		} else {
-			routingTable.Prompts[prompt.Name] = vmcp.BackendToTarget(backend)
+			target := vmcp.BackendToTarget(backend)
+			// Store the original prompt name for forwarding to backend
+			target.OriginalCapabilityName = prompt.Name
+			routingTable.Prompts[prompt.Name] = target
 		}
 	}
 

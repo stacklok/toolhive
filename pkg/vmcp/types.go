@@ -23,6 +23,17 @@ type BackendTarget struct {
 	// Supported: "stdio", "http", "sse", "streamable-http"
 	TransportType string
 
+	// OriginalCapabilityName is the original name of the capability (tool/resource/prompt)
+	// as known by the backend. This is used when forwarding requests to the backend.
+	//
+	// When conflict resolution renames capabilities, this field preserves the original name:
+	// - Prefix strategy: "fetch" → "fetch_fetch" (OriginalCapabilityName="fetch")
+	// - Priority strategy: usually unchanged (OriginalCapabilityName="tool_name")
+	// - Manual strategy: "fetch" → "custom_name" (OriginalCapabilityName="fetch")
+	//
+	// If empty, the resolved name is used when forwarding to the backend.
+	OriginalCapabilityName string
+
 	// AuthStrategy identifies the authentication strategy for this backend.
 	// The actual authentication is handled by OutgoingAuthenticator interface.
 	// Examples: "pass_through", "token_exchange", "client_credentials", "oauth_proxy"
@@ -41,6 +52,18 @@ type BackendTarget struct {
 
 	// Metadata stores additional backend-specific information.
 	Metadata map[string]string
+}
+
+// GetBackendCapabilityName returns the name to use when forwarding a request to the backend.
+// If conflict resolution renamed the capability, this returns the original name that the backend expects.
+// Otherwise, it returns the resolved name as-is.
+//
+// This method encapsulates the name translation logic for all capability types (tools, resources, prompts).
+func (t *BackendTarget) GetBackendCapabilityName(resolvedName string) string {
+	if t.OriginalCapabilityName != "" {
+		return t.OriginalCapabilityName
+	}
+	return resolvedName
 }
 
 // BackendHealthStatus represents the health state of a backend.

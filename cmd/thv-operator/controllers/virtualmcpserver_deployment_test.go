@@ -295,9 +295,10 @@ func TestBuildServiceMetadataForVmcp(t *testing.T) {
 }
 
 // TestGetVmcpImage tests vmcp image retrieval
+//
+//nolint:paralleltest,tparallel // Cannot run in parallel due to environment variable manipulation
 func TestGetVmcpImage(t *testing.T) {
-	t.Parallel()
-
+	// Note: Not using t.Parallel() because subtests manipulate environment variables
 	tests := []struct {
 		name          string
 		envValue      string
@@ -318,7 +319,7 @@ func TestGetVmcpImage(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			// Note: Cannot run in parallel due to environment variable manipulation
+			// Cannot run subtests in parallel due to environment variable manipulation
 
 			if tt.envValue != "" {
 				err := os.Setenv("VMCP_IMAGE", tt.envValue)

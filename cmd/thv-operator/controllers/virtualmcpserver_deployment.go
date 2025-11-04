@@ -133,7 +133,7 @@ func (*VirtualMCPServerReconciler) buildVolumesForVmcp(
 }
 
 // buildEnvVarsForVmcp builds environment variables for the vmcp container
-func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
+func (*VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) []corev1.EnvVar {
@@ -150,9 +150,10 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 		Value: vmcp.Namespace,
 	})
 
-	// Add log level if specified
+	// TODO: Add log level from operational config when Operational is not nil
+	//nolint:staticcheck // Empty branch reserved for future log level configuration
 	if vmcp.Spec.Operational != nil {
-		// TODO: Add log level from operational config
+		// Log level env var will be added here
 	}
 
 	// TODO: Add environment variables for:
@@ -166,7 +167,7 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations
 func (*VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 	baseLabels map[string]string,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	_ *mcpv1alpha1.VirtualMCPServer,
 ) (map[string]string, map[string]string) {
 	deploymentLabels := baseLabels
 	deploymentAnnotations := make(map[string]string)
@@ -179,7 +180,7 @@ func (*VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 // buildPodTemplateMetadata builds pod template labels and annotations for vmcp
 func (*VirtualMCPServerReconciler) buildPodTemplateMetadata(
 	baseLabels map[string]string,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	_ *mcpv1alpha1.VirtualMCPServer,
 	vmcpConfigChecksum string,
 ) (map[string]string, map[string]string) {
 	templateLabels := baseLabels
@@ -214,7 +215,7 @@ func (r *VirtualMCPServerReconciler) buildSecurityContextsForVmcp(
 
 // buildContainerPortsForVmcp builds container port configuration
 func (*VirtualMCPServerReconciler) buildContainerPortsForVmcp(
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	_ *mcpv1alpha1.VirtualMCPServer,
 ) []corev1.ContainerPort {
 	return []corev1.ContainerPort{{
 		ContainerPort: vmcpDefaultPort,
@@ -268,7 +269,7 @@ func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 // buildServiceMetadataForVmcp builds service labels and annotations
 func (*VirtualMCPServerReconciler) buildServiceMetadataForVmcp(
 	baseLabels map[string]string,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	_ *mcpv1alpha1.VirtualMCPServer,
 ) (map[string]string, map[string]string) {
 	serviceLabels := baseLabels
 	serviceAnnotations := make(map[string]string)

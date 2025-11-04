@@ -385,10 +385,10 @@ func TestCalculateCapabilitiesSummary(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                      string
-		vmcp                      *mcpv1alpha1.VirtualMCPServer
-		backends                  []mcpv1alpha1.DiscoveredBackend
-		expectedToolCount         int
+		name                       string
+		vmcp                       *mcpv1alpha1.VirtualMCPServer
+		backends                   []mcpv1alpha1.DiscoveredBackend
+		expectedToolCount          int
 		expectedCompositeToolCount int
 	}{
 		{
@@ -405,7 +405,7 @@ func TestCalculateCapabilitiesSummary(t *testing.T) {
 				{Name: "backend-1", Status: "ready"},
 				{Name: "backend-2", Status: "ready"},
 			},
-			expectedToolCount:         10, // 2 backends * 5 tools each (placeholder)
+			expectedToolCount:          10, // 2 backends * 5 tools each (placeholder)
 			expectedCompositeToolCount: 2,
 		},
 		{
@@ -421,7 +421,7 @@ func TestCalculateCapabilitiesSummary(t *testing.T) {
 				{Name: "backend-1", Status: "ready"},
 				{Name: "backend-2", Status: "unavailable"},
 			},
-			expectedToolCount:         5, // 1 ready backend * 5 tools
+			expectedToolCount:          5, // 1 ready backend * 5 tools
 			expectedCompositeToolCount: 1,
 		},
 		{
@@ -432,7 +432,7 @@ func TestCalculateCapabilitiesSummary(t *testing.T) {
 			backends: []mcpv1alpha1.DiscoveredBackend{
 				{Name: "backend-1", Status: "unavailable"},
 			},
-			expectedToolCount:         0,
+			expectedToolCount:          0,
 			expectedCompositeToolCount: 0,
 		},
 	}
@@ -457,11 +457,11 @@ func TestCheckBackendHealth(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                 string
-		backends             []mcpv1alpha1.DiscoveredBackend
-		expectedAllHealthy   bool
-		expectedSomeHealthy  bool
-		expectedUnavailable  int
+		name                string
+		backends            []mcpv1alpha1.DiscoveredBackend
+		expectedAllHealthy  bool
+		expectedSomeHealthy bool
+		expectedUnavailable int
 	}{
 		{
 			name: "all healthy",

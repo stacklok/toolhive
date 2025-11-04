@@ -648,11 +648,12 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 
 // getHealthCheckInterval returns the health check interval for the VirtualMCPServer
 func (*VirtualMCPServerReconciler) getHealthCheckInterval(vmcp *mcpv1alpha1.VirtualMCPServer) time.Duration {
+	// TODO: Parse the duration string from spec when FailureHandling is configured
+	//nolint:staticcheck // Empty branch reserved for future duration parsing implementation
 	if vmcp.Spec.Operational != nil &&
 		vmcp.Spec.Operational.FailureHandling != nil &&
 		vmcp.Spec.Operational.FailureHandling.HealthCheckInterval != "" {
-		// TODO: Parse the duration string from spec
-		// For now, return default
+		// Parse duration when implemented
 	}
 	return 30 * time.Second
 }
@@ -686,146 +687,140 @@ func createVmcpServiceURL(vmcpName, namespace string, port int32) string {
 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Create a handler that maps MCPGroup changes to VirtualMCPServer reconciliation requests
-	mcpGroupHandler := handler.EnqueueRequestsFromMapFunc(
-		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			mcpGroup, ok := obj.(*mcpv1alpha1.MCPGroup)
-			if !ok {
-				return nil
-			}
-
-			// List all VirtualMCPServers in the same namespace
-			vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
-			if err := r.List(ctx, vmcpList, client.InNamespace(mcpGroup.Namespace)); err != nil {
-				log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPGroup watch")
-				return nil
-			}
-
-			// Find VirtualMCPServers that reference this MCPGroup
-			var requests []reconcile.Request
-			for _, vmcp := range vmcpList.Items {
-				if vmcp.Spec.GroupRef.Name == mcpGroup.Name {
-					requests = append(requests, reconcile.Request{
-						NamespacedName: types.NamespacedName{
-							Name:      vmcp.Name,
-							Namespace: vmcp.Namespace,
-						},
-					})
-				}
-			}
-
-			return requests
-		},
-	)
-
-	// Create a handler that maps MCPServer changes to VirtualMCPServer reconciliation requests
-	mcpServerHandler := handler.EnqueueRequestsFromMapFunc(
-		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			mcpServer, ok := obj.(*mcpv1alpha1.MCPServer)
-			if !ok {
-				return nil
-			}
-
-			// Find VirtualMCPServers that might include this MCPServer via their MCPGroup
-			// This requires checking which MCPGroups include this server
-			// For simplicity, we'll reconcile all VirtualMCPServers in the same namespace
-			// A more optimized approach would track group memberships
-			vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
-			if err := r.List(ctx, vmcpList, client.InNamespace(mcpServer.Namespace)); err != nil {
-				log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPServer watch")
-				return nil
-			}
-
-			var requests []reconcile.Request
-			for _, vmcp := range vmcpList.Items {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{
-						Name:      vmcp.Name,
-						Namespace: vmcp.Namespace,
-					},
-				})
-			}
-
-			return requests
-		},
-	)
-
-	// Create a handler that maps MCPExternalAuthConfig changes to VirtualMCPServer reconciliation requests
-	externalAuthConfigHandler := handler.EnqueueRequestsFromMapFunc(
-		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			externalAuthConfig, ok := obj.(*mcpv1alpha1.MCPExternalAuthConfig)
-			if !ok {
-				return nil
-			}
-
-			// List all VirtualMCPServers in the same namespace that might reference this auth config
-			vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
-			if err := r.List(ctx, vmcpList, client.InNamespace(externalAuthConfig.Namespace)); err != nil {
-				log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPExternalAuthConfig watch")
-				return nil
-			}
-
-			// For now, reconcile all VirtualMCPServers in the namespace
-			// A more optimized approach would track which backends reference which auth configs
-			var requests []reconcile.Request
-			for _, vmcp := range vmcpList.Items {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{
-						Name:      vmcp.Name,
-						Namespace: vmcp.Namespace,
-					},
-				})
-			}
-
-			return requests
-		},
-	)
-
-	// Create a handler that maps MCPToolConfig changes to VirtualMCPServer reconciliation requests
-	toolConfigHandler := handler.EnqueueRequestsFromMapFunc(
-		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			toolConfig, ok := obj.(*mcpv1alpha1.MCPToolConfig)
-			if !ok {
-				return nil
-			}
-
-			// List all VirtualMCPServers in the same namespace
-			vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
-			if err := r.List(ctx, vmcpList, client.InNamespace(toolConfig.Namespace)); err != nil {
-				log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPToolConfig watch")
-				return nil
-			}
-
-			// Find VirtualMCPServers that reference this MCPToolConfig in their aggregation settings
-			var requests []reconcile.Request
-			for _, vmcp := range vmcpList.Items {
-				if vmcp.Spec.Aggregation != nil && len(vmcp.Spec.Aggregation.Tools) > 0 {
-					for _, toolConfig := range vmcp.Spec.Aggregation.Tools {
-						if toolConfig.ToolConfigRef != nil && toolConfig.ToolConfigRef.Name == toolConfig.ToolConfigRef.Name {
-							requests = append(requests, reconcile.Request{
-								NamespacedName: types.NamespacedName{
-									Name:      vmcp.Name,
-									Namespace: vmcp.Namespace,
-								},
-							})
-							break
-						}
-					}
-				}
-			}
-
-			return requests
-		},
-	)
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.VirtualMCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
-		Watches(&mcpv1alpha1.MCPGroup{}, mcpGroupHandler).
-		Watches(&mcpv1alpha1.MCPServer{}, mcpServerHandler).
-		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
-		Watches(&mcpv1alpha1.MCPToolConfig{}, toolConfigHandler).
+		Watches(&mcpv1alpha1.MCPGroup{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPGroupToVirtualMCPServer)).
+		Watches(&mcpv1alpha1.MCPServer{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToVirtualMCPServer)).
+		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapExternalAuthConfigToVirtualMCPServer)).
+		Watches(&mcpv1alpha1.MCPToolConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapToolConfigToVirtualMCPServer)).
 		Complete(r)
+}
+
+// mapMCPGroupToVirtualMCPServer maps MCPGroup changes to VirtualMCPServer reconciliation requests
+func (r *VirtualMCPServerReconciler) mapMCPGroupToVirtualMCPServer(ctx context.Context, obj client.Object) []reconcile.Request {
+	mcpGroup, ok := obj.(*mcpv1alpha1.MCPGroup)
+	if !ok {
+		return nil
+	}
+
+	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(mcpGroup.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPGroup watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, vmcp := range vmcpList.Items {
+		if vmcp.Spec.GroupRef.Name == mcpGroup.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      vmcp.Name,
+					Namespace: vmcp.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
+}
+
+// mapMCPServerToVirtualMCPServer maps MCPServer changes to VirtualMCPServer reconciliation requests
+func (r *VirtualMCPServerReconciler) mapMCPServerToVirtualMCPServer(ctx context.Context, obj client.Object) []reconcile.Request {
+	mcpServer, ok := obj.(*mcpv1alpha1.MCPServer)
+	if !ok {
+		return nil
+	}
+
+	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(mcpServer.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPServer watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, vmcp := range vmcpList.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      vmcp.Name,
+				Namespace: vmcp.Namespace,
+			},
+		})
+	}
+
+	return requests
+}
+
+// mapExternalAuthConfigToVirtualMCPServer maps MCPExternalAuthConfig changes to VirtualMCPServer reconciliation requests
+func (r *VirtualMCPServerReconciler) mapExternalAuthConfigToVirtualMCPServer(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
+	externalAuthConfig, ok := obj.(*mcpv1alpha1.MCPExternalAuthConfig)
+	if !ok {
+		return nil
+	}
+
+	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(externalAuthConfig.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPExternalAuthConfig watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, vmcp := range vmcpList.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      vmcp.Name,
+				Namespace: vmcp.Namespace,
+			},
+		})
+	}
+
+	return requests
+}
+
+// mapToolConfigToVirtualMCPServer maps MCPToolConfig changes to VirtualMCPServer reconciliation requests
+func (r *VirtualMCPServerReconciler) mapToolConfigToVirtualMCPServer(ctx context.Context, obj client.Object) []reconcile.Request {
+	toolConfig, ok := obj.(*mcpv1alpha1.MCPToolConfig)
+	if !ok {
+		return nil
+	}
+
+	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(toolConfig.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPToolConfig watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, vmcp := range vmcpList.Items {
+		if r.vmcpReferencesToolConfig(&vmcp, toolConfig.Name) {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      vmcp.Name,
+					Namespace: vmcp.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
+}
+
+// vmcpReferencesToolConfig checks if a VirtualMCPServer references the given MCPToolConfig
+func (*VirtualMCPServerReconciler) vmcpReferencesToolConfig(vmcp *mcpv1alpha1.VirtualMCPServer, toolConfigName string) bool {
+	if vmcp.Spec.Aggregation == nil || len(vmcp.Spec.Aggregation.Tools) == 0 {
+		return false
+	}
+
+	for _, tc := range vmcp.Spec.Aggregation.Tools {
+		if tc.ToolConfigRef != nil && tc.ToolConfigRef.Name == toolConfigName {
+			return true
+		}
+	}
+
+	return false
 }

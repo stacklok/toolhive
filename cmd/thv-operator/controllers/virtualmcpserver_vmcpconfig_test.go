@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 // TestCreateVmcpConfigFromVirtualMCPServer tests vmcp config generation
@@ -223,11 +224,11 @@ func TestConvertAggregation(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name                   string
-		aggregation            *mcpv1alpha1.AggregationConfig
-		expectedStrategy       string
-		hasPrefixFormat        bool
-		hasPriorityOrder       bool
+		name                    string
+		aggregation             *mcpv1alpha1.AggregationConfig
+		expectedStrategy        vmcp.ConflictResolutionStrategy
+		hasPrefixFormat         bool
+		hasPriorityOrder        bool
 		expectedToolConfigCount int
 	}{
 		{
@@ -238,7 +239,7 @@ func TestConvertAggregation(t *testing.T) {
 					PrefixFormat: "{workload}_",
 				},
 			},
-			expectedStrategy: "prefix",
+			expectedStrategy: vmcp.ConflictStrategyPrefix,
 			hasPrefixFormat:  true,
 		},
 		{
@@ -249,7 +250,7 @@ func TestConvertAggregation(t *testing.T) {
 					PriorityOrder: []string{"backend-1", "backend-2"},
 				},
 			},
-			expectedStrategy: "priority",
+			expectedStrategy: vmcp.ConflictStrategyPriority,
 			hasPriorityOrder: true,
 		},
 		{
@@ -272,7 +273,7 @@ func TestConvertAggregation(t *testing.T) {
 					},
 				},
 			},
-			expectedStrategy:        "prefix",
+			expectedStrategy:        vmcp.ConflictStrategyPrefix,
 			expectedToolConfigCount: 2,
 		},
 	}
@@ -316,9 +317,9 @@ func TestConvertCompositeTools(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
+		name           string
 		compositeTools []mcpv1alpha1.CompositeToolSpec
-		expectedCount int
+		expectedCount  int
 	}{
 		{
 			name: "single composite tool",
@@ -395,7 +396,7 @@ func TestConvertCompositeTools(t *testing.T) {
 func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
+	testVmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-vmcp",
 			Namespace: "default",
@@ -413,7 +414,7 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(vmcp).
+		WithObjects(testVmcp).
 		Build()
 
 	r := &VirtualMCPServerReconciler{
@@ -421,7 +422,7 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	err := r.ensureVmcpConfigConfigMap(context.Background(), vmcp)
+	err := r.ensureVmcpConfigConfigMap(context.Background(), testVmcp)
 	require.NoError(t, err)
 
 	// Verify ConfigMap was created

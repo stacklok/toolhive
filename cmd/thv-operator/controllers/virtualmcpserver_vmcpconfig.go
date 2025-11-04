@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -49,8 +50,8 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		},
 	}
 
-	// Compute and add content checksum annotation
-	checksum := computeConfigMapChecksum(configMap)
+	// Compute and add content checksum annotation using controllerutil
+	checksum := ctrlutil.CalculateConfigHash(configMap.Data)
 	configMap.Annotations = map[string]string{
 		"toolhive.stacklok.dev/content-checksum": checksum,
 	}
@@ -110,6 +111,8 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMapResource(
 }
 
 // createVmcpConfigFromVirtualMCPServer converts VirtualMCPServer CRD spec to vmcp Config
+//
+//nolint:unparam // error return reserved for future reference resolution
 func (r *VirtualMCPServerReconciler) createVmcpConfigFromVirtualMCPServer(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -154,7 +157,7 @@ func (r *VirtualMCPServerReconciler) createVmcpConfigFromVirtualMCPServer(
 
 // convertIncomingAuth converts IncomingAuthConfig from CRD to vmcp config
 func (*VirtualMCPServerReconciler) convertIncomingAuth(
-	ctx context.Context,
+	_ context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) *vmcpconfig.IncomingAuthConfig {
 	incoming := &vmcpconfig.IncomingAuthConfig{}
@@ -179,7 +182,7 @@ func (*VirtualMCPServerReconciler) convertIncomingAuth(
 
 // convertOutgoingAuth converts OutgoingAuthConfig from CRD to vmcp config
 func (r *VirtualMCPServerReconciler) convertOutgoingAuth(
-	ctx context.Context,
+	_ context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) *vmcpconfig.OutgoingAuthConfig {
 	outgoing := &vmcpconfig.OutgoingAuthConfig{
@@ -231,8 +234,8 @@ func (*VirtualMCPServerReconciler) convertBackendAuthConfig(
 }
 
 // convertAggregation converts AggregationConfig from CRD to vmcp config
-func (r *VirtualMCPServerReconciler) convertAggregation(
-	ctx context.Context,
+func (*VirtualMCPServerReconciler) convertAggregation(
+	_ context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) *vmcpconfig.AggregationConfig {
 	agg := &vmcpconfig.AggregationConfig{}
@@ -286,7 +289,7 @@ func (r *VirtualMCPServerReconciler) convertAggregation(
 
 // convertCompositeTools converts CompositeToolSpec from CRD to vmcp config
 func (*VirtualMCPServerReconciler) convertCompositeTools(
-	ctx context.Context,
+	_ context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) []*vmcpconfig.CompositeToolConfig {
 	compositeTools := make([]*vmcpconfig.CompositeToolConfig, 0, len(vmcp.Spec.CompositeTools))
@@ -361,7 +364,7 @@ func convertArguments(args map[string]string) map[string]any {
 
 // convertTokenCache converts TokenCacheConfig from CRD to vmcp config
 func (*VirtualMCPServerReconciler) convertTokenCache(
-	ctx context.Context,
+	_ context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) *vmcpconfig.TokenCacheConfig {
 	cache := &vmcpconfig.TokenCacheConfig{
@@ -384,10 +387,11 @@ func (*VirtualMCPServerReconciler) convertTokenCache(
 			Address:   vmcp.Spec.TokenCache.Redis.Address,
 			DB:        vmcp.Spec.TokenCache.Redis.DB,
 			KeyPrefix: vmcp.Spec.TokenCache.Redis.KeyPrefix,
-			// TODO: Resolve password from secret reference
+			// TODO: Resolve password from secret reference when PasswordRef is set
 		}
+		//nolint:staticcheck // Empty branch reserved for future password reference resolution
 		if vmcp.Spec.TokenCache.Redis.PasswordRef != nil {
-			// Password should be resolved at runtime by vmcp binary
+			// Password will be resolved at runtime by vmcp binary via secret reference
 		}
 	}
 
@@ -396,7 +400,7 @@ func (*VirtualMCPServerReconciler) convertTokenCache(
 
 // convertOperational converts OperationalConfig from CRD to vmcp config
 func (*VirtualMCPServerReconciler) convertOperational(
-	ctx context.Context,
+	_ context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) *vmcpconfig.OperationalConfig {
 	operational := &vmcpconfig.OperationalConfig{}
@@ -423,8 +427,8 @@ func (*VirtualMCPServerReconciler) convertOperational(
 
 	if vmcp.Spec.Operational.FailureHandling != nil {
 		operational.FailureHandling = &vmcpconfig.FailureHandlingConfig{
-			UnhealthyThreshold:  vmcp.Spec.Operational.FailureHandling.UnhealthyThreshold,
-			PartialFailureMode:  vmcp.Spec.Operational.FailureHandling.PartialFailureMode,
+			UnhealthyThreshold: vmcp.Spec.Operational.FailureHandling.UnhealthyThreshold,
+			PartialFailureMode: vmcp.Spec.Operational.FailureHandling.PartialFailureMode,
 		}
 
 		// Parse health check interval
@@ -482,11 +486,4 @@ func labelsForVmcpConfig(vmcpName string) map[string]string {
 		"toolhive.stacklok.io/virtual-mcp-server": vmcpName,
 		"toolhive.stacklok.io/managed-by":         "toolhive-operator",
 	}
-}
-
-// computeConfigMapChecksum computes a checksum for the ConfigMap data
-func computeConfigMapChecksum(cm *corev1.ConfigMap) string {
-	// Simple checksum based on JSON serialization of data
-	data, _ := json.Marshal(cm.Data)
-	return fmt.Sprintf("%x", data)
 }

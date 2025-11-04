@@ -7,12 +7,17 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+)
+
+const (
+	backendStatusReady       = "ready"
+	backendStatusDegraded    = "degraded"
+	backendStatusUnavailable = "unavailable"
 )
 
 // backendHealthResult represents the health status of all backends
@@ -58,7 +63,7 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 				// Add as unavailable backend
 				discoveredBackends = append(discoveredBackends, mcpv1alpha1.DiscoveredBackend{
 					Name:   serverName,
-					Status: "unavailable",
+					Status: backendStatusUnavailable,
 				})
 				continue
 			}
@@ -120,13 +125,8 @@ func (r *VirtualMCPServerReconciler) discoverBackendServer(
 	if mcpServer.Spec.ExternalAuthConfigRef != nil {
 		backend.AuthConfigRef = mcpServer.Spec.ExternalAuthConfigRef.Name
 
-		// Fetch the auth config to get the type
-		authConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
-		err := r.Get(ctx, types.NamespacedName{
-			Name:      mcpServer.Spec.ExternalAuthConfigRef.Name,
-			Namespace: namespace,
-		}, authConfig)
-
+		// Fetch the auth config to get the type using controllerutil
+		authConfig, err := ctrlutil.GetExternalAuthConfigByName(ctx, r.Client, namespace, mcpServer.Spec.ExternalAuthConfigRef.Name)
 		if err == nil {
 			// Determine auth type from the auth config spec
 			backend.AuthType = r.getAuthTypeFromConfig(authConfig)
@@ -136,11 +136,13 @@ func (r *VirtualMCPServerReconciler) discoverBackendServer(
 	// Determine backend status based on MCPServer phase
 	switch mcpServer.Status.Phase {
 	case mcpv1alpha1.MCPServerPhaseRunning:
-		backend.Status = "ready"
+		backend.Status = backendStatusReady
 	case mcpv1alpha1.MCPServerPhaseFailed:
-		backend.Status = "degraded"
+		backend.Status = backendStatusDegraded
+	case mcpv1alpha1.MCPServerPhasePending, mcpv1alpha1.MCPServerPhaseTerminating:
+		backend.Status = backendStatusUnavailable
 	default:
-		backend.Status = "unavailable"
+		backend.Status = backendStatusUnavailable
 	}
 
 	// Set last health check time to now
@@ -184,13 +186,13 @@ func (*VirtualMCPServerReconciler) calculateCapabilitiesSummary(
 
 	readyBackends := 0
 	for _, backend := range backends {
-		if backend.Status == "ready" {
+		if backend.Status == backendStatusReady {
 			readyBackends++
 		}
 	}
 
 	// Placeholder calculation - should be replaced with actual capability discovery
-	summary.ToolCount = readyBackends * 5  // Assume avg 5 tools per backend
+	summary.ToolCount = readyBackends * 5 // Assume avg 5 tools per backend
 	summary.ResourceCount = readyBackends * 2
 	summary.PromptCount = readyBackends * 1
 
@@ -199,7 +201,7 @@ func (*VirtualMCPServerReconciler) calculateCapabilitiesSummary(
 
 // checkBackendHealth checks the health of all discovered backends
 func (*VirtualMCPServerReconciler) checkBackendHealth(
-	ctx context.Context,
+	_ context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) backendHealthResult {
 	result := backendHealthResult{
@@ -212,7 +214,7 @@ func (*VirtualMCPServerReconciler) checkBackendHealth(
 
 	healthyCount := 0
 	for _, backend := range vmcp.Status.DiscoveredBackends {
-		if backend.Status == "ready" {
+		if backend.Status == backendStatusReady {
 			healthyCount++
 		} else {
 			result.unavailableCount++
@@ -223,24 +225,4 @@ func (*VirtualMCPServerReconciler) checkBackendHealth(
 	result.someHealthy = healthyCount > 0
 
 	return result
-}
-
-// listMCPServersByLabels lists MCPServers matching the given label selector
-func (r *VirtualMCPServerReconciler) listMCPServersByLabels(
-	ctx context.Context,
-	namespace string,
-	selector labels.Selector,
-) ([]mcpv1alpha1.MCPServer, error) {
-	mcpServerList := &mcpv1alpha1.MCPServerList{}
-
-	listOpts := &client.ListOptions{
-		Namespace:     namespace,
-		LabelSelector: selector,
-	}
-
-	if err := r.List(ctx, mcpServerList, listOpts); err != nil {
-		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
-	}
-
-	return mcpServerList.Items, nil
 }

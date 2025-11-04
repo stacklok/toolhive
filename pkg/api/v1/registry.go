@@ -241,17 +241,19 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Validate that only one of URL or LocalPath is provided
-	if req.URL != nil && req.LocalPath != nil {
-		http.Error(w, "Cannot specify both URL and local path", http.StatusBadRequest)
+	// Validate that only one of URL, APIURL, or LocalPath is provided
+	if (req.URL != nil && req.APIURL != nil) ||
+		(req.URL != nil && req.LocalPath != nil) ||
+		(req.APIURL != nil && req.LocalPath != nil) {
+		http.Error(w, "Cannot specify more than one registry type (url, api_url, or local_path)", http.StatusBadRequest)
 		return
 	}
 
 	var responseType string
 	var message string
 
-	// Handle reset to default (no URL or LocalPath specified)
-	if req.URL == nil && req.LocalPath == nil {
+	// Handle reset to default (no URL, APIURL, or LocalPath specified)
+	if req.URL == nil && req.APIURL == nil && req.LocalPath == nil {
 		// Use the config provider to unset the registry
 		provider := rr.configProvider
 		if err := provider.UnsetRegistry(); err != nil {
@@ -276,6 +278,21 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 		}
 		responseType = "url"
 		message = fmt.Sprintf("Successfully set registry URL: %s", *req.URL)
+	} else if req.APIURL != nil {
+		// Handle API URL update
+		allowPrivateIP := false
+		if req.AllowPrivateIP != nil {
+			allowPrivateIP = *req.AllowPrivateIP
+		}
+
+		// Use the config provider to update the registry API URL
+		if err := rr.configProvider.SetRegistryAPI(*req.APIURL, allowPrivateIP); err != nil {
+			logger.Errorf("Failed to set registry API URL: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to set registry API URL: %v", err), http.StatusBadRequest)
+			return
+		}
+		responseType = "api"
+		message = fmt.Sprintf("Successfully set registry API URL: %s", *req.APIURL)
 	} else if req.LocalPath != nil {
 		// Handle local path update
 		// Use the config provider to update the registry file
@@ -521,9 +538,11 @@ type getServerResponse struct {
 type UpdateRegistryRequest struct {
 	// Registry URL (for remote registries)
 	URL *string `json:"url,omitempty"`
+	// MCP Registry API URL
+	APIURL *string `json:"api_url,omitempty"`
 	// Local registry file path
 	LocalPath *string `json:"local_path,omitempty"`
-	// Allow private IP addresses for registry URL
+	// Allow private IP addresses for registry URL or API URL
 	AllowPrivateIP *bool `json:"allow_private_ip,omitempty"`
 }
 

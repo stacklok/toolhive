@@ -488,7 +488,7 @@ func (p *HTTPSSEProxy) processPendingMessages(clientID string, messageCh chan<- 
 	}
 
 	// Find messages for this client (all messages for now)
-	for _, pendingMsg := range p.pendingMessages {
+	for i, pendingMsg := range p.pendingMessages {
 		// Convert to SSE string
 		sseString := pendingMsg.Message.ToSSEString()
 
@@ -498,7 +498,10 @@ func (p *HTTPSSEProxy) processPendingMessages(clientID string, messageCh chan<- 
 			// Message sent successfully
 		default:
 			// Channel is full, stop sending
-			logger.Errorf("Failed to send pending message to client %s (channel full)", clientID)
+			logger.Errorf("Client %s channel full after sending %d/%d pending messages",
+				clientID, i, len(p.pendingMessages))
+			// Remove successfully sent messages and keep the rest
+			p.pendingMessages = p.pendingMessages[i:]
 			return
 		}
 	}

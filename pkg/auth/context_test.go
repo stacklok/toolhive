@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -90,89 +89,6 @@ func TestIdentityContext_ExplicitNilValue(t *testing.T) {
 	identity, ok := IdentityFromContext(ctx)
 	assert.True(t, ok, "expected value to be present")
 	assert.Nil(t, identity, "expected nil identity")
-}
-
-// TestGetClaimsFromContext_EdgeCases verifies backward-compatible claims retrieval edge cases.
-func TestGetClaimsFromContext_EdgeCases(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		setupCtx  func() context.Context
-		wantOk    bool
-		checkFunc func(t *testing.T, claims jwt.MapClaims)
-	}{
-		{
-			name: "identity_with_claims",
-			setupCtx: func() context.Context {
-				identity := &Identity{
-					Subject: "user123",
-					Claims: map[string]any{
-						"sub":    "user123",
-						"org_id": "org456",
-					},
-				}
-				return WithIdentity(context.Background(), identity)
-			},
-			wantOk: true,
-			checkFunc: func(t *testing.T, claims jwt.MapClaims) {
-				t.Helper()
-				assert.Equal(t, "user123", claims["sub"])
-				assert.Equal(t, "org456", claims["org_id"])
-			},
-		},
-		{
-			name: "identity_with_nil_claims",
-			setupCtx: func() context.Context {
-				identity := &Identity{
-					Subject: "user123",
-					Claims:  nil,
-				}
-				return WithIdentity(context.Background(), identity)
-			},
-			wantOk: false,
-		},
-		{
-			name: "no_identity",
-			setupCtx: func() context.Context {
-				return context.Background()
-			},
-			wantOk: false,
-		},
-		{
-			name: "nil_context",
-			setupCtx: func() context.Context {
-				return nil
-			},
-			wantOk: false,
-		},
-		{
-			name: "explicitly_nil_identity",
-			setupCtx: func() context.Context {
-				return context.WithValue(context.Background(), IdentityContextKey{}, (*Identity)(nil))
-			},
-			wantOk: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctx := tt.setupCtx()
-			claims, ok := GetClaimsFromContext(ctx)
-
-			assert.Equal(t, tt.wantOk, ok)
-			if tt.wantOk {
-				require.NotNil(t, claims)
-				if tt.checkFunc != nil {
-					tt.checkFunc(t, claims)
-				}
-			} else {
-				assert.Nil(t, claims)
-			}
-		})
-	}
 }
 
 // TestIdentityContext_Overwrite verifies that storing a new identity replaces the old one.

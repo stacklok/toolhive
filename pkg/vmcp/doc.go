@@ -83,12 +83,11 @@
 //		Middleware() func(http.Handler) http.Handler
 //	}
 //
-// OutgoingAuthenticator (pkg/vmcp/auth):
+// OutgoingAuthRegistry (pkg/vmcp/auth):
 //
-//	type OutgoingAuthenticator interface {
-//		AuthenticateRequest(ctx context.Context, req *http.Request, strategy string, metadata map[string]any) error
-//		GetStrategy(name string) (AuthStrategy, error)
-//		RegisterStrategy(name string, strategy AuthStrategy) error
+//	type OutgoingAuthRegistry interface {
+//		GetStrategy(name string) (Strategy, error)
+//		RegisterStrategy(name string, strategy Strategy) error
 //	}
 //
 // # Design Principles
@@ -137,9 +136,10 @@
 //			// Route to backend
 //			target, err := rtr.RouteTool(ctx, toolName)
 //
-//			// Authenticate to backend
+//			// Authenticate to backend (resolve strategy and call it)
 //			backendReq := createBackendRequest(...)
-//			err = outAuth.AuthenticateRequest(ctx, backendReq, target.AuthStrategy, target.AuthMetadata)
+//			strategy, err := outAuth.GetStrategy(target.AuthStrategy)
+//			err = strategy.Authenticate(ctx, backendReq, target.AuthMetadata)
 //
 //			// Forward request and return response
 //			// ...

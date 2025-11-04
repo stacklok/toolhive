@@ -29,6 +29,11 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	CompositeTools []CompositeToolSpec `json:"compositeTools,omitempty"`
 
+	// CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
+	// for complex, reusable workflows
+	// +optional
+	CompositeToolRefs []CompositeToolDefinitionRef `json:"compositeToolRefs,omitempty"`
+
 	// TokenCache configures token caching behavior
 	// +optional
 	TokenCache *TokenCacheConfig `json:"tokenCache,omitempty"`

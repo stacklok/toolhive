@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-03T00:19:04Z",
+  "last_updated": "2025-11-04T00:17:50Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -2284,7 +2284,7 @@
           "required": true
         },
         {
-          "name": "GRAFANA_API_KEY",
+          "name": "GRAFANA_SERVICE_ACCOUNT_TOKEN",
           "description": "Service account token with appropriate permissions",
           "required": true,
           "secret": true
@@ -2581,9 +2581,9 @@
         "pg_upgrade"
       ],
       "metadata": {
-        "stars": 69,
+        "stars": 71,
         "pulls": 104,
-        "last_updated": "2025-10-15T02:30:47Z"
+        "last_updated": "2025-11-03T02:34:25Z"
       },
       "repository_url": "https://github.com/heroku/heroku-mcp-server",
       "tags": [
@@ -2794,7 +2794,7 @@
       "description": "Allows LLM-powered applications to interact with Kubernetes clusters.",
       "tier": "Community",
       "status": "Active",
-      "transport": "sse",
+      "transport": "streamable-http",
       "tools": [
         "list_resources",
         "get_resource",
@@ -3869,9 +3869,9 @@
         "update-many"
       ],
       "metadata": {
-        "stars": 677,
+        "stars": 783,
         "pulls": 5060,
-        "last_updated": "2025-10-15T02:30:47Z"
+        "last_updated": "2025-11-03T02:34:25Z"
       },
       "repository_url": "https://github.com/mongodb-js/mongodb-mcp-server",
       "tags": [
@@ -4213,7 +4213,7 @@
       "description": "OSV (Open Source Vulnerabilities) database access for querying package and commit vulnerabilities",
       "tier": "Community",
       "status": "Active",
-      "transport": "sse",
+      "transport": "streamable-http",
       "tools": [
         "query_vulnerability",
         "query_vulnerabilities_batch",
@@ -4688,15 +4688,14 @@
       "description": "Scan code for security vulnerabilities using Semgrep with 5,000+ semantic analysis rules",
       "tier": "Official",
       "status": "Active",
-      "transport": "sse",
+      "transport": "stdio",
       "tools": [
         "get_abstract_syntax_tree",
         "get_supported_languages",
-        "security_check",
         "semgrep_findings",
         "semgrep_rule_schema",
         "semgrep_scan",
-        "semgrep_scan_local",
+        "semgrep_scan_supply_chain",
         "semgrep_scan_with_custom_rule"
       ],
       "metadata": {
@@ -4740,8 +4739,8 @@
         }
       ],
       "args": [
-        "--transport",
-        "sse"
+        "semgrep",
+        "mcp"
       ]
     },
     "sentry": {
@@ -4766,9 +4765,9 @@
         "whoami"
       ],
       "metadata": {
-        "stars": 384,
+        "stars": 411,
         "pulls": 127,
-        "last_updated": "2025-10-15T02:30:47Z"
+        "last_updated": "2025-11-03T02:34:26Z"
       },
       "repository_url": "https://github.com/getsentry/sentry-mcp",
       "tags": [
@@ -4866,9 +4865,9 @@
         "describe_table"
       ],
       "metadata": {
-        "stars": 11,
+        "stars": 12,
         "pulls": 4212,
-        "last_updated": "2025-10-15T02:30:48Z"
+        "last_updated": "2025-11-03T02:34:26Z"
       },
       "repository_url": "https://github.com/StacklokLabs/sqlite-mcp",
       "tags": [
@@ -4986,9 +4985,9 @@
         "search_docs"
       ],
       "metadata": {
-        "stars": 2189,
+        "stars": 2238,
         "pulls": 102,
-        "last_updated": "2025-10-16T02:30:31Z"
+        "last_updated": "2025-11-03T02:34:27Z"
       },
       "repository_url": "https://github.com/supabase-community/supabase-mcp",
       "tags": [
@@ -5616,7 +5615,7 @@
       "description": "The Mermaid MCP Server enables AI assistants to create, validate, and render Mermaid diagrams seamlessly",
       "tier": "Official",
       "status": "Active",
-      "transport": "sse",
+      "transport": "streamable-http",
       "tools": [
         "validate_and_render_mermaid_diagram"
       ],
@@ -5635,7 +5634,7 @@
         "author": "Mermaid",
         "homepage": "https://docs.mermaidchart.com/ai/mcp-server"
       },
-      "url": "https://mcp.mermaidchart.com/sse"
+      "url": "https://mcp.mermaidchart.com/mcp"
     },
     "monday": {
       "description": "Monday.com's official remote MCP server for project and workflow management",
@@ -5690,7 +5689,7 @@
       "description": "Neon's official remote MCP server for serverless Postgres with branching and migrations",
       "tier": "Official",
       "status": "Active",
-      "transport": "sse",
+      "transport": "streamable-http",
       "tools": [
         "list_projects",
         "list_organizations",
@@ -5736,7 +5735,7 @@
       "custom_metadata": {
         "author": "Neon"
       },
-      "url": "https://mcp.neon.tech/sse"
+      "url": "https://mcp.neon.tech/mcp"
     },
     "notion-remote": {
       "description": "Notion's official remote MCP server for workspaces, pages, databases, and comments",
@@ -5929,13 +5928,13 @@
         "homepage": "https://mcp.semgrep.ai",
         "license": "MIT"
       },
-      "url": "https://mcp.semgrep.ai"
+      "url": "https://mcp.semgrep.ai/mcp"
     },
     "sentry-remote": {
       "description": "Sentry's official remote MCP server for error monitoring and performance tracking",
       "tier": "Official",
       "status": "Active",
-      "transport": "sse",
+      "transport": "streamable-http",
       "tools": [
         "whoami",
         "find_organizations",
@@ -5973,7 +5972,7 @@
         "author": "Sentry",
         "homepage": "https://sentry.io"
       },
-      "url": "https://mcp.sentry.dev/sse"
+      "url": "https://mcp.sentry.dev/mcp"
     },
     "square": {
       "description": "Square's official remote MCP server for payment processing and commerce",
@@ -6105,7 +6104,7 @@
       "description": "Wix's official remote MCP server for development platform and site management",
       "tier": "Official",
       "status": "Active",
-      "transport": "sse",
+      "transport": "streamable-http",
       "tools": [
         "WixREADME",
         "SearchWixWDSDocumentation",
@@ -6141,7 +6140,7 @@
         "author": "Wix",
         "homepage": "https://dev.wix.com"
       },
-      "url": "https://mcp.wix.com/sse"
+      "url": "https://mcp.wix.com/mcp"
     }
   }
 }

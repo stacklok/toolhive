@@ -1,7 +1,6 @@
 package authz
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -136,7 +135,10 @@ func TestResponseFilteringWriter(t *testing.T) {
 			// Create an HTTP request with claims in context
 			req, err := http.NewRequest(http.MethodPost, "/messages", nil)
 			require.NoError(t, err, "Failed to create HTTP request")
-			req = req.WithContext(context.WithValue(req.Context(), auth.ClaimsContextKey{}, tc.claims))
+			sub := tc.claims["sub"].(string)
+			name, _ := tc.claims["name"].(string)
+			identity := &auth.Identity{Subject: sub, Name: name, Claims: tc.claims}
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
 			// Create a response recorder
 			rr := httptest.NewRecorder()

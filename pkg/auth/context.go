@@ -1,6 +1,12 @@
+// Package auth provides authentication and authorization utilities.
 package auth
 
-import "context"
+import (
+	"context"
+	"errors"
+
+	"github.com/golang-jwt/jwt/v5"
+)
 
 // IdentityContextKey is the key used to store Identity in the request context.
 // This provides type-safe context storage and retrieval for authenticated identities.
@@ -42,4 +48,36 @@ func WithIdentity(ctx context.Context, identity *Identity) context.Context {
 func IdentityFromContext(ctx context.Context) (*Identity, bool) {
 	identity, ok := ctx.Value(IdentityContextKey{}).(*Identity)
 	return identity, ok
+}
+
+// claimsToIdentity converts JWT claims to Identity struct.
+// It requires the 'sub' claim per OIDC Core 1.0 spec § 5.1.
+// The original token can be provided for passthrough scenarios.
+//
+// Note: The Groups field is intentionally NOT populated here.
+// Authorization logic MUST extract groups from the Claims map, as group claim
+// names vary by provider (e.g., "groups", "roles", "cognito:groups").
+func claimsToIdentity(claims jwt.MapClaims, token string) (*Identity, error) {
+	// Validate required 'sub' claim per OIDC Core 1.0 spec
+	sub, ok := claims["sub"].(string)
+	if !ok || sub == "" {
+		return nil, errors.New("missing or invalid 'sub' claim (required by OIDC Core 1.0 § 5.1)")
+	}
+
+	identity := &Identity{
+		Subject:   sub,
+		Claims:    claims,
+		Token:     token,
+		TokenType: "Bearer",
+	}
+
+	// Extract optional standard claims
+	if name, ok := claims["name"].(string); ok {
+		identity.Name = name
+	}
+	if email, ok := claims["email"].(string); ok {
+		identity.Email = email
+	}
+
+	return identity, nil
 }

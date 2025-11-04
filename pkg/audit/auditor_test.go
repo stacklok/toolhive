@@ -2,7 +2,6 @@ package audit
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -353,7 +352,13 @@ func TestExtractSubjects(t *testing.T) {
 		}
 
 		req := httptest.NewRequest("GET", "/test", nil)
-		ctx := context.WithValue(req.Context(), auth.ClaimsContextKey{}, claims)
+		identity := &auth.Identity{
+			Subject: claims["sub"].(string),
+			Name:    claims["name"].(string),
+			Email:   claims["email"].(string),
+			Claims:  claims,
+		}
+		ctx := auth.WithIdentity(req.Context(), identity)
 		req = req.WithContext(ctx)
 
 		subjects := auditor.extractSubjects(req)
@@ -372,7 +377,11 @@ func TestExtractSubjects(t *testing.T) {
 		}
 
 		req := httptest.NewRequest("GET", "/test", nil)
-		ctx := context.WithValue(req.Context(), auth.ClaimsContextKey{}, claims)
+		identity := &auth.Identity{
+			Subject: claims["sub"].(string),
+			Claims:  claims,
+		}
+		ctx := auth.WithIdentity(req.Context(), identity)
 		req = req.WithContext(ctx)
 
 		subjects := auditor.extractSubjects(req)
@@ -389,7 +398,12 @@ func TestExtractSubjects(t *testing.T) {
 		}
 
 		req := httptest.NewRequest("GET", "/test", nil)
-		ctx := context.WithValue(req.Context(), auth.ClaimsContextKey{}, claims)
+		identity := &auth.Identity{
+			Subject: claims["sub"].(string),
+			Email:   claims["email"].(string),
+			Claims:  claims,
+		}
+		ctx := auth.WithIdentity(req.Context(), identity)
 		req = req.WithContext(ctx)
 
 		subjects := auditor.extractSubjects(req)

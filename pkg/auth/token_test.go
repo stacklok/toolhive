@@ -242,17 +242,17 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 
 	// Create a test handler
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Get the claims from the context using the proper key type
-		claims, ok := r.Context().Value(ClaimsContextKey{}).(jwt.MapClaims)
-		if !ok {
-			t.Errorf("Failed to get claims from context")
-			http.Error(w, "Failed to get claims from context", http.StatusInternalServerError)
+		// Get the identity from the context
+		identity, ok := IdentityFromContext(r.Context())
+		if !ok || identity == nil {
+			t.Errorf("Failed to get identity from context")
+			http.Error(w, "Failed to get identity from context", http.StatusInternalServerError)
 			return
 		}
 
 		// Write the claims as the response
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(claims); err != nil {
+		if err := json.NewEncoder(w).Encode(identity.Claims); err != nil {
 			t.Errorf("Failed to encode claims: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to encode claims: %v", err), http.StatusInternalServerError)
 			return
@@ -1281,6 +1281,7 @@ func TestMiddleware_WWWAuthenticate_WithMockIntrospection(t *testing.T) {
 		case "good":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"active": true,
+				"sub":    "test-user",
 				"exp":    float64(time.Now().Add(60 * time.Second).Unix()),
 				"iss":    issuer,
 			})

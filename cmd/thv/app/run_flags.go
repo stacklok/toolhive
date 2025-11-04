@@ -642,9 +642,13 @@ func getRemoteAuthFromRemoteServerMetadata(
 	}
 
 	// Process the resolved client secret (convert plain text to secret reference if needed)
-	clientSecret, err := processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
-	if err != nil {
-		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+	// Only process if a secret was actually provided to avoid unnecessary secrets manager access
+	var clientSecret string
+	if resolvedClientSecret != "" {
+		clientSecret, err = processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+		}
 	}
 
 	authCfg := &runner.RemoteAuthConfig{
@@ -701,9 +705,13 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*runner.RemoteAuthConfig, er
 	}
 
 	// Process the resolved client secret (convert plain text to secret reference if needed)
-	clientSecret, err := processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
-	if err != nil {
-		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+	// Only process if a secret was actually provided to avoid unnecessary secrets manager access
+	var clientSecret string
+	if resolvedClientSecret != "" {
+		clientSecret, err = processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+		}
 	}
 
 	return &runner.RemoteAuthConfig{

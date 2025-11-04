@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -52,12 +53,21 @@ type Runner struct {
 	statusManager statuses.StatusManager
 
 	// authenticatedTokenSource is the wrapped token source for remote workloads with authentication monitoring
-	authenticatedTokenSource *AuthenticatedTokenSource
+	authenticatedTokenSource *auth.MonitoredTokenSource
 
 	// monitoringCtx is the context for background authentication monitoring
 	// It is cancelled during Cleanup() to stop monitoring
 	monitoringCtx    context.Context
 	monitoringCancel context.CancelFunc
+}
+
+// statusManagerAdapter adapts statuses.StatusManager to auth.StatusUpdater interface
+type statusManagerAdapter struct {
+	sm statuses.StatusManager
+}
+
+func (a *statusManagerAdapter) SetWorkloadStatus(ctx context.Context, workloadName string, status rt.WorkloadStatus, reason string) error {
+	return a.sm.SetWorkloadStatus(ctx, workloadName, status, reason)
 }
 
 // NewRunner creates a new Runner with the provided configuration
@@ -236,10 +246,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		if tokenSource != nil {
 			// Create a child context for monitoring that can be cancelled during cleanup
 			r.monitoringCtx, r.monitoringCancel = context.WithCancel(ctx)
-			// Create adapter for StatusManager
-			r.authenticatedTokenSource = NewAuthenticatedTokenSource(r.monitoringCtx, tokenSource, r.Config.BaseName, r.statusManager)
+			// Create adapter to bridge statuses.StatusManager to auth.StatusUpdater
+			adapter := &statusManagerAdapter{sm: r.statusManager}
+			r.authenticatedTokenSource = auth.NewMonitoredTokenSource(r.monitoringCtx, tokenSource, r.Config.BaseName, adapter)
 			tokenSource = r.authenticatedTokenSource
-			r.authenticatedTokenSource.startBackgroundMonitoring()
+			r.authenticatedTokenSource.StartBackgroundMonitoring()
 		}
 
 		// Set the token source on the HTTP transport

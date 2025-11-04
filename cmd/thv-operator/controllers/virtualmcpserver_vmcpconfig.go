@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -50,10 +50,11 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		},
 	}
 
-	// Compute and add content checksum annotation using controllerutil
-	checksum := ctrlutil.CalculateConfigHash(configMap.Data)
+	// Compute and add content checksum annotation using robust SHA256-based checksum
+	checksumCalculator := checksum.NewRunConfigConfigMapChecksum()
+	checksumValue := checksumCalculator.ComputeConfigMapChecksum(configMap)
 	configMap.Annotations = map[string]string{
-		"toolhive.stacklok.dev/content-checksum": checksum,
+		checksum.ContentChecksumAnnotation: checksumValue,
 	}
 
 	return r.ensureVmcpConfigConfigMapResource(ctx, vmcp, configMap)
@@ -86,8 +87,8 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMapResource(
 	}
 
 	// ConfigMap exists, check if content has changed by comparing checksums
-	currentChecksum := current.Annotations["toolhive.stacklok.dev/content-checksum"]
-	desiredChecksum := desired.Annotations["toolhive.stacklok.dev/content-checksum"]
+	currentChecksum := current.Annotations[checksum.ContentChecksumAnnotation]
+	desiredChecksum := desired.Annotations[checksum.ContentChecksumAnnotation]
 
 	if currentChecksum != desiredChecksum {
 		desired.ResourceVersion = current.ResourceVersion

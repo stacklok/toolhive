@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -25,12 +26,26 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
 // VirtualMCPServerReconciler reconciles a VirtualMCPServer object
+//
+// Resource Cleanup Strategy:
+// VirtualMCPServer does NOT use finalizers because all managed resources have owner references
+// set via controllerutil.SetControllerReference. Kubernetes automatically cascade-deletes
+// owned resources when the VirtualMCPServer is deleted. Managed resources include:
+//   - Deployment (owned)
+//   - Service (owned)
+//   - ConfigMap for vmcp config (owned)
+//   - ServiceAccount, Role, RoleBinding via ctrlutil.EnsureRBACResource (owned)
+//
+// This differs from MCPServer which uses finalizers to explicitly delete resources that
+// may not have owner references (StatefulSet, headless Service, RunConfig ConfigMap).
 type VirtualMCPServerReconciler struct {
 	client.Client
 	Scheme           *runtime.Scheme
+	Recorder         record.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 }
 
@@ -111,6 +126,11 @@ func (r *VirtualMCPServerReconciler) validateAndDiscoverBackends(
 			Message: vmcp.Status.Message,
 		})
 		if statusErr := r.Status().Update(ctx, vmcp); statusErr != nil {
+			// Handle conflicts by requeuing - another controller may have updated the resource
+			if errors.IsConflict(statusErr) {
+				ctxLogger.V(1).Info("Conflict updating status after GroupRef validation error, requeuing")
+				return statusErr // Return error to trigger requeue
+			}
 			ctxLogger.Error(statusErr, "Failed to update VirtualMCPServer status after GroupRef validation error")
 		}
 		return err
@@ -131,6 +151,11 @@ func (r *VirtualMCPServerReconciler) validateAndDiscoverBackends(
 			Message: vmcp.Status.Message,
 		})
 		if statusErr := r.Status().Update(ctx, vmcp); statusErr != nil {
+			// Handle conflicts by requeuing - another controller may have updated the resource
+			if errors.IsConflict(statusErr) {
+				ctxLogger.V(1).Info("Conflict updating status after GroupRef validation, requeuing")
+				return statusErr // Return error to trigger requeue
+			}
 			ctxLogger.Error(statusErr, "Failed to update VirtualMCPServer status after GroupRef validation")
 		}
 		// Requeue to check again later
@@ -157,9 +182,25 @@ func (r *VirtualMCPServerReconciler) validateAndDiscoverBackends(
 			Message: err.Error(),
 		})
 		if statusErr := r.Status().Update(ctx, vmcp); statusErr != nil {
+			// Handle conflicts by requeuing - another controller may have updated the resource
+			if errors.IsConflict(statusErr) {
+				ctxLogger.V(1).Info("Conflict updating status after backend discovery error, requeuing")
+				return statusErr // Return error to trigger requeue
+			}
 			ctxLogger.Error(statusErr, "Failed to update VirtualMCPServer status after backend discovery error")
 		}
+		// Record event for backend discovery failure
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "BackendDiscoveryFailed",
+				"Failed to discover backends from MCPGroup %s: %v", vmcp.Spec.GroupRef.Name, err)
+		}
 		return err
+	}
+
+	// Record event for successful backend discovery
+	if r.Recorder != nil && len(vmcp.Status.DiscoveredBackends) > 0 {
+		r.Recorder.Eventf(vmcp, corev1.EventTypeNormal, "BackendsDiscovered",
+			"Successfully discovered %d backend(s) from MCPGroup %s", len(vmcp.Status.DiscoveredBackends), vmcp.Spec.GroupRef.Name)
 	}
 
 	return nil
@@ -171,6 +212,18 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) error {
 	ctxLogger := log.FromContext(ctx)
+
+	// Validate secret references before creating resources
+	// This catches configuration errors early, providing faster feedback than waiting for pod startup failures
+	if err := r.validateSecretReferences(ctx, vmcp); err != nil {
+		ctxLogger.Error(err, "Secret validation failed")
+		// Record event for secret validation failure
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "SecretValidationFailed",
+				"Secret validation failed: %v", err)
+		}
+		return err
+	}
 
 	// Ensure RBAC resources
 	if err := r.ensureRBACResources(ctx, vmcp); err != nil {
@@ -257,7 +310,13 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	})
 }
 
-// getVmcpConfigChecksum fetches the vmcp Config ConfigMap checksum annotation
+// getVmcpConfigChecksum fetches the vmcp Config ConfigMap checksum annotation.
+// This is used to trigger deployment rollouts when the configuration changes.
+//
+// Note: VirtualMCPServer uses a custom ConfigMap naming pattern ("{name}-vmcp-config")
+// instead of the standard "{name}-runconfig" pattern, so it cannot use the shared
+// checksum.RunConfigChecksumFetcher. However, it follows the same validation logic
+// and uses the same annotation constant for consistency.
 func (r *VirtualMCPServerReconciler) getVmcpConfigChecksum(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -274,15 +333,24 @@ func (r *VirtualMCPServerReconciler) getVmcpConfigChecksum(
 	}, configMap)
 
 	if err != nil {
-		return "", err
+		// Preserve error type for IsNotFound checks
+		return "", fmt.Errorf("failed to get vmcp Config ConfigMap %s/%s: %w",
+			vmcp.Namespace, configMapName, err)
 	}
 
-	checksum, ok := configMap.Annotations["toolhive.stacklok.dev/content-checksum"]
-	if !ok || checksum == "" {
-		return "", fmt.Errorf("ConfigMap %s missing content-checksum annotation", configMapName)
+	// Use the standard checksum annotation constant for consistency
+	checksumValue, ok := configMap.Annotations[checksum.ContentChecksumAnnotation]
+	if !ok {
+		return "", fmt.Errorf("vmcp Config ConfigMap %s/%s missing %s annotation",
+			vmcp.Namespace, configMapName, checksum.ContentChecksumAnnotation)
 	}
 
-	return checksum, nil
+	if checksumValue == "" {
+		return "", fmt.Errorf("vmcp Config ConfigMap %s/%s has empty %s annotation",
+			vmcp.Namespace, configMapName, checksum.ContentChecksumAnnotation)
+	}
+
+	return checksumValue, nil
 }
 
 // ensureDeployment ensures the Deployment exists and is up to date
@@ -315,7 +383,17 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		ctxLogger.Info("Creating a new Deployment", "Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
 		if err := r.Create(ctx, dep); err != nil {
 			ctxLogger.Error(err, "Failed to create new Deployment")
+			// Record event for deployment creation failure
+			if r.Recorder != nil {
+				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "DeploymentCreationFailed",
+					"Failed to create Deployment: %v", err)
+			}
 			return ctrl.Result{}, err
+		}
+		// Record event for successful deployment creation
+		if r.Recorder != nil {
+			r.Recorder.Event(vmcp, corev1.EventTypeNormal, "DeploymentCreated",
+				"Deployment created successfully")
 		}
 		return ctrl.Result{RequeueAfter: 0}, nil
 	} else if err != nil {
@@ -324,12 +402,22 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 	}
 
 	// Deployment exists - check if it needs to be updated
+	// deploymentNeedsUpdate performs a detailed comparison to avoid unnecessary updates
 	if r.deploymentNeedsUpdate(ctx, deployment, vmcp, vmcpConfigChecksum) {
 		newDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum)
 		if newDeployment == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create updated Deployment object")
 		}
-		// Update the deployment spec but preserve replica count for HPA compatibility
+
+		// Selective field update strategy:
+		// - Update Spec.Template: Contains container spec, volumes, pod metadata (triggers rollout)
+		// - Update Labels: For label selectors and queries
+		// - Update Annotations: For metadata and tooling
+		// - Preserve Spec.Replicas: Allows HPA/VPA to manage scaling independently
+		// - Preserve ResourceVersion, UID: Required for optimistic concurrency control
+		//
+		// Note: If update conflicts occur due to concurrent modifications, the reconcile
+		// loop will retry automatically. Kubernetes' optimistic locking prevents data loss.
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
 		deployment.Annotations = newDeployment.Annotations
@@ -337,7 +425,18 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 		ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
 		if err := r.Update(ctx, deployment); err != nil {
 			ctxLogger.Error(err, "Failed to update Deployment")
+			// Record event for deployment update failure
+			if r.Recorder != nil {
+				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "DeploymentUpdateFailed",
+					"Failed to update Deployment: %v", err)
+			}
+			// Return error to trigger reconcile retry (handles transient failures and conflicts)
 			return ctrl.Result{}, err
+		}
+		// Record event for successful deployment update (config change triggers rollout)
+		if r.Recorder != nil {
+			r.Recorder.Event(vmcp, corev1.EventTypeNormal, "DeploymentUpdated",
+				"Deployment updated, rolling out new configuration")
 		}
 		return ctrl.Result{Requeue: true}, nil
 	}
@@ -364,7 +463,17 @@ func (r *VirtualMCPServerReconciler) ensureService(
 		ctxLogger.Info("Creating a new Service", "Service.Namespace", svc.Namespace, "Service.Name", svc.Name)
 		if err := r.Create(ctx, svc); err != nil {
 			ctxLogger.Error(err, "Failed to create new Service")
+			// Record event for service creation failure
+			if r.Recorder != nil {
+				r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "ServiceCreationFailed",
+					"Failed to create Service: %v", err)
+			}
 			return ctrl.Result{}, err
+		}
+		// Record event for successful service creation
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, corev1.EventTypeNormal, "ServiceCreated",
+				"Service %s created successfully", serviceName)
 		}
 		return ctrl.Result{RequeueAfter: 0}, nil
 	} else if err != nil {
@@ -373,11 +482,21 @@ func (r *VirtualMCPServerReconciler) ensureService(
 	}
 
 	// Service exists - check if it needs to be updated
+	// serviceNeedsUpdate compares ports, type, labels, and annotations
 	if r.serviceNeedsUpdate(service, vmcp) {
 		newService := r.serviceForVirtualMCPServer(ctx, vmcp)
 		if newService == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create updated Service object")
 		}
+
+		// Selective field update strategy for Service:
+		// - Update Spec.Ports: Modify exposed ports
+		// - Update Spec.Type: Change service type (ClusterIP, NodePort, LoadBalancer)
+		// - Update Labels: For selectors and queries
+		// - Update Annotations: For metadata and tooling
+		// - Preserve Spec.ClusterIP: Immutable field, cannot be changed
+		// - Preserve Spec.HealthCheckNodePort: Set by cloud provider for LoadBalancer
+		// - Preserve ResourceVersion, UID: Required for optimistic concurrency control
 		service.Spec.Ports = newService.Spec.Ports
 		service.Spec.Type = newService.Spec.Type
 		service.Labels = newService.Labels
@@ -401,7 +520,14 @@ func (r *VirtualMCPServerReconciler) ensureServiceURL(
 ) error {
 	if vmcp.Status.URL == "" {
 		vmcp.Status.URL = createVmcpServiceURL(vmcp.Name, vmcp.Namespace, vmcpDefaultPort)
-		return r.Status().Update(ctx, vmcp)
+		if err := r.Status().Update(ctx, vmcp); err != nil {
+			// Handle conflicts by returning error to trigger requeue
+			// Conflicts here mean another reconcile loop updated the resource
+			if errors.IsConflict(err) {
+				return err // Controller will requeue automatically
+			}
+			return fmt.Errorf("failed to update service URL in status: %w", err)
+		}
 	}
 	return nil
 }
@@ -556,7 +682,44 @@ func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 	return false
 }
 
-// updateVirtualMCPServerStatus updates the status of the VirtualMCPServer
+// updateVirtualMCPServerStatus updates the status of the VirtualMCPServer based on pod and backend health.
+//
+// Status Update Pattern and Conflict Handling:
+//
+// This controller follows the status update pattern established by MCPGroup controller in this codebase.
+// Status updates occur at multiple points during reconciliation:
+//
+//  1. Early Error States: Status updates happen immediately when validation or discovery fails
+//     (e.g., GroupRef not found, GroupRef not ready, backend discovery failed)
+//
+// 2. Mid-Reconciliation: Status fields like URL are set when resources are created
+//
+// 3. Final Status: This function performs the comprehensive final status update by:
+//   - Listing all pods for the deployment
+//   - Checking backend health status
+//   - Computing overall phase (Ready, Degraded, Pending, Failed)
+//   - Setting appropriate conditions
+//   - Updating ObservedGeneration to track which spec version was reconciled
+//
+// Conflict Handling Strategy:
+// All Status().Update() calls now include explicit conflict detection using errors.IsConflict().
+// When conflicts occur:
+// - The error is returned to the controller runtime
+// - Controller runtime automatically requeues the reconciliation
+// - Next reconcile loop will GET the latest resource version and retry
+//
+// This implements Kubernetes' optimistic concurrency control pattern and prevents lost updates
+// when multiple controllers or processes modify the same resource. The MCPGroup controller
+// demonstrates this pattern is the established best practice in this codebase.
+//
+// Why Not a Separate Status Reconciler?
+// This codebase does not use separate status-only reconcile loops. Status and spec reconciliation
+// happen in the same loop, which is appropriate for this use case because:
+// - Status depends on spec reconciliation (need deployment/service to exist first)
+// - Status updates are not frequent enough to warrant separate reconciliation
+// - Single reconcile loop is simpler and matches existing codebase patterns
+//
+//nolint:gocyclo // Status reconciliation requires multiple conditions for pod phases and backend health
 func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -643,19 +806,47 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 	// Update ObservedGeneration to reflect that we've processed this generation
 	vmcp.Status.ObservedGeneration = vmcp.Generation
 
-	return r.Status().Update(ctx, vmcp)
+	// Update status with conflict handling
+	// This is the final status update after all reconciliation steps complete
+	if err := r.Status().Update(ctx, vmcp); err != nil {
+		// Handle conflicts by returning error to trigger requeue
+		// Optimistic concurrency control: if another process updated the resource,
+		// we'll requeue and reconcile with the latest state
+		if errors.IsConflict(err) {
+			return err // Controller will requeue automatically
+		}
+		return fmt.Errorf("failed to update VirtualMCPServer status: %w", err)
+	}
+	return nil
 }
 
-// getHealthCheckInterval returns the health check interval for the VirtualMCPServer
+// getHealthCheckInterval returns the health check interval for periodic reconciliation.
+// It parses the duration from the VirtualMCPServer spec if configured, otherwise returns the default.
+// Invalid duration strings fall back to the default. Intervals are clamped to min/max boundaries.
 func (*VirtualMCPServerReconciler) getHealthCheckInterval(vmcp *mcpv1alpha1.VirtualMCPServer) time.Duration {
-	// TODO: Parse the duration string from spec when FailureHandling is configured
-	//nolint:staticcheck // Empty branch reserved for future duration parsing implementation
 	if vmcp.Spec.Operational != nil &&
 		vmcp.Spec.Operational.FailureHandling != nil &&
 		vmcp.Spec.Operational.FailureHandling.HealthCheckInterval != "" {
-		// Parse duration when implemented
+
+		interval, err := time.ParseDuration(vmcp.Spec.Operational.FailureHandling.HealthCheckInterval)
+		if err != nil {
+			// Log warning but don't fail - fall back to default
+			// This shouldn't happen if webhook validation is working, but handle gracefully
+			return vmcpDefaultHealthCheckInterval
+		}
+
+		// Sanity check: clamp to min/max boundaries defined in constants
+		if interval < vmcpMinHealthCheckInterval {
+			return vmcpMinHealthCheckInterval
+		}
+		if interval > vmcpMaxHealthCheckInterval {
+			return vmcpMaxHealthCheckInterval
+		}
+
+		return interval
 	}
-	return 30 * time.Second
+
+	return vmcpDefaultHealthCheckInterval
 }
 
 // labelsForVirtualMCPServer returns the labels for selecting the resources belonging to the given VirtualMCPServer CR name
@@ -670,16 +861,32 @@ func labelsForVirtualMCPServer(name string) map[string]string {
 }
 
 // vmcpServiceAccountName returns the service account name for the vmcp server
+// Uses "-vmcp" suffix to avoid conflicts with MCPServer or MCPRemoteProxy resources of the same name.
+// This allows VirtualMCPServer, MCPServer, and MCPRemoteProxy to coexist in the same namespace
+// with the same base name (e.g., "foo-vmcp", "foo-proxy-runner", "foo-remote-proxy-runner").
 func vmcpServiceAccountName(vmcpName string) string {
 	return fmt.Sprintf("%s-vmcp", vmcpName)
 }
 
 // vmcpServiceName generates the service name for a VirtualMCPServer
+// Uses "vmcp-" prefix to distinguish from MCPServer's "mcp-{name}-proxy" pattern.
+// This allows VirtualMCPServer and MCPServer to coexist with the same base name.
+//
+// Design Note: Each controller has its own service naming functions rather than using a shared utility
+// because naming conventions are intentionally different to prevent conflicts:
+// - MCPServer: "mcp-{name}-proxy"
+// - MCPRemoteProxy: "mcp-{name}-remote-proxy"
+// - VirtualMCPServer: "vmcp-{name}"
+//
+// This pattern is controller-specific by design. Moving to controllerutil would not add value since
+// there's no shared logic - just different prefixes/suffixes for each resource type.
 func vmcpServiceName(vmcpName string) string {
 	return fmt.Sprintf("vmcp-%s", vmcpName)
 }
 
 // createVmcpServiceURL generates the full cluster-local service URL for a VirtualMCPServer
+// While the URL pattern (http://{service}.{namespace}.svc.cluster.local:{port}) is standard,
+// each controller has different service naming requirements (see vmcpServiceName comment).
 func createVmcpServiceURL(vmcpName, namespace string, port int32) string {
 	serviceName := vmcpServiceName(vmcpName)
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
@@ -727,28 +934,82 @@ func (r *VirtualMCPServerReconciler) mapMCPGroupToVirtualMCPServer(ctx context.C
 	return requests
 }
 
-// mapMCPServerToVirtualMCPServer maps MCPServer changes to VirtualMCPServer reconciliation requests
+// mapMCPServerToVirtualMCPServer maps MCPServer changes to VirtualMCPServer reconciliation requests.
+// This function implements an optimization to only reconcile VirtualMCPServers that are actually
+// affected by the MCPServer change, rather than reconciling all VirtualMCPServers in the namespace.
+//
+// The optimization works by:
+// 1. Finding all MCPGroups that include the changed MCPServer (via Status.Servers)
+// 2. Finding all VirtualMCPServers that reference those MCPGroups
+// 3. Only reconciling those specific VirtualMCPServers
+//
+// This significantly reduces unnecessary reconciliations in large clusters with many VirtualMCPServers.
 func (r *VirtualMCPServerReconciler) mapMCPServerToVirtualMCPServer(ctx context.Context, obj client.Object) []reconcile.Request {
 	mcpServer, ok := obj.(*mcpv1alpha1.MCPServer)
 	if !ok {
 		return nil
 	}
 
+	ctxLogger := log.FromContext(ctx)
+
+	// Step 1: Find all MCPGroups that include this MCPServer
+	// MCPGroups track their member servers in Status.Servers (populated by MCPGroup controller)
+	mcpGroupList := &mcpv1alpha1.MCPGroupList{}
+	if err := r.List(ctx, mcpGroupList, client.InNamespace(mcpServer.Namespace)); err != nil {
+		ctxLogger.Error(err, "Failed to list MCPGroups for MCPServer watch")
+		return nil
+	}
+
+	// Track which MCPGroups include this MCPServer
+	affectedGroups := make(map[string]bool)
+	for _, group := range mcpGroupList.Items {
+		// Check if this MCPServer is in the group's server list
+		for _, serverName := range group.Status.Servers {
+			if serverName == mcpServer.Name {
+				affectedGroups[group.Name] = true
+				ctxLogger.V(1).Info("MCPServer is member of MCPGroup",
+					"mcpServer", mcpServer.Name,
+					"mcpGroup", group.Name)
+				break // No need to check other servers in this group
+			}
+		}
+	}
+
+	// If no groups include this MCPServer, no VirtualMCPServers need reconciliation
+	if len(affectedGroups) == 0 {
+		ctxLogger.V(1).Info("MCPServer not a member of any MCPGroup, skipping VirtualMCPServer reconciliation",
+			"mcpServer", mcpServer.Name)
+		return nil
+	}
+
+	// Step 2: Find VirtualMCPServers that reference the affected MCPGroups
 	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
 	if err := r.List(ctx, vmcpList, client.InNamespace(mcpServer.Namespace)); err != nil {
-		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPServer watch")
+		ctxLogger.Error(err, "Failed to list VirtualMCPServers for MCPServer watch")
 		return nil
 	}
 
 	var requests []reconcile.Request
 	for _, vmcp := range vmcpList.Items {
-		requests = append(requests, reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Name:      vmcp.Name,
-				Namespace: vmcp.Namespace,
-			},
-		})
+		// Only reconcile if this VirtualMCPServer references an affected MCPGroup
+		if affectedGroups[vmcp.Spec.GroupRef.Name] {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      vmcp.Name,
+					Namespace: vmcp.Namespace,
+				},
+			})
+			ctxLogger.V(1).Info("Queuing VirtualMCPServer for reconciliation due to MCPServer change",
+				"virtualMCPServer", vmcp.Name,
+				"mcpGroup", vmcp.Spec.GroupRef.Name,
+				"mcpServer", mcpServer.Name)
+		}
 	}
+
+	ctxLogger.V(1).Info("Mapped MCPServer to VirtualMCPServers",
+		"mcpServer", mcpServer.Name,
+		"affectedGroups", len(affectedGroups),
+		"virtualMCPServers", len(requests))
 
 	return requests
 }
@@ -771,12 +1032,15 @@ func (r *VirtualMCPServerReconciler) mapExternalAuthConfigToVirtualMCPServer(
 
 	var requests []reconcile.Request
 	for _, vmcp := range vmcpList.Items {
-		requests = append(requests, reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Name:      vmcp.Name,
-				Namespace: vmcp.Namespace,
-			},
-		})
+		// Only reconcile VirtualMCPServers that actually reference this ExternalAuthConfig
+		if r.vmcpReferencesExternalAuthConfig(&vmcp, externalAuthConfig.Name) {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      vmcp.Name,
+					Namespace: vmcp.Namespace,
+				},
+			})
+		}
 	}
 
 	return requests
@@ -818,6 +1082,33 @@ func (*VirtualMCPServerReconciler) vmcpReferencesToolConfig(vmcp *mcpv1alpha1.Vi
 
 	for _, tc := range vmcp.Spec.Aggregation.Tools {
 		if tc.ToolConfigRef != nil && tc.ToolConfigRef.Name == toolConfigName {
+			return true
+		}
+	}
+
+	return false
+}
+
+// vmcpReferencesExternalAuthConfig checks if a VirtualMCPServer references the given MCPExternalAuthConfig
+func (*VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	authConfigName string,
+) bool {
+	if vmcp.Spec.OutgoingAuth == nil {
+		return false
+	}
+
+	// Check default backend auth configuration
+	if vmcp.Spec.OutgoingAuth.Default != nil &&
+		vmcp.Spec.OutgoingAuth.Default.ExternalAuthConfigRef != nil &&
+		vmcp.Spec.OutgoingAuth.Default.ExternalAuthConfigRef.Name == authConfigName {
+		return true
+	}
+
+	// Check per-backend auth configurations
+	for _, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
+		if backendAuth.ExternalAuthConfigRef != nil &&
+			backendAuth.ExternalAuthConfigRef.Name == authConfigName {
 			return true
 		}
 	}

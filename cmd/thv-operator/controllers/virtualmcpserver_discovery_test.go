@@ -388,11 +388,11 @@ func TestCalculateCapabilitiesSummary(t *testing.T) {
 		name                       string
 		vmcp                       *mcpv1alpha1.VirtualMCPServer
 		backends                   []mcpv1alpha1.DiscoveredBackend
-		expectedToolCount          int
+		expectNil                  bool
 		expectedCompositeToolCount int
 	}{
 		{
-			name: "multiple ready backends",
+			name: "with composite tools returns summary with composite count",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
@@ -405,35 +405,42 @@ func TestCalculateCapabilitiesSummary(t *testing.T) {
 				{Name: "backend-1", Status: "ready"},
 				{Name: "backend-2", Status: "ready"},
 			},
-			expectedToolCount:          10, // 2 backends * 5 tools each (placeholder)
+			expectNil:                  false,
 			expectedCompositeToolCount: 2,
 		},
 		{
-			name: "mixed backend status",
+			name: "with composite tool refs returns summary",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-						{Name: "composite-1"},
+					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
+						{Name: "ref-1"},
 					},
 				},
 			},
 			backends: []mcpv1alpha1.DiscoveredBackend{
 				{Name: "backend-1", Status: "ready"},
-				{Name: "backend-2", Status: "unavailable"},
 			},
-			expectedToolCount:          5, // 1 ready backend * 5 tools
+			expectNil:                  false,
 			expectedCompositeToolCount: 1,
 		},
 		{
-			name: "no ready backends",
+			name: "without composite tools returns nil",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{},
 			},
 			backends: []mcpv1alpha1.DiscoveredBackend{
-				{Name: "backend-1", Status: "unavailable"},
+				{Name: "backend-1", Status: "ready"},
+				{Name: "backend-2", Status: "unavailable"},
 			},
-			expectedToolCount:          0,
-			expectedCompositeToolCount: 0,
+			expectNil: true,
+		},
+		{
+			name: "empty spec returns nil",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{},
+			},
+			backends:  []mcpv1alpha1.DiscoveredBackend{},
+			expectNil: true,
 		},
 	}
 
@@ -445,9 +452,17 @@ func TestCalculateCapabilitiesSummary(t *testing.T) {
 			r := &VirtualMCPServerReconciler{}
 			summary := r.calculateCapabilitiesSummary(tt.vmcp, tt.backends)
 
-			assert.NotNil(t, summary)
-			assert.Equal(t, tt.expectedToolCount, summary.ToolCount)
-			assert.Equal(t, tt.expectedCompositeToolCount, summary.CompositeToolCount)
+			if tt.expectNil {
+				assert.Nil(t, summary, "Expected nil summary when capabilities are unknown")
+			} else {
+				assert.NotNil(t, summary)
+				// ToolCount, ResourceCount, PromptCount should be 0 until capability discovery is implemented
+				assert.Equal(t, 0, summary.ToolCount, "ToolCount should be 0 until capability discovery implemented")
+				assert.Equal(t, 0, summary.ResourceCount, "ResourceCount should be 0 until capability discovery implemented")
+				assert.Equal(t, 0, summary.PromptCount, "PromptCount should be 0 until capability discovery implemented")
+				// CompositeToolCount can be calculated from spec
+				assert.Equal(t, tt.expectedCompositeToolCount, summary.CompositeToolCount)
+			}
 		})
 	}
 }

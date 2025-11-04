@@ -184,6 +184,7 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 	if err := (&controllers.VirtualMCPServerReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
+		Recorder:         mgr.GetEventRecorderFor("virtualmcpserver-controller"),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller VirtualMCPServer: %w", err)

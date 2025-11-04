@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -19,7 +21,33 @@ import (
 )
 
 const (
-	vmcpDefaultPort = int32(8080)
+	// Network configuration
+	vmcpDefaultPort = int32(8080) // Default port for VirtualMCPServer service
+
+	// Health probe configuration for VirtualMCPServer containers
+	// These values are tuned for VMCP's aggregation workload characteristics:
+	// - Higher initial delay accounts for backend discovery and config loading
+	// - Readiness probe is more aggressive to detect availability issues quickly
+	// - Liveness probe is more conservative to avoid unnecessary restarts
+
+	// Liveness probe parameters (detects if container needs restart)
+	vmcpLivenessInitialDelay = int32(30) // seconds - allow time for startup and backend discovery
+	vmcpLivenessPeriod       = int32(10) // seconds - check every 10s
+	vmcpLivenessTimeout      = int32(5)  // seconds - wait up to 5s for response
+	vmcpLivenessFailures     = int32(3)  // consecutive failures before restart
+
+	// Readiness probe parameters (detects if container can serve traffic)
+	vmcpReadinessInitialDelay = int32(15) // seconds - shorter than liveness to enable traffic sooner
+	vmcpReadinessPeriod       = int32(5)  // seconds - check more frequently for quick detection
+	vmcpReadinessTimeout      = int32(3)  // seconds - shorter timeout for faster detection
+	vmcpReadinessFailures     = int32(3)  // consecutive failures before removing from service
+
+	// Backend health check configuration
+	// These control how frequently the controller checks backend health and reconciles.
+	// The controller requeues after each reconciliation using these intervals.
+	vmcpDefaultHealthCheckInterval = 30 * time.Second // Default interval for backend health checks
+	vmcpMinHealthCheckInterval     = 1 * time.Second  // Minimum allowed health check interval
+	vmcpMaxHealthCheckInterval     = 5 * time.Minute  // Maximum allowed health check interval
 )
 
 // RBAC rules for VirtualMCPServer service account
@@ -68,14 +96,20 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 				Spec: corev1.PodSpec{
 					ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
 					Containers: []corev1.Container{{
-						Image:           getVmcpImage(),
-						Name:            "vmcp",
-						Args:            args,
-						Env:             env,
-						VolumeMounts:    volumeMounts,
-						Ports:           r.buildContainerPortsForVmcp(vmcp),
-						LivenessProbe:   ctrlutil.BuildHealthProbe("/health", "http", 30, 10, 5, 3),
-						ReadinessProbe:  ctrlutil.BuildHealthProbe("/health", "http", 15, 5, 3, 3),
+						Image:        getVmcpImage(),
+						Name:         "vmcp",
+						Args:         args,
+						Env:          env,
+						VolumeMounts: volumeMounts,
+						Ports:        r.buildContainerPortsForVmcp(vmcp),
+						LivenessProbe: ctrlutil.BuildHealthProbe(
+							"/health", "http",
+							vmcpLivenessInitialDelay, vmcpLivenessPeriod, vmcpLivenessTimeout, vmcpLivenessFailures,
+						),
+						ReadinessProbe: ctrlutil.BuildHealthProbe(
+							"/health", "http",
+							vmcpReadinessInitialDelay, vmcpReadinessPeriod, vmcpReadinessTimeout, vmcpReadinessFailures,
+						),
 						SecurityContext: containerSecurityContext,
 					}},
 					Volumes:         volumes,
@@ -156,10 +190,10 @@ func (*VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 		// Log level env var will be added here
 	}
 
-	// TODO: Add environment variables for:
-	// - Redis connection (if using Redis token cache)
-	// - OIDC client secrets
-	// - Other secrets referenced in the config
+	// Note: Secrets (OIDC client secrets, Redis passwords, service account credentials) are NOT added
+	// as environment variables here. They are validated by validateSecretReferences() during reconciliation
+	// and configured through the vmcp config file or volume mounts for better security.
+	// Environment variables are reserved for non-sensitive configuration only.
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
 }
@@ -287,4 +321,118 @@ func getVmcpImage() string {
 	// Default to latest vmcp image
 	// TODO: Use versioned image from build
 	return "ghcr.io/stacklok/toolhive/vmcp:latest"
+}
+
+// validateSecretReferences validates that all secret references in the VirtualMCPServer spec exist
+// and contain the required keys. This catches configuration errors during reconciliation rather than
+// at pod startup, providing faster feedback to users.
+//
+// Validated secrets include:
+// - OIDC client secrets (IncomingAuth.OIDCConfig.Inline.ClientSecretRef)
+// - Service account credentials (OutgoingAuth.*.ServiceAccount.CredentialsRef)
+// - Redis passwords (TokenCache.Redis.PasswordRef)
+//
+// This follows the pattern from ctrlutil.GenerateOIDCClientSecretEnvVar() which validates secrets
+// exist before pod creation.
+//
+//nolint:gocyclo // Secret validation requires checking multiple optional config paths
+func (r *VirtualMCPServerReconciler) validateSecretReferences(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) error {
+	// Validate OIDC client secret if configured
+	if vmcp.Spec.IncomingAuth != nil &&
+		vmcp.Spec.IncomingAuth.OIDCConfig != nil &&
+		vmcp.Spec.IncomingAuth.OIDCConfig.Inline != nil &&
+		vmcp.Spec.IncomingAuth.OIDCConfig.Inline.ClientSecretRef != nil {
+		if err := r.validateSecretKeyRef(ctx, vmcp.Namespace,
+			vmcp.Spec.IncomingAuth.OIDCConfig.Inline.ClientSecretRef,
+			"OIDC client secret"); err != nil {
+			return err
+		}
+	}
+
+	// Validate service account credentials in default backend auth
+	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Default != nil {
+		if err := r.validateBackendAuthSecrets(ctx, vmcp.Namespace, vmcp.Spec.OutgoingAuth.Default, "default backend"); err != nil {
+			return err
+		}
+	}
+
+	// Validate service account credentials in per-backend auth
+	if vmcp.Spec.OutgoingAuth != nil {
+		for backendName, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
+			if err := r.validateBackendAuthSecrets(ctx, vmcp.Namespace, &backendAuth, fmt.Sprintf("backend %s", backendName)); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Validate Redis password if configured
+	if vmcp.Spec.TokenCache != nil &&
+		vmcp.Spec.TokenCache.Redis != nil &&
+		vmcp.Spec.TokenCache.Redis.PasswordRef != nil {
+		if err := r.validateSecretKeyRef(ctx, vmcp.Namespace,
+			vmcp.Spec.TokenCache.Redis.PasswordRef,
+			"Redis password"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateBackendAuthSecrets validates secrets referenced in backend authentication configuration
+func (r *VirtualMCPServerReconciler) validateBackendAuthSecrets(
+	ctx context.Context,
+	namespace string,
+	backendAuth *mcpv1alpha1.BackendAuthConfig,
+	backendDesc string,
+) error {
+	if backendAuth == nil {
+		return nil
+	}
+
+	// Only service account auth type has secrets to validate
+	if backendAuth.Type == mcpv1alpha1.BackendAuthTypeServiceAccount &&
+		backendAuth.ServiceAccount != nil {
+		if err := r.validateSecretKeyRef(ctx, namespace,
+			&backendAuth.ServiceAccount.CredentialsRef,
+			fmt.Sprintf("%s service account credentials", backendDesc)); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateSecretKeyRef validates that a secret reference exists and contains the required key.
+// This implements the validation pattern from ctrlutil.GenerateOIDCClientSecretEnvVar().
+func (r *VirtualMCPServerReconciler) validateSecretKeyRef(
+	ctx context.Context,
+	namespace string,
+	secretRef *mcpv1alpha1.SecretKeyRef,
+	secretDesc string,
+) error {
+	if secretRef == nil {
+		return nil
+	}
+
+	// Validate that the referenced secret exists
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: namespace,
+		Name:      secretRef.Name,
+	}, &secret); err != nil {
+		return fmt.Errorf("failed to get %s secret %s/%s: %w",
+			secretDesc, namespace, secretRef.Name, err)
+	}
+
+	// Validate that the key exists in the secret
+	if _, ok := secret.Data[secretRef.Key]; !ok {
+		return fmt.Errorf("%s secret %s/%s is missing key %q",
+			secretDesc, namespace, secretRef.Name, secretRef.Key)
+	}
+
+	return nil
 }

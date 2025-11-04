@@ -163,40 +163,39 @@ func (*VirtualMCPServerReconciler) getAuthTypeFromConfig(
 	return authConfig.Spec.Type
 }
 
-// calculateCapabilitiesSummary calculates aggregated capabilities from discovered backends
+// calculateCapabilitiesSummary calculates aggregated capabilities from discovered backends.
+//
+// Current Implementation Status:
+// This function returns nil until proper capability discovery is implemented.
+// Returning nil is preferable to placeholder/estimated data which can confuse operators.
+//
+// Future Implementation Requirements:
+// 1. Query each backend's capabilities via MCP protocol
+// 2. Apply tool filtering from Aggregation.Tools
+// 3. Apply conflict resolution strategy (prefix, priority, deduplicate)
+// 4. Count the final aggregated capabilities after conflict resolution
+// 5. Handle backend unavailability gracefully
+//
+// For now, we return nil to indicate capabilities are unknown rather than showing
+// misleading placeholder data. Users can check backend status and count instead.
 func (*VirtualMCPServerReconciler) calculateCapabilitiesSummary(
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	backends []mcpv1alpha1.DiscoveredBackend,
+	_ []mcpv1alpha1.DiscoveredBackend,
 ) *mcpv1alpha1.CapabilitiesSummary {
-	summary := &mcpv1alpha1.CapabilitiesSummary{
-		ToolCount:          0,
-		ResourceCount:      0,
-		PromptCount:        0,
-		CompositeToolCount: len(vmcp.Spec.CompositeTools) + len(vmcp.Spec.CompositeToolRefs),
-	}
-
-	// TODO: In a real implementation, we would:
-	// 1. Query each backend's capabilities
-	// 2. Apply tool filtering from Aggregation.Tools
-	// 3. Apply conflict resolution strategy
-	// 4. Count the final aggregated capabilities
-	//
-	// For now, we'll estimate based on number of backends
-	// This should be replaced with actual capability discovery
-
-	readyBackends := 0
-	for _, backend := range backends {
-		if backend.Status == backendStatusReady {
-			readyBackends++
+	// CompositeToolCount can be calculated immediately from the spec
+	// as it doesn't require querying backends
+	if len(vmcp.Spec.CompositeTools) > 0 || len(vmcp.Spec.CompositeToolRefs) > 0 {
+		return &mcpv1alpha1.CapabilitiesSummary{
+			ToolCount:          0, // Unknown until capability discovery implemented
+			ResourceCount:      0, // Unknown until capability discovery implemented
+			PromptCount:        0, // Unknown until capability discovery implemented
+			CompositeToolCount: len(vmcp.Spec.CompositeTools) + len(vmcp.Spec.CompositeToolRefs),
 		}
 	}
 
-	// Placeholder calculation - should be replaced with actual capability discovery
-	summary.ToolCount = readyBackends * 5 // Assume avg 5 tools per backend
-	summary.ResourceCount = readyBackends * 2
-	summary.PromptCount = readyBackends * 1
-
-	return summary
+	// Return nil to indicate capabilities are unknown
+	// This is clearer than returning zeros which could be confused with "no capabilities"
+	return nil
 }
 
 // checkBackendHealth checks the health of all discovered backends

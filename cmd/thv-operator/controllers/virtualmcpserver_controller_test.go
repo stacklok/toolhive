@@ -295,7 +295,7 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 			},
 		},
 		Data: map[string]string{
-			"config.json": "{}",
+			"config.yaml": "{}",
 		},
 	}
 
@@ -336,7 +336,7 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 	assert.Equal(t, "vmcp", container.Name)
 	assert.NotEmpty(t, container.Image)
 	assert.Contains(t, container.Args, "serve")
-	assert.Contains(t, container.Args, "--config=/etc/vmcp-config/config.json")
+	assert.Contains(t, container.Args, "--config=/etc/vmcp-config/config.yaml")
 
 	// Verify checksum annotation is set
 	assert.Equal(t, "test-checksum-123",

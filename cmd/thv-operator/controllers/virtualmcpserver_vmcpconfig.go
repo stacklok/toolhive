@@ -18,6 +18,11 @@ import (
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
+const (
+	// conflictResolutionPrefix is the string value for prefix conflict resolution strategy
+	conflictResolutionPrefix = "prefix"
+)
+
 // ensureVmcpConfigConfigMap ensures the vmcp Config ConfigMap exists and is up to date
 func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	ctx context.Context,
@@ -46,7 +51,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 			Labels:    labelsForVmcpConfig(vmcp.Name),
 		},
 		Data: map[string]string{
-			"config.json": string(vmcpConfigJSON),
+			"config.yaml": string(vmcpConfigJSON), // Using .yaml extension - yaml.v3 can parse JSON
 		},
 	}
 
@@ -163,19 +168,46 @@ func (*VirtualMCPServerReconciler) convertIncomingAuth(
 ) *vmcpconfig.IncomingAuthConfig {
 	incoming := &vmcpconfig.IncomingAuthConfig{}
 
-	// TODO: Implement proper conversion from OIDCConfigRef to OIDCConfig
-	// The OIDCConfigRef structure is more complex and needs to resolve references
+	// Convert OIDC configuration
 	if vmcp.Spec.IncomingAuth.OIDCConfig != nil {
 		incoming.Type = "oidc"
-		// Placeholder - will need to resolve actual OIDC config from references
-		incoming.OIDC = &vmcpconfig.OIDCConfig{}
+
+		// Handle inline OIDC configuration
+		if vmcp.Spec.IncomingAuth.OIDCConfig.Type == authzLabelValueInline && vmcp.Spec.IncomingAuth.OIDCConfig.Inline != nil {
+			inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
+			incoming.OIDC = &vmcpconfig.OIDCConfig{
+				Issuer:       inline.Issuer,
+				ClientID:     inline.ClientID, // Note: API uses clientId (camelCase) but config uses ClientID
+				ClientSecret: inline.ClientSecret,
+				Audience:     inline.Audience,
+				Resource:     vmcp.Spec.IncomingAuth.OIDCConfig.ResourceURL,
+				Scopes:       nil, // TODO: Add scopes if needed
+			}
+		} else {
+			// TODO: Handle configMap and kubernetes types
+			// For now, create empty config to avoid nil pointer
+			incoming.OIDC = &vmcpconfig.OIDCConfig{}
+		}
 	}
 
+	// Convert authorization configuration
 	if vmcp.Spec.IncomingAuth.AuthzConfig != nil {
-		incoming.Authz = &vmcpconfig.AuthzConfig{
-			Type: vmcp.Spec.IncomingAuth.AuthzConfig.Type,
-			// TODO: Load policies from ConfigMap if referenced
+		// Map Kubernetes API types to vmcp config types
+		// API "inline" maps to vmcp "cedar"
+		authzType := vmcp.Spec.IncomingAuth.AuthzConfig.Type
+		if authzType == authzLabelValueInline {
+			authzType = "cedar"
 		}
+
+		incoming.Authz = &vmcpconfig.AuthzConfig{
+			Type: authzType,
+		}
+
+		// Handle inline policies
+		if vmcp.Spec.IncomingAuth.AuthzConfig.Type == authzLabelValueInline && vmcp.Spec.IncomingAuth.AuthzConfig.Inline != nil {
+			incoming.Authz.Policies = vmcp.Spec.IncomingAuth.AuthzConfig.Inline.Policies
+		}
+		// TODO: Load policies from ConfigMap if Type is "configMap"
 	}
 
 	return incoming
@@ -244,13 +276,13 @@ func (*VirtualMCPServerReconciler) convertAggregation(
 	// Convert conflict resolution strategy
 	switch vmcp.Spec.Aggregation.ConflictResolution {
 	case mcpv1alpha1.ConflictResolutionPrefix:
-		agg.ConflictResolution = "prefix"
+		agg.ConflictResolution = conflictResolutionPrefix
 	case mcpv1alpha1.ConflictResolutionPriority:
 		agg.ConflictResolution = "priority"
 	case mcpv1alpha1.ConflictResolutionManual:
 		agg.ConflictResolution = "manual"
 	default:
-		agg.ConflictResolution = "prefix" // default
+		agg.ConflictResolution = conflictResolutionPrefix // default
 	}
 
 	// Convert conflict resolution config
@@ -258,6 +290,11 @@ func (*VirtualMCPServerReconciler) convertAggregation(
 		agg.ConflictResolutionConfig = &vmcpconfig.ConflictResolutionConfig{
 			PrefixFormat:  vmcp.Spec.Aggregation.ConflictResolutionConfig.PrefixFormat,
 			PriorityOrder: vmcp.Spec.Aggregation.ConflictResolutionConfig.PriorityOrder,
+		}
+	} else if agg.ConflictResolution == conflictResolutionPrefix {
+		// Provide default prefix format if using prefix strategy without explicit config
+		agg.ConflictResolutionConfig = &vmcpconfig.ConflictResolutionConfig{
+			PrefixFormat: "{workload}_",
 		}
 	}
 
@@ -306,7 +343,7 @@ func (*VirtualMCPServerReconciler) convertCompositeTools(
 		// Parse timeout
 		if crdTool.Timeout != "" {
 			if duration, err := time.ParseDuration(crdTool.Timeout); err == nil {
-				tool.Timeout = duration
+				tool.Timeout = vmcpconfig.Duration(duration)
 			}
 		}
 
@@ -333,7 +370,7 @@ func (*VirtualMCPServerReconciler) convertCompositeTools(
 			// Parse timeout
 			if crdStep.Timeout != "" {
 				if duration, err := time.ParseDuration(crdStep.Timeout); err == nil {
-					step.Timeout = duration
+					step.Timeout = vmcpconfig.Duration(duration)
 				}
 			}
 
@@ -378,7 +415,7 @@ func (*VirtualMCPServerReconciler) convertTokenCache(
 		}
 		if vmcp.Spec.TokenCache.Memory.TTLOffset != "" {
 			if duration, err := time.ParseDuration(vmcp.Spec.TokenCache.Memory.TTLOffset); err == nil {
-				cache.Memory.TTLOffset = duration
+				cache.Memory.TTLOffset = vmcpconfig.Duration(duration)
 			}
 		}
 	}
@@ -408,20 +445,20 @@ func (*VirtualMCPServerReconciler) convertOperational(
 
 	if vmcp.Spec.Operational.Timeouts != nil {
 		operational.Timeouts = &vmcpconfig.TimeoutConfig{
-			PerWorkload: make(map[string]time.Duration),
+			PerWorkload: make(map[string]vmcpconfig.Duration),
 		}
 
 		// Parse default timeout
 		if vmcp.Spec.Operational.Timeouts.Default != "" {
 			if duration, err := time.ParseDuration(vmcp.Spec.Operational.Timeouts.Default); err == nil {
-				operational.Timeouts.Default = duration
+				operational.Timeouts.Default = vmcpconfig.Duration(duration)
 			}
 		}
 
 		// Parse per-workload timeouts
 		for workload, timeoutStr := range vmcp.Spec.Operational.Timeouts.PerWorkload {
 			if duration, err := time.ParseDuration(timeoutStr); err == nil {
-				operational.Timeouts.PerWorkload[workload] = duration
+				operational.Timeouts.PerWorkload[workload] = vmcpconfig.Duration(duration)
 			}
 		}
 	}
@@ -435,7 +472,7 @@ func (*VirtualMCPServerReconciler) convertOperational(
 		// Parse health check interval
 		if vmcp.Spec.Operational.FailureHandling.HealthCheckInterval != "" {
 			if duration, err := time.ParseDuration(vmcp.Spec.Operational.FailureHandling.HealthCheckInterval); err == nil {
-				operational.FailureHandling.HealthCheckInterval = duration
+				operational.FailureHandling.HealthCheckInterval = vmcpconfig.Duration(duration)
 			}
 		}
 
@@ -449,7 +486,7 @@ func (*VirtualMCPServerReconciler) convertOperational(
 			// Parse circuit breaker timeout
 			if vmcp.Spec.Operational.FailureHandling.CircuitBreaker.Timeout != "" {
 				if duration, err := time.ParseDuration(vmcp.Spec.Operational.FailureHandling.CircuitBreaker.Timeout); err == nil {
-					operational.FailureHandling.CircuitBreaker.Timeout = duration
+					operational.FailureHandling.CircuitBreaker.Timeout = vmcpconfig.Duration(duration)
 				}
 			}
 		}

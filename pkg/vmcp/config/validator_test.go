@@ -416,7 +416,7 @@ func TestValidator_ValidateTokenCache(t *testing.T) {
 				Provider: CacheProviderMemory,
 				Memory: &MemoryCacheConfig{
 					MaxEntries: 1000,
-					TTLOffset:  5 * time.Minute,
+					TTLOffset:  Duration(5 * time.Minute),
 				},
 			},
 			wantErr: false,
@@ -427,7 +427,7 @@ func TestValidator_ValidateTokenCache(t *testing.T) {
 				Provider: "redis",
 				Redis: &RedisCacheConfig{
 					Address:   "localhost:6379",
-					TTLOffset: 5 * time.Minute,
+					TTLOffset: Duration(5 * time.Minute),
 				},
 			},
 			wantErr: false,
@@ -492,7 +492,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 				{
 					Name:        "deploy_workflow",
 					Description: "Deploy workflow",
-					Timeout:     30 * time.Minute,
+					Timeout:     Duration(30 * time.Minute),
 					Steps: []*WorkflowStepConfig{
 						{
 							ID:   "merge",
@@ -509,7 +509,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 			tools: []*CompositeToolConfig{
 				{
 					Description: "Deploy workflow",
-					Timeout:     30 * time.Minute,
+					Timeout:     Duration(30 * time.Minute),
 					Steps: []*WorkflowStepConfig{
 						{
 							ID:   "merge",
@@ -528,7 +528,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 				{
 					Name:        "deploy",
 					Description: "Deploy workflow",
-					Timeout:     30 * time.Minute,
+					Timeout:     Duration(30 * time.Minute),
 					Steps: []*WorkflowStepConfig{
 						{
 							ID:   "merge",
@@ -540,7 +540,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 				{
 					Name:        "deploy",
 					Description: "Another deploy workflow",
-					Timeout:     30 * time.Minute,
+					Timeout:     Duration(30 * time.Minute),
 					Steps: []*WorkflowStepConfig{
 						{
 							ID:   "merge",

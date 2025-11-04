@@ -145,7 +145,7 @@ token_cache:
 				if cfg.TokenCache.Memory.MaxEntries != 1000 {
 					t.Errorf("Memory.MaxEntries = %v, want 1000", cfg.TokenCache.Memory.MaxEntries)
 				}
-				if cfg.TokenCache.Memory.TTLOffset != 5*time.Minute {
+				if cfg.TokenCache.Memory.TTLOffset != Duration(5*time.Minute) {
 					t.Errorf("Memory.TTLOffset = %v, want 5m", cfg.TokenCache.Memory.TTLOffset)
 				}
 			},
@@ -200,7 +200,7 @@ composite_tools:
 				if tool.Name != "deploy_workflow" {
 					t.Errorf("Tool.Name = %v, want deploy_workflow", tool.Name)
 				}
-				if tool.Timeout != 30*time.Minute {
+				if tool.Timeout != Duration(30*time.Minute) {
 					t.Errorf("Tool.Timeout = %v, want 30m", tool.Timeout)
 				}
 				if len(tool.Steps) != 2 {

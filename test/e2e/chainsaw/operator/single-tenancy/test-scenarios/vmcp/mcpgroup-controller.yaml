@@ -5,12 +5,3 @@ metadata:
   namespace: toolhive-system
 spec:
   description: "Test group for VirtualMCPServer controller testing"
-  servers:
-  - name: backend-1
-    selector:
-      matchLabels:
-        app: mcp-backend-1
-  - name: backend-2
-    selector:
-      matchLabels:
-        app: mcp-backend-2

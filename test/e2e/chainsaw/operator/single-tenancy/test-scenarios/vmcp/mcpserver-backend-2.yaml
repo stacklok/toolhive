@@ -8,6 +8,7 @@ metadata:
 spec:
   image: ghcr.io/stacklok/toolhive/mcp-backend-2:latest
   transport: stdio
+  groupRef: test-group-controller
   env:
     - name: DEBUG
       value: "true"

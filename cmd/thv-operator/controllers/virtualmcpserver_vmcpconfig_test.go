@@ -433,7 +433,7 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	}, cm)
 	require.NoError(t, err)
 	assert.Equal(t, "test-vmcp-vmcp-config", cm.Name)
-	assert.Contains(t, cm.Data, "config.json")
+	assert.Contains(t, cm.Data, "config.yaml")
 	assert.NotEmpty(t, cm.Annotations["toolhive.stacklok.dev/content-checksum"])
 }
 

@@ -82,7 +82,7 @@ func TestBuildContainerArgsForVmcp(t *testing.T) {
 	args := r.buildContainerArgsForVmcp()
 
 	assert.Contains(t, args, "serve")
-	assert.Contains(t, args, "--config=/etc/vmcp-config/config.json")
+	assert.Contains(t, args, "--config=/etc/vmcp-config/config.yaml")
 }
 
 // TestBuildVolumesForVmcp tests volume and volume mount generation

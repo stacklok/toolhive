@@ -7,10 +7,13 @@ spec:
   groupRef:
     name: test-group-controller
   incomingAuth:
+    # Using Google's public OIDC issuer for testing (discovery will work)
     oidcConfig:
       type: inline
       inline:
-        issuer: https://auth.example.com
+        issuer: https://accounts.google.com
+        clientId: test-client-id
+        clientSecret: test-client-secret
         audience: virtual-mcp-controller
     authzConfig:
       type: inline
@@ -21,6 +24,8 @@ spec:
     source: discovered
   aggregation:
     conflictResolution: prefix
+    conflictResolutionConfig:
+      prefixFormat: "{workload}_"
   operational:
     failureHandling:
       healthCheckInterval: 30s

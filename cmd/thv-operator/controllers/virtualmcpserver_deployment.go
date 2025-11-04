@@ -22,7 +22,7 @@ import (
 
 const (
 	// Network configuration
-	vmcpDefaultPort = int32(8080) // Default port for VirtualMCPServer service
+	vmcpDefaultPort = int32(4483) // Default port for VirtualMCPServer service (matches vmcp server port)
 
 	// Health probe configuration for VirtualMCPServer containers
 	// These values are tuned for VMCP's aggregation workload characteristics:
@@ -55,6 +55,11 @@ var vmcpRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{""},
 		Resources: []string{"configmaps", "secrets"},
+		Verbs:     []string{"get", "list", "watch"},
+	},
+	{
+		APIGroups: []string{"toolhive.stacklok.dev"},
+		Resources: []string{"mcpgroups", "mcpservers"},
 		Verbs:     []string{"get", "list", "watch"},
 	},
 }
@@ -131,7 +136,9 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 func (*VirtualMCPServerReconciler) buildContainerArgsForVmcp() []string {
 	return []string{
 		"serve",
-		"--config=/etc/vmcp-config/config.json",
+		"--config=/etc/vmcp-config/config.yaml",
+		"--host=0.0.0.0", // Listen on all interfaces for Kubernetes service routing
+		"--port=4483",    // Standard vmcp port
 	}
 }
 

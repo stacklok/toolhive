@@ -12,12 +12,15 @@ spec:
       inline:
         issuer: https://auth.example.com
         audience: virtual-mcp-controller
-    authz:
-      model: rbac
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
   outgoingAuth:
     source: discovered
   aggregation:
     conflictResolution: prefix
   operational:
-    logLevel: info
-    healthCheckInterval: 30s
+    failureHandling:
+      healthCheckInterval: 30s

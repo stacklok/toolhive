@@ -6,8 +6,8 @@ metadata:
   labels:
     app: mcp-backend-2
 spec:
-  type: stdio
-  command: /usr/bin/mcp-backend-2
+  image: ghcr.io/stacklok/toolhive/mcp-backend-2:latest
+  transport: stdio
   env:
     - name: DEBUG
       value: "true"

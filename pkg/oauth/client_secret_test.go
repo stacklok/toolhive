@@ -307,6 +307,23 @@ func TestStoreSecretInManagerWithProvider(t *testing.T) {
 	}
 }
 
+// TestProcessOAuthClientSecret tests that empty secrets don't require secrets manager
+func TestProcessOAuthClientSecret(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty client secret returns empty without accessing secrets manager", func(t *testing.T) {
+		t.Parallel()
+
+		// This test verifies that when clientSecret is empty, ProcessOAuthClientSecret
+		// returns early without attempting to access the secrets manager.
+		// If it tried to access the secrets manager, it would fail because
+		// no secrets provider is configured in the test environment.
+		result, err := ProcessOAuthClientSecret("test-workload", "")
+		assert.NoError(t, err, "Should not error when client secret is empty")
+		assert.Equal(t, "", result, "Should return empty string when input is empty")
+	})
+}
+
 // TestProcessOAuthClientSecretWithProvider tests the testable version with dependency injection
 func TestProcessOAuthClientSecretWithProvider(t *testing.T) {
 	t.Parallel()

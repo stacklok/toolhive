@@ -17,6 +17,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth"
 )
 
 const (
@@ -44,14 +45,30 @@ type httpBackendClient struct {
 	// clientFactory creates MCP clients for backends.
 	// Abstracted as a function to enable testing with mock clients.
 	clientFactory func(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error)
+
+	// registry manages authentication strategies for outgoing requests to backend MCP servers.
+	// Must not be nil - use UnauthenticatedStrategy for no authentication.
+	registry auth.OutgoingAuthRegistry
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
 // This client supports streamable-HTTP and SSE transports.
-func NewHTTPBackendClient() vmcp.BackendClient {
-	return &httpBackendClient{
-		clientFactory: defaultClientFactory,
+//
+// The registry parameter manages authentication strategies for outgoing requests to backend MCP servers.
+// It must not be nil. To disable authentication, use a registry configured with the
+// "unauthenticated" strategy.
+//
+// Returns an error if registry is nil.
+func NewHTTPBackendClient(registry auth.OutgoingAuthRegistry) (vmcp.BackendClient, error) {
+	if registry == nil {
+		return nil, fmt.Errorf("registry cannot be nil; use UnauthenticatedStrategy for no authentication")
 	}
+
+	c := &httpBackendClient{
+		registry: registry,
+	}
+	c.clientFactory = c.defaultClientFactory
+	return c, nil
 }
 
 // roundTripperFunc is a function adapter for http.RoundTripper.
@@ -62,29 +79,103 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+// authRoundTripper is an http.RoundTripper that adds authentication to backend requests.
+// The authentication strategy and metadata are pre-resolved and validated at client creation time,
+// eliminating per-request lookups and validation overhead.
+type authRoundTripper struct {
+	base         http.RoundTripper
+	authStrategy auth.Strategy
+	authMetadata map[string]any
+	target       *vmcp.BackendTarget
+}
+
+// RoundTrip implements http.RoundTripper by adding authentication headers to requests.
+// The authentication strategy was pre-resolved and validated at client creation time,
+// so this method simply applies the authentication without any lookups or validation.
+func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Clone request to avoid modifying the original
+	reqClone := req.Clone(req.Context())
+
+	// Apply pre-resolved authentication strategy
+	if err := a.authStrategy.Authenticate(reqClone.Context(), reqClone, a.authMetadata); err != nil {
+		return nil, fmt.Errorf("authentication failed for backend %s: %w", a.target.WorkloadID, err)
+	}
+
+	logger.Debugf("Applied authentication strategy %q to backend %s", a.authStrategy.Name(), a.target.WorkloadID)
+
+	return a.base.RoundTrip(reqClone)
+}
+
+// resolveAuthStrategy resolves the authentication strategy for a backend target.
+// It handles defaulting to "unauthenticated" when no strategy is specified.
+// This method should be called once at client creation time to enable fail-fast
+// behavior for invalid authentication configurations.
+func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (auth.Strategy, error) {
+	strategyName := target.AuthStrategy
+
+	// Default to unauthenticated if not specified
+	if strategyName == "" {
+		strategyName = "unauthenticated"
+	}
+
+	// Resolve strategy from registry
+	strategy, err := h.registry.GetStrategy(strategyName)
+	if err != nil {
+		return nil, fmt.Errorf("authentication strategy %q not found: %w", strategyName, err)
+	}
+
+	return strategy, nil
+}
+
 // defaultClientFactory creates mark3labs MCP clients for different transport types.
-func defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
-	// Create HTTP client with response size limits for DoS protection
+func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
+	// Build transport chain: size limit → authentication → HTTP
+	var baseTransport http.RoundTripper = http.DefaultTransport
+
+	// Resolve authentication strategy ONCE at client creation time
+	authStrategy, err := h.resolveAuthStrategy(target)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve authentication for backend %s: %w",
+			target.WorkloadID, err)
+	}
+
+	// Validate metadata ONCE at client creation time
+	if err := authStrategy.Validate(target.AuthMetadata); err != nil {
+		return nil, fmt.Errorf("invalid authentication configuration for backend %s: %w",
+			target.WorkloadID, err)
+	}
+
+	// Add authentication layer with pre-resolved strategy
+	baseTransport = &authRoundTripper{
+		base:         baseTransport,
+		authStrategy: authStrategy,
+		authMetadata: target.AuthMetadata,
+		target:       target,
+	}
+
+	// Add size limit layer for DoS protection
+	sizeLimitedTransport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		resp, err := baseTransport.RoundTrip(req)
+		if err != nil {
+			return nil, err
+		}
+		// Wrap response body with size limit
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{
+			Reader: io.LimitReader(resp.Body, maxResponseSize),
+			Closer: resp.Body,
+		}
+		return resp, nil
+	})
+
+	// Create HTTP client with configured transport chain
 	httpClient := &http.Client{
-		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			resp, err := http.DefaultTransport.RoundTrip(req)
-			if err != nil {
-				return nil, err
-			}
-			// Wrap response body with size limit
-			resp.Body = struct {
-				io.Reader
-				io.Closer
-			}{
-				Reader: io.LimitReader(resp.Body, maxResponseSize),
-				Closer: resp.Body,
-			}
-			return resp, nil
-		}),
+		Transport: sizeLimitedTransport,
 	}
 
 	var c *client.Client
-	var err error
 
 	switch target.TransportType {
 	case "streamable-http", "streamable":
@@ -93,8 +184,6 @@ func defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*cli
 			transport.WithHTTPTimeout(0),
 			transport.WithContinuousListening(),
 			transport.WithHTTPBasicClient(httpClient),
-			// TODO: Add authentication header injection via WithHTTPHeaderFunc
-			// This will be implemented when we add OutgoingAuthenticator support
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create streamable-http client: %w", err)

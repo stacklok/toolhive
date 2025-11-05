@@ -94,10 +94,7 @@ func (m *crdManager) List(ctx context.Context) ([]*Group, error) {
 		return nil, fmt.Errorf("failed to list MCPGroups: %w", err)
 	}
 
-	groups := make([]*Group, 0, len(mcpGroupList.Items))
-	for i := range mcpGroupList.Items {
-		groups = append(groups, mcpGroupToGroup(&mcpGroupList.Items[i]))
-	}
+	groups := mcpGroupListToGroups(mcpGroupList)
 
 	// Sort groups alphanumerically by name
 	sort.Slice(groups, func(i, j int) bool {
@@ -248,6 +245,15 @@ func (m *crdManager) UnregisterClients(ctx context.Context, groupNames []string,
 	}
 
 	return nil
+}
+
+// mcpGroupListToGroups converts an MCPGroupList to a slice of Groups
+func mcpGroupListToGroups(mcpGroupList *mcpv1alpha1.MCPGroupList) []*Group {
+	groups := make([]*Group, 0, len(mcpGroupList.Items))
+	for i := range mcpGroupList.Items {
+		groups = append(groups, mcpGroupToGroup(&mcpGroupList.Items[i]))
+	}
+	return groups
 }
 
 // mcpGroupToGroup converts an MCPGroup CRD to a Group

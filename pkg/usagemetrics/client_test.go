@@ -11,6 +11,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// newTestClient creates a client for testing with a pre-set anonymous ID
+func newTestClient(endpoint, anonymousID string) *Client {
+	if endpoint == "" {
+		endpoint = defaultEndpoint
+	}
+	return &Client{
+		endpoint:    endpoint,
+		anonymousID: anonymousID,
+		client: &http.Client{
+			Timeout: defaultTimeout,
+		},
+	}
+}
+
 func TestGenerateUserAgent(t *testing.T) {
 	t.Parallel()
 
@@ -81,17 +95,8 @@ func TestSendMetrics_Non2xxStatusCode(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Create temp updates file with instance ID
-	tempDir := t.TempDir()
-	updatesFile := tempDir + "/toolhive/updates.json"
-	os.MkdirAll(tempDir+"/toolhive", 0755)
-	os.WriteFile(updatesFile, []byte(`{"instance_id":"test-anon-id"}`), 0600)
-
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", tempDir)
-	defer os.Setenv("HOME", originalHome)
-
-	client := NewClient(server.URL)
+	// Create client with test anonymous ID
+	client := newTestClient(server.URL, "test-anon-id")
 	record := MetricRecord{
 		Count:     5,
 		Timestamp: "2025-01-01T00:00:00Z",

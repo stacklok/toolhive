@@ -1,5 +1,5 @@
 {
-  "name": "github",
+  "name": "io.github.stacklok/github",
   "description": "Provides integration with GitHub's APIs",
   "tier": "Official",
   "status": "Active",

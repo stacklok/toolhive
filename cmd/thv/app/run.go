@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -280,11 +281,19 @@ func getworkloadDefaultName(ctx context.Context, serverOrImage string) string {
 		return name
 	}
 
-	// Check if it's a server name from registry
+	// Check if it's a server name from registry (including reverse-DNS names with slashes)
 	if !strings.Contains(serverOrImage, "://") && !strings.Contains(serverOrImage, ":") {
-		// Simple server name (no protocol, no slashes, no colons), return as-is
-		if !strings.Contains(serverOrImage, "/") {
-			return serverOrImage
+		// Check if this is a registry server name by attempting to look it up
+		provider, err := registry.GetDefaultProvider()
+		if err == nil {
+			_, err := provider.GetServer(serverOrImage)
+			if err == nil {
+				// It's a valid registry server name - sanitize for container/filesystem use
+				// Replace dots and slashes with dashes to create a valid workload name
+				sanitized := strings.ReplaceAll(serverOrImage, ".", "-")
+				sanitized = strings.ReplaceAll(sanitized, "/", "-")
+				return sanitized
+			}
 		}
 	}
 

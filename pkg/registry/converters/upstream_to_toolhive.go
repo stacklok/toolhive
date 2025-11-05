@@ -26,10 +26,10 @@ func ServerJSONToImageMetadata(serverJSON *upstream.ServerJSON) (*types.ImageMet
 		return nil, err
 	}
 
-	// Use Title if available, otherwise extract simple name from reverse-DNS Name
+	// Use Title if available, otherwise use full reverse-DNS Name to avoid conflicts
 	displayName := serverJSON.Title
 	if displayName == "" {
-		displayName = ExtractServerName(serverJSON.Name)
+		displayName = serverJSON.Name
 	}
 
 	imageMetadata := &types.ImageMetadata{
@@ -149,10 +149,10 @@ func ServerJSONToRemoteServerMetadata(serverJSON *upstream.ServerJSON) (*types.R
 
 	remote := serverJSON.Remotes[0] // Use first remote
 
-	// Use Title if available, otherwise extract simple name from reverse-DNS Name
+	// Use Title if available, otherwise use full reverse-DNS Name to avoid conflicts
 	displayName := serverJSON.Title
 	if displayName == "" {
-		displayName = ExtractServerName(serverJSON.Name)
+		displayName = serverJSON.Name
 	}
 
 	remoteMetadata := &types.RemoteServerMetadata{

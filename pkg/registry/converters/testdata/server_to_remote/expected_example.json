@@ -1,5 +1,5 @@
 {
-  "name": "example-remote",
+  "name": "io.github.stacklok/example-remote",
   "description": "Example remote MCP server accessed via SSE",
   "tier": "Community",
   "status": "active",

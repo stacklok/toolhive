@@ -11,6 +11,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
@@ -75,7 +76,7 @@ func NewRootCmd() *cobra.Command {
 
 // newServeCmd creates the serve command for starting the vMCP server
 func newServeCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the Virtual MCP Server",
 		Long: `Start the Virtual MCP Server to aggregate and proxy multiple MCP servers.
@@ -85,6 +86,12 @@ listening for MCP client connections. It will aggregate tools, resources, and pr
 from all configured backend MCP servers.`,
 		RunE: runServe,
 	}
+
+	// Add serve-specific flags
+	cmd.Flags().String("host", "127.0.0.1", "Host address to bind to")
+	cmd.Flags().Int("port", 4483, "Port to listen on")
+
+	return cmd
 }
 
 // newVersionCmd creates the version command
@@ -170,6 +177,87 @@ func getVersion() string {
 	return "dev"
 }
 
+// mustGetIntFlag retrieves an integer flag value, panicking if retrieval fails.
+// This is safe for flags defined by the command itself since they should always be retrievable.
+func mustGetIntFlag(cmd *cobra.Command, name string) int {
+	val, err := cmd.Flags().GetInt(name)
+	if err != nil {
+		// This should never happen for properly defined flags
+		panic(fmt.Sprintf("failed to get int flag %s: %v", name, err))
+	}
+	return val
+}
+
+// loadAndValidateConfig loads and validates the vMCP configuration file
+func loadAndValidateConfig(configPath string) (*config.Config, error) {
+	logger.Infof("Loading configuration from: %s", configPath)
+
+	loader := config.NewYAMLLoader(configPath)
+	cfg, err := loader.Load()
+	if err != nil {
+		logger.Errorf("Failed to load configuration: %v", err)
+		return nil, fmt.Errorf("configuration loading failed: %w", err)
+	}
+
+	validator := config.NewValidator()
+	if err := validator.Validate(cfg); err != nil {
+		logger.Errorf("Configuration validation failed: %v", err)
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	logger.Infof("Configuration loaded and validated successfully")
+	logger.Infof("  Name: %s", cfg.Name)
+	logger.Infof("  Group: %s", cfg.GroupRef)
+	logger.Infof("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution)
+
+	return cfg, nil
+}
+
+// discoverBackends initializes managers, discovers backends, and creates backend client
+func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, vmcp.BackendClient, error) {
+	// Initialize managers for backend discovery
+	logger.Info("Initializing workload and group managers")
+	workloadsManager, err := workloads.NewManager(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create workloads manager: %w", err)
+	}
+
+	groupsManager, err := groups.NewManager()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
+	}
+
+	// Create outgoing authentication registry from configuration
+	logger.Info("Initializing outgoing authentication")
+	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, cfg.OutgoingAuth)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
+	}
+
+	// Create backend discoverer and discover backends
+	discoverer := aggregator.NewCLIBackendDiscoverer(workloadsManager, groupsManager, cfg.OutgoingAuth)
+
+	logger.Infof("Discovering backends in group: %s", cfg.GroupRef)
+	backends, err := discoverer.Discover(ctx, cfg.GroupRef)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to discover backends: %w", err)
+	}
+
+	if len(backends) == 0 {
+		return nil, nil, fmt.Errorf("no backends found in group %s", cfg.GroupRef)
+	}
+
+	logger.Infof("Discovered %d backends", len(backends))
+
+	// Create backend client
+	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create backend client: %w", err)
+	}
+
+	return backends, backendClient, nil
+}
+
 // runServe implements the serve command logic
 func runServe(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
@@ -179,71 +267,19 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("no configuration file specified, use --config flag")
 	}
 
-	logger.Infof("Loading configuration from: %s", configPath)
-
-	// Load configuration from YAML
-	loader := config.NewYAMLLoader(configPath)
-	cfg, err := loader.Load()
+	// Load and validate configuration
+	cfg, err := loadAndValidateConfig(configPath)
 	if err != nil {
-		logger.Errorf("Failed to load configuration: %v", err)
-		return fmt.Errorf("configuration loading failed: %w", err)
+		return err
 	}
 
-	// Validate configuration
-	validator := config.NewValidator()
-	if err := validator.Validate(cfg); err != nil {
-		logger.Errorf("Configuration validation failed: %v", err)
-		return fmt.Errorf("validation failed: %w", err)
-	}
-
-	logger.Infof("Configuration loaded and validated successfully")
-	logger.Infof("  Name: %s", cfg.Name)
-	logger.Infof("  Group: %s", cfg.GroupRef)
-	logger.Infof("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution)
-
-	// Initialize managers for backend discovery
-	logger.Info("Initializing workload and group managers")
-	workloadsManager, err := workloads.NewManager(ctx)
+	// Discover backends and create client
+	backends, backendClient, err := discoverBackends(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("failed to create workloads manager: %w", err)
+		return err
 	}
 
-	groupsManager, err := groups.NewManager()
-	if err != nil {
-		return fmt.Errorf("failed to create groups manager: %w", err)
-	}
-
-	// Create outgoing authentication registry from configuration
-	logger.Info("Initializing outgoing authentication")
-	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, cfg.OutgoingAuth)
-	if err != nil {
-		return fmt.Errorf("failed to create outgoing authentication registry: %w", err)
-	}
-
-	// Create backend discoverer
-	discoverer := aggregator.NewCLIBackendDiscoverer(workloadsManager, groupsManager, cfg.OutgoingAuth)
-
-	// Discover backends from the configured group
-	logger.Infof("Discovering backends in group: %s", cfg.GroupRef)
-	backends, err := discoverer.Discover(ctx, cfg.GroupRef)
-	if err != nil {
-		return fmt.Errorf("failed to discover backends: %w", err)
-	}
-
-	if len(backends) == 0 {
-		return fmt.Errorf("no backends found in group %s", cfg.GroupRef)
-	}
-
-	logger.Infof("Discovered %d backends", len(backends))
-
-	// Create backend client
-	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
-	if err != nil {
-		return fmt.Errorf("failed to create backend client: %w", err)
-	}
-
-	// Create conflict resolver based on configuration
-	// Use the factory method that handles all strategies
+	// Create conflict resolver and aggregator
 	conflictResolver, err := aggregator.NewConflictResolver(cfg.Aggregation)
 	if err != nil {
 		return fmt.Errorf("failed to create conflict resolver: %w", err)
@@ -281,12 +317,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	logger.Infof("Incoming authentication configured: %s", cfg.IncomingAuth.Type)
 
-	// Create server configuration
+	// Create server configuration with flags
 	serverCfg := &vmcpserver.Config{
 		Name:            cfg.Name,
 		Version:         getVersion(),
-		Host:            "127.0.0.1", // TODO: Make configurable
-		Port:            4483,        // TODO: Make configurable
+		Host:            cmd.Flag("host").Value.String(),
+		Port:            mustGetIntFlag(cmd, "port"),
 		AuthMiddleware:  authMiddleware,
 		AuthInfoHandler: authInfoHandler,
 	}

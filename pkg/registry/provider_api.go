@@ -2,7 +2,6 @@ package registry
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -205,10 +204,6 @@ func ConvertServerJSON(serverJSON *v0.ServerJSON) (types.ServerMetadata, error) 
 	if err != nil {
 		return nil, err
 	}
-
-	// TEMPORARY DEBUG: Print after conversion
-	afterJSON, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Printf("\n=== AFTER CONVERSION ===\n%s\n", string(afterJSON))
 
 	return result, nil
 }

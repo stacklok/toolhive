@@ -77,7 +77,7 @@ func NewClient(baseURL string, allowPrivateIp bool) (Client, error) {
 func (c *mcpRegistryClient) GetServer(ctx context.Context, name string) (*v0.ServerJSON, error) {
 	// URL encode the server name to handle special characters
 	encodedName := url.PathEscape(name)
-	endpoint := fmt.Sprintf("%s/v0/servers/%s/versions/latest", c.baseURL, encodedName)
+	endpoint := fmt.Sprintf("%s/v0.1/servers/%s/versions/latest", c.baseURL, encodedName)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -148,7 +148,7 @@ func (c *mcpRegistryClient) ListServers(ctx context.Context, opts *ListOptions) 
 func (c *mcpRegistryClient) fetchServersPage(
 	ctx context.Context, cursor string, opts *ListOptions,
 ) ([]*v0.ServerJSON, string, error) {
-	endpoint := fmt.Sprintf("%s/v0/servers", c.baseURL)
+	endpoint := fmt.Sprintf("%s/v0.1/servers", c.baseURL)
 
 	// Build query parameters
 	params := url.Values{}
@@ -207,7 +207,7 @@ func (c *mcpRegistryClient) SearchServers(ctx context.Context, query string) ([]
 	params.Add("search", query)
 	params.Add("version", "latest")
 
-	endpoint := fmt.Sprintf("%s/v0/servers?%s", c.baseURL, params.Encode())
+	endpoint := fmt.Sprintf("%s/v0.1/servers?%s", c.baseURL, params.Encode())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {

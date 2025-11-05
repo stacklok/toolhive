@@ -1,4 +1,5 @@
 {
+  "name": "github",
   "description": "Provides integration with GitHub's APIs",
   "tier": "Official",
   "status": "Active",

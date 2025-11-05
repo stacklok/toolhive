@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	upstream "github.com/modelcontextprotocol/registry/pkg/api/v0"
-	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,7 +20,7 @@ type ToolHiveRegistry struct {
 }
 
 // parseServerEntry parses a server entry as either ImageMetadata or RemoteServerMetadata
-func parseServerEntry(data json.RawMessage) (imageMetadata *registry.ImageMetadata, remoteMetadata *registry.RemoteServerMetadata, err error) {
+func parseServerEntry(data json.RawMessage) (imageMetadata *types.ImageMetadata, remoteMetadata *types.RemoteServerMetadata, err error) {
 	// Try to detect type by checking for "image" vs "url" field
 	var typeCheck map[string]interface{}
 	if err := json.Unmarshal(data, &typeCheck); err != nil {
@@ -29,14 +29,14 @@ func parseServerEntry(data json.RawMessage) (imageMetadata *registry.ImageMetada
 
 	if _, hasImage := typeCheck["image"]; hasImage {
 		// It's an ImageMetadata
-		var img registry.ImageMetadata
+		var img types.ImageMetadata
 		if err := json.Unmarshal(data, &img); err != nil {
 			return nil, nil, err
 		}
 		return &img, nil, nil
 	} else if _, hasURL := typeCheck["url"]; hasURL {
 		// It's a RemoteServerMetadata
-		var remote registry.RemoteServerMetadata
+		var remote types.RemoteServerMetadata
 		if err := json.Unmarshal(data, &remote); err != nil {
 			return nil, nil, err
 		}
@@ -169,7 +169,7 @@ func TestRoundTrip_RealRegistryData(t *testing.T) {
 	t.Logf("%s", separator)
 }
 
-func testImageServerRoundTrip(t *testing.T, name string, serverJSON *upstream.ServerJSON, original *registry.ImageMetadata, stats *struct {
+func testImageServerRoundTrip(t *testing.T, name string, serverJSON *upstream.ServerJSON, original *types.ImageMetadata, stats *struct {
 	total            int
 	imageServers     int
 	remoteServers    int
@@ -194,7 +194,7 @@ func testImageServerRoundTrip(t *testing.T, name string, serverJSON *upstream.Se
 	compareImageMetadata(t, name, original, converted, stats)
 }
 
-func testRemoteServerRoundTrip(t *testing.T, name string, serverJSON *upstream.ServerJSON, original *registry.RemoteServerMetadata, stats *struct {
+func testRemoteServerRoundTrip(t *testing.T, name string, serverJSON *upstream.ServerJSON, original *types.RemoteServerMetadata, stats *struct {
 	total            int
 	imageServers     int
 	remoteServers    int
@@ -219,7 +219,7 @@ func testRemoteServerRoundTrip(t *testing.T, name string, serverJSON *upstream.S
 	compareRemoteServerMetadata(t, name, original, converted, stats)
 }
 
-func compareImageMetadata(t *testing.T, name string, original, converted *registry.ImageMetadata, stats *struct {
+func compareImageMetadata(t *testing.T, name string, original, converted *types.ImageMetadata, stats *struct {
 	total            int
 	imageServers     int
 	remoteServers    int
@@ -287,7 +287,7 @@ func compareImageMetadata(t *testing.T, name string, original, converted *regist
 	}
 }
 
-func compareRemoteServerMetadata(t *testing.T, name string, original, converted *registry.RemoteServerMetadata, stats *struct {
+func compareRemoteServerMetadata(t *testing.T, name string, original, converted *types.RemoteServerMetadata, stats *struct {
 	total            int
 	imageServers     int
 	remoteServers    int
@@ -372,7 +372,7 @@ func stringSlicesEqual(a, b []string) bool {
 	return true
 }
 
-func envVarsEqual(a, b *registry.EnvVar) bool {
+func envVarsEqual(a, b *types.EnvVar) bool {
 	if a == nil && b == nil {
 		return true
 	}
@@ -386,7 +386,7 @@ func envVarsEqual(a, b *registry.EnvVar) bool {
 		a.Default == b.Default
 }
 
-func headersEqual(a, b *registry.Header) bool {
+func headersEqual(a, b *types.Header) bool {
 	if a == nil && b == nil {
 		return true
 	}
@@ -399,7 +399,7 @@ func headersEqual(a, b *registry.Header) bool {
 		a.Secret == b.Secret
 }
 
-func metadataEqual(a, b *registry.Metadata) bool {
+func metadataEqual(a, b *types.Metadata) bool {
 	if a == nil && b == nil {
 		return true
 	}

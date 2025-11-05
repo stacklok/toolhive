@@ -1,6 +1,8 @@
 package registry
 
 import (
+
+	"github.com/stacklok/toolhive/pkg/registry/types"
 	"os"
 	"path/filepath"
 	"testing"
@@ -333,7 +335,7 @@ func TestGetServer(t *testing.T) {
 
 	// Check if it's a container server and has an image
 	if !server.IsRemote() {
-		if img, ok := server.(*ImageMetadata); ok {
+		if img, ok := server.(*types.ImageMetadata); ok {
 			if img.Image == "" {
 				t.Error("ImageMetadata image is empty")
 			}

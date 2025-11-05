@@ -1,6 +1,8 @@
 package registry
 
 import (
+
+	"github.com/stacklok/toolhive/pkg/registry/types"
 	"encoding/json"
 	"testing"
 
@@ -341,7 +343,7 @@ func TestValidateEmbeddedRegistryCanLoadData(t *testing.T) {
 	require.NoError(t, err, "Should be able to load embedded registry data")
 
 	// Verify it's valid JSON
-	var registry Registry
+	var registry types.Registry
 	err = json.Unmarshal(registryData, &registry)
 	require.NoError(t, err, "Embedded registry should be valid JSON")
 

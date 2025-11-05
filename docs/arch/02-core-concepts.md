@@ -107,17 +107,17 @@ A **proxy** is the component that sits between MCP clients and MCP servers, forw
 
 **Middleware** is a composable layer in the request processing chain. Each middleware can inspect, modify, or reject requests.
 
-**Nine middleware types:**
+**Middleware types:**
 
-1. **Authentication** (`auth`) - JWT token validation
-2. **Token Exchange** (`tokenexchange`) - OAuth token exchange
-3. **MCP Parser** (`mcp-parser`) - JSON-RPC parsing
-4. **Tool Filter** (`tool-filter`) - Filter and override tools in `tools/list` responses
-5. **Tool Call Filter** (`tool-call-filter`) - Validate and map `tools/call` requests
-6. **Usage Metrics** (`usagemetrics`) - Anonymous usage metrics for ToolHive development (opt-out: `thv config usage-metrics disable`)
-7. **Telemetry** (`telemetry`) - OpenTelemetry instrumentation
-8. **Authorization** (`authorization`) - Cedar policy evaluation
-9. **Audit** (`audit`) - Request logging
+- **Authentication** (`auth`) - JWT token validation
+- **Token Exchange** (`tokenexchange`) - OAuth token exchange
+- **MCP Parser** (`mcp-parser`) - JSON-RPC parsing
+- **Tool Filter** (`tool-filter`) - Filter and override tools in `tools/list` responses
+- **Tool Call Filter** (`tool-call-filter`) - Validate and map `tools/call` requests
+- **Usage Metrics** (`usagemetrics`) - Anonymous usage metrics for ToolHive development (opt-out: `thv config usage-metrics disable`)
+- **Telemetry** (`telemetry`) - OpenTelemetry instrumentation
+- **Authorization** (`authorization`) - Cedar policy evaluation
+- **Audit** (`audit`) - Request logging
 
 **Execution order (request flow):**
 Middleware applied in reverse configuration order. Requests flow through: Audit* → Authorization* → Telemetry* → Usage Metrics* → Parser → Token Exchange* → Auth → Tool Call Filter* → Tool Filter* → MCP Server

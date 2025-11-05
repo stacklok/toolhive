@@ -13,6 +13,7 @@ import (
 	"go.uber.org/mock/gomock"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
@@ -222,6 +223,7 @@ func TestCreateWorkload(t *testing.T) {
 					groupManager:    mockGroupManager,
 					workloadManager: mockWorkloadManager,
 					imageRetriever:  mockRetriever,
+					appConfig:       &config.Config{},
 				},
 			}
 
@@ -414,6 +416,7 @@ func TestUpdateWorkload(t *testing.T) {
 					groupManager:    mockGroupManager,
 					workloadManager: mockWorkloadManager,
 					imageRetriever:  mockRetriever,
+					appConfig:       &config.Config{},
 				},
 			}
 

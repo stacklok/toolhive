@@ -32,6 +32,7 @@ type WorkloadService struct {
 	containerRuntime runtime.Runtime
 	debugMode        bool
 	imageRetriever   retriever.Retriever
+	appConfig        *config.Config
 }
 
 // NewWorkloadService creates a new WorkloadService instance
@@ -41,12 +42,17 @@ func NewWorkloadService(
 	containerRuntime runtime.Runtime,
 	debugMode bool,
 ) *WorkloadService {
+	// Load application config for global settings
+	configProvider := config.NewDefaultProvider()
+	appConfig := configProvider.GetConfig()
+
 	return &WorkloadService{
 		workloadManager:  workloadManager,
 		groupManager:     groupManager,
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
 		imageRetriever:   retriever.GetMCPServer,
+		appConfig:        appConfig,
 	}
 }
 
@@ -223,10 +229,6 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		transportType = serverMetadata.GetTransport()
 	}
 
-	// Load application config for global settings
-	configProvider := config.NewDefaultProvider()
-	appConfig := configProvider.GetConfig()
-
 	// Configure middleware from flags
 	options = append(options,
 		runner.WithMiddlewareFromFlags(
@@ -240,7 +242,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 			"",
 			req.Name,
 			transportType,
-			appConfig.DisableUsageMetrics,
+			s.appConfig.DisableUsageMetrics,
 		),
 	)
 

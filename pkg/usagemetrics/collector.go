@@ -22,8 +22,13 @@ const (
 // Checks: CI detection > Config disable > Environment variable > Default (true)
 // If either config or env var explicitly disables metrics, they stay disabled
 func ShouldEnableMetrics(configDisabled bool) bool {
+	return shouldEnableMetrics(configDisabled, updates.ShouldSkipUpdateChecks, os.Getenv)
+}
+
+// shouldEnableMetrics is an internal testable version that accepts dependencies
+func shouldEnableMetrics(configDisabled bool, isCI func() bool, getEnv func(string) string) bool {
 	// 1. Skip metrics in CI environments (automatic)
-	if updates.ShouldSkipUpdateChecks() {
+	if isCI() {
 		return false
 	}
 
@@ -33,7 +38,7 @@ func ShouldEnableMetrics(configDisabled bool) bool {
 	}
 
 	// 3. Check environment variable for explicit opt-out
-	if envValue := os.Getenv(EnvVarUsageMetricsEnabled); envValue == "false" {
+	if envValue := getEnv(EnvVarUsageMetricsEnabled); envValue == "false" {
 		return false
 	}
 
@@ -60,8 +65,11 @@ func NewCollector() (*Collector, error) {
 }
 
 // Start begins the background goroutine for periodic flush
+// If already started, this is a no-op to prevent goroutine leaks
 func (c *Collector) Start() {
-	c.started.Store(true)
+	if c.started.Swap(true) {
+		return // Already started
+	}
 	go c.flushLoop()
 }
 
@@ -102,7 +110,7 @@ func (c *Collector) Flush() error {
 			logger.Debugf("Flushing %d tool calls for previous day %s (midnight boundary)", count, c.currentDate)
 
 			if err := c.client.SendMetrics(c.instanceID, record); err != nil {
-				logger.Warnf("Failed to send metrics for previous day: %v", err)
+				logger.Debugf("Failed to send metrics for previous day: %v", err)
 				// Continue anyway - we'll reset for the new day
 			}
 		}
@@ -129,7 +137,7 @@ func (c *Collector) Flush() error {
 	logger.Debugf("Flushing %d tool calls at %s", count, timestamp)
 
 	if err := c.client.SendMetrics(c.instanceID, record); err != nil {
-		logger.Warnf("Failed to send metrics: %v", err)
+		logger.Debugf("Failed to send metrics: %v", err)
 		// Don't return error - we'll retry on next flush
 		return nil
 	}

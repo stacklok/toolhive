@@ -24,8 +24,9 @@ const (
 
 // Client sends usage metrics to the API
 type Client struct {
-	endpoint string
-	client   *http.Client
+	endpoint    string
+	client      *http.Client
+	anonymousID string
 }
 
 // NewClient creates a new metrics client
@@ -34,8 +35,15 @@ func NewClient(endpoint string) *Client {
 		endpoint = defaultEndpoint
 	}
 
+	// Get anonymous ID once at client creation and cache for process duration
+	anonymousID, err := updates.TryGetAnonymousID()
+	if err != nil {
+		logger.Debugf("Failed to get anonymous ID during client creation: %v", err)
+	}
+
 	return &Client{
-		endpoint: endpoint,
+		endpoint:    endpoint,
+		anonymousID: anonymousID,
 		client: &http.Client{
 			Timeout: defaultTimeout,
 		},
@@ -44,16 +52,9 @@ func NewClient(endpoint string) *Client {
 
 // SendMetrics sends the metrics record to the API
 func (c *Client) SendMetrics(instanceID string, record MetricRecord) error {
-	// Get the anonymous ID from the updates file (shared across all ToolHive components)
-	// Use TryGetInstanceID to avoid generating a new ID if it doesn't exist
-	anonymousID, err := updates.TryGetAnonymousID()
-	if err != nil {
-		return fmt.Errorf("failed to get anonymous ID: %w", err)
-	}
-
-	// Skip sending if anonymous ID is not initialized yet
-	// This is a failsafe - the ID should always exist
-	if anonymousID == "" {
+	// Use cached anonymous ID (set at client creation)
+	// Skip sending if anonymous ID is not initialized
+	if c.anonymousID == "" {
 		logger.Debugf("Skipping metrics send - anonymous ID not yet initialized")
 		return nil
 	}
@@ -69,8 +70,8 @@ func (c *Client) SendMetrics(instanceID string, record MetricRecord) error {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(instanceIDHeader, instanceID)   // Proxy instance ID
-	req.Header.Set(anonymousIDHeader, anonymousID) // User anonymous ID from updates.json
+	req.Header.Set(instanceIDHeader, instanceID)     // Proxy instance ID
+	req.Header.Set(anonymousIDHeader, c.anonymousID) // User anonymous ID
 	req.Header.Set(userAgentHeader, generateUserAgent())
 
 	resp, err := c.client.Do(req)

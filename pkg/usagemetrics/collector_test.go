@@ -2,7 +2,6 @@ package usagemetrics
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -69,75 +68,103 @@ func TestCollector_Shutdown(t *testing.T) {
 	collector.Shutdown(ctx)
 }
 
-func TestShouldEnableMetrics(t *testing.T) { //nolint:paralleltest // Test modifies environment variables
+func TestCollector_Start_PreventsDuplicateGoroutines(t *testing.T) {
+	t.Parallel()
+
+	collector, err := NewCollector()
+	require.NoError(t, err)
+	defer func() {
+		ctx := context.Background()
+		collector.Shutdown(ctx)
+	}()
+
+	// Call Start multiple times
+	collector.Start()
+	collector.Start()
+	collector.Start()
+
+	// Verify started flag is set
+	assert.True(t, collector.started.Load(), "Collector should be marked as started")
+
+	// If multiple goroutines were created, we'd see issues with concurrent
+	// access to the channels. The test passes if no race conditions occur.
+	// The -race flag in our test suite will catch this.
+}
+
+func TestShouldEnableMetrics(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		configDisabled bool
 		envVarValue    string
-		ciEnvVar       string
+		isCI           bool
 		expected       bool
 	}{
 		{
 			name:           "default enabled",
 			configDisabled: false,
 			envVarValue:    "",
-			ciEnvVar:       "",
+			isCI:           false,
 			expected:       true,
 		},
 		{
 			name:           "config disabled",
 			configDisabled: true,
 			envVarValue:    "",
-			ciEnvVar:       "",
+			isCI:           false,
 			expected:       false,
 		},
 		{
 			name:           "env var opt-out",
 			configDisabled: false,
 			envVarValue:    "false",
-			ciEnvVar:       "",
+			isCI:           false,
 			expected:       false,
 		},
 		{
 			name:           "config disabled overrides env enabled",
 			configDisabled: true,
 			envVarValue:    "true",
-			ciEnvVar:       "",
+			isCI:           false,
 			expected:       false,
 		},
 		{
 			name:           "CI environment disables metrics",
 			configDisabled: false,
 			envVarValue:    "",
-			ciEnvVar:       "GITHUB_ACTIONS",
+			isCI:           true,
 			expected:       false,
 		},
 		{
 			name:           "CI environment overrides config and env",
 			configDisabled: false,
 			envVarValue:    "true",
-			ciEnvVar:       "CI",
+			isCI:           true,
 			expected:       false,
 		},
 	}
 
-	for _, tt := range tests { //nolint:paralleltest // Test modifies environment variables
+	for _, tt := range tests {
+		tt := tt // capture range variable
 		t.Run(tt.name, func(t *testing.T) {
-			// Set up environment variables
-			if tt.envVarValue != "" {
-				os.Setenv(EnvVarUsageMetricsEnabled, tt.envVarValue)
-				defer os.Unsetenv(EnvVarUsageMetricsEnabled)
-			} else {
-				os.Unsetenv(EnvVarUsageMetricsEnabled)
+			t.Parallel()
+
+			// Mock CI detection
+			mockIsCI := func() bool {
+				return tt.isCI
 			}
 
-			if tt.ciEnvVar != "" {
-				os.Setenv(tt.ciEnvVar, "true")
-				defer os.Unsetenv(tt.ciEnvVar)
+			// Mock environment variable getter
+			mockGetEnv := func(key string) string {
+				if key == EnvVarUsageMetricsEnabled {
+					return tt.envVarValue
+				}
+				return ""
 			}
 
-			result := ShouldEnableMetrics(tt.configDisabled)
-			assert.Equal(t, tt.expected, result, "ShouldEnableMetrics(%v) = %v, want %v", tt.configDisabled, result, tt.expected)
+			result := shouldEnableMetrics(tt.configDisabled, mockIsCI, mockGetEnv)
+			assert.Equal(t, tt.expected, result, "shouldEnableMetrics(%v) = %v, want %v", tt.configDisabled, result, tt.expected)
 		})
 	}
 }

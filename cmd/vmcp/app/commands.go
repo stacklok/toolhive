@@ -146,7 +146,7 @@ This command checks:
 
 			logger.Infof("✓ Configuration is valid")
 			logger.Infof("  Name: %s", cfg.Name)
-			logger.Infof("  Group: %s", cfg.GroupRef)
+			logger.Infof("  Group: %s", cfg.Group)
 			logger.Infof("  Incoming Auth: %s", cfg.IncomingAuth.Type)
 			logger.Infof("  Outgoing Auth: %s (source: %s)",
 				func() string {
@@ -196,7 +196,7 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 
 	logger.Infof("Configuration loaded and validated successfully")
 	logger.Infof("  Name: %s", cfg.Name)
-	logger.Infof("  Group: %s", cfg.GroupRef)
+	logger.Infof("  Group: %s", cfg.Group)
 	logger.Infof("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution)
 
 	return cfg, nil
@@ -237,8 +237,8 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 	// Create backend discoverer and discover backends
 	discoverer := aggregator.NewCLIBackendDiscoverer(workloadsManager, groupsManager, cfg.OutgoingAuth)
 
-	logger.Infof("Discovering backends in group: %s", cfg.GroupRef)
-	backends, err := discoverer.Discover(ctx, cfg.GroupRef)
+	logger.Infof("Discovering backends in group: %s", cfg.Group)
+	backends, err := discoverer.Discover(ctx, cfg.Group)
 	if err != nil {
 		// Handle discovery errors gracefully - this is expected in Kubernetes
 		logger.Warnf("CLI backend discovery failed (likely running in Kubernetes): %v", err)
@@ -248,7 +248,7 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 	}
 
 	if len(backends) == 0 {
-		logger.Warnf("No backends discovered in group %s - vmcp will start but have no backends to proxy", cfg.GroupRef)
+		logger.Warnf("No backends discovered in group %s - vmcp will start but have no backends to proxy", cfg.Group)
 		return []vmcp.Backend{}, backendClient, nil
 	}
 

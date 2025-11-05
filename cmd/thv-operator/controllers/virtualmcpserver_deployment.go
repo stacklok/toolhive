@@ -21,6 +21,9 @@ import (
 )
 
 const (
+	// Annotations
+	vmcpConfigChecksumAnnotation = "toolhive.stacklok.dev/vmcp-config-checksum"
+
 	// Network configuration
 	vmcpDefaultPort = int32(4483) // Default port for VirtualMCPServer service (matches vmcp server port)
 
@@ -101,12 +104,13 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 				Spec: corev1.PodSpec{
 					ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
 					Containers: []corev1.Container{{
-						Image:        getVmcpImage(),
-						Name:         "vmcp",
-						Args:         args,
-						Env:          env,
-						VolumeMounts: volumeMounts,
-						Ports:        r.buildContainerPortsForVmcp(vmcp),
+						Image:           getVmcpImage(),
+						ImagePullPolicy: corev1.PullIfNotPresent,
+						Name:            "vmcp",
+						Args:            args,
+						Env:             env,
+						VolumeMounts:    volumeMounts,
+						Ports:           r.buildContainerPortsForVmcp(vmcp),
 						LivenessProbe: ctrlutil.BuildHealthProbe(
 							"/health", "http",
 							vmcpLivenessInitialDelay, vmcpLivenessPeriod, vmcpLivenessTimeout, vmcpLivenessFailures,
@@ -228,7 +232,7 @@ func (*VirtualMCPServerReconciler) buildPodTemplateMetadata(
 	templateAnnotations := make(map[string]string)
 
 	// Add vmcp Config checksum annotation to trigger pod rollout when config changes
-	templateAnnotations["toolhive.stacklok.dev/vmcp-config-checksum"] = vmcpConfigChecksum
+	templateAnnotations[vmcpConfigChecksumAnnotation] = vmcpConfigChecksum
 
 	// TODO: Add support for PodTemplateSpec overrides from spec
 

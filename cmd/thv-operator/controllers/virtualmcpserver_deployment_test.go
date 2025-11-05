@@ -71,7 +71,7 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 
 	// Verify checksum annotation
 	assert.Equal(t, "test-checksum",
-		deployment.Spec.Template.Annotations["toolhive.stacklok.dev/vmcp-config-checksum"])
+		deployment.Spec.Template.Annotations[vmcpConfigChecksumAnnotation])
 }
 
 // TestBuildContainerArgsForVmcp tests container argument generation
@@ -190,7 +190,7 @@ func TestBuildPodTemplateMetadata(t *testing.T) {
 	labels, annotations := r.buildPodTemplateMetadata(baseLabels, vmcp, checksum)
 
 	assert.Equal(t, baseLabels, labels)
-	assert.Equal(t, checksum, annotations["toolhive.stacklok.dev/vmcp-config-checksum"])
+	assert.Equal(t, checksum, annotations[vmcpConfigChecksumAnnotation])
 }
 
 // TestBuildSecurityContextsForVmcp tests security context generation

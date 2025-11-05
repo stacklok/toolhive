@@ -19,8 +19,8 @@ func TestValidator_ValidateBasicFields(t *testing.T) {
 		{
 			name: "valid configuration",
 			cfg: &Config{
-				Name:     "test-vmcp",
-				GroupRef: "test-group",
+				Name:  "test-vmcp",
+				Group: "test-group",
 				IncomingAuth: &IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -39,7 +39,7 @@ func TestValidator_ValidateBasicFields(t *testing.T) {
 		{
 			name: "missing name",
 			cfg: &Config{
-				GroupRef: "test-group",
+				Group: "test-group",
 				IncomingAuth: &IncomingAuthConfig{
 					Type: "anonymous",
 				},

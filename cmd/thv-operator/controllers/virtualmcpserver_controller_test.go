@@ -340,7 +340,7 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 
 	// Verify checksum annotation is set
 	assert.Equal(t, "test-checksum-123",
-		deployment.Spec.Template.Annotations["toolhive.stacklok.dev/vmcp-config-checksum"])
+		deployment.Spec.Template.Annotations[vmcpConfigChecksumAnnotation])
 }
 
 // TestVirtualMCPServerEnsureService tests Service creation

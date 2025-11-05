@@ -20,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -27,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -63,13 +65,13 @@ func TestCreateVmcpConfigFromVirtualMCPServer(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			r := &VirtualMCPServerReconciler{}
-			config, err := r.createVmcpConfigFromVirtualMCPServer(context.Background(), tt.vmcp)
+			converter := vmcpconfig.NewConverter()
+			config, err := converter.Convert(context.Background(), tt.vmcp)
 
 			require.NoError(t, err)
 			assert.NotNil(t, config)
 			assert.Equal(t, tt.expectedName, config.Name)
-			assert.Equal(t, tt.expectedGroupRef, config.GroupRef)
+			assert.Equal(t, tt.expectedGroupRef, config.Group)
 		})
 	}
 }
@@ -133,23 +135,27 @@ func TestConvertOutgoingAuth(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcp := &mcpv1alpha1.VirtualMCPServer{
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
 					OutgoingAuth: tt.outgoingAuth,
 				},
 			}
 
-			r := &VirtualMCPServerReconciler{}
-			config := r.convertOutgoingAuth(context.Background(), vmcp)
+			converter := vmcpconfig.NewConverter()
+			config, err := converter.Convert(context.Background(), vmcpServer)
+			require.NoError(t, err)
 
-			require.NotNil(t, config)
-			assert.Equal(t, tt.expectedSource, config.Source)
+			require.NotNil(t, config.OutgoingAuth)
+			assert.Equal(t, tt.expectedSource, config.OutgoingAuth.Source)
 
 			if tt.hasDefault {
-				assert.NotNil(t, config.Default)
+				assert.NotNil(t, config.OutgoingAuth.Default)
 			}
 
-			assert.Len(t, config.Backends, tt.backendCount)
+			assert.Len(t, config.OutgoingAuth.Backends, tt.backendCount)
 		})
 	}
 }
@@ -206,8 +212,24 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			r := &VirtualMCPServerReconciler{}
-			strategy := r.convertBackendAuthConfig(tt.authConfig)
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Default: tt.authConfig,
+					},
+				},
+			}
+
+			converter := vmcpconfig.NewConverter()
+			config, err := converter.Convert(context.Background(), vmcpServer)
+			require.NoError(t, err)
+
+			require.NotNil(t, config.OutgoingAuth)
+			require.NotNil(t, config.OutgoingAuth.Default)
+			strategy := config.OutgoingAuth.Default
 
 			require.NotNil(t, strategy)
 			assert.Equal(t, tt.expectedType, strategy.Type)
@@ -283,30 +305,34 @@ func TestConvertAggregation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcp := &mcpv1alpha1.VirtualMCPServer{
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
 					Aggregation: tt.aggregation,
 				},
 			}
 
-			r := &VirtualMCPServerReconciler{}
-			config := r.convertAggregation(context.Background(), vmcp)
+			converter := vmcpconfig.NewConverter()
+			config, err := converter.Convert(context.Background(), vmcpServer)
+			require.NoError(t, err)
 
-			require.NotNil(t, config)
-			assert.Equal(t, tt.expectedStrategy, config.ConflictResolution)
+			require.NotNil(t, config.Aggregation)
+			assert.Equal(t, tt.expectedStrategy, config.Aggregation.ConflictResolution)
 
 			if tt.hasPrefixFormat {
-				require.NotNil(t, config.ConflictResolutionConfig)
-				assert.NotEmpty(t, config.ConflictResolutionConfig.PrefixFormat)
+				require.NotNil(t, config.Aggregation.ConflictResolutionConfig)
+				assert.NotEmpty(t, config.Aggregation.ConflictResolutionConfig.PrefixFormat)
 			}
 
 			if tt.hasPriorityOrder {
-				require.NotNil(t, config.ConflictResolutionConfig)
-				assert.NotEmpty(t, config.ConflictResolutionConfig.PriorityOrder)
+				require.NotNil(t, config.Aggregation.ConflictResolutionConfig)
+				assert.NotEmpty(t, config.Aggregation.ConflictResolutionConfig.PriorityOrder)
 			}
 
 			if tt.expectedToolConfigCount > 0 {
-				assert.Len(t, config.Tools, tt.expectedToolConfigCount)
+				assert.Len(t, config.Aggregation.Tools, tt.expectedToolConfigCount)
 			}
 		})
 	}
@@ -372,15 +398,20 @@ func TestConvertCompositeTools(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcp := &mcpv1alpha1.VirtualMCPServer{
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
 					CompositeTools: tt.compositeTools,
 				},
 			}
 
-			r := &VirtualMCPServerReconciler{}
-			tools := r.convertCompositeTools(context.Background(), vmcp)
+			converter := vmcpconfig.NewConverter()
+			config, err := converter.Convert(context.Background(), vmcpServer)
+			require.NoError(t, err)
 
+			tools := config.CompositeTools
 			assert.Len(t, tools, tt.expectedCount)
 
 			for i, tool := range tools {
@@ -460,11 +491,11 @@ func TestValidateVmcpConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			r := &VirtualMCPServerReconciler{}
+			validator := vmcpconfig.NewValidator()
 
 			// Type assertion will fail for nil, which is expected
 			if tt.config == nil {
-				err := r.validateVmcpConfig(context.Background(), nil)
+				err := validator.Validate(context.Background(), nil)
 				if tt.expectError {
 					require.Error(t, err)
 					if tt.errContains != "" {
@@ -486,4 +517,121 @@ func TestLabelsForVmcpConfig(t *testing.T) {
 	assert.Equal(t, "vmcp-config", labels["toolhive.stacklok.io/component"])
 	assert.Equal(t, vmcpName, labels["toolhive.stacklok.io/virtual-mcp-server"])
 	assert.Equal(t, "toolhive-operator", labels["toolhive.stacklok.io/managed-by"])
+}
+
+// TestYAMLMarshalingDeterminism tests that YAML marshaling produces deterministic output
+// for vmcp config containing map fields, ensuring stable checksums for ConfigMap updates.
+func TestYAMLMarshalingDeterminism(t *testing.T) {
+	t.Parallel()
+
+	// Create a VirtualMCPServer with multiple map fields to test determinism
+	testVmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "test-group",
+			},
+			// OutgoingAuth with Backends map
+			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+				Source: "mixed",
+				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
+					"backend-zebra": {
+						Type: mcpv1alpha1.BackendAuthTypeServiceAccount,
+						ServiceAccount: &mcpv1alpha1.ServiceAccountAuth{
+							CredentialsRef: mcpv1alpha1.SecretKeyRef{
+								Name: "zebra-secret",
+								Key:  "token",
+							},
+						},
+					},
+					"backend-alpha": {
+						Type: mcpv1alpha1.BackendAuthTypePassThrough,
+					},
+					"backend-middle": {
+						Type: mcpv1alpha1.BackendAuthTypeServiceAccount,
+						ServiceAccount: &mcpv1alpha1.ServiceAccountAuth{
+							CredentialsRef: mcpv1alpha1.SecretKeyRef{
+								Name: "middle-secret",
+								Key:  "token",
+							},
+						},
+					},
+				},
+			},
+			// Aggregation with tool overrides (map)
+			Aggregation: &mcpv1alpha1.AggregationConfig{
+				ConflictResolution: mcpv1alpha1.ConflictResolutionPrefix,
+				Tools: []mcpv1alpha1.WorkloadToolConfig{
+					{
+						Workload: "workload-1",
+						Overrides: map[string]mcpv1alpha1.ToolOverride{
+							"tool-zebra": {
+								Name:        "renamed-zebra",
+								Description: "Zebra tool",
+							},
+							"tool-alpha": {
+								Name:        "renamed-alpha",
+								Description: "Alpha tool",
+							},
+							"tool-middle": {
+								Name:        "renamed-middle",
+								Description: "Middle tool",
+							},
+						},
+					},
+				},
+			},
+			// Operational with PerWorkload timeouts (map)
+			Operational: &mcpv1alpha1.OperationalConfig{
+				Timeouts: &mcpv1alpha1.TimeoutConfig{
+					Default: "30s",
+					PerWorkload: map[string]string{
+						"workload-zebra":  "60s",
+						"workload-alpha":  "45s",
+						"workload-middle": "50s",
+					},
+				},
+			},
+		},
+	}
+
+	converter := vmcpconfig.NewConverter()
+
+	// Marshal the config 10 times to ensure deterministic output
+	const iterations = 10
+	results := make([]string, iterations)
+
+	for i := 0; i < iterations; i++ {
+		config, err := converter.Convert(context.Background(), testVmcp)
+		require.NoError(t, err)
+
+		yamlBytes, err := yaml.Marshal(config)
+		require.NoError(t, err)
+
+		results[i] = string(yamlBytes)
+	}
+
+	// Verify all results are identical
+	for i := 1; i < len(results); i++ {
+		assert.Equal(t, results[0], results[i],
+			"YAML marshaling produced different output on iteration %d.\n"+
+				"This indicates non-deterministic marshaling which will cause incorrect ConfigMap checksums.\n"+
+				"Expected yaml.v3 to sort map keys alphabetically for deterministic output.", i)
+	}
+
+	// Additional verification: check that output contains sorted keys
+	// (yaml.v3 should sort map keys alphabetically)
+	firstResult := results[0]
+	assert.Contains(t, firstResult, "name: test-vmcp")
+	assert.Contains(t, firstResult, "group: test-group")
+
+	// Verify the YAML is valid and non-empty
+	assert.NotEmpty(t, firstResult)
+	assert.Greater(t, len(firstResult), 100, "YAML output should contain substantial content")
+
+	t.Logf("✅ All %d marshaling iterations produced identical output (%d bytes)",
+		iterations, len(results[0]))
 }

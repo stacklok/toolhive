@@ -7,14 +7,8 @@ spec:
   groupRef:
     name: test-group-controller
   incomingAuth:
-    # Using Google's public OIDC issuer for testing (discovery will work)
-    oidcConfig:
-      type: inline
-      inline:
-        issuer: https://accounts.google.com
-        clientId: test-client-id
-        clientSecret: test-client-secret
-        audience: virtual-mcp-controller
+    # Using anonymous authentication for testing
+    type: anonymous
     authzConfig:
       type: inline
       inline:

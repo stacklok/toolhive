@@ -43,9 +43,8 @@ func (l *YAMLLoader) Load() (*Config, error) {
 
 // rawConfig represents the YAML structure as defined in the proposal.
 type rawConfig struct {
-	Name     string `yaml:"name"`
-	Group    string `yaml:"group"`     // CLI YAML format
-	GroupRef string `yaml:"group_ref"` // Kubernetes JSON format
+	Name  string `yaml:"name"`
+	Group string `yaml:"group"`
 
 	IncomingAuth rawIncomingAuth `yaml:"incoming_auth"`
 	OutgoingAuth rawOutgoingAuth `yaml:"outgoing_auth"`
@@ -192,15 +191,9 @@ type rawElicitationResponse struct {
 
 // transformToConfig converts the raw YAML structure to the unified Config model.
 func (l *YAMLLoader) transformToConfig(raw *rawConfig) (*Config, error) {
-	// Support both CLI YAML format (group) and Kubernetes JSON format (group_ref)
-	groupRef := raw.Group
-	if groupRef == "" {
-		groupRef = raw.GroupRef
-	}
-
 	cfg := &Config{
-		Name:     raw.Name,
-		GroupRef: groupRef,
+		Name:  raw.Name,
+		Group: raw.Group,
 	}
 
 	// Transform incoming auth

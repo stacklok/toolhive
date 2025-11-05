@@ -504,6 +504,14 @@ spec:
                     required:
                     - type
                     type: object
+                  type:
+                    description: 'Type defines the authentication type: anonymous,
+                      local, or oidc'
+                    enum:
+                    - anonymous
+                    - local
+                    - oidc
+                    type: string
                 type: object
               operational:
                 description: Operational defines operational settings like timeouts

@@ -70,7 +70,7 @@ func (*DefaultValidator) validateBasicFields(cfg *Config) error {
 		return fmt.Errorf("name is required")
 	}
 
-	if cfg.GroupRef == "" {
+	if cfg.Group == "" {
 		return fmt.Errorf("group reference is required")
 	}
 

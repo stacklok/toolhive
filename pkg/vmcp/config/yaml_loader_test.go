@@ -44,8 +44,8 @@ aggregation:
 				if cfg.Name != "test-vmcp" {
 					t.Errorf("Name = %v, want test-vmcp", cfg.Name)
 				}
-				if cfg.GroupRef != "test-group" {
-					t.Errorf("GroupRef = %v, want test-group", cfg.GroupRef)
+				if cfg.Group != "test-group" {
+					t.Errorf("Group = %v, want test-group", cfg.Group)
 				}
 				if cfg.IncomingAuth.Type != "anonymous" {
 					t.Errorf("IncomingAuth.Type = %v, want anonymous", cfg.IncomingAuth.Type)

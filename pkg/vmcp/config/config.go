@@ -72,8 +72,8 @@ type Config struct {
 	// Name is the virtual MCP server name.
 	Name string `json:"name" yaml:"name"`
 
-	// GroupRef references the ToolHive group containing backend workloads.
-	GroupRef string `json:"group_ref" yaml:"group_ref"`
+	// Group references the ToolHive group containing backend workloads.
+	Group string `json:"group_ref" yaml:"group"`
 
 	// IncomingAuth configures how clients authenticate to the virtual MCP server.
 	IncomingAuth *IncomingAuthConfig `json:"incoming_auth,omitempty" yaml:"incoming_auth,omitempty"`

@@ -106,7 +106,7 @@ func TestManager_Create(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{groupStore: mockStore}
+			manager := &cliManager{groupStore: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -181,7 +181,7 @@ func TestManager_Get(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{groupStore: mockStore}
+			manager := &cliManager{groupStore: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -288,7 +288,7 @@ func TestManager_List(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{groupStore: mockStore}
+			manager := &cliManager{groupStore: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -374,7 +374,7 @@ func TestManager_Delete(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{groupStore: mockStore}
+			manager := &cliManager{groupStore: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -448,7 +448,7 @@ func TestManager_Exists(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{groupStore: mockStore}
+			manager := &cliManager{groupStore: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -533,7 +533,7 @@ func TestManager_RegisterClients(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{groupStore: mockStore}
+			manager := &cliManager{groupStore: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)
@@ -617,7 +617,7 @@ func TestManager_UnregisterClients(t *testing.T) {
 			defer ctrl.Finish()
 
 			mockStore := mocks.NewMockStore(ctrl)
-			manager := &manager{groupStore: mockStore}
+			manager := &cliManager{groupStore: mockStore}
 
 			// Set up mock expectations
 			tt.setupMock(mockStore)

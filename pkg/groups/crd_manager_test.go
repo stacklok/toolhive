@@ -1,0 +1,786 @@
+package groups
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	thverrors "github.com/stacklok/toolhive/pkg/errors"
+	"github.com/stacklok/toolhive/pkg/logger"
+)
+
+func init() {
+	// Initialize logger for tests
+	logger.Initialize()
+}
+
+// createTestScheme creates a test scheme with required types
+func createTestScheme() *runtime.Scheme {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(mcpv1alpha1.AddToScheme(scheme))
+	return scheme
+}
+
+// createTestCRDManager creates a CRD manager with a fake client for testing
+func createTestCRDManager(objs ...client.Object) (*crdManager, client.Client) {
+	scheme := createTestScheme()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	manager := NewCRDManager(fakeClient, "default").(*crdManager)
+	return manager, fakeClient
+}
+
+func TestCRDManager_Create(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		groupName   string
+		setupObjs   []client.Object
+		expectError bool
+		errorType   string
+		errorMsg    string
+	}{
+		{
+			name:        "successful creation",
+			groupName:   "testgroup",
+			setupObjs:   []client.Object{},
+			expectError: false,
+		},
+		{
+			name:      "group already exists",
+			groupName: "existinggroup",
+			setupObjs: []client.Object{
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "existinggroup",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{},
+					},
+				},
+			},
+			expectError: true,
+			errorType:   thverrors.ErrGroupAlreadyExists,
+			errorMsg:    "already exists",
+		},
+		{
+			name:        "invalid name - uppercase",
+			groupName:   "MyGroup",
+			setupObjs:   []client.Object{},
+			expectError: true,
+			errorType:   thverrors.ErrInvalidArgument,
+			errorMsg:    "must be lowercase",
+		},
+		{
+			name:        "invalid name - empty",
+			groupName:   "",
+			setupObjs:   []client.Object{},
+			expectError: true,
+			errorType:   thverrors.ErrInvalidArgument,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager, _ := createTestCRDManager(tt.setupObjs...)
+			ctx := context.Background()
+
+			err := manager.Create(ctx, tt.groupName)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorType != "" {
+					var thErr *thverrors.Error
+					if assert.ErrorAs(t, err, &thErr) {
+						assert.Equal(t, tt.errorType, thErr.Type)
+					}
+				}
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+
+				// Verify the group was created
+				group, err := manager.Get(ctx, tt.groupName)
+				require.NoError(t, err)
+				assert.Equal(t, tt.groupName, group.Name)
+				assert.Empty(t, group.RegisteredClients)
+			}
+		})
+	}
+}
+
+func TestCRDManager_Get(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		groupName   string
+		setupObjs   []client.Object
+		expectError bool
+		errorType   string
+		expected    *Group
+	}{
+		{
+			name:      "successful get",
+			groupName: "testgroup",
+			setupObjs: []client.Object{
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "testgroup",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{"client1", "client2"},
+					},
+				},
+			},
+			expectError: false,
+			expected: &Group{
+				Name:              "testgroup",
+				RegisteredClients: []string{"client1", "client2"},
+			},
+		},
+		{
+			name:        "group not found",
+			groupName:   "nonexistent",
+			setupObjs:   []client.Object{},
+			expectError: true,
+			errorType:   thverrors.ErrGroupNotFound,
+		},
+		{
+			name:      "group with no registered clients",
+			groupName: "emptygroup",
+			setupObjs: []client.Object{
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "emptygroup",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: nil,
+					},
+				},
+			},
+			expectError: false,
+			expected: &Group{
+				Name:              "emptygroup",
+				RegisteredClients: []string{},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager, _ := createTestCRDManager(tt.setupObjs...)
+			ctx := context.Background()
+
+			group, err := manager.Get(ctx, tt.groupName)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorType != "" {
+					var thErr *thverrors.Error
+					if assert.ErrorAs(t, err, &thErr) {
+						assert.Equal(t, tt.errorType, thErr.Type)
+					}
+				}
+				assert.Nil(t, group)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, group)
+				assert.Equal(t, tt.expected.Name, group.Name)
+				assert.Equal(t, tt.expected.RegisteredClients, group.RegisteredClients)
+			}
+		})
+	}
+}
+
+func TestCRDManager_List(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		setupObjs []client.Object
+		expected  []*Group
+	}{
+		{
+			name:      "empty list",
+			setupObjs: []client.Object{},
+			expected:  []*Group{},
+		},
+		{
+			name: "list multiple groups",
+			setupObjs: []client.Object{
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "group1",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{"client1"},
+					},
+				},
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "group2",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{"client2", "client3"},
+					},
+				},
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "agroup",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{},
+					},
+				},
+			},
+			expected: []*Group{
+				{
+					Name:              "agroup",
+					RegisteredClients: []string{},
+				},
+				{
+					Name:              "group1",
+					RegisteredClients: []string{"client1"},
+				},
+				{
+					Name:              "group2",
+					RegisteredClients: []string{"client2", "client3"},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager, _ := createTestCRDManager(tt.setupObjs...)
+			ctx := context.Background()
+
+			groups, err := manager.List(ctx)
+
+			require.NoError(t, err)
+			require.Len(t, groups, len(tt.expected))
+
+			for i, expected := range tt.expected {
+				assert.Equal(t, expected.Name, groups[i].Name)
+				assert.Equal(t, expected.RegisteredClients, groups[i].RegisteredClients)
+			}
+		})
+	}
+}
+
+func TestCRDManager_Delete(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		groupName   string
+		setupObjs   []client.Object
+		expectError bool
+		errorType   string
+	}{
+		{
+			name:      "successful deletion",
+			groupName: "testgroup",
+			setupObjs: []client.Object{
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "testgroup",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name:        "group not found",
+			groupName:   "nonexistent",
+			setupObjs:   []client.Object{},
+			expectError: true,
+			errorType:   thverrors.ErrGroupNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager, fakeClient := createTestCRDManager(tt.setupObjs...)
+			ctx := context.Background()
+
+			err := manager.Delete(ctx, tt.groupName)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorType != "" {
+					var thErr *thverrors.Error
+					if assert.ErrorAs(t, err, &thErr) {
+						assert.Equal(t, tt.errorType, thErr.Type)
+					}
+				}
+			} else {
+				assert.NoError(t, err)
+
+				// Verify the group was deleted
+				mcpGroup := &mcpv1alpha1.MCPGroup{}
+				err := fakeClient.Get(ctx, client.ObjectKey{
+					Name:      tt.groupName,
+					Namespace: "default",
+				}, mcpGroup)
+				assert.True(t, errors.IsNotFound(err), "Group should be deleted")
+			}
+		})
+	}
+}
+
+func TestCRDManager_Exists(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		groupName   string
+		setupObjs   []client.Object
+		expected    bool
+		expectError bool
+	}{
+		{
+			name:      "group exists",
+			groupName: "testgroup",
+			setupObjs: []client.Object{
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "testgroup",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{},
+					},
+				},
+			},
+			expected:    true,
+			expectError: false,
+		},
+		{
+			name:        "group does not exist",
+			groupName:   "nonexistent",
+			setupObjs:   []client.Object{},
+			expected:    false,
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager, _ := createTestCRDManager(tt.setupObjs...)
+			ctx := context.Background()
+
+			exists, err := manager.Exists(ctx, tt.groupName)
+
+			if tt.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.expected, exists)
+			}
+		})
+	}
+}
+
+func TestCRDManager_RegisterClients(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		groupNames  []string
+		clientNames []string
+		setupObjs   []client.Object
+		expectError bool
+		verify      func(*testing.T, client.Client, []string, []string)
+	}{
+		{
+			name:        "register clients to single group",
+			groupNames:  []string{"testgroup"},
+			clientNames: []string{"client1", "client2"},
+			setupObjs: []client.Object{
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "testgroup",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{},
+					},
+				},
+			},
+			expectError: false,
+			verify: func(t *testing.T, fakeClient client.Client, groupNames, clientNames []string) {
+				t.Helper()
+				ctx := context.Background()
+				mcpGroup := &mcpv1alpha1.MCPGroup{}
+				err := fakeClient.Get(ctx, client.ObjectKey{
+					Name:      groupNames[0],
+					Namespace: "default",
+				}, mcpGroup)
+				require.NoError(t, err)
+				assert.ElementsMatch(t, clientNames, mcpGroup.Spec.RegisteredClients)
+			},
+		},
+		{
+			name:        "register clients to multiple groups",
+			groupNames:  []string{"group1", "group2"},
+			clientNames: []string{"client1"},
+			setupObjs: []client.Object{
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "group1",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{},
+					},
+				},
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "group2",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{},
+					},
+				},
+			},
+			expectError: false,
+			verify: func(t *testing.T, fakeClient client.Client, groupNames, clientNames []string) {
+				t.Helper()
+				ctx := context.Background()
+				for _, groupName := range groupNames {
+					mcpGroup := &mcpv1alpha1.MCPGroup{}
+					err := fakeClient.Get(ctx, client.ObjectKey{
+						Name:      groupName,
+						Namespace: "default",
+					}, mcpGroup)
+					require.NoError(t, err)
+					assert.Contains(t, mcpGroup.Spec.RegisteredClients, clientNames[0])
+				}
+			},
+		},
+		{
+			name:        "skip already registered clients",
+			groupNames:  []string{"testgroup"},
+			clientNames: []string{"client1", "client2"},
+			setupObjs: []client.Object{
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "testgroup",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{"client1"},
+					},
+				},
+			},
+			expectError: false,
+			verify: func(t *testing.T, fakeClient client.Client, groupNames, clientNames []string) {
+				t.Helper()
+				ctx := context.Background()
+				mcpGroup := &mcpv1alpha1.MCPGroup{}
+				err := fakeClient.Get(ctx, client.ObjectKey{
+					Name:      groupNames[0],
+					Namespace: "default",
+				}, mcpGroup)
+				require.NoError(t, err)
+				assert.ElementsMatch(t, clientNames, mcpGroup.Spec.RegisteredClients)
+			},
+		},
+		{
+			name:        "group not found",
+			groupNames:  []string{"nonexistent"},
+			clientNames: []string{"client1"},
+			setupObjs:   []client.Object{},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager, fakeClient := createTestCRDManager(tt.setupObjs...)
+			ctx := context.Background()
+
+			err := manager.RegisterClients(ctx, tt.groupNames, tt.clientNames)
+
+			if tt.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				if tt.verify != nil {
+					tt.verify(t, fakeClient, tt.groupNames, tt.clientNames)
+				}
+			}
+		})
+	}
+}
+
+func TestCRDManager_UnregisterClients(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		groupNames  []string
+		clientNames []string
+		setupObjs   []client.Object
+		expectError bool
+		verify      func(*testing.T, client.Client, []string, []string)
+	}{
+		{
+			name:        "unregister clients from single group",
+			groupNames:  []string{"testgroup"},
+			clientNames: []string{"client1"},
+			setupObjs: []client.Object{
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "testgroup",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{"client1", "client2"},
+					},
+				},
+			},
+			expectError: false,
+			verify: func(t *testing.T, fakeClient client.Client, groupNames, clientNames []string) {
+				t.Helper()
+				ctx := context.Background()
+				mcpGroup := &mcpv1alpha1.MCPGroup{}
+				err := fakeClient.Get(ctx, client.ObjectKey{
+					Name:      groupNames[0],
+					Namespace: "default",
+				}, mcpGroup)
+				require.NoError(t, err)
+				assert.NotContains(t, mcpGroup.Spec.RegisteredClients, clientNames[0])
+				assert.Contains(t, mcpGroup.Spec.RegisteredClients, "client2")
+			},
+		},
+		{
+			name:        "unregister multiple clients",
+			groupNames:  []string{"testgroup"},
+			clientNames: []string{"client1", "client2"},
+			setupObjs: []client.Object{
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "testgroup",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{"client1", "client2", "client3"},
+					},
+				},
+			},
+			expectError: false,
+			verify: func(t *testing.T, fakeClient client.Client, groupNames, _ []string) {
+				t.Helper()
+				ctx := context.Background()
+				mcpGroup := &mcpv1alpha1.MCPGroup{}
+				err := fakeClient.Get(ctx, client.ObjectKey{
+					Name:      groupNames[0],
+					Namespace: "default",
+				}, mcpGroup)
+				require.NoError(t, err)
+				assert.NotContains(t, mcpGroup.Spec.RegisteredClients, "client1")
+				assert.NotContains(t, mcpGroup.Spec.RegisteredClients, "client2")
+				assert.Contains(t, mcpGroup.Spec.RegisteredClients, "client3")
+			},
+		},
+		{
+			name:        "unregister from multiple groups",
+			groupNames:  []string{"group1", "group2"},
+			clientNames: []string{"client1"},
+			setupObjs: []client.Object{
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "group1",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{"client1", "client2"},
+					},
+				},
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "group2",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{"client1"},
+					},
+				},
+			},
+			expectError: false,
+			verify: func(t *testing.T, fakeClient client.Client, groupNames, clientNames []string) {
+				t.Helper()
+				ctx := context.Background()
+				for _, groupName := range groupNames {
+					mcpGroup := &mcpv1alpha1.MCPGroup{}
+					err := fakeClient.Get(ctx, client.ObjectKey{
+						Name:      groupName,
+						Namespace: "default",
+					}, mcpGroup)
+					require.NoError(t, err)
+					assert.NotContains(t, mcpGroup.Spec.RegisteredClients, clientNames[0])
+				}
+			},
+		},
+		{
+			name:        "group not found",
+			groupNames:  []string{"nonexistent"},
+			clientNames: []string{"client1"},
+			setupObjs:   []client.Object{},
+			expectError: true,
+		},
+		{
+			name:        "unregister non-existent client (no-op)",
+			groupNames:  []string{"testgroup"},
+			clientNames: []string{"nonexistent"},
+			setupObjs: []client.Object{
+				&mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "testgroup",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPGroupSpec{
+						RegisteredClients: []string{"client1"},
+					},
+				},
+			},
+			expectError: false,
+			verify: func(t *testing.T, fakeClient client.Client, groupNames, _ []string) {
+				t.Helper()
+				ctx := context.Background()
+				mcpGroup := &mcpv1alpha1.MCPGroup{}
+				err := fakeClient.Get(ctx, client.ObjectKey{
+					Name:      groupNames[0],
+					Namespace: "default",
+				}, mcpGroup)
+				require.NoError(t, err)
+				assert.Contains(t, mcpGroup.Spec.RegisteredClients, "client1")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager, fakeClient := createTestCRDManager(tt.setupObjs...)
+			ctx := context.Background()
+
+			err := manager.UnregisterClients(ctx, tt.groupNames, tt.clientNames)
+
+			if tt.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				if tt.verify != nil {
+					tt.verify(t, fakeClient, tt.groupNames, tt.clientNames)
+				}
+			}
+		})
+	}
+}
+
+func TestMCPGroupToGroup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		mcpGroup *mcpv1alpha1.MCPGroup
+		expected *Group
+	}{
+		{
+			name: "with registered clients",
+			mcpGroup: &mcpv1alpha1.MCPGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "testgroup",
+				},
+				Spec: mcpv1alpha1.MCPGroupSpec{
+					RegisteredClients: []string{"client1", "client2"},
+				},
+			},
+			expected: &Group{
+				Name:              "testgroup",
+				RegisteredClients: []string{"client1", "client2"},
+			},
+		},
+		{
+			name: "with nil registered clients",
+			mcpGroup: &mcpv1alpha1.MCPGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "testgroup",
+				},
+				Spec: mcpv1alpha1.MCPGroupSpec{
+					RegisteredClients: nil,
+				},
+			},
+			expected: &Group{
+				Name:              "testgroup",
+				RegisteredClients: []string{},
+			},
+		},
+		{
+			name: "with empty registered clients",
+			mcpGroup: &mcpv1alpha1.MCPGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "testgroup",
+				},
+				Spec: mcpv1alpha1.MCPGroupSpec{
+					RegisteredClients: []string{},
+				},
+			},
+			expected: &Group{
+				Name:              "testgroup",
+				RegisteredClients: []string{},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := mcpGroupToGroup(tt.mcpGroup)
+			assert.Equal(t, tt.expected.Name, result.Name)
+			assert.Equal(t, tt.expected.RegisteredClients, result.RegisteredClients)
+		})
+	}
+}

@@ -142,12 +142,12 @@ func (m *crdManager) Exists(ctx context.Context, name string) (bool, error) {
 }
 
 // In Kubernetes, client configuration management is not applicable, so this is a no-op.
-func (m *crdManager) RegisterClients(ctx context.Context, groupNames []string, clientNames []string) error {
+func (*crdManager) RegisterClients(context.Context, []string, []string) error {
 	return nil
 }
 
 // In Kubernetes, client configuration management is not applicable, so this is a no-op.
-func (m *crdManager) UnregisterClients(ctx context.Context, groupNames []string, clientNames []string) error {
+func (*crdManager) UnregisterClients(context.Context, []string, []string) error {
 	return nil
 }
 

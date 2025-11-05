@@ -170,39 +170,6 @@ func (r *VirtualMCPServerReconciler) validateAndDiscoverBackends(
 		Message: fmt.Sprintf("MCPGroup %s is valid and ready", vmcp.Spec.GroupRef.Name),
 	})
 
-	// Discover backends from MCPGroup
-	if err := r.discoverBackends(ctx, vmcp, mcpGroup); err != nil {
-		ctxLogger.Error(err, "Failed to discover backends")
-		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhaseFailed
-		vmcp.Status.Message = fmt.Sprintf("Backend discovery failed: %v", err)
-		meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionTypeBackendsDiscovered,
-			Status:  metav1.ConditionFalse,
-			Reason:  mcpv1alpha1.ConditionReasonDiscoveryFailed,
-			Message: err.Error(),
-		})
-		if statusErr := r.Status().Update(ctx, vmcp); statusErr != nil {
-			// Handle conflicts by requeuing - another controller may have updated the resource
-			if errors.IsConflict(statusErr) {
-				ctxLogger.V(1).Info("Conflict updating status after backend discovery error, requeuing")
-				return statusErr // Return error to trigger requeue
-			}
-			ctxLogger.Error(statusErr, "Failed to update VirtualMCPServer status after backend discovery error")
-		}
-		// Record event for backend discovery failure
-		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "BackendDiscoveryFailed",
-				"Failed to discover backends from MCPGroup %s: %v", vmcp.Spec.GroupRef.Name, err)
-		}
-		return err
-	}
-
-	// Record event for successful backend discovery
-	if r.Recorder != nil && len(vmcp.Status.DiscoveredBackends) > 0 {
-		r.Recorder.Eventf(vmcp, corev1.EventTypeNormal, "BackendsDiscovered",
-			"Successfully discovered %d backend(s) from MCPGroup %s", len(vmcp.Status.DiscoveredBackends), vmcp.Spec.GroupRef.Name)
-	}
-
 	return nil
 }
 
@@ -751,28 +718,15 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 		}
 	}
 
-	// Check backend health
-	backendHealth := r.checkBackendHealth(ctx, vmcp)
-
-	// Update the status based on pod and backend health
-	if running > 0 && backendHealth.allHealthy {
+	// Update the status based on pod health
+	if running > 0 {
 		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhaseReady
-		vmcp.Status.Message = "Virtual MCP server is running and all backends are healthy"
+		vmcp.Status.Message = "Virtual MCP server is running"
 		meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
 			Type:    mcpv1alpha1.ConditionTypeVirtualMCPServerReady,
 			Status:  metav1.ConditionTrue,
-			Reason:  mcpv1alpha1.ConditionReasonAllBackendsReady,
-			Message: "All backends are ready and healthy",
-		})
-	} else if running > 0 && backendHealth.someHealthy {
-		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhaseDegraded
-		vmcp.Status.Message = fmt.Sprintf("Virtual MCP server is running but %d/%d backends are unavailable",
-			backendHealth.unavailableCount, backendHealth.totalCount)
-		meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionTypeVirtualMCPServerReady,
-			Status:  metav1.ConditionTrue,
-			Reason:  mcpv1alpha1.ConditionReasonSomeBackendsUnavailable,
-			Message: vmcp.Status.Message,
+			Reason:  "DeploymentReady",
+			Message: "Deployment is ready",
 		})
 	} else if pending > 0 {
 		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhasePending
@@ -783,14 +737,14 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 			Reason:  "DeploymentNotReady",
 			Message: "Deployment is not yet ready",
 		})
-	} else if failed > 0 || !backendHealth.someHealthy {
+	} else if failed > 0 {
 		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhaseFailed
-		vmcp.Status.Message = "Virtual MCP server failed to start or all backends are unavailable"
+		vmcp.Status.Message = "Virtual MCP server failed to start"
 		meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
 			Type:    mcpv1alpha1.ConditionTypeVirtualMCPServerReady,
 			Status:  metav1.ConditionFalse,
 			Reason:  "DeploymentFailed",
-			Message: "Deployment failed or all backends unavailable",
+			Message: "Deployment failed",
 		})
 	} else {
 		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhasePending

@@ -286,44 +286,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Create aggregator
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools)
 
-	// Aggregate capabilities from all backends with timeout
-	logger.Info("Aggregating capabilities from backends")
-
-	var capabilities *aggregator.AggregatedCapabilities
-	if len(backends) > 0 {
-		aggCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-
-		var err error
-		capabilities, err = agg.AggregateCapabilities(aggCtx, backends)
-		if err != nil {
-			return fmt.Errorf("failed to aggregate capabilities: %w", err)
-		}
-
-		logger.Infof("Aggregated %d tools, %d resources, %d prompts from %d backends",
-			capabilities.Metadata.ToolCount,
-			capabilities.Metadata.ResourceCount,
-			capabilities.Metadata.PromptCount,
-			capabilities.Metadata.BackendCount)
-	} else {
-		// No backends available - create empty capabilities
-		logger.Warnf("No backends available - starting with empty capabilities")
-		capabilities = &aggregator.AggregatedCapabilities{
-			Tools:     []vmcp.Tool{},
-			Resources: []vmcp.Resource{},
-			Prompts:   []vmcp.Prompt{},
-			RoutingTable: &vmcp.RoutingTable{
-				Tools:     make(map[string]*vmcp.BackendTarget),
-				Resources: make(map[string]*vmcp.BackendTarget),
-				Prompts:   make(map[string]*vmcp.BackendTarget),
-			},
-			Metadata: &aggregator.AggregationMetadata{
-				BackendCount:  0,
-				ToolCount:     0,
-				ResourceCount: 0,
-				PromptCount:   0,
-			},
-		}
+	// Aggregate capabilities
+	capabilities, err := aggregateCapabilities(ctx, agg, backends)
+	if err != nil {
+		return err
 	}
 
 	// Create router
@@ -365,4 +331,50 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Start server (blocks until shutdown signal)
 	logger.Infof("Starting Virtual MCP Server at %s", srv.Address())
 	return srv.Start(ctx)
+}
+
+// aggregateCapabilities aggregates capabilities from backends or creates empty capabilities
+func aggregateCapabilities(
+	ctx context.Context,
+	agg aggregator.Aggregator,
+	backends []vmcp.Backend,
+) (*aggregator.AggregatedCapabilities, error) {
+	logger.Info("Aggregating capabilities from backends")
+
+	if len(backends) > 0 {
+		aggCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		capabilities, err := agg.AggregateCapabilities(aggCtx, backends)
+		if err != nil {
+			return nil, fmt.Errorf("failed to aggregate capabilities: %w", err)
+		}
+
+		logger.Infof("Aggregated %d tools, %d resources, %d prompts from %d backends",
+			capabilities.Metadata.ToolCount,
+			capabilities.Metadata.ResourceCount,
+			capabilities.Metadata.PromptCount,
+			capabilities.Metadata.BackendCount)
+
+		return capabilities, nil
+	}
+
+	// No backends available - create empty capabilities
+	logger.Warnf("No backends available - starting with empty capabilities")
+	return &aggregator.AggregatedCapabilities{
+		Tools:     []vmcp.Tool{},
+		Resources: []vmcp.Resource{},
+		Prompts:   []vmcp.Prompt{},
+		RoutingTable: &vmcp.RoutingTable{
+			Tools:     make(map[string]*vmcp.BackendTarget),
+			Resources: make(map[string]*vmcp.BackendTarget),
+			Prompts:   make(map[string]*vmcp.BackendTarget),
+		},
+		Metadata: &aggregator.AggregationMetadata{
+			BackendCount:  0,
+			ToolCount:     0,
+			ResourceCount: 0,
+			PromptCount:   0,
+		},
+	}, nil
 }

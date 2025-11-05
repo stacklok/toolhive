@@ -2,10 +2,10 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
+	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,7 +38,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return fmt.Errorf("invalid vmcp Config: %w", err)
 	}
 
-	vmcpConfigJSON, err := json.MarshalIndent(vmcpConfig, "", "  ")
+	vmcpConfigYAML, err := yaml.Marshal(vmcpConfig)
 	if err != nil {
 		return fmt.Errorf("failed to marshal vmcp config: %w", err)
 	}
@@ -51,7 +51,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 			Labels:    labelsForVmcpConfig(vmcp.Name),
 		},
 		Data: map[string]string{
-			"config.yaml": string(vmcpConfigJSON), // Using .yaml extension - yaml.v3 can parse JSON
+			"config.yaml": string(vmcpConfigYAML),
 		},
 	}
 

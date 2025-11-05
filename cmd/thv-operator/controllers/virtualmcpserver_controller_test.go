@@ -404,17 +404,11 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 		expectedPhase mcpv1alpha1.VirtualMCPServerPhase
 	}{
 		{
-			name: "running pods with healthy backends",
+			name: "running pods",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-vmcp",
 					Namespace: "default",
-				},
-				Status: mcpv1alpha1.VirtualMCPServerStatus{
-					DiscoveredBackends: []mcpv1alpha1.DiscoveredBackend{
-						{Name: "backend-1", Status: "ready"},
-						{Name: "backend-2", Status: "ready"},
-					},
 				},
 			},
 			pods: []corev1.Pod{
@@ -432,44 +426,11 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 			expectedPhase: mcpv1alpha1.VirtualMCPServerPhaseReady,
 		},
 		{
-			name: "running pods with degraded backends",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Status: mcpv1alpha1.VirtualMCPServerStatus{
-					DiscoveredBackends: []mcpv1alpha1.DiscoveredBackend{
-						{Name: "backend-1", Status: "ready"},
-						{Name: "backend-2", Status: "unavailable"},
-					},
-				},
-			},
-			pods: []corev1.Pod{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-vmcp-pod-1",
-						Namespace: "default",
-						Labels:    labelsForVirtualMCPServer("test-vmcp"),
-					},
-					Status: corev1.PodStatus{
-						Phase: corev1.PodRunning,
-					},
-				},
-			},
-			expectedPhase: mcpv1alpha1.VirtualMCPServerPhaseDegraded,
-		},
-		{
 			name: "pending pods",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-vmcp",
 					Namespace: "default",
-				},
-				Status: mcpv1alpha1.VirtualMCPServerStatus{
-					DiscoveredBackends: []mcpv1alpha1.DiscoveredBackend{
-						{Name: "backend-1", Status: "ready"},
-					},
 				},
 			},
 			pods: []corev1.Pod{
@@ -492,11 +453,6 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-vmcp",
 					Namespace: "default",
-				},
-				Status: mcpv1alpha1.VirtualMCPServerStatus{
-					DiscoveredBackends: []mcpv1alpha1.DiscoveredBackend{
-						{Name: "backend-1", Status: "ready"},
-					},
 				},
 			},
 			pods: []corev1.Pod{

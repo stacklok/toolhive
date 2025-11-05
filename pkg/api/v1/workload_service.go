@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -123,7 +124,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		return nil, fmt.Errorf("group '%s' does not exist", groupName)
 	}
 
-	var remoteAuthConfig *runner.RemoteAuthConfig
+	var remoteAuthConfig *remote.Config
 	var imageURL string
 	var imageMetadata *registry.ImageMetadata
 	var serverMetadata registry.ServerMetadata
@@ -158,7 +159,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 
 		if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
 			if remoteServerMetadata.OAuthConfig != nil {
-				remoteAuthConfig = &runner.RemoteAuthConfig{
+				remoteAuthConfig = &remote.Config{
 					ClientID:     req.OAuthConfig.ClientID,
 					Scopes:       remoteServerMetadata.OAuthConfig.Scopes,
 					CallbackPort: remoteServerMetadata.OAuthConfig.CallbackPort,
@@ -259,10 +260,10 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 func createRequestToRemoteAuthConfig(
 	_ context.Context,
 	req *createRequest,
-) *runner.RemoteAuthConfig {
+) *remote.Config {
 
 	// Create RemoteAuthConfig
-	remoteAuthConfig := &runner.RemoteAuthConfig{
+	remoteAuthConfig := &remote.Config{
 		ClientID:     req.OAuthConfig.ClientID,
 		Scopes:       req.OAuthConfig.Scopes,
 		Issuer:       req.OAuthConfig.Issuer,

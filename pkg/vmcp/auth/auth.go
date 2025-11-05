@@ -1,7 +1,7 @@
 // Package auth provides authentication for Virtual MCP Server.
 //
 // This package defines:
-//   - OutgoingAuthenticator: Authenticates vMCP to backend servers
+//   - OutgoingAuthRegistry: Registry for managing backend authentication strategies
 //   - Strategy: Pluggable authentication strategies for backends
 //
 // Incoming authentication uses pkg/auth middleware (OIDC, local, anonymous)
@@ -17,24 +17,39 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 )
 
-// OutgoingAuthenticator handles authentication to backend MCP servers.
-// This is responsible for obtaining and injecting appropriate credentials
-// for each backend based on its authentication strategy.
+// OutgoingAuthRegistry manages authentication strategies for outgoing requests to backend MCP servers.
+// This is a registry that stores and retrieves Strategy implementations.
 //
-// The specific authentication strategies and their behavior will be defined
-// during implementation based on the design decisions documented in the
-// Virtual MCP Server proposal.
-type OutgoingAuthenticator interface {
-	// AuthenticateRequest adds authentication to an outgoing backend request.
-	// The strategy and metadata are provided in the BackendTarget.
-	AuthenticateRequest(ctx context.Context, req *http.Request, strategy string, metadata map[string]any) error
-
-	// GetStrategy returns the authentication strategy handler for a given strategy name.
-	// This enables extensibility - new strategies can be registered.
+// The registry supports dynamic strategy registration, allowing custom authentication
+// strategies to be added at runtime. Once registered, strategies can be retrieved
+// by name and used to authenticate requests to backends.
+//
+// Responsibilities:
+//   - Maintain registry of available strategies
+//   - Retrieve strategies by name
+//   - Register new strategies dynamically
+//
+// This registry does NOT perform authentication itself. Authentication is performed
+// by Strategy implementations retrieved from this registry.
+//
+// Usage Pattern:
+//  1. Register strategies during application initialization
+//  2. Resolve strategy once at client creation time (cold path)
+//  3. Call strategy.Authenticate() directly per-request (hot path)
+//
+// Thread-safety: Implementations must be safe for concurrent access.
+type OutgoingAuthRegistry interface {
+	// GetStrategy retrieves an authentication strategy by name.
+	// Returns an error if the strategy is not found.
 	GetStrategy(name string) (Strategy, error)
 
 	// RegisterStrategy registers a new authentication strategy.
-	// This allows custom auth strategies to be added at runtime.
+	// The strategy name must match the name returned by strategy.Name().
+	// Returns an error if:
+	//   - name is empty
+	//   - strategy is nil
+	//   - a strategy with the same name is already registered
+	//   - strategy.Name() does not match the registration name
 	RegisterStrategy(name string, strategy Strategy) error
 }
 

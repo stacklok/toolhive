@@ -1,4 +1,4 @@
-package auth
+package factory
 
 import (
 	"context"

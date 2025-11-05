@@ -1,4 +1,4 @@
-package runner
+package remote
 
 import (
 	"net/http/httptest"
@@ -190,7 +190,7 @@ func replaceFirst(s, old, replacement string) string {
 // testCase represents a single test case
 type testCase struct {
 	name               string
-	config             *RemoteAuthConfig
+	config             *Config
 	authInfo           *discovery.AuthInfo
 	remoteURL          string
 	mockServers        map[string]*httptest.Server

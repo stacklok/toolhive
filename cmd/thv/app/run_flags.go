@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/cli"
 	cfg "github.com/stacklok/toolhive/pkg/config"
@@ -615,7 +616,7 @@ func extractTelemetryValues(config *telemetry.Config) (string, float64, []string
 func getRemoteAuthFromRemoteServerMetadata(
 	remoteServerMetadata *registry.RemoteServerMetadata,
 	runFlags *RunFlags,
-) (*runner.RemoteAuthConfig, error) {
+) (*remote.Config, error) {
 	if remoteServerMetadata == nil || remoteServerMetadata.OAuthConfig == nil {
 		return getRemoteAuthFromRunFlags(runFlags)
 	}
@@ -651,7 +652,7 @@ func getRemoteAuthFromRemoteServerMetadata(
 		}
 	}
 
-	authCfg := &runner.RemoteAuthConfig{
+	authCfg := &remote.Config{
 		ClientID:     f.RemoteAuthClientID,
 		ClientSecret: clientSecret,
 		SkipBrowser:  f.RemoteAuthSkipBrowser,
@@ -692,7 +693,7 @@ func getRemoteAuthFromRemoteServerMetadata(
 }
 
 // getRemoteAuthFromRunFlags creates RemoteAuthConfig from RunFlags
-func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*runner.RemoteAuthConfig, error) {
+func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 	// Resolve OAuth client secret from multiple sources (flag, file, environment variable)
 	// This follows the same priority as resolveSecret: flag → file → environment variable
 	resolvedClientSecret, err := resolveSecret(
@@ -714,7 +715,7 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*runner.RemoteAuthConfig, er
 		}
 	}
 
-	return &runner.RemoteAuthConfig{
+	return &remote.Config{
 		ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
 		ClientSecret: clientSecret,
 		Scopes:       runFlags.RemoteAuthFlags.RemoteAuthScopes,

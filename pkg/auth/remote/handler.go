@@ -1,4 +1,4 @@
-package runner
+package remote
 
 import (
 	"context"
@@ -10,21 +10,21 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-// RemoteAuthHandler handles authentication for remote MCP servers.
+// Handler handles authentication for remote MCP servers.
 // Supports OAuth/OIDC-based authentication with automatic discovery.
-type RemoteAuthHandler struct {
-	config *RemoteAuthConfig
+type Handler struct {
+	config *Config
 }
 
-// NewRemoteAuthHandler creates a new remote authentication handler
-func NewRemoteAuthHandler(config *RemoteAuthConfig) *RemoteAuthHandler {
-	return &RemoteAuthHandler{
+// NewHandler creates a new remote authentication handler
+func NewHandler(config *Config) *Handler {
+	return &Handler{
 		config: config,
 	}
 }
 
 // Authenticate is the main entry point for remote MCP server authentication
-func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
+func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
 
 	// First, try to detect if authentication is required
 	authInfo, err := discovery.DetectAuthenticationFromServer(ctx, remoteURL, nil)
@@ -89,7 +89,7 @@ func (h *RemoteAuthHandler) Authenticate(ctx context.Context, remoteURL string) 
 // discoverIssuerAndScopes attempts to discover the OAuth issuer and scopes from various sources
 // following RFC 8414 and RFC 9728 standards
 // If the issuer is not derived from Realm and Resource Metadata, it derives from the remote URL
-func (h *RemoteAuthHandler) discoverIssuerAndScopes(
+func (h *Handler) discoverIssuerAndScopes(
 	ctx context.Context,
 	authInfo *discovery.AuthInfo,
 	remoteURL string,
@@ -135,7 +135,7 @@ func (h *RemoteAuthHandler) discoverIssuerAndScopes(
 }
 
 // tryDiscoverFromResourceMetadata attempts to discover issuer and scopes from resource metadata
-func (h *RemoteAuthHandler) tryDiscoverFromResourceMetadata(
+func (h *Handler) tryDiscoverFromResourceMetadata(
 	ctx context.Context,
 	resourceMetadataURL string,
 ) (string, []string, *discovery.AuthServerInfo, error) {
@@ -172,7 +172,7 @@ func (h *RemoteAuthHandler) tryDiscoverFromResourceMetadata(
 }
 
 // findValidAuthServer validates authorization servers and returns the first valid one
-func (*RemoteAuthHandler) findValidAuthServer(
+func (*Handler) findValidAuthServer(
 	ctx context.Context,
 	authServers []string,
 ) (*discovery.AuthServerInfo, string) {
@@ -197,7 +197,7 @@ func (*RemoteAuthHandler) findValidAuthServer(
 // tryDiscoverFromWellKnown attempts to discover the actual OAuth issuer
 // by probing the server's well-known endpoints without validating issuer match
 // This is useful when the issuer differs from the server URL (e.g., Atlassian case)
-func (h *RemoteAuthHandler) tryDiscoverFromWellKnown(
+func (h *Handler) tryDiscoverFromWellKnown(
 	ctx context.Context,
 	remoteURL string,
 ) (string, []string, *discovery.AuthServerInfo, error) {

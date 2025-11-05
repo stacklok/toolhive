@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -77,11 +78,11 @@ func WithRemoteURL(remoteURL string) RunConfigBuilderOption {
 }
 
 // WithRemoteAuth sets the remote authentication configuration
-func WithRemoteAuth(config *RemoteAuthConfig) RunConfigBuilderOption {
+func WithRemoteAuth(config *remote.Config) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		if config == nil {
-			config = &RemoteAuthConfig{
-				CallbackPort: DefaultCallbackPort,
+			config = &remote.Config{
+				CallbackPort: remote.DefaultCallbackPort,
 			}
 		}
 		b.config.RemoteAuthConfig = config

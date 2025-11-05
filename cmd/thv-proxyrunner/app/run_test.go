@@ -1,10 +1,14 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/runner"
 )
 
 func TestRunCmdFlagsAndParsing(t *testing.T) {
@@ -206,6 +210,35 @@ func TestRunWithFileBasedConfigBehavior(t *testing.T) {
 		// Test that essential flags still exist for config file mode
 		k8sPodPatchFlag := cmd.Flag("k8s-pod-patch")
 		assert.NotNil(t, k8sPodPatchFlag, "k8s-pod-patch flag should exist for config file mode")
+	})
+
+	t.Run("EnvFileDir processing works with WithEnvFilesFromDirectory", func(t *testing.T) {
+		t.Parallel()
+
+		// This test verifies the pattern used in the fix for issue #2460
+		// It simulates what happens when Vault secrets are injected
+
+		// Create temp directory with mock Vault secret files
+		tmpDir := t.TempDir()
+		err := os.WriteFile(filepath.Join(tmpDir, "api-key"), []byte("API_KEY=secret123"), 0644)
+		require.NoError(t, err)
+		err = os.WriteFile(filepath.Join(tmpDir, "db-password"), []byte("DB_PASSWORD=dbpass456"), 0644)
+		require.NoError(t, err)
+
+		// Create a RunConfig with EnvFileDir set (this is what the operator does)
+		config := &runner.RunConfig{
+			EnvFileDir: tmpDir,
+			EnvVars:    map[string]string{"EXISTING": "value"},
+		}
+
+		// Call WithEnvFilesFromDirectory (this is what the fix does)
+		updatedConfig, err := config.WithEnvFilesFromDirectory(config.EnvFileDir)
+		require.NoError(t, err)
+
+		// Verify env vars from files were merged
+		assert.Equal(t, "value", updatedConfig.EnvVars["EXISTING"], "Existing env var should be preserved")
+		assert.Equal(t, "secret123", updatedConfig.EnvVars["API_KEY"], "API_KEY from file should be loaded")
+		assert.Equal(t, "dbpass456", updatedConfig.EnvVars["DB_PASSWORD"], "DB_PASSWORD from file should be loaded")
 	})
 }
 

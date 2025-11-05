@@ -177,17 +177,6 @@ func getVersion() string {
 	return "dev"
 }
 
-// mustGetIntFlag retrieves an integer flag value, panicking if retrieval fails.
-// This is safe for flags defined by the command itself since they should always be retrievable.
-func mustGetIntFlag(cmd *cobra.Command, name string) int {
-	val, err := cmd.Flags().GetInt(name)
-	if err != nil {
-		// This should never happen for properly defined flags
-		panic(fmt.Sprintf("failed to get int flag %s: %v", name, err))
-	}
-	return val
-}
-
 // loadAndValidateConfig loads and validates the vMCP configuration file
 func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	logger.Infof("Loading configuration from: %s", configPath)
@@ -318,11 +307,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	logger.Infof("Incoming authentication configured: %s", cfg.IncomingAuth.Type)
 
 	// Create server configuration with flags
+	// Cobra validates flag types at parse time, so these values are safe to use directly
+	host, _ := cmd.Flags().GetString("host")
+	port, _ := cmd.Flags().GetInt("port")
+
 	serverCfg := &vmcpserver.Config{
 		Name:            cfg.Name,
 		Version:         getVersion(),
-		Host:            cmd.Flag("host").Value.String(),
-		Port:            mustGetIntFlag(cmd, "port"),
+		Host:            host,
+		Port:            port,
 		AuthMiddleware:  authMiddleware,
 		AuthInfoHandler: authInfoHandler,
 	}

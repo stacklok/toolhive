@@ -10,6 +10,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -18,7 +19,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/oauth"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -225,7 +225,7 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 	}
 
 	// The client secret is in plain text format - migrate it
-	cliFormatSecret, err := oauth.ProcessOAuthClientSecret(config.Name, config.RemoteAuthConfig.ClientSecret)
+	cliFormatSecret, err := authoauth.ProcessOAuthClientSecret(config.Name, config.RemoteAuthConfig.ClientSecret)
 	if err != nil {
 		return fmt.Errorf("failed to process OAuth client secret: %w", err)
 	}

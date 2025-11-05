@@ -210,7 +210,7 @@ func TestCreateWorkload(t *testing.T) {
 			mockRetriever := makeMockRetriever(t,
 				"test-image",
 				"test-image",
-				&registry.ImageMetadata{Image: "test-image"},
+				&types.ImageMetadata{Image: "test-image"},
 				nil,
 			)
 
@@ -403,7 +403,7 @@ func TestUpdateWorkload(t *testing.T) {
 			mockRetriever := makeMockRetriever(t,
 				"test-image",
 				"test-image",
-				&registry.ImageMetadata{Image: "test-image"},
+				&types.ImageMetadata{Image: "test-image"},
 				nil,
 			)
 

@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 var searchCmd = &cobra.Command{
@@ -49,7 +50,7 @@ func searchCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	// Sort servers by name using the utility function
-	registry.SortServersByName(servers)
+	types.SortServersByName(servers)
 
 	// Output based on format
 	switch searchFormat {
@@ -63,7 +64,7 @@ func searchCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 // printJSONSearchResults prints servers in JSON format
-func printJSONSearchResults(servers []registry.ServerMetadata) error {
+func printJSONSearchResults(servers []types.ServerMetadata) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(servers, "", "  ")
 	if err != nil {
@@ -76,7 +77,7 @@ func printJSONSearchResults(servers []registry.ServerMetadata) error {
 }
 
 // printTextSearchResults prints servers in text format
-func printTextSearchResults(servers []registry.ServerMetadata) {
+func printTextSearchResults(servers []types.ServerMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTRANSPORT\tSTARS\tPULLS")

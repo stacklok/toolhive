@@ -9,11 +9,9 @@ import (
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 
 	"github.com/stacklok/toolhive/pkg/registry/api"
+	"github.com/stacklok/toolhive/pkg/registry/converters"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 )
-
-// NOTE: Using converters from converters.go (same package) to avoid circular dependency.
-// This is a TEMPORARY solution - converters are copied from toolhive-registry.
-// TODO: Move types to toolhive-registry and import converters as a library.
 
 // APIRegistryProvider provides registry data from an MCP Registry API endpoint
 // It queries the API on-demand for each operation, ensuring fresh data.
@@ -55,7 +53,7 @@ func NewAPIRegistryProvider(apiURL string, allowPrivateIp bool) (*APIRegistryPro
 // GetRegistry returns the registry data by fetching all servers from the API
 // This method queries the API and converts all servers to ToolHive format.
 // Note: This can be slow for large registries as it fetches everything.
-func (p *APIRegistryProvider) GetRegistry() (*Registry, error) {
+func (p *APIRegistryProvider) GetRegistry() (*types.Registry, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -72,22 +70,22 @@ func (p *APIRegistryProvider) GetRegistry() (*Registry, error) {
 	}
 
 	// Build Registry structure
-	registry := &Registry{
+	registry := &types.Registry{
 		Version:       "1.0.0",
 		LastUpdated:   time.Now().Format(time.RFC3339),
-		Servers:       make(map[string]*ImageMetadata),
-		RemoteServers: make(map[string]*RemoteServerMetadata),
-		Groups:        []*Group{},
+		Servers:       make(map[string]*types.ImageMetadata),
+		RemoteServers: make(map[string]*types.RemoteServerMetadata),
+		Groups:        []*types.Group{},
 	}
 
 	// Separate servers into container and remote
 	for _, server := range serverMetadata {
 		if server.IsRemote() {
-			if remoteServer, ok := server.(*RemoteServerMetadata); ok {
+			if remoteServer, ok := server.(*types.RemoteServerMetadata); ok {
 				registry.RemoteServers[remoteServer.Name] = remoteServer
 			}
 		} else {
-			if imageServer, ok := server.(*ImageMetadata); ok {
+			if imageServer, ok := server.(*types.ImageMetadata); ok {
 				registry.Servers[imageServer.Name] = imageServer
 			}
 		}
@@ -97,13 +95,13 @@ func (p *APIRegistryProvider) GetRegistry() (*Registry, error) {
 }
 
 // GetServer returns a specific server by name (queries API directly)
-func (p *APIRegistryProvider) GetServer(name string) (ServerMetadata, error) {
+func (p *APIRegistryProvider) GetServer(name string) (types.ServerMetadata, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Try direct API lookup first (supports both reverse-DNS and simple names)
 	// Build potential reverse-DNS name
-	reverseDNSName := BuildReverseDNSName(name)
+	reverseDNSName := converters.BuildReverseDNSName(name)
 
 	// Try the reverse-DNS format first
 	serverJSON, err := p.client.GetServer(ctx, reverseDNSName)
@@ -127,7 +125,7 @@ func (p *APIRegistryProvider) GetServer(name string) (ServerMetadata, error) {
 
 	// Find exact match in search results
 	for _, server := range servers {
-		simpleName := ExtractServerName(server.Name)
+		simpleName := converters.ExtractServerName(server.Name)
 		if simpleName == name || server.Name == name {
 			return ConvertServerJSON(server)
 		}
@@ -137,7 +135,7 @@ func (p *APIRegistryProvider) GetServer(name string) (ServerMetadata, error) {
 }
 
 // SearchServers searches for servers matching the query (queries API directly)
-func (p *APIRegistryProvider) SearchServers(query string) ([]ServerMetadata, error) {
+func (p *APIRegistryProvider) SearchServers(query string) ([]types.ServerMetadata, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -151,7 +149,7 @@ func (p *APIRegistryProvider) SearchServers(query string) ([]ServerMetadata, err
 }
 
 // ListServers returns all servers from the API
-func (p *APIRegistryProvider) ListServers() ([]ServerMetadata, error) {
+func (p *APIRegistryProvider) ListServers() ([]types.ServerMetadata, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -166,14 +164,14 @@ func (p *APIRegistryProvider) ListServers() ([]ServerMetadata, error) {
 // GetImageServer returns a specific container server by name (overrides BaseProvider)
 // This override is necessary because BaseProvider.GetImageServer calls p.GetServer,
 // which would call BaseProvider.GetServer instead of APIRegistryProvider.GetServer
-func (p *APIRegistryProvider) GetImageServer(name string) (*ImageMetadata, error) {
+func (p *APIRegistryProvider) GetImageServer(name string) (*types.ImageMetadata, error) {
 	server, err := p.GetServer(name)
 	if err != nil {
 		return nil, err
 	}
 
 	// Type assert to ImageMetadata
-	if img, ok := server.(*ImageMetadata); ok {
+	if img, ok := server.(*types.ImageMetadata); ok {
 		return img, nil
 	}
 
@@ -183,7 +181,7 @@ func (p *APIRegistryProvider) GetImageServer(name string) (*ImageMetadata, error
 // ConvertServerJSON converts an MCP Registry API ServerJSON to ToolHive ServerMetadata
 // Uses converters from converters.go (same package)
 // Note: Only handles OCI packages and remote servers, skips npm/pypi by design
-func ConvertServerJSON(serverJSON *v0.ServerJSON) (ServerMetadata, error) {
+func ConvertServerJSON(serverJSON *v0.ServerJSON) (types.ServerMetadata, error) {
 	if serverJSON == nil {
 		return nil, fmt.Errorf("serverJSON is nil")
 	}
@@ -191,17 +189,17 @@ func ConvertServerJSON(serverJSON *v0.ServerJSON) (ServerMetadata, error) {
 	// Determine if this is a remote server or container-based server
 	// Remote servers have the 'remotes' field populated
 	// Container servers have the 'packages' field populated
-	var result ServerMetadata
+	var result types.ServerMetadata
 	var err error
 
 	if len(serverJSON.Remotes) > 0 {
-		result, err = ServerJSONToRemoteServerMetadata(serverJSON)
+		result, err = converters.ServerJSONToRemoteServerMetadata(serverJSON)
 	} else if len(serverJSON.Packages) == 0 {
 		// Skip servers without packages or remotes (incomplete entries)
 		return nil, fmt.Errorf("server %s has no packages or remotes, skipping", serverJSON.Name)
 	} else {
 		// ServerJSONToImageMetadata only handles OCI packages, will error on npm/pypi
-		result, err = ServerJSONToImageMetadata(serverJSON)
+		result, err = converters.ServerJSONToImageMetadata(serverJSON)
 	}
 
 	if err != nil {
@@ -218,8 +216,8 @@ func ConvertServerJSON(serverJSON *v0.ServerJSON) (ServerMetadata, error) {
 // ConvertServersToMetadata converts a slice of ServerJSON to a slice of ServerMetadata
 // Skips servers that cannot be converted (e.g., incomplete entries)
 // Uses official converters from toolhive-registry package
-func ConvertServersToMetadata(servers []*v0.ServerJSON) ([]ServerMetadata, error) {
-	result := make([]ServerMetadata, 0, len(servers))
+func ConvertServersToMetadata(servers []*v0.ServerJSON) ([]types.ServerMetadata, error) {
+	result := make([]types.ServerMetadata, 0, len(servers))
 
 	for _, server := range servers {
 		metadata, err := ConvertServerJSON(server)

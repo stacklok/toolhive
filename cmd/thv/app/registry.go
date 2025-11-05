@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 	transtypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -64,7 +65,7 @@ func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 	}
 
 	// Sort servers by name using the utility function
-	registry.SortServersByName(servers)
+	types.SortServersByName(servers)
 
 	// Output based on format
 	switch registryFormat {
@@ -99,7 +100,7 @@ func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 // printJSONServers prints servers in JSON format
-func printJSONServers(servers []registry.ServerMetadata) error {
+func printJSONServers(servers []types.ServerMetadata) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(servers, "", "  ")
 	if err != nil {
@@ -112,7 +113,7 @@ func printJSONServers(servers []registry.ServerMetadata) error {
 }
 
 // printJSONServer prints a single server in JSON format
-func printJSONServer(server registry.ServerMetadata) error {
+func printJSONServer(server types.ServerMetadata) error {
 	jsonData, err := json.MarshalIndent(server, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
@@ -124,7 +125,7 @@ func printJSONServer(server registry.ServerMetadata) error {
 }
 
 // printTextServers prints servers in text format
-func printTextServers(servers []registry.ServerMetadata) {
+func printTextServers(servers []types.ServerMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTIER\tSTARS\tPULLS")
@@ -166,7 +167,7 @@ const (
 )
 
 // getServerType returns the type of server (container or remote)
-func getServerType(server registry.ServerMetadata) string {
+func getServerType(server types.ServerMetadata) string {
 	if server.IsRemote() {
 		return ServerTypeRemote
 	}
@@ -175,7 +176,7 @@ func getServerType(server registry.ServerMetadata) string {
 
 // printTextServerInfo prints detailed information about a server in text format
 // nolint:gocyclo
-func printTextServerInfo(name string, server registry.ServerMetadata) {
+func printTextServerInfo(name string, server types.ServerMetadata) {
 	fmt.Printf("Name: %s\n", server.GetName())
 	fmt.Printf("Type: %s\n", getServerType(server))
 	fmt.Printf("Description: %s\n", server.GetDescription())
@@ -186,7 +187,7 @@ func printTextServerInfo(name string, server registry.ServerMetadata) {
 	// Type-specific information
 	if !server.IsRemote() {
 		// Container server
-		if img, ok := server.(*registry.ImageMetadata); ok {
+		if img, ok := server.(*types.ImageMetadata); ok {
 			fmt.Printf("Image: %s\n", img.Image)
 			isHTTPTransport := img.Transport == transtypes.TransportTypeSSE.String() ||
 				img.Transport == transtypes.TransportTypeStreamableHTTP.String()
@@ -240,7 +241,7 @@ func printTextServerInfo(name string, server registry.ServerMetadata) {
 		}
 	} else {
 		// Remote server
-		if remote, ok := server.(*registry.RemoteServerMetadata); ok {
+		if remote, ok := server.(*types.RemoteServerMetadata); ok {
 			fmt.Printf("URL: %s\n", remote.URL)
 
 			// Print headers

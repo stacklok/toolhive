@@ -137,7 +137,7 @@ func TestConfigureTransport(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name              string
-		imageMetadata     *registry.ImageMetadata
+		imageMetadata     *types.ImageMetadata
 		expectedTransport string
 	}{
 		{
@@ -147,7 +147,7 @@ func TestConfigureTransport(t *testing.T) {
 		},
 		{
 			name: "metadata with empty transport returns SSE",
-			imageMetadata: &registry.ImageMetadata{
+			imageMetadata: &types.ImageMetadata{
 				BaseServerMetadata: registry.BaseServerMetadata{
 					Transport: "",
 				},
@@ -156,7 +156,7 @@ func TestConfigureTransport(t *testing.T) {
 		},
 		{
 			name: "metadata with stdio transport",
-			imageMetadata: &registry.ImageMetadata{
+			imageMetadata: &types.ImageMetadata{
 				BaseServerMetadata: registry.BaseServerMetadata{
 					Transport: "stdio",
 				},
@@ -165,7 +165,7 @@ func TestConfigureTransport(t *testing.T) {
 		},
 		{
 			name: "metadata with streamable-http transport",
-			imageMetadata: &registry.ImageMetadata{
+			imageMetadata: &types.ImageMetadata{
 				BaseServerMetadata: registry.BaseServerMetadata{
 					Transport: "streamable-http",
 				},
@@ -189,7 +189,7 @@ func TestPrepareEnvironmentVariables(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name          string
-		imageMetadata *registry.ImageMetadata
+		imageMetadata *types.ImageMetadata
 		userEnv       map[string]string
 		expected      map[string]string
 	}{
@@ -201,7 +201,7 @@ func TestPrepareEnvironmentVariables(t *testing.T) {
 		},
 		{
 			name: "metadata with defaults, no user env",
-			imageMetadata: &registry.ImageMetadata{
+			imageMetadata: &types.ImageMetadata{
 				EnvVars: []*registry.EnvVar{
 					{Name: "VAR1", Default: "default1"},
 					{Name: "VAR2", Default: "default2"},
@@ -215,7 +215,7 @@ func TestPrepareEnvironmentVariables(t *testing.T) {
 		},
 		{
 			name: "metadata with defaults, user overrides",
-			imageMetadata: &registry.ImageMetadata{
+			imageMetadata: &types.ImageMetadata{
 				EnvVars: []*registry.EnvVar{
 					{Name: "VAR1", Default: "default1"},
 					{Name: "VAR2", Default: "default2"},
@@ -243,7 +243,7 @@ func TestPrepareEnvironmentVariables(t *testing.T) {
 		},
 		{
 			name: "metadata with empty defaults ignored",
-			imageMetadata: &registry.ImageMetadata{
+			imageMetadata: &types.ImageMetadata{
 				EnvVars: []*registry.EnvVar{
 					{Name: "VAR1", Default: ""},
 					{Name: "VAR2", Default: "value2"},
@@ -281,7 +281,7 @@ func TestBuildServerConfig(t *testing.T) {
 	tests := []struct {
 		name          string
 		imageURL      string
-		imageMetadata *registry.ImageMetadata
+		imageMetadata *types.ImageMetadata
 		expectError   bool
 	}{
 		{
@@ -293,7 +293,7 @@ func TestBuildServerConfig(t *testing.T) {
 		{
 			name:     "valid config with metadata",
 			imageURL: "test/image:latest",
-			imageMetadata: &registry.ImageMetadata{
+			imageMetadata: &types.ImageMetadata{
 				BaseServerMetadata: registry.BaseServerMetadata{
 					Transport: "stdio",
 				},

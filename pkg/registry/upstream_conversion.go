@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 // ToolhiveExtensionKey is the key used for ToolHive-specific metadata in the x-publisher field
@@ -20,7 +21,7 @@ type ToolhivePublisherExtension struct {
 	// Tools is a list of tool names provided by this MCP server
 	Tools []string `json:"tools,omitempty" yaml:"tools,omitempty"`
 	// Metadata contains additional information about the server
-	Metadata *Metadata `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+	Metadata *types.Metadata `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 	// Tags are categorization labels for the server
 	Tags []string `json:"tags,omitempty" yaml:"tags,omitempty"`
 	// CustomMetadata allows for additional user-defined metadata
@@ -32,11 +33,11 @@ type ToolhivePublisherExtension struct {
 	// DockerTags lists the available Docker tags for this server image
 	DockerTags []string `json:"docker_tags,omitempty" yaml:"docker_tags,omitempty"`
 	// Provenance contains verification and signing metadata
-	Provenance *Provenance `json:"provenance,omitempty" yaml:"provenance,omitempty"`
+	Provenance *types.Provenance `json:"provenance,omitempty" yaml:"provenance,omitempty"`
 }
 
 // ConvertUpstreamToToolhive converts an upstream server detail to toolhive format
-func ConvertUpstreamToToolhive(upstream *UpstreamServerDetail) (ServerMetadata, error) {
+func ConvertUpstreamToToolhive(upstream *UpstreamServerDetail) (types.ServerMetadata, error) {
 	if upstream == nil {
 		return nil, fmt.Errorf("upstream server detail is nil")
 	}
@@ -56,9 +57,9 @@ func ConvertUpstreamToToolhive(upstream *UpstreamServerDetail) (ServerMetadata, 
 }
 
 // convertToRemoteServer converts upstream format to RemoteServerMetadata
-func convertToRemoteServer(upstream *UpstreamServerDetail, toolhiveExt *ToolhivePublisherExtension) *RemoteServerMetadata {
-	remote := &RemoteServerMetadata{
-		BaseServerMetadata: BaseServerMetadata{
+func convertToRemoteServer(upstream *UpstreamServerDetail, toolhiveExt *ToolhivePublisherExtension) *types.RemoteServerMetadata {
+	remote := &types.RemoteServerMetadata{
+		BaseServerMetadata: types.BaseServerMetadata{
 			Name:          upstream.Server.Name,
 			Description:   upstream.Server.Description,
 			Tier:          getStringOrDefault(toolhiveExt, func(t *ToolhivePublisherExtension) string { return t.Tier }, "Community"),
@@ -85,7 +86,7 @@ func convertToRemoteServer(upstream *UpstreamServerDetail, toolhiveExt *Toolhive
 }
 
 // convertToImageMetadata converts upstream format to ImageMetadata
-func convertToImageMetadata(upstream *UpstreamServerDetail, toolhiveExt *ToolhivePublisherExtension) (*ImageMetadata, error) {
+func convertToImageMetadata(upstream *UpstreamServerDetail, toolhiveExt *ToolhivePublisherExtension) (*types.ImageMetadata, error) {
 	if len(upstream.Server.Packages) == 0 {
 		return nil, fmt.Errorf("no packages found for container server")
 	}
@@ -103,8 +104,8 @@ func convertToImageMetadata(upstream *UpstreamServerDetail, toolhiveExt *Toolhiv
 		}
 	}
 
-	image := &ImageMetadata{
-		BaseServerMetadata: BaseServerMetadata{
+	image := &types.ImageMetadata{
+		BaseServerMetadata: types.BaseServerMetadata{
 			Name:          upstream.Server.Name,
 			Description:   upstream.Server.Description,
 			Tier:          getStringOrDefault(toolhiveExt, func(t *ToolhivePublisherExtension) string { return t.Tier }, "Community"),
@@ -130,7 +131,7 @@ func convertToImageMetadata(upstream *UpstreamServerDetail, toolhiveExt *Toolhiv
 }
 
 // ConvertToolhiveToUpstream converts toolhive format to upstream format
-func ConvertToolhiveToUpstream(server ServerMetadata) (*UpstreamServerDetail, error) {
+func ConvertToolhiveToUpstream(server types.ServerMetadata) (*UpstreamServerDetail, error) {
 	if server == nil {
 		return nil, fmt.Errorf("server metadata is nil")
 	}
@@ -165,7 +166,7 @@ func ConvertToolhiveToUpstream(server ServerMetadata) (*UpstreamServerDetail, er
 	}
 
 	if server.IsRemote() {
-		if remoteServer, ok := server.(*RemoteServerMetadata); ok {
+		if remoteServer, ok := server.(*types.RemoteServerMetadata); ok {
 			upstream.Server.Remotes = []UpstreamRemote{
 				{
 					TransportType: convertTransportToUpstream(remoteServer.Transport),
@@ -176,7 +177,7 @@ func ConvertToolhiveToUpstream(server ServerMetadata) (*UpstreamServerDetail, er
 			upstream.Server.Packages = convertEnvVarsToPackages(remoteServer.EnvVars)
 		}
 	} else {
-		if imageServer, ok := server.(*ImageMetadata); ok {
+		if imageServer, ok := server.(*types.ImageMetadata); ok {
 			toolhiveExt.TargetPort = imageServer.TargetPort
 			toolhiveExt.Permissions = imageServer.Permissions
 			toolhiveExt.DockerTags = imageServer.DockerTags
@@ -246,10 +247,10 @@ func convertTransportToUpstream(transport string) UpstreamTransportType {
 	}
 }
 
-func convertHeaders(headers []UpstreamKeyValueInput) []*Header {
-	result := make([]*Header, 0, len(headers))
+func convertHeaders(headers []UpstreamKeyValueInput) []*types.Header {
+	result := make([]*types.Header, 0, len(headers))
 	for _, h := range headers {
-		result = append(result, &Header{
+		result = append(result, &types.Header{
 			Name:        h.Name,
 			Description: h.Description,
 			Required:    h.IsRequired,
@@ -261,7 +262,7 @@ func convertHeaders(headers []UpstreamKeyValueInput) []*Header {
 	return result
 }
 
-func convertHeadersToUpstream(headers []*Header) []UpstreamKeyValueInput {
+func convertHeadersToUpstream(headers []*types.Header) []UpstreamKeyValueInput {
 	result := make([]UpstreamKeyValueInput, 0, len(headers))
 	for _, h := range headers {
 		result = append(result, UpstreamKeyValueInput{
@@ -276,10 +277,10 @@ func convertHeadersToUpstream(headers []*Header) []UpstreamKeyValueInput {
 	return result
 }
 
-func convertEnvironmentVariables(envVars []UpstreamKeyValueInput) []*EnvVar {
-	result := make([]*EnvVar, 0, len(envVars))
+func convertEnvironmentVariables(envVars []UpstreamKeyValueInput) []*types.EnvVar {
+	result := make([]*types.EnvVar, 0, len(envVars))
 	for _, ev := range envVars {
-		result = append(result, &EnvVar{
+		result = append(result, &types.EnvVar{
 			Name:        ev.Name,
 			Description: ev.Description,
 			Required:    ev.IsRequired,
@@ -290,7 +291,7 @@ func convertEnvironmentVariables(envVars []UpstreamKeyValueInput) []*EnvVar {
 	return result
 }
 
-func convertEnvVarsToUpstream(envVars []*EnvVar) []UpstreamKeyValueInput {
+func convertEnvVarsToUpstream(envVars []*types.EnvVar) []UpstreamKeyValueInput {
 	result := make([]UpstreamKeyValueInput, 0, len(envVars))
 	for _, ev := range envVars {
 		result = append(result, UpstreamKeyValueInput{
@@ -392,7 +393,7 @@ func getPackageEnvVars(packages []UpstreamPackage) []UpstreamKeyValueInput {
 	return nil
 }
 
-func convertEnvVarsToPackages(envVars []*EnvVar) []UpstreamPackage {
+func convertEnvVarsToPackages(envVars []*types.EnvVar) []UpstreamPackage {
 	if len(envVars) == 0 {
 		return nil
 	}
@@ -446,11 +447,11 @@ func getIntOrDefault[T any](ext *T, getter func(*T) int, defaultValue int) int {
 	return defaultValue
 }
 
-func getMetadataOrDefault(ext *ToolhivePublisherExtension) *Metadata {
+func getMetadataOrDefault(ext *ToolhivePublisherExtension) *types.Metadata {
 	if ext != nil && ext.Metadata != nil {
 		return ext.Metadata
 	}
-	return &Metadata{
+	return &types.Metadata{
 		Stars:       0,
 		Pulls:       0,
 		LastUpdated: time.Now().Format(time.RFC3339),
@@ -464,7 +465,7 @@ func getPermissionsOrDefault(ext *ToolhivePublisherExtension) *permissions.Profi
 	return nil
 }
 
-func getProvenanceOrDefault(ext *ToolhivePublisherExtension) *Provenance {
+func getProvenanceOrDefault(ext *ToolhivePublisherExtension) *types.Provenance {
 	if ext != nil && ext.Provenance != nil {
 		return ext.Provenance
 	}

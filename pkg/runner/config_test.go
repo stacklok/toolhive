@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -551,7 +552,7 @@ func TestRunConfig_WithAuthz(t *testing.T) {
 // mockEnvVarValidator implements the EnvVarValidator interface for testing
 type mockEnvVarValidator struct{}
 
-func (*mockEnvVarValidator) Validate(_ context.Context, _ *registry.ImageMetadata, _ *RunConfig, suppliedEnvVars map[string]string) (map[string]string, error) {
+func (*mockEnvVarValidator) Validate(_ context.Context, _ *regtypes.ImageMetadata, _ *RunConfig, suppliedEnvVars map[string]string) (map[string]string, error) {
 	// For testing, just return the supplied environment variables as-is
 	return suppliedEnvVars, nil
 }
@@ -565,7 +566,7 @@ func TestRunConfigBuilder(t *testing.T) {
 	cmdArgs := []string{"arg1", "arg2"}
 	name := "test-server"
 	imageURL := "test-image:latest"
-	imageMetadata := &registry.ImageMetadata{
+	imageMetadata := &regtypes.ImageMetadata{
 		BaseServerMetadata: registry.BaseServerMetadata{
 			Name:      "test-metadata-name",
 			Transport: "sse",
@@ -780,7 +781,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 		name               string
 		userTransport      string
 		userTargetPort     int
-		metadata           *registry.ImageMetadata
+		metadata           *regtypes.ImageMetadata
 		expectedTransport  types.TransportType
 		expectedTargetPort int
 	}{
@@ -788,7 +789,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 			name:           "Metadata transport used when user doesn't specify",
 			userTransport:  "",
 			userTargetPort: 0,
-			metadata: &registry.ImageMetadata{
+			metadata: &regtypes.ImageMetadata{
 				BaseServerMetadata: registry.BaseServerMetadata{
 					Transport: "streamable-http",
 				},
@@ -801,7 +802,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 			name:           "User transport overrides metadata",
 			userTransport:  "stdio",
 			userTargetPort: 0,
-			metadata: &registry.ImageMetadata{
+			metadata: &regtypes.ImageMetadata{
 				BaseServerMetadata: registry.BaseServerMetadata{
 					Transport: "sse",
 				},
@@ -814,7 +815,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 			name:           "User target port overrides metadata",
 			userTransport:  "sse",
 			userTargetPort: 4000,
-			metadata: &registry.ImageMetadata{
+			metadata: &regtypes.ImageMetadata{
 				BaseServerMetadata: registry.BaseServerMetadata{
 					Transport: "sse",
 				},
@@ -936,7 +937,7 @@ func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 	validator := &mockEnvVarValidator{}
 
 	userArgs := []string{"--user-arg1", "--user-arg2"}
-	metadata := &registry.ImageMetadata{
+	metadata := &regtypes.ImageMetadata{
 		Args: []string{"--metadata-arg1", "--metadata-arg2"},
 	}
 
@@ -991,7 +992,7 @@ func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 
 	// No user args provided
 	userArgs := []string{}
-	metadata := &registry.ImageMetadata{
+	metadata := &regtypes.ImageMetadata{
 		Args: []string{"--metadata-arg1", "--metadata-arg2"},
 	}
 
@@ -1112,7 +1113,7 @@ func TestRunConfigBuilder_FilesystemMCPScenario(t *testing.T) {
 	validator := &mockEnvVarValidator{}
 
 	// Simulate the filesystem MCP registry configuration
-	metadata := &registry.ImageMetadata{
+	metadata := &regtypes.ImageMetadata{
 		Args: []string{"/projects"}, // Default args from registry
 	}
 

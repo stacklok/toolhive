@@ -10,6 +10,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 const (
@@ -380,8 +381,8 @@ func (rr *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 
 	// Build response with both container and remote servers
 	response := listServersResponse{
-		Servers:       make([]*registry.ImageMetadata, 0, len(reg.Servers)),
-		RemoteServers: make([]*registry.RemoteServerMetadata, 0, len(reg.RemoteServers)),
+		Servers:       make([]*types.ImageMetadata, 0, len(reg.Servers)),
+		RemoteServers: make([]*types.RemoteServerMetadata, 0, len(reg.RemoteServers)),
 	}
 
 	// Add container servers
@@ -439,14 +440,14 @@ func (rr *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	// Build response based on server type
 	var response getServerResponse
 	if server.IsRemote() {
-		if remote, ok := server.(*registry.RemoteServerMetadata); ok {
+		if remote, ok := server.(*types.RemoteServerMetadata); ok {
 			response = getServerResponse{
 				RemoteServer: remote,
 				IsRemote:     true,
 			}
 		}
 	} else {
-		if img, ok := server.(*registry.ImageMetadata); ok {
+		if img, ok := server.(*types.ImageMetadata); ok {
 			response = getServerResponse{
 				Server:   img,
 				IsRemote: false,
@@ -507,7 +508,7 @@ type getRegistryResponse struct {
 	// Source of the registry (URL, file path, or empty string for built-in)
 	Source string `json:"source"`
 	// Full registry data
-	Registry *registry.Registry `json:"registry"`
+	Registry *types.Registry `json:"registry"`
 }
 
 // listServersResponse represents the response for listing servers in a registry
@@ -515,9 +516,9 @@ type getRegistryResponse struct {
 //	@Description	Response containing a list of servers
 type listServersResponse struct {
 	// List of container servers in the registry
-	Servers []*registry.ImageMetadata `json:"servers"`
+	Servers []*types.ImageMetadata `json:"servers"`
 	// List of remote servers in the registry (if any)
-	RemoteServers []*registry.RemoteServerMetadata `json:"remote_servers,omitempty"`
+	RemoteServers []*types.RemoteServerMetadata `json:"remote_servers,omitempty"`
 }
 
 // getServerResponse represents the response for getting a server from a registry
@@ -525,9 +526,9 @@ type listServersResponse struct {
 //	@Description	Response containing server details
 type getServerResponse struct {
 	// Container server details (if it's a container server)
-	Server *registry.ImageMetadata `json:"server,omitempty"`
+	Server *types.ImageMetadata `json:"server,omitempty"`
 	// Remote server details (if it's a remote server)
-	RemoteServer *registry.RemoteServerMetadata `json:"remote_server,omitempty"`
+	RemoteServer *types.RemoteServerMetadata `json:"remote_server,omitempty"`
 	// Indicates if this is a remote server
 	IsRemote bool `json:"is_remote"`
 }

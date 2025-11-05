@@ -1,29 +1,22 @@
-// Package registry provides conversion functions from upstream MCP ServerJSON format
+// Package converters provides conversion functions from upstream MCP ServerJSON format
 // to toolhive ImageMetadata/RemoteServerMetadata formats.
-//
-// TEMPORARY COPY: This file contains converters copied from github.com/stacklok/toolhive-registry
-// to avoid circular dependency issues. This is a temporary solution.
-//
-// TODO: Refactor to move types to toolhive-registry and import converters from there.
-// See: https://github.com/stacklok/toolhive/issues/XXXX
-package registry
+package converters
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
-	"strings"
 
 	upstream "github.com/modelcontextprotocol/registry/pkg/api/v0"
 	"github.com/modelcontextprotocol/registry/pkg/model"
-
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 // ServerJSONToImageMetadata converts an upstream ServerJSON (with OCI packages) to toolhive ImageMetadata
 // This function only handles OCI packages and will error if there are multiple OCI packages
-func ServerJSONToImageMetadata(serverJSON *upstream.ServerJSON) (*ImageMetadata, error) {
+func ServerJSONToImageMetadata(serverJSON *upstream.ServerJSON) (*types.ImageMetadata, error) {
 	if serverJSON == nil {
 		return nil, fmt.Errorf("serverJSON cannot be nil")
 	}
@@ -33,15 +26,9 @@ func ServerJSONToImageMetadata(serverJSON *upstream.ServerJSON) (*ImageMetadata,
 		return nil, err
 	}
 
-	// Use Title if present, otherwise extract from reverse-DNS Name
-	name := serverJSON.Title
-	if name == "" {
-		name = ExtractServerName(serverJSON.Name)
-	}
-
-	imageMetadata := &ImageMetadata{
-		BaseServerMetadata: BaseServerMetadata{
-			Name:        name,
+	imageMetadata := &types.ImageMetadata{
+		BaseServerMetadata: types.BaseServerMetadata{
+			Name:        serverJSON.Title,
 			Description: serverJSON.Description,
 			Transport:   pkg.Transport.Type,
 		},
@@ -54,7 +41,7 @@ func ServerJSONToImageMetadata(serverJSON *upstream.ServerJSON) (*ImageMetadata,
 	}
 
 	// Convert environment variables
-	imageMetadata.EnvVars = convertMCPEnvironmentVariables(pkg.EnvironmentVariables)
+	imageMetadata.EnvVars = convertEnvironmentVariables(pkg.EnvironmentVariables)
 
 	// Extract target port from transport URL if present
 	imageMetadata.TargetPort = extractTargetPort(pkg.Transport.URL, serverJSON.Name)
@@ -97,15 +84,15 @@ func extractSingleOCIPackage(serverJSON *upstream.ServerJSON) (model.Package, er
 	return ociPackages[0], nil
 }
 
-// convertMCPEnvironmentVariables converts model.KeyValueInput to EnvVar (from MCP Registry API)
-func convertMCPEnvironmentVariables(envVars []model.KeyValueInput) []*EnvVar {
+// convertEnvironmentVariables converts model.KeyValueInput to types.EnvVar
+func convertEnvironmentVariables(envVars []model.KeyValueInput) []*types.EnvVar {
 	if len(envVars) == 0 {
 		return nil
 	}
 
-	result := make([]*EnvVar, 0, len(envVars))
+	result := make([]*types.EnvVar, 0, len(envVars))
 	for _, envVar := range envVars {
-		result = append(result, &EnvVar{
+		result = append(result, &types.EnvVar{
 			Name:        envVar.Name,
 			Description: envVar.Description,
 			Required:    envVar.IsRequired,
@@ -145,7 +132,7 @@ func extractTargetPort(transportURL, serverName string) int {
 
 // ServerJSONToRemoteServerMetadata converts an upstream ServerJSON (with remotes) to toolhive RemoteServerMetadata
 // This function extracts remote server data and reconstructs RemoteServerMetadata format
-func ServerJSONToRemoteServerMetadata(serverJSON *upstream.ServerJSON) (*RemoteServerMetadata, error) {
+func ServerJSONToRemoteServerMetadata(serverJSON *upstream.ServerJSON) (*types.RemoteServerMetadata, error) {
 	if serverJSON == nil {
 		return nil, fmt.Errorf("serverJSON cannot be nil")
 	}
@@ -156,15 +143,9 @@ func ServerJSONToRemoteServerMetadata(serverJSON *upstream.ServerJSON) (*RemoteS
 
 	remote := serverJSON.Remotes[0] // Use first remote
 
-	// Use Title if present, otherwise extract from reverse-DNS Name
-	name := serverJSON.Title
-	if name == "" {
-		name = ExtractServerName(serverJSON.Name)
-	}
-
-	remoteMetadata := &RemoteServerMetadata{
-		BaseServerMetadata: BaseServerMetadata{
-			Name:        name,
+	remoteMetadata := &types.RemoteServerMetadata{
+		BaseServerMetadata: types.BaseServerMetadata{
+			Name:        serverJSON.Title,
 			Description: serverJSON.Description,
 			Transport:   remote.Type,
 		},
@@ -178,9 +159,9 @@ func ServerJSONToRemoteServerMetadata(serverJSON *upstream.ServerJSON) (*RemoteS
 
 	// Convert headers
 	if len(remote.Headers) > 0 {
-		remoteMetadata.Headers = make([]*Header, 0, len(remote.Headers))
+		remoteMetadata.Headers = make([]*types.Header, 0, len(remote.Headers))
 		for _, header := range remote.Headers {
-			remoteMetadata.Headers = append(remoteMetadata.Headers, &Header{
+			remoteMetadata.Headers = append(remoteMetadata.Headers, &types.Header{
 				Name:        header.Name,
 				Description: header.Description,
 				Required:    header.IsRequired,
@@ -196,7 +177,7 @@ func ServerJSONToRemoteServerMetadata(serverJSON *upstream.ServerJSON) (*RemoteS
 }
 
 // extractImageExtensions extracts publisher-provided extensions into ImageMetadata
-func extractImageExtensions(serverJSON *upstream.ServerJSON, imageMetadata *ImageMetadata) {
+func extractImageExtensions(serverJSON *upstream.ServerJSON, imageMetadata *types.ImageMetadata) {
 	extensions := getStacklokExtensions(serverJSON)
 	if extensions == nil {
 		return
@@ -228,7 +209,7 @@ func getStacklokExtensions(serverJSON *upstream.ServerJSON) map[string]interface
 }
 
 // extractBasicImageFields extracts basic string and slice fields
-func extractBasicImageFields(extensions map[string]interface{}, imageMetadata *ImageMetadata) {
+func extractBasicImageFields(extensions map[string]interface{}, imageMetadata *types.ImageMetadata) {
 	if status, ok := extensions["status"].(string); ok {
 		imageMetadata.Status = status
 	}
@@ -244,13 +225,13 @@ func extractBasicImageFields(extensions map[string]interface{}, imageMetadata *I
 }
 
 // extractImageMetadataField extracts the metadata object (stars, pulls, last_updated)
-func extractImageMetadataField(extensions map[string]interface{}, imageMetadata *ImageMetadata) {
+func extractImageMetadataField(extensions map[string]interface{}, imageMetadata *types.ImageMetadata) {
 	metadataData, ok := extensions["metadata"].(map[string]interface{})
 	if !ok {
 		return
 	}
 
-	imageMetadata.Metadata = &Metadata{}
+	imageMetadata.Metadata = &types.Metadata{}
 	if stars, ok := metadataData["stars"].(float64); ok {
 		imageMetadata.Metadata.Stars = int(stars)
 	}
@@ -263,7 +244,7 @@ func extractImageMetadataField(extensions map[string]interface{}, imageMetadata 
 }
 
 // extractComplexImageFields extracts complex fields (args, permissions, provenance)
-func extractComplexImageFields(extensions map[string]interface{}, imageMetadata *ImageMetadata) {
+func extractComplexImageFields(extensions map[string]interface{}, imageMetadata *types.ImageMetadata) {
 	// Extract args (fallback if PackageArguments wasn't used)
 	if len(imageMetadata.Args) == 0 {
 		if argsData, ok := extensions["args"].([]interface{}); ok {
@@ -278,12 +259,12 @@ func extractComplexImageFields(extensions map[string]interface{}, imageMetadata 
 
 	// Extract provenance using JSON round-trip
 	if provData, ok := extensions["provenance"]; ok {
-		imageMetadata.Provenance = remarshalToType[*Provenance](provData)
+		imageMetadata.Provenance = remarshalToType[*types.Provenance](provData)
 	}
 }
 
 // extractRemoteExtensions extracts publisher-provided extensions into RemoteServerMetadata
-func extractRemoteExtensions(serverJSON *upstream.ServerJSON, remoteMetadata *RemoteServerMetadata) {
+func extractRemoteExtensions(serverJSON *upstream.ServerJSON, remoteMetadata *types.RemoteServerMetadata) {
 	if serverJSON.Meta == nil || serverJSON.Meta.PublisherProvided == nil {
 		return
 	}
@@ -314,7 +295,7 @@ func extractRemoteExtensions(serverJSON *upstream.ServerJSON, remoteMetadata *Re
 			remoteMetadata.Tags = interfaceSliceToStringSlice(tagsData)
 		}
 		if metadataData, ok := extensions["metadata"].(map[string]interface{}); ok {
-			remoteMetadata.Metadata = &Metadata{}
+			remoteMetadata.Metadata = &types.Metadata{}
 			if stars, ok := metadataData["stars"].(float64); ok {
 				remoteMetadata.Metadata.Stars = int(stars)
 			}
@@ -328,7 +309,7 @@ func extractRemoteExtensions(serverJSON *upstream.ServerJSON, remoteMetadata *Re
 
 		// Extract OAuth config using JSON round-trip
 		if oauthData, ok := extensions["oauth_config"]; ok {
-			remoteMetadata.OAuthConfig = remarshalToType[*OAuthConfig](oauthData)
+			remoteMetadata.OAuthConfig = remarshalToType[*types.OAuthConfig](oauthData)
 		}
 
 		break // Only process first entry
@@ -367,34 +348,4 @@ func flattenPackageArguments(args []model.Argument) []string {
 		}
 	}
 	return result
-}
-
-// interfaceSliceToStringSlice converts []interface{} to []string
-func interfaceSliceToStringSlice(input []interface{}) []string {
-	result := make([]string, 0, len(input))
-	for _, item := range input {
-		if str, ok := item.(string); ok {
-			result = append(result, str)
-		}
-	}
-	return result
-}
-
-// ExtractServerName extracts the simple server name from a reverse-DNS format name
-// Example: "io.github.stacklok/fetch" -> "fetch"
-func ExtractServerName(reverseDNSName string) string {
-	parts := strings.Split(reverseDNSName, "/")
-	if len(parts) == 2 {
-		return parts[1]
-	}
-	return reverseDNSName
-}
-
-// BuildReverseDNSName builds a reverse-DNS format name from a simple name
-// Example: "fetch" -> "io.github.stacklok/fetch"
-func BuildReverseDNSName(simpleName string) string {
-	if strings.Contains(simpleName, "/") {
-		return simpleName // Already in reverse-DNS format
-	}
-	return "io.github.stacklok/" + simpleName
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/validation"
@@ -422,7 +423,7 @@ func groupRunCmdFunc(cmd *cobra.Command, args []string) error {
 
 // validateGroupRunPreconditions validates all conditions before making any changes
 func validateGroupRunPreconditions(ctx context.Context, groupName string,
-	registryGroup *registry.Group, secrets []string, envVars []string) error {
+	registryGroup *types.Group, secrets []string, envVars []string) error {
 	if err := validateRuntimeGroupDoesNotExist(ctx, groupName); err != nil {
 		return err
 	}
@@ -453,7 +454,7 @@ func validateRuntimeGroupDoesNotExist(ctx context.Context, groupName string) err
 }
 
 // validateServersDoNotExist checks that no servers in the group already exist as workloads
-func validateServersDoNotExist(ctx context.Context, registryGroup *registry.Group) error {
+func validateServersDoNotExist(ctx context.Context, registryGroup *types.Group) error {
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create container runtime: %w", err)
@@ -489,7 +490,7 @@ func validateServersDoNotExist(ctx context.Context, registryGroup *registry.Grou
 }
 
 // validateSecretsFormat validates all secrets have correct format and target existing servers
-func validateSecretsFormat(secrets []string, registryGroup *registry.Group) error {
+func validateSecretsFormat(secrets []string, registryGroup *types.Group) error {
 	for _, secret := range secrets {
 		if err := validateSecretFormat(secret, registryGroup); err != nil {
 			return err
@@ -499,7 +500,7 @@ func validateSecretsFormat(secrets []string, registryGroup *registry.Group) erro
 }
 
 // validateEnvVarsFormat validates all environment variables have correct format and target existing servers
-func validateEnvVarsFormat(envVars []string, registryGroup *registry.Group) error {
+func validateEnvVarsFormat(envVars []string, registryGroup *types.Group) error {
 	for _, envVar := range envVars {
 		if err := validateEnvVarFormat(envVar, registryGroup); err != nil {
 			return err
@@ -510,7 +511,7 @@ func validateEnvVarsFormat(envVars []string, registryGroup *registry.Group) erro
 
 // deployServer deploys a single server using the same path as the normal run command
 func deployServer(ctx context.Context, serverName string,
-	serverMetadata *registry.ImageMetadata, groupName string, secrets []string, envVars []string, cmd *cobra.Command) error {
+	serverMetadata *types.ImageMetadata, groupName string, secrets []string, envVars []string, cmd *cobra.Command) error {
 
 	// Filter secrets and env vars for this specific server
 	serverSecrets := filterSecretsForServer(secrets, serverName)
@@ -564,7 +565,7 @@ func deployRemoteServer(ctx context.Context, serverName string,
 }
 
 // validateSecretFormat validates secret format and checks if target server exists in the group
-func validateSecretFormat(secret string, registryGroup *registry.Group) error {
+func validateSecretFormat(secret string, registryGroup *types.Group) error {
 	// Expected format: NAME,target=SERVER_NAME.TARGET
 	parts := strings.Split(secret, ",target=")
 	if len(parts) != 2 {
@@ -603,7 +604,7 @@ func validateSecretFormat(secret string, registryGroup *registry.Group) error {
 }
 
 // validateEnvVarFormat validates environment variable format and checks if target server exists in the group
-func validateEnvVarFormat(envVar string, registryGroup *registry.Group) error {
+func validateEnvVarFormat(envVar string, registryGroup *types.Group) error {
 	// Expected format: SERVER_NAME.KEY=VALUE
 	parts := strings.Split(envVar, "=")
 	if len(parts) < 2 {

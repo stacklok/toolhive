@@ -33,7 +33,7 @@ func TestHandler_SearchRegistry_WithMocks(t *testing.T) {
 			name:  "successful search with results",
 			query: "test",
 			mockServers: []registry.ServerMetadata{
-				&registry.ImageMetadata{
+				&types.ImageMetadata{
 					BaseServerMetadata: registry.BaseServerMetadata{
 						Name:        "test-server",
 						Description: "Test server description",
@@ -43,7 +43,7 @@ func TestHandler_SearchRegistry_WithMocks(t *testing.T) {
 					},
 					Image: "test/image:latest",
 				},
-				&registry.ImageMetadata{
+				&types.ImageMetadata{
 					BaseServerMetadata: registry.BaseServerMetadata{
 						Name:        "another-test",
 						Description: "Another test server",
@@ -56,7 +56,7 @@ func TestHandler_SearchRegistry_WithMocks(t *testing.T) {
 				m.EXPECT().
 					SearchServers("test").
 					Return([]registry.ServerMetadata{
-						&registry.ImageMetadata{
+						&types.ImageMetadata{
 							BaseServerMetadata: registry.BaseServerMetadata{
 								Name:        "test-server",
 								Description: "Test server description",
@@ -66,7 +66,7 @@ func TestHandler_SearchRegistry_WithMocks(t *testing.T) {
 							},
 							Image: "test/image:latest",
 						},
-						&registry.ImageMetadata{
+						&types.ImageMetadata{
 							BaseServerMetadata: registry.BaseServerMetadata{
 								Name:        "another-test",
 								Description: "Another test server",

@@ -49,14 +49,8 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 	logger.Debugf("Querying capabilities from backend %s", backend.ID)
 
 	// Create a BackendTarget from the Backend
-	target := &vmcp.BackendTarget{
-		WorkloadID:    backend.ID,
-		WorkloadName:  backend.Name,
-		BaseURL:       backend.BaseURL,
-		TransportType: backend.TransportType,
-		HealthStatus:  backend.HealthStatus,
-		Metadata:      backend.Metadata,
-	}
+	// Use BackendToTarget helper to ensure all fields (including auth) are copied
+	target := vmcp.BackendToTarget(&backend)
 
 	// Query capabilities using the backend client
 	capabilities, err := a.backendClient.ListCapabilities(ctx, target)

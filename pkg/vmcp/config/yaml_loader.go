@@ -78,9 +78,15 @@ type rawOutgoingAuth struct {
 }
 
 type rawBackendAuthStrategy struct {
-	Type           string                 `yaml:"type"`
-	TokenExchange  *rawTokenExchangeAuth  `yaml:"token_exchange"`
-	ServiceAccount *rawServiceAccountAuth `yaml:"service_account"`
+	Type            string                  `yaml:"type"`
+	HeaderInjection *rawHeaderInjectionAuth `yaml:"header_injection"`
+	TokenExchange   *rawTokenExchangeAuth   `yaml:"token_exchange"`
+	ServiceAccount  *rawServiceAccountAuth  `yaml:"service_account"`
+}
+
+type rawHeaderInjectionAuth struct {
+	HeaderName  string `yaml:"header_name"`
+	HeaderValue string `yaml:"header_value"`
 }
 
 type rawTokenExchangeAuth struct {
@@ -304,6 +310,19 @@ func (*YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*B
 	}
 
 	switch raw.Type {
+	case "header_injection":
+		if raw.HeaderInjection == nil {
+			return nil, fmt.Errorf("header_injection configuration is required")
+		}
+
+		strategy.Metadata = map[string]any{
+			"header_name":  raw.HeaderInjection.HeaderName,
+			"header_value": raw.HeaderInjection.HeaderValue,
+		}
+
+	case "unauthenticated":
+		// No metadata required for unauthenticated strategy
+
 	case "token_exchange":
 		if raw.TokenExchange == nil {
 			return nil, fmt.Errorf("token_exchange configuration is required")

@@ -35,7 +35,7 @@ type BackendTarget struct {
 	OriginalCapabilityName string
 
 	// AuthStrategy identifies the authentication strategy for this backend.
-	// The actual authentication is handled by OutgoingAuthenticator interface.
+	// The actual authentication is handled by OutgoingAuthRegistry interface.
 	// Examples: "pass_through", "token_exchange", "client_credentials", "oauth_proxy"
 	AuthStrategy string
 

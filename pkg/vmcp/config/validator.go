@@ -169,8 +169,10 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *Backend
 	}
 
 	validTypes := []string{
-		"pass_through", "token_exchange", "client_credentials",
-		"service_account", "header_injection", "oauth_proxy",
+		"unauthenticated", "header_injection",
+		// TODO: Add more as strategies are implemented:
+		// "pass_through", "token_exchange", "client_credentials",
+		// "service_account", "oauth_proxy",
 	}
 	if !contains(validTypes, strategy.Type) {
 		return fmt.Errorf("type must be one of: %s", strings.Join(validTypes, ", "))
@@ -194,9 +196,12 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *Backend
 		}
 
 	case "header_injection":
-		// Header injection requires header name and value/format
+		// Header injection requires header name and value
 		if _, ok := strategy.Metadata["header_name"]; !ok {
 			return fmt.Errorf("header_injection requires metadata field: header_name")
+		}
+		if _, ok := strategy.Metadata["header_value"]; !ok {
+			return fmt.Errorf("header_injection requires metadata field: header_value")
 		}
 	}
 

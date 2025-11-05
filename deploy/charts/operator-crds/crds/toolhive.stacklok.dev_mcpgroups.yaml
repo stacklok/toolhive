@@ -49,12 +49,6 @@ spec:
               description:
                 description: Description provides human-readable context
                 type: string
-              registeredClients:
-                description: RegisteredClients lists the client names that are registered
-                  with this group
-                items:
-                  type: string
-                type: array
             type: object
           status:
             description: MCPGroupStatus defines observed state

@@ -1,4 +1,4 @@
-// Package oauth contains the OAuth management logic for ToolHive.
+// Package oauth contains OAuth/OIDC protocol implementation for ToolHive.
 package oauth
 
 import (

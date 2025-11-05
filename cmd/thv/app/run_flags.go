@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/cli"
 	cfg "github.com/stacklok/toolhive/pkg/config"
@@ -17,7 +18,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/oauth"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -854,5 +854,5 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 
 // processOAuthClientSecret processes an OAuth client secret, converting plain text to secret reference if needed
 func processOAuthClientSecret(clientSecret, workloadName string) (string, error) {
-	return oauth.ProcessOAuthClientSecret(workloadName, clientSecret)
+	return authoauth.ProcessOAuthClientSecret(workloadName, clientSecret)
 }

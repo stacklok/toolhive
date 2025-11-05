@@ -9,10 +9,6 @@ type MCPGroupSpec struct {
 	// Description provides human-readable context
 	// +optional
 	Description string `json:"description,omitempty"`
-
-	// RegisteredClients lists the client names that are registered with this group
-	// +optional
-	RegisteredClients []string `json:"registeredClients,omitempty"`
 }
 
 // MCPGroupStatus defines observed state

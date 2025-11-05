@@ -55,9 +55,7 @@ func (m *crdManager) Create(ctx context.Context, name string) error {
 			Name:      name,
 			Namespace: m.namespace,
 		},
-		Spec: mcpv1alpha1.MCPGroupSpec{
-			RegisteredClients: []string{},
-		},
+		Spec: mcpv1alpha1.MCPGroupSpec{},
 	}
 
 	if err := m.k8sClient.Create(ctx, mcpGroup); err != nil {
@@ -143,107 +141,13 @@ func (m *crdManager) Exists(ctx context.Context, name string) (bool, error) {
 	return true, nil
 }
 
-// RegisterClients registers multiple clients with multiple groups.
+// In Kubernetes, client configuration management is not applicable, so this is a no-op.
 func (m *crdManager) RegisterClients(ctx context.Context, groupNames []string, clientNames []string) error {
-	for _, groupName := range groupNames {
-		// Get the existing MCPGroup
-		mcpGroup := &mcpv1alpha1.MCPGroup{}
-		err := m.k8sClient.Get(ctx, types.NamespacedName{
-			Name:      groupName,
-			Namespace: m.namespace,
-		}, mcpGroup)
-
-		if err != nil {
-			if errors.IsNotFound(err) {
-				return thverrors.NewGroupNotFoundError(fmt.Sprintf("group '%s' not found", groupName), err)
-			}
-			return fmt.Errorf("failed to get MCPGroup %s: %w", groupName, err)
-		}
-
-		groupModified := false
-		currentClients := mcpGroup.Spec.RegisteredClients
-		if currentClients == nil {
-			currentClients = []string{}
-		}
-
-		for _, clientName := range clientNames {
-			// Check if client is already registered
-			alreadyRegistered := false
-			for _, existingClient := range currentClients {
-				if existingClient == clientName {
-					alreadyRegistered = true
-					break
-				}
-			}
-
-			if alreadyRegistered {
-				logger.Infof("Client %s is already registered with group %s, skipping", clientName, groupName)
-				continue
-			}
-
-			// Add the client to the group
-			currentClients = append(currentClients, clientName)
-			groupModified = true
-			logger.Infof("Successfully registered client %s with group %s", clientName, groupName)
-		}
-
-		// Only update if the group was actually modified
-		if groupModified {
-			mcpGroup.Spec.RegisteredClients = currentClients
-			if err := m.k8sClient.Update(ctx, mcpGroup); err != nil {
-				return fmt.Errorf("failed to update MCPGroup %s: %w", groupName, err)
-			}
-		}
-	}
-
 	return nil
 }
 
-// UnregisterClients removes multiple clients from multiple groups.
+// In Kubernetes, client configuration management is not applicable, so this is a no-op.
 func (m *crdManager) UnregisterClients(ctx context.Context, groupNames []string, clientNames []string) error {
-	for _, groupName := range groupNames {
-		// Get the existing MCPGroup
-		mcpGroup := &mcpv1alpha1.MCPGroup{}
-		err := m.k8sClient.Get(ctx, types.NamespacedName{
-			Name:      groupName,
-			Namespace: m.namespace,
-		}, mcpGroup)
-
-		if err != nil {
-			if errors.IsNotFound(err) {
-				return thverrors.NewGroupNotFoundError(fmt.Sprintf("group '%s' not found", groupName), err)
-			}
-			return fmt.Errorf("failed to get MCPGroup %s: %w", groupName, err)
-		}
-
-		groupModified := false
-		currentClients := mcpGroup.Spec.RegisteredClients
-		if currentClients == nil {
-			currentClients = []string{}
-		}
-
-		for _, clientName := range clientNames {
-			// Find and remove the client from the group
-			for i, existingClient := range currentClients {
-				if existingClient == clientName {
-					// Remove client from slice
-					currentClients = append(currentClients[:i], currentClients[i+1:]...)
-					groupModified = true
-					logger.Infof("Successfully unregistered client %s from group %s", clientName, groupName)
-					break
-				}
-			}
-		}
-
-		// Only update if the group was actually modified
-		if groupModified {
-			mcpGroup.Spec.RegisteredClients = currentClients
-			if err := m.k8sClient.Update(ctx, mcpGroup); err != nil {
-				return fmt.Errorf("failed to update MCPGroup %s: %w", groupName, err)
-			}
-		}
-	}
-
 	return nil
 }
 
@@ -258,13 +162,9 @@ func mcpGroupListToGroups(mcpGroupList *mcpv1alpha1.MCPGroupList) []*Group {
 
 // mcpGroupToGroup converts an MCPGroup CRD to a Group
 func mcpGroupToGroup(mcpGroup *mcpv1alpha1.MCPGroup) *Group {
-	registeredClients := mcpGroup.Spec.RegisteredClients
-	if registeredClients == nil {
-		registeredClients = []string{}
-	}
-
+	// In Kubernetes, RegisteredClients is not applicable - always return empty slice
 	return &Group{
 		Name:              mcpGroup.Name,
-		RegisteredClients: registeredClients,
+		RegisteredClients: []string{},
 	}
 }

@@ -66,9 +66,7 @@ func TestCRDManager_Create(t *testing.T) {
 						Name:      "existinggroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{},
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 			},
 			expectError: true,
@@ -145,15 +143,13 @@ func TestCRDManager_Get(t *testing.T) {
 						Name:      "testgroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{"client1", "client2"},
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
 			expected: &Group{
 				Name:              "testgroup",
-				RegisteredClients: []string{"client1", "client2"},
+				RegisteredClients: []string{},
 			},
 		},
 		{
@@ -172,9 +168,7 @@ func TestCRDManager_Get(t *testing.T) {
 						Name:      "emptygroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: nil,
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
@@ -234,27 +228,21 @@ func TestCRDManager_List(t *testing.T) {
 						Name:      "group1",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{"client1"},
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 				&mcpv1alpha1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "group2",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{"client2", "client3"},
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 				&mcpv1alpha1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "agroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{},
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 			},
 			expected: []*Group{
@@ -264,11 +252,11 @@ func TestCRDManager_List(t *testing.T) {
 				},
 				{
 					Name:              "group1",
-					RegisteredClients: []string{"client1"},
+					RegisteredClients: []string{},
 				},
 				{
 					Name:              "group2",
-					RegisteredClients: []string{"client2", "client3"},
+					RegisteredClients: []string{},
 				},
 			},
 		},
@@ -313,9 +301,7 @@ func TestCRDManager_Delete(t *testing.T) {
 						Name:      "testgroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{},
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
@@ -380,9 +366,7 @@ func TestCRDManager_Exists(t *testing.T) {
 						Name:      "testgroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{},
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 			},
 			expected:    true,
@@ -425,10 +409,9 @@ func TestCRDManager_RegisterClients(t *testing.T) {
 		clientNames []string
 		setupObjs   []client.Object
 		expectError bool
-		verify      func(*testing.T, client.Client, []string, []string)
 	}{
 		{
-			name:        "register clients to single group",
+			name:        "register clients to single group (no-op)",
 			groupNames:  []string{"testgroup"},
 			clientNames: []string{"client1", "client2"},
 			setupObjs: []client.Object{
@@ -437,26 +420,13 @@ func TestCRDManager_RegisterClients(t *testing.T) {
 						Name:      "testgroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{},
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
-			verify: func(t *testing.T, fakeClient client.Client, groupNames, clientNames []string) {
-				t.Helper()
-				ctx := context.Background()
-				mcpGroup := &mcpv1alpha1.MCPGroup{}
-				err := fakeClient.Get(ctx, client.ObjectKey{
-					Name:      groupNames[0],
-					Namespace: "default",
-				}, mcpGroup)
-				require.NoError(t, err)
-				assert.ElementsMatch(t, clientNames, mcpGroup.Spec.RegisteredClients)
-			},
 		},
 		{
-			name:        "register clients to multiple groups",
+			name:        "register clients to multiple groups (no-op)",
 			groupNames:  []string{"group1", "group2"},
 			clientNames: []string{"client1"},
 			setupObjs: []client.Object{
@@ -465,69 +435,24 @@ func TestCRDManager_RegisterClients(t *testing.T) {
 						Name:      "group1",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{},
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 				&mcpv1alpha1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "group2",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{},
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
-			verify: func(t *testing.T, fakeClient client.Client, groupNames, clientNames []string) {
-				t.Helper()
-				ctx := context.Background()
-				for _, groupName := range groupNames {
-					mcpGroup := &mcpv1alpha1.MCPGroup{}
-					err := fakeClient.Get(ctx, client.ObjectKey{
-						Name:      groupName,
-						Namespace: "default",
-					}, mcpGroup)
-					require.NoError(t, err)
-					assert.Contains(t, mcpGroup.Spec.RegisteredClients, clientNames[0])
-				}
-			},
 		},
 		{
-			name:        "skip already registered clients",
-			groupNames:  []string{"testgroup"},
-			clientNames: []string{"client1", "client2"},
-			setupObjs: []client.Object{
-				&mcpv1alpha1.MCPGroup{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "testgroup",
-						Namespace: "default",
-					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{"client1"},
-					},
-				},
-			},
-			expectError: false,
-			verify: func(t *testing.T, fakeClient client.Client, groupNames, clientNames []string) {
-				t.Helper()
-				ctx := context.Background()
-				mcpGroup := &mcpv1alpha1.MCPGroup{}
-				err := fakeClient.Get(ctx, client.ObjectKey{
-					Name:      groupNames[0],
-					Namespace: "default",
-				}, mcpGroup)
-				require.NoError(t, err)
-				assert.ElementsMatch(t, clientNames, mcpGroup.Spec.RegisteredClients)
-			},
-		},
-		{
-			name:        "group not found",
+			name:        "register clients with non-existent groups (no-op)",
 			groupNames:  []string{"nonexistent"},
 			clientNames: []string{"client1"},
 			setupObjs:   []client.Object{},
-			expectError: true,
+			expectError: false,
 		},
 	}
 
@@ -535,7 +460,7 @@ func TestCRDManager_RegisterClients(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			manager, fakeClient := createTestCRDManager(tt.setupObjs...)
+			manager, _ := createTestCRDManager(tt.setupObjs...)
 			ctx := context.Background()
 
 			err := manager.RegisterClients(ctx, tt.groupNames, tt.clientNames)
@@ -544,9 +469,6 @@ func TestCRDManager_RegisterClients(t *testing.T) {
 				require.Error(t, err)
 			} else {
 				require.NoError(t, err)
-				if tt.verify != nil {
-					tt.verify(t, fakeClient, tt.groupNames, tt.clientNames)
-				}
 			}
 		})
 	}
@@ -561,10 +483,9 @@ func TestCRDManager_UnregisterClients(t *testing.T) {
 		clientNames []string
 		setupObjs   []client.Object
 		expectError bool
-		verify      func(*testing.T, client.Client, []string, []string)
 	}{
 		{
-			name:        "unregister clients from single group",
+			name:        "unregister clients from single group (no-op)",
 			groupNames:  []string{"testgroup"},
 			clientNames: []string{"client1"},
 			setupObjs: []client.Object{
@@ -573,27 +494,13 @@ func TestCRDManager_UnregisterClients(t *testing.T) {
 						Name:      "testgroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{"client1", "client2"},
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
-			verify: func(t *testing.T, fakeClient client.Client, groupNames, clientNames []string) {
-				t.Helper()
-				ctx := context.Background()
-				mcpGroup := &mcpv1alpha1.MCPGroup{}
-				err := fakeClient.Get(ctx, client.ObjectKey{
-					Name:      groupNames[0],
-					Namespace: "default",
-				}, mcpGroup)
-				require.NoError(t, err)
-				assert.NotContains(t, mcpGroup.Spec.RegisteredClients, clientNames[0])
-				assert.Contains(t, mcpGroup.Spec.RegisteredClients, "client2")
-			},
 		},
 		{
-			name:        "unregister multiple clients",
+			name:        "unregister multiple clients (no-op)",
 			groupNames:  []string{"testgroup"},
 			clientNames: []string{"client1", "client2"},
 			setupObjs: []client.Object{
@@ -602,28 +509,13 @@ func TestCRDManager_UnregisterClients(t *testing.T) {
 						Name:      "testgroup",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{"client1", "client2", "client3"},
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
-			verify: func(t *testing.T, fakeClient client.Client, groupNames, _ []string) {
-				t.Helper()
-				ctx := context.Background()
-				mcpGroup := &mcpv1alpha1.MCPGroup{}
-				err := fakeClient.Get(ctx, client.ObjectKey{
-					Name:      groupNames[0],
-					Namespace: "default",
-				}, mcpGroup)
-				require.NoError(t, err)
-				assert.NotContains(t, mcpGroup.Spec.RegisteredClients, "client1")
-				assert.NotContains(t, mcpGroup.Spec.RegisteredClients, "client2")
-				assert.Contains(t, mcpGroup.Spec.RegisteredClients, "client3")
-			},
 		},
 		{
-			name:        "unregister from multiple groups",
+			name:        "unregister from multiple groups (no-op)",
 			groupNames:  []string{"group1", "group2"},
 			clientNames: []string{"client1"},
 			setupObjs: []client.Object{
@@ -632,69 +524,24 @@ func TestCRDManager_UnregisterClients(t *testing.T) {
 						Name:      "group1",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{"client1", "client2"},
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 				&mcpv1alpha1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "group2",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{"client1"},
-					},
+					Spec: mcpv1alpha1.MCPGroupSpec{},
 				},
 			},
 			expectError: false,
-			verify: func(t *testing.T, fakeClient client.Client, groupNames, clientNames []string) {
-				t.Helper()
-				ctx := context.Background()
-				for _, groupName := range groupNames {
-					mcpGroup := &mcpv1alpha1.MCPGroup{}
-					err := fakeClient.Get(ctx, client.ObjectKey{
-						Name:      groupName,
-						Namespace: "default",
-					}, mcpGroup)
-					require.NoError(t, err)
-					assert.NotContains(t, mcpGroup.Spec.RegisteredClients, clientNames[0])
-				}
-			},
 		},
 		{
-			name:        "group not found",
+			name:        "unregister with non-existent groups (no-op)",
 			groupNames:  []string{"nonexistent"},
 			clientNames: []string{"client1"},
 			setupObjs:   []client.Object{},
-			expectError: true,
-		},
-		{
-			name:        "unregister non-existent client (no-op)",
-			groupNames:  []string{"testgroup"},
-			clientNames: []string{"nonexistent"},
-			setupObjs: []client.Object{
-				&mcpv1alpha1.MCPGroup{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "testgroup",
-						Namespace: "default",
-					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
-						RegisteredClients: []string{"client1"},
-					},
-				},
-			},
 			expectError: false,
-			verify: func(t *testing.T, fakeClient client.Client, groupNames, _ []string) {
-				t.Helper()
-				ctx := context.Background()
-				mcpGroup := &mcpv1alpha1.MCPGroup{}
-				err := fakeClient.Get(ctx, client.ObjectKey{
-					Name:      groupNames[0],
-					Namespace: "default",
-				}, mcpGroup)
-				require.NoError(t, err)
-				assert.Contains(t, mcpGroup.Spec.RegisteredClients, "client1")
-			},
 		},
 	}
 
@@ -702,7 +549,7 @@ func TestCRDManager_UnregisterClients(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			manager, fakeClient := createTestCRDManager(tt.setupObjs...)
+			manager, _ := createTestCRDManager(tt.setupObjs...)
 			ctx := context.Background()
 
 			err := manager.UnregisterClients(ctx, tt.groupNames, tt.clientNames)
@@ -711,9 +558,6 @@ func TestCRDManager_UnregisterClients(t *testing.T) {
 				require.Error(t, err)
 			} else {
 				require.NoError(t, err)
-				if tt.verify != nil {
-					tt.verify(t, fakeClient, tt.groupNames, tt.clientNames)
-				}
 			}
 		})
 	}
@@ -728,44 +572,12 @@ func TestMCPGroupToGroup(t *testing.T) {
 		expected *Group
 	}{
 		{
-			name: "with registered clients",
+			name: "basic group conversion",
 			mcpGroup: &mcpv1alpha1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "testgroup",
 				},
-				Spec: mcpv1alpha1.MCPGroupSpec{
-					RegisteredClients: []string{"client1", "client2"},
-				},
-			},
-			expected: &Group{
-				Name:              "testgroup",
-				RegisteredClients: []string{"client1", "client2"},
-			},
-		},
-		{
-			name: "with nil registered clients",
-			mcpGroup: &mcpv1alpha1.MCPGroup{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "testgroup",
-				},
-				Spec: mcpv1alpha1.MCPGroupSpec{
-					RegisteredClients: nil,
-				},
-			},
-			expected: &Group{
-				Name:              "testgroup",
-				RegisteredClients: []string{},
-			},
-		},
-		{
-			name: "with empty registered clients",
-			mcpGroup: &mcpv1alpha1.MCPGroup{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "testgroup",
-				},
-				Spec: mcpv1alpha1.MCPGroupSpec{
-					RegisteredClients: []string{},
-				},
+				Spec: mcpv1alpha1.MCPGroupSpec{},
 			},
 			expected: &Group{
 				Name:              "testgroup",

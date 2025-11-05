@@ -674,6 +674,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `description` _string_ | Description provides human-readable context |  |  |
+| `registeredClients` _string array_ | RegisteredClients lists the client names that are registered with this group |  |  |
 
 
 #### MCPGroupStatus

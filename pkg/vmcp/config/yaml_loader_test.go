@@ -387,7 +387,7 @@ incoming_auth:
 outgoing_auth:
   source: inline
   default:
-    type: pass_through
+    type: unauthenticated
 
 aggregation:
   conflict_resolution: prefix
@@ -407,7 +407,7 @@ incoming_auth:
 outgoing_auth:
   source: inline
   default:
-    type: pass_through
+    type: unauthenticated
 
 aggregation:
   conflict_resolution: prefix
@@ -429,7 +429,7 @@ incoming_auth:
 outgoing_auth:
   source: inline
   default:
-    type: pass_through
+    type: unauthenticated
 
 aggregation:
   conflict_resolution: prefix

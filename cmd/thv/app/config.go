@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 var configCmd = &cobra.Command{
@@ -190,6 +191,8 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
+		// Reset the cached provider so it re-initializes with the new config
+		registry.ResetDefaultProvider()
 		fmt.Printf("Successfully set registry URL: %s\n", cleanPath)
 		if allowPrivateRegistryIp {
 			fmt.Print("Successfully enabled use of private IP addresses for the remote registry\n")
@@ -201,7 +204,14 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 		}
 		return nil
 	case config.RegistryTypeFile:
-		return provider.SetRegistryFile(cleanPath)
+		err := provider.SetRegistryFile(cleanPath)
+		if err != nil {
+			return err
+		}
+		// Reset the cached provider so it re-initializes with the new config
+		registry.ResetDefaultProvider()
+		fmt.Printf("Successfully set local registry file: %s\n", cleanPath)
+		return nil
 	default:
 		return fmt.Errorf("unsupported registry type")
 	}
@@ -215,6 +225,9 @@ func setRegistryAPICmdFunc(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// Reset the cached provider so it re-initializes with the new config
+	registry.ResetDefaultProvider()
 
 	fmt.Printf("Successfully set registry API endpoint: %s\n", apiURL)
 	if allowPrivateRegistryIp {
@@ -259,6 +272,9 @@ func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
+
+	// Reset the cached provider so it re-initializes with the new config
+	registry.ResetDefaultProvider()
 
 	if url != "" {
 		fmt.Printf("Successfully removed registry URL: %s\n", url)

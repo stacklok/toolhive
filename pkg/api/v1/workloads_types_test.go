@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -152,7 +153,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 
 		runConfig := &runner.RunConfig{
 			Name: "test-workload",
-			RemoteAuthConfig: &runner.RemoteAuthConfig{
+			RemoteAuthConfig: &remote.Config{
 				Issuer:       "https://oauth.example.com",
 				AuthorizeURL: "https://oauth.example.com/auth",
 				TokenURL:     "https://oauth.example.com/token",
@@ -189,7 +190,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 
 		runConfig := &runner.RunConfig{
 			Name: "test-workload",
-			RemoteAuthConfig: &runner.RemoteAuthConfig{
+			RemoteAuthConfig: &remote.Config{
 				Issuer:       "https://oauth.example.com",
 				AuthorizeURL: "https://oauth.example.com/auth",
 				TokenURL:     "https://oauth.example.com/token",

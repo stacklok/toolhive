@@ -17,7 +17,6 @@ package controllers
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,10 +32,11 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
-// TestVirtualMCPServerValidateAndDiscoverBackends tests the backend discovery and validation
-func TestVirtualMCPServerValidateAndDiscoverBackends(t *testing.T) {
+// TestVirtualMCPServerValidateGroupRef tests the GroupRef validation
+func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -173,7 +173,7 @@ func TestVirtualMCPServerValidateAndDiscoverBackends(t *testing.T) {
 				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 			}
 
-			err := r.validateAndDiscoverBackends(context.Background(), tt.vmcp)
+			err := r.validateGroupRef(context.Background(), tt.vmcp)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -338,9 +338,9 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 	assert.Contains(t, container.Args, "serve")
 	assert.Contains(t, container.Args, "--config=/etc/vmcp-config/config.yaml")
 
-	// Verify checksum annotation is set
+	// Verify checksum annotation is set using standard annotation key
 	assert.Equal(t, "test-checksum-123",
-		deployment.Spec.Template.Annotations[vmcpConfigChecksumAnnotation])
+		deployment.Spec.Template.Annotations[checksum.RunConfigChecksumAnnotation])
 }
 
 // TestVirtualMCPServerEnsureService tests Service creation
@@ -531,123 +531,11 @@ func TestVirtualMCPServerNaming(t *testing.T) {
 	svcName := vmcpServiceName(vmcpName)
 	assert.Equal(t, "vmcp-my-vmcp", svcName)
 
+	// Test ConfigMap name
+	cmName := vmcpConfigMapName(vmcpName)
+	assert.Equal(t, "my-vmcp-vmcp-config", cmName)
+
 	// Test service URL
 	url := createVmcpServiceURL(vmcpName, "default", 8080)
 	assert.Equal(t, "http://vmcp-my-vmcp.default.svc.cluster.local:8080", url)
-}
-
-// TestGetHealthCheckInterval tests the health check interval parsing
-func TestGetHealthCheckInterval(t *testing.T) {
-	t.Parallel()
-
-	reconciler := &VirtualMCPServerReconciler{}
-
-	tests := []struct {
-		name             string
-		vmcp             *mcpv1alpha1.VirtualMCPServer
-		expectedInterval time.Duration
-	}{
-		{
-			name: "no operational config returns default",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{},
-			},
-			expectedInterval: 30 * time.Second,
-		},
-		{
-			name: "no failure handling returns default",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Operational: &mcpv1alpha1.OperationalConfig{},
-				},
-			},
-			expectedInterval: 30 * time.Second,
-		},
-		{
-			name: "empty health check interval returns default",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Operational: &mcpv1alpha1.OperationalConfig{
-						FailureHandling: &mcpv1alpha1.FailureHandlingConfig{
-							HealthCheckInterval: "",
-						},
-					},
-				},
-			},
-			expectedInterval: 30 * time.Second,
-		},
-		{
-			name: "valid duration string is parsed",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Operational: &mcpv1alpha1.OperationalConfig{
-						FailureHandling: &mcpv1alpha1.FailureHandlingConfig{
-							HealthCheckInterval: "1m",
-						},
-					},
-				},
-			},
-			expectedInterval: 1 * time.Minute,
-		},
-		{
-			name: "duration less than 1s is clamped to 1s",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Operational: &mcpv1alpha1.OperationalConfig{
-						FailureHandling: &mcpv1alpha1.FailureHandlingConfig{
-							HealthCheckInterval: "500ms",
-						},
-					},
-				},
-			},
-			expectedInterval: 1 * time.Second,
-		},
-		{
-			name: "duration greater than 5m is clamped to 5m",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Operational: &mcpv1alpha1.OperationalConfig{
-						FailureHandling: &mcpv1alpha1.FailureHandlingConfig{
-							HealthCheckInterval: "10m",
-						},
-					},
-				},
-			},
-			expectedInterval: 5 * time.Minute,
-		},
-		{
-			name: "invalid duration string returns default",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Operational: &mcpv1alpha1.OperationalConfig{
-						FailureHandling: &mcpv1alpha1.FailureHandlingConfig{
-							HealthCheckInterval: "invalid",
-						},
-					},
-				},
-			},
-			expectedInterval: 30 * time.Second,
-		},
-		{
-			name: "45s duration is preserved",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					Operational: &mcpv1alpha1.OperationalConfig{
-						FailureHandling: &mcpv1alpha1.FailureHandlingConfig{
-							HealthCheckInterval: "45s",
-						},
-					},
-				},
-			},
-			expectedInterval: 45 * time.Second,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			interval := reconciler.getHealthCheckInterval(tt.vmcp)
-			assert.Equal(t, tt.expectedInterval, interval)
-		})
-	}
 }

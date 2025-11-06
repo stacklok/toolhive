@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -17,13 +17,11 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
 const (
-	// Annotations
-	vmcpConfigChecksumAnnotation = "toolhive.stacklok.dev/vmcp-config-checksum"
-
 	// Network configuration
 	vmcpDefaultPort = int32(4483) // Default port for VirtualMCPServer service (matches vmcp server port)
 
@@ -44,13 +42,6 @@ const (
 	vmcpReadinessPeriod       = int32(5)  // seconds - check more frequently for quick detection
 	vmcpReadinessTimeout      = int32(3)  // seconds - shorter timeout for faster detection
 	vmcpReadinessFailures     = int32(3)  // consecutive failures before removing from service
-
-	// Backend health check configuration
-	// These control how frequently the controller checks backend health and reconciles.
-	// The controller requeues after each reconciliation using these intervals.
-	vmcpDefaultHealthCheckInterval = 30 * time.Second // Default interval for backend health checks
-	vmcpMinHealthCheckInterval     = 1 * time.Second  // Minimum allowed health check interval
-	vmcpMaxHealthCheckInterval     = 5 * time.Minute  // Maximum allowed health check interval
 )
 
 // RBAC rules for VirtualMCPServer service account
@@ -154,7 +145,7 @@ func (*VirtualMCPServerReconciler) buildVolumesForVmcp(
 	volumes := []corev1.Volume{}
 
 	// Add vmcp Config ConfigMap volume
-	configMapName := fmt.Sprintf("%s-vmcp-config", vmcp.Name)
+	configMapName := vmcpConfigMapName(vmcp.Name)
 	volumeMounts = append(volumeMounts, corev1.VolumeMount{
 		Name:      "vmcp-config",
 		MountPath: "/etc/vmcp-config",
@@ -201,10 +192,61 @@ func (*VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 		// Log level env var will be added here
 	}
 
-	// Note: Secrets (OIDC client secrets, Redis passwords, service account credentials) are NOT added
-	// as environment variables here. They are validated by validateSecretReferences() during reconciliation
-	// and configured through the vmcp config file or volume mounts for better security.
-	// Environment variables are reserved for non-sensitive configuration only.
+	// Mount OIDC client secret as environment variable
+	// The vmcp config file will reference this via client_secret_env: "VMCP_OIDC_CLIENT_SECRET"
+	//
+	// Two approaches are supported:
+	// 1. ClientSecretRef: References an existing Kubernetes Secret (recommended)
+	// 2. ClientSecret: Literal value that will be stored in a generated Secret
+	//
+	// Both cases result in the secret being mounted as an environment variable for security.
+	if vmcp.Spec.IncomingAuth != nil &&
+		vmcp.Spec.IncomingAuth.OIDCConfig != nil &&
+		vmcp.Spec.IncomingAuth.OIDCConfig.Inline != nil {
+		inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
+
+		// For testing: Skip OIDC discovery for example/test issuers
+		// This allows tests to run without requiring a real OIDC provider
+		if inline.Issuer != "" && (strings.Contains(inline.Issuer, "example.com") || strings.Contains(inline.Issuer, "test")) {
+			env = append(env, corev1.EnvVar{
+				Name:  "VMCP_SKIP_OIDC_DISCOVERY",
+				Value: "true",
+			})
+		}
+
+		if inline.ClientSecretRef != nil {
+			// Approach 1: Mount from existing Secret reference
+			env = append(env, corev1.EnvVar{
+				Name: "VMCP_OIDC_CLIENT_SECRET",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: inline.ClientSecretRef.Name,
+						},
+						Key: inline.ClientSecretRef.Key,
+					},
+				},
+			})
+		} else if inline.ClientSecret != "" {
+			// Approach 2: Mount from generated Secret containing literal value
+			// The generated secret is created by ensureOIDCClientSecret()
+			generatedSecretName := fmt.Sprintf("%s-oidc-client-secret", vmcp.Name)
+			env = append(env, corev1.EnvVar{
+				Name: "VMCP_OIDC_CLIENT_SECRET",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: generatedSecretName,
+						},
+						Key: "clientSecret",
+					},
+				},
+			})
+		}
+	}
+
+	// Note: Other secrets (Redis passwords, service account credentials) may be added here in the future
+	// following the same pattern of mounting from Kubernetes Secrets as environment variables.
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
 }
@@ -229,10 +271,10 @@ func (*VirtualMCPServerReconciler) buildPodTemplateMetadata(
 	vmcpConfigChecksum string,
 ) (map[string]string, map[string]string) {
 	templateLabels := baseLabels
-	templateAnnotations := make(map[string]string)
 
 	// Add vmcp Config checksum annotation to trigger pod rollout when config changes
-	templateAnnotations[vmcpConfigChecksumAnnotation] = vmcpConfigChecksum
+	// Use the standard checksum package helper for consistency
+	templateAnnotations := checksum.AddRunConfigChecksumToPodTemplate(nil, vmcpConfigChecksum)
 
 	// TODO: Add support for PodTemplateSpec overrides from spec
 

@@ -82,8 +82,8 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	// Validate GroupRef and discover backends
-	if err := r.validateAndDiscoverBackends(ctx, vmcp); err != nil {
+	// Validate GroupRef
+	if err := r.validateGroupRef(ctx, vmcp); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -98,12 +98,17 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	// Schedule periodic backend health checks
-	return ctrl.Result{RequeueAfter: r.getHealthCheckInterval(vmcp)}, nil
+	// Reconciliation complete - rely on event-driven reconciliation
+	// Kubernetes will automatically trigger reconcile when:
+	// - VirtualMCPServer spec changes
+	// - Referenced resources (MCPGroup, Secrets) change
+	// - Owned resources (Deployment, Service) status changes
+	// - vmcp pods emit events about backend health
+	return ctrl.Result{}, nil
 }
 
-// validateAndDiscoverBackends validates the GroupRef and discovers backend MCPServers
-func (r *VirtualMCPServerReconciler) validateAndDiscoverBackends(
+// validateGroupRef validates that the referenced MCPGroup exists and is ready
+func (r *VirtualMCPServerReconciler) validateGroupRef(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) error {
@@ -292,7 +297,7 @@ func (r *VirtualMCPServerReconciler) getVmcpConfigChecksum(
 		return "", fmt.Errorf("vmcp cannot be nil")
 	}
 
-	configMapName := fmt.Sprintf("%s-vmcp-config", vmcp.Name)
+	configMapName := vmcpConfigMapName(vmcp.Name)
 	configMap := &corev1.ConfigMap{}
 	err := r.Get(ctx, types.NamespacedName{
 		Name:      configMapName,
@@ -321,6 +326,8 @@ func (r *VirtualMCPServerReconciler) getVmcpConfigChecksum(
 }
 
 // ensureDeployment ensures the Deployment exists and is up to date
+//
+//nolint:unparam // ctrl.Result needed for ConfigMap not found case (RequeueAfter)
 func (r *VirtualMCPServerReconciler) ensureDeployment(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -362,7 +369,9 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 			r.Recorder.Event(vmcp, corev1.EventTypeNormal, "DeploymentCreated",
 				"Deployment created successfully")
 		}
-		return ctrl.Result{RequeueAfter: 0}, nil
+		// Return empty result to continue with rest of reconciliation (Service, status update, etc.)
+		// Kubernetes will automatically requeue when Deployment status changes
+		return ctrl.Result{}, nil
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get Deployment")
 		return ctrl.Result{}, err
@@ -405,13 +414,17 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 			r.Recorder.Event(vmcp, corev1.EventTypeNormal, "DeploymentUpdated",
 				"Deployment updated, rolling out new configuration")
 		}
-		return ctrl.Result{Requeue: true}, nil
+		// Return empty result to continue with rest of reconciliation
+		// Deployment rollout will be monitored when Kubernetes triggers subsequent reconciles
+		return ctrl.Result{}, nil
 	}
 
 	return ctrl.Result{}, nil
 }
 
 // ensureService ensures the Service exists and is up to date
+//
+//nolint:unparam // ctrl.Result kept for consistency with ensureDeployment signature
 func (r *VirtualMCPServerReconciler) ensureService(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -442,7 +455,8 @@ func (r *VirtualMCPServerReconciler) ensureService(
 			r.Recorder.Eventf(vmcp, corev1.EventTypeNormal, "ServiceCreated",
 				"Service %s created successfully", serviceName)
 		}
-		return ctrl.Result{RequeueAfter: 0}, nil
+		// Return empty result to continue with rest of reconciliation
+		return ctrl.Result{}, nil
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get Service")
 		return ctrl.Result{}, err
@@ -474,7 +488,8 @@ func (r *VirtualMCPServerReconciler) ensureService(
 			ctxLogger.Error(err, "Failed to update Service")
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		// Return empty result to continue with rest of reconciliation
+		return ctrl.Result{}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -774,35 +789,6 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 	return nil
 }
 
-// getHealthCheckInterval returns the health check interval for periodic reconciliation.
-// It parses the duration from the VirtualMCPServer spec if configured, otherwise returns the default.
-// Invalid duration strings fall back to the default. Intervals are clamped to min/max boundaries.
-func (*VirtualMCPServerReconciler) getHealthCheckInterval(vmcp *mcpv1alpha1.VirtualMCPServer) time.Duration {
-	if vmcp.Spec.Operational != nil &&
-		vmcp.Spec.Operational.FailureHandling != nil &&
-		vmcp.Spec.Operational.FailureHandling.HealthCheckInterval != "" {
-
-		interval, err := time.ParseDuration(vmcp.Spec.Operational.FailureHandling.HealthCheckInterval)
-		if err != nil {
-			// Log warning but don't fail - fall back to default
-			// This shouldn't happen if webhook validation is working, but handle gracefully
-			return vmcpDefaultHealthCheckInterval
-		}
-
-		// Sanity check: clamp to min/max boundaries defined in constants
-		if interval < vmcpMinHealthCheckInterval {
-			return vmcpMinHealthCheckInterval
-		}
-		if interval > vmcpMaxHealthCheckInterval {
-			return vmcpMaxHealthCheckInterval
-		}
-
-		return interval
-	}
-
-	return vmcpDefaultHealthCheckInterval
-}
-
 // labelsForVirtualMCPServer returns the labels for selecting the resources belonging to the given VirtualMCPServer CR name
 func labelsForVirtualMCPServer(name string) map[string]string {
 	return map[string]string{
@@ -836,6 +822,12 @@ func vmcpServiceAccountName(vmcpName string) string {
 // there's no shared logic - just different prefixes/suffixes for each resource type.
 func vmcpServiceName(vmcpName string) string {
 	return fmt.Sprintf("vmcp-%s", vmcpName)
+}
+
+// vmcpConfigMapName generates the ConfigMap name for a VirtualMCPServer's vmcp configuration
+// Uses "-vmcp-config" suffix pattern.
+func vmcpConfigMapName(vmcpName string) string {
+	return fmt.Sprintf("%s-vmcp-config", vmcpName)
 }
 
 // createVmcpServiceURL generates the full cluster-local service URL for a VirtualMCPServer

@@ -27,6 +27,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
 // TestDeploymentForVirtualMCPServer tests Deployment creation
@@ -69,9 +70,9 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 	// Verify service account
 	assert.Equal(t, vmcpServiceAccountName(vmcp.Name), deployment.Spec.Template.Spec.ServiceAccountName)
 
-	// Verify checksum annotation
+	// Verify checksum annotation using standard annotation key
 	assert.Equal(t, "test-checksum",
-		deployment.Spec.Template.Annotations[vmcpConfigChecksumAnnotation])
+		deployment.Spec.Template.Annotations[checksum.RunConfigChecksumAnnotation])
 }
 
 // TestBuildContainerArgsForVmcp tests container argument generation
@@ -184,13 +185,13 @@ func TestBuildPodTemplateMetadata(t *testing.T) {
 			Namespace: "default",
 		},
 	}
-	checksum := "test-checksum-123"
+	checksumValue := "test-checksum-123"
 
 	r := &VirtualMCPServerReconciler{}
-	labels, annotations := r.buildPodTemplateMetadata(baseLabels, vmcp, checksum)
+	labels, annotations := r.buildPodTemplateMetadata(baseLabels, vmcp, checksumValue)
 
 	assert.Equal(t, baseLabels, labels)
-	assert.Equal(t, checksum, annotations[vmcpConfigChecksumAnnotation])
+	assert.Equal(t, checksumValue, annotations[checksum.RunConfigChecksumAnnotation])
 }
 
 // TestBuildSecurityContextsForVmcp tests security context generation

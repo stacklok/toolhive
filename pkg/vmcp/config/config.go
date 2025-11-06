@@ -119,8 +119,11 @@ type OIDCConfig struct {
 	// ClientID is the OAuth client ID.
 	ClientID string `json:"client_id" yaml:"client_id"`
 
-	// ClientSecret is the OAuth client secret (or secret reference).
-	ClientSecret string `json:"client_secret" yaml:"client_secret"`
+	// ClientSecretEnv is the name of the environment variable containing the client secret.
+	// This is the secure way to reference secrets - the actual secret value is never stored
+	// in configuration files, only the environment variable name.
+	// The secret value will be resolved from this environment variable at runtime.
+	ClientSecretEnv string `json:"client_secret_env,omitempty" yaml:"client_secret_env,omitempty"`
 
 	// Audience is the required token audience.
 	Audience string `json:"audience" yaml:"audience"`

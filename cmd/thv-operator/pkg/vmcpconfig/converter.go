@@ -83,14 +83,25 @@ func (*Converter) convertIncomingAuth(
 		// Handle inline OIDC configuration
 		if vmcp.Spec.IncomingAuth.OIDCConfig.Type == authzLabelValueInline && vmcp.Spec.IncomingAuth.OIDCConfig.Inline != nil {
 			inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
-			incoming.OIDC = &vmcpconfig.OIDCConfig{
-				Issuer:       inline.Issuer,
-				ClientID:     inline.ClientID, // Note: API uses clientId (camelCase) but config uses ClientID
-				ClientSecret: inline.ClientSecret,
-				Audience:     inline.Audience,
-				Resource:     vmcp.Spec.IncomingAuth.OIDCConfig.ResourceURL,
-				Scopes:       nil, // TODO: Add scopes if needed
+			oidcConfig := &vmcpconfig.OIDCConfig{
+				Issuer:   inline.Issuer,
+				ClientID: inline.ClientID, // Note: API uses clientId (camelCase) but config uses ClientID
+				Audience: inline.Audience,
+				Resource: vmcp.Spec.IncomingAuth.OIDCConfig.ResourceURL,
+				Scopes:   nil, // TODO: Add scopes if needed
 			}
+
+			// Handle client secret - always use environment variable reference for security
+			// Both ClientSecretRef (reference to existing secret) and ClientSecret (literal value)
+			// are mounted as environment variables by the deployment controller
+			if inline.ClientSecretRef != nil || inline.ClientSecret != "" {
+				// Generate environment variable name that will be mounted in the deployment
+				// The deployment controller will mount the secret (either from ClientSecretRef or
+				// from a generated secret for ClientSecret literal values)
+				oidcConfig.ClientSecretEnv = "VMCP_OIDC_CLIENT_SECRET"
+			}
+
+			incoming.OIDC = oidcConfig
 		} else {
 			// TODO: Handle configMap and kubernetes types
 			// For now, create empty config to avoid nil pointer

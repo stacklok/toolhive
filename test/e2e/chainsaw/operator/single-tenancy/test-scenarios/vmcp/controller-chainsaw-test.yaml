@@ -235,3 +235,91 @@ spec:
           fi
 
           echo "✅ Phase verification complete"
+
+  - name: test-oidc-client-secret-security
+    description: Verify ClientSecret is securely handled via Kubernetes Secret, not stored in ConfigMap
+    try:
+    - apply:
+        file: oidc-client-secret.yaml
+    - assert:
+        file: oidc-client-secret.yaml
+
+    - apply:
+        file: vmcp-with-oidc.yaml
+    - assert:
+        file: vmcp-with-oidc.yaml
+
+    - assert:
+        file: assert-oidc-security.yaml
+
+    - script:
+        content: |
+          #!/bin/bash
+          set -e
+
+          echo "Verifying OIDC ClientSecret security implementation..."
+
+          # 1. Verify the Secret exists
+          echo "1. Checking Secret exists..."
+          if kubectl get secret test-oidc-client-secret -n toolhive-system &>/dev/null; then
+            echo "✓ Secret test-oidc-client-secret exists"
+          else
+            echo "✗ Secret not found"
+            exit 1
+          fi
+
+          # 2. Verify ConfigMap does NOT contain the secret value
+          echo "2. Verifying ConfigMap security..."
+          CONFIG_CONTENT=$(kubectl get configmap test-vmcp-oidc-vmcp-config -n toolhive-system -o jsonpath='{.data.config\.yaml}' 2>/dev/null || echo "")
+
+          if [ -z "$CONFIG_CONTENT" ]; then
+            echo "✗ ConfigMap not found"
+            exit 1
+          fi
+
+          # Check that literal secret value is NOT in ConfigMap
+          if echo "$CONFIG_CONTENT" | grep -q "super-secret-value-123"; then
+            echo "✗ SECURITY ISSUE: Literal secret value found in ConfigMap!"
+            echo "$CONFIG_CONTENT"
+            exit 1
+          fi
+          echo "✓ ConfigMap does not contain literal secret value"
+
+          # Check that only env var name is stored
+          if echo "$CONFIG_CONTENT" | grep -q "client_secret_env.*VMCP_OIDC_CLIENT_SECRET"; then
+            echo "✓ ConfigMap contains only environment variable name"
+          else
+            echo "✗ ConfigMap missing client_secret_env field"
+            echo "$CONFIG_CONTENT"
+            exit 1
+          fi
+
+          # 3. Verify Deployment mounts Secret as environment variable
+          echo "3. Verifying Deployment env var mounting..."
+          ENV_VAR_NAME=$(kubectl get deployment test-vmcp-oidc -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="VMCP_OIDC_CLIENT_SECRET")].name}' 2>/dev/null || echo "")
+
+          if [ "$ENV_VAR_NAME" = "VMCP_OIDC_CLIENT_SECRET" ]; then
+            echo "✓ Deployment has VMCP_OIDC_CLIENT_SECRET env var"
+          else
+            echo "✗ Deployment missing VMCP_OIDC_CLIENT_SECRET env var"
+            kubectl get deployment test-vmcp-oidc -n toolhive-system -o yaml
+            exit 1
+          fi
+
+          # Verify it's mounted from Secret
+          SECRET_NAME=$(kubectl get deployment test-vmcp-oidc -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="VMCP_OIDC_CLIENT_SECRET")].valueFrom.secretKeyRef.name}' 2>/dev/null || echo "")
+          SECRET_KEY=$(kubectl get deployment test-vmcp-oidc -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="VMCP_OIDC_CLIENT_SECRET")].valueFrom.secretKeyRef.key}' 2>/dev/null || echo "")
+
+          if [ "$SECRET_NAME" = "test-oidc-client-secret" ] && [ "$SECRET_KEY" = "clientSecret" ]; then
+            echo "✓ Env var correctly references Secret (name: $SECRET_NAME, key: $SECRET_KEY)"
+          else
+            echo "✗ Env var not correctly mounted from Secret"
+            echo "  Found: name=$SECRET_NAME, key=$SECRET_KEY"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ OIDC ClientSecret security verified:"
+          echo "   - Secret stored in Kubernetes Secret (not ConfigMap)"
+          echo "   - ConfigMap contains only env var name"
+          echo "   - Deployment mounts Secret as environment variable"

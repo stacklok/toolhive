@@ -43,7 +43,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return fmt.Errorf("failed to marshal vmcp config: %w", err)
 	}
 
-	configMapName := fmt.Sprintf("%s-vmcp-config", vmcp.Name)
+	configMapName := vmcpConfigMapName(vmcp.Name)
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      configMapName,

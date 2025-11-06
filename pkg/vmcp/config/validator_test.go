@@ -118,11 +118,11 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 			auth: &IncomingAuthConfig{
 				Type: "oidc",
 				OIDC: &OIDCConfig{
-					Issuer:       "https://example.com",
-					ClientID:     "test-client",
-					ClientSecret: "test-secret",
-					Audience:     "vmcp",
-					Scopes:       []string{"openid"},
+					Issuer:          "https://example.com",
+					ClientID:        "test-client",
+					ClientSecretEnv: "OIDC_CLIENT_SECRET",
+					Audience:        "vmcp",
+					Scopes:          []string{"openid"},
 				},
 			},
 			wantErr: false,
@@ -148,9 +148,9 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 			auth: &IncomingAuthConfig{
 				Type: "oidc",
 				OIDC: &OIDCConfig{
-					ClientID:     "test-client",
-					ClientSecret: "test-secret",
-					Audience:     "vmcp",
+					ClientID:        "test-client",
+					ClientSecretEnv: "OIDC_CLIENT_SECRET",
+					Audience:        "vmcp",
 				},
 			},
 			wantErr: true,

@@ -106,9 +106,9 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 			return fmt.Errorf("incoming_auth.oidc.audience is required")
 		}
 
-		// Client secret should be set (either directly or via env var reference)
-		if auth.OIDC.ClientSecret == "" {
-			return fmt.Errorf("incoming_auth.oidc.client_secret is required")
+		// Client secret env var should be set (references a Kubernetes Secret mounted as env var)
+		if auth.OIDC.ClientSecretEnv == "" {
+			return fmt.Errorf("incoming_auth.oidc.client_secret_env is required")
 		}
 	}
 

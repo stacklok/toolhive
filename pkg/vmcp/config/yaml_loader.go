@@ -60,8 +60,7 @@ type rawIncomingAuth struct {
 	OIDC *struct {
 		Issuer          string   `yaml:"issuer"`
 		ClientID        string   `yaml:"client_id"`
-		ClientSecretEnv string   `yaml:"client_secret_env"` // CLI YAML format (env var name)
-		ClientSecret    string   `yaml:"client_secret"`     // Kubernetes JSON format (literal value)
+		ClientSecretEnv string   `yaml:"client_secret_env"` // Environment variable name containing the client secret
 		Audience        string   `yaml:"audience"`
 		Resource        string   `yaml:"resource"`
 		Scopes          []string `yaml:"scopes"`
@@ -247,32 +246,20 @@ func (l *YAMLLoader) transformToConfig(raw *rawConfig) (*Config, error) {
 	return cfg, nil
 }
 
+//nolint:unparam // error return reserved for future validation logic
 func (*YAMLLoader) transformIncomingAuth(raw *rawIncomingAuth) (*IncomingAuthConfig, error) {
 	cfg := &IncomingAuthConfig{
 		Type: raw.Type,
 	}
 
 	if raw.OIDC != nil {
-		// Support both CLI YAML format (client_secret_env) and Kubernetes JSON format (client_secret)
-		var clientSecret string
-		if raw.OIDC.ClientSecret != "" {
-			// Kubernetes JSON format: literal client secret value
-			clientSecret = raw.OIDC.ClientSecret
-		} else if raw.OIDC.ClientSecretEnv != "" {
-			// CLI YAML format: resolve environment variable for client secret
-			clientSecret = os.Getenv(raw.OIDC.ClientSecretEnv)
-			if clientSecret == "" {
-				return nil, fmt.Errorf("environment variable %s not set for client_secret", raw.OIDC.ClientSecretEnv)
-			}
-		}
-
 		cfg.OIDC = &OIDCConfig{
-			Issuer:       raw.OIDC.Issuer,
-			ClientID:     raw.OIDC.ClientID,
-			ClientSecret: clientSecret,
-			Audience:     raw.OIDC.Audience,
-			Resource:     raw.OIDC.Resource,
-			Scopes:       raw.OIDC.Scopes,
+			Issuer:          raw.OIDC.Issuer,
+			ClientID:        raw.OIDC.ClientID,
+			ClientSecretEnv: raw.OIDC.ClientSecretEnv,
+			Audience:        raw.OIDC.Audience,
+			Resource:        raw.OIDC.Resource,
+			Scopes:          raw.OIDC.Scopes,
 		}
 	}
 

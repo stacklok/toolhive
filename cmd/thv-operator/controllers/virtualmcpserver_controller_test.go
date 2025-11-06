@@ -33,6 +33,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 )
 
 // TestVirtualMCPServerValidateGroupRef tests the GroupRef validation
@@ -173,7 +174,10 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 			}
 
-			err := r.validateGroupRef(context.Background(), tt.vmcp)
+			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
+			err := r.validateGroupRef(context.Background(), tt.vmcp, statusManager)
+			// Apply status updates for test assertions
+			_ = statusManager.UpdateStatus(context.Background(), &tt.vmcp.Status)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -646,8 +650,11 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 				Scheme: scheme,
 			}
 
-			err := r.updateVirtualMCPServerStatus(context.Background(), tt.vmcp)
+			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
+			err := r.updateVirtualMCPServerStatus(context.Background(), tt.vmcp, statusManager)
 			require.NoError(t, err)
+			// Apply status updates for test assertions
+			_ = statusManager.UpdateStatus(context.Background(), &tt.vmcp.Status)
 			assert.Equal(t, tt.expectedPhase, tt.vmcp.Status.Phase)
 		})
 	}

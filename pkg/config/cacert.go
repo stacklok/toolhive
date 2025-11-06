@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/stacklok/toolhive/pkg/certs"
 )
@@ -17,18 +16,16 @@ import (
 //
 // The function returns an error if any validation fails or if updating the configuration fails.
 func setCACert(provider Provider, certPath string) error {
-	// Clean the path
-	certPath = filepath.Clean(certPath)
-
-	// Validate that the file exists and is readable
-	if _, err := os.Stat(certPath); err != nil {
-		return fmt.Errorf("CA certificate file not found or not accessible: %w", err)
+	// Validate and clean the file path
+	cleanPath, err := validateFilePath(certPath)
+	if err != nil {
+		return fmt.Errorf("CA certificate %w", err)
 	}
 
-	// Read and validate the certificate
-	certContent, err := os.ReadFile(certPath)
+	// Read the certificate
+	certContent, err := readFile(cleanPath)
 	if err != nil {
-		return fmt.Errorf("failed to read CA certificate file: %w", err)
+		return fmt.Errorf("CA certificate %w", err)
 	}
 
 	// Validate the certificate format
@@ -38,7 +35,7 @@ func setCACert(provider Provider, certPath string) error {
 
 	// Update the configuration
 	err = provider.UpdateConfig(func(c *Config) {
-		c.CACertificatePath = certPath
+		c.CACertificatePath = cleanPath
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)

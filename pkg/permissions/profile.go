@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	pkgpath "path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -198,11 +199,6 @@ func isWindowsPath(path string) bool {
 	return false
 }
 
-// cleanPath cleans a path using filepath.Clean
-func cleanPath(path string) string {
-	return filepath.Clean(path)
-}
-
 // validateResourceScheme checks if a resource URI scheme is valid
 func validateResourceScheme(scheme string) bool {
 	return regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`).MatchString(scheme)
@@ -299,8 +295,10 @@ func parseResourceURI(declaration string) (source, target string, err error) {
 	}
 
 	// Clean paths
-	cleanedResource := cleanPath(resourceName)
-	cleanedTarget := cleanPath(containerPath)
+	cleanedResource := filepath.Clean(resourceName)
+	// For the target, we explicitly use path.Clean so that we do not convert
+	// Unix style paths into Windows style paths on Windows hosts
+	cleanedTarget := pkgpath.Clean(containerPath)
 
 	return scheme + "://" + cleanedResource, cleanedTarget, nil
 }
@@ -324,7 +322,7 @@ func parseWindowsPath(declaration string, colonPositions []int) (source, target 
 		if err := validatePath(declaration); err != nil {
 			return "", "", err
 		}
-		cleanedPath := cleanPath(declaration)
+		cleanedPath := filepath.Clean(declaration)
 		return cleanedPath, cleanedPath, nil
 	}
 
@@ -346,8 +344,8 @@ func parseWindowsPath(declaration string, colonPositions []int) (source, target 
 			return "", "", err
 		}
 
-		cleanedSource := cleanPath(hostPath)
-		cleanedTarget := cleanPath(containerPath)
+		cleanedSource := filepath.Clean(hostPath)
+		cleanedTarget := filepath.Clean(containerPath)
 		return cleanedSource, cleanedTarget, nil
 	}
 
@@ -381,8 +379,9 @@ func parseHostContainerPath(declaration string, colonPositions []int) (source, t
 			return "", "", err
 		}
 
-		cleanedSource := cleanPath(hostPath)
-		cleanedTarget := cleanPath(containerPath)
+		cleanedSource := filepath.Clean(hostPath)
+		// See comment above about using path.Clean instead of filepath.Clean.
+		cleanedTarget := pkgpath.Clean(containerPath)
 		return cleanedSource, cleanedTarget, nil
 	}
 
@@ -401,7 +400,8 @@ func parseSinglePath(declaration string) (source, target string, err error) {
 		return "", "", err
 	}
 
-	cleanedPath := cleanPath(declaration)
+	// See comment above about using path.Clean instead of filepath.Clean.
+	cleanedPath := pkgpath.Clean(declaration)
 	return cleanedPath, cleanedPath, nil
 }
 

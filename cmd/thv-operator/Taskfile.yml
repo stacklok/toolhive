@@ -125,24 +125,24 @@ tasks:
   operator-deploy-local:
     desc: |
       Build the ToolHive runtime and Operator image locally and deploy it to the K8s cluster.
-      Set ENABLE_EXPERIMENTAL_FEATURES=true to enable experimental features in the operator
-      and automatically build and deploy the registry API image.
+      Set ENABLE_EXPERIMENTAL_FEATURES=true to enable experimental features in the operator.
+      Registry API image is pulled from ghcr.io/stacklok/thv-registry-api:latest
       Example: task operator-deploy-local ENABLE_EXPERIMENTAL_FEATURES=true
     platforms: [linux, darwin]
     vars:
       ENABLE_EXPERIMENTAL_FEATURES: '{{.ENABLE_EXPERIMENTAL_FEATURES | default "false"}}'
+      REGISTRY_API_IMAGE: '{{.REGISTRY_API_IMAGE | default "ghcr.io/stacklok/thv-registry-api:latest"}}'
       OPERATOR_IMAGE:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1
       TOOLHIVE_IMAGE:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-proxyrunner | tail -n 1
-      REGISTRY_API_IMAGE:
-        sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-registry-api | tail -n 1
     cmds:
       - echo "Loading toolhive operator image {{.OPERATOR_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.OPERATOR_IMAGE}}
       - echo "Loading toolhive image {{.TOOLHIVE_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.TOOLHIVE_IMAGE}}
-      - echo "Loading registry API image {{.REGISTRY_API_IMAGE}} into kind..."
+      - echo "Pulling and loading registry API image {{.REGISTRY_API_IMAGE}} into kind..."
+      - docker pull {{.REGISTRY_API_IMAGE}}
       - kind load docker-image --name toolhive {{.REGISTRY_API_IMAGE}}
       - |
         helm upgrade --install toolhive-operator deploy/charts/operator \
@@ -211,7 +211,7 @@ tasks:
         if [ -z "$CI" ]; then
           if ! command -v chainsaw >/dev/null 2>&1; then
             echo "Chainsaw not found, installing..."
-            go install github.com/kubernetes-sigs/chainsaw/cmd/chainsaw@latest
+            go install github.com/kyverno/chainsaw@latest
           fi
         fi
       - chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/setup
@@ -220,7 +220,7 @@ tasks:
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/setup
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup
-
+      
   operator-run:
     desc: Run the operator controller locally
     cmds:
@@ -268,12 +268,21 @@ tasks:
 
   ocp-build-and-push:
     desc: Build ToolHive and Operator images and push them to OpenShift registry
+    vars:
+      SHA:  
+        sh: git rev-parse HEAD || echo "unknown"
     cmds:
       - task: ocp-registry-login
       - echo "Building and pushing toolhive operator image to {{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}..."
-      - KO_DOCKER_REPO={{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}} ko build --push --base-import-paths {{if eq .OCP_INSECURE_REGISTRY "true"}}--insecure-registry{{end}} ./cmd/thv-operator
+      - task: build-operator-image-ubi
+        vars:
+          REPO: "{{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}"
+      - eval "{{.CONTAINER_RUNTIME}} push {{if eq .OCP_INSECURE_REGISTRY "true"}}--tls-verify=false{{end}} {{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}/thv-operator:{{.SHA}}-ubi"
       - echo "Building and pushing toolhive proxy runner image to {{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}..."
-      - KO_DOCKER_REPO={{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}} ko build --push --base-import-paths {{if eq .OCP_INSECURE_REGISTRY "true"}}--insecure-registry{{end}} ./cmd/thv-proxyrunner
+      - task: build-proxyrunner-image-ubi
+        vars:
+          REPO: "{{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}"
+      - eval "{{.CONTAINER_RUNTIME}} push {{if eq .OCP_INSECURE_REGISTRY "true"}}--tls-verify=false{{end}} {{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}/thv-proxyrunner:{{.SHA}}-ubi"
       - echo "Images pushed successfully to {{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}"
 
   ocp-verify-push:
@@ -282,17 +291,20 @@ tasks:
       - echo "Checking image streams in project {{.OCP_PROJECT}}..."
       - oc get is -n {{.OCP_PROJECT}}
       - echo "Describing thv-operator image stream..."
-      - oc describe is thv-operator -n {{.OCP_PROJECT}} || echo "thv-operator image stream not found"
+      - oc describe is thv-operator -n {{.OCP_PROJECT}} || (echo "thv-operator image stream not found" && exit 1)
       - echo "Describing thv-proxyrunner image stream..."
-      - oc describe is thv-proxyrunner -n {{.OCP_PROJECT}} || echo "thv-proxyrunner image stream not found"
+      - oc describe is thv-proxyrunner -n {{.OCP_PROJECT}} || (echo "thv-proxyrunner image stream not found" && exit 1)
 
   ocp-deploy-operator:
     desc: Deploy ToolHive Operator to OpenShift using locally built images
+    vars:
+      SHA:  
+        sh: git rev-parse HEAD || echo "unknown"
     cmds:
       - |
         helm upgrade --install toolhive-operator deploy/charts/operator \
-        --set operator.image=image-registry.openshift-image-registry.svc:5000/{{.OCP_PROJECT}}/thv-operator:latest \
-        --set operator.toolhiveRunnerImage=image-registry.openshift-image-registry.svc:5000/{{.OCP_PROJECT}}/thv-proxyrunner:latest \
+        --set operator.image=image-registry.openshift-image-registry.svc:5000/{{.OCP_PROJECT}}/thv-operator:{{.SHA}}-ubi \
+        --set operator.toolhiveRunnerImage=image-registry.openshift-image-registry.svc:5000/{{.OCP_PROJECT}}/thv-proxyrunner:{{.SHA}}-ubi \
         --namespace {{.OCP_PROJECT}} \
         --create-namespace \
         {{ .CLI_ARGS }}
@@ -342,3 +354,47 @@ tasks:
       - echo "Keycloak will be available at http://localhost:8080"
       - echo "Use 'task keycloak:get-admin-creds' to get login credentials"
       - kubectl port-forward service/keycloak-dev-service -n keycloak 8080:8080 --kubeconfig kconfig.yaml
+
+  build-operator-image-ubi:
+    desc: Build the operator image
+    vars:
+      COMMIT:
+        sh: git rev-parse --short HEAD || echo "unknown"
+      BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
+      SHA:  
+        sh: git rev-parse HEAD || echo "unknown"
+      REPO: '{{.REPO | default "ghcr.io/stacklok/toolhive"}}'
+    cmds:
+      - >
+        eval "{{.CONTAINER_RUNTIME}} build --load
+        -t {{.REPO}}/thv-operator:{{.SHA}}-ubi
+        --build-arg CODEDIR=cmd/thv-operator
+        --build-arg VERSION={{.SHA}}-ubi
+        --build-arg COMMIT={{.COMMIT}}
+        --build-arg BUILD_DATE={{.BUILD_DATE}}
+        --label name=\"toolhive-operator\"
+        --label vendor=\"Stacklok\"
+        --label maintainer=\"Stacklok\"
+        -f containers/operator/Dockerfile ."
+
+  build-proxyrunner-image-ubi:
+    desc: Build the proxyrunner image
+    vars:
+      COMMIT:
+        sh: git rev-parse --short HEAD || echo "unknown"
+      BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
+      SHA:  
+        sh: git rev-parse HEAD || echo "unknown"
+      REPO: '{{.REPO | default "ghcr.io/stacklok/toolhive"}}'
+    cmds:
+      - >
+        eval "{{.CONTAINER_RUNTIME}} build --load
+        -t {{.REPO}}/thv-proxyrunner:{{.SHA}}-ubi
+        --build-arg CODEDIR=cmd/thv-proxyrunner
+        --build-arg VERSION={{.SHA}}-ubi
+        --build-arg COMMIT={{.COMMIT}}
+        --build-arg BUILD_DATE={{.BUILD_DATE}}
+        --label name=\"toolhive-proxyrunner\"
+        --label vendor=\"Stacklok\"
+        --label maintainer=\"Stacklok\"
+        -f containers/operator/Dockerfile ."

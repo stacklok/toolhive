@@ -88,6 +88,23 @@ The test framework uses Ginkgo and Gomega for BDD-style testing.
    - `transport/`: Communication protocols (HTTP, SSE, stdio, streamable)
    - `workloads/`: Workload lifecycle management
 
+4. **Virtual MCP Server (`cmd/vmcp/`)**
+   - Core packages in `pkg/vmcp/`:
+     - `aggregator/`: Backend discovery (CLI/K8s), capability querying, conflict resolution (prefix/priority/manual)
+     - `router/`: Routes MCP requests (tools/resources/prompts) to backends
+     - `auth/`: Two-boundary auth model (incoming: clients→vMCP; outgoing: vMCP→backends)
+     - `composer/`: Multi-step workflow execution with DAG-based parallel/sequential support
+     - `config/`: Platform-agnostic config model (works for CLI YAML and K8s CRDs)
+     - `server/`: HTTP server implementation with session management and auth middleware
+     - `client/`: Backend MCP client using mark3labs/mcp-go SDK
+     - `cache/`: Token caching with pluggable backends
+   - K8s CRDs in `cmd/thv-operator/api/v1alpha1/`:
+     - `VirtualMCPServer`: Main vMCP server resource (GroupRef, auth configs, aggregation, composite tools)
+     - `VirtualMCPCompositeToolDefinition`: Reusable composite tool workflows
+     - `MCPGroup`: Defines backend workload collections
+     - `MCPServer`, `MCPRegistry`, `MCPRemoteProxy`: Backend workload types
+     - `MCPExternalAuthConfig`, `ToolConfig`: Supporting config resources
+
 ### Key Design Patterns
 
 - **Factory Pattern**: Used extensively for creating runtime-specific implementations (Docker/Colima/Podman vs Kubernetes)
@@ -200,6 +217,39 @@ Follow conventional commit format:
 - Capitalize subject line
 - Do not end subject line with period
 - Use body to explain what and why vs. how
+
+## Architecture Documentation
+
+ToolHive maintains comprehensive architecture documentation in `docs/arch/`. When making changes that affect architecture, you MUST update the relevant documentation to keep it in sync with the code.
+
+### When to Update Documentation
+
+Update architecture docs when you:
+- Add or modify core components (workloads, transports, middleware, permissions, registry, groups)
+- Change system design patterns, abstractions, or interfaces
+- Modify the RunConfig schema or permission profiles
+- Update the Kubernetes operator or CRDs
+- Add new architectural concepts or change how components interact
+
+### Which Documentation to Update
+
+| Code Changes | Documentation Files |
+|--------------|---------------------|
+| Core packages (`pkg/workloads/`, `pkg/transport/`, `pkg/permissions/`, `pkg/registry/`, `pkg/groups/`) | `docs/arch/02-core-concepts.md` + topic-specific doc (e.g., `08-workloads-lifecycle.md`, `06-registry-system.md`) |
+| RunConfig schema (`pkg/runner/config.go`) | `docs/arch/05-runconfig-and-permissions.md` |
+| Middleware (`pkg/*/middleware.go`) | `docs/middleware.md` and `docs/arch/02-core-concepts.md` |
+| Operator or CRDs (`cmd/thv-operator/`, `api/`) | `docs/arch/09-operator-architecture.md` |
+| Major architectural changes | `docs/arch/00-overview.md` and `docs/arch/02-core-concepts.md` |
+
+### Documentation Guidelines
+
+- Include code references using `file_path` format (without line numbers since they change frequently)
+- Update Mermaid diagrams when component interactions change
+- Keep terminology consistent with definitions in `docs/arch/02-core-concepts.md`
+- Cross-reference related documentation
+- Explain design decisions and the "why" behind changes
+
+For the complete documentation structure and navigation, see `docs/arch/README.md`.
 
 ## Development Best Practices
 

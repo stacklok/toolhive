@@ -1,0 +1,128 @@
+# Virtual MCP Server Example Configuration
+#
+# This is a minimal example configuration for the Virtual MCP Server.
+# The Virtual MCP Server aggregates multiple MCP server workloads from a
+# ToolHive group into a single unified MCP endpoint.
+#
+# Usage:
+#   vmcp serve --config example-config.yaml
+#
+# Prerequisites:
+#   1. Create a ToolHive group: thv group create engineering-team
+#   2. Run backend MCP servers: thv run github --group engineering-team
+#   3. Start Virtual MCP: vmcp serve --config this-file.yaml
+
+# Virtual MCP Server name
+name: "engineering-vmcp"
+
+# Reference to ToolHive group containing backend MCP servers
+# This group should contain one or more running MCP server workloads
+group: "engineering-team"
+
+# ===== INCOMING AUTHENTICATION (Client → Virtual MCP) =====
+# Currently not implemented - this configuration is a placeholder for
+# future implementation (Issue #165)
+incoming_auth:
+  type: anonymous  # Options: oidc | anonymous | local
+  # OIDC configuration (when type=oidc, not yet implemented):
+  # oidc:
+  #   issuer: "https://keycloak.example.com/realms/myrealm"
+  #   client_id: "vmcp-client"
+  #   client_secret_env: "VMCP_CLIENT_SECRET"
+  #   audience: "vmcp"
+  #   resource: "http://localhost:4483/mcp"
+  #   scopes: ["openid", "profile", "email"]
+
+# ===== OUTGOING AUTHENTICATION (Virtual MCP → Backends) =====
+# Implemented strategies: unauthenticated, header_injection
+outgoing_auth:
+  source: inline  # Options: inline | discovered
+
+  # Default behavior for backends without explicit config
+  default:
+    type: unauthenticated  # Options: unauthenticated | header_injection
+    # TODO: Uncomment when pass_through is implemented
+    # type: pass_through
+
+  # Per-backend authentication examples
+  # backends:
+  #   # Example: API key authentication
+  #   github:
+  #     type: header_injection
+  #     header_injection:
+  #       header_name: "Authorization"
+  #       header_value: "${GITHUB_API_TOKEN}"
+  #
+  #   # TODO: Uncomment when token_exchange is implemented
+  #   # jira:
+  #   #   type: token_exchange
+  #   #   metadata:
+  #   #     token_url: "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token"
+  #   #     client_id: "vmcp-github-exchange"
+  #   #     client_secret_env: "GITHUB_EXCHANGE_SECRET"
+  #   #     audience: "github-api"
+  #   #     scopes: ["repo", "read:org"]
+
+# ===== TOOL AGGREGATION =====
+aggregation:
+  # Conflict resolution strategy when multiple backends have tools with the same name
+  # Options: prefix | priority | manual
+  conflict_resolution: prefix
+
+  # Configuration for the chosen strategy
+  conflict_resolution_config:
+    # For prefix strategy: format for prefixing tool names
+    # Options: {workload}_ | {workload}. | custom-prefix-
+    prefix_format: "{workload}_"
+
+    # For priority strategy: explicit backend ordering (first wins)
+    # priority_order: ["github", "jira", "slack"]
+
+  # Per-workload tool filtering and overrides (optional)
+  # tools:
+  #   - workload: "github"
+  #     # Include only specific tools (omit to include all)
+  #     filter: ["create_pr", "merge_pr", "list_issues"]
+  #     # Rename tools to avoid conflicts
+  #     overrides:
+  #       create_pr:
+  #         name: "gh_create_pr"
+  #         description: "Create a GitHub pull request"
+
+# ===== TOKEN CACHING =====
+# Token cache configuration (not yet implemented)
+# This will be used when outgoing authentication is implemented
+# token_cache:
+#   provider: memory  # Options: memory | redis
+#   config:
+#     max_entries: 1000
+#     ttl_offset: "5m"  # Refresh tokens 5 minutes before expiry
+
+# ===== OPERATIONAL SETTINGS =====
+# Operational configuration (partially implemented)
+# operational:
+#   timeouts:
+#     default: 30s
+#     per_workload:
+#       github: 45s
+#
+#   failure_handling:
+#     health_check_interval: 30s
+#     unhealthy_threshold: 3
+#     partial_failure_mode: fail  # Options: fail | best_effort
+#     circuit_breaker:
+#       enabled: true
+#       failure_threshold: 5
+#       timeout: 60s
+
+# ===== COMPOSITE TOOLS (Phase 2) =====
+# Composite tools for multi-step workflows (not yet implemented)
+# composite_tools:
+#   - name: "deploy_and_notify"
+#     description: "Deploy PR and notify team"
+#     parameters:
+#       pr_number: {type: "integer"}
+#     steps:
+#       - id: "merge"
+#         tool: "github.merge_pr"
+#         arguments: {pr: "{{.params.pr_number}}"}

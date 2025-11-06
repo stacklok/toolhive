@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -152,7 +153,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 
 		runConfig := &runner.RunConfig{
 			Name: "test-workload",
-			RemoteAuthConfig: &runner.RemoteAuthConfig{
+			RemoteAuthConfig: &remote.Config{
 				Issuer:       "https://oauth.example.com",
 				AuthorizeURL: "https://oauth.example.com/auth",
 				TokenURL:     "https://oauth.example.com/token",
@@ -189,7 +190,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 
 		runConfig := &runner.RunConfig{
 			Name: "test-workload",
-			RemoteAuthConfig: &runner.RemoteAuthConfig{
+			RemoteAuthConfig: &remote.Config{
 				Issuer:       "https://oauth.example.com",
 				AuthorizeURL: "https://oauth.example.com/auth",
 				TokenURL:     "https://oauth.example.com/token",
@@ -244,6 +245,33 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		require.NotNil(t, result)
 		// Invalid secrets should be ignored, resulting in empty secrets array
 		assert.Empty(t, result.Secrets)
+	})
+
+	t.Run("with tools override", func(t *testing.T) {
+		t.Parallel()
+
+		runConfig := &runner.RunConfig{
+			Name: "test-workload",
+			ToolsOverride: map[string]runner.ToolOverride{
+				"fetch": {
+					Name:        "fetch_custom",
+					Description: "Custom fetch description",
+				},
+				"read": {
+					Name: "read_file",
+				},
+			},
+		}
+
+		result := runConfigToCreateRequest(runConfig)
+
+		require.NotNil(t, result)
+		require.NotNil(t, result.ToolsOverride)
+		assert.Len(t, result.ToolsOverride, 2)
+		assert.Equal(t, "fetch_custom", result.ToolsOverride["fetch"].Name)
+		assert.Equal(t, "Custom fetch description", result.ToolsOverride["fetch"].Description)
+		assert.Equal(t, "read_file", result.ToolsOverride["read"].Name)
+		assert.Empty(t, result.ToolsOverride["read"].Description)
 	})
 
 	t.Run("nil runConfig", func(t *testing.T) {

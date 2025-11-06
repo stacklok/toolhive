@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -41,6 +42,8 @@ type runConfigBuilder struct {
 	// Store ports separately for proper validation
 	port       int
 	targetPort int
+	// Store network mode to apply to permission profile after it's loaded
+	networkMode string
 	// Build context determines which validation and features are enabled
 	buildContext BuildContext
 }
@@ -75,11 +78,11 @@ func WithRemoteURL(remoteURL string) RunConfigBuilderOption {
 }
 
 // WithRemoteAuth sets the remote authentication configuration
-func WithRemoteAuth(config *RemoteAuthConfig) RunConfigBuilderOption {
+func WithRemoteAuth(config *remote.Config) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		if config == nil {
-			config = &RemoteAuthConfig{
-				CallbackPort: DefaultCallbackPort,
+			config = &remote.Config{
+				CallbackPort: remote.DefaultCallbackPort,
 			}
 		}
 		b.config.RemoteAuthConfig = config
@@ -227,6 +230,15 @@ func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	}
 }
 
+// WithNetworkMode sets the network mode for the container.
+// The network mode will be applied to the permission profile after it is loaded.
+func WithNetworkMode(networkMode string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.networkMode = networkMode
+		return nil
+	}
+}
+
 // WithK8sPodPatch sets the Kubernetes pod template patch
 func WithK8sPodPatch(patch string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
@@ -309,18 +321,20 @@ func WithOIDCConfig(
 	jwksAuthTokenFile string,
 	resourceURL string,
 	jwksAllowPrivateIP bool,
+	insecureAllowHTTP bool,
 ) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
 			oidcClientID != "" || oidcClientSecret != "" {
 			b.config.OIDCConfig = &auth.TokenValidatorConfig{
-				Issuer:           oidcIssuer,
-				Audience:         oidcAudience,
-				JWKSURL:          oidcJwksURL,
-				IntrospectionURL: oidcIntrospectionURL,
-				ClientID:         oidcClientID,
-				ClientSecret:     oidcClientSecret,
-				AllowPrivateIP:   jwksAllowPrivateIP,
+				Issuer:            oidcIssuer,
+				Audience:          oidcAudience,
+				JWKSURL:           oidcJwksURL,
+				IntrospectionURL:  oidcIntrospectionURL,
+				ClientID:          oidcClientID,
+				ClientSecret:      oidcClientSecret,
+				AllowPrivateIP:    jwksAllowPrivateIP,
+				InsecureAllowHTTP: insecureAllowHTTP,
 			}
 		}
 
@@ -342,7 +356,7 @@ func WithOIDCConfig(
 	}
 }
 
-// WithTelemetryConfig configures telemetry settings
+// WithTelemetryConfig configures telemetry settings (legacy - custom attributes handled via middleware)
 func WithTelemetryConfig(
 	otelEndpoint string,
 	otelEnablePrometheusMetricsPath bool,
@@ -770,6 +784,16 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	c.PermissionProfile, err = b.loadPermissionProfile(imageMetadata)
 	if err != nil {
 		return err
+	}
+
+	// Apply network mode to permission profile if specified
+	if b.networkMode != "" {
+		// Ensure Network permissions struct exists
+		if c.PermissionProfile.Network == nil {
+			c.PermissionProfile.Network = &permissions.NetworkPermissions{}
+		}
+		c.PermissionProfile.Network.Mode = b.networkMode
+		logger.Infof("Setting network mode to '%s' on permission profile", b.networkMode)
 	}
 
 	// Process volume mounts

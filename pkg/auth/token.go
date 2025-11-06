@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -390,6 +391,10 @@ type TokenValidatorConfig struct {
 	// AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
 	AllowPrivateIP bool
 
+	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+	// WARNING: This is insecure and should NEVER be used in production
+	InsecureAllowHTTP bool
+
 	// IntrospectionURL is the optional introspection endpoint for validating tokens
 	IntrospectionURL string
 
@@ -405,7 +410,13 @@ func discoverOIDCConfiguration(
 	ctx context.Context,
 	issuer, caCertPath, authTokenFile string,
 	allowPrivateIP bool,
+	insecureAllowHTTP bool,
 ) (*OIDCDiscoveryDocument, error) {
+	// Validate issuer URL scheme
+	if err := networking.ValidateEndpointURLWithInsecure(issuer, insecureAllowHTTP); err != nil {
+		return nil, fmt.Errorf("invalid issuer URL: %w", err)
+	}
+
 	// Construct the well-known endpoint URL
 	wellKnownURL := strings.TrimSuffix(issuer, "/") + "/.well-known/openid-configuration"
 
@@ -424,6 +435,7 @@ func discoverOIDCConfiguration(
 		WithCABundle(caCertPath).
 		WithTokenFromFile(authTokenFile).
 		WithPrivateIPs(allowPrivateIP).
+		WithInsecureAllowHTTP(insecureAllowHTTP).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
@@ -469,13 +481,67 @@ func NewTokenValidatorConfig(issuer, audience, jwksURL, clientID string, clientS
 	}
 }
 
+// registerIntrospectionProviders creates and configures the provider registry
+// for token introspection based on the configuration.
+func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret string) (*Registry, error) {
+	registry := NewRegistry()
+
+	// Add Google provider if the introspection URL matches
+	if config.IntrospectionURL == GoogleTokeninfoURL {
+		logger.Debugf("Registering Google tokeninfo provider: %s", config.IntrospectionURL)
+		registry.AddProvider(NewGoogleProvider(config.IntrospectionURL))
+	}
+
+	// Add GitHub provider if the introspection URL matches GitHub's API pattern
+	if strings.Contains(config.IntrospectionURL, GitHubTokenCheckURL) {
+		logger.Debugf("Registering GitHub token validation provider: %s", config.IntrospectionURL)
+		githubProvider, err := NewGitHubProvider(
+			config.IntrospectionURL,
+			config.ClientID,
+			clientSecret,
+			config.CACertPath,
+			config.AllowPrivateIP,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create GitHub provider: %w", err)
+		}
+		registry.AddProvider(githubProvider)
+	}
+
+	// Add RFC7662 provider with auth if configured
+	if config.ClientID != "" || clientSecret != "" {
+		rfc7662Provider, err := NewRFC7662ProviderWithAuth(
+			config.IntrospectionURL, config.ClientID, clientSecret,
+			config.CACertPath, config.AuthTokenFile, config.AllowPrivateIP,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create RFC7662 provider: %w", err)
+		}
+		registry.AddProvider(rfc7662Provider)
+	}
+
+	return registry, nil
+}
+
 // NewTokenValidator creates a new token validator.
 func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*TokenValidator, error) {
+	// Log warning if insecure HTTP is enabled
+	if config.InsecureAllowHTTP {
+		logger.Warnf(
+			"WARNING: InsecureAllowHTTP is enabled for issuer '%s' - "+
+				"HTTP OIDC URLs are allowed. This is INSECURE and should NEVER be used in production!",
+			config.Issuer,
+		)
+	}
+
 	jwksURL := config.JWKSURL
 
 	// If JWKS URL is not provided but issuer is, try to discover it
 	if jwksURL == "" && config.Issuer != "" {
-		doc, err := discoverOIDCConfiguration(ctx, config.Issuer, config.CACertPath, config.AuthTokenFile, config.AllowPrivateIP)
+		doc, err := discoverOIDCConfiguration(
+			ctx, config.Issuer, config.CACertPath, config.AuthTokenFile,
+			config.AllowPrivateIP, config.InsecureAllowHTTP,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrFailedToDiscoverOIDC, err)
 		}
@@ -492,6 +558,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 		WithCABundle(config.CACertPath).
 		WithPrivateIPs(config.AllowPrivateIP).
 		WithTokenFromFile(config.AuthTokenFile).
+		WithInsecureAllowHTTP(config.InsecureAllowHTTP).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
@@ -508,24 +575,19 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 
 	// Skip synchronous JWKS registration - will be done lazily on first use
 
-	// Create provider registry with RFC7662 fallback
-	registry := NewRegistry()
-
-	// Add Google provider if the introspection URL matches
-	if config.IntrospectionURL == GoogleTokeninfoURL {
-		logger.Debugf("Registering Google tokeninfo provider: %s", config.IntrospectionURL)
-		registry.AddProvider(NewGoogleProvider(config.IntrospectionURL))
+	// Load client secret from environment variable if not provided in config
+	// This allows secrets to be injected via Kubernetes Secret references
+	clientSecret := config.ClientSecret
+	if clientSecret == "" {
+		if envSecret := os.Getenv("TOOLHIVE_OIDC_CLIENT_SECRET"); envSecret != "" {
+			clientSecret = envSecret
+		}
 	}
 
-	// Add RFC7662 provider with auth if configured
-	if config.ClientID != "" || config.ClientSecret != "" {
-		rfc7662Provider, err := NewRFC7662ProviderWithAuth(
-			config.IntrospectionURL, config.ClientID, config.ClientSecret, config.CACertPath, config.AuthTokenFile, config.AllowPrivateIP,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create RFC7662 provider: %w", err)
-		}
-		registry.AddProvider(rfc7662Provider)
+	// Register introspection providers
+	registry, err := registerIntrospectionProviders(config, clientSecret)
+	if err != nil {
+		return nil, err
 	}
 
 	return &TokenValidator{
@@ -534,7 +596,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 		jwksURL:       jwksURL,
 		introspectURL: config.IntrospectionURL,
 		clientID:      config.ClientID,
-		clientSecret:  config.ClientSecret,
+		clientSecret:  clientSecret,
 		jwksClient:    cache,
 		client:        config.httpClient,
 		resourceURL:   config.ResourceURL,
@@ -757,9 +819,6 @@ func (v *TokenValidator) ValidateToken(ctx context.Context, tokenString string) 
 	return claims, nil
 }
 
-// ClaimsContextKey is the key used to store claims in the request context.
-type ClaimsContextKey struct{}
-
 // buildWWWAuthenticate builds a RFC 6750 / RFC 9728 compliant value for the
 // WWW-Authenticate header. It always includes realm and, if set, resource_metadata.
 // If includeError is true, it appends error="invalid_token" and an optional description.
@@ -802,26 +861,16 @@ func (v *TokenValidator) buildWWWAuthenticate(includeError bool, errDescription 
 	return "Bearer " + strings.Join(parts, ", ")
 }
 
-// Middleware creates an HTTP middleware that validates JWT tokens.
+// Middleware creates an HTTP middleware that validates JWT tokens and creates Identity.
 func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Get the token from the Authorization header
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
+		// Extract the bearer token from the Authorization header
+		tokenString, err := ExtractBearerToken(r)
+		if err != nil {
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(false, ""))
-			http.Error(w, "Authorization header required", http.StatusUnauthorized)
+			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
-
-		// Check if the Authorization header has the Bearer prefix
-		if !strings.HasPrefix(authHeader, "Bearer ") {
-			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(false, ""))
-			http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
-			return
-		}
-
-		// Extract the token
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 
 		// Validate the token
 		claims, err := v.ValidateToken(r.Context(), tokenString)
@@ -831,8 +880,17 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Add the claims to the request context using a proper key type
-		ctx := context.WithValue(r.Context(), ClaimsContextKey{}, claims)
+		// Convert claims to Identity
+		identity, err := claimsToIdentity(claims, tokenString)
+		if err != nil {
+			logger.Errorf("Failed to convert claims to identity: %v", err)
+			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(true, err.Error()))
+			http.Error(w, "Invalid authentication claims", http.StatusUnauthorized)
+			return
+		}
+
+		// Add the Identity to the request context
+		ctx := WithIdentity(r.Context(), identity)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

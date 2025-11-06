@@ -66,6 +66,7 @@ func runWithFlagsBasedConfig(
 			runFlags.runJWKSAuthTokenFile,
 			runFlags.runResourceURL,
 			runFlags.runJWKSAllowPrivateIP,
+			false,
 		),
 		runner.WithTelemetryConfig(
 			runFlags.runOtelEndpoint,
@@ -124,6 +125,15 @@ func runWithFileBasedConfig(
 			return fmt.Errorf("failed to validate environment variables: %v", err)
 		}
 		config.EnvVars = validatedEnvVars
+	}
+
+	// Process environment files from EnvFileDir if specified (e.g., for Vault secrets)
+	if config.EnvFileDir != "" {
+		updatedConfig, err := config.WithEnvFilesFromDirectory(config.EnvFileDir)
+		if err != nil {
+			return fmt.Errorf("failed to process environment files from directory %s: %v", config.EnvFileDir, err)
+		}
+		config = updatedConfig
 	}
 
 	// Apply image metadata overrides if needed (similar to what the builder does)

@@ -3,10 +3,15 @@ package git
 import (
 	"context"
 	"fmt"
-	"os"
+	"runtime"
 
+	"github.com/go-git/go-billy/v5/memfs"
+	"github.com/go-git/go-billy/v5/util"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
+	"github.com/go-git/go-git/v5/storage/filesystem"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // Client defines the interface for Git operations
@@ -18,7 +23,7 @@ type Client interface {
 	GetFileContent(repoInfo *RepositoryInfo, path string) ([]byte, error)
 
 	// Cleanup removes local repository directory
-	Cleanup(repoInfo *RepositoryInfo) error
+	Cleanup(ctx context.Context, repoInfo *RepositoryInfo) error
 }
 
 // DefaultGitClient implements GitClient using go-git
@@ -49,16 +54,37 @@ func (c *DefaultGitClient) Clone(ctx context.Context, config *CloneConfig) (*Rep
 	}
 	// For commit-based clones, we need the full repository to ensure the commit is available
 
+	// Use in-memory filesystems for the repository and the storer
+	// See https://github.com/mindersec/minder/blob/main/internal/providers/git/git.go
+	// for more details
 	// Clone the repository
-	repo, err := git.PlainCloneContext(ctx, config.Directory, false, cloneOptions)
+	memFS := memfs.New()
+	memFS = &LimitedFs{
+		Fs:            memFS,
+		MaxFiles:      10 * 1000,
+		TotalFileSize: 100 * 1024 * 1024,
+	}
+	// go-git seems to want separate filesystems for the storer and the checked out files
+	storerFs := memfs.New()
+	storerFs = &LimitedFs{
+		Fs:            storerFs,
+		MaxFiles:      10 * 1000,
+		TotalFileSize: 100 * 1024 * 1024,
+	}
+	storerCache := cache.NewObjectLRUDefault()
+	storer := filesystem.NewStorage(storerFs, storerCache)
+
+	repo, err := git.CloneContext(ctx, storer, memFS, cloneOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to clone repository: %w", err)
 	}
 
 	// Get repository information
 	repoInfo := &RepositoryInfo{
-		Repository: repo,
-		RemoteURL:  config.URL,
+		Repository:       repo,
+		RemoteURL:        config.URL,
+		storerFilesystem: storerFs,
+		objectCache:      storerCache,
 	}
 
 	// If specific commit is requested, checkout that commit
@@ -125,19 +151,39 @@ func (*DefaultGitClient) GetFileContent(repoInfo *RepositoryInfo, path string) (
 }
 
 // Cleanup removes local repository directory
-func (*DefaultGitClient) Cleanup(repoInfo *RepositoryInfo) error {
+func (*DefaultGitClient) Cleanup(ctx context.Context, repoInfo *RepositoryInfo) error {
+	logger := log.FromContext(ctx)
 	if repoInfo == nil || repoInfo.Repository == nil {
-		return nil
+		return fmt.Errorf("repository is nil")
 	}
 
-	// Get the repository directory from the worktree
-	workTree, err := repoInfo.Repository.Worktree()
-	if err != nil {
-		return fmt.Errorf("failed to get worktree: %w", err)
+	// 1. Clear object cache explicitly
+	if repoInfo.objectCache != nil {
+		logger.V(1).Info("Clearing object cache")
+		repoInfo.objectCache.Clear()
 	}
 
-	// Remove the directory
-	return os.RemoveAll(workTree.Filesystem.Root())
+	// 2. Clear worktree filesystem
+	worktree, err := repoInfo.Repository.Worktree()
+	if err == nil && worktree.Filesystem != nil {
+		logger.V(1).Info("Clearing worktree filesystem")
+		_ = util.RemoveAll(worktree.Filesystem, "/")
+	}
+
+	// 3. Clear storer filesystem (memfs)
+	if repoInfo.storerFilesystem != nil {
+		logger.V(1).Info("Clearing storer filesystem")
+		_ = util.RemoveAll(repoInfo.storerFilesystem, "/")
+	}
+
+	// 4. Nil out all references
+	repoInfo.objectCache = nil
+	repoInfo.storerFilesystem = nil
+	repoInfo.Repository = nil
+
+	// // 5. Force GC to reclaim memory
+	runtime.GC()
+	return nil
 }
 
 // updateRepositoryInfo updates the repository info with current state

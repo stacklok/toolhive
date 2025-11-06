@@ -17,6 +17,11 @@ type Provider interface {
 	SetRegistryFile(registryPath string) error
 	UnsetRegistry() error
 	GetRegistryConfig() (url, localPath string, allowPrivateIP bool, registryType string)
+
+	// CA certificate operations
+	SetCACert(certPath string) error
+	GetCACert() (certPath string, exists bool, accessible bool)
+	UnsetCACert() error
 }
 
 // DefaultProvider implements Provider using the default XDG config path
@@ -60,6 +65,21 @@ func (d *DefaultProvider) UnsetRegistry() error {
 // GetRegistryConfig returns current registry configuration
 func (d *DefaultProvider) GetRegistryConfig() (url, localPath string, allowPrivateIP bool, registryType string) {
 	return getRegistryConfig(d)
+}
+
+// SetCACert validates and sets the CA certificate path
+func (d *DefaultProvider) SetCACert(certPath string) error {
+	return setCACert(d, certPath)
+}
+
+// GetCACert returns the currently configured CA certificate path and its accessibility status
+func (d *DefaultProvider) GetCACert() (certPath string, exists bool, accessible bool) {
+	return getCACert(d)
+}
+
+// UnsetCACert removes the CA certificate configuration
+func (d *DefaultProvider) UnsetCACert() error {
+	return unsetCACert(d)
 }
 
 // PathProvider implements Provider using a specific config path
@@ -113,6 +133,21 @@ func (p *PathProvider) GetRegistryConfig() (url, localPath string, allowPrivateI
 	return getRegistryConfig(p)
 }
 
+// SetCACert validates and sets the CA certificate path
+func (p *PathProvider) SetCACert(certPath string) error {
+	return setCACert(p, certPath)
+}
+
+// GetCACert returns the currently configured CA certificate path and its accessibility status
+func (p *PathProvider) GetCACert() (certPath string, exists bool, accessible bool) {
+	return getCACert(p)
+}
+
+// UnsetCACert removes the CA certificate configuration
+func (p *PathProvider) UnsetCACert() error {
+	return unsetCACert(p)
+}
+
 // KubernetesProvider is a no-op implementation of Provider for Kubernetes environments.
 // In Kubernetes, configuration is managed by the cluster, not by local files.
 type KubernetesProvider struct{}
@@ -157,6 +192,21 @@ func (*KubernetesProvider) UnsetRegistry() error {
 // GetRegistryConfig returns empty registry configuration for Kubernetes environments
 func (*KubernetesProvider) GetRegistryConfig() (url, localPath string, allowPrivateIP bool, registryType string) {
 	return "", "", false, ""
+}
+
+// SetCACert is a no-op for Kubernetes environments
+func (*KubernetesProvider) SetCACert(_ string) error {
+	return nil
+}
+
+// GetCACert returns empty CA cert configuration for Kubernetes environments
+func (*KubernetesProvider) GetCACert() (certPath string, exists bool, accessible bool) {
+	return "", false, false
+}
+
+// UnsetCACert is a no-op for Kubernetes environments
+func (*KubernetesProvider) UnsetCACert() error {
+	return nil
 }
 
 // NewProvider creates the appropriate config provider based on the runtime environment

@@ -56,7 +56,6 @@ type HTTPSSEProxy struct {
 	// Basic configuration
 	host              string
 	port              int
-	containerName     string
 	middlewares       []types.NamedMiddleware
 	trustProxyHeaders bool
 
@@ -89,7 +88,6 @@ type HTTPSSEProxy struct {
 func NewHTTPSSEProxy(
 	host string,
 	port int,
-	containerName string,
 	trustProxyHeaders bool,
 	prometheusHandler http.Handler,
 	middlewares ...types.NamedMiddleware,
@@ -103,7 +101,6 @@ func NewHTTPSSEProxy(
 		middlewares:       middlewares,
 		host:              host,
 		port:              port,
-		containerName:     containerName,
 		trustProxyHeaders: trustProxyHeaders,
 		shutdownCh:        make(chan struct{}),
 		messageCh:         make(chan jsonrpc2.Message, 100),
@@ -184,7 +181,7 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 		_, portStr, _ := net.SplitHostPort(actualAddr)
 		actualPort, _ := strconv.Atoi(portStr)
 
-		logger.Infof("HTTP proxy started for container %s on port %d", p.containerName, actualPort)
+		logger.Infof("HTTP proxy started on port %d", actualPort)
 		logger.Infof("SSE endpoint: http://%s%s", actualAddr, ssecommon.HTTPSSEEndpoint)
 		logger.Infof("JSON-RPC endpoint: http://%s%s", actualAddr, ssecommon.HTTPMessagesEndpoint)
 
@@ -491,7 +488,7 @@ func (p *HTTPSSEProxy) processPendingMessages(clientID string, messageCh chan<- 
 	}
 
 	// Find messages for this client (all messages for now)
-	for _, pendingMsg := range p.pendingMessages {
+	for i, pendingMsg := range p.pendingMessages {
 		// Convert to SSE string
 		sseString := pendingMsg.Message.ToSSEString()
 
@@ -501,7 +498,10 @@ func (p *HTTPSSEProxy) processPendingMessages(clientID string, messageCh chan<- 
 			// Message sent successfully
 		default:
 			// Channel is full, stop sending
-			logger.Errorf("Failed to send pending message to client %s (channel full)", clientID)
+			logger.Errorf("Client %s channel full after sending %d/%d pending messages",
+				clientID, i, len(p.pendingMessages))
+			// Remove successfully sent messages and keep the rest
+			p.pendingMessages = p.pendingMessages[i:]
 			return
 		}
 	}

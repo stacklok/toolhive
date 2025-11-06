@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -45,7 +46,7 @@ func TestMCPServerReconciler_DetectPlatform_Success(t *testing.T) {
 				err:      nil,
 			}
 			reconciler := &MCPServerReconciler{
-				PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
+				PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
 			}
 
 			ctx := context.Background()
@@ -72,7 +73,7 @@ func TestMCPServerReconciler_DetectPlatform_Error(t *testing.T) {
 		err:      assert.AnError,
 	}
 	reconciler := &MCPServerReconciler{
-		PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
 	}
 
 	ctx := context.Background()
@@ -96,7 +97,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -109,11 +110,11 @@ func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 	}
 	reconciler := &MCPServerReconciler{
 		Scheme:           scheme,
-		PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
 	}
 
 	ctx := context.Background()
-	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer)
+	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
 
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
@@ -168,7 +169,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_OpenShift(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -181,11 +182,11 @@ func TestMCPServerReconciler_DeploymentForMCPServer_OpenShift(t *testing.T) {
 	}
 	reconciler := &MCPServerReconciler{
 		Scheme:           scheme,
-		PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
 	}
 
 	ctx := context.Background()
-	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer)
+	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
 
 	require.NotNil(t, deployment, "Deployment should not be nil")
 
@@ -246,7 +247,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_PlatformDetectionError(t *te
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     "test-image:latest",
 			Transport: "stdio",
-			Port:      8080,
+			ProxyPort: 8080,
 		},
 	}
 
@@ -259,11 +260,11 @@ func TestMCPServerReconciler_DeploymentForMCPServer_PlatformDetectionError(t *te
 	}
 	reconciler := &MCPServerReconciler{
 		Scheme:           scheme,
-		PlatformDetector: NewSharedPlatformDetectorWithDetector(mockDetector),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetectorWithDetector(mockDetector),
 	}
 
 	ctx := context.Background()
-	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer)
+	deployment := reconciler.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
 
 	require.NotNil(t, deployment, "Deployment should not be nil")
 

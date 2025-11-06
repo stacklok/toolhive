@@ -55,6 +55,10 @@ const (
 	LMStudio MCPClient = "lm-studio"
 	// Goose represents the Goose AI agent.
 	Goose MCPClient = "goose"
+	// Trae represents the Trae IDE.
+	Trae MCPClient = "trae"
+	// Continue represents the Continue.dev IDE plugins.
+	Continue MCPClient = "continue"
 )
 
 // Extension is extension of the client config file.
@@ -65,6 +69,16 @@ const (
 	JSON Extension = "json"
 	// YAML represents a YAML extension.
 	YAML Extension = "yaml"
+)
+
+// YAMLStorageType represents how servers are stored in YAML configuration files.
+type YAMLStorageType string
+
+const (
+	// YAMLStorageTypeMap represents servers stored as a map with server names as keys.
+	YAMLStorageTypeMap YAMLStorageType = "map"
+	// YAMLStorageTypeArray represents servers stored as an array of objects.
+	YAMLStorageTypeArray YAMLStorageType = "array"
 )
 
 // mcpClientConfig represents a configuration path for a supported MCP client.
@@ -79,6 +93,10 @@ type mcpClientConfig struct {
 	SupportedTransportTypesMap    map[types.TransportType]string // stdio should be mapped to sse
 	IsTransportTypeFieldSupported bool
 	MCPServersUrlLabel            string
+	// YAML-specific configuration (only used when Extension == YAML)
+	YAMLStorageType     YAMLStorageType        // How servers are stored in YAML (map or array)
+	YAMLIdentifierField string                 // For array type: field name that identifies the server
+	YAMLDefaults        map[string]interface{} // Default values to add to entries
 }
 
 var (
@@ -366,6 +384,50 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		IsTransportTypeFieldSupported: true,
 		MCPServersUrlLabel:            "uri",
+		// YAML configuration
+		YAMLStorageType: YAMLStorageTypeMap,
+		YAMLDefaults: map[string]interface{}{
+			"enabled": true,
+			"timeout": 60,
+		},
+	},
+	{
+		ClientType:           Trae,
+		Description:          "Trae IDE",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{"Trae", "User"},
+		PlatformPrefix: map[string][]string{
+			"linux":   {".config"},
+			"darwin":  {"Library", "Application Support"},
+			"windows": {"AppData", "Roaming"},
+		},
+		Extension: JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: false,
+		MCPServersUrlLabel:            "url",
+	},
+	{
+		ClientType:           Continue,
+		Description:          "Continue.dev IDE plugins",
+		SettingsFile:         "config.yaml",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".continue"},
+		Extension:            YAML,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "sse",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "streamable-http",
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabel:            "url",
+		// YAML configuration
+		YAMLStorageType:     YAMLStorageTypeArray,
+		YAMLIdentifierField: "name",
 	},
 }
 
@@ -487,7 +549,17 @@ func (cm *ClientManager) CreateClientConfig(clientType MCPClient) (*ConfigFile, 
 
 	// Create the file if it does not exist
 	logger.Infof("Creating new client config file at %s", path)
-	err := os.WriteFile(path, []byte("{}"), 0600)
+
+	var initialContent []byte
+	if clientCfg.Extension == YAML {
+		// For YAML files, create an empty file - the updater will initialize structure as needed
+		initialContent = []byte("")
+	} else {
+		// JSON files get empty object
+		initialContent = []byte("{}")
+	}
+
+	err := os.WriteFile(path, initialContent, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client config file: %w", err)
 	}
@@ -559,9 +631,11 @@ func (cm *ClientManager) retrieveConfigFileMetadata(clientType MCPClient) (*Conf
 	var configUpdater ConfigUpdater
 	switch clientCfg.Extension {
 	case YAML:
+		// Use the generic YAML converter with configuration from mcpClientConfig
+		converter := NewGenericYAMLConverter(clientCfg)
 		configUpdater = &YAMLConfigUpdater{
 			Path:      path,
-			Converter: &GooseYAMLConverter{},
+			Converter: converter,
 		}
 	case JSON:
 		configUpdater = &JSONConfigUpdater{

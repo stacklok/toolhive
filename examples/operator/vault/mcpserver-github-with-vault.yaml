@@ -6,7 +6,7 @@ metadata:
 spec:
   image: ghcr.io/github/github-mcp-server:latest
   transport: stdio
-  port: 9095
+  proxyPort: 9095
   resources:
     limits:
       cpu: '100m'

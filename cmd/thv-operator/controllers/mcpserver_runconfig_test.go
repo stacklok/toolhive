@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
@@ -46,7 +47,7 @@ func createTestMCPServerWithConfig(name, namespace, image string, envVars []mcpv
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:     image,
 			Transport: stdioTransport,
-			Port:      8080,
+			ProxyPort: 8080,
 			Env:       envVars,
 		},
 	}
@@ -70,7 +71,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 				},
 			},
 			//nolint:thelper // We want to see the error at the specific line
@@ -91,7 +92,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "env-image:latest",
 					Transport: "sse",
-					Port:      9090,
+					ProxyPort: 9090,
 					Env: []mcpv1alpha1.EnvVar{
 						{Name: "VAR1", Value: "value1"},
 						{Name: "VAR2", Value: "value2"},
@@ -118,7 +119,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "vol-image:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					Volumes: []mcpv1alpha1.Volume{
 						{Name: "vol1", HostPath: "/host/path1", MountPath: "/mount/path1", ReadOnly: false},
 						{Name: "vol2", HostPath: "/host/path2", MountPath: "/mount/path2", ReadOnly: true},
@@ -143,7 +144,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "secret-image:latest",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					Secrets: []mcpv1alpha1.SecretRef{
 						{Name: "secret1", Key: "key1", TargetEnvName: "TARGET1"},
 						{Name: "secret2", Key: "key2"}, // No target, should use key as target
@@ -171,7 +172,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					ProxyMode: streamableHTTPProxyMode,
 				},
 			},
@@ -194,7 +195,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					// ProxyMode not specified
 				},
 			},
@@ -217,8 +218,8 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:       "comprehensive:latest",
 					Transport:   "streamable-http",
-					Port:        9090,
-					TargetPort:  8080,
+					ProxyPort:   9090,
+					McpPort:     8080,
 					ProxyMode:   "streamable-http",
 					Args:        []string{"--comprehensive", "--test"},
 					ToolsFilter: []string{"tool1", "tool2"},
@@ -272,7 +273,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:       "edge:latest",
 					Transport:   "stdio",
-					Port:        8080,
+					ProxyPort:   8080,
 					Args:        []string{},             // Empty slice
 					ToolsFilter: nil,                    // Nil slice
 					Env:         nil,                    // Nil slice
@@ -292,124 +293,6 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			},
 		},
 		{
-			name: "with telemetry configuration",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "telemetry-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					Port:      8080,
-					Telemetry: &mcpv1alpha1.TelemetryConfig{
-						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
-							Enabled:     true,
-							Endpoint:    "http://otel-collector:4317",
-							ServiceName: "custom-service-name",
-							Insecure:    true,
-							Headers:     []string{"Authorization=Bearer token123", "X-API-Key=abc"},
-							Tracing: &mcpv1alpha1.OpenTelemetryTracingConfig{
-								Enabled:      true,
-								SamplingRate: "0.25",
-							},
-							Metrics: &mcpv1alpha1.OpenTelemetryMetricsConfig{
-								Enabled: true,
-							},
-						},
-						Prometheus: &mcpv1alpha1.PrometheusConfig{
-							Enabled: true,
-						},
-					},
-				},
-			},
-			//nolint:thelper // We want to see the error at the specific line
-			expected: func(t *testing.T, config *runner.RunConfig) {
-				assert.Equal(t, "telemetry-server", config.Name)
-
-				// Verify telemetry config is set
-				assert.NotNil(t, config.TelemetryConfig)
-
-				// Check OpenTelemetry settings (endpoint should have http:// prefix stripped)
-				assert.Equal(t, "otel-collector:4317", config.TelemetryConfig.Endpoint)
-				assert.Equal(t, "custom-service-name", config.TelemetryConfig.ServiceName)
-				assert.True(t, config.TelemetryConfig.Insecure)
-				assert.True(t, config.TelemetryConfig.TracingEnabled)
-				assert.True(t, config.TelemetryConfig.MetricsEnabled)
-				assert.Equal(t, 0.25, config.TelemetryConfig.SamplingRate)
-				assert.Equal(t, map[string]string{"Authorization": "Bearer token123", "X-API-Key": "abc"}, config.TelemetryConfig.Headers)
-
-				// Check Prometheus settings
-				assert.True(t, config.TelemetryConfig.EnablePrometheusMetricsPath)
-			},
-		},
-		{
-			name: "with minimal telemetry configuration",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "minimal-telemetry-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					Port:      8080,
-					Telemetry: &mcpv1alpha1.TelemetryConfig{
-						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
-							Enabled:  true,
-							Endpoint: "https://secure-otel:4318",
-							// ServiceName not specified - should default to MCPServer name
-						},
-					},
-				},
-			},
-			//nolint:thelper // We want to see the error at the specific line
-			expected: func(t *testing.T, config *runner.RunConfig) {
-				assert.Equal(t, "minimal-telemetry-server", config.Name)
-
-				// Verify telemetry config is set
-				assert.NotNil(t, config.TelemetryConfig)
-
-				// Check that service name defaults to MCPServer name
-				assert.Equal(t, "minimal-telemetry-server", config.TelemetryConfig.ServiceName)
-				assert.Equal(t, "secure-otel:4318", config.TelemetryConfig.Endpoint)
-				assert.False(t, config.TelemetryConfig.Insecure)           // Default should be false
-				assert.Equal(t, 0.05, config.TelemetryConfig.SamplingRate) // Default sampling rate
-			},
-		},
-		{
-			name: "with prometheus only telemetry",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "prometheus-only-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					Port:      8080,
-					Telemetry: &mcpv1alpha1.TelemetryConfig{
-						Prometheus: &mcpv1alpha1.PrometheusConfig{
-							Enabled: true,
-						},
-					},
-				},
-			},
-			//nolint:thelper // We want to see the error at the specific line
-			expected: func(t *testing.T, config *runner.RunConfig) {
-				assert.Equal(t, "prometheus-only-server", config.Name)
-
-				// Verify telemetry config is set
-				assert.NotNil(t, config.TelemetryConfig)
-
-				// Only Prometheus should be enabled
-				assert.True(t, config.TelemetryConfig.EnablePrometheusMetricsPath)
-				assert.False(t, config.TelemetryConfig.TracingEnabled)
-				assert.False(t, config.TelemetryConfig.MetricsEnabled)
-				assert.Equal(t, "", config.TelemetryConfig.Endpoint)
-			},
-		},
-		{
 			name: "with inline authorization configuration",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -419,7 +302,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
 						Type: mcpv1alpha1.AuthzConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineAuthzConfig{
@@ -459,12 +342,12 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
 						Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
 						ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
 							Name: "test-authz-config",
-							Key:  defaultAuthzKey,
+							Key:  ctrlutil.DefaultAuthzKey,
 						},
 					},
 				},
@@ -493,7 +376,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     testImage,
 					Transport: stdioTransport,
-					Port:      8080,
+					ProxyPort: 8080,
 					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -528,52 +411,6 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.True(t, config.OIDCConfig.AllowPrivateIP)
 			},
 		},
-		{
-			name: "with audit configuration enabled",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "audit-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					Port:      8080,
-					Audit: &mcpv1alpha1.AuditConfig{
-						Enabled: true,
-					},
-				},
-			},
-			//nolint:thelper // We want to see the error at the specific line
-			expected: func(t *testing.T, config *runner.RunConfig) {
-				assert.Equal(t, "audit-server", config.Name)
-				// Verify audit config is set
-				assert.NotNil(t, config.AuditConfig)
-			},
-		},
-		{
-			name: "with audit configuration disabled",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "audit-disabled-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					Port:      8080,
-					Audit: &mcpv1alpha1.AuditConfig{
-						Enabled: false,
-					},
-				},
-			},
-			//nolint:thelper // We want to see the error at the specific line
-			expected: func(t *testing.T, config *runner.RunConfig) {
-				assert.Equal(t, "audit-disabled-server", config.Name)
-				// When audit is disabled, config should be nil
-				assert.Nil(t, config.AuditConfig)
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -600,7 +437,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 							if k := tt.mcpServer.Spec.AuthzConfig.ConfigMap.Key; k != "" {
 								return k
 							}
-							return defaultAuthzKey
+							return ctrlutil.DefaultAuthzKey
 						}(): `{
 							"version": "v1",
 							"type": "cedarv1",
@@ -646,8 +483,8 @@ func TestDeterministicConfigMapGeneration(t *testing.T) {
 		Spec: mcpv1alpha1.MCPServerSpec{
 			Image:       "deterministic-test:v1.2.3",
 			Transport:   "sse",
-			Port:        9090,
-			TargetPort:  8080,
+			ProxyPort:   9090,
+			McpPort:     8080,
 			Args:        []string{"--arg1", "--arg2", "--complex-flag=value"},
 			ToolsFilter: []string{"tool3", "tool1", "tool2"}, // Different order to test sorting
 			Env: []mcpv1alpha1.EnvVar{
@@ -869,71 +706,6 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			},
 		},
 		{
-			name: "configmap with telemetry configuration",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "telemetry-test",
-					Namespace: "toolhive-system",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "ghcr.io/example/server:v1.0.0",
-					Transport: "stdio",
-					Port:      8080,
-					Telemetry: &mcpv1alpha1.TelemetryConfig{
-						OpenTelemetry: &mcpv1alpha1.OpenTelemetryConfig{
-							Enabled:     true,
-							Endpoint:    "http://otel-collector:4317",
-							ServiceName: "test-service",
-							Headers:     []string{"Authorization=Bearer test-token"},
-							Insecure:    true,
-							Tracing: &mcpv1alpha1.OpenTelemetryTracingConfig{
-								Enabled:      true,
-								SamplingRate: "0.1",
-							},
-							Metrics: &mcpv1alpha1.OpenTelemetryMetricsConfig{
-								Enabled: true,
-							},
-						},
-						Prometheus: &mcpv1alpha1.PrometheusConfig{
-							Enabled: true,
-						},
-					},
-				},
-			},
-			existingCM:  nil,
-			expectError: false,
-			validateContent: func(t *testing.T, cm *corev1.ConfigMap) {
-				t.Helper()
-				assert.Equal(t, "telemetry-test-runconfig", cm.Name)
-				assert.Equal(t, "toolhive-system", cm.Namespace)
-				assert.Contains(t, cm.Data, "runconfig.json")
-
-				// Parse and validate telemetry configuration in runconfig.json
-				var runConfig runner.RunConfig
-				err := json.Unmarshal([]byte(cm.Data["runconfig.json"]), &runConfig)
-				require.NoError(t, err)
-
-				// Verify basic fields
-				assert.Equal(t, "telemetry-test", runConfig.Name)
-				assert.Equal(t, "ghcr.io/example/server:v1.0.0", runConfig.Image)
-
-				// Verify telemetry configuration is properly serialized
-				assert.NotNil(t, runConfig.TelemetryConfig, "TelemetryConfig should be present in runconfig.json")
-
-				// Check OpenTelemetry settings (endpoint should have http:// prefix stripped)
-				assert.Equal(t, "otel-collector:4317", runConfig.TelemetryConfig.Endpoint)
-				assert.Equal(t, "test-service", runConfig.TelemetryConfig.ServiceName)
-				assert.True(t, runConfig.TelemetryConfig.Insecure)
-				assert.True(t, runConfig.TelemetryConfig.TracingEnabled)
-				assert.True(t, runConfig.TelemetryConfig.MetricsEnabled)
-				assert.Equal(t, 0.1, runConfig.TelemetryConfig.SamplingRate)
-				assert.Equal(t, map[string]string{"Authorization": "Bearer test-token"}, runConfig.TelemetryConfig.Headers)
-
-				// Check Prometheus settings
-				assert.True(t, runConfig.TelemetryConfig.EnablePrometheusMetricsPath)
-			},
-		},
-		{
 			name: "configmap with inline authorization configuration",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -943,7 +715,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/example/server:v1.0.0",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
 						Type: mcpv1alpha1.AuthzConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineAuthzConfig{
@@ -996,7 +768,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/example/server:v1.0.0",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 						Type: mcpv1alpha1.OIDCConfigTypeInline,
 						Inline: &mcpv1alpha1.InlineOIDCConfig{
@@ -1051,7 +823,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/example/server:v1.0.0",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					Audit: &mcpv1alpha1.AuditConfig{
 						Enabled: true,
 					},
@@ -1139,7 +911,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			Spec: mcpv1alpha1.MCPServerSpec{
 				Image:     "ghcr.io/example/server:v1.0.0",
 				Transport: "stdio",
-				Port:      8080,
+				ProxyPort: 8080,
 				AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
 					Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
 					ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
@@ -1426,12 +1198,13 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 			},
 			modifyServer: func(server *mcpv1alpha1.MCPServer) {
 				server.Spec.Transport = "sse"
-				server.Spec.Port = 9090
-				server.Spec.TargetPort = 8080
+				server.Spec.ProxyPort = 9090
+				server.Spec.McpPort = 8080
 			},
 			expectedChanges: map[string]interface{}{
-				"Transport": transporttypes.TransportTypeSSE,
-				"Port":      9090,
+				"Transport":  transporttypes.TransportTypeSSE,
+				"Port":       9090,
+				"TargetPort": 8080,
 			},
 		},
 		{
@@ -1604,15 +1377,19 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/example/server:v1.0.0",
 					Transport: "stdio",
-					Port:      8080,
-					PodTemplateSpec: &corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Annotations: map[string]string{
-								"vault.hashicorp.com/agent-inject": "true",
-								"vault.hashicorp.com/role":         "test-role",
+					ProxyPort: 8080,
+					PodTemplateSpec: func() *runtime.RawExtension {
+						pts := &corev1.PodTemplateSpec{
+							ObjectMeta: metav1.ObjectMeta{
+								Annotations: map[string]string{
+									"vault.hashicorp.com/agent-inject": "true",
+									"vault.hashicorp.com/role":         "test-role",
+								},
 							},
-						},
-					},
+						}
+						raw, _ := json.Marshal(pts)
+						return &runtime.RawExtension{Raw: raw}
+					}(),
 				},
 			},
 			expectedEnvDir: "/vault/secrets",
@@ -1627,7 +1404,7 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/example/server:v1.0.0",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
@@ -1652,7 +1429,7 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "ghcr.io/example/server:v1.0.0",
 					Transport: "stdio",
-					Port:      8080,
+					ProxyPort: 8080,
 				},
 			},
 			expectedEnvDir: "",

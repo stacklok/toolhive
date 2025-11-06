@@ -5,17 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	runconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap"
 	configMapChecksum "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/operator/accessors"
@@ -83,11 +82,6 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		proxyHost = envHost
 	}
 
-	port := 8080
-	if m.Spec.Port != 0 {
-		port = int(m.Spec.Port)
-	}
-
 	// Helper functions to convert MCPServer spec to builder format
 	envVars := convertEnvVarsFromMCPServer(m.Spec.Env)
 	volumes := convertVolumesFromMCPServer(m.Spec.Volumes)
@@ -100,7 +94,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 
 	if m.Spec.ToolConfigRef != nil {
 		// ToolConfigRef takes precedence over inline ToolsFilter
-		toolConfig, err := GetToolConfigForMCPServer(context.Background(), r.Client, m)
+		toolConfig, err := ctrlutil.GetToolConfigForMCPServer(context.Background(), r.Client, m)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)
 		}
@@ -136,7 +130,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		runner.WithName(m.Name),
 		runner.WithImage(m.Spec.Image),
 		runner.WithCmdArgs(m.Spec.Args),
-		runner.WithTransportAndPorts(m.Spec.Transport, port, int(m.Spec.TargetPort)),
+		runner.WithTransportAndPorts(m.Spec.Transport, int(m.GetProxyPort()), int(m.GetMcpPort())),
 		runner.WithProxyMode(transporttypes.ProxyMode(proxyMode)),
 		runner.WithHost(proxyHost),
 		runner.WithTrustProxyHeaders(m.Spec.TrustProxyHeaders),
@@ -171,36 +165,43 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 		}
 	}
 
-	// Add telemetry configuration if specified
-	addTelemetryConfigOptions(&options, m.Spec.Telemetry, m.Name)
-
-	// Add authorization configuration if specified
+	// Create context for API operations
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()
 
-	if err := AddAuthzConfigOptions(ctx, r.Client, m.Namespace, m.Spec.AuthzConfig, &options); err != nil {
+	// Add telemetry configuration if specified
+	runconfig.AddTelemetryConfigOptions(ctx, &options, m.Spec.Telemetry, m.Name)
+
+	// Add authorization configuration if specified
+
+	if err := ctrlutil.AddAuthzConfigOptions(ctx, r.Client, m.Namespace, m.Spec.AuthzConfig, &options); err != nil {
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
-	if err := r.addOIDCConfigOptions(ctx, &options, m); err != nil {
+	if err := ctrlutil.AddOIDCConfigOptions(ctx, r.Client, m, &options); err != nil {
 		return nil, fmt.Errorf("failed to process OIDCConfig: %w", err)
 	}
 
 	// Add external auth configuration if specified
-	if err := r.addExternalAuthConfigOptions(ctx, m, &options); err != nil {
+	if err := ctrlutil.AddExternalAuthConfigOptions(ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef, &options); err != nil {
 		return nil, fmt.Errorf("failed to process ExternalAuthConfig: %w", err)
 	}
 
 	// Add audit configuration if specified
-	addAuditConfigOptions(&options, m.Spec.Audit)
+	runconfig.AddAuditConfigOptions(&options, m.Spec.Audit)
 
 	// Check for Vault Agent Injection and add env-file-dir if needed
 	vaultDetected := false
 
 	// Check for Vault injection in pod template annotations
-	if m.Spec.PodTemplateSpec != nil &&
-		m.Spec.PodTemplateSpec.Annotations != nil {
-		vaultDetected = hasVaultAgentInjection(m.Spec.PodTemplateSpec.Annotations)
+	if m.Spec.PodTemplateSpec != nil && m.Spec.PodTemplateSpec.Raw != nil {
+		// Try to unmarshal the raw extension to check annotations
+		var podTemplateSpec corev1.PodTemplateSpec
+		if err := json.Unmarshal(m.Spec.PodTemplateSpec.Raw, &podTemplateSpec); err == nil {
+			if podTemplateSpec.Annotations != nil {
+				vaultDetected = hasVaultAgentInjection(podTemplateSpec.Annotations)
+			}
+		}
 	}
 
 	// Also check resource overrides annotations using the accessor for safe access
@@ -447,218 +448,13 @@ func convertVolumesFromMCPServer(vols []mcpv1alpha1.Volume) []string {
 	return volumes
 }
 
-// addTelemetryConfigOptions adds telemetry configuration options to the builder options
-func addTelemetryConfigOptions(
-	options *[]runner.RunConfigBuilderOption,
-	telemetryConfig *mcpv1alpha1.TelemetryConfig,
-	mcpServerName string,
-) {
-	if telemetryConfig == nil {
-		return
+// hasVaultAgentInjection checks if Vault Agent Injection is enabled in the pod annotations
+func hasVaultAgentInjection(annotations map[string]string) bool {
+	if annotations == nil {
+		return false
 	}
 
-	// Default values
-	var otelEndpoint string
-	var otelEnablePrometheusMetricsPath bool
-	var otelTracingEnabled bool
-	var otelMetricsEnabled bool
-	var otelServiceName string
-	var otelSamplingRate = 0.05 // Default sampling rate
-	var otelHeaders []string
-	var otelInsecure bool
-	var otelEnvironmentVariables []string
-
-	// Process OpenTelemetry configuration
-	if telemetryConfig.OpenTelemetry != nil && telemetryConfig.OpenTelemetry.Enabled {
-		otel := telemetryConfig.OpenTelemetry
-
-		// Strip http:// or https:// prefix if present, as OTLP client expects host:port format
-		otelEndpoint = strings.TrimPrefix(strings.TrimPrefix(otel.Endpoint, "https://"), "http://")
-		otelInsecure = otel.Insecure
-		otelHeaders = otel.Headers
-
-		// Use MCPServer name as service name if not specified
-		if otel.ServiceName != "" {
-			otelServiceName = otel.ServiceName
-		} else {
-			otelServiceName = mcpServerName
-		}
-
-		// Handle tracing configuration
-		if otel.Tracing != nil {
-			otelTracingEnabled = otel.Tracing.Enabled
-			if otel.Tracing.SamplingRate != "" {
-				// Parse sampling rate string to float64
-				if rate, err := strconv.ParseFloat(otel.Tracing.SamplingRate, 64); err == nil {
-					otelSamplingRate = rate
-				}
-			}
-		}
-
-		// Handle metrics configuration
-		if otel.Metrics != nil {
-			otelMetricsEnabled = otel.Metrics.Enabled
-		}
-	}
-
-	// Process Prometheus configuration
-	if telemetryConfig.Prometheus != nil {
-		otelEnablePrometheusMetricsPath = telemetryConfig.Prometheus.Enabled
-	}
-
-	// Add telemetry config to options
-	*options = append(*options, runner.WithTelemetryConfig(
-		otelEndpoint,
-		otelEnablePrometheusMetricsPath,
-		otelTracingEnabled,
-		otelMetricsEnabled,
-		otelServiceName,
-		otelSamplingRate,
-		otelHeaders,
-		otelInsecure,
-		otelEnvironmentVariables,
-	))
-}
-
-// addOIDCConfigOptions adds OIDC authentication configuration options to the builder options
-func (r *MCPServerReconciler) addOIDCConfigOptions(
-	ctx context.Context,
-	options *[]runner.RunConfigBuilderOption,
-	m *mcpv1alpha1.MCPServer,
-) error {
-
-	// Use the OIDC resolver to get configuration
-	resolver := oidc.NewResolver(r.Client)
-	oidcConfig, err := resolver.Resolve(ctx, m)
-	if err != nil {
-		return fmt.Errorf("failed to resolve OIDC configuration: %w", err)
-	}
-
-	if oidcConfig == nil {
-		return nil
-	}
-
-	// Add OIDC config to options
-	*options = append(*options, runner.WithOIDCConfig(
-		oidcConfig.Issuer,
-		oidcConfig.Audience,
-		oidcConfig.JWKSURL,
-		oidcConfig.IntrospectionURL,
-		oidcConfig.ClientID,
-		oidcConfig.ClientSecret,
-		oidcConfig.ThvCABundlePath,
-		oidcConfig.JWKSAuthTokenPath,
-		oidcConfig.ResourceURL,
-		oidcConfig.JWKSAllowPrivateIP,
-	))
-
-	return nil
-}
-
-// addAuditConfigOptions adds audit configuration options to the builder options
-func addAuditConfigOptions(
-	options *[]runner.RunConfigBuilderOption,
-	auditConfig *mcpv1alpha1.AuditConfig,
-) {
-	if auditConfig == nil {
-		return
-	}
-
-	// Add audit config to options with default config (no custom config path for now)
-	*options = append(*options, runner.WithAuditEnabled(auditConfig.Enabled, ""))
-}
-
-// addExternalAuthConfigOptions adds external authentication configuration options to the builder options
-// This creates middleware configuration for token exchange
-func (r *MCPServerReconciler) addExternalAuthConfigOptions(
-	ctx context.Context,
-	m *mcpv1alpha1.MCPServer,
-	options *[]runner.RunConfigBuilderOption,
-) error {
-	if m.Spec.ExternalAuthConfigRef == nil {
-		return nil
-	}
-
-	// Fetch the MCPExternalAuthConfig
-	externalAuthConfig, err := GetExternalAuthConfigForMCPServer(ctx, r.Client, m)
-	if err != nil {
-		return fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
-	}
-
-	// Only token exchange type is supported currently
-	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeTokenExchange {
-		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
-	}
-
-	tokenExchangeSpec := externalAuthConfig.Spec.TokenExchange
-	if tokenExchangeSpec == nil {
-		return fmt.Errorf("token exchange configuration is nil for type tokenExchange")
-	}
-
-	// Validate that the referenced Kubernetes secret exists
-	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{
-		Namespace: m.Namespace,
-		Name:      tokenExchangeSpec.ClientSecretRef.Name,
-	}, &secret); err != nil {
-		return fmt.Errorf("failed to get client secret %s/%s: %w",
-			m.Namespace, tokenExchangeSpec.ClientSecretRef.Name, err)
-	}
-
-	if _, ok := secret.Data[tokenExchangeSpec.ClientSecretRef.Key]; !ok {
-		return fmt.Errorf("client secret %s/%s is missing key %q",
-			m.Namespace, tokenExchangeSpec.ClientSecretRef.Name, tokenExchangeSpec.ClientSecretRef.Key)
-	}
-
-	// Use scopes array directly from spec (already matches middleware.Config format)
-	scopes := tokenExchangeSpec.Scopes
-
-	// Determine header strategy based on ExternalTokenHeaderName
-	headerStrategy := "replace" // Default strategy
-	if tokenExchangeSpec.ExternalTokenHeaderName != "" {
-		headerStrategy = "custom"
-	}
-
-	// Build token exchange middleware configuration
-	// Client secret is provided via TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET environment variable
-	// to avoid embedding plaintext secrets in the ConfigMap
-	tokenExchangeConfig := map[string]interface{}{
-		"token_url": tokenExchangeSpec.TokenURL,
-		"client_id": tokenExchangeSpec.ClientID,
-		"audience":  tokenExchangeSpec.Audience,
-	}
-
-	if len(scopes) > 0 {
-		tokenExchangeConfig["scopes"] = scopes
-	}
-
-	if headerStrategy != "" {
-		tokenExchangeConfig["header_strategy"] = headerStrategy
-	}
-
-	if tokenExchangeSpec.ExternalTokenHeaderName != "" {
-		tokenExchangeConfig["external_token_header_name"] = tokenExchangeSpec.ExternalTokenHeaderName
-	}
-
-	// Create middleware parameters
-	middlewareParams := map[string]interface{}{
-		"token_exchange_config": tokenExchangeConfig,
-	}
-
-	// Marshal parameters to JSON
-	paramsJSON, err := json.Marshal(middlewareParams)
-	if err != nil {
-		return fmt.Errorf("failed to marshal token exchange middleware parameters: %w", err)
-	}
-
-	// Create middleware config
-	middlewareConfig := transporttypes.MiddlewareConfig{
-		Type:       "tokenexchange",
-		Parameters: json.RawMessage(paramsJSON),
-	}
-
-	// Add to options using the WithMiddlewareConfig builder option
-	*options = append(*options, runner.WithMiddlewareConfig([]transporttypes.MiddlewareConfig{middlewareConfig}))
-
-	return nil
+	// Check if vault.hashicorp.com/agent-inject annotation is present and set to "true"
+	value, exists := annotations["vault.hashicorp.com/agent-inject"]
+	return exists && value == "true"
 }

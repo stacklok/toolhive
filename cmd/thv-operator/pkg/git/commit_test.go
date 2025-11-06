@@ -1,9 +1,10 @@
 package git
 
 import (
-	"context"
-	"os"
 	"testing"
+
+	"github.com/go-logr/logr"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // TestDefaultGitClient_CloneSpecificCommit_RealRepo tests cloning a specific commit from a real repository
@@ -14,20 +15,12 @@ func TestDefaultGitClient_CloneSpecificCommit_RealRepo(t *testing.T) {
 	}
 
 	client := NewDefaultGitClient()
-	ctx := context.Background()
-
-	// Create temporary directory for cloning
-	tempDir, err := os.MkdirTemp("", "git-commit-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+	ctx := log.IntoContext(t.Context(), logr.Discard())
 
 	// Test with a known commit from a public repository
 	config := &CloneConfig{
-		URL:       "https://github.com/stacklok/toolhive",
-		Commit:    "395b6ba11bdd60b615a9630a66dcede2abcfbb48", // Known valid commit
-		Directory: tempDir,
+		URL:    "https://github.com/stacklok/toolhive",
+		Commit: "395b6ba11bdd60b615a9630a66dcede2abcfbb48", // Known valid commit
 	}
 
 	repoInfo, err := client.Clone(ctx, config)
@@ -46,15 +39,9 @@ func TestDefaultGitClient_CloneSpecificCommit_RealRepo(t *testing.T) {
 	}
 
 	// Clean up
-	err = client.Cleanup(repoInfo)
+	err = client.Cleanup(ctx, repoInfo)
 	if err != nil {
 		t.Fatalf("Failed to cleanup: %v", err)
-	}
-
-	// Verify directory was removed
-	_, err = os.Stat(tempDir)
-	if !os.IsNotExist(err) {
-		t.Error("Expected directory to be removed after cleanup")
 	}
 }
 
@@ -66,27 +53,19 @@ func TestDefaultGitClient_CloneInvalidCommit(t *testing.T) {
 	}
 
 	client := NewDefaultGitClient()
-	ctx := context.Background()
-
-	// Create temporary directory for cloning
-	tempDir, err := os.MkdirTemp("", "git-invalid-commit-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+	ctx := log.IntoContext(t.Context(), logr.Discard())
 
 	// Test with an invalid commit hash
 	config := &CloneConfig{
-		URL:       "https://github.com/stacklok/toolhive",
-		Commit:    "f4da6f2", // This is the original invalid commit that was causing the error
-		Directory: tempDir,
+		URL:    "https://github.com/stacklok/toolhive",
+		Commit: "f4da6f2", // This is the original invalid commit that was causing the error
 	}
 
 	repoInfo, err := client.Clone(ctx, config)
 	if err == nil {
 		t.Error("Expected error for invalid commit hash, got nil")
 		if repoInfo != nil {
-			client.Cleanup(repoInfo)
+			client.Cleanup(ctx, repoInfo)
 		}
 	}
 

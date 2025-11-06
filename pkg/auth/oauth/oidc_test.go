@@ -95,8 +95,8 @@ func testDiscoverOIDCEndpoints(
 		return nil, fmt.Errorf("failed to decode OIDC configuration: %w", err)
 	}
 
-	// Validate that we got the required fields
-	if err := validateOIDCDocument(&doc, issuer, true); err != nil {
+	// Validate that we got the required fields (insecureAllowHTTP is false for tests)
+	if err := validateOIDCDocument(&doc, issuer, true, false); err != nil {
 		return nil, fmt.Errorf("invalid OIDC configuration: %w", err)
 	}
 
@@ -433,7 +433,7 @@ func TestValidateOIDCDocument(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateOIDCDocument(tt.doc, tt.expectedIssuer, true)
+			err := validateOIDCDocument(tt.doc, tt.expectedIssuer, true, false)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -1054,7 +1054,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 					},
 				}
 			}
-			doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client)
+			doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false)
 
 			if tt.expectError {
 				require.Error(t, err)

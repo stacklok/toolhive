@@ -17,8 +17,8 @@ spec:
     - fetch
 
   # Port configuration
-  port: 8080
-  targetPort: 8080
+  proxyPort: 8080
+  mcpPort: 8080
 
   # Reference to external authentication configuration
   # The MCPExternalAuthConfig must be in the same namespace

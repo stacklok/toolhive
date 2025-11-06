@@ -67,6 +67,13 @@ func ValidateEndpointURL(endpoint string) error {
 	return validateEndpointURLWithSkip(endpoint, skipValidation)
 }
 
+// ValidateEndpointURLWithInsecure validates that an endpoint URL is secure, allowing HTTP if insecureAllowHTTP is true
+// WARNING: This is insecure and should NEVER be used in production
+func ValidateEndpointURLWithInsecure(endpoint string, insecureAllowHTTP bool) error {
+	skipValidation := strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true")
+	return validateEndpointURLWithSkip(endpoint, skipValidation || insecureAllowHTTP)
+}
+
 // validateEndpointURLWithSkip validates that an endpoint URL is secure, with an option to skip validation
 func validateEndpointURLWithSkip(endpoint string, skipValidation bool) error {
 	if skipValidation {

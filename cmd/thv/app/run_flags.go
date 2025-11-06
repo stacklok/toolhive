@@ -8,6 +8,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/cli"
 	cfg "github.com/stacklok/toolhive/pkg/config"
@@ -15,8 +17,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/ignore"
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/oauth"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -65,6 +67,7 @@ type RunFlags struct {
 	ThvCABundle        string
 	JWKSAuthTokenFile  string
 	JWKSAllowPrivateIP bool
+	InsecureAllowHTTP  bool
 
 	// OAuth discovery configuration
 	ResourceURL string
@@ -79,12 +82,16 @@ type RunFlags struct {
 	OtelInsecure                    bool
 	OtelEnablePrometheusMetricsPath bool
 	OtelEnvironmentVariables        []string // renamed binding to otel-env-vars
+	OtelCustomAttributes            string   // Custom attributes in key=value format
 
 	// Network isolation
 	IsolateNetwork bool
 
 	// Proxy headers
 	TrustProxyHeaders bool
+
+	// Network mode
+	Network string
 
 	// Labels
 	Labels []string
@@ -170,6 +177,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Path to file containing bearer token for authenticating JWKS/OIDC requests")
 	cmd.Flags().BoolVar(&config.JWKSAllowPrivateIP, "jwks-allow-private-ip", false,
 		"Allow JWKS/OIDC endpoints on private IP addresses (use with caution)")
+	cmd.Flags().BoolVar(&config.InsecureAllowHTTP, "oidc-insecure-allow-http", false,
+		"Allow HTTP (non-HTTPS) OIDC issuers for local development/testing (WARNING: Insecure!)")
 
 	// Remote authentication flags
 	AddRemoteAuthFlags(cmd, &config.RemoteAuthFlags)
@@ -196,11 +205,15 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Enable Prometheus-style /metrics endpoint on the main transport port")
 	cmd.Flags().StringArrayVar(&config.OtelEnvironmentVariables, "otel-env-vars", nil,
 		"Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)")
+	cmd.Flags().StringVar(&config.OtelCustomAttributes, "otel-custom-attributes", "",
+		"Custom resource attributes for OpenTelemetry in key=value format (e.g., server_type=prod,region=us-east-1,team=platform)")
 
 	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", false,
 		"Isolate the container network from the host (default: false)")
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
 		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix)")
+	cmd.Flags().StringVar(&config.Network, "network", "",
+		"Connect the container to a network (e.g., 'host' for host networking)")
 	cmd.Flags().StringArrayVarP(&config.Labels, "label", "l", []string{}, "Set labels on the container (format: key=value)")
 	cmd.Flags().BoolVarP(&config.Foreground, "foreground", "f", false, "Run in foreground mode (block until container exits)")
 	cmd.Flags().StringArrayVar(
@@ -316,7 +329,7 @@ func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *teleme
 
 	return createTelemetryConfig(finalOtelEndpoint, finalOtelEnablePrometheusMetricsPath,
 		runFlags.OtelServiceName, runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, finalOtelSamplingRate,
-		runFlags.OtelHeaders, finalOtelInsecure, finalOtelEnvironmentVariables)
+		runFlags.OtelHeaders, finalOtelInsecure, finalOtelEnvironmentVariables, runFlags.OtelCustomAttributes)
 }
 
 // setupRuntimeAndValidation creates container runtime and selects environment variable validator
@@ -435,6 +448,7 @@ func buildRunnerConfig(
 		runner.WithPermissionProfileNameOrPath(runFlags.PermissionProfile),
 		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
 		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
+		runner.WithNetworkMode(runFlags.Network),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
 		runner.WithProxyMode(types.ProxyMode(runFlags.ProxyMode)),
 		runner.WithTransportAndPorts(transportType, runFlags.ProxyPort, runFlags.TargetPort),
@@ -524,8 +538,10 @@ func configureMiddlewareAndOptions(
 
 	// Set additional configurations that are still needed in old format for other parts of the system
 	opts = append(opts,
-		runner.WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
-			runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP,
+		runner.WithOIDCConfig(
+			oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
+			runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile, runFlags.ResourceURL,
+			runFlags.JWKSAllowPrivateIP, runFlags.InsecureAllowHTTP,
 		),
 		runner.WithTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
 			runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, runFlags.OtelServiceName,
@@ -600,7 +616,7 @@ func extractTelemetryValues(config *telemetry.Config) (string, float64, []string
 func getRemoteAuthFromRemoteServerMetadata(
 	remoteServerMetadata *registry.RemoteServerMetadata,
 	runFlags *RunFlags,
-) (*runner.RemoteAuthConfig, error) {
+) (*remote.Config, error) {
 	if remoteServerMetadata == nil || remoteServerMetadata.OAuthConfig == nil {
 		return getRemoteAuthFromRunFlags(runFlags)
 	}
@@ -627,12 +643,16 @@ func getRemoteAuthFromRemoteServerMetadata(
 	}
 
 	// Process the resolved client secret (convert plain text to secret reference if needed)
-	clientSecret, err := processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
-	if err != nil {
-		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+	// Only process if a secret was actually provided to avoid unnecessary secrets manager access
+	var clientSecret string
+	if resolvedClientSecret != "" {
+		clientSecret, err = processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+		}
 	}
 
-	authCfg := &runner.RemoteAuthConfig{
+	authCfg := &remote.Config{
 		ClientID:     f.RemoteAuthClientID,
 		ClientSecret: clientSecret,
 		SkipBrowser:  f.RemoteAuthSkipBrowser,
@@ -673,7 +693,7 @@ func getRemoteAuthFromRemoteServerMetadata(
 }
 
 // getRemoteAuthFromRunFlags creates RemoteAuthConfig from RunFlags
-func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*runner.RemoteAuthConfig, error) {
+func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 	// Resolve OAuth client secret from multiple sources (flag, file, environment variable)
 	// This follows the same priority as resolveSecret: flag → file → environment variable
 	resolvedClientSecret, err := resolveSecret(
@@ -686,12 +706,16 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*runner.RemoteAuthConfig, er
 	}
 
 	// Process the resolved client secret (convert plain text to secret reference if needed)
-	clientSecret, err := processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
-	if err != nil {
-		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+	// Only process if a secret was actually provided to avoid unnecessary secrets manager access
+	var clientSecret string
+	if resolvedClientSecret != "" {
+		clientSecret, err = processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+		}
 	}
 
-	return &runner.RemoteAuthConfig{
+	return &remote.Config{
 		ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
 		ClientSecret: clientSecret,
 		Scopes:       runFlags.RemoteAuthFlags.RemoteAuthScopes,
@@ -773,7 +797,7 @@ func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionUR
 // createTelemetryConfig creates a telemetry configuration if any telemetry parameters are provided
 func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
 	otelServiceName string, otelTracingEnabled bool, otelMetricsEnabled bool, otelSamplingRate float64, otelHeaders []string,
-	otelInsecure bool, otelEnvironmentVariables []string) *telemetry.Config {
+	otelInsecure bool, otelEnvironmentVariables []string, otelCustomAttributes string) *telemetry.Config {
 	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
 		return nil
 	}
@@ -806,6 +830,14 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		}
 	}
 
+	// Parse custom attributes
+	customAttrs, err := telemetry.ParseCustomAttributes(otelCustomAttributes)
+	if err != nil {
+		// Log the error but don't fail - telemetry is optional
+		logger.Warnf("Failed to parse custom attributes: %v", err)
+		customAttrs = nil
+	}
+
 	return &telemetry.Config{
 		Endpoint:                    otelEndpoint,
 		ServiceName:                 serviceName,
@@ -817,10 +849,11 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 		Insecure:                    otelInsecure,
 		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 		EnvironmentVariables:        processedEnvVars,
+		CustomAttributes:            customAttrs,
 	}
 }
 
 // processOAuthClientSecret processes an OAuth client secret, converting plain text to secret reference if needed
 func processOAuthClientSecret(clientSecret, workloadName string) (string, error) {
-	return oauth.ProcessOAuthClientSecret(workloadName, clientSecret)
+	return authoauth.ProcessOAuthClientSecret(workloadName, clientSecret)
 }

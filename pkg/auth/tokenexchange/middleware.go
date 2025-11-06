@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/oauth2"
@@ -296,13 +295,16 @@ func createTokenExchangeMiddleware(
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Get claims from the auth middleware
-			claims, ok := r.Context().Value(auth.ClaimsContextKey{}).(jwt.MapClaims)
+			// Get identity from the auth middleware
+			identity, ok := auth.IdentityFromContext(r.Context())
 			if !ok {
-				logger.Debug("No claims found in context, proceeding without token exchange")
+				logger.Debug("No identity found in context, proceeding without token exchange")
 				next.ServeHTTP(w, r)
 				return
 			}
+
+			// Extract claims from identity for token exchange
+			claims := jwt.MapClaims(identity.Claims)
 
 			var tokenProvider SubjectTokenProvider
 
@@ -313,16 +315,9 @@ func createTokenExchangeMiddleware(
 				tokenProvider = subjectTokenProvider
 			} else {
 				// otherwise, extract token from incoming request's Authorization header
-				authHeader := r.Header.Get("Authorization")
-				if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-					logger.Debug("No valid Bearer token found, proceeding without token exchange")
-					next.ServeHTTP(w, r)
-					return
-				}
-
-				subjectToken := strings.TrimPrefix(authHeader, "Bearer ")
-				if subjectToken == "" {
-					logger.Debug("Empty Bearer token, proceeding without token exchange")
+				subjectToken, err := auth.ExtractBearerToken(r)
+				if err != nil {
+					logger.Debugf("No valid Bearer token found (%v), proceeding without token exchange", err)
 					next.ServeHTTP(w, r)
 					return
 				}

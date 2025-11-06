@@ -12,25 +12,32 @@ import (
 
 func TestAnonymousMiddleware(t *testing.T) {
 	t.Parallel()
-	// Create a test handler that checks for claims in the context
+	// Create a test handler that checks for identity in the context
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := GetClaimsFromContext(r.Context())
-		require.True(t, ok, "Expected claims to be present in context")
+		identity, ok := IdentityFromContext(r.Context())
+		require.True(t, ok, "Expected identity to be present in context")
+		require.NotNil(t, identity, "Expected identity to be non-nil")
+
+		// Verify the identity fields
+		assert.Equal(t, "anonymous", identity.Subject)
+		assert.Equal(t, "Anonymous User", identity.Name)
+		assert.Equal(t, "anonymous@localhost", identity.Email)
 
 		// Verify the anonymous claims
-		assert.Equal(t, "anonymous", claims["sub"])
-		assert.Equal(t, "toolhive-local", claims["iss"])
-		assert.Equal(t, "toolhive", claims["aud"])
-		assert.Equal(t, "anonymous@localhost", claims["email"])
-		assert.Equal(t, "Anonymous User", claims["name"])
+		require.NotNil(t, identity.Claims)
+		assert.Equal(t, "anonymous", identity.Claims["sub"])
+		assert.Equal(t, "toolhive-local", identity.Claims["iss"])
+		assert.Equal(t, "toolhive", identity.Claims["aud"])
+		assert.Equal(t, "anonymous@localhost", identity.Claims["email"])
+		assert.Equal(t, "Anonymous User", identity.Claims["name"])
 
 		// Verify timestamps are reasonable
 		now := time.Now().Unix()
-		exp, ok := claims["exp"].(int64)
+		exp, ok := identity.Claims["exp"].(int64)
 		require.True(t, ok, "Expected exp to be present and be an int64")
 		assert.Greater(t, exp, now, "Expected exp to be in the future")
 
-		iat, ok := claims["iat"].(int64)
+		iat, ok := identity.Claims["iat"].(int64)
 		require.True(t, ok, "Expected iat to be present and be an int64")
 		assert.LessOrEqual(t, iat, now+1, "Expected iat to be current time or earlier (with 1 second tolerance)")
 

@@ -242,17 +242,17 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 
 	// Create a test handler
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Get the claims from the context using the proper key type
-		claims, ok := r.Context().Value(ClaimsContextKey{}).(jwt.MapClaims)
-		if !ok {
-			t.Errorf("Failed to get claims from context")
-			http.Error(w, "Failed to get claims from context", http.StatusInternalServerError)
+		// Get the identity from the context
+		identity, ok := IdentityFromContext(r.Context())
+		if !ok || identity == nil {
+			t.Errorf("Failed to get identity from context")
+			http.Error(w, "Failed to get identity from context", http.StatusInternalServerError)
 			return
 		}
 
 		// Write the claims as the response
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(claims); err != nil {
+		if err := json.NewEncoder(w).Encode(identity.Claims); err != nil {
 			t.Errorf("Failed to encode claims: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to encode claims: %v", err), http.StatusInternalServerError)
 			return
@@ -467,7 +467,7 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("successful discovery", func(t *testing.T) {
 		t.Parallel()
-		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL, caCertPath, "", true)
+		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL, caCertPath, "", true, false)
 		if err != nil {
 			t.Fatalf("Expected no error but got %v", err)
 		}
@@ -484,7 +484,7 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("issuer with trailing slash", func(t *testing.T) {
 		t.Parallel()
-		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL+"/", caCertPath, "", true)
+		doc, err := discoverOIDCConfiguration(ctx, oidcServer.URL+"/", caCertPath, "", true, false)
 		if err != nil {
 			t.Fatalf("Expected no error but got %v", err)
 		}
@@ -496,7 +496,7 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("invalid issuer URL", func(t *testing.T) {
 		t.Parallel()
-		_, err := discoverOIDCConfiguration(ctx, "invalid-url", "", "", false)
+		_, err := discoverOIDCConfiguration(ctx, "invalid-url", "", "", false, false)
 		if err == nil {
 			t.Error("Expected error but got nil")
 		}
@@ -504,7 +504,7 @@ func TestDiscoverOIDCConfiguration(t *testing.T) {
 
 	t.Run("non-existent endpoint", func(t *testing.T) {
 		t.Parallel()
-		_, err := discoverOIDCConfiguration(ctx, "https://non-existent-domain.example", "", "", false)
+		_, err := discoverOIDCConfiguration(ctx, "https://non-existent-domain.example", "", "", false, false)
 		if err == nil {
 			t.Error("Expected error but got nil")
 		}
@@ -1281,6 +1281,7 @@ func TestMiddleware_WWWAuthenticate_WithMockIntrospection(t *testing.T) {
 		case "good":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"active": true,
+				"sub":    "test-user",
 				"exp":    float64(time.Now().Add(60 * time.Second).Unix()),
 				"iss":    issuer,
 			})

@@ -528,13 +528,14 @@ func (a *CedarAuthorizer) AuthorizeWithJWTClaims(
 	resourceID string,
 	arguments map[string]interface{},
 ) (bool, error) {
-	// Extract JWT claims from the context
-	claims, ok := auth.GetClaimsFromContext(ctx)
+	// Extract Identity from the context
+	identity, ok := auth.IdentityFromContext(ctx)
 	if !ok {
 		return false, ErrMissingPrincipal
 	}
 
-	// Extract client ID from claims
+	// Extract client ID from Identity claims
+	claims := jwt.MapClaims(identity.Claims)
 	clientID, ok := extractClientIDFromClaims(claims)
 	if !ok {
 		return false, ErrMissingPrincipal

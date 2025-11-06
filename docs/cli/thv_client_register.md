@@ -25,10 +25,12 @@ Valid clients:
   - amp-windsurf: Sourcegraph Amp extension for Windsurf
   - claude-code: Claude Code CLI
   - cline: Cline extension for VS Code
+  - continue: Continue.dev extensions for VS Code and JetBrains
   - cursor: Cursor editor
   - goose: Goose AI agent
   - lm-studio: LM Studio application
   - roo-code: Roo Code extension for VS Code
+  - trae: Trae IDE
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders edition
   - windsurf: Windsurf IDE

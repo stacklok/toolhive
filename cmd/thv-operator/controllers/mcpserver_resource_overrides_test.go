@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -51,8 +52,8 @@ func TestResourceOverrides(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 				},
 			},
 			expectedDeploymentLabels: map[string]string{
@@ -80,8 +81,8 @@ func TestResourceOverrides(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
@@ -145,8 +146,8 @@ func TestResourceOverrides(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
@@ -198,8 +199,8 @@ func TestResourceOverrides(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
@@ -263,8 +264,8 @@ func TestResourceOverrides(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
@@ -305,7 +306,7 @@ func TestResourceOverrides(t *testing.T) {
 
 			// Test deployment creation
 			ctx := context.Background()
-			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer)
+			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer, "test-checksum")
 			require.NotNil(t, deployment)
 
 			assert.Equal(t, tt.expectedDeploymentLabels, deployment.Labels)
@@ -397,7 +398,7 @@ func TestMergeStringMaps(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := mergeStringMaps(tt.defaultMap, tt.overrideMap)
+			result := ctrlutil.MergeStringMaps(tt.defaultMap, tt.overrideMap)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -426,8 +427,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							Env: []mcpv1alpha1.EnvVar{
@@ -452,8 +453,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							Env: []mcpv1alpha1.EnvVar{
@@ -478,8 +479,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							Env: []mcpv1alpha1.EnvVar{
@@ -505,8 +506,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							Env: []mcpv1alpha1.EnvVar{
@@ -530,8 +531,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 				},
 			},
 			existingEnvVars: []corev1.EnvVar{},
@@ -545,8 +546,8 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					Port:  8080,
+					Image:     "test-image",
+					ProxyPort: 8080,
 				},
 			},
 			existingEnvVars: []corev1.EnvVar{
@@ -563,7 +564,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 
 			// Create a deployment and manually set up its state to isolate proxy env testing
 			ctx := context.Background()
-			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer)
+			deployment := r.deploymentForMCPServer(ctx, tt.mcpServer, "test-checksum")
 			require.NotNil(t, deployment)
 			require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 
@@ -574,7 +575,7 @@ func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 			deployment.Spec.Template.Spec.Containers[0].Image = getToolhiveRunnerImage()
 
 			// Test if deployment needs update - should correlate with env change expectation
-			needsUpdate := r.deploymentNeedsUpdate(context.Background(), deployment, tt.mcpServer)
+			needsUpdate := r.deploymentNeedsUpdate(context.Background(), deployment, tt.mcpServer, "test-checksum")
 
 			if tt.expectEnvChange {
 				assert.True(t, needsUpdate, "Expected deployment update due to proxy env change")

@@ -13,8 +13,8 @@ spec:
         - name: INSECURE_DISABLE_URL_VALIDATION
           value: "true"
   transport: streamable-http
-  port: 9090
-  targetPort: 9090
+  proxyPort: 9090
+  mcpPort: 9090
   env:
 
   # OIDC authentication with Keycloak

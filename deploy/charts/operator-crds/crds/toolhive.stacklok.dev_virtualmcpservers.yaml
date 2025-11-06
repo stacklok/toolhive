@@ -1,0 +1,935 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.3
+  name: virtualmcpservers.toolhive.stacklok.dev
+spec:
+  group: toolhive.stacklok.dev
+  names:
+    kind: VirtualMCPServer
+    listKind: VirtualMCPServerList
+    plural: virtualmcpservers
+    shortNames:
+    - vmcp
+    - virtualmcp
+    singular: virtualmcpserver
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: The phase of the VirtualMCPServer
+      jsonPath: .status.phase
+      name: Phase
+      type: string
+    - description: Total tools
+      jsonPath: .status.capabilities.toolCount
+      name: Tools
+      type: integer
+    - description: Backends
+      jsonPath: .status.discoveredBackends[*]
+      name: Backends
+      type: integer
+    - description: Virtual MCP server URL
+      jsonPath: .status.url
+      name: URL
+      type: string
+    - description: Age
+      jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          VirtualMCPServer is the Schema for the virtualmcpservers API
+          VirtualMCPServer aggregates multiple backend MCPServers into a unified endpoint
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: VirtualMCPServerSpec defines the desired state of VirtualMCPServer
+            properties:
+              aggregation:
+                description: Aggregation defines tool aggregation and conflict resolution
+                  strategies
+                properties:
+                  conflictResolution:
+                    default: prefix
+                    description: |-
+                      ConflictResolution defines the strategy for resolving tool name conflicts
+                      - prefix: Automatically prefix tool names with workload identifier
+                      - priority: First workload in priority order wins
+                      - manual: Explicitly define overrides for all conflicts
+                    enum:
+                    - prefix
+                    - priority
+                    - manual
+                    type: string
+                  conflictResolutionConfig:
+                    description: ConflictResolutionConfig provides configuration for
+                      the chosen strategy
+                    properties:
+                      prefixFormat:
+                        default: '{workload}_'
+                        description: |-
+                          PrefixFormat defines the prefix format for the "prefix" strategy
+                          Supports placeholders: {workload}, {workload}_, {workload}.
+                        type: string
+                      priorityOrder:
+                        description: PriorityOrder defines the workload priority order
+                          for the "priority" strategy
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  tools:
+                    description: |-
+                      Tools defines per-workload tool filtering and overrides
+                      References existing MCPToolConfig resources
+                    items:
+                      description: WorkloadToolConfig defines tool filtering and overrides
+                        for a specific workload
+                      properties:
+                        filter:
+                          description: |-
+                            Filter is an inline list of tool names to allow (allow list)
+                            Only used if ToolConfigRef is not specified
+                          items:
+                            type: string
+                          type: array
+                        overrides:
+                          additionalProperties:
+                            description: |-
+                              ToolOverride represents a tool override configuration.
+                              Both Name and Description can be overridden independently, but
+                              they can't be both empty.
+                            properties:
+                              description:
+                                description: Description is the redefined description
+                                  of the tool
+                                type: string
+                              name:
+                                description: Name is the redefined name of the tool
+                                type: string
+                            type: object
+                          description: |-
+                            Overrides is an inline map of tool overrides
+                            Only used if ToolConfigRef is not specified
+                          type: object
+                        toolConfigRef:
+                          description: |-
+                            ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming
+                            If specified, Filter and Overrides are ignored
+                          properties:
+                            name:
+                              description: Name is the name of the MCPToolConfig resource
+                                in the same namespace
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        workload:
+                          description: Workload is the name of the backend MCPServer
+                            workload
+                          type: string
+                      required:
+                      - workload
+                      type: object
+                    type: array
+                type: object
+              compositeToolRefs:
+                description: |-
+                  CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
+                  for complex, reusable workflows
+                items:
+                  description: CompositeToolDefinitionRef references a VirtualMCPCompositeToolDefinition
+                    resource
+                  properties:
+                    name:
+                      description: Name is the name of the VirtualMCPCompositeToolDefinition
+                        resource in the same namespace
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              compositeTools:
+                description: |-
+                  CompositeTools defines inline composite tool definitions
+                  For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead
+                items:
+                  description: |-
+                    CompositeToolSpec defines an inline composite tool
+                    For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead
+                  properties:
+                    description:
+                      description: Description describes the composite tool
+                      type: string
+                    name:
+                      description: Name is the name of the composite tool
+                      type: string
+                    parameters:
+                      additionalProperties:
+                        description: ParameterSpec defines a parameter for a composite
+                          tool
+                        properties:
+                          default:
+                            description: Default is the default value for the parameter
+                            type: string
+                          description:
+                            description: Description describes the parameter
+                            type: string
+                          required:
+                            default: false
+                            description: Required indicates if the parameter is required
+                            type: boolean
+                          type:
+                            description: Type is the parameter type (string, integer,
+                              boolean, etc.)
+                            type: string
+                        required:
+                        - type
+                        type: object
+                      description: Parameters defines the input parameters for the
+                        composite tool
+                      type: object
+                    steps:
+                      description: Steps defines the workflow steps
+                      items:
+                        description: WorkflowStep defines a step in a composite tool
+                          workflow
+                        properties:
+                          arguments:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              Arguments is a map of argument templates
+                              Supports Go template syntax with .params and .steps
+                            type: object
+                          condition:
+                            description: Condition is a template expression that determines
+                              if the step should execute
+                            type: string
+                          dependsOn:
+                            description: DependsOn lists step IDs that must complete
+                              before this step
+                            items:
+                              type: string
+                            type: array
+                          id:
+                            description: ID is the unique identifier for this step
+                            type: string
+                          message:
+                            description: |-
+                              Message is the elicitation message
+                              Only used when Type is "elicitation"
+                            type: string
+                          onError:
+                            description: OnError defines error handling behavior
+                            properties:
+                              action:
+                                default: abort
+                                description: Action defines the action to take on
+                                  error
+                                enum:
+                                - abort
+                                - continue
+                                - retry
+                                type: string
+                              maxRetries:
+                                description: |-
+                                  MaxRetries is the maximum number of retries
+                                  Only used when Action is "retry"
+                                type: integer
+                            type: object
+                          schema:
+                            description: Schema defines the expected response schema
+                              for elicitation
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                          timeout:
+                            description: Timeout is the maximum execution time for
+                              this step
+                            type: string
+                          tool:
+                            description: |-
+                              Tool is the tool to call (format: "workload.tool_name")
+                              Only used when Type is "tool_call"
+                            type: string
+                          type:
+                            default: tool_call
+                            description: Type is the step type (tool_call, elicitation,
+                              etc.)
+                            enum:
+                            - tool_call
+                            - elicitation
+                            type: string
+                        required:
+                        - id
+                        type: object
+                      minItems: 1
+                      type: array
+                    timeout:
+                      default: 30m
+                      description: Timeout is the maximum execution time for the composite
+                        tool
+                      type: string
+                  required:
+                  - description
+                  - name
+                  - steps
+                  type: object
+                type: array
+              groupRef:
+                description: |-
+                  GroupRef references an existing MCPGroup that defines backend workloads
+                  The referenced MCPGroup must exist in the same namespace
+                properties:
+                  name:
+                    description: Name is the name of the MCPGroup resource in the
+                      same namespace
+                    type: string
+                required:
+                - name
+                type: object
+              incomingAuth:
+                description: IncomingAuth configures authentication for clients connecting
+                  to the Virtual MCP server
+                properties:
+                  authzConfig:
+                    description: |-
+                      AuthzConfig defines authorization policy configuration
+                      Reuses MCPServer authz patterns
+                    properties:
+                      configMap:
+                        description: |-
+                          ConfigMap references a ConfigMap containing authorization configuration
+                          Only used when Type is "configMap"
+                        properties:
+                          key:
+                            default: authz.json
+                            description: Key is the key in the ConfigMap that contains
+                              the authorization configuration
+                            type: string
+                          name:
+                            description: Name is the name of the ConfigMap
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      inline:
+                        description: |-
+                          Inline contains direct authorization configuration
+                          Only used when Type is "inline"
+                        properties:
+                          entitiesJson:
+                            default: '[]'
+                            description: EntitiesJSON is a JSON string representing
+                              Cedar entities
+                            type: string
+                          policies:
+                            description: Policies is a list of Cedar policy strings
+                            items:
+                              type: string
+                            minItems: 1
+                            type: array
+                        required:
+                        - policies
+                        type: object
+                      type:
+                        default: configMap
+                        description: Type is the type of authorization configuration
+                        enum:
+                        - configMap
+                        - inline
+                        type: string
+                    required:
+                    - type
+                    type: object
+                  oidcConfig:
+                    description: |-
+                      OIDCConfig defines OIDC authentication configuration
+                      Reuses MCPServer OIDC patterns
+                    properties:
+                      configMap:
+                        description: |-
+                          ConfigMap references a ConfigMap containing OIDC configuration
+                          Only used when Type is "configmap"
+                        properties:
+                          key:
+                            default: oidc.json
+                            description: Key is the key in the ConfigMap that contains
+                              the OIDC configuration
+                            type: string
+                          name:
+                            description: Name is the name of the ConfigMap
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      inline:
+                        description: |-
+                          Inline contains direct OIDC configuration
+                          Only used when Type is "inline"
+                        properties:
+                          audience:
+                            description: Audience is the expected audience for the
+                              token
+                            type: string
+                          clientId:
+                            description: ClientID is the OIDC client ID
+                            type: string
+                          clientSecret:
+                            description: |-
+                              ClientSecret is the client secret for introspection (optional)
+                              Deprecated: Use ClientSecretRef instead for better security
+                            type: string
+                          clientSecretRef:
+                            description: |-
+                              ClientSecretRef is a reference to a Kubernetes Secret containing the client secret
+                              If both ClientSecret and ClientSecretRef are provided, ClientSecretRef takes precedence
+                            properties:
+                              key:
+                                description: Key is the key within the secret
+                                type: string
+                              name:
+                                description: Name is the name of the secret
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                          insecureAllowHTTP:
+                            default: false
+                            description: |-
+                              InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+                              WARNING: This is insecure and should NEVER be used in production
+                              Only enable for local development, testing, or trusted internal networks
+                            type: boolean
+                          introspectionUrl:
+                            description: IntrospectionURL is the URL for token introspection
+                              endpoint
+                            type: string
+                          issuer:
+                            description: Issuer is the OIDC issuer URL
+                            type: string
+                          jwksAllowPrivateIP:
+                            default: false
+                            description: |-
+                              JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
+                              Use with caution - only enable for trusted internal IDPs
+                            type: boolean
+                          jwksAuthTokenPath:
+                            description: |-
+                              JWKSAuthTokenPath is the path to file containing bearer token for JWKS/OIDC requests
+                              The file must be mounted into the pod (e.g., via Secret volume)
+                            type: string
+                          jwksUrl:
+                            description: JWKSURL is the URL to fetch the JWKS from
+                            type: string
+                          thvCABundlePath:
+                            description: |-
+                              ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests
+                              The file must be mounted into the pod (e.g., via ConfigMap or Secret volume)
+                            type: string
+                        required:
+                        - issuer
+                        type: object
+                      kubernetes:
+                        description: |-
+                          Kubernetes configures OIDC for Kubernetes service account token validation
+                          Only used when Type is "kubernetes"
+                        properties:
+                          audience:
+                            default: toolhive
+                            description: Audience is the expected audience for the
+                              token
+                            type: string
+                          introspectionUrl:
+                            description: |-
+                              IntrospectionURL is the URL for token introspection endpoint
+                              If empty, OIDC discovery will be used to automatically determine the introspection URL
+                            type: string
+                          issuer:
+                            default: https://kubernetes.default.svc
+                            description: Issuer is the OIDC issuer URL
+                            type: string
+                          jwksUrl:
+                            description: |-
+                              JWKSURL is the URL to fetch the JWKS from
+                              If empty, OIDC discovery will be used to automatically determine the JWKS URL
+                            type: string
+                          namespace:
+                            description: |-
+                              Namespace is the namespace of the service account
+                              If empty, uses the MCPServer's namespace
+                            type: string
+                          serviceAccount:
+                            description: |-
+                              ServiceAccount is the name of the service account to validate tokens for
+                              If empty, uses the pod's service account
+                            type: string
+                          useClusterAuth:
+                            description: |-
+                              UseClusterAuth enables using the Kubernetes cluster's CA bundle and service account token
+                              When true, uses /var/run/secrets/kubernetes.io/serviceaccount/ca.crt for TLS verification
+                              and /var/run/secrets/kubernetes.io/serviceaccount/token for bearer token authentication
+                              Defaults to true if not specified
+                            type: boolean
+                        type: object
+                      resourceUrl:
+                        description: |-
+                          ResourceURL is the explicit resource URL for OAuth discovery endpoint (RFC 9728)
+                          If not specified, defaults to the in-cluster Kubernetes service URL
+                        type: string
+                      type:
+                        default: kubernetes
+                        description: Type is the type of OIDC configuration
+                        enum:
+                        - kubernetes
+                        - configMap
+                        - inline
+                        type: string
+                    required:
+                    - type
+                    type: object
+                type: object
+              operational:
+                description: Operational defines operational settings like timeouts
+                  and health checks
+                properties:
+                  failureHandling:
+                    description: FailureHandling configures failure handling behavior
+                    properties:
+                      circuitBreaker:
+                        description: CircuitBreaker configures circuit breaker behavior
+                        properties:
+                          enabled:
+                            default: false
+                            description: Enabled controls whether circuit breaker
+                              is enabled
+                            type: boolean
+                          failureThreshold:
+                            default: 5
+                            description: FailureThreshold is the number of failures
+                              before opening the circuit
+                            type: integer
+                          timeout:
+                            default: 60s
+                            description: Timeout is the duration to wait before attempting
+                              to close the circuit
+                            type: string
+                        type: object
+                      healthCheckInterval:
+                        default: 30s
+                        description: HealthCheckInterval is the interval between health
+                          checks
+                        type: string
+                      partialFailureMode:
+                        default: fail
+                        description: |-
+                          PartialFailureMode defines behavior when some backends are unavailable
+                          - fail: Fail entire request if any backend is unavailable
+                          - best_effort: Continue with available backends
+                        enum:
+                        - fail
+                        - best_effort
+                        type: string
+                      unhealthyThreshold:
+                        default: 3
+                        description: UnhealthyThreshold is the number of consecutive
+                          failures before marking unhealthy
+                        type: integer
+                    type: object
+                  timeouts:
+                    description: Timeouts configures timeout settings
+                    properties:
+                      default:
+                        default: 30s
+                        description: Default is the default timeout for backend requests
+                        type: string
+                      perWorkload:
+                        additionalProperties:
+                          type: string
+                        description: PerWorkload defines per-workload timeout overrides
+                        type: object
+                    type: object
+                type: object
+              outgoingAuth:
+                description: OutgoingAuth configures authentication from Virtual MCP
+                  to backend MCPServers
+                properties:
+                  backends:
+                    additionalProperties:
+                      description: BackendAuthConfig defines authentication configuration
+                        for a backend MCPServer
+                      properties:
+                        externalAuthConfigRef:
+                          description: |-
+                            ExternalAuthConfigRef references an MCPExternalAuthConfig resource
+                            Only used when Type is "external_auth_config_ref"
+                          properties:
+                            name:
+                              description: Name is the name of the MCPExternalAuthConfig
+                                resource
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        serviceAccount:
+                          description: |-
+                            ServiceAccount configures service account authentication
+                            Only used when Type is "service_account"
+                          properties:
+                            credentialsRef:
+                              description: CredentialsRef references a secret containing
+                                the service account credentials
+                              properties:
+                                key:
+                                  description: Key is the key within the secret
+                                  type: string
+                                name:
+                                  description: Name is the name of the secret
+                                  type: string
+                              required:
+                              - key
+                              - name
+                              type: object
+                            headerFormat:
+                              default: Bearer {token}
+                              description: |-
+                                HeaderFormat is the format string for the header value
+                                Use {token} as placeholder for the credential value
+                              type: string
+                            headerName:
+                              default: Authorization
+                              description: HeaderName is the HTTP header name for
+                                the credentials
+                              type: string
+                          required:
+                          - credentialsRef
+                          type: object
+                        type:
+                          description: Type defines the authentication type
+                          enum:
+                          - discovered
+                          - pass_through
+                          - service_account
+                          - external_auth_config_ref
+                          type: string
+                      required:
+                      - type
+                      type: object
+                    description: |-
+                      Backends defines per-backend authentication overrides
+                      Works in all modes (discovered, inline, mixed)
+                    type: object
+                  default:
+                    description: Default defines default behavior for backends without
+                      explicit auth config
+                    properties:
+                      externalAuthConfigRef:
+                        description: |-
+                          ExternalAuthConfigRef references an MCPExternalAuthConfig resource
+                          Only used when Type is "external_auth_config_ref"
+                        properties:
+                          name:
+                            description: Name is the name of the MCPExternalAuthConfig
+                              resource
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      serviceAccount:
+                        description: |-
+                          ServiceAccount configures service account authentication
+                          Only used when Type is "service_account"
+                        properties:
+                          credentialsRef:
+                            description: CredentialsRef references a secret containing
+                              the service account credentials
+                            properties:
+                              key:
+                                description: Key is the key within the secret
+                                type: string
+                              name:
+                                description: Name is the name of the secret
+                                type: string
+                            required:
+                            - key
+                            - name
+                            type: object
+                          headerFormat:
+                            default: Bearer {token}
+                            description: |-
+                              HeaderFormat is the format string for the header value
+                              Use {token} as placeholder for the credential value
+                            type: string
+                          headerName:
+                            default: Authorization
+                            description: HeaderName is the HTTP header name for the
+                              credentials
+                            type: string
+                        required:
+                        - credentialsRef
+                        type: object
+                      type:
+                        description: Type defines the authentication type
+                        enum:
+                        - discovered
+                        - pass_through
+                        - service_account
+                        - external_auth_config_ref
+                        type: string
+                    required:
+                    - type
+                    type: object
+                  source:
+                    default: discovered
+                    description: |-
+                      Source defines how backend authentication configurations are determined
+                      - discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef
+                      - inline: Explicit per-backend configuration in VirtualMCPServer
+                      - mixed: Discover most, override specific backends
+                    enum:
+                    - discovered
+                    - inline
+                    - mixed
+                    type: string
+                type: object
+              podTemplateSpec:
+                description: |-
+                  PodTemplateSpec defines the pod template to use for the Virtual MCP server
+                  This allows for customizing the pod configuration beyond what is provided by the other fields.
+                  Note that to modify the specific container the Virtual MCP server runs in, you must specify
+                  the 'vmcp' container name in the PodTemplateSpec.
+                  This field accepts a PodTemplateSpec object as JSON/YAML.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              tokenCache:
+                description: TokenCache configures token caching behavior
+                properties:
+                  memory:
+                    description: |-
+                      Memory configures in-memory token caching
+                      Only used when Provider is "memory"
+                    properties:
+                      maxEntries:
+                        default: 1000
+                        description: MaxEntries is the maximum number of cache entries
+                        type: integer
+                      ttlOffset:
+                        default: 5m
+                        description: TTLOffset is the duration before token expiry
+                          to refresh
+                        type: string
+                    type: object
+                  provider:
+                    default: memory
+                    description: Provider defines the cache provider type
+                    enum:
+                    - memory
+                    - redis
+                    type: string
+                  redis:
+                    description: |-
+                      Redis configures Redis token caching
+                      Only used when Provider is "redis"
+                    properties:
+                      address:
+                        description: Address is the Redis server address
+                        type: string
+                      db:
+                        default: 0
+                        description: DB is the Redis database number
+                        type: integer
+                      keyPrefix:
+                        default: 'vmcp:tokens:'
+                        description: KeyPrefix is the prefix for cache keys
+                        type: string
+                      passwordRef:
+                        description: PasswordRef references a secret containing the
+                          Redis password
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      tls:
+                        default: false
+                        description: TLS enables TLS for Redis connections
+                        type: boolean
+                    required:
+                    - address
+                    type: object
+                type: object
+            required:
+            - groupRef
+            type: object
+          status:
+            description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
+            properties:
+              capabilities:
+                description: Capabilities summarizes aggregated capabilities from
+                  all backends
+                properties:
+                  compositeToolCount:
+                    description: CompositeToolCount is the number of composite tools
+                      defined
+                    type: integer
+                  promptCount:
+                    description: PromptCount is the total number of prompts exposed
+                    type: integer
+                  resourceCount:
+                    description: ResourceCount is the total number of resources exposed
+                    type: integer
+                  toolCount:
+                    description: ToolCount is the total number of tools exposed
+                    type: integer
+                type: object
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the VirtualMCPServer's state
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              discoveredBackends:
+                description: DiscoveredBackends lists discovered backend configurations
+                  when source=discovered
+                items:
+                  description: DiscoveredBackend represents a discovered backend MCPServer
+                  properties:
+                    authConfigRef:
+                      description: |-
+                        AuthConfigRef is the name of the discovered MCPExternalAuthConfig
+                        Empty if backend has no external auth config
+                      type: string
+                    authType:
+                      description: AuthType is the type of authentication configured
+                      type: string
+                    lastHealthCheck:
+                      description: LastHealthCheck is the timestamp of the last health
+                        check
+                      format: date-time
+                      type: string
+                    name:
+                      description: Name is the name of the backend MCPServer
+                      type: string
+                    status:
+                      description: Status is the current status of the backend
+                      enum:
+                      - ready
+                      - degraded
+                      - unavailable
+                      type: string
+                    url:
+                      description: URL is the URL of the backend MCPServer
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              message:
+                description: Message provides additional information about the current
+                  phase
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  for this VirtualMCPServer
+                format: int64
+                type: integer
+              phase:
+                default: Pending
+                description: Phase is the current phase of the VirtualMCPServer
+                enum:
+                - Pending
+                - Ready
+                - Degraded
+                - Failed
+                type: string
+              url:
+                description: URL is the URL where the Virtual MCP server can be accessed
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

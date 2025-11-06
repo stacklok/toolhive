@@ -139,7 +139,8 @@ metadata:
 spec:
   image: docker.io/mcp/fetch
   transport: stdio
-  port: 8080
+  proxyPort: 8080
+  mcpPort: 8080
   resources:
     limits:
       cpu: "100m"
@@ -167,8 +168,8 @@ metadata:
   namespace: toolhive-system
 spec:
   image: ghcr.io/github/github-mcp-server
-  transport: stdio
-  port: 8080
+  proxyPort: 8080
+  mcpPort: 8080
   secrets:
     - name: github-token
       key: token
@@ -212,8 +213,8 @@ kubectl describe mcpserver <name>
 |---------------------|----------------------------------------------------|----------|---------|
 | `image`             | Container image for the MCP server                 | Yes      | -       |
 | `transport`         | Transport method (stdio, streamable-http or sse)   | No       | stdio   |
-| `port`              | Port to expose the MCP server on                   | No       | 8080    |
-| `targetPort`        | Port that MCP server listens to                    | No       | -       |
+| `proxyPort`         | Port to expose the MCP server on                   | No       | 8080    |
+| `mcpPort`           | Port that MCP server listens to                    | No       | -       |
 | `args`              | Additional arguments to pass to the MCP server     | No       | -       |
 | `env`               | Environment variables to set in the container      | No       | -       |
 | `volumes`           | Volumes to mount in the container                  | No       | -       |

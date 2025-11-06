@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
 const (
@@ -127,7 +128,7 @@ func (r *ToolConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 // calculateConfigHash calculates a hash of the MCPToolConfig spec using Kubernetes utilities
 func (*ToolConfigReconciler) calculateConfigHash(spec mcpv1alpha1.MCPToolConfigSpec) string {
-	return CalculateConfigHash(spec)
+	return ctrlutil.CalculateConfigHash(spec)
 }
 
 // handleDeletion handles the deletion of a MCPToolConfig
@@ -179,7 +180,7 @@ func (r *ToolConfigReconciler) findReferencingMCPServers(
 	ctx context.Context,
 	toolConfig *mcpv1alpha1.MCPToolConfig,
 ) ([]mcpv1alpha1.MCPServer, error) {
-	return FindReferencingMCPServers(ctx, r.Client, toolConfig.Namespace, toolConfig.Name,
+	return ctrlutil.FindReferencingMCPServers(ctx, r.Client, toolConfig.Namespace, toolConfig.Name,
 		func(server *mcpv1alpha1.MCPServer) *string {
 			if server.Spec.ToolConfigRef != nil {
 				return &server.Spec.ToolConfigRef.Name
@@ -225,33 +226,4 @@ func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// Watch for MCPServers and reconcile the MCPToolConfig when they change
 		Watches(&mcpv1alpha1.MCPServer{}, toolConfigHandler).
 		Complete(r)
-}
-
-// GetToolConfigForMCPServer retrieves the MCPToolConfig referenced by an MCPServer
-func GetToolConfigForMCPServer(
-	ctx context.Context,
-	c client.Client,
-	mcpServer *mcpv1alpha1.MCPServer,
-) (*mcpv1alpha1.MCPToolConfig, error) {
-	if mcpServer.Spec.ToolConfigRef == nil {
-		// We throw an error because in this case you assume there is a ToolConfig
-		// but there isn't one referenced.
-		return nil, fmt.Errorf("MCPServer %s does not reference a MCPToolConfig", mcpServer.Name)
-	}
-
-	toolConfig := &mcpv1alpha1.MCPToolConfig{}
-	err := c.Get(ctx, types.NamespacedName{
-		Name:      mcpServer.Spec.ToolConfigRef.Name,
-		Namespace: mcpServer.Namespace, // Same namespace as MCPServer
-	}, toolConfig)
-
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return nil, fmt.Errorf("MCPToolConfig %s not found in namespace %s",
-				mcpServer.Spec.ToolConfigRef.Name, mcpServer.Namespace)
-		}
-		return nil, fmt.Errorf("failed to get MCPToolConfig: %w", err)
-	}
-
-	return toolConfig, nil
 }

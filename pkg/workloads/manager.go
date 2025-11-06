@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -60,6 +61,8 @@ type Manager interface {
 	UpdateWorkload(ctx context.Context, workloadName string, newConfig *runner.RunConfig) (*errgroup.Group, error)
 	// GetLogs retrieves the logs of a container.
 	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
+	// GetProxyLogs retrieves the proxy logs from the filesystem.
+	GetProxyLogs(ctx context.Context, workloadName string) (string, error)
 	// MoveToGroup moves the specified workloads from one group to another by updating their runconfig.
 	MoveToGroup(ctx context.Context, workloadNames []string, groupFrom string, groupTo string) error
 	// ListWorkloadsInGroup returns all workload names that belong to the specified group, including stopped workloads.
@@ -466,6 +469,31 @@ func (d *defaultManager) GetLogs(ctx context.Context, workloadName string, follo
 	return logs, nil
 }
 
+// GetProxyLogs retrieves proxy logs from the filesystem
+func (*defaultManager) GetProxyLogs(_ context.Context, workloadName string) (string, error) {
+	// Get the proxy log file path
+	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", workloadName))
+	if err != nil {
+		return "", fmt.Errorf("failed to get proxy log file path for workload %s: %w", workloadName, err)
+	}
+
+	// Clean the file path to prevent path traversal
+	cleanLogFilePath := filepath.Clean(logFilePath)
+
+	// Check if the log file exists
+	if _, err := os.Stat(cleanLogFilePath); os.IsNotExist(err) {
+		return "", fmt.Errorf("proxy logs not found for workload %s", workloadName)
+	}
+
+	// Read and return the entire log file
+	content, err := os.ReadFile(cleanLogFilePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read proxy log for workload %s: %w", workloadName, err)
+	}
+
+	return string(content), nil
+}
+
 // deleteWorkload handles deletion of a single workload
 func (d *defaultManager) deleteWorkload(name string) error {
 	// Create a child context with a longer timeout
@@ -576,6 +604,28 @@ func (d *defaultManager) getWorkloadContainer(ctx context.Context, name string) 
 		return nil, fmt.Errorf("failed to find workload %s: %v", name, err)
 	}
 	return &container, nil
+}
+
+// isSupervisorProcessAlive checks if the supervisor process for a workload is alive
+// by checking if a PID exists. If a PID exists, we assume the supervisor is running.
+// This is a reasonable assumption because:
+// - If the supervisor exits cleanly, it cleans up the PID
+// - If killed unexpectedly, the PID remains but stopProcess will handle it gracefully
+// - The main issue we're preventing is accumulating zombie supervisors from repeated restarts
+func (d *defaultManager) isSupervisorProcessAlive(ctx context.Context, name string) bool {
+	if name == "" {
+		return false
+	}
+
+	// Try to read the PID - if it exists, assume supervisor is running
+	_, err := d.statuses.GetWorkloadPID(ctx, name)
+	if err != nil {
+		// No PID found, supervisor is not running
+		return false
+	}
+
+	// PID exists, assume supervisor is alive
+	return true
 }
 
 // stopProcess stops the proxy process associated with the container
@@ -778,10 +828,44 @@ func (d *defaultManager) restartRemoteWorkload(
 	runConfig *runner.RunConfig,
 	foreground bool,
 ) error {
-	workloadState := d.getRemoteWorkloadState(ctx, name, runConfig.BaseName)
+	// Get workload status using the status manager
+	workload, err := d.statuses.GetWorkload(ctx, name)
+	if err != nil && !errors.Is(err, rt.ErrWorkloadNotFound) {
+		return err
+	}
 
-	if d.isWorkloadAlreadyRunning(name, workloadState) {
-		return nil
+	// If workload is already running, check if the supervisor process is healthy
+	if err == nil && workload.Status == rt.WorkloadStatusRunning {
+		// Check if the supervisor process is actually alive
+		supervisorAlive := d.isSupervisorProcessAlive(ctx, runConfig.BaseName)
+
+		if supervisorAlive {
+			// Workload is running and healthy - preserve old behavior (no-op)
+			logger.Infof("Remote workload %s is already running", name)
+			return nil
+		}
+
+		// Supervisor is dead/missing - we need to clean up and restart to fix the damaged state
+		logger.Infof("Remote workload %s is running but supervisor is dead, cleaning up before restart", name)
+
+		// Set status to stopping
+		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
+			logger.Debugf("Failed to set workload %s status to stopping: %v", name, err)
+		}
+
+		// Stop the supervisor process (proxy) if it exists (may already be dead)
+		// This ensures we clean up any orphaned supervisor processes
+		d.stopProxyIfNeeded(ctx, name, runConfig.BaseName)
+
+		// Clean up client configurations
+		if err := removeClientConfigurations(name, false); err != nil {
+			logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+		}
+
+		// Set status to stopped after cleanup is complete
+		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
+			logger.Debugf("Failed to set workload %s status to stopped: %v", name, err)
+		}
 	}
 
 	// Load runner configuration from state
@@ -803,6 +887,8 @@ func (d *defaultManager) restartRemoteWorkload(
 }
 
 // restartContainerWorkload handles restarting a container-based workload
+//
+//nolint:gocyclo // Complexity is justified - handles multiple restart scenarios and edge cases
 func (d *defaultManager) restartContainerWorkload(ctx context.Context, name string, foreground bool) error {
 	// Get container info to resolve partial names and extract proper workload name
 	var containerName string
@@ -830,10 +916,67 @@ func (d *defaultManager) restartContainerWorkload(ctx context.Context, name stri
 		return err
 	}
 
-	// Check if already running - compare status to WorkloadStatusRunning
+	// Check if workload is running and healthy (including supervisor process)
 	if err == nil && workload.Status == rt.WorkloadStatusRunning {
-		logger.Infof("Container %s is already running", containerName)
-		return nil
+		// Check if the supervisor process is actually alive
+		supervisorAlive := d.isSupervisorProcessAlive(ctx, workloadName)
+
+		if supervisorAlive {
+			// Workload is running and healthy - preserve old behavior (no-op)
+			logger.Infof("Container %s is already running", containerName)
+			return nil
+		}
+
+		// Supervisor is dead/missing - we need to clean up and restart to fix the damaged state
+		logger.Infof("Container %s is running but supervisor is dead, cleaning up before restart", containerName)
+	}
+
+	// Check if we need to stop the workload before restarting
+	// This happens when: 1) container is running, or 2) inconsistent state
+	shouldStop := false
+	if err == nil && workload.Status == rt.WorkloadStatusRunning {
+		// Workload status shows running (and supervisor is dead, otherwise we would have returned above)
+		shouldStop = true
+	} else if container.IsRunning() {
+		// Container is running but status is not running (inconsistent state)
+		shouldStop = true
+	}
+
+	// If we need to stop, do it now (including cleanup of any remaining supervisor process)
+	if shouldStop {
+		logger.Infof("Stopping container %s before restart", containerName)
+
+		// Set status to stopping
+		if err := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStopping, ""); err != nil {
+			logger.Debugf("Failed to set workload %s status to stopping: %v", workloadName, err)
+		}
+
+		// Stop the supervisor process (proxy) if it exists (may already be dead)
+		// This ensures we clean up any orphaned supervisor processes
+		if !labels.IsAuxiliaryWorkload(container.Labels) {
+			d.stopProcess(ctx, workloadName)
+		}
+
+		// Now stop the container if it's running
+		if container.IsRunning() {
+			if err := d.runtime.StopWorkload(ctx, containerName); err != nil {
+				if statusErr := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusError, err.Error()); statusErr != nil {
+					logger.Warnf("Failed to set workload %s status to error: %v", workloadName, statusErr)
+				}
+				return fmt.Errorf("failed to stop container %s: %v", containerName, err)
+			}
+			logger.Infof("Container %s stopped", containerName)
+		}
+
+		// Clean up client configurations
+		if err := removeClientConfigurations(workloadName, labels.IsAuxiliaryWorkload(container.Labels)); err != nil {
+			logger.Warnf("Warning: Failed to remove client configurations: %v", err)
+		}
+
+		// Set status to stopped after cleanup is complete
+		if err := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusStopped, ""); err != nil {
+			logger.Debugf("Failed to set workload %s status to stopped: %v", workloadName, err)
+		}
 	}
 
 	// Load runner configuration from state
@@ -848,58 +991,11 @@ func (d *defaultManager) restartContainerWorkload(ctx context.Context, name stri
 	}
 	logger.Infof("Loaded configuration from state for %s", workloadName)
 
-	// Stop container if needed - since workload is not in running status, check if container needs stopping
-	if container.IsRunning() {
-		logger.Infof("Container %s is running but workload is not in running state. Stopping container...", containerName)
-		if err := d.runtime.StopWorkload(ctx, containerName); err != nil {
-			if statusErr := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusError, ""); statusErr != nil {
-				logger.Warnf("Failed to set workload %s status to error: %v", workloadName, statusErr)
-			}
-			return fmt.Errorf("failed to stop container %s: %v", containerName, err)
-		}
-		logger.Infof("Container %s stopped", containerName)
-	}
-
 	// Start the workload with background context to avoid timeout cancellation
 	// The ctx with AsyncOperationTimeout is only for the restart setup operations,
 	// but the actual workload should run indefinitely with its own lifecycle management
 	// Use workload name for user-facing operations
 	return d.startWorkload(context.Background(), workloadName, mcpRunner, foreground)
-}
-
-// workloadState holds the current state of a workload for restart operations
-type workloadState struct {
-	BaseName     string
-	Running      bool
-	ProxyRunning bool
-}
-
-// getRemoteWorkloadState retrieves the current state of a remote workload
-func (d *defaultManager) getRemoteWorkloadState(ctx context.Context, name, baseName string) *workloadState {
-	workloadSt := &workloadState{
-		BaseName: baseName,
-	}
-
-	// Check the workload status
-	workload, err := d.statuses.GetWorkload(ctx, name)
-	if err != nil {
-		// If we can't get the status, assume it's not running
-		logger.Debugf("Failed to get status for remote workload %s: %v", name, err)
-		workloadSt.Running = false
-	} else {
-		workloadSt.Running = workload.Status == rt.WorkloadStatusRunning
-	}
-
-	return workloadSt
-}
-
-// isWorkloadAlreadyRunning checks if the workload is already fully running
-func (*defaultManager) isWorkloadAlreadyRunning(name string, workloadSt *workloadState) bool {
-	if workloadSt.Running && workloadSt.ProxyRunning {
-		logger.Infof("Container %s and proxy are already running", name)
-		return true
-	}
-	return false
 }
 
 // startWorkload starts the workload in either foreground or background mode

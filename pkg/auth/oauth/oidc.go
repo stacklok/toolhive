@@ -38,27 +38,35 @@ type httpClient interface {
 
 // DiscoverOIDCEndpoints discovers OAuth endpoints from an OIDC issuer
 func DiscoverOIDCEndpoints(ctx context.Context, issuer string) (*OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClient(ctx, issuer, nil)
+	return discoverOIDCEndpointsWithClient(ctx, issuer, nil, false)
 }
 
 // DiscoverActualIssuer discovers the actual issuer from a URL that might be different from the issuer itself
 // This is useful when the resource metadata points to a URL that hosts the authorization server metadata
 // but the actual issuer identifier is different (e.g., Stripe's case)
 func DiscoverActualIssuer(ctx context.Context, metadataURL string) (*OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClientAndValidation(ctx, metadataURL, nil, false)
+	return discoverOIDCEndpointsWithClientAndValidation(ctx, metadataURL, nil, false, false)
 }
 
 // discoverOIDCEndpointsWithClient discovers OAuth endpoints from an OIDC issuer with a custom HTTP client (private for testing)
-func discoverOIDCEndpointsWithClient(ctx context.Context, issuer string, client httpClient) (*OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClientAndValidation(ctx, issuer, client, true)
+func discoverOIDCEndpointsWithClient(
+	ctx context.Context,
+	issuer string,
+	client httpClient,
+	insecureAllowHTTP bool,
+) (*OIDCDiscoveryDocument, error) {
+	return discoverOIDCEndpointsWithClientAndValidation(ctx, issuer, client, true, insecureAllowHTTP)
 }
 
 // discoverOIDCEndpointsWithClientAndValidation discovers OAuth endpoints with optional issuer validation
+//
+//nolint:gocyclo // Function complexity justified by comprehensive OIDC discovery logic
 func discoverOIDCEndpointsWithClientAndValidation(
 	ctx context.Context,
 	issuer string,
 	client httpClient,
 	validateIssuer bool,
+	insecureAllowHTTP bool,
 ) (*OIDCDiscoveryDocument, error) {
 	// Validate issuer URL
 	issuerURL, err := url.Parse(issuer)
@@ -66,9 +74,9 @@ func discoverOIDCEndpointsWithClientAndValidation(
 		return nil, fmt.Errorf("invalid issuer URL: %w", err)
 	}
 
-	// Ensure HTTPS for security (except localhost for development)
-	if issuerURL.Scheme != "https" && !networking.IsLocalhost(issuerURL.Host) {
-		return nil, fmt.Errorf("issuer must use HTTPS: %s", issuer)
+	// Ensure HTTPS for security (except localhost for development or when explicitly allowed for testing)
+	if issuerURL.Scheme != "https" && !networking.IsLocalhost(issuerURL.Host) && !insecureAllowHTTP {
+		return nil, fmt.Errorf("issuer must use HTTPS: %s (use insecureAllowHTTP for testing only)", issuer)
 	}
 
 	// Build both well-known URLs (handles tenant/realm paths)
@@ -120,7 +128,7 @@ func discoverOIDCEndpointsWithClientAndValidation(
 			// When not validating, use the discovered issuer as the expected one
 			expectedIssuer = doc.Issuer
 		}
-		if err := validateOIDCDocument(&doc, expectedIssuer, oidc); err != nil {
+		if err := validateOIDCDocument(&doc, expectedIssuer, oidc, insecureAllowHTTP); err != nil {
 			return nil, fmt.Errorf("%s: invalid metadata: %w", urlStr, err)
 		}
 		return &doc, nil
@@ -142,7 +150,7 @@ func discoverOIDCEndpointsWithClientAndValidation(
 }
 
 // validateOIDCDocument validates the OIDC discovery document
-func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string, oidc bool) error {
+func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string, oidc bool, insecureAllowHTTP bool) error {
 	if doc.Issuer == "" {
 		return fmt.Errorf("missing issuer")
 	}
@@ -164,7 +172,7 @@ func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string, oid
 		return fmt.Errorf("missing jwks_uri (OIDC requires it)")
 	}
 
-	// Validate URLs
+	// Validate URLs (skip HTTPS validation if insecureAllowHTTP is enabled)
 	endpoints := map[string]string{
 		"authorization_endpoint": doc.AuthorizationEndpoint,
 		"token_endpoint":         doc.TokenEndpoint,
@@ -177,7 +185,7 @@ func validateOIDCDocument(doc *OIDCDiscoveryDocument, expectedIssuer string, oid
 	}
 	for name, endpoint := range endpoints {
 		if endpoint != "" {
-			if err := networking.ValidateEndpointURL(endpoint); err != nil {
+			if err := networking.ValidateEndpointURLWithInsecure(endpoint, insecureAllowHTTP); err != nil {
 				return fmt.Errorf("invalid %s: %w", name, err)
 			}
 		}
@@ -205,8 +213,8 @@ func createOAuthConfigFromOIDCWithClient(
 	callbackPort int,
 	client httpClient,
 ) (*Config, error) {
-	// Discover OIDC endpoints
-	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client)
+	// Discover OIDC endpoints (insecureAllowHTTP is false for OAuth config creation)
+	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover OIDC endpoints: %w", err)
 	}

@@ -76,7 +76,7 @@ func NewOutgoingAuthRegistry(_ context.Context, cfg *config.OutgoingAuthConfig) 
 // registerUnauthenticatedStrategy registers the default unauthenticated strategy.
 func registerUnauthenticatedStrategy(registry auth.OutgoingAuthRegistry) error {
 	unauthStrategy := strategies.NewUnauthenticatedStrategy()
-	if err := registry.RegisterStrategy("unauthenticated", unauthStrategy); err != nil {
+	if err := registry.RegisterStrategy(strategies.StrategyTypeUnauthenticated, unauthStrategy); err != nil {
 		return fmt.Errorf("failed to register default unauthenticated strategy: %w", err)
 	}
 	return nil
@@ -120,7 +120,7 @@ func collectStrategyTypes(cfg *config.OutgoingAuthConfig) map[string]struct{} {
 func registerStrategies(registry auth.OutgoingAuthRegistry, strategyTypes map[string]struct{}) error {
 	for strategyType := range strategyTypes {
 		// Skip "unauthenticated" - already registered
-		if strategyType == "unauthenticated" {
+		if strategyType == strategies.StrategyTypeUnauthenticated {
 			continue
 		}
 
@@ -156,9 +156,9 @@ func createStrategy(strategyType string) (auth.Strategy, error) {
 	}
 
 	switch strategyType {
-	case "header_injection":
+	case strategies.StrategyTypeHeaderInjection:
 		return strategies.NewHeaderInjectionStrategy(), nil
-	case "unauthenticated":
+	case strategies.StrategyTypeUnauthenticated:
 		return strategies.NewUnauthenticatedStrategy(), nil
 	default:
 		return nil, fmt.Errorf("unknown strategy type: %s", strategyType)

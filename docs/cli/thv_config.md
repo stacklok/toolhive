@@ -37,6 +37,7 @@ The config command provides subcommands to manage application configuration sett
 * [thv config otel](thv_config_otel.md)	 - Manage OpenTelemetry configuration
 * [thv config set-ca-cert](thv_config_set-ca-cert.md)	 - Set the default CA certificate for container builds
 * [thv config set-registry](thv_config_set-registry.md)	 - Set the MCP server registry
+* [thv config set-registry-api](thv_config_set-registry-api.md)	 - Set the MCP Registry API endpoint
 * [thv config unset-ca-cert](thv_config_unset-ca-cert.md)	 - Remove the configured CA certificate
 * [thv config unset-registry](thv_config_unset-registry.md)	 - Remove the configured registry
 * [thv config usage-metrics](thv_config_usage-metrics.md)	 - Enable or disable anonymous usage metrics

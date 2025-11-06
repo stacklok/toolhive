@@ -122,11 +122,12 @@ func setRegistryAPI(provider Provider, apiURL string, allowPrivateRegistryIp boo
 			return fmt.Errorf("failed to create HTTP client: %w", err)
 		}
 		// Try to fetch the /openapi.yaml endpoint to validate
-		openapiURL := apiURL
-		if !strings.HasSuffix(apiURL, "/") {
-			openapiURL += "/"
+		// Use JoinPath for safe URL construction
+		openapiURL, err := neturl.JoinPath(apiURL, "openapi.yaml")
+		if err != nil {
+			return fmt.Errorf("failed to construct OpenAPI URL: %w", err)
 		}
-		openapiURL += "openapi.yaml"
+		// #nosec G107 -- URL is validated above and path is a constant
 		_, err = registryClient.Get(openapiURL)
 		if err != nil && strings.Contains(fmt.Sprint(err), networking.ErrPrivateIpAddress) {
 			return err

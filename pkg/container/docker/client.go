@@ -757,23 +757,18 @@ func convertRelativePathToAbsolute(source string, mountDecl permissions.MountDec
 		return source, true
 	}
 
-	var basePath string
-	var err error
 	// Special case for Windows: expand ~ to user profile directory.
 	if rt.GOOS == "windows" && strings.HasPrefix(source, "~") {
-		basePath = os.Getenv("USERPROFILE")
-		source = strings.Replace(source, "~", basePath, 1)
-	} else {
-		// Otherwise: Get the current working directory
-		basePath, err = os.Getwd()
-		if err != nil {
-			logger.Warnf("Warning: Failed to get current working directory: %v", err)
-			return "", false
-		}
+		homeDir := os.Getenv("USERPROFILE")
+		source = strings.Replace(source, "~", homeDir, 1)
 	}
 
-	// Convert relative path to absolute path
-	absPath := filepath.Join(basePath, source)
+	absPath, err := filepath.Abs(source)
+	if err != nil {
+		logger.Warnf("Warning: Failed to convert to absolute path: %s (%v)", mountDecl, err)
+		return "", false
+	}
+	
 	logger.Infof("Converting relative path to absolute: %s -> %s", mountDecl, absPath)
 	return absPath, true
 }

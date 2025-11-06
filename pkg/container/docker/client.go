@@ -768,7 +768,7 @@ func convertRelativePathToAbsolute(source string, mountDecl permissions.MountDec
 		logger.Warnf("Warning: Failed to convert to absolute path: %s (%v)", mountDecl, err)
 		return "", false
 	}
-	
+
 	logger.Infof("Converting relative path to absolute: %s -> %s", mountDecl, absPath)
 	return absPath, true
 }

@@ -393,6 +393,156 @@ func TestVirtualMCPServerEnsureService(t *testing.T) {
 	assert.Equal(t, "http", service.Spec.Ports[0].Name)
 }
 
+// TestVirtualMCPServerServiceType tests Service creation with different service types
+func TestVirtualMCPServerServiceType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		serviceType         string
+		expectedServiceType corev1.ServiceType
+	}{
+		{
+			name:                "default to ClusterIP",
+			serviceType:         "",
+			expectedServiceType: corev1.ServiceTypeClusterIP,
+		},
+		{
+			name:                "explicit ClusterIP",
+			serviceType:         "ClusterIP",
+			expectedServiceType: corev1.ServiceTypeClusterIP,
+		},
+		{
+			name:                "LoadBalancer",
+			serviceType:         "LoadBalancer",
+			expectedServiceType: corev1.ServiceTypeLoadBalancer,
+		},
+		{
+			name:                "NodePort",
+			serviceType:         "NodePort",
+			expectedServiceType: corev1.ServiceTypeNodePort,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
+					ServiceType: tt.serviceType,
+				},
+			}
+
+			scheme := runtime.NewScheme()
+			_ = mcpv1alpha1.AddToScheme(scheme)
+			_ = corev1.AddToScheme(scheme)
+
+			r := &VirtualMCPServerReconciler{
+				Scheme: scheme,
+			}
+
+			// Test serviceForVirtualMCPServer
+			service := r.serviceForVirtualMCPServer(context.Background(), vmcp)
+			require.NotNil(t, service)
+			assert.Equal(t, tt.expectedServiceType, service.Spec.Type)
+		})
+	}
+}
+
+// TestVirtualMCPServerServiceNeedsUpdate tests service update detection
+func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
+	t.Parallel()
+
+	baseVmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "test-group",
+			},
+			ServiceType: "ClusterIP",
+		},
+	}
+
+	baseService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpServiceName(baseVmcp.Name),
+			Namespace: baseVmcp.Namespace,
+			Labels:    labelsForVirtualMCPServer(baseVmcp.Name),
+		},
+		Spec: corev1.ServiceSpec{
+			Type: corev1.ServiceTypeClusterIP,
+			Ports: []corev1.ServicePort{{
+				Port: vmcpDefaultPort,
+			}},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		service     *corev1.Service
+		vmcp        *mcpv1alpha1.VirtualMCPServer
+		needsUpdate bool
+	}{
+		{
+			name:        "no update needed",
+			service:     baseService.DeepCopy(),
+			vmcp:        baseVmcp.DeepCopy(),
+			needsUpdate: false,
+		},
+		{
+			name:    "service type changed to LoadBalancer",
+			service: baseService.DeepCopy(),
+			vmcp: func() *mcpv1alpha1.VirtualMCPServer {
+				v := baseVmcp.DeepCopy()
+				v.Spec.ServiceType = "LoadBalancer"
+				return v
+			}(),
+			needsUpdate: true,
+		},
+		{
+			name:    "service type changed to NodePort",
+			service: baseService.DeepCopy(),
+			vmcp: func() *mcpv1alpha1.VirtualMCPServer {
+				v := baseVmcp.DeepCopy()
+				v.Spec.ServiceType = "NodePort"
+				return v
+			}(),
+			needsUpdate: true,
+		},
+		{
+			name: "port changed",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Spec.Ports[0].Port = 9999
+				return s
+			}(),
+			vmcp:        baseVmcp.DeepCopy(),
+			needsUpdate: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := &VirtualMCPServerReconciler{}
+			result := r.serviceNeedsUpdate(tt.service, tt.vmcp)
+			assert.Equal(t, tt.needsUpdate, result)
+		})
+	}
+}
+
 // TestVirtualMCPServerUpdateStatus tests status update logic
 func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 	t.Parallel()

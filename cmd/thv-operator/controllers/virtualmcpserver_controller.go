@@ -647,6 +647,15 @@ func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 		return true
 	}
 
+	// Check if service type has changed
+	expectedServiceType := corev1.ServiceTypeClusterIP
+	if vmcp.Spec.ServiceType != "" {
+		expectedServiceType = corev1.ServiceType(vmcp.Spec.ServiceType)
+	}
+	if service.Spec.Type != expectedServiceType {
+		return true
+	}
+
 	// Check if service metadata has changed
 	expectedLabels := labelsForVirtualMCPServer(vmcp.Name)
 	expectedAnnotations := make(map[string]string)

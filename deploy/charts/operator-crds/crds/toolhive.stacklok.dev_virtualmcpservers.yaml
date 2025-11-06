@@ -725,6 +725,15 @@ spec:
                   This field accepts a PodTemplateSpec object as JSON/YAML.
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
+              serviceType:
+                default: ClusterIP
+                description: ServiceType specifies the Kubernetes service type for
+                  the Virtual MCP server
+                enum:
+                - ClusterIP
+                - NodePort
+                - LoadBalancer
+                type: string
               tokenCache:
                 description: TokenCache configures token caching behavior
                 properties:

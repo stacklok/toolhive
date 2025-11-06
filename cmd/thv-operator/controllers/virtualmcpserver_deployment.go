@@ -322,9 +322,11 @@ func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 	// Build service metadata
 	serviceLabels, serviceAnnotations := r.buildServiceMetadataForVmcp(ls, vmcp)
 
-	// Determine service type (ClusterIP by default, LoadBalancer if specified)
+	// Determine service type from spec (defaults to ClusterIP if not specified)
 	serviceType := corev1.ServiceTypeClusterIP
-	// TODO: Add configuration option for LoadBalancer service type
+	if vmcp.Spec.ServiceType != "" {
+		serviceType = corev1.ServiceType(vmcp.Spec.ServiceType)
+	}
 
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{

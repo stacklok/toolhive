@@ -42,6 +42,12 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	Operational *OperationalConfig `json:"operational,omitempty"`
 
+	// ServiceType specifies the Kubernetes service type for the Virtual MCP server
+	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
+	// +kubebuilder:default=ClusterIP
+	// +optional
+	ServiceType string `json:"serviceType,omitempty"`
+
 	// PodTemplateSpec defines the pod template to use for the Virtual MCP server
 	// This allows for customizing the pod configuration beyond what is provided by the other fields.
 	// Note that to modify the specific container the Virtual MCP server runs in, you must specify

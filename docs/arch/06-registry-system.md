@@ -422,8 +422,8 @@ When multiple registries configured, ToolHive uses this priority order:
 The factory selects the first configured registry type in this order. To switch between registry types, use the appropriate CLI command:
 
 ```bash
-# Set API registry (highest priority)
-thv config set-registry-api https://registry.example.com
+# Set API registry (highest priority, for example, https://registry.modelcontextprotocol.io)
+thv config set-registry-api https://registry.example.com 
 
 # Set remote registry (if no API registry configured)
 thv config set-registry https://example.com/registry.json

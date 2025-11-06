@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/versions"
 )
 
 // Client represents an MCP Registry API client
@@ -48,6 +49,7 @@ type mcpRegistryClient struct {
 	baseURL        string
 	httpClient     *http.Client
 	allowPrivateIp bool
+	userAgent      string
 }
 
 // NewClient creates a new MCP Registry API client
@@ -69,6 +71,7 @@ func NewClient(baseURL string, allowPrivateIp bool) (Client, error) {
 		baseURL:        baseURL,
 		httpClient:     httpClient,
 		allowPrivateIp: allowPrivateIp,
+		userAgent:      versions.GetUserAgent(),
 	}, nil
 }
 
@@ -83,6 +86,7 @@ func (c *mcpRegistryClient) GetServer(ctx context.Context, name string) (*v0.Ser
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
+	req.Header.Set("User-Agent", c.userAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -173,6 +177,7 @@ func (c *mcpRegistryClient) fetchServersPage(
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create request: %w", err)
 	}
+	req.Header.Set("User-Agent", c.userAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -213,6 +218,7 @@ func (c *mcpRegistryClient) SearchServers(ctx context.Context, query string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
+	req.Header.Set("User-Agent", c.userAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -248,6 +254,7 @@ func (c *mcpRegistryClient) ValidateEndpoint(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
+	req.Header.Set("User-Agent", c.userAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

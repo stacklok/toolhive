@@ -161,25 +161,6 @@ _Appears in:_
 | `externalAuthConfigRef` _[ExternalAuthConfigRef](#externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "external_auth_config_ref" |  |  |
 
 
-#### CapabilitiesSummary
-
-
-
-CapabilitiesSummary summarizes aggregated capabilities
-
-
-
-_Appears in:_
-- [VirtualMCPServerStatus](#virtualmcpserverstatus)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `toolCount` _integer_ | ToolCount is the total number of tools exposed |  |  |
-| `resourceCount` _integer_ | ResourceCount is the total number of resources exposed |  |  |
-| `promptCount` _integer_ | PromptCount is the total number of prompts exposed |  |  |
-| `compositeToolCount` _integer_ | CompositeToolCount is the number of composite tools defined |  |  |
-
-
 #### CircuitBreakerConfig
 
 
@@ -301,27 +282,6 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `prefixFormat` _string_ | PrefixFormat defines the prefix format for the "prefix" strategy<br />Supports placeholders: \{workload\}, \{workload\}_, \{workload\}. | \{workload\}_ |  |
 | `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy |  |  |
-
-
-#### DiscoveredBackend
-
-
-
-DiscoveredBackend represents a discovered backend MCPServer
-
-
-
-_Appears in:_
-- [VirtualMCPServerStatus](#virtualmcpserverstatus)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name is the name of the backend MCPServer |  | Required: \{\} <br /> |
-| `authConfigRef` _string_ | AuthConfigRef is the name of the discovered MCPExternalAuthConfig<br />Empty if backend has no external auth config |  |  |
-| `authType` _string_ | AuthType is the type of authentication configured |  |  |
-| `status` _string_ | Status is the current status of the backend |  | Enum: [ready degraded unavailable] <br /> |
-| `lastHealthCheck` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastHealthCheck is the timestamp of the last health check |  |  |
-| `url` _string_ | URL is the URL of the backend MCPServer |  |  |
 
 
 
@@ -448,6 +408,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `type` _string_ | Type defines the authentication type: anonymous, local, or oidc |  | Enum: [anonymous local oidc] <br /> |
 | `oidcConfig` _[OIDCConfigRef](#oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration<br />Reuses MCPServer OIDC patterns |  |  |
 | `authzConfig` _[AuthzConfigRef](#authzconfigref)_ | AuthzConfig defines authorization policy configuration<br />Reuses MCPServer authz patterns |  |  |
 
@@ -1994,8 +1955,6 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the VirtualMCPServer's state |  |  |
-| `discoveredBackends` _[DiscoveredBackend](#discoveredbackend) array_ | DiscoveredBackends lists discovered backend configurations when source=discovered |  |  |
-| `capabilities` _[CapabilitiesSummary](#capabilitiessummary)_ | Capabilities summarizes aggregated capabilities from all backends |  |  |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this VirtualMCPServer |  |  |
 | `phase` _[VirtualMCPServerPhase](#virtualmcpserverphase)_ | Phase is the current phase of the VirtualMCPServer | Pending | Enum: [Pending Ready Degraded Failed] <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  |  |

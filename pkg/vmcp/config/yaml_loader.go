@@ -61,7 +61,7 @@ type rawIncomingAuth struct {
 	OIDC *struct {
 		Issuer          string   `yaml:"issuer"`
 		ClientID        string   `yaml:"client_id"`
-		ClientSecretEnv string   `yaml:"client_secret_env"`
+		ClientSecretEnv string   `yaml:"client_secret_env"` // Environment variable name containing the client secret
 		Audience        string   `yaml:"audience"`
 		Resource        string   `yaml:"resource"`
 		Scopes          []string `yaml:"scopes"`
@@ -192,8 +192,8 @@ type rawElicitationResponse struct {
 // transformToConfig converts the raw YAML structure to the unified Config model.
 func (l *YAMLLoader) transformToConfig(raw *rawConfig) (*Config, error) {
 	cfg := &Config{
-		Name:     raw.Name,
-		GroupRef: raw.Group,
+		Name:  raw.Name,
+		Group: raw.Group,
 	}
 
 	// Transform incoming auth
@@ -247,25 +247,20 @@ func (l *YAMLLoader) transformToConfig(raw *rawConfig) (*Config, error) {
 	return cfg, nil
 }
 
+//nolint:unparam // error return reserved for future validation logic
 func (*YAMLLoader) transformIncomingAuth(raw *rawIncomingAuth) (*IncomingAuthConfig, error) {
 	cfg := &IncomingAuthConfig{
 		Type: raw.Type,
 	}
 
 	if raw.OIDC != nil {
-		// Resolve environment variable for client secret
-		clientSecret := os.Getenv(raw.OIDC.ClientSecretEnv)
-		if clientSecret == "" && raw.OIDC.ClientSecretEnv != "" {
-			return nil, fmt.Errorf("environment variable %s not set for client_secret", raw.OIDC.ClientSecretEnv)
-		}
-
 		cfg.OIDC = &OIDCConfig{
-			Issuer:       raw.OIDC.Issuer,
-			ClientID:     raw.OIDC.ClientID,
-			ClientSecret: clientSecret,
-			Audience:     raw.OIDC.Audience,
-			Resource:     raw.OIDC.Resource,
-			Scopes:       raw.OIDC.Scopes,
+			Issuer:          raw.OIDC.Issuer,
+			ClientID:        raw.OIDC.ClientID,
+			ClientSecretEnv: raw.OIDC.ClientSecretEnv,
+			Audience:        raw.OIDC.Audience,
+			Resource:        raw.OIDC.Resource,
+			Scopes:          raw.OIDC.Scopes,
 		}
 	}
 
@@ -417,7 +412,7 @@ func (*YAMLLoader) transformTokenCache(raw *rawTokenCache) (*TokenCacheConfig, e
 
 		cfg.Memory = &MemoryCacheConfig{
 			MaxEntries: raw.Config.MaxEntries,
-			TTLOffset:  ttlOffset,
+			TTLOffset:  Duration(ttlOffset),
 		}
 
 	case CacheProviderRedis:
@@ -431,7 +426,7 @@ func (*YAMLLoader) transformTokenCache(raw *rawTokenCache) (*TokenCacheConfig, e
 			DB:        raw.Config.DB,
 			KeyPrefix: raw.Config.KeyPrefix,
 			Password:  raw.Config.Password,
-			TTLOffset: ttlOffset,
+			TTLOffset: Duration(ttlOffset),
 		}
 	}
 
@@ -449,8 +444,8 @@ func (*YAMLLoader) transformOperational(raw *rawOperational) (*OperationalConfig
 		}
 
 		cfg.Timeouts = &TimeoutConfig{
-			Default:     defaultTimeout,
-			PerWorkload: make(map[string]time.Duration),
+			Default:     Duration(defaultTimeout),
+			PerWorkload: make(map[string]Duration),
 		}
 
 		for workload, timeoutStr := range raw.Timeouts.PerWorkload {
@@ -458,7 +453,7 @@ func (*YAMLLoader) transformOperational(raw *rawOperational) (*OperationalConfig
 			if err != nil {
 				return nil, fmt.Errorf("invalid timeout for workload %s: %w", workload, err)
 			}
-			cfg.Timeouts.PerWorkload[workload] = timeout
+			cfg.Timeouts.PerWorkload[workload] = Duration(timeout)
 		}
 	}
 
@@ -469,7 +464,7 @@ func (*YAMLLoader) transformOperational(raw *rawOperational) (*OperationalConfig
 	}
 
 	cfg.FailureHandling = &FailureHandlingConfig{
-		HealthCheckInterval: healthCheckInterval,
+		HealthCheckInterval: Duration(healthCheckInterval),
 		UnhealthyThreshold:  raw.FailureHandling.UnhealthyThreshold,
 		PartialFailureMode:  raw.FailureHandling.PartialFailureMode,
 	}
@@ -484,7 +479,7 @@ func (*YAMLLoader) transformOperational(raw *rawOperational) (*OperationalConfig
 		cfg.FailureHandling.CircuitBreaker = &CircuitBreakerConfig{
 			Enabled:          true,
 			FailureThreshold: raw.FailureHandling.CircuitBreaker.FailureThreshold,
-			Timeout:          cbTimeout,
+			Timeout:          Duration(cbTimeout),
 		}
 	}
 
@@ -504,7 +499,7 @@ func (l *YAMLLoader) transformCompositeTools(raw []*rawCompositeTool) ([]*Compos
 			Name:        rawTool.Name,
 			Description: rawTool.Description,
 			Parameters:  make(map[string]ParameterSchema),
-			Timeout:     timeout,
+			Timeout:     Duration(timeout),
 		}
 
 		// Transform parameters
@@ -558,10 +553,10 @@ func (*YAMLLoader) transformWorkflowStep(raw *rawWorkflowStep) (*WorkflowStepCon
 		if err != nil {
 			return nil, fmt.Errorf("invalid timeout: %w", err)
 		}
-		step.Timeout = timeout
+		step.Timeout = Duration(timeout)
 	} else if raw.Type == "elicitation" {
 		// Set default timeout for elicitation steps
-		step.Timeout = 5 * time.Minute
+		step.Timeout = Duration(5 * time.Minute)
 	}
 
 	if raw.OnError != nil {
@@ -574,7 +569,7 @@ func (*YAMLLoader) transformWorkflowStep(raw *rawWorkflowStep) (*WorkflowStepCon
 			if err != nil {
 				return nil, fmt.Errorf("invalid retry_delay: %w", err)
 			}
-			step.OnError.RetryDelay = retryDelay
+			step.OnError.RetryDelay = Duration(retryDelay)
 		}
 	}
 

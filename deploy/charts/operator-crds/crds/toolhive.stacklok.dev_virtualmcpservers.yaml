@@ -22,14 +22,6 @@ spec:
       jsonPath: .status.phase
       name: Phase
       type: string
-    - description: Total tools
-      jsonPath: .status.capabilities.toolCount
-      name: Tools
-      type: integer
-    - description: Backends
-      jsonPath: .status.discoveredBackends[*]
-      name: Backends
-      type: integer
     - description: Virtual MCP server URL
       jsonPath: .status.url
       name: URL
@@ -512,6 +504,14 @@ spec:
                     required:
                     - type
                     type: object
+                  type:
+                    description: 'Type defines the authentication type: anonymous,
+                      local, or oidc'
+                    enum:
+                    - anonymous
+                    - local
+                    - oidc
+                    type: string
                 type: object
               operational:
                 description: Operational defines operational settings like timeouts
@@ -794,24 +794,6 @@ spec:
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
-              capabilities:
-                description: Capabilities summarizes aggregated capabilities from
-                  all backends
-                properties:
-                  compositeToolCount:
-                    description: CompositeToolCount is the number of composite tools
-                      defined
-                    type: integer
-                  promptCount:
-                    description: PromptCount is the total number of prompts exposed
-                    type: integer
-                  resourceCount:
-                    description: ResourceCount is the total number of resources exposed
-                    type: integer
-                  toolCount:
-                    description: ToolCount is the total number of tools exposed
-                    type: integer
-                type: object
               conditions:
                 description: Conditions represent the latest available observations
                   of the VirtualMCPServer's state
@@ -868,42 +850,6 @@ spec:
                   - reason
                   - status
                   - type
-                  type: object
-                type: array
-              discoveredBackends:
-                description: DiscoveredBackends lists discovered backend configurations
-                  when source=discovered
-                items:
-                  description: DiscoveredBackend represents a discovered backend MCPServer
-                  properties:
-                    authConfigRef:
-                      description: |-
-                        AuthConfigRef is the name of the discovered MCPExternalAuthConfig
-                        Empty if backend has no external auth config
-                      type: string
-                    authType:
-                      description: AuthType is the type of authentication configured
-                      type: string
-                    lastHealthCheck:
-                      description: LastHealthCheck is the timestamp of the last health
-                        check
-                      format: date-time
-                      type: string
-                    name:
-                      description: Name is the name of the backend MCPServer
-                      type: string
-                    status:
-                      description: Status is the current status of the backend
-                      enum:
-                      - ready
-                      - degraded
-                      - unavailable
-                      type: string
-                    url:
-                      description: URL is the URL of the backend MCPServer
-                      type: string
-                  required:
-                  - name
                   type: object
                 type: array
               message:

@@ -46,6 +46,13 @@ func (r *VirtualMCPServer) Validate() error {
 		return fmt.Errorf("spec.groupRef.name is required")
 	}
 
+	// Validate IncomingAuth configuration
+	if r.Spec.IncomingAuth != nil {
+		if err := r.validateIncomingAuth(); err != nil {
+			return err
+		}
+	}
+
 	// Validate OutgoingAuth configuration
 	if r.Spec.OutgoingAuth != nil {
 		if err := r.validateOutgoingAuth(); err != nil {
@@ -72,6 +79,23 @@ func (r *VirtualMCPServer) Validate() error {
 		if err := r.validateTokenCache(); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+// validateIncomingAuth validates IncomingAuth configuration
+func (r *VirtualMCPServer) validateIncomingAuth() error {
+	auth := r.Spec.IncomingAuth
+
+	// Type is required when IncomingAuth is specified
+	if auth.Type == "" {
+		return fmt.Errorf("spec.incomingAuth.type is required")
+	}
+
+	// Validate type-specific requirements
+	if auth.Type == "oidc" && auth.OIDCConfig == nil {
+		return fmt.Errorf("spec.incomingAuth.oidcConfig is required when type is oidc")
 	}
 
 	return nil

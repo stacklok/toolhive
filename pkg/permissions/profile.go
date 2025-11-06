@@ -345,7 +345,8 @@ func parseWindowsPath(declaration string, colonPositions []int) (source, target 
 		}
 
 		cleanedSource := filepath.Clean(hostPath)
-		cleanedTarget := filepath.Clean(containerPath)
+		// See comment above about using path.Clean instead of filepath.Clean.
+		cleanedTarget := pkgpath.Clean(containerPath)
 		return cleanedSource, cleanedTarget, nil
 	}
 

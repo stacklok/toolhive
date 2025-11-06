@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-05T00:18:57Z",
+  "last_updated": "2025-11-06T00:18:31Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -348,9 +348,9 @@
         "jira_batch_create_versions"
       ],
       "metadata": {
-        "stars": 3332,
+        "stars": 3502,
         "pulls": 12849,
-        "last_updated": "2025-10-16T02:30:32Z"
+        "last_updated": "2025-11-04T02:32:44Z"
       },
       "repository_url": "https://github.com/sooperset/mcp-atlassian",
       "tags": [
@@ -587,9 +587,9 @@
         "get_price_list_urls"
       ],
       "metadata": {
-        "stars": 6742,
+        "stars": 6915,
         "pulls": 8179,
-        "last_updated": "2025-10-16T02:30:32Z"
+        "last_updated": "2025-11-04T02:32:44Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -1699,9 +1699,9 @@
         "list_allowed_directories"
       ],
       "metadata": {
-        "stars": 70459,
+        "stars": 71855,
         "pulls": 20619,
-        "last_updated": "2025-10-16T02:30:32Z"
+        "last_updated": "2025-11-04T02:32:45Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1740,9 +1740,9 @@
         "firecrawl_search"
       ],
       "metadata": {
-        "stars": 4728,
+        "stars": 4844,
         "pulls": 12644,
-        "last_updated": "2025-10-17T02:30:04Z"
+        "last_updated": "2025-11-04T02:32:46Z"
       },
       "repository_url": "https://github.com/firecrawl/firecrawl-mcp-server",
       "tags": [
@@ -2118,7 +2118,7 @@
         "milestones",
         "pipelines"
       ],
-      "image": "iwakitakuma/gitlab-mcp:2.0.8",
+      "image": "iwakitakuma/gitlab-mcp:2.0.9",
       "target_port": 3002,
       "permissions": {
         "network": {
@@ -3352,7 +3352,7 @@
         "query",
         "graph-database"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-cypher:0.4.1",
+      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-cypher:0.5.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -3808,9 +3808,9 @@
         "open_nodes"
       ],
       "metadata": {
-        "stars": 70459,
+        "stars": 71855,
         "pulls": 15854,
-        "last_updated": "2025-10-16T02:30:32Z"
+        "last_updated": "2025-11-04T02:32:46Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -4342,7 +4342,7 @@
         "evaluation",
         "ai"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.19",
+      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.22",
       "permissions": {
         "network": {
           "outbound": {

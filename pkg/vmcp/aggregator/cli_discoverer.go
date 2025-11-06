@@ -103,13 +103,11 @@ func (d *cliBackendDiscoverer) Discover(ctx context.Context, groupRef string) ([
 		}
 
 		// Apply authentication configuration if provided
-		if d.authConfig != nil {
-			authStrategy, authMetadata := d.resolveAuthConfig(name)
-			backend.AuthStrategy = authStrategy
-			backend.AuthMetadata = authMetadata
-			if authStrategy != "" {
-				logger.Debugf("Backend %s configured with auth strategy: %s", name, authStrategy)
-			}
+		authStrategy, authMetadata := d.authConfig.ResolveForBackend(name)
+		backend.AuthStrategy = authStrategy
+		backend.AuthMetadata = authMetadata
+		if authStrategy != "" {
+			logger.Debugf("Backend %s configured with auth strategy: %s", name, authStrategy)
 		}
 
 		// Copy user labels to metadata first
@@ -134,29 +132,6 @@ func (d *cliBackendDiscoverer) Discover(ctx context.Context, groupRef string) ([
 
 	logger.Infof("Discovered %d backends in group %s", len(backends), groupRef)
 	return backends, nil
-}
-
-// resolveAuthConfig determines the authentication strategy and metadata for a backend.
-// It checks for backend-specific configuration first, then falls back to default.
-func (d *cliBackendDiscoverer) resolveAuthConfig(backendID string) (string, map[string]any) {
-	if d.authConfig == nil {
-		return "", nil
-	}
-
-	// Check for backend-specific configuration
-	if strategy, exists := d.authConfig.Backends[backendID]; exists && strategy != nil {
-		logger.Debugf("Using backend-specific auth strategy for %s: %s", backendID, strategy.Type)
-		return strategy.Type, strategy.Metadata
-	}
-
-	// Fall back to default configuration
-	if d.authConfig.Default != nil {
-		logger.Debugf("Using default auth strategy for %s: %s", backendID, d.authConfig.Default.Type)
-		return d.authConfig.Default.Type, d.authConfig.Default.Metadata
-	}
-
-	// No authentication configured
-	return "", nil
 }
 
 // mapWorkloadStatusToHealth converts a workload status to a backend health status.

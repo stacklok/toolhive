@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-vmcp-controller
+  namespace: toolhive-system
+  labels:
+    app.kubernetes.io/name: virtualmcpserver
+    app.kubernetes.io/instance: test-vmcp-controller
+    app.kubernetes.io/component: vmcp-server
+    app.kubernetes.io/managed-by: thv-operator
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app.kubernetes.io/name: virtualmcpserver
+    app.kubernetes.io/instance: test-vmcp-controller

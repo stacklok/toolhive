@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-vmcp-oidc
+  namespace: toolhive-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: vmcp
+        env:
+        # Verify that the OIDC client secret is mounted as an environment variable from a Kubernetes Secret
+        - name: VMCP_OIDC_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: test-oidc-client-secret
+              key: clientSecret

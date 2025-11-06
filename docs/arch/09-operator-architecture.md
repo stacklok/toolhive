@@ -118,6 +118,77 @@ MCPGroup resources allow grouping related MCP servers. Servers reference their g
 
 **Controller**: `cmd/thv-operator/controllers/mcpgroup_controller.go`
 
+### VirtualMCPServer
+
+Aggregates multiple MCPServer resources from an MCPGroup into a single unified MCP server interface with advanced composition capabilities.
+
+**Implementation**: `cmd/thv-operator/api/v1alpha1/virtualmcpserver_types.go`
+
+VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, and prompts from multiple backend MCPServers. It provides:
+
+**Key capabilities:**
+- **Backend Discovery**: Automatically discovers MCPServers from a referenced MCPGroup
+- **Tool Aggregation**: Aggregates tools from multiple backends with configurable conflict resolution (prefix, priority, manual)
+- **Tool Filtering**: Selective tool exposure with allow/deny lists and rewriting rules
+- **Composite Tools**: Create new tools that orchestrate calls across multiple backend tools
+- **Incoming Authentication**: OIDC and authorization policies for clients connecting to the virtual server
+- **Outgoing Authentication**: Automatic token exchange and authentication to backend servers
+- **Token Caching**: Configurable token caching with TTL and capacity limits
+- **Operational Controls**: Health check intervals, failure handling, and backend retry logic
+
+**Architecture:**
+```
+┌─────────────┐
+│   Clients   │
+└──────┬──────┘
+       │
+       │ (OIDC auth)
+       ▼
+┌────────────────────────┐
+│  VirtualMCPServer      │
+│  - Tool Aggregation    │
+│  - Conflict Resolution │
+│  - Composite Tools     │
+│  - Token Exchange      │
+└────────┬───────────────┘
+         │
+         ├──────────┬──────────┬──────────┐
+         ▼          ▼          ▼          ▼
+    ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
+    │Backend1│ │Backend2│ │Backend3│ │Backend4│
+    │MCPSrvr │ │MCPSrvr │ │MCPSrvr │ │MCPSrvr │
+    └────────┘ └────────┘ └────────┘ └────────┘
+         (Discovered from MCPGroup)
+```
+
+**Status fields** include:
+- Phase (Ready, Degraded, Pending, Failed)
+- URL for accessing the virtual server
+- Discovered backends with individual health status
+- Capabilities summary (tool/resource/prompt counts)
+- Detailed conditions for validation, discovery, and readiness
+
+**Referenced by**: MCPGroup (via `spec.groupRef`)
+
+**Controller**: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
+
+**Key features:**
+
+1. **Conflict Resolution Strategies**:
+   - `prefix`: Prefix tool names with backend identifier
+   - `priority`: First backend in priority order wins conflicts
+   - `manual`: Explicitly define which backend wins each conflict
+
+2. **Composite Tools**: Define new tools that orchestrate multiple backend tool calls with parameter mapping and response aggregation
+
+3. **Watch Optimization**: Targeted reconciliation - only reconciles VirtualMCPServers affected by backend changes, not all servers in the namespace
+
+4. **Status Reconciliation**: Robust status updates with conflict handling following Kubernetes optimistic concurrency control patterns
+
+5. **Backend Health Monitoring**: Periodic health checks with configurable intervals and automatic status updates
+
+For examples, see the [`examples/operator/`](../../examples/operator/) directory.
+
 For complete examples of all CRDs, see the [`examples/operator/mcp-servers/`](../../examples/operator/mcp-servers/) directory.
 
 ## Operator Components

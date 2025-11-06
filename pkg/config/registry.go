@@ -1,10 +1,7 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
-	neturl "net/url"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -36,23 +33,13 @@ func DetectRegistryType(input string) (registryType string, cleanPath string) {
 
 // setRegistryURL validates and sets a registry URL using the provided provider
 func setRegistryURL(provider Provider, registryURL string, allowPrivateRegistryIp bool) error {
-	parsedURL, err := neturl.Parse(registryURL)
+	// Validate URL scheme
+	_, err := validateURLScheme(registryURL, allowPrivateRegistryIp)
 	if err != nil {
 		return fmt.Errorf("invalid registry URL: %w", err)
 	}
 
-	if allowPrivateRegistryIp {
-		// we validate either https or http URLs
-		if parsedURL.Scheme != networking.HttpScheme && parsedURL.Scheme != networking.HttpsScheme {
-			return fmt.Errorf("registry URL must start with http:// or https:// when allowing private IPs")
-		}
-	} else {
-		// we just allow https
-		if parsedURL.Scheme != networking.HttpsScheme {
-			return fmt.Errorf("registry URL must start with https:// when not allowing private IPs")
-		}
-	}
-
+	// Check for private IP addresses if not allowed
 	if !allowPrivateRegistryIp {
 		registryClient, err := networking.NewHttpClientBuilder().Build()
 		if err != nil {
@@ -79,33 +66,21 @@ func setRegistryURL(provider Provider, registryURL string, allowPrivateRegistryI
 
 // setRegistryFile validates and sets a local registry file using the provided provider
 func setRegistryFile(provider Provider, registryPath string) error {
-	// Validate that the file exists and is readable
-	if _, err := os.Stat(registryPath); err != nil {
-		return fmt.Errorf("local registry file not found or not accessible: %w", err)
-	}
-
-	// Basic validation - check if it's a JSON file
-	if !strings.HasSuffix(strings.ToLower(registryPath), ".json") {
-		return fmt.Errorf("registry file must be a JSON file (*.json)")
-	}
-
-	// Try to read and parse the file to validate it's a valid registry
-	// #nosec G304: File path is user-provided but validated above
-	registryContent, err := os.ReadFile(registryPath)
+	// Validate file path exists
+	cleanPath, err := validateFilePath(registryPath)
 	if err != nil {
-		return fmt.Errorf("failed to read registry file: %w", err)
+		return fmt.Errorf("local registry %w", err)
 	}
 
-	// Basic JSON validation
-	var registry map[string]interface{}
-	if err := json.Unmarshal(registryContent, &registry); err != nil {
-		return fmt.Errorf("invalid JSON format in registry file: %w", err)
+	// Validate JSON file
+	if err := validateJSONFile(cleanPath); err != nil {
+		return fmt.Errorf("registry file: %w", err)
 	}
 
 	// Make the path absolute
-	absPath, err := filepath.Abs(registryPath)
+	absPath, err := makeAbsolutePath(cleanPath)
 	if err != nil {
-		return fmt.Errorf("failed to resolve absolute path: %w", err)
+		return fmt.Errorf("registry file: %w", err)
 	}
 
 	// Update the configuration

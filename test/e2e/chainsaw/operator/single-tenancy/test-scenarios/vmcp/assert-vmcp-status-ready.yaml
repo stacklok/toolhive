@@ -1,0 +1,12 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: test-vmcp-controller
+  namespace: toolhive-system
+status:
+  phase: Running
+  conditions:
+  - type: Ready
+    status: "True"
+  - type: BackendsDiscovered
+    status: "True"

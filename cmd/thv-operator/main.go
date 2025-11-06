@@ -180,6 +180,16 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 		return fmt.Errorf("unable to create controller MCPGroup: %w", err)
 	}
 
+	// Set up VirtualMCPServer controller
+	if err := (&controllers.VirtualMCPServerReconciler{
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		Recorder:         mgr.GetEventRecorderFor("virtualmcpserver-controller"),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller VirtualMCPServer: %w", err)
+	}
+
 	// Set up VirtualMCPServer webhook
 	if err := (&mcpv1alpha1.VirtualMCPServer{}).SetupWebhookWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create webhook VirtualMCPServer: %w", err)

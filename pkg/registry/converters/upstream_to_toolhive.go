@@ -47,8 +47,8 @@ func ServerJSONToImageMetadata(serverJSON *upstream.ServerJSON) (*types.ImageMet
 		imageMetadata.RepositoryURL = serverJSON.Repository.URL
 	}
 
-	// Convert environment variables
-	imageMetadata.EnvVars = convertEnvironmentVariables(pkg.EnvironmentVariables)
+	// Convert environment variables from both sources
+	imageMetadata.EnvVars = extractEnvironmentVariables(pkg)
 
 	// Extract target port from transport URL if present
 	imageMetadata.TargetPort = extractTargetPort(pkg.Transport.URL, serverJSON.Name)
@@ -91,6 +91,21 @@ func extractSingleOCIPackage(serverJSON *upstream.ServerJSON) (model.Package, er
 	return ociPackages[0], nil
 }
 
+// extractEnvironmentVariables extracts environment variables from both sources:
+// 1. The direct environmentVariables field (preferred)
+// 2. The -e/--env flags in runtimeArguments (Docker CLI pattern)
+func extractEnvironmentVariables(pkg model.Package) []*types.EnvVar {
+	var envVars []*types.EnvVar
+
+	// First, extract from the dedicated environmentVariables field
+	envVars = append(envVars, convertEnvironmentVariables(pkg.EnvironmentVariables)...)
+
+	// Second, extract from -e/--env flags in runtimeArguments
+	envVars = append(envVars, extractEnvFromRuntimeArgs(pkg.RuntimeArguments)...)
+
+	return envVars
+}
+
 // convertEnvironmentVariables converts model.KeyValueInput to types.EnvVar
 func convertEnvironmentVariables(envVars []model.KeyValueInput) []*types.EnvVar {
 	if len(envVars) == 0 {
@@ -108,6 +123,78 @@ func convertEnvironmentVariables(envVars []model.KeyValueInput) []*types.EnvVar 
 		})
 	}
 	return result
+}
+
+// extractEnvFromRuntimeArgs extracts environment variables from -e/--env flags in runtime arguments
+// This handles the Docker CLI pattern where env vars are specified as: -e KEY=value or --env KEY=value
+func extractEnvFromRuntimeArgs(args []model.Argument) []*types.EnvVar {
+	var result []*types.EnvVar
+
+	for _, arg := range args {
+		// Skip if not a named argument with -e or --env
+		if arg.Type != model.ArgumentTypeNamed {
+			continue
+		}
+		if arg.Name != "-e" && arg.Name != "--env" {
+			continue
+		}
+
+		// Parse the environment variable from the value
+		// Format: KEY=value or KEY={variableName}
+		envVar := parseEnvVarFromValue(arg.Value, arg.Description, arg.Variables)
+		if envVar != nil {
+			envVar.Required = arg.IsRequired
+			result = append(result, envVar)
+		}
+	}
+
+	return result
+}
+
+// parseEnvVarFromValue parses an environment variable definition from a value string
+// Handles formats like: KEY=value, KEY={varName}, etc.
+func parseEnvVarFromValue(value, description string, variables map[string]model.Input) *types.EnvVar {
+	if value == "" {
+		return nil
+	}
+
+	// Find the = separator
+	eqIdx := -1
+	for i, ch := range value {
+		if ch == '=' {
+			eqIdx = i
+			break
+		}
+	}
+
+	if eqIdx == -1 {
+		return nil // No = found, invalid format
+	}
+
+	name := value[:eqIdx]
+	valuePart := value[eqIdx+1:]
+
+	envVar := &types.EnvVar{
+		Name:        name,
+		Description: description,
+	}
+
+	// Check if the value contains a variable reference like {token}
+	if len(valuePart) > 2 && valuePart[0] == '{' && valuePart[len(valuePart)-1] == '}' {
+		varName := valuePart[1 : len(valuePart)-1]
+		if varDef, ok := variables[varName]; ok {
+			envVar.Required = varDef.IsRequired
+			envVar.Secret = varDef.IsSecret
+			if varDef.Default != "" {
+				envVar.Default = varDef.Default
+			}
+		}
+	} else {
+		// Static value provided
+		envVar.Default = valuePart
+	}
+
+	return envVar
 }
 
 // extractTargetPort extracts the port number from a transport URL

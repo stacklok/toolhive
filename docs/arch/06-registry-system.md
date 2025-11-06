@@ -356,9 +356,9 @@ thv config unset-registry
 **API Requirements:**
 
 The API endpoint must implement:
-- `GET /v0/servers` - List all servers with pagination
-- `GET /v0/servers/:name` - Get specific server by reverse-DNS name
-- `GET /v0/servers?search=<query>` - Search servers
+- `GET /v0.1/servers` - List all servers with pagination
+- `GET /v0.1/servers/:name` - Get specific server by reverse-DNS name
+- `GET /v0.1/servers?search=<query>` - Search servers
 - `GET /openapi.yaml` - OpenAPI specification (version 1.0.0)
 
 **Response format:**

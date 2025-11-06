@@ -302,9 +302,9 @@ func determineTransportType(serverURL, transportFlag string) types.TransportType
 	// Auto-detect based on URL path
 	parsedURL, err := url.Parse(serverURL)
 	if err != nil {
-		// If we can't parse the URL, default to SSE for backward compatibility
-		logger.Warnf("Failed to parse server URL %s, defaulting to SSE transport: %v", serverURL, err)
-		return types.TransportTypeSSE
+		// If we can't parse the URL, default to streamable-http (SSE is deprecated)
+		logger.Warnf("Failed to parse server URL %s, defaulting to streamable-http transport: %v", serverURL, err)
+		return types.TransportTypeStreamableHTTP
 	}
 
 	path := parsedURL.Path
@@ -320,8 +320,8 @@ func determineTransportType(serverURL, transportFlag string) types.TransportType
 		return types.TransportTypeSSE
 	}
 
-	// Default to SSE for backward compatibility
-	return types.TransportTypeSSE
+	// Default to streamable-http (SSE is deprecated)
+	return types.TransportTypeStreamableHTTP
 }
 
 // initializeMCPClient initializes the MCP client connection

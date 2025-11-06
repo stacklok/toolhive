@@ -123,7 +123,7 @@ type RunFlags struct {
 // AddRunFlags adds all the run flags to a command
 func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.Transport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
-	cmd.Flags().StringVar(&config.ProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
+	cmd.Flags().StringVar(&config.ProxyMode, "proxy-mode", "streamable-http", "Proxy mode for stdio (streamable-http or sse)")
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	cmd.Flags().StringVar(&config.Group, "group", "default",
 		"Name of the group this workload belongs to (defaults to 'default' if not specified)")
@@ -392,7 +392,7 @@ func handleImageRetrieval(
 func validateAndSetupProxyMode(runFlags *RunFlags) error {
 	if !types.IsValidProxyMode(runFlags.ProxyMode) {
 		if runFlags.ProxyMode == "" {
-			runFlags.ProxyMode = types.ProxyModeSSE.String() // default to SSE for backward compatibility
+			runFlags.ProxyMode = types.ProxyModeStreamableHTTP.String() // default to streamable-http (SSE is deprecated)
 		} else {
 			return fmt.Errorf("invalid value for --proxy-mode: %s", runFlags.ProxyMode)
 		}

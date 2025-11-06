@@ -38,7 +38,7 @@ func NewHeaderInjectionStrategy() *HeaderInjectionStrategy {
 
 // Name returns the strategy identifier.
 func (*HeaderInjectionStrategy) Name() string {
-	return "header_injection"
+	return StrategyTypeHeaderInjection
 }
 
 // Authenticate injects the header value from metadata into the request header.
@@ -56,12 +56,12 @@ func (*HeaderInjectionStrategy) Name() string {
 //   - header_name is missing or empty
 //   - header_value is missing or empty
 func (*HeaderInjectionStrategy) Authenticate(_ context.Context, req *http.Request, metadata map[string]any) error {
-	headerName, ok := metadata["header_name"].(string)
+	headerName, ok := metadata[MetadataHeaderName].(string)
 	if !ok || headerName == "" {
 		return fmt.Errorf("header_name required in metadata")
 	}
 
-	headerValue, ok := metadata["header_value"].(string)
+	headerValue, ok := metadata[MetadataHeaderValue].(string)
 	if !ok || headerValue == "" {
 		return fmt.Errorf("header_value required in metadata")
 	}
@@ -89,12 +89,12 @@ func (*HeaderInjectionStrategy) Authenticate(_ context.Context, req *http.Reques
 // This validation is typically called during configuration parsing to fail fast
 // if the strategy is misconfigured.
 func (*HeaderInjectionStrategy) Validate(metadata map[string]any) error {
-	headerName, ok := metadata["header_name"].(string)
+	headerName, ok := metadata[MetadataHeaderName].(string)
 	if !ok || headerName == "" {
 		return fmt.Errorf("header_name required in metadata")
 	}
 
-	headerValue, ok := metadata["header_value"].(string)
+	headerValue, ok := metadata[MetadataHeaderValue].(string)
 	if !ok || headerValue == "" {
 		return fmt.Errorf("header_value required in metadata")
 	}

@@ -15,9 +15,7 @@ Set the OpenTelemetry endpoint URL
 
 ### Synopsis
 
-Set the OpenTelemetry OTLP endpoint URL for tracing and metrics.
-
-This endpoint will be used by default when running MCP servers unless overridden by the --otel-endpoint flag.
+Set the OpenTelemetry endpoint URL.
 
 Example:
 

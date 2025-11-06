@@ -15,7 +15,7 @@ Get the currently configured OpenTelemetry endpoint
 
 ### Synopsis
 
-Display the OpenTelemetry endpoint URL that is currently configured.
+Display the OpenTelemetry endpoint that is currently configured.
 
 ```
 thv config otel get-endpoint [flags]

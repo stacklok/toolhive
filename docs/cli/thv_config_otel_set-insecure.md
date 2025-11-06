@@ -11,16 +11,18 @@ mdx:
 
 ## thv config otel set-insecure
 
-Set the OpenTelemetry insecure transport flag
+Set the OpenTelemetry insecure connection flag
 
 ### Synopsis
 
-Set the OpenTelemetry insecure flag to enable HTTP instead of HTTPS for OTLP endpoints.
+Set the OpenTelemetry insecure connection flag.
+
+Example:
 
 	thv config otel set-insecure true
 
 ```
-thv config otel set-insecure <enabled> [flags]
+thv config otel set-insecure <insecure> [flags]
 ```
 
 ### Options

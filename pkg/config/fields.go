@@ -9,6 +9,8 @@ import (
 
 // ConfigFieldSpec defines the specification for a generic config field.
 // It encapsulates all the logic needed to set, get, unset, and validate a config field.
+//
+//nolint:revive // ConfigFieldSpec is clear and preferred over FieldSpec
 type ConfigFieldSpec struct {
 	// Name is the unique identifier for the field (e.g., "ca-cert", "registry-url")
 	Name string

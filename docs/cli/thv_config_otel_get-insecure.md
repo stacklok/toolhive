@@ -11,11 +11,11 @@ mdx:
 
 ## thv config otel get-insecure
 
-Get the currently configured OpenTelemetry insecure transport flag
+Get the currently configured OpenTelemetry insecure connection flag
 
 ### Synopsis
 
-Display the OpenTelemetry insecure transport flag that is currently configured.
+Display the OpenTelemetry insecure connection flag that is currently configured.
 
 ```
 thv config otel get-insecure [flags]

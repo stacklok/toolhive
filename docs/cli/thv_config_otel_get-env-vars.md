@@ -15,7 +15,7 @@ Get the currently configured OpenTelemetry environment variables
 
 ### Synopsis
 
-Display the OpenTelemetry environment variables that are currently configured.
+Display the OpenTelemetry environment variables that is currently configured.
 
 ```
 thv config otel get-env-vars [flags]

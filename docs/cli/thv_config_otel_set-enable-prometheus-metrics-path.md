@@ -15,12 +15,14 @@ Set the OpenTelemetry Prometheus metrics path flag
 
 ### Synopsis
 
-Set the OpenTelemetry Prometheus metrics path flag to enable /metrics endpoint.
+Set the OpenTelemetry Prometheus metrics path flag.
+
+Example:
 
 	thv config otel set-enable-prometheus-metrics-path true
 
 ```
-thv config otel set-enable-prometheus-metrics-path <enabled> [flags]
+thv config otel set-enable-prometheus-metrics-path <enable-prometheus-metrics-path> [flags]
 ```
 
 ### Options

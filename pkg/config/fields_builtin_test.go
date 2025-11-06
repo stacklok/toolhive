@@ -11,30 +11,39 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
+const (
+	validCertType       = "valid"
+	invalidCertType     = "invalid"
+	nonexistentCertType = "nonexistent"
+	validFileType       = "valid"
+	invalidJSONFileType = "invalid-json"
+	nonJSONFileType     = "non-json"
+)
+
 func TestBuiltinFields_CACert(t *testing.T) {
 	t.Parallel()
 	logger.Initialize()
 
 	tests := []struct {
 		name        string
-		certType    string // "valid", "invalid", "nonexistent"
+		certType    string // validCertType, invalidCertType, nonexistentCertType
 		wantErr     bool
 		errContains string
 	}{
 		{
 			name:     "valid CA certificate",
-			certType: "valid",
+			certType: validCertType,
 			wantErr:  false,
 		},
 		{
 			name:        "non-existent certificate",
-			certType:    "nonexistent",
+			certType:    nonexistentCertType,
 			wantErr:     true,
 			errContains: "file not found",
 		},
 		{
 			name:        "invalid certificate format",
-			certType:    "invalid",
+			certType:    invalidCertType,
 			wantErr:     true,
 			errContains: "invalid CA certificate",
 		},
@@ -63,11 +72,11 @@ func TestBuiltinFields_CACert(t *testing.T) {
 			// Determine which cert path to use based on test type
 			var testCertPath string
 			switch tt.certType {
-			case "valid":
+			case validCertType:
 				testCertPath = certPath
-			case "invalid":
+			case invalidCertType:
 				testCertPath = invalidCertPath
-			case "nonexistent":
+			case nonexistentCertType:
 				testCertPath = "/non/existent/cert.pem"
 			}
 
@@ -104,30 +113,30 @@ func TestBuiltinFields_RegistryFile(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		fileType    string // "valid", "invalid-json", "non-json", "nonexistent"
+		fileType    string // validFileType, invalidJSONFileType, nonJSONFileType, nonexistentCertType
 		wantErr     bool
 		errContains string
 	}{
 		{
 			name:     "valid registry file",
-			fileType: "valid",
+			fileType: validFileType,
 			wantErr:  false,
 		},
 		{
 			name:        "non-existent file",
-			fileType:    "nonexistent",
+			fileType:    nonexistentCertType,
 			wantErr:     true,
 			errContains: "file not found",
 		},
 		{
 			name:        "invalid JSON content",
-			fileType:    "invalid-json",
+			fileType:    invalidJSONFileType,
 			wantErr:     true,
 			errContains: "invalid JSON format",
 		},
 		{
 			name:        "non-JSON file extension",
-			fileType:    "non-json",
+			fileType:    nonJSONFileType,
 			wantErr:     true,
 			errContains: "must be a JSON file",
 		},
@@ -162,13 +171,13 @@ func TestBuiltinFields_RegistryFile(t *testing.T) {
 			// Determine which registry path to use based on file type
 			var testRegistryPath string
 			switch tt.fileType {
-			case "valid":
+			case validFileType:
 				testRegistryPath = validRegistryPath
-			case "invalid-json":
+			case invalidJSONFileType:
 				testRegistryPath = invalidJSONPath
-			case "non-json":
+			case nonJSONFileType:
 				testRegistryPath = nonJSONPath
-			case "nonexistent":
+			case nonexistentCertType:
 				testRegistryPath = "/non/existent/registry.json"
 			}
 

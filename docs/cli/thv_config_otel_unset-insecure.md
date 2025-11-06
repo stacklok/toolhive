@@ -11,11 +11,11 @@ mdx:
 
 ## thv config otel unset-insecure
 
-Remove the configured OpenTelemetry insecure transport flag
+Remove the configured OpenTelemetry insecure connection flag
 
 ### Synopsis
 
-Remove the OpenTelemetry insecure transport flag configuration.
+Remove the OpenTelemetry insecure connection flag configuration.
 
 ```
 thv config otel unset-insecure [flags]

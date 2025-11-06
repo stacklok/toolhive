@@ -11,16 +11,18 @@ mdx:
 
 ## thv config otel set-metrics-enabled
 
-Set the OpenTelemetry metrics export to enabled
+Set the OpenTelemetry metrics export flag
 
 ### Synopsis
 
-Set the OpenTelemetry metrics flag to enable to export metrics to an OTel collector.
+Set the OpenTelemetry metrics export flag.
+
+Example:
 
 	thv config otel set-metrics-enabled true
 
 ```
-thv config otel set-metrics-enabled <enabled> [flags]
+thv config otel set-metrics-enabled <metrics-enabled> [flags]
 ```
 
 ### Options

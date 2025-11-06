@@ -11,16 +11,18 @@ mdx:
 
 ## thv config otel set-tracing-enabled
 
-Set the OpenTelemetry tracing export to enabled
+Set the OpenTelemetry tracing export flag
 
 ### Synopsis
 
-Set the OpenTelemetry tracing flag to enable to export traces to an OTel collector.
+Set the OpenTelemetry tracing export flag.
+
+Example:
 
 	thv config otel set-tracing-enabled true
 
 ```
-thv config otel set-tracing-enabled <enabled> [flags]
+thv config otel set-tracing-enabled <tracing-enabled> [flags]
 ```
 
 ### Options

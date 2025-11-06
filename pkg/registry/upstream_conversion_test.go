@@ -1,14 +1,13 @@
 package registry
 
 import (
-
-	"github.com/stacklok/toolhive/pkg/registry/types"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 func TestConvertUpstreamToToolhive_DockerPackage(t *testing.T) {

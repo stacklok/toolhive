@@ -86,7 +86,9 @@ func convertToRemoteServer(upstream *UpstreamServerDetail, toolhiveExt *Toolhive
 }
 
 // convertToImageMetadata converts upstream format to ImageMetadata
-func convertToImageMetadata(upstream *UpstreamServerDetail, toolhiveExt *ToolhivePublisherExtension) (*types.ImageMetadata, error) {
+func convertToImageMetadata(
+	upstream *UpstreamServerDetail, toolhiveExt *ToolhivePublisherExtension,
+) (*types.ImageMetadata, error) {
 	if len(upstream.Server.Packages) == 0 {
 		return nil, fmt.Errorf("no packages found for container server")
 	}

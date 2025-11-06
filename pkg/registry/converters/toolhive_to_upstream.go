@@ -15,6 +15,7 @@ import (
 
 	upstream "github.com/modelcontextprotocol/registry/pkg/api/v0"
 	"github.com/modelcontextprotocol/registry/pkg/model"
+
 	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 

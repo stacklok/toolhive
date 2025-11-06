@@ -17,7 +17,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -567,7 +566,7 @@ func TestRunConfigBuilder(t *testing.T) {
 	name := "test-server"
 	imageURL := "test-image:latest"
 	imageMetadata := &regtypes.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:      "test-metadata-name",
 			Transport: "sse",
 		},
@@ -790,7 +789,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 			userTransport:  "",
 			userTargetPort: 0,
 			metadata: &regtypes.ImageMetadata{
-				BaseServerMetadata: registry.BaseServerMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Transport: "streamable-http",
 				},
 				TargetPort: 3000,
@@ -803,7 +802,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 			userTransport:  "stdio",
 			userTargetPort: 0,
 			metadata: &regtypes.ImageMetadata{
-				BaseServerMetadata: registry.BaseServerMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Transport: "sse",
 				},
 				TargetPort: 3000,
@@ -816,7 +815,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 			userTransport:  "sse",
 			userTargetPort: 4000,
 			metadata: &regtypes.ImageMetadata{
-				BaseServerMetadata: registry.BaseServerMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Transport: "sse",
 				},
 				TargetPort: 3000,

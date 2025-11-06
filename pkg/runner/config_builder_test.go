@@ -14,7 +14,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -35,7 +34,7 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 	}`
 
 	imageMetadata := &regtypes.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name: "test-image",
 		},
 		Permissions: &permissions.Profile{
@@ -557,7 +556,7 @@ func TestRunConfigBuilder_ToolOverrideMutualExclusivity(t *testing.T) {
 	mockValidator := &mockEnvVarValidator{}
 
 	imageMetadata := &regtypes.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:  "test-image",
 			Tools: []string{"tool1", "tool2", "tool3"},
 		},
@@ -636,7 +635,7 @@ func TestRunConfigBuilder_ToolOverrideWithToolsFilter(t *testing.T) {
 	mockValidator := &mockEnvVarValidator{}
 
 	imageMetadata := &regtypes.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:  "test-image",
 			Tools: []string{"tool1", "tool2", "tool3"},
 		},
@@ -700,7 +699,7 @@ func TestNewOperatorRunConfigBuilder(t *testing.T) {
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 	imageMetadata := &regtypes.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:  "test-image",
 			Tools: []string{"tool1", "tool2", "tool3"},
 		},
@@ -769,7 +768,7 @@ func TestWithEnvVars(t *testing.T) {
 			// Create a mock environment variable validator
 			mockValidator := &mockEnvVarValidator{}
 			imageMetadata := &regtypes.ImageMetadata{
-				BaseServerMetadata: registry.BaseServerMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Name:  "test-image",
 					Tools: []string{"tool1", "tool2", "tool3"},
 				},
@@ -797,7 +796,7 @@ func TestWithEnvVarsOverwrite(t *testing.T) {
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 	imageMetadata := &regtypes.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:  "test-image",
 			Tools: []string{"tool1", "tool2", "tool3"},
 		},
@@ -882,7 +881,7 @@ func TestBuildForOperator(t *testing.T) {
 			// Create a mock environment variable validator
 			mockValidator := &mockEnvVarValidator{}
 			imageMetadata := &regtypes.ImageMetadata{
-				BaseServerMetadata: registry.BaseServerMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Name:  "test-image",
 					Tools: []string{"tool1", "tool2", "tool3"},
 				},

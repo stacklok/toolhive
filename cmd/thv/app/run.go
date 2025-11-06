@@ -259,7 +259,7 @@ func deriveRemoteName(remoteURL string) (string, error) {
 
 // getworkloadDefaultName generates a default workload name based on the serverOrImage input
 // This function reuses the existing system's naming logic to ensure consistency
-func getworkloadDefaultName(ctx context.Context, serverOrImage string) string {
+func getworkloadDefaultName(_ context.Context, serverOrImage string) string {
 	// If it's a protocol scheme (uvx://, npx://, go://)
 	if runner.IsImageProtocolScheme(serverOrImage) {
 		// Extract package name from protocol scheme using the existing parseProtocolScheme logic

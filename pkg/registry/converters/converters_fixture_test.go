@@ -7,9 +7,10 @@ import (
 	"testing"
 
 	upstream "github.com/modelcontextprotocol/registry/pkg/api/v0"
-	"github.com/stacklok/toolhive/pkg/registry/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 // TestConverters_Fixtures validates converter functions using JSON fixture files

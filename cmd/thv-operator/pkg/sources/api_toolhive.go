@@ -14,7 +14,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/httpclient"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 // ToolHiveAPIHandler handles registry data from ToolHive Registry API endpoints
@@ -178,14 +178,14 @@ func (h *ToolHiveAPIHandler) convertToToolhiveRegistry(
 	ctx context.Context,
 	baseURL string,
 	response *ListServersResponse,
-) (*registry.Registry, error) {
+) (*regtypes.Registry, error) {
 	logger := log.FromContext(ctx)
 
-	toolhiveRegistry := &registry.Registry{
+	toolhiveRegistry := &regtypes.Registry{
 		Version:       "1.0",
 		LastUpdated:   time.Now().Format(time.RFC3339),
-		Servers:       make(map[string]*registry.ImageMetadata),
-		RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+		Servers:       make(map[string]*regtypes.ImageMetadata),
+		RemoteServers: make(map[string]*regtypes.RemoteServerMetadata),
 	}
 
 	// Fetch detailed information for each server in parallel
@@ -199,7 +199,7 @@ func (h *ToolHiveAPIHandler) fetchServerDetailsParallel(
 	ctx context.Context,
 	baseURL string,
 	servers []ServerSummaryResponse,
-	toolhiveRegistry *registry.Registry,
+	toolhiveRegistry *regtypes.Registry,
 	logger logr.Logger,
 ) {
 	// Limit concurrent requests to avoid overwhelming the API
@@ -268,9 +268,9 @@ func (h *ToolHiveAPIHandler) fetchServerDetailsParallel(
 }
 
 // addServerFromSummary adds a server using only summary data (fallback)
-func (*ToolHiveAPIHandler) addServerFromSummary(reg *registry.Registry, summary *ServerSummaryResponse) {
-	imageMetadata := &registry.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+func (*ToolHiveAPIHandler) addServerFromSummary(reg *regtypes.Registry, summary *ServerSummaryResponse) {
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:        summary.Name,
 			Description: summary.Description,
 			Tier:        summary.Tier,
@@ -284,9 +284,9 @@ func (*ToolHiveAPIHandler) addServerFromSummary(reg *registry.Registry, summary 
 }
 
 // addServerFromDetail adds a server using full detail data
-func (*ToolHiveAPIHandler) addServerFromDetail(reg *registry.Registry, detail *ServerDetailResponse) {
-	imageMetadata := &registry.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+func (*ToolHiveAPIHandler) addServerFromDetail(reg *regtypes.Registry, detail *ServerDetailResponse) {
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:          detail.Name,
 			Description:   detail.Description,
 			Tier:          detail.Tier,
@@ -304,9 +304,9 @@ func (*ToolHiveAPIHandler) addServerFromDetail(reg *registry.Registry, detail *S
 
 	// Add environment variables if present
 	if len(detail.EnvVars) > 0 {
-		imageMetadata.EnvVars = make([]*registry.EnvVar, len(detail.EnvVars))
+		imageMetadata.EnvVars = make([]*regtypes.EnvVar, len(detail.EnvVars))
 		for i, envVar := range detail.EnvVars {
-			imageMetadata.EnvVars[i] = &registry.EnvVar{
+			imageMetadata.EnvVars[i] = &regtypes.EnvVar{
 				Name:        envVar.Name,
 				Description: envVar.Description,
 				Required:    envVar.Required,

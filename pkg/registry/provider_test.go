@@ -1,8 +1,6 @@
 package registry
 
 import (
-
-	"github.com/stacklok/toolhive/pkg/registry/types"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 func TestNewRegistryProvider(t *testing.T) {

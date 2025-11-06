@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 func TestNewDefaultFilterService(t *testing.T) {
@@ -39,21 +39,21 @@ func TestDefaultFilterService_ApplyFilters_NoFilter(t *testing.T) {
 	ctx := context.Background()
 
 	// Create test registry
-	originalRegistry := &registry.Registry{
+	originalRegistry := &regtypes.Registry{
 		Version:     "1.0.0",
 		LastUpdated: "2023-01-01T00:00:00Z",
-		Servers: map[string]*registry.ImageMetadata{
+		Servers: map[string]*regtypes.ImageMetadata{
 			"postgres": {
-				BaseServerMetadata: registry.BaseServerMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Name: "postgres",
 					Tags: []string{"database", "sql"},
 				},
 				Image: "postgres:latest",
 			},
 		},
-		RemoteServers: map[string]*registry.RemoteServerMetadata{
+		RemoteServers: map[string]*regtypes.RemoteServerMetadata{
 			"web-api": {
-				BaseServerMetadata: registry.BaseServerMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Name: "web-api",
 					Tags: []string{"web", "api"},
 				},
@@ -110,42 +110,42 @@ func TestDefaultFilterService_ApplyFilters_NameFiltering(t *testing.T) {
 			t.Parallel()
 
 			// Create test registry
-			originalRegistry := &registry.Registry{
+			originalRegistry := &regtypes.Registry{
 				Version:     "1.0.0",
 				LastUpdated: "2023-01-01T00:00:00Z",
-				Servers: map[string]*registry.ImageMetadata{
+				Servers: map[string]*regtypes.ImageMetadata{
 					"postgres-server": {
-						BaseServerMetadata: registry.BaseServerMetadata{
+						BaseServerMetadata: regtypes.BaseServerMetadata{
 							Name: "postgres-server",
 							Tags: []string{"database"},
 						},
 						Image: "postgres:latest",
 					},
 					"mysql-server": {
-						BaseServerMetadata: registry.BaseServerMetadata{
+						BaseServerMetadata: regtypes.BaseServerMetadata{
 							Name: "mysql-server",
 							Tags: []string{"database"},
 						},
 						Image: "mysql:latest",
 					},
 					"redis-experimental": {
-						BaseServerMetadata: registry.BaseServerMetadata{
+						BaseServerMetadata: regtypes.BaseServerMetadata{
 							Name: "redis-experimental",
 							Tags: []string{"cache"},
 						},
 						Image: "redis:latest",
 					},
 				},
-				RemoteServers: map[string]*registry.RemoteServerMetadata{
+				RemoteServers: map[string]*regtypes.RemoteServerMetadata{
 					"web-api": {
-						BaseServerMetadata: registry.BaseServerMetadata{
+						BaseServerMetadata: regtypes.BaseServerMetadata{
 							Name: "web-api",
 							Tags: []string{"web"},
 						},
 						URL: "https://example.com",
 					},
 					"admin-experimental": {
-						BaseServerMetadata: registry.BaseServerMetadata{
+						BaseServerMetadata: regtypes.BaseServerMetadata{
 							Name: "admin-experimental",
 							Tags: []string{"admin"},
 						},
@@ -223,42 +223,42 @@ func TestDefaultFilterService_ApplyFilters_TagFiltering(t *testing.T) {
 			t.Parallel()
 
 			// Create test registry
-			originalRegistry := &registry.Registry{
+			originalRegistry := &regtypes.Registry{
 				Version:     "1.0.0",
 				LastUpdated: "2023-01-01T00:00:00Z",
-				Servers: map[string]*registry.ImageMetadata{
+				Servers: map[string]*regtypes.ImageMetadata{
 					"postgres-server": {
-						BaseServerMetadata: registry.BaseServerMetadata{
+						BaseServerMetadata: regtypes.BaseServerMetadata{
 							Name: "postgres-server",
 							Tags: []string{"database", "sql"},
 						},
 						Image: "postgres:latest",
 					},
 					"mysql-server": {
-						BaseServerMetadata: registry.BaseServerMetadata{
+						BaseServerMetadata: regtypes.BaseServerMetadata{
 							Name: "mysql-server",
 							Tags: []string{"database", "deprecated"},
 						},
 						Image: "mysql:latest",
 					},
 					"redis-server": {
-						BaseServerMetadata: registry.BaseServerMetadata{
+						BaseServerMetadata: regtypes.BaseServerMetadata{
 							Name: "redis-server",
 							Tags: []string{"cache"},
 						},
 						Image: "redis:latest",
 					},
 				},
-				RemoteServers: map[string]*registry.RemoteServerMetadata{
+				RemoteServers: map[string]*regtypes.RemoteServerMetadata{
 					"web-api": {
-						BaseServerMetadata: registry.BaseServerMetadata{
+						BaseServerMetadata: regtypes.BaseServerMetadata{
 							Name: "web-api",
 							Tags: []string{"web", "api"},
 						},
 						URL: "https://example.com",
 					},
 					"legacy-api": {
-						BaseServerMetadata: registry.BaseServerMetadata{
+						BaseServerMetadata: regtypes.BaseServerMetadata{
 							Name: "legacy-api",
 							Tags: []string{"web", "deprecated"},
 						},
@@ -300,35 +300,35 @@ func TestDefaultFilterService_ApplyFilters_CombinedFiltering(t *testing.T) {
 	ctx := context.Background()
 
 	// Create test registry
-	originalRegistry := &registry.Registry{
+	originalRegistry := &regtypes.Registry{
 		Version:     "1.0.0",
 		LastUpdated: "2023-01-01T00:00:00Z",
-		Servers: map[string]*registry.ImageMetadata{
+		Servers: map[string]*regtypes.ImageMetadata{
 			"postgres-server": {
-				BaseServerMetadata: registry.BaseServerMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Name: "postgres-server",
 					Tags: []string{"database", "sql"},
 				},
 				Image: "postgres:latest",
 			},
 			"postgres-experimental": {
-				BaseServerMetadata: registry.BaseServerMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Name: "postgres-experimental",
 					Tags: []string{"database", "experimental"},
 				},
 				Image: "postgres:experimental",
 			},
 			"web-server": {
-				BaseServerMetadata: registry.BaseServerMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Name: "web-server",
 					Tags: []string{"web", "api"},
 				},
 				Image: "nginx:latest",
 			},
 		},
-		RemoteServers: map[string]*registry.RemoteServerMetadata{
+		RemoteServers: map[string]*regtypes.RemoteServerMetadata{
 			"database-api": {
-				BaseServerMetadata: registry.BaseServerMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Name: "database-api",
 					Tags: []string{"database", "api"},
 				},
@@ -372,11 +372,11 @@ func TestDefaultFilterService_ApplyFilters_EmptyRegistry(t *testing.T) {
 	ctx := context.Background()
 
 	// Create empty registry
-	originalRegistry := &registry.Registry{
+	originalRegistry := &regtypes.Registry{
 		Version:       "1.0.0",
 		LastUpdated:   "2023-01-01T00:00:00Z",
-		Servers:       make(map[string]*registry.ImageMetadata),
-		RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+		Servers:       make(map[string]*regtypes.ImageMetadata),
+		RemoteServers: make(map[string]*regtypes.RemoteServerMetadata),
 	}
 
 	filter := &mcpv1alpha1.RegistryFilter{
@@ -401,18 +401,18 @@ func TestDefaultFilterService_ApplyFilters_PreservesMetadata(t *testing.T) {
 	ctx := context.Background()
 
 	// Create registry with groups
-	groups := []*registry.Group{
+	groups := []*regtypes.Group{
 		{
 			Name:        "test-group",
 			Description: "Test group",
 		},
 	}
 
-	originalRegistry := &registry.Registry{
+	originalRegistry := &regtypes.Registry{
 		Version:       "1.0.0",
 		LastUpdated:   "2023-01-01T00:00:00Z",
-		Servers:       make(map[string]*registry.ImageMetadata),
-		RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+		Servers:       make(map[string]*regtypes.ImageMetadata),
+		RemoteServers: make(map[string]*regtypes.RemoteServerMetadata),
 		Groups:        groups,
 	}
 

@@ -1,13 +1,13 @@
 package registry
 
 import (
-
-	"github.com/stacklok/toolhive/pkg/registry/types"
 	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 // TestEmbeddedRegistrySchemaValidation validates that the embedded registry.json

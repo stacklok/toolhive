@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 func TestNewConfigMapStorageManager(t *testing.T) {
@@ -43,7 +43,7 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 	tests := []struct {
 		name              string
 		registry          *mcpv1alpha1.MCPRegistry
-		registryData      *registry.Registry
+		registryData      *regtypes.Registry
 		existingConfigMap *corev1.ConfigMap
 		expectError       bool
 		errorContains     string
@@ -61,10 +61,10 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 					},
 				},
 			},
-			registryData: &registry.Registry{
+			registryData: &regtypes.Registry{
 				Version:       "1.0.0",
-				Servers:       make(map[string]*registry.ImageMetadata),
-				RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+				Servers:       make(map[string]*regtypes.ImageMetadata),
+				RemoteServers: make(map[string]*regtypes.RemoteServerMetadata),
 			},
 			expectError: false,
 		},
@@ -81,12 +81,12 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 					},
 				},
 			},
-			registryData: &registry.Registry{
+			registryData: &regtypes.Registry{
 				Version: "1.0.0",
-				Servers: map[string]*registry.ImageMetadata{
+				Servers: map[string]*regtypes.ImageMetadata{
 					"server1": {},
 				},
-				RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+				RemoteServers: make(map[string]*regtypes.RemoteServerMetadata),
 			},
 			existingConfigMap: &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
@@ -112,12 +112,12 @@ func TestConfigMapStorageManager_Store(t *testing.T) {
 					},
 				},
 			},
-			registryData: &registry.Registry{
+			registryData: &regtypes.Registry{
 				Version: "1.0",
-				Servers: map[string]*registry.ImageMetadata{
+				Servers: map[string]*regtypes.ImageMetadata{
 					"test-server": {},
 				},
-				RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+				RemoteServers: make(map[string]*regtypes.RemoteServerMetadata),
 			},
 			expectError: false,
 		},
@@ -192,7 +192,7 @@ func TestConfigMapStorageManager_Get(t *testing.T) {
 		name             string
 		registry         *mcpv1alpha1.MCPRegistry
 		configMap        *corev1.ConfigMap
-		expectedRegistry *registry.Registry
+		expectedRegistry *regtypes.Registry
 		expectError      bool
 		errorContains    string
 	}{
@@ -213,9 +213,9 @@ func TestConfigMapStorageManager_Get(t *testing.T) {
 					ConfigMapStorageDataKey: `{"version": "1.0.0", "servers": {"server1": {}}, "remoteServers": {}}`,
 				},
 			},
-			expectedRegistry: &registry.Registry{
+			expectedRegistry: &regtypes.Registry{
 				Version: "1.0.0",
-				Servers: map[string]*registry.ImageMetadata{
+				Servers: map[string]*regtypes.ImageMetadata{
 					"server1": {},
 				},
 				RemoteServers: nil, // JSON unmarshaling creates nil for empty objects

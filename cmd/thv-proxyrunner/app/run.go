@@ -10,7 +10,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -88,7 +88,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// we use the DetachedEnvVarValidator.
 	envVarValidator := &runner.DetachedEnvVarValidator{}
 
-	var imageMetadata *registry.ImageMetadata
+	var imageMetadata *regtypes.ImageMetadata
 
 	// Get the name of the MCP server to run.
 	// This may be a server name from the registry, a container image, or a protocol scheme.

@@ -8,6 +8,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 func TestNewTestRegistryBuilder(t *testing.T) {
@@ -191,7 +192,7 @@ func TestTestRegistryBuilder_WithRemoteServer(t *testing.T) {
 
 			if tt.shouldAdd {
 				assert.Len(t, builder.registry.RemoteServers, 1)
-				var remoteServer *registry.RemoteServerMetadata
+				var remoteServer *regtypes.RemoteServerMetadata
 				for _, server := range builder.registry.RemoteServers {
 					remoteServer = server
 					break
@@ -474,7 +475,7 @@ func TestTestRegistryBuilder_BuildJSON(t *testing.T) {
 			switch tt.format {
 			case mcpv1alpha1.RegistryFormatToolHive, "":
 				// Should be a registry object
-				var registry registry.Registry
+				var registry regtypes.Registry
 				err = json.Unmarshal(jsonData, &registry)
 				assert.NoError(t, err)
 				assert.Equal(t, "1.0.0", registry.Version)
@@ -506,7 +507,7 @@ func TestTestRegistryBuilder_BuildPrettyJSON(t *testing.T) {
 	assert.Greater(t, len(prettyJSON), len(regularJSON))
 
 	// Both should unmarshal to the same data
-	var prettyData, regularData registry.Registry
+	var prettyData, regularData regtypes.Registry
 	err1 := json.Unmarshal(prettyJSON, &prettyData)
 	err2 := json.Unmarshal(regularJSON, &regularData)
 	assert.NoError(t, err1)

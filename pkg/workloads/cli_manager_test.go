@@ -1,0 +1,1616 @@
+package workloads
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/stacklok/toolhive/pkg/config"
+	configMocks "github.com/stacklok/toolhive/pkg/config/mocks"
+	"github.com/stacklok/toolhive/pkg/container/runtime"
+	runtimeMocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
+	"github.com/stacklok/toolhive/pkg/core"
+	"github.com/stacklok/toolhive/pkg/runner"
+	statusMocks "github.com/stacklok/toolhive/pkg/workloads/statuses/mocks"
+)
+
+func TestCLIManager_ListWorkloadsInGroup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		groupName      string
+		mockWorkloads  []core.Workload
+		expectedNames  []string
+		expectError    bool
+		setupStatusMgr func(*statusMocks.MockStatusManager)
+	}{
+		{
+			name:      "non existent group returns empty list",
+			groupName: "non-group",
+			mockWorkloads: []core.Workload{
+				{Name: "workload1", Group: "other-group"},
+				{Name: "workload2", Group: "another-group"},
+			},
+			expectedNames: []string{},
+			expectError:   false,
+			setupStatusMgr: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().ListWorkloads(gomock.Any(), true, gomock.Any()).Return([]core.Workload{
+					{Name: "workload1", Group: "other-group"},
+					{Name: "workload2", Group: "another-group"},
+				}, nil)
+
+				sm.EXPECT().GetWorkload(gomock.Any(), gomock.Any()).Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil).AnyTimes()
+			},
+		},
+		{
+			name:      "multiple workloads in group",
+			groupName: "test-group",
+			mockWorkloads: []core.Workload{
+				{Name: "workload1", Group: "test-group"},
+				{Name: "workload2", Group: "other-group"},
+				{Name: "workload3", Group: "test-group"},
+				{Name: "workload4", Group: "test-group"},
+			},
+			expectedNames: []string{"workload1", "workload3", "workload4"},
+			expectError:   false,
+			setupStatusMgr: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().ListWorkloads(gomock.Any(), true, gomock.Any()).Return([]core.Workload{
+					{Name: "workload1", Group: "test-group"},
+					{Name: "workload2", Group: "other-group"},
+					{Name: "workload3", Group: "test-group"},
+					{Name: "workload4", Group: "test-group"},
+				}, nil)
+
+				sm.EXPECT().GetWorkload(gomock.Any(), gomock.Any()).Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil).AnyTimes()
+			},
+		},
+		{
+			name:      "workloads with empty group names",
+			groupName: "",
+			mockWorkloads: []core.Workload{
+				{Name: "workload1", Group: ""},
+				{Name: "workload2", Group: "test-group"},
+				{Name: "workload3", Group: ""},
+			},
+			expectedNames: []string{"workload1", "workload3"},
+			expectError:   false,
+			setupStatusMgr: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().ListWorkloads(gomock.Any(), true, gomock.Any()).Return([]core.Workload{
+					{Name: "workload1", Group: ""},
+					{Name: "workload2", Group: "test-group"},
+					{Name: "workload3", Group: ""},
+				}, nil)
+
+				sm.EXPECT().GetWorkload(gomock.Any(), gomock.Any()).Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil).AnyTimes()
+			},
+		},
+		{
+			name:      "includes stopped workloads",
+			groupName: "test-group",
+			mockWorkloads: []core.Workload{
+				{Name: "running-workload", Group: "test-group", Status: runtime.WorkloadStatusRunning},
+				{Name: "stopped-workload", Group: "test-group", Status: runtime.WorkloadStatusStopped},
+				{Name: "other-group-workload", Group: "other-group", Status: runtime.WorkloadStatusRunning},
+			},
+			expectedNames: []string{"running-workload", "stopped-workload"},
+			expectError:   false,
+			setupStatusMgr: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().ListWorkloads(gomock.Any(), true, gomock.Any()).Return([]core.Workload{
+					{Name: "running-workload", Group: "test-group", Status: runtime.WorkloadStatusRunning},
+					{Name: "stopped-workload", Group: "test-group", Status: runtime.WorkloadStatusStopped},
+					{Name: "other-group-workload", Group: "other-group", Status: runtime.WorkloadStatusRunning},
+				}, nil)
+
+				sm.EXPECT().GetWorkload(gomock.Any(), gomock.Any()).Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil).AnyTimes()
+			},
+		},
+		{
+			name:          "error from ListWorkloads propagated",
+			groupName:     "test-group",
+			expectedNames: nil,
+			expectError:   true,
+			setupStatusMgr: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().ListWorkloads(gomock.Any(), true, gomock.Any()).Return(nil, assert.AnError)
+			},
+		},
+		{
+			name:          "no workloads",
+			groupName:     "test-group",
+			mockWorkloads: []core.Workload{},
+			expectedNames: []string{},
+			expectError:   false,
+			setupStatusMgr: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().ListWorkloads(gomock.Any(), true, gomock.Any()).Return([]core.Workload{}, nil)
+
+				sm.EXPECT().GetWorkload(gomock.Any(), gomock.Any()).Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil).AnyTimes()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
+			tt.setupStatusMgr(mockStatusMgr)
+
+			manager := &cliManager{
+				runtime:  nil, // Not needed for this test
+				statuses: mockStatusMgr,
+			}
+
+			ctx := context.Background()
+			result, err := manager.ListWorkloadsInGroup(ctx, tt.groupName)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "failed to list workloads")
+				return
+			}
+
+			require.NoError(t, err)
+			assert.ElementsMatch(t, tt.expectedNames, result)
+		})
+	}
+}
+
+func TestCLIManager_DoesWorkloadExist(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		setupMocks   func(*statusMocks.MockStatusManager)
+		expected     bool
+		expectError  bool
+	}{
+		{
+			name:         "workload exists and running",
+			workloadName: "test-workload",
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "test-workload").Return(core.Workload{
+					Name:   "test-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+			},
+			expected:    true,
+			expectError: false,
+		},
+		{
+			name:         "workload exists but in error state",
+			workloadName: "error-workload",
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "error-workload").Return(core.Workload{
+					Name:   "error-workload",
+					Status: runtime.WorkloadStatusError,
+				}, nil)
+			},
+			expected:    false,
+			expectError: false,
+		},
+		{
+			name:         "workload not found",
+			workloadName: "missing-workload",
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "missing-workload").Return(core.Workload{}, runtime.ErrWorkloadNotFound)
+			},
+			expected:    false,
+			expectError: false,
+		},
+		{
+			name:         "error getting workload",
+			workloadName: "problematic-workload",
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "problematic-workload").Return(core.Workload{}, errors.New("database error"))
+			},
+			expected:    false,
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
+			tt.setupMocks(mockStatusMgr)
+
+			manager := &cliManager{
+				statuses: mockStatusMgr,
+			}
+
+			ctx := context.Background()
+			result, err := manager.DoesWorkloadExist(ctx, tt.workloadName)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "failed to check if workload exists")
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestCLIManager_GetWorkload(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	expectedWorkload := core.Workload{
+		Name:   "test-workload",
+		Status: runtime.WorkloadStatusRunning,
+	}
+
+	mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
+	mockStatusMgr.EXPECT().GetWorkload(gomock.Any(), "test-workload").Return(expectedWorkload, nil)
+
+	manager := &cliManager{
+		statuses: mockStatusMgr,
+	}
+
+	ctx := context.Background()
+	result, err := manager.GetWorkload(ctx, "test-workload")
+
+	require.NoError(t, err)
+	assert.Equal(t, expectedWorkload, result)
+}
+
+func TestCLIManager_GetLogs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		follow       bool
+		setupMocks   func(*runtimeMocks.MockRuntime)
+		expectedLogs string
+		expectError  bool
+		errorMsg     string
+	}{
+		{
+			name:         "successful log retrieval",
+			workloadName: "test-workload",
+			follow:       false,
+			setupMocks: func(rt *runtimeMocks.MockRuntime) {
+				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "test-workload", false).Return("test log content", nil)
+			},
+			expectedLogs: "test log content",
+			expectError:  false,
+		},
+		{
+			name:         "workload not found",
+			workloadName: "missing-workload",
+			follow:       false,
+			setupMocks: func(rt *runtimeMocks.MockRuntime) {
+				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "missing-workload", false).Return("", runtime.ErrWorkloadNotFound)
+			},
+			expectedLogs: "",
+			expectError:  true,
+			errorMsg:     "workload not found",
+		},
+		{
+			name:         "runtime error",
+			workloadName: "error-workload",
+			follow:       true,
+			setupMocks: func(rt *runtimeMocks.MockRuntime) {
+				rt.EXPECT().GetWorkloadLogs(gomock.Any(), "error-workload", true).Return("", errors.New("runtime failure"))
+			},
+			expectedLogs: "",
+			expectError:  true,
+			errorMsg:     "failed to get container logs",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockRuntime := runtimeMocks.NewMockRuntime(ctrl)
+			tt.setupMocks(mockRuntime)
+
+			manager := &cliManager{
+				runtime: mockRuntime,
+			}
+
+			ctx := context.Background()
+			logs, err := manager.GetLogs(ctx, tt.workloadName, tt.follow)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.expectedLogs, logs)
+			}
+		})
+	}
+}
+
+func TestCLIManager_StopWorkloads(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		workloadNames []string
+		expectError   bool
+		errorMsg      string
+	}{
+		{
+			name:          "invalid workload name with path traversal",
+			workloadNames: []string{"../etc/passwd"},
+			expectError:   true,
+			errorMsg:      "path traversal",
+		},
+		{
+			name:          "invalid workload name with slash",
+			workloadNames: []string{"workload/name"},
+			expectError:   true,
+			errorMsg:      "invalid workload name",
+		},
+		{
+			name:          "empty workload name list",
+			workloadNames: []string{},
+			expectError:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager := &cliManager{}
+
+			ctx := context.Background()
+			group, err := manager.StopWorkloads(ctx, tt.workloadNames)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+				assert.Nil(t, group)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, group)
+				assert.IsType(t, &errgroup.Group{}, group)
+			}
+		})
+	}
+}
+
+func TestCLIManager_DeleteWorkloads(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		workloadNames []string
+		expectError   bool
+		errorMsg      string
+	}{
+		{
+			name:          "invalid workload name",
+			workloadNames: []string{"../../../etc/passwd"},
+			expectError:   true,
+			errorMsg:      "invalid workload name",
+		},
+		{
+			name:          "mixed valid and invalid names",
+			workloadNames: []string{"valid-name", "invalid../name"},
+			expectError:   true,
+			errorMsg:      "invalid workload name",
+		},
+		{
+			name:          "empty workload name list",
+			workloadNames: []string{},
+			expectError:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager := &cliManager{}
+
+			ctx := context.Background()
+			group, err := manager.DeleteWorkloads(ctx, tt.workloadNames)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+				assert.Nil(t, group)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, group)
+				assert.IsType(t, &errgroup.Group{}, group)
+			}
+		})
+	}
+}
+
+func TestCLIManager_RestartWorkloads(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		workloadNames []string
+		foreground    bool
+		expectError   bool
+		errorMsg      string
+	}{
+		{
+			name:          "invalid workload name",
+			workloadNames: []string{"invalid/name"},
+			foreground:    false,
+			expectError:   true,
+			errorMsg:      "invalid workload name",
+		},
+		{
+			name:          "empty workload name list",
+			workloadNames: []string{},
+			foreground:    false,
+			expectError:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			manager := &cliManager{}
+
+			ctx := context.Background()
+			group, err := manager.RestartWorkloads(ctx, tt.workloadNames, tt.foreground)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+				assert.Nil(t, group)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, group)
+				assert.IsType(t, &errgroup.Group{}, group)
+			}
+		})
+	}
+}
+
+func TestCLIManager_restartRemoteWorkload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		runConfig    *runner.RunConfig
+		foreground   bool
+		setupMocks   func(*statusMocks.MockStatusManager)
+		expectError  bool
+		errorMsg     string
+	}{
+		{
+			name:         "remote workload already running with healthy supervisor",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-base",
+				RemoteURL: "http://example.com",
+			},
+			foreground: false,
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+				// Check if supervisor is alive - return valid PID (supervisor is healthy)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(12345, nil)
+			},
+			// With healthy supervisor, restart should return early (no-op)
+			expectError: false,
+		},
+		{
+			name:         "remote workload already running with dead supervisor",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-base",
+				RemoteURL: "http://example.com",
+			},
+			foreground: false,
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+				// Check if supervisor is alive - return error (supervisor is dead)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(0, errors.New("no PID found"))
+				// With dead supervisor, restart proceeds with cleanup and restart
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-base").Return(0, errors.New("no PID found"))
+				// Allow any subsequent status updates
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+				sm.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+			},
+			// Restart now proceeds to load state which fails in tests (can't mock runner.LoadState easily)
+			expectError: true,
+			errorMsg:    "failed to load state",
+		},
+		{
+			name:         "status manager error",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-base",
+				RemoteURL: "http://example.com",
+			},
+			foreground: false,
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{}, errors.New("status manager error"))
+			},
+			expectError: true,
+			errorMsg:    "status manager error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			statusMgr := statusMocks.NewMockStatusManager(ctrl)
+			tt.setupMocks(statusMgr)
+
+			manager := &cliManager{
+				statuses: statusMgr,
+			}
+
+			err := manager.restartRemoteWorkload(context.Background(), tt.workloadName, tt.runConfig, tt.foreground)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestCLIManager_restartContainerWorkload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		foreground   bool
+		setupMocks   func(*statusMocks.MockStatusManager, *runtimeMocks.MockRuntime)
+		expectError  bool
+		errorMsg     string
+	}{
+		{
+			name:         "container workload already running with healthy supervisor",
+			workloadName: "container-workload",
+			foreground:   false,
+			setupMocks: func(sm *statusMocks.MockStatusManager, rm *runtimeMocks.MockRuntime) {
+				// Mock container info
+				rm.EXPECT().GetWorkloadInfo(gomock.Any(), "container-workload").Return(runtime.ContainerInfo{
+					Name:  "container-workload",
+					State: runtime.WorkloadStatusRunning,
+					Labels: map[string]string{
+						"toolhive.base-name": "container-workload",
+					},
+				}, nil)
+				sm.EXPECT().GetWorkload(gomock.Any(), "container-workload").Return(core.Workload{
+					Name:   "container-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+				// Check if supervisor is alive - return valid PID (supervisor is healthy)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(12345, nil)
+			},
+			// With healthy supervisor, restart should return early (no-op)
+			expectError: false,
+		},
+		{
+			name:         "container workload already running with dead supervisor",
+			workloadName: "container-workload",
+			foreground:   false,
+			setupMocks: func(sm *statusMocks.MockStatusManager, rm *runtimeMocks.MockRuntime) {
+				// Mock container info
+				rm.EXPECT().GetWorkloadInfo(gomock.Any(), "container-workload").Return(runtime.ContainerInfo{
+					Name:  "container-workload",
+					State: runtime.WorkloadStatusRunning,
+					Labels: map[string]string{
+						"toolhive.base-name": "container-workload",
+					},
+				}, nil)
+				sm.EXPECT().GetWorkload(gomock.Any(), "container-workload").Return(core.Workload{
+					Name:   "container-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+				// Check if supervisor is alive - return error (supervisor is dead)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(0, errors.New("no PID found"))
+				// With dead supervisor, restart proceeds with cleanup and restart
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "container-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(0, errors.New("no PID found"))
+				rm.EXPECT().StopWorkload(gomock.Any(), "container-workload").Return(nil)
+				// Allow any subsequent status updates
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+				sm.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+			},
+			// Restart now proceeds to load state which fails in tests (can't mock runner.LoadState easily)
+			expectError: true,
+			errorMsg:    "failed to load state",
+		},
+		{
+			name:         "status manager error",
+			workloadName: "container-workload",
+			foreground:   false,
+			setupMocks: func(sm *statusMocks.MockStatusManager, rm *runtimeMocks.MockRuntime) {
+				// Mock container info
+				rm.EXPECT().GetWorkloadInfo(gomock.Any(), "container-workload").Return(runtime.ContainerInfo{
+					Name:  "container-workload",
+					State: "running",
+					Labels: map[string]string{
+						"toolhive.base-name": "container-workload",
+					},
+				}, nil)
+				sm.EXPECT().GetWorkload(gomock.Any(), "container-workload").Return(core.Workload{}, errors.New("status manager error"))
+			},
+			expectError: true,
+			errorMsg:    "status manager error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			statusMgr := statusMocks.NewMockStatusManager(ctrl)
+			runtimeMgr := runtimeMocks.NewMockRuntime(ctrl)
+
+			tt.setupMocks(statusMgr, runtimeMgr)
+
+			manager := &cliManager{
+				statuses: statusMgr,
+				runtime:  runtimeMgr,
+			}
+
+			err := manager.restartContainerWorkload(context.Background(), tt.workloadName, tt.foreground)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestCLIManager_restartLogicConsistency tests restart behavior with healthy vs dead supervisor
+func TestCLIManager_restartLogicConsistency(t *testing.T) {
+	t.Parallel()
+
+	t.Run("remote_workload_healthy_supervisor_no_restart", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		statusMgr := statusMocks.NewMockStatusManager(ctrl)
+
+		statusMgr.EXPECT().GetWorkload(gomock.Any(), "test-workload").Return(core.Workload{
+			Name:   "test-workload",
+			Status: runtime.WorkloadStatusRunning,
+		}, nil)
+
+		// Check if supervisor is alive - return valid PID (healthy)
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-base").Return(12345, nil)
+
+		manager := &cliManager{
+			statuses: statusMgr,
+		}
+
+		runConfig := &runner.RunConfig{
+			BaseName:  "test-base",
+			RemoteURL: "http://example.com",
+		}
+
+		err := manager.restartRemoteWorkload(context.Background(), "test-workload", runConfig, false)
+
+		// With healthy supervisor, restart should return successfully without doing anything
+		require.NoError(t, err)
+	})
+
+	t.Run("remote_workload_dead_supervisor_calls_stop", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		statusMgr := statusMocks.NewMockStatusManager(ctrl)
+
+		statusMgr.EXPECT().GetWorkload(gomock.Any(), "test-workload").Return(core.Workload{
+			Name:   "test-workload",
+			Status: runtime.WorkloadStatusRunning,
+		}, nil)
+
+		// Check if supervisor is alive - return error (dead supervisor)
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-base").Return(0, errors.New("no PID found"))
+
+		// When supervisor is dead, expect stop logic to be called
+		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-base").Return(0, errors.New("no PID found"))
+
+		// Allow any subsequent status updates - we don't care about the exact sequence
+		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+		statusMgr.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+
+		manager := &cliManager{
+			statuses: statusMgr,
+		}
+
+		runConfig := &runner.RunConfig{
+			BaseName:  "test-base",
+			RemoteURL: "http://example.com",
+		}
+
+		_ = manager.restartRemoteWorkload(context.Background(), "test-workload", runConfig, false)
+
+		// The important part is that the stop methods were called (verified by mock expectations)
+		// We don't care if the restart ultimately succeeds or fails
+	})
+
+	t.Run("container_workload_healthy_supervisor_no_restart", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		statusMgr := statusMocks.NewMockStatusManager(ctrl)
+		runtimeMgr := runtimeMocks.NewMockRuntime(ctrl)
+
+		containerInfo := runtime.ContainerInfo{
+			Name:  "test-workload",
+			State: runtime.WorkloadStatusRunning,
+			Labels: map[string]string{
+				"toolhive.base-name": "test-workload",
+			},
+		}
+		runtimeMgr.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").Return(containerInfo, nil)
+
+		statusMgr.EXPECT().GetWorkload(gomock.Any(), "test-workload").Return(core.Workload{
+			Name:   "test-workload",
+			Status: runtime.WorkloadStatusRunning,
+		}, nil)
+
+		// Check if supervisor is alive - return valid PID (healthy)
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(12345, nil)
+
+		manager := &cliManager{
+			statuses: statusMgr,
+			runtime:  runtimeMgr,
+		}
+
+		err := manager.restartContainerWorkload(context.Background(), "test-workload", false)
+
+		// With healthy supervisor, restart should return successfully without doing anything
+		require.NoError(t, err)
+	})
+
+	t.Run("container_workload_dead_supervisor_calls_stop", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		statusMgr := statusMocks.NewMockStatusManager(ctrl)
+		runtimeMgr := runtimeMocks.NewMockRuntime(ctrl)
+
+		containerInfo := runtime.ContainerInfo{
+			Name:  "test-workload",
+			State: runtime.WorkloadStatusRunning,
+			Labels: map[string]string{
+				"toolhive.base-name": "test-workload",
+			},
+		}
+		runtimeMgr.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").Return(containerInfo, nil)
+
+		statusMgr.EXPECT().GetWorkload(gomock.Any(), "test-workload").Return(core.Workload{
+			Name:   "test-workload",
+			Status: runtime.WorkloadStatusRunning,
+		}, nil)
+
+		// Check if supervisor is alive - return error (dead supervisor)
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(0, errors.New("no PID found"))
+
+		// When supervisor is dead, expect stop logic to be called
+		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(0, errors.New("no PID found"))
+		runtimeMgr.EXPECT().StopWorkload(gomock.Any(), "test-workload").Return(nil)
+
+		// Allow any subsequent status updates (starting, error, etc.) - we don't care about the exact sequence
+		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+		statusMgr.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
+
+		manager := &cliManager{
+			statuses: statusMgr,
+			runtime:  runtimeMgr,
+		}
+
+		_ = manager.restartContainerWorkload(context.Background(), "test-workload", false)
+
+		// The important part is that the stop methods were called (verified by mock expectations)
+		// We don't care if the restart ultimately succeeds or fails
+	})
+}
+
+func TestCLIManager_RunWorkload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		runConfig   *runner.RunConfig
+		setupMocks  func(*statusMocks.MockStatusManager)
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "successful run - status creation",
+			runConfig: &runner.RunConfig{
+				BaseName: "test-workload",
+			},
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				// Expect starting status first, then error status when the runner fails
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStarting, "").Return(nil)
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusError, gomock.Any()).Return(nil)
+			},
+			expectError: true, // The runner will fail without proper setup
+		},
+		{
+			name: "status creation failure",
+			runConfig: &runner.RunConfig{
+				BaseName: "failing-workload",
+			},
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "failing-workload", runtime.WorkloadStatusStarting, "").Return(errors.New("status creation failed"))
+			},
+			expectError: true,
+			errorMsg:    "failed to create workload status",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
+			tt.setupMocks(mockStatusMgr)
+
+			manager := &cliManager{
+				statuses: mockStatusMgr,
+			}
+
+			ctx := context.Background()
+			err := manager.RunWorkload(ctx, tt.runConfig)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestCLIManager_validateSecretParameters(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		runConfig   *runner.RunConfig
+		setupMocks  func(*configMocks.MockProvider)
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "no secrets - should pass",
+			runConfig: &runner.RunConfig{
+				Secrets: []string{},
+			},
+			setupMocks:  func(*configMocks.MockProvider) {}, // No expectations
+			expectError: false,
+		},
+		{
+			name: "config error",
+			runConfig: &runner.RunConfig{
+				Secrets: []string{"secret1"},
+			},
+			setupMocks: func(cp *configMocks.MockProvider) {
+				mockConfig := &config.Config{}
+				cp.EXPECT().GetConfig().Return(mockConfig)
+			},
+			expectError: true,
+			errorMsg:    "error determining secrets provider type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockConfigProvider := configMocks.NewMockProvider(ctrl)
+			tt.setupMocks(mockConfigProvider)
+
+			manager := &cliManager{
+				configProvider: mockConfigProvider,
+			}
+
+			ctx := context.Background()
+			err := manager.validateSecretParameters(ctx, tt.runConfig)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestCLIManager_getWorkloadContainer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		setupMocks   func(*runtimeMocks.MockRuntime, *statusMocks.MockStatusManager)
+		expected     *runtime.ContainerInfo
+		expectError  bool
+		errorMsg     string
+	}{
+		{
+			name:         "successful retrieval",
+			workloadName: "test-workload",
+			setupMocks: func(rt *runtimeMocks.MockRuntime, _ *statusMocks.MockStatusManager) {
+				expectedContainer := runtime.ContainerInfo{
+					Name:  "test-workload",
+					State: runtime.WorkloadStatusRunning,
+				}
+				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").Return(expectedContainer, nil)
+			},
+			expected: &runtime.ContainerInfo{
+				Name:  "test-workload",
+				State: runtime.WorkloadStatusRunning,
+			},
+			expectError: false,
+		},
+		{
+			name:         "workload not found",
+			workloadName: "missing-workload",
+			setupMocks: func(rt *runtimeMocks.MockRuntime, _ *statusMocks.MockStatusManager) {
+				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "missing-workload").Return(runtime.ContainerInfo{}, runtime.ErrWorkloadNotFound)
+			},
+			expected:    nil,
+			expectError: false, // getWorkloadContainer returns nil for not found, not error
+		},
+		{
+			name:         "runtime error",
+			workloadName: "error-workload",
+			setupMocks: func(rt *runtimeMocks.MockRuntime, sm *statusMocks.MockStatusManager) {
+				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "error-workload").Return(runtime.ContainerInfo{}, errors.New("runtime failure"))
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "error-workload", runtime.WorkloadStatusError, "runtime failure").Return(nil)
+			},
+			expected:    nil,
+			expectError: true,
+			errorMsg:    "failed to find workload",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockRuntime := runtimeMocks.NewMockRuntime(ctrl)
+			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
+			tt.setupMocks(mockRuntime, mockStatusMgr)
+
+			manager := &cliManager{
+				runtime:  mockRuntime,
+				statuses: mockStatusMgr,
+			}
+
+			ctx := context.Background()
+			result, err := manager.getWorkloadContainer(ctx, tt.workloadName)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+			} else {
+				require.NoError(t, err)
+				if tt.expected == nil {
+					assert.Nil(t, result)
+				} else {
+					assert.Equal(t, tt.expected, result)
+				}
+			}
+		})
+	}
+}
+
+func TestCLIManager_removeContainer(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		setupMocks   func(*runtimeMocks.MockRuntime, *statusMocks.MockStatusManager)
+		expectError  bool
+		errorMsg     string
+	}{
+		{
+			name:         "successful removal",
+			workloadName: "test-workload",
+			setupMocks: func(rt *runtimeMocks.MockRuntime, _ *statusMocks.MockStatusManager) {
+				rt.EXPECT().RemoveWorkload(gomock.Any(), "test-workload").Return(nil)
+			},
+			expectError: false,
+		},
+		{
+			name:         "removal failure",
+			workloadName: "failing-workload",
+			setupMocks: func(rt *runtimeMocks.MockRuntime, sm *statusMocks.MockStatusManager) {
+				rt.EXPECT().RemoveWorkload(gomock.Any(), "failing-workload").Return(errors.New("removal failed"))
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "failing-workload", runtime.WorkloadStatusError, "removal failed").Return(nil)
+			},
+			expectError: true,
+			errorMsg:    "failed to remove container",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockRuntime := runtimeMocks.NewMockRuntime(ctrl)
+			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
+			tt.setupMocks(mockRuntime, mockStatusMgr)
+
+			manager := &cliManager{
+				runtime:  mockRuntime,
+				statuses: mockStatusMgr,
+			}
+
+			ctx := context.Background()
+			err := manager.removeContainer(ctx, tt.workloadName)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestCLIManager_needSecretsPassword(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		secretOptions []string
+		setupMocks    func(*configMocks.MockProvider)
+		expected      bool
+	}{
+		{
+			name:          "no secrets",
+			secretOptions: []string{},
+			setupMocks:    func(*configMocks.MockProvider) {}, // No expectations
+			expected:      false,
+		},
+		{
+			name:          "has secrets but config access fails",
+			secretOptions: []string{"secret1"},
+			setupMocks: func(cp *configMocks.MockProvider) {
+				mockConfig := &config.Config{}
+				cp.EXPECT().GetConfig().Return(mockConfig)
+			},
+			expected: false, // Returns false when provider type detection fails
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockConfigProvider := configMocks.NewMockProvider(ctrl)
+			tt.setupMocks(mockConfigProvider)
+
+			manager := &cliManager{
+				configProvider: mockConfigProvider,
+			}
+
+			result := manager.needSecretsPassword(tt.secretOptions)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestCLIManager_RunWorkloadDetached(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		runConfig   *runner.RunConfig
+		setupMocks  func(*statusMocks.MockStatusManager, *configMocks.MockProvider)
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "validation failure should not reach PID management",
+			runConfig: &runner.RunConfig{
+				BaseName: "test-workload",
+				Secrets:  []string{"invalid-secret"},
+			},
+			setupMocks: func(_ *statusMocks.MockStatusManager, cp *configMocks.MockProvider) {
+				// Mock config provider to cause validation failure
+				mockConfig := &config.Config{}
+				cp.EXPECT().GetConfig().Return(mockConfig)
+				// No SetWorkloadPID expectation since validation should fail first
+			},
+			expectError: true,
+			errorMsg:    "failed to validate workload parameters",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
+			mockConfigProvider := configMocks.NewMockProvider(ctrl)
+			tt.setupMocks(mockStatusMgr, mockConfigProvider)
+
+			manager := &cliManager{
+				statuses:       mockStatusMgr,
+				configProvider: mockConfigProvider,
+			}
+
+			ctx := context.Background()
+			err := manager.RunWorkloadDetached(ctx, tt.runConfig)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestCLIManager_RunWorkloadDetached_PIDManagement tests that PID management
+// happens in the later stages of RunWorkloadDetached when the process actually starts.
+// This is tested indirectly by verifying the behavior exists in the code flow.
+func TestCLIManager_RunWorkloadDetached_PIDManagement(t *testing.T) {
+	t.Parallel()
+
+	// This test documents the expected behavior:
+	// 1. RunWorkloadDetached calls SetWorkloadPID after starting the detached process
+	// 2. The PID management happens after validation and process creation
+	// 3. SetWorkloadPID failures are logged as warnings but don't fail the operation
+
+	// Since RunWorkloadDetached involves spawning actual processes and complex setup,
+	// we verify the PID management integration exists by checking the method signature
+	// and code structure rather than running the full integration.
+
+	manager := &cliManager{}
+	assert.NotNil(t, manager, "cliManager should be instantiable")
+
+	// Verify the method exists with the correct signature
+	var runWorkloadDetachedFunc interface{} = manager.RunWorkloadDetached
+	assert.NotNil(t, runWorkloadDetachedFunc, "RunWorkloadDetached method should exist")
+}
+
+func TestAsyncOperationTimeout(t *testing.T) {
+	t.Parallel()
+
+	// Test that the timeout constant is properly defined
+	assert.Equal(t, 5*time.Minute, AsyncOperationTimeout)
+}
+
+func TestErrWorkloadNotRunning(t *testing.T) {
+	t.Parallel()
+
+	// Test that the error is properly defined
+	assert.Error(t, ErrWorkloadNotRunning)
+	assert.Contains(t, ErrWorkloadNotRunning.Error(), "workload not running")
+}
+
+func TestCLIManager_ListWorkloads(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		listAll      bool
+		labelFilters []string
+		setupMocks   func(*statusMocks.MockStatusManager)
+		expected     []core.Workload
+		expectError  bool
+		errorMsg     string
+	}{
+		{
+			name:         "successful listing without filters",
+			listAll:      true,
+			labelFilters: []string{},
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				workloads := []core.Workload{
+					{Name: "workload1", Status: runtime.WorkloadStatusRunning},
+					{Name: "workload2", Status: runtime.WorkloadStatusStopped},
+				}
+				sm.EXPECT().ListWorkloads(gomock.Any(), true, []string{}).Return(workloads, nil)
+				sm.EXPECT().GetWorkload(gomock.Any(), gomock.Any()).Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil).AnyTimes()
+			},
+			expected: []core.Workload{
+				{Name: "workload1", Status: runtime.WorkloadStatusRunning},
+				{Name: "workload2", Status: runtime.WorkloadStatusStopped},
+			},
+			expectError: false,
+		},
+		{
+			name:         "error from status manager",
+			listAll:      false,
+			labelFilters: []string{"env=prod"},
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().ListWorkloads(gomock.Any(), false, []string{"env=prod"}).Return(nil, errors.New("database error"))
+			},
+			expected:    nil,
+			expectError: true,
+			errorMsg:    "database error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
+			tt.setupMocks(mockStatusMgr)
+
+			manager := &cliManager{
+				statuses: mockStatusMgr,
+			}
+
+			ctx := context.Background()
+			result, err := manager.ListWorkloads(ctx, tt.listAll, tt.labelFilters...)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+			} else {
+				// We expect this to succeed but might include remote workloads
+				// Since getRemoteWorkloadsFromState will likely fail in unit tests,
+				// we mainly verify the container workloads are returned
+				require.NoError(t, err)
+				assert.GreaterOrEqual(t, len(result), len(tt.expected))
+				// Verify at least our expected container workloads are present
+				for _, expectedWorkload := range tt.expected {
+					found := false
+					for _, actualWorkload := range result {
+						if actualWorkload.Name == expectedWorkload.Name {
+							found = true
+							break
+						}
+					}
+					assert.True(t, found, fmt.Sprintf("Expected workload %s not found in result", expectedWorkload.Name))
+				}
+			}
+		})
+	}
+}
+
+func TestCLIManager_UpdateWorkload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		expectError  bool
+		errorMsg     string
+		setupMocks   func(*runtimeMocks.MockRuntime, *statusMocks.MockStatusManager)
+	}{
+		{
+			name:         "invalid workload name with slash",
+			workloadName: "invalid/name",
+			expectError:  true,
+			errorMsg:     "invalid workload name",
+		},
+		{
+			name:         "invalid workload name with backslash",
+			workloadName: "invalid\\name",
+			expectError:  true,
+			errorMsg:     "invalid workload name",
+		},
+		{
+			name:         "invalid workload name with path traversal",
+			workloadName: "../invalid",
+			expectError:  true,
+			errorMsg:     "invalid workload name",
+		},
+		{
+			name:         "valid workload name returns errgroup immediately",
+			workloadName: "valid-workload",
+			expectError:  false,
+			setupMocks: func(rt *runtimeMocks.MockRuntime, sm *statusMocks.MockStatusManager) {
+				// Mock calls that will happen in the background goroutine
+				// We don't care about the success/failure, just that it doesn't panic
+				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "valid-workload").
+					Return(runtime.ContainerInfo{}, errors.New("not found")).AnyTimes()
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "valid-workload", gomock.Any(), gomock.Any()).
+					Return(nil).AnyTimes()
+			},
+		},
+		{
+			name:         "UpdateWorkload returns errgroup even if async operation will fail",
+			workloadName: "failing-workload",
+			expectError:  false,
+			setupMocks: func(rt *runtimeMocks.MockRuntime, sm *statusMocks.MockStatusManager) {
+				// The async operation will fail, but UpdateWorkload itself should succeed
+				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "failing-workload").
+					Return(runtime.ContainerInfo{}, errors.New("container lookup failed")).AnyTimes()
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "failing-workload", gomock.Any(), gomock.Any()).
+					Return(nil).AnyTimes()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockRuntime := runtimeMocks.NewMockRuntime(ctrl)
+			mockStatusManager := statusMocks.NewMockStatusManager(ctrl)
+			mockConfigProvider := configMocks.NewMockProvider(ctrl)
+
+			if tt.setupMocks != nil {
+				tt.setupMocks(mockRuntime, mockStatusManager)
+			}
+
+			manager := &cliManager{
+				runtime:        mockRuntime,
+				statuses:       mockStatusManager,
+				configProvider: mockConfigProvider,
+			}
+
+			// Create a dummy RunConfig for testing
+			runConfig := &runner.RunConfig{
+				ContainerName: tt.workloadName,
+				BaseName:      tt.workloadName,
+			}
+
+			ctx := context.Background()
+			group, err := manager.UpdateWorkload(ctx, tt.workloadName, runConfig)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+				assert.Nil(t, group)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, group)
+				// For valid cases, we get an errgroup but don't wait for completion
+				// The async operations inside are tested separately
+			}
+		})
+	}
+}
+
+func TestCLIManager_updateSingleWorkload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		runConfig    *runner.RunConfig
+		setupMocks   func(*runtimeMocks.MockRuntime, *statusMocks.MockStatusManager)
+		expectError  bool
+		errorMsg     string
+	}{
+		{
+			name:         "stop operation fails",
+			workloadName: "test-workload",
+			runConfig: &runner.RunConfig{
+				ContainerName: "test-workload",
+				BaseName:      "test-workload",
+				Group:         "default",
+			},
+			setupMocks: func(rt *runtimeMocks.MockRuntime, sm *statusMocks.MockStatusManager) {
+				// Mock the stop operation - return error for GetWorkloadInfo
+				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").
+					Return(runtime.ContainerInfo{}, errors.New("container lookup failed")).AnyTimes()
+				// Still expect status updates to be attempted
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil).AnyTimes()
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusError, "").Return(nil).AnyTimes()
+			},
+			expectError: true,
+			errorMsg:    "failed to stop workload",
+		},
+		{
+			name:         "successful stop and delete operations complete correctly",
+			workloadName: "test-workload",
+			runConfig: &runner.RunConfig{
+				ContainerName: "test-workload",
+				BaseName:      "test-workload",
+				Group:         "default",
+			},
+			setupMocks: func(rt *runtimeMocks.MockRuntime, sm *statusMocks.MockStatusManager) {
+				// Mock stop operation - workload exists and can be stopped
+				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").
+					Return(runtime.ContainerInfo{
+						Name:   "test-workload",
+						State:  "running",
+						Labels: map[string]string{"toolhive-basename": "test-workload"},
+					}, nil)
+				// Mock GetWorkloadPID call from stopProcess
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(1234, nil)
+				rt.EXPECT().StopWorkload(gomock.Any(), "test-workload").Return(nil)
+				sm.EXPECT().ResetWorkloadPID(gomock.Any(), "test-workload").Return(nil)
+
+				// Mock delete operation - workload exists and can be deleted
+				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").
+					Return(runtime.ContainerInfo{Name: "test-workload"}, nil)
+				rt.EXPECT().RemoveWorkload(gomock.Any(), "test-workload").Return(nil)
+
+				// Mock status updates for stop and delete phases
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopped, "").Return(nil)
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusRemoving, "").Return(nil)
+				sm.EXPECT().DeleteWorkloadStatus(gomock.Any(), "test-workload").Return(nil)
+
+				// Mock RunWorkloadDetached calls - expect the ones that will be called
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStarting, "").Return(nil)
+				sm.EXPECT().SetWorkloadPID(gomock.Any(), "test-workload", gomock.Any()).Return(nil)
+			},
+			expectError: false, // Test passes - update process completes successfully
+		},
+		{
+			name:         "delete operation fails after successful stop",
+			workloadName: "test-workload",
+			runConfig: &runner.RunConfig{
+				ContainerName: "test-workload",
+				BaseName:      "test-workload",
+				Group:         "default",
+			},
+			setupMocks: func(rt *runtimeMocks.MockRuntime, sm *statusMocks.MockStatusManager) {
+				// Mock successful stop
+				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").
+					Return(runtime.ContainerInfo{
+						Name:   "test-workload",
+						State:  "running",
+						Labels: map[string]string{"toolhive-basename": "test-workload"},
+					}, nil)
+				// Mock GetWorkloadPID call from stopProcess
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(1234, nil)
+				rt.EXPECT().StopWorkload(gomock.Any(), "test-workload").Return(nil)
+				sm.EXPECT().ResetWorkloadPID(gomock.Any(), "test-workload").Return(nil)
+
+				// Mock failed delete
+				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").
+					Return(runtime.ContainerInfo{Name: "test-workload"}, nil)
+				rt.EXPECT().RemoveWorkload(gomock.Any(), "test-workload").Return(errors.New("delete failed"))
+
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopped, "").Return(nil)
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusRemoving, "").Return(nil)
+				// RemoveWorkload fails, so error status is set
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusError, "delete failed").Return(nil)
+			},
+			expectError: true,
+			errorMsg:    "failed to delete workload",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			mockRuntime := runtimeMocks.NewMockRuntime(ctrl)
+			mockStatusManager := statusMocks.NewMockStatusManager(ctrl)
+			mockConfigProvider := configMocks.NewMockProvider(ctrl)
+
+			if tt.setupMocks != nil {
+				tt.setupMocks(mockRuntime, mockStatusManager)
+			}
+
+			manager := &cliManager{
+				runtime:        mockRuntime,
+				statuses:       mockStatusManager,
+				configProvider: mockConfigProvider,
+			}
+
+			err := manager.updateSingleWorkload(tt.workloadName, tt.runConfig)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}

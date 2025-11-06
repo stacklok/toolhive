@@ -13,7 +13,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -27,6 +26,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 )
 
 // VirtualMCPServerReconciler reconciles a VirtualMCPServer object
@@ -82,19 +82,36 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
+	// Create status manager for batched updates
+	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
 	// Validate GroupRef
-	if err := r.validateGroupRef(ctx, vmcp); err != nil {
+	if err := r.validateGroupRef(ctx, vmcp, statusManager); err != nil {
+		// Apply status changes before returning error
+		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+			ctxLogger.Error(err, "Failed to apply status updates after GroupRef validation error")
+		}
 		return ctrl.Result{}, err
 	}
 
 	// Ensure all resources
-	if err := r.ensureAllResources(ctx, vmcp); err != nil {
+	if err := r.ensureAllResources(ctx, vmcp, statusManager); err != nil {
+		// Apply status changes before returning error
+		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+			ctxLogger.Error(err, "Failed to apply status updates after resource reconciliation error")
+		}
 		return ctrl.Result{}, err
 	}
 
-	// Update status
-	if err := r.updateVirtualMCPServerStatus(ctx, vmcp); err != nil {
+	// Update status based on pod health
+	if err := r.updateVirtualMCPServerStatus(ctx, vmcp, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to update VirtualMCPServer status")
+		return ctrl.Result{}, err
+	}
+
+	// Apply all collected status changes in a single batch update
+	if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+		ctxLogger.Error(err, "Failed to apply final status updates")
 		return ctrl.Result{}, err
 	}
 
@@ -107,10 +124,48 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return ctrl.Result{}, nil
 }
 
+// applyStatusUpdates applies all collected status changes in a single batch update.
+// This implements the StatusCollector pattern to reduce API calls and prevent update conflicts.
+func (r *VirtualMCPServerReconciler) applyStatusUpdates(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// Fetch the latest version to avoid conflicts
+	latest := &mcpv1alpha1.VirtualMCPServer{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      vmcp.Name,
+		Namespace: vmcp.Namespace,
+	}, latest); err != nil {
+		return fmt.Errorf("failed to get latest VirtualMCPServer: %w", err)
+	}
+
+	// Apply collected changes to the latest status
+	hasUpdates := statusManager.UpdateStatus(ctx, &latest.Status)
+
+	// Only update if there are changes
+	if hasUpdates {
+		if err := r.Status().Update(ctx, latest); err != nil {
+			// Handle conflicts by returning error to trigger requeue
+			if errors.IsConflict(err) {
+				ctxLogger.V(1).Info("Conflict updating status, will requeue")
+				return err
+			}
+			return fmt.Errorf("failed to update VirtualMCPServer status: %w", err)
+		}
+		ctxLogger.V(1).Info("Successfully applied batched status updates")
+	}
+
+	return nil
+}
+
 // validateGroupRef validates that the referenced MCPGroup exists and is ready
 func (r *VirtualMCPServerReconciler) validateGroupRef(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
@@ -122,22 +177,14 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 	}, mcpGroup)
 
 	if errors.IsNotFound(err) {
-		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhaseFailed
-		vmcp.Status.Message = fmt.Sprintf("Referenced MCPGroup %s not found", vmcp.Spec.GroupRef.Name)
-		meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionTypeVirtualMCPServerGroupRefValidated,
-			Status:  metav1.ConditionFalse,
-			Reason:  mcpv1alpha1.ConditionReasonVirtualMCPServerGroupRefNotFound,
-			Message: vmcp.Status.Message,
-		})
-		if statusErr := r.Status().Update(ctx, vmcp); statusErr != nil {
-			// Handle conflicts by requeuing - another controller may have updated the resource
-			if errors.IsConflict(statusErr) {
-				ctxLogger.V(1).Info("Conflict updating status after GroupRef validation error, requeuing")
-				return statusErr // Return error to trigger requeue
-			}
-			ctxLogger.Error(statusErr, "Failed to update VirtualMCPServer status after GroupRef validation error")
-		}
+		message := fmt.Sprintf("Referenced MCPGroup %s not found", vmcp.Spec.GroupRef.Name)
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(message)
+		statusManager.SetGroupRefValidatedCondition(
+			mcpv1alpha1.ConditionReasonVirtualMCPServerGroupRefNotFound,
+			message,
+			metav1.ConditionFalse,
+		)
 		return err
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get MCPGroup")
@@ -146,34 +193,25 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 
 	// Check if MCPGroup is ready
 	if mcpGroup.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
-		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhasePending
-		vmcp.Status.Message = fmt.Sprintf("Referenced MCPGroup %s is not ready (phase: %s)",
+		message := fmt.Sprintf("Referenced MCPGroup %s is not ready (phase: %s)",
 			vmcp.Spec.GroupRef.Name, mcpGroup.Status.Phase)
-		meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionTypeVirtualMCPServerGroupRefValidated,
-			Status:  metav1.ConditionFalse,
-			Reason:  mcpv1alpha1.ConditionReasonVirtualMCPServerGroupRefNotReady,
-			Message: vmcp.Status.Message,
-		})
-		if statusErr := r.Status().Update(ctx, vmcp); statusErr != nil {
-			// Handle conflicts by requeuing - another controller may have updated the resource
-			if errors.IsConflict(statusErr) {
-				ctxLogger.V(1).Info("Conflict updating status after GroupRef validation, requeuing")
-				return statusErr // Return error to trigger requeue
-			}
-			ctxLogger.Error(statusErr, "Failed to update VirtualMCPServer status after GroupRef validation")
-		}
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhasePending)
+		statusManager.SetMessage(message)
+		statusManager.SetGroupRefValidatedCondition(
+			mcpv1alpha1.ConditionReasonVirtualMCPServerGroupRefNotReady,
+			message,
+			metav1.ConditionFalse,
+		)
 		// Requeue to check again later
 		return fmt.Errorf("MCPGroup %s is not ready", vmcp.Spec.GroupRef.Name)
 	}
 
 	// GroupRef is valid and ready
-	meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
-		Type:    mcpv1alpha1.ConditionTypeVirtualMCPServerGroupRefValidated,
-		Status:  metav1.ConditionTrue,
-		Reason:  mcpv1alpha1.ConditionReasonVirtualMCPServerGroupRefValid,
-		Message: fmt.Sprintf("MCPGroup %s is valid and ready", vmcp.Spec.GroupRef.Name),
-	})
+	statusManager.SetGroupRefValidatedCondition(
+		mcpv1alpha1.ConditionReasonVirtualMCPServerGroupRefValid,
+		fmt.Sprintf("MCPGroup %s is valid and ready", vmcp.Spec.GroupRef.Name),
+		metav1.ConditionTrue,
+	)
 
 	return nil
 }
@@ -182,6 +220,7 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 func (r *VirtualMCPServerReconciler) ensureAllResources(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
@@ -224,7 +263,8 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	}
 
 	// Update service URL in status
-	return r.ensureServiceURL(ctx, vmcp)
+	r.ensureServiceURL(vmcp, statusManager)
+	return nil
 }
 
 // ensureRBACResources ensures that the RBAC resources are in place for the VirtualMCPServer
@@ -496,22 +536,14 @@ func (r *VirtualMCPServerReconciler) ensureService(
 }
 
 // ensureServiceURL ensures the service URL is set in the status
-func (r *VirtualMCPServerReconciler) ensureServiceURL(
-	ctx context.Context,
+func (*VirtualMCPServerReconciler) ensureServiceURL(
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) error {
+	statusManager virtualmcpserverstatus.StatusManager,
+) {
 	if vmcp.Status.URL == "" {
-		vmcp.Status.URL = createVmcpServiceURL(vmcp.Name, vmcp.Namespace, vmcpDefaultPort)
-		if err := r.Status().Update(ctx, vmcp); err != nil {
-			// Handle conflicts by returning error to trigger requeue
-			// Conflicts here mean another reconcile loop updated the resource
-			if errors.IsConflict(err) {
-				return err // Controller will requeue automatically
-			}
-			return fmt.Errorf("failed to update service URL in status: %w", err)
-		}
+		url := createVmcpServiceURL(vmcp.Name, vmcp.Namespace, vmcpDefaultPort)
+		statusManager.SetURL(url)
 	}
-	return nil
 }
 
 // deploymentNeedsUpdate checks if the deployment needs to be updated
@@ -714,6 +746,7 @@ func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
 	// List the pods for this VirtualMCPServer's deployment
 	podList := &corev1.PodList{}
@@ -744,57 +777,26 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 
 	// Update the status based on pod health
 	if running > 0 {
-		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhaseReady
-		vmcp.Status.Message = "Virtual MCP server is running"
-		meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionTypeVirtualMCPServerReady,
-			Status:  metav1.ConditionTrue,
-			Reason:  "DeploymentReady",
-			Message: "Deployment is ready",
-		})
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseReady)
+		statusManager.SetMessage("Virtual MCP server is running")
+		statusManager.SetReadyCondition("DeploymentReady", "Deployment is ready", metav1.ConditionTrue)
 	} else if pending > 0 {
-		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhasePending
-		vmcp.Status.Message = "Virtual MCP server is starting"
-		meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionTypeVirtualMCPServerReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  "DeploymentNotReady",
-			Message: "Deployment is not yet ready",
-		})
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhasePending)
+		statusManager.SetMessage("Virtual MCP server is starting")
+		statusManager.SetReadyCondition("DeploymentNotReady", "Deployment is not yet ready", metav1.ConditionFalse)
 	} else if failed > 0 {
-		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhaseFailed
-		vmcp.Status.Message = "Virtual MCP server failed to start"
-		meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionTypeVirtualMCPServerReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  "DeploymentFailed",
-			Message: "Deployment failed",
-		})
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage("Virtual MCP server failed to start")
+		statusManager.SetReadyCondition("DeploymentFailed", "Deployment failed", metav1.ConditionFalse)
 	} else {
-		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhasePending
-		vmcp.Status.Message = "No pods found for Virtual MCP server"
-		meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
-			Type:    mcpv1alpha1.ConditionTypeVirtualMCPServerReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  "DeploymentNotReady",
-			Message: "No pods found",
-		})
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhasePending)
+		statusManager.SetMessage("No pods found for Virtual MCP server")
+		statusManager.SetReadyCondition("DeploymentNotReady", "No pods found", metav1.ConditionFalse)
 	}
 
 	// Update ObservedGeneration to reflect that we've processed this generation
-	vmcp.Status.ObservedGeneration = vmcp.Generation
+	statusManager.SetObservedGeneration(vmcp.Generation)
 
-	// Update status with conflict handling
-	// This is the final status update after all reconciliation steps complete
-	if err := r.Status().Update(ctx, vmcp); err != nil {
-		// Handle conflicts by returning error to trigger requeue
-		// Optimistic concurrency control: if another process updated the resource,
-		// we'll requeue and reconcile with the latest state
-		if errors.IsConflict(err) {
-			return err // Controller will requeue automatically
-		}
-		return fmt.Errorf("failed to update VirtualMCPServer status: %w", err)
-	}
 	return nil
 }
 

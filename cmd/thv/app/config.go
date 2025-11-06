@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/stacklok/toolhive/pkg/certs"
 	"github.com/stacklok/toolhive/pkg/config"
 )
 
@@ -99,73 +98,51 @@ func init() {
 }
 
 func setCACertCmdFunc(_ *cobra.Command, args []string) error {
-	certPath := filepath.Clean(args[0])
+	certPath := args[0]
 
-	// Validate that the file exists and is readable
-	if _, err := os.Stat(certPath); err != nil {
-		return fmt.Errorf("CA certificate file not found or not accessible: %w", err)
-	}
-
-	// Read and validate the certificate
-	certContent, err := os.ReadFile(certPath)
+	provider := config.NewDefaultProvider()
+	err := provider.SetCACert(certPath)
 	if err != nil {
-		return fmt.Errorf("failed to read CA certificate file: %w", err)
+		return err
 	}
 
-	// Validate the certificate format
-	if err := certs.ValidateCACertificate(certContent); err != nil {
-		return fmt.Errorf("invalid CA certificate: %w", err)
-	}
-
-	// Update the configuration
-	err = config.UpdateConfig(func(c *config.Config) {
-		c.CACertificatePath = certPath
-	})
-	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
-	}
-
-	fmt.Printf("Successfully set CA certificate path: %s\n", certPath)
+	fmt.Printf("Successfully set CA certificate path: %s\n", filepath.Clean(certPath))
 	return nil
 }
 
 func getCACertCmdFunc(_ *cobra.Command, _ []string) error {
-	configProvider := config.NewDefaultProvider()
-	cfg := configProvider.GetConfig()
+	provider := config.NewDefaultProvider()
+	certPath, exists, accessible := provider.GetCACert()
 
-	if cfg.CACertificatePath == "" {
+	if !exists {
 		fmt.Println("No CA certificate is currently configured.")
 		return nil
 	}
 
-	fmt.Printf("Current CA certificate path: %s\n", cfg.CACertificatePath)
+	fmt.Printf("Current CA certificate path: %s\n", certPath)
 
-	// Check if the file still exists
-	if _, err := os.Stat(cfg.CACertificatePath); err != nil {
-		fmt.Printf("Warning: The configured CA certificate file is not accessible: %v\n", err)
+	if !accessible {
+		fmt.Printf("Warning: The configured CA certificate file is not accessible\n")
 	}
 
 	return nil
 }
 
 func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
-	configProvider := config.NewDefaultProvider()
-	cfg := configProvider.GetConfig()
+	provider := config.NewDefaultProvider()
+	certPath, exists, _ := provider.GetCACert()
 
-	if cfg.CACertificatePath == "" {
+	if !exists {
 		fmt.Println("No CA certificate is currently configured.")
 		return nil
 	}
 
-	// Update the configuration
-	err := config.UpdateConfig(func(c *config.Config) {
-		c.CACertificatePath = ""
-	})
+	err := provider.UnsetCACert()
 	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
+		return err
 	}
 
-	fmt.Println("Successfully removed CA certificate configuration.")
+	fmt.Printf("Successfully removed CA certificate configuration: %s\n", certPath)
 	return nil
 }
 

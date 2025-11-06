@@ -33,7 +33,7 @@ var _ = Describe("Proxy Tunnel E2E", Label("proxy", "tunnel", "e2e"), Serial, fu
 		By("Starting OSV MCP server as target workload")
 		e2e.NewTHVCommand(config, "run",
 			"--name", osvServerName,
-			"--transport", "sse",
+			"--transport", "streamable-http",
 			"osv").ExpectSuccess()
 
 		By("Waiting for OSV server to be ready")

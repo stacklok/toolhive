@@ -8,6 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 )
 
 // YAMLLoader loads configuration from a YAML file.
@@ -310,17 +311,17 @@ func (*YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*B
 	}
 
 	switch raw.Type {
-	case "header_injection":
+	case strategies.StrategyTypeHeaderInjection:
 		if raw.HeaderInjection == nil {
 			return nil, fmt.Errorf("header_injection configuration is required")
 		}
 
 		strategy.Metadata = map[string]any{
-			"header_name":  raw.HeaderInjection.HeaderName,
-			"header_value": raw.HeaderInjection.HeaderValue,
+			strategies.MetadataHeaderName:  raw.HeaderInjection.HeaderName,
+			strategies.MetadataHeaderValue: raw.HeaderInjection.HeaderValue,
 		}
 
-	case "unauthenticated":
+	case strategies.StrategyTypeUnauthenticated:
 		// No metadata required for unauthenticated strategy
 
 	case "token_exchange":

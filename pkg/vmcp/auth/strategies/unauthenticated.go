@@ -38,7 +38,7 @@ func NewUnauthenticatedStrategy() *UnauthenticatedStrategy {
 
 // Name returns the strategy identifier.
 func (*UnauthenticatedStrategy) Name() string {
-	return "unauthenticated"
+	return StrategyTypeUnauthenticated
 }
 
 // Authenticate performs no authentication and returns immediately.

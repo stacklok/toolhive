@@ -368,7 +368,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	logger.Infof("Applied statefulset %s", createdStatefulSet.Name)
 
 	if transportTypeRequiresHeadlessService(transportType) && options != nil {
-		// Create a headless service for SSE transport
+		// Create a headless service for HTTP transport
 		err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create headless service: %v", err)
@@ -417,7 +417,7 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadName string) (runt
 		ports = extractPortMappingsFromPod(&pods.Items[0])
 	}
 
-	// Get ports from associated service (for SSE transport)
+	// Get ports from associated service (for HTTP transport)
 	service, err := c.client.CoreV1().Services(namespace).Get(ctx, workloadName, metav1.GetOptions{})
 	if err == nil {
 		// Service exists, add its ports
@@ -504,7 +504,7 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 		// Extract port mappings from pod
 		ports := extractPortMappingsFromPod(&pod)
 
-		// Get ports from associated service (for SSE transport)
+		// Get ports from associated service (for HTTP transport)
 		service, err := c.client.CoreV1().Services(namespace).Get(ctx, pod.Name, metav1.GetOptions{})
 		if err == nil {
 			// Service exists, add its ports
@@ -637,7 +637,7 @@ func parsePortString(portStr string) (int, error) {
 	return portNum, nil
 }
 
-// configureContainerPorts adds port configurations to a container for SSE transport
+// configureContainerPorts adds port configurations to a container for HTTP transport
 func configureContainerPorts(
 	containerConfig *corev1apply.ContainerApplyConfiguration,
 	options *runtime.DeployWorkloadOptions,
@@ -821,7 +821,7 @@ func (c *Client) createHeadlessService(
 
 	// If no ports were configured, don't create a service
 	if len(servicePorts) == 0 {
-		logger.Info("No ports configured for SSE transport, skipping service creation")
+		logger.Info("No ports configured for HTTP transport, skipping service creation")
 		return nil
 	}
 
@@ -861,7 +861,7 @@ func (c *Client) createHeadlessService(
 		return fmt.Errorf("failed to apply service: %v", err)
 	}
 
-	logger.Infof("Created headless service %s for SSE transport", containerName)
+	logger.Infof("Created headless service %s for HTTP transport", containerName)
 
 	options.SSEHeadlessServiceName = svcName
 	return nil

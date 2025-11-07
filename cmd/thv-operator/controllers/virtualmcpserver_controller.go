@@ -228,6 +228,12 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	// This catches configuration errors early, providing faster feedback than waiting for pod startup failures
 	if err := r.validateSecretReferences(ctx, vmcp); err != nil {
 		ctxLogger.Error(err, "Secret validation failed")
+		// Set AuthConfigured condition to False
+		statusManager.SetAuthConfiguredCondition(
+			mcpv1alpha1.ConditionReasonAuthInvalid,
+			fmt.Sprintf("Authentication configuration is invalid: %v", err),
+			metav1.ConditionFalse,
+		)
 		// Record event for secret validation failure
 		if r.Recorder != nil {
 			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "SecretValidationFailed",
@@ -235,6 +241,13 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 		}
 		return err
 	}
+
+	// Authentication secrets validated successfully
+	statusManager.SetAuthConfiguredCondition(
+		mcpv1alpha1.ConditionReasonAuthValid,
+		"Authentication configuration is valid",
+		metav1.ConditionTrue,
+	)
 
 	// Ensure RBAC resources
 	if err := r.ensureRBACResources(ctx, vmcp); err != nil {

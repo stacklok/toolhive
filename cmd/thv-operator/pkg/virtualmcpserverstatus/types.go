@@ -35,6 +35,9 @@ type StatusManager interface {
 	// SetReadyCondition sets the Ready condition
 	SetReadyCondition(reason, message string, status metav1.ConditionStatus)
 
+	// SetAuthConfiguredCondition sets the AuthConfigured condition
+	SetAuthConfiguredCondition(reason, message string, status metav1.ConditionStatus)
+
 	// UpdateStatus applies all collected status changes in a single batch update.
 	// Returns true if updates were applied, false if no changes were collected.
 	UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alpha1.VirtualMCPServerStatus) bool

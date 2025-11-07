@@ -77,6 +77,11 @@ func (s *StatusCollector) SetReadyCondition(reason, message string, status metav
 	s.SetCondition(mcpv1alpha1.ConditionTypeVirtualMCPServerReady, reason, message, status)
 }
 
+// SetAuthConfiguredCondition sets the AuthConfigured condition.
+func (s *StatusCollector) SetAuthConfiguredCondition(reason, message string, status metav1.ConditionStatus) {
+	s.SetCondition(mcpv1alpha1.ConditionTypeAuthConfigured, reason, message, status)
+}
+
 // UpdateStatus applies all collected status changes in a single batch update.
 // Expects vmcpStatus to be freshly fetched from the cluster to ensure the update operates on the latest resource version.
 func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alpha1.VirtualMCPServerStatus) bool {

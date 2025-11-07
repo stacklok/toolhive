@@ -469,6 +469,8 @@ func (c *RunConfig) WithStandardLabels() *RunConfig {
 	transportLabel := c.Transport.String()
 	if c.Transport == types.TransportTypeStdio && c.ProxyMode == types.ProxyModeStreamableHTTP {
 		transportLabel = types.TransportTypeStreamableHTTP.String()
+	} else if c.Transport == types.TransportTypeStdio && c.ProxyMode == types.ProxyModeSSE {
+		transportLabel = types.TransportTypeSSE.String()
 	}
 	// Use the Group field from the RunConfig
 	labels.AddStandardLabels(c.ContainerLabels, containerName, c.BaseName, transportLabel, c.Port)

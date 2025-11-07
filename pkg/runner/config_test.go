@@ -481,6 +481,42 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 				"existing-label":     "existing-value",
 			},
 		},
+		{
+			name: "Stdio transport with SSE proxy mode",
+			config: &RunConfig{
+				Name:            "test-server",
+				Image:           "test-image",
+				Transport:       types.TransportTypeStdio,
+				ProxyMode:       types.ProxyModeSSE,
+				Port:            60000,
+				ContainerLabels: map[string]string{},
+			},
+			expected: map[string]string{
+				"toolhive":           "true",
+				"toolhive-name":      "test-server",
+				"toolhive-transport": "sse", // Should be "sse" not "stdio"
+				"toolhive-port":      "60000",
+				"toolhive-tool-type": "mcp",
+			},
+		},
+		{
+			name: "Stdio transport with streamable-http proxy mode",
+			config: &RunConfig{
+				Name:            "test-server",
+				Image:           "test-image",
+				Transport:       types.TransportTypeStdio,
+				ProxyMode:       types.ProxyModeStreamableHTTP,
+				Port:            60000,
+				ContainerLabels: map[string]string{},
+			},
+			expected: map[string]string{
+				"toolhive":           "true",
+				"toolhive-name":      "test-server",
+				"toolhive-transport": "streamable-http", // Should be "streamable-http" not "stdio"
+				"toolhive-port":      "60000",
+				"toolhive-tool-type": "mcp",
+			},
+		},
 	}
 
 	for _, tc := range testCases {

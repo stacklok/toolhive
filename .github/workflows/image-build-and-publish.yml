@@ -187,6 +187,7 @@ jobs:
           images: ${{ env.BASE_REPO }}
           tags: |
             type=raw,value=${{ steps.version-string.outputs.tag }}-ubi
+            type=raw,value=latest-ubi,enable=${{ startsWith(github.ref, 'refs/tags/') }}
           labels: |
             name=toolhive-operator
             vendor=Stacklok
@@ -240,6 +241,7 @@ jobs:
           # Sign the latest tag if building from a tag
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest
+            cosign sign -y $BASE_REPO:latest-ubi
           fi
 
   proxyrunner-image-build-and-publish:
@@ -286,6 +288,7 @@ jobs:
           images: ${{ env.BASE_REPO }}
           tags: |
             type=raw,value=${{ steps.version-string.outputs.tag }}-ubi
+            type=raw,value=latest-ubi,enable=${{ startsWith(github.ref, 'refs/tags/') }}
           labels: |
             name=toolhive-proxyrunner
             vendor=Stacklok
@@ -337,6 +340,7 @@ jobs:
           # Sign the latest tag if building from a tag
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             cosign sign -y $BASE_REPO:latest
+            cosign sign -y $BASE_REPO:latest-ubi
           fi
 
   vmcp-image-build-and-publish:

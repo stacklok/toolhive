@@ -507,13 +507,13 @@ func waitForInitializeSuccess(ctx context.Context, serverURL, transportType stri
 
 	logger.Infof("Waiting for MCP server to be ready at %s (timeout: %v)", endpoint, maxWaitTime)
 
+	// Create HTTP client with a reasonable timeout for requests
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
 	for {
 		attempt++
-
-		// Create a new HTTP client with a reasonable timeout for each request
-		httpClient := &http.Client{
-			Timeout: 10 * time.Second,
-		}
 
 		// Make the readiness check request
 		var req *http.Request

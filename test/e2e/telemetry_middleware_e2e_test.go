@@ -38,7 +38,7 @@ var _ = Describe("Telemetry Middleware E2E", Label("middleware", "telemetry", "e
 		Expect(err).ToNot(HaveOccurred())
 		workloadName = generateUniqueTelemetryServerName("telemetry-test")
 		mcpServerName = "osv" // Use OSV server as a reliable test server
-		transportType = types.TransportTypeSSE
+		transportType = types.TransportTypeStreamableHTTP
 	})
 
 	JustBeforeEach(func() {
@@ -309,7 +309,8 @@ func startProxyStdioForTelemetryTest(config *e2e.TestConfig, workloadName string
 	Expect(err).ToNot(HaveOccurred())
 
 	// Extract base URL for transparent proxy
-	baseURL := strings.TrimSuffix(strings.Split(serverURL, "#")[0], "/sse")
+	// With streamable-http: http://127.0.0.1:PORT/mcp (no fragment)
+	baseURL := strings.TrimSuffix(serverURL, "/mcp")
 	GinkgoWriter.Printf("Base URL for telemetry proxy: %s\n", baseURL)
 
 	// Start the proxy command

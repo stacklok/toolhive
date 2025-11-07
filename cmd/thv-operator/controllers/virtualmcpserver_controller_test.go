@@ -33,6 +33,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 )
 
 // TestVirtualMCPServerValidateGroupRef tests the GroupRef validation
@@ -173,7 +174,10 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 			}
 
-			err := r.validateGroupRef(context.Background(), tt.vmcp)
+			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
+			err := r.validateGroupRef(context.Background(), tt.vmcp, statusManager)
+			// Apply status updates for test assertions
+			_ = statusManager.UpdateStatus(context.Background(), &tt.vmcp.Status)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -646,8 +650,11 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 				Scheme: scheme,
 			}
 
-			err := r.updateVirtualMCPServerStatus(context.Background(), tt.vmcp)
+			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
+			err := r.updateVirtualMCPServerStatus(context.Background(), tt.vmcp, statusManager)
 			require.NoError(t, err)
+			// Apply status updates for test assertions
+			_ = statusManager.UpdateStatus(context.Background(), &tt.vmcp.Status)
 			assert.Equal(t, tt.expectedPhase, tt.vmcp.Status.Phase)
 		})
 	}
@@ -688,4 +695,96 @@ func TestVirtualMCPServerNaming(t *testing.T) {
 	// Test service URL
 	url := createVmcpServiceURL(vmcpName, "default", 8080)
 	assert.Equal(t, "http://vmcp-my-vmcp.default.svc.cluster.local:8080", url)
+}
+
+// TestVirtualMCPServerAuthConfiguredCondition tests AuthConfigured condition setting
+func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	tests := []struct {
+		name                string
+		vmcp                *mcpv1alpha1.VirtualMCPServer
+		secrets             []client.Object
+		expectAuthCondition bool
+		expectedAuthStatus  metav1.ConditionStatus
+		expectedAuthReason  string
+		expectError         bool
+	}{
+		{
+			name: "valid auth with no secrets required",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+				},
+			},
+			secrets:             []client.Object{},
+			expectAuthCondition: true,
+			expectedAuthStatus:  metav1.ConditionTrue,
+			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthValid,
+			expectError:         false,
+		},
+		// Note: We can't easily test OIDC secret validation without creating the full
+		// OIDCConfigRef structure with ConfigMaps, which is complex for a unit test.
+		// The secret validation is tested implicitly through the ensureAllResources flow.
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			objs := append([]client.Object{tt.vmcp}, tt.secrets...)
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objs...).
+				WithStatusSubresource(&mcpv1alpha1.VirtualMCPServer{}).
+				Build()
+
+			r := &VirtualMCPServerReconciler{
+				Client:           fakeClient,
+				Scheme:           scheme,
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
+			err := r.ensureAllResources(context.Background(), tt.vmcp, statusManager)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			}
+			// ensureAllResources may return errors for missing resources like MCPGroup
+			// We're only testing the auth condition setting
+
+			// Apply status updates to check condition
+			_ = statusManager.UpdateStatus(context.Background(), &tt.vmcp.Status)
+
+			if tt.expectAuthCondition {
+				// Find AuthConfigured condition
+				var authCondition *metav1.Condition
+				for i := range tt.vmcp.Status.Conditions {
+					if tt.vmcp.Status.Conditions[i].Type == mcpv1alpha1.ConditionTypeAuthConfigured {
+						authCondition = &tt.vmcp.Status.Conditions[i]
+						break
+					}
+				}
+
+				require.NotNil(t, authCondition, "AuthConfigured condition should be set")
+				assert.Equal(t, tt.expectedAuthStatus, authCondition.Status)
+				assert.Equal(t, tt.expectedAuthReason, authCondition.Reason)
+			}
+		})
+	}
 }

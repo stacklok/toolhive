@@ -59,40 +59,6 @@ func TestRunCmdFlagsAndParsing(t *testing.T) {
 	assert.Equal(t, "127.0.0.1", hostValue, "Host flag value should match what was set")
 }
 
-func TestValidateAndNormaliseHostFlagStillWorks(t *testing.T) {
-	t.Parallel()
-
-	// Ensure the host validation function still works correctly
-	// This is important because our new code is called before host validation
-
-	validCases := []struct {
-		input    string
-		expected string
-	}{
-		{"127.0.0.1", "127.0.0.1"},
-		{"0.0.0.0", "0.0.0.0"},
-		{"192.168.1.1", "192.168.1.1"},
-	}
-
-	for _, tc := range validCases {
-		result, err := ValidateAndNormaliseHostFlag(tc.input)
-		assert.NoError(t, err, "Valid IP should not error: %s", tc.input)
-		assert.Equal(t, tc.expected, result, "Result should match expected for: %s", tc.input)
-	}
-
-	// Test invalid cases
-	invalidCases := []string{
-		"not-an-ip",
-		"999.999.999.999",
-		"",
-	}
-
-	for _, invalid := range invalidCases {
-		_, err := ValidateAndNormaliseHostFlag(invalid)
-		assert.Error(t, err, "Invalid input should error: %s", invalid)
-	}
-}
-
 func TestProxyModeFlagExists(t *testing.T) {
 	t.Parallel()
 

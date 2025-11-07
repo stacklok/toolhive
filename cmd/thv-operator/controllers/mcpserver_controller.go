@@ -898,7 +898,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	replicas := int32(1)
 
 	// Prepare container args
-	args := []string{"run", "--foreground=true"}
+	args := []string{"run"}
 
 	// Prepare container volume mounts
 	volumeMounts := []corev1.VolumeMount{}

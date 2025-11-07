@@ -19,6 +19,7 @@ func TestCreateOAuthConfigManual(t *testing.T) {
 		scopes       []string
 		usePKCE      bool
 		callbackPort int
+		resource     string
 		expectError  bool
 		errorMsg     string
 		validate     func(t *testing.T, config *Config)
@@ -32,6 +33,7 @@ func TestCreateOAuthConfigManual(t *testing.T) {
 			scopes:       []string{"read", "write"},
 			usePKCE:      true,
 			callbackPort: 8080,
+			resource:     "https://example.com/foo/bar",
 			expectError:  false,
 			validate: func(t *testing.T, config *Config) {
 				t.Helper()
@@ -42,6 +44,7 @@ func TestCreateOAuthConfigManual(t *testing.T) {
 				assert.Equal(t, []string{"read", "write"}, config.Scopes)
 				assert.True(t, config.UsePKCE)
 				assert.Equal(t, 8080, config.CallbackPort)
+				assert.Equal(t, "https://example.com/foo/bar", config.Resource)
 			},
 		},
 		{
@@ -261,6 +264,7 @@ func TestCreateOAuthConfigManual(t *testing.T) {
 				tt.scopes,
 				tt.usePKCE,
 				tt.callbackPort,
+				tt.resource,
 				oauthParams,
 			)
 
@@ -326,6 +330,7 @@ func TestCreateOAuthConfigManual_ScopeDefaultBehavior(t *testing.T) {
 				tt.scopes,
 				true,
 				8080,
+				"",
 				nil, // No OAuth params for basic tests
 			)
 
@@ -368,6 +373,7 @@ func TestCreateOAuthConfigManual_PKCEBehavior(t *testing.T) {
 				[]string{"read"},
 				tt.usePKCE,
 				8080,
+				"",
 				nil, // No OAuth params for basic tests
 			)
 
@@ -415,6 +421,7 @@ func TestCreateOAuthConfigManual_CallbackPortBehavior(t *testing.T) {
 				[]string{"read"},
 				true,
 				tt.port,
+				"",
 				nil, // No OAuth params for basic tests
 			)
 
@@ -479,6 +486,7 @@ func TestCreateOAuthConfigManual_OAuthParamsBehavior(t *testing.T) {
 				[]string{"read"},
 				true,
 				8080,
+				"",
 				tt.oauthParams,
 			)
 

@@ -20,6 +20,9 @@ type Config struct {
 	CallbackPort     int           `json:"callback_port,omitempty" yaml:"callback_port,omitempty"`
 	UsePKCE          bool          `json:"use_pkce" yaml:"use_pkce"`
 
+	// Resource is the OAuth 2.0 resource indicator (RFC 8707).
+	Resource string `json:"resource,omitempty" yaml:"resource,omitempty"`
+
 	// OAuth endpoint configuration (from registry)
 	Issuer       string `json:"issuer,omitempty" yaml:"issuer,omitempty"`
 	AuthorizeURL string `json:"authorize_url,omitempty" yaml:"authorize_url,omitempty"`

@@ -167,6 +167,8 @@ type OAuthConfig struct {
 	// CallbackPort is the specific port to use for the OAuth callback server
 	// If not specified, a random available port will be used
 	CallbackPort int `json:"callback_port,omitempty" yaml:"callback_port,omitempty"`
+	// Resource is the OAuth 2.0 resource indicator (RFC 8707)
+	Resource string `json:"resource,omitempty" yaml:"resource,omitempty"`
 }
 
 // RemoteServerMetadata represents the metadata for a remote MCP server accessed via HTTP/HTTPS.

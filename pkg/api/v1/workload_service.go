@@ -160,6 +160,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 					AuthorizeURL: remoteServerMetadata.OAuthConfig.AuthorizeURL,
 					TokenURL:     remoteServerMetadata.OAuthConfig.TokenURL,
 					UsePKCE:      remoteServerMetadata.OAuthConfig.UsePKCE,
+					Resource:     remoteServerMetadata.OAuthConfig.Resource,
 					OAuthParams:  remoteServerMetadata.OAuthConfig.OAuthParams,
 					Headers:      remoteServerMetadata.Headers,
 					EnvVars:      remoteServerMetadata.EnvVars,

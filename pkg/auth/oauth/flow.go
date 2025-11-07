@@ -52,6 +52,9 @@ type Config struct {
 	// IntrospectionEndpoint is the optional introspection endpoint for validating tokens
 	IntrospectionEndpoint string
 
+	// Resource is the OAuth 2.0 resource indicator (RFC 8707).
+	Resource string
+
 	// OAuthParams are additional parameters to pass to the authorization URL
 	OAuthParams map[string]string
 }
@@ -244,6 +247,10 @@ func (f *Flow) buildAuthURL() string {
 		oauth2.SetAuthURLParam("state", f.state),
 	}
 
+	if f.config.Resource != "" {
+		opts = append(opts, oauth2.SetAuthURLParam("resource", f.config.Resource))
+	}
+
 	if f.config.OAuthParams != nil {
 		for key, value := range f.config.OAuthParams {
 			opts = append(opts, oauth2.SetAuthURLParam(key, value))
@@ -301,6 +308,10 @@ func (f *Flow) handleCallback(tokenChan chan<- *oauth2.Token, errorChan chan<- e
 		// Add PKCE verifier if enabled
 		if f.config.UsePKCE {
 			opts = append(opts, oauth2.SetAuthURLParam("code_verifier", f.codeVerifier))
+		}
+
+		if f.config.Resource != "" {
+			opts = append(opts, oauth2.SetAuthURLParam("resource", f.config.Resource))
 		}
 
 		token, err := f.oauth2Config.Exchange(ctx, code, opts...)

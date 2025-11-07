@@ -542,6 +542,9 @@ components:
             OAuthParams contains additional OAuth parameters to include in the authorization request
             These are server-specific parameters like "prompt", "response_mode", etc.
           type: object
+        resource:
+          description: Resource is the OAuth 2.0 resource indicator (RFC 8707)
+          type: string
         scopes:
           description: |-
             Scopes are the OAuth scopes to request
@@ -720,6 +723,9 @@ components:
             type: string
           description: OAuth parameters for server-specific customization
           type: object
+        resource:
+          description: Resource is the OAuth 2.0 resource indicator (RFC 8707).
+          type: string
         scopes:
           items:
             type: string
@@ -1461,6 +1467,9 @@ components:
             type: string
           description: Additional OAuth parameters for server-specific customization
           type: object
+        resource:
+          description: OAuth 2.0 resource indicator (RFC 8707)
+          type: string
         scopes:
           description: OAuth scopes to request
           items:

@@ -2,11 +2,13 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -274,6 +276,24 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	logger.Infof("MCP server %s started successfully", r.Config.ContainerName)
 
+	// Wait for the MCP server to accept initialize requests before updating client configurations.
+	// This prevents timing issues where clients try to connect before the server is fully ready.
+	// We repeatedly call initialize until it succeeds (up to 5 minutes).
+	transportType := labels.GetTransportType(r.Config.ContainerLabels)
+	serverURL := transport.GenerateMCPServerURL(
+		transportType,
+		"localhost",
+		r.Config.Port,
+		r.Config.ContainerName,
+		r.Config.RemoteURL)
+
+	// Repeatedly try calling initialize until it succeeds (up to 5 minutes)
+	// Some servers (like mcp-optimizer) can take significant time to start up
+	if err := waitForInitializeSuccess(ctx, serverURL, transportType, 5*time.Minute); err != nil {
+		logger.Warnf("Warning: Initialize not successful, but continuing: %v", err)
+		// Continue anyway to maintain backward compatibility, but log a warning
+	}
+
 	// Update client configurations with the MCP server URL.
 	// Note that this function checks the configuration to determine which
 	// clients should be updated, if any.
@@ -281,14 +301,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err != nil {
 		logger.Warnf("Warning: Failed to create client manager: %v", err)
 	} else {
-		transportType := labels.GetTransportType(r.Config.ContainerLabels)
-		serverURL := transport.GenerateMCPServerURL(
-			transportType,
-			"localhost",
-			r.Config.Port,
-			r.Config.ContainerName,
-			r.Config.RemoteURL)
-
 		if err := clientManager.AddServerToClients(ctx, r.Config.ContainerName, serverURL, transportType, r.Config.Group); err != nil {
 			logger.Warnf("Warning: Failed to add server to client configurations: %v", err)
 		}
@@ -449,4 +461,108 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 	}
 
 	return lastErr
+}
+
+// waitForInitializeSuccess repeatedly calls the MCP server's initialize endpoint until it succeeds.
+// This prevents timing issues where clients try to connect before the server is fully ready.
+// It makes repeated attempts with exponential backoff up to a maximum timeout.
+func waitForInitializeSuccess(ctx context.Context, serverURL, transportType string, maxWaitTime time.Duration) error {
+	// Construct the endpoint URL based on transport type
+	var endpoint string
+	switch transportType {
+	case "streamable-http", "streamable":
+		// For streamable-http, serverURL already contains the /mcp path
+		// Format: http://localhost:port/mcp
+		endpoint = serverURL
+	case "sse", "stdio":
+		// For SSE/stdio, serverURL contains /sse#container-name
+		// Format: http://localhost:port/sse#container-name
+		// We need to change it to /messages (without the fragment)
+		endpoint = serverURL
+		// Remove fragment if present (everything after #)
+		if idx := strings.Index(endpoint, "#"); idx != -1 {
+			endpoint = endpoint[:idx]
+		}
+		// Replace /sse with /messages for the initialize call
+		endpoint = strings.Replace(endpoint, "/sse", "/messages", 1)
+	default:
+		// For other transports, no HTTP initialize check is needed
+		logger.Debugf("Skipping initialize check for transport type: %s", transportType)
+		return nil
+	}
+
+	// Create the initialize request payload
+	initPayload := `{"jsonrpc":"2.0","method":"initialize","id":"toolhive-init-check",` +
+		`"params":{"protocolVersion":"2024-11-05","capabilities":{},` +
+		`"clientInfo":{"name":"toolhive","version":"1.0"}}}`
+
+	// Setup retry logic with exponential backoff
+	startTime := time.Now()
+	attempt := 0
+	baseDelay := 100 * time.Millisecond
+	maxDelay := 2 * time.Second // Cap at 2 seconds between retries
+
+	logger.Infof("Waiting for MCP server to accept initialize requests at %s (timeout: %v)", endpoint, maxWaitTime)
+
+	for {
+		attempt++
+
+		// Create a new HTTP client with a reasonable timeout for each request
+		httpClient := &http.Client{
+			Timeout: 10 * time.Second,
+		}
+
+		// Make the initialize request
+		req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBufferString(initPayload))
+		if err != nil {
+			logger.Debugf("Failed to create initialize request (attempt %d): %v", attempt, err)
+		} else {
+			req.Header.Set("Content-Type", "application/json")
+			// MCP servers may require clients to accept both JSON and SSE responses
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			req.Header.Set("MCP-Protocol-Version", "2024-11-05")
+
+			resp, err := httpClient.Do(req)
+			if err == nil {
+				//nolint:errcheck // Ignoring close error on response body in error path
+				defer resp.Body.Close()
+				
+				// Accept 200 OK as success
+				if resp.StatusCode == http.StatusOK {
+					elapsed := time.Since(startTime)
+					logger.Infof("MCP server successfully responded to initialize after %v (attempt %d)", elapsed, attempt)
+					return nil
+				}
+
+				logger.Debugf("Initialize returned status %d (attempt %d)", resp.StatusCode, attempt)
+			} else {
+				logger.Debugf("Failed to reach initialize endpoint (attempt %d): %v", attempt, err)
+			}
+		}
+
+		// Check if we've exceeded the maximum wait time
+		elapsed := time.Since(startTime)
+		if elapsed >= maxWaitTime {
+			return fmt.Errorf("initialize not successful after %v (%d attempts)", elapsed, attempt)
+		}
+
+		// Calculate delay with exponential backoff
+		// Cap the exponent to prevent overflow
+		exp := attempt - 1
+		if exp > 10 {
+			exp = 10
+		}
+		delay := baseDelay * time.Duration(1<<uint(exp)) //nolint:gosec // Overflow prevented by capping exp
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+
+		// Wait before retrying
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while waiting for initialize")
+		case <-time.After(delay):
+			// Continue to next attempt
+		}
+	}
 }

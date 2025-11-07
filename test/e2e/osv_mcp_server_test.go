@@ -58,9 +58,9 @@ var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 				// The command should indicate success
 				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the OSV server")
 
-			By("Waiting for the server to be running")
-			err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
-			Expect(err).ToNot(HaveOccurred(), "Server should be running within 5 minutes")
+				By("Waiting for the server to be running")
+				err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
+				Expect(err).ToNot(HaveOccurred(), "Server should be running within 5 minutes")
 
 				By("Verifying the server appears in the list with SSE transport")
 				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()

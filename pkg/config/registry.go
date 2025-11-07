@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	neturl "net/url"
 	"path/filepath"
 	"strings"
 

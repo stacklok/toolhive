@@ -37,7 +37,8 @@ var registryInfoCmd = &cobra.Command{
 }
 
 var (
-	registryFormat string
+	registryFormat  string
+	refreshRegistry bool
 )
 
 func init() {
@@ -50,7 +51,9 @@ func init() {
 
 	// Add flags for list and info commands
 	registryListCmd.Flags().StringVar(&registryFormat, "format", FormatText, "Output format (json or text)")
+	registryListCmd.Flags().BoolVar(&refreshRegistry, "refresh", false, "Force refresh registry cache")
 	registryInfoCmd.Flags().StringVar(&registryFormat, "format", FormatText, "Output format (json or text)")
+	registryInfoCmd.Flags().BoolVar(&refreshRegistry, "refresh", false, "Force refresh registry cache")
 }
 
 func registryListCmdFunc(_ *cobra.Command, _ []string) error {
@@ -59,6 +62,16 @@ func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get registry provider: %v", err)
 	}
+
+	// Force refresh if requested
+	if refreshRegistry {
+		if cached, ok := provider.(*registry.CachedAPIRegistryProvider); ok {
+			if err := cached.ForceRefresh(); err != nil {
+				return fmt.Errorf("failed to refresh registry: %v", err)
+			}
+		}
+	}
+
 	servers, err := provider.ListServers()
 	if err != nil {
 		return fmt.Errorf("failed to list servers: %v", err)
@@ -84,6 +97,16 @@ func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get registry provider: %v", err)
 	}
+
+	// Force refresh if requested
+	if refreshRegistry {
+		if cached, ok := provider.(*registry.CachedAPIRegistryProvider); ok {
+			if err := cached.ForceRefresh(); err != nil {
+				return fmt.Errorf("failed to refresh registry: %v", err)
+			}
+		}
+	}
+
 	server, err := provider.GetServer(serverName)
 	if err != nil {
 		return fmt.Errorf("failed to get server information: %v", err)

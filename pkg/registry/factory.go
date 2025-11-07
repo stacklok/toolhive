@@ -26,7 +26,9 @@ func NewRegistryProvider(cfg *config.Config) Provider {
 	// 4. Default - embedded registry data
 
 	if cfg != nil && len(cfg.RegistryApiUrl) > 0 {
-		provider, err := NewAPIRegistryProvider(cfg.RegistryApiUrl, cfg.AllowPrivateRegistryIp)
+		// Use cached provider with persistent cache enabled by default
+		// This provides 1-hour TTL and works for both CLI and API server
+		provider, err := NewCachedAPIRegistryProvider(cfg.RegistryApiUrl, cfg.AllowPrivateRegistryIp, true)
 		if err != nil {
 			// Log error but fall back to default provider
 			// This prevents application from failing if API is temporarily unavailable

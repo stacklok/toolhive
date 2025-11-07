@@ -401,8 +401,8 @@ func parseSinglePath(declaration string) (source, target string, err error) {
 		return "", "", err
 	}
 
-	// See comment above about using path.Clean instead of filepath.Clean.
-	cleanedPath := pkgpath.Clean(declaration)
+	// Single path should always be converted to OS-specific cleaned path.
+	cleanedPath := filepath.Clean(declaration)
 	return cleanedPath, cleanedPath, nil
 }
 

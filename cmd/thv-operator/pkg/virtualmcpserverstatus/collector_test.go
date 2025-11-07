@@ -187,8 +187,8 @@ func TestStatusCollector_MultipleConditions(t *testing.T) {
 	collector := NewStatusManager(vmcp)
 
 	collector.SetGroupRefValidatedCondition("GroupValid", "group is valid", metav1.ConditionTrue)
-	collector.SetReadyCondition("DeploymentReady", "deployment is ready", metav1.ConditionTrue)
 	collector.SetAuthConfiguredCondition("AuthValid", "auth is configured", metav1.ConditionTrue)
+	collector.SetReadyCondition("DeploymentReady", "deployment is ready", metav1.ConditionTrue)
 
 	status := &mcpv1alpha1.VirtualMCPServerStatus{}
 	hasUpdates := collector.UpdateStatus(context.Background(), status)
@@ -196,12 +196,12 @@ func TestStatusCollector_MultipleConditions(t *testing.T) {
 	assert.True(t, hasUpdates)
 	assert.Len(t, status.Conditions, 3)
 
-	// Verify all conditions are present
+	// Verify all three conditions are present
 	conditionTypes := make(map[string]bool)
 	for _, cond := range status.Conditions {
 		conditionTypes[cond.Type] = true
 	}
 	assert.True(t, conditionTypes[mcpv1alpha1.ConditionTypeVirtualMCPServerGroupRefValidated])
-	assert.True(t, conditionTypes[mcpv1alpha1.ConditionTypeVirtualMCPServerReady])
 	assert.True(t, conditionTypes[mcpv1alpha1.ConditionTypeAuthConfigured])
+	assert.True(t, conditionTypes[mcpv1alpha1.ConditionTypeVirtualMCPServerReady])
 }

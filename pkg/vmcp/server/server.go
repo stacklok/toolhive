@@ -309,7 +309,7 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	var errs []error
 
-	// Stop HTTP server
+	// Stop HTTP server (this internally closes the listener)
 	if s.httpServer != nil {
 		// Create shutdown context with timeout
 		shutdownCtx, cancel := context.WithTimeout(ctx, defaultShutdownTimeout)
@@ -320,19 +320,12 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
-	// Close listener
+	// Clear listener reference (already closed by httpServer.Shutdown)
 	s.listenerMu.Lock()
-	listener := s.listener
 	s.listener = nil
 	s.listenerMu.Unlock()
 
-	if listener != nil {
-		if err := listener.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to close listener: %w", err))
-		}
-	}
-
-	// Stop session manager
+	// Stop session manager after HTTP server shutdown
 	if s.sessionManager != nil {
 		if err := s.sessionManager.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to stop session manager: %w", err))
@@ -366,13 +359,18 @@ func (s *Server) Address() string {
 //nolint:unparam // Error return kept for future extensibility
 func (s *Server) registerTool(tool vmcp.Tool) error {
 	// Convert vmcp.Tool to mcp.Tool
+	// Note: tool.InputSchema is already a complete JSON Schema (map[string]any)
+	// containing type, properties, required, etc. We marshal it to JSON and
+	// use RawInputSchema to avoid double-nesting the schema structure.
+	schemaJSON, err := json.Marshal(tool.InputSchema)
+	if err != nil {
+		return fmt.Errorf("failed to marshal input schema for tool %s: %w", tool.Name, err)
+	}
+
 	mcpTool := mcp.Tool{
-		Name:        tool.Name,
-		Description: tool.Description,
-		InputSchema: mcp.ToolInputSchema{
-			Type:       "object",
-			Properties: tool.InputSchema,
-		},
+		Name:           tool.Name,
+		Description:    tool.Description,
+		RawInputSchema: schemaJSON,
 	}
 
 	// Create handler that routes to backend
@@ -465,8 +463,15 @@ func (s *Server) createToolHandler(toolName string) func(context.Context, mcp.Ca
 			return mcp.NewToolResultError(wrappedErr.Error()), nil
 		}
 
+		// Get the name to use when calling the backend (handles conflict resolution renaming)
+		backendToolName := target.GetBackendCapabilityName(toolName)
+		if backendToolName != toolName {
+			logger.Debugf("Translating tool name %s -> %s for backend %s",
+				toolName, backendToolName, target.WorkloadID)
+		}
+
 		// Forward request to backend
-		result, err := s.backendClient.CallTool(ctx, target, toolName, args)
+		result, err := s.backendClient.CallTool(ctx, target, backendToolName, args)
 		if err != nil {
 			// Distinguish between domain errors (tool execution failed) and operational errors (backend unavailable)
 			if errors.Is(err, vmcp.ErrToolExecutionFailed) {
@@ -509,8 +514,11 @@ func (s *Server) createResourceHandler(uri string) func(
 			return nil, fmt.Errorf("routing error: %w", err)
 		}
 
+		// Get the URI to use when calling the backend (handles conflict resolution renaming)
+		backendURI := target.GetBackendCapabilityName(uri)
+
 		// Forward request to backend
-		data, err := s.backendClient.ReadResource(ctx, target, uri)
+		data, err := s.backendClient.ReadResource(ctx, target, backendURI)
 		if err != nil {
 			// Check if backend is unavailable (operational error)
 			if errors.Is(err, vmcp.ErrBackendUnavailable) {
@@ -572,8 +580,11 @@ func (s *Server) createPromptHandler(promptName string) func(
 			args[k] = v
 		}
 
+		// Get the name to use when calling the backend (handles conflict resolution renaming)
+		backendPromptName := target.GetBackendCapabilityName(promptName)
+
 		// Forward request to backend
-		promptText, err := s.backendClient.GetPrompt(ctx, target, promptName, args)
+		promptText, err := s.backendClient.GetPrompt(ctx, target, backendPromptName, args)
 		if err != nil {
 			// Check if backend is unavailable (operational error)
 			if errors.Is(err, vmcp.ErrBackendUnavailable) {

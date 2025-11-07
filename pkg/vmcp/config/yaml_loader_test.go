@@ -44,8 +44,8 @@ aggregation:
 				if cfg.Name != "test-vmcp" {
 					t.Errorf("Name = %v, want test-vmcp", cfg.Name)
 				}
-				if cfg.GroupRef != "test-group" {
-					t.Errorf("GroupRef = %v, want test-group", cfg.GroupRef)
+				if cfg.Group != "test-group" {
+					t.Errorf("Group = %v, want test-group", cfg.Group)
 				}
 				if cfg.IncomingAuth.Type != "anonymous" {
 					t.Errorf("IncomingAuth.Type = %v, want anonymous", cfg.IncomingAuth.Type)
@@ -100,8 +100,8 @@ aggregation:
 				if cfg.IncomingAuth.OIDC.Issuer != "https://auth.example.com" {
 					t.Errorf("OIDC.Issuer = %v, want https://auth.example.com", cfg.IncomingAuth.OIDC.Issuer)
 				}
-				if cfg.IncomingAuth.OIDC.ClientSecret != "my-secret-value" {
-					t.Errorf("OIDC.ClientSecret = %v, want my-secret-value", cfg.IncomingAuth.OIDC.ClientSecret)
+				if cfg.IncomingAuth.OIDC.ClientSecretEnv != "TEST_SECRET" {
+					t.Errorf("OIDC.ClientSecretEnv = %v, want TEST_SECRET", cfg.IncomingAuth.OIDC.ClientSecretEnv)
 				}
 			},
 			wantErr: false,
@@ -145,7 +145,7 @@ token_cache:
 				if cfg.TokenCache.Memory.MaxEntries != 1000 {
 					t.Errorf("Memory.MaxEntries = %v, want 1000", cfg.TokenCache.Memory.MaxEntries)
 				}
-				if cfg.TokenCache.Memory.TTLOffset != 5*time.Minute {
+				if cfg.TokenCache.Memory.TTLOffset != Duration(5*time.Minute) {
 					t.Errorf("Memory.TTLOffset = %v, want 5m", cfg.TokenCache.Memory.TTLOffset)
 				}
 			},
@@ -200,7 +200,7 @@ composite_tools:
 				if tool.Name != "deploy_workflow" {
 					t.Errorf("Tool.Name = %v, want deploy_workflow", tool.Name)
 				}
-				if tool.Timeout != 30*time.Minute {
+				if tool.Timeout != Duration(30*time.Minute) {
 					t.Errorf("Tool.Timeout = %v, want 30m", tool.Timeout)
 				}
 				if len(tool.Steps) != 2 {
@@ -221,7 +221,7 @@ incoming_auth
 			errMsg:  "failed to parse YAML",
 		},
 		{
-			name: "missing environment variable",
+			name: "OIDC with unset environment variable is allowed (validation happens at runtime)",
 			yaml: `
 name: test-vmcp
 group: test-group
@@ -244,8 +244,17 @@ aggregation:
   conflict_resolution_config:
     prefix_format: "{workload}_"
 `,
-			wantErr: true,
-			errMsg:  "environment variable MISSING_VAR not set",
+			want: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				if cfg.IncomingAuth.OIDC == nil {
+					t.Fatal("IncomingAuth.OIDC is nil")
+				}
+				// Verify the env var name is stored (not resolved)
+				if cfg.IncomingAuth.OIDC.ClientSecretEnv != "MISSING_VAR" {
+					t.Errorf("OIDC.ClientSecretEnv = %v, want MISSING_VAR", cfg.IncomingAuth.OIDC.ClientSecretEnv)
+				}
+			},
+			wantErr: false,
 		},
 		{
 			name: "invalid duration format",
@@ -387,7 +396,7 @@ incoming_auth:
 outgoing_auth:
   source: inline
   default:
-    type: pass_through
+    type: unauthenticated
 
 aggregation:
   conflict_resolution: prefix
@@ -407,7 +416,7 @@ incoming_auth:
 outgoing_auth:
   source: inline
   default:
-    type: pass_through
+    type: unauthenticated
 
 aggregation:
   conflict_resolution: prefix
@@ -429,7 +438,7 @@ incoming_auth:
 outgoing_auth:
   source: inline
   default:
-    type: pass_through
+    type: unauthenticated
 
 aggregation:
   conflict_resolution: prefix

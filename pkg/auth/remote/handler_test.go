@@ -1,4 +1,4 @@
-package runner
+package remote
 
 import (
 	"context"
@@ -28,22 +28,11 @@ func init() {
 func TestDiscoverIssuerAndScopes(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name               string
-		config             *RemoteAuthConfig
-		authInfo           *discovery.AuthInfo
-		remoteURL          string
-		mockServers        map[string]*httptest.Server
-		expectedIssuer     string
-		expectedScopes     []string
-		expectedAuthServer bool
-		expectError        bool
-		errorContains      string
-	}{
+	tests := []testCase{
 		// Priority 1: Configured issuer takes precedence
 		{
 			name: "configured issuer takes precedence",
-			config: &RemoteAuthConfig{
+			config: &Config{
 				Issuer: "https://configured.example.com",
 				Scopes: []string{"openid", "profile"},
 			},
@@ -61,7 +50,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 		// Priority 2: Realm-derived issuer
 		{
 			name:   "valid realm URL derives issuer",
-			config: &RemoteAuthConfig{},
+			config: &Config{},
 			authInfo: &discovery.AuthInfo{
 				Type:  "OAuth",
 				Realm: "https://auth.example.com/realm/mcp",
@@ -73,7 +62,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 		},
 		{
 			name:   "realm with query and fragment stripped",
-			config: &RemoteAuthConfig{},
+			config: &Config{},
 			authInfo: &discovery.AuthInfo{
 				Type:  "OAuth",
 				Realm: "https://auth.example.com/realm?param=value#fragment",
@@ -88,7 +77,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 		// These tests use dynamic setup to create properly linked servers
 		{
 			name:   "valid resource metadata",
-			config: &RemoteAuthConfig{},
+			config: &Config{},
 			authInfo: &discovery.AuthInfo{
 				Type:             "OAuth",
 				ResourceMetadata: "dynamic", // Special marker for dynamic setup
@@ -104,7 +93,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 		},
 		{
 			name:   "resource metadata with multiple auth servers",
-			config: &RemoteAuthConfig{},
+			config: &Config{},
 			authInfo: &discovery.AuthInfo{
 				Type:             "OAuth",
 				ResourceMetadata: "dynamic-multi", // Special marker for dynamic setup
@@ -122,7 +111,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 		// Priority 4: Well-known discovery (Atlassian scenario)
 		{
 			name:   "well-known discovery with issuer mismatch",
-			config: &RemoteAuthConfig{},
+			config: &Config{},
 			authInfo: &discovery.AuthInfo{
 				Type: "OAuth",
 			},
@@ -139,7 +128,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 		// Priority 5: URL-derived fallback
 		{
 			name:   "url derived fallback when well-known fails",
-			config: &RemoteAuthConfig{},
+			config: &Config{},
 			authInfo: &discovery.AuthInfo{
 				Type: "OAuth",
 			},
@@ -155,7 +144,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 		// Security test cases
 		{
 			name:   "http realm rejected for security",
-			config: &RemoteAuthConfig{},
+			config: &Config{},
 			authInfo: &discovery.AuthInfo{
 				Type:  "OAuth",
 				Realm: "http://insecure.example.com", // HTTP not HTTPS
@@ -172,7 +161,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 		},
 		{
 			name:   "localhost http realm allowed",
-			config: &RemoteAuthConfig{},
+			config: &Config{},
 			authInfo: &discovery.AuthInfo{
 				Type:  "OAuth",
 				Realm: "http://localhost:8080",
@@ -184,7 +173,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 		},
 		{
 			name:   "malformed resource metadata URL",
-			config: &RemoteAuthConfig{},
+			config: &Config{},
 			authInfo: &discovery.AuthInfo{
 				Type:             "OAuth",
 				ResourceMetadata: "not-a-url",
@@ -197,7 +186,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 		// Edge cases
 		{
 			name:   "empty auth info",
-			config: &RemoteAuthConfig{},
+			config: &Config{},
 			authInfo: &discovery.AuthInfo{
 				Type: "OAuth",
 			},
@@ -212,7 +201,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 		},
 		{
 			name:   "all discovery methods fail",
-			config: &RemoteAuthConfig{},
+			config: &Config{},
 			authInfo: &discovery.AuthInfo{
 				Type: "OAuth",
 			},
@@ -226,7 +215,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 		},
 		{
 			name:   "malformed remote URL",
-			config: &RemoteAuthConfig{},
+			config: &Config{},
 			authInfo: &discovery.AuthInfo{
 				Type: "OAuth",
 			},
@@ -236,7 +225,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 		},
 		{
 			name: "configured scopes used with discovered issuer",
-			config: &RemoteAuthConfig{
+			config: &Config{
 				Scopes: []string{"custom", "scopes"},
 			},
 			authInfo: &discovery.AuthInfo{
@@ -250,7 +239,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 		},
 		{
 			name:   "resource metadata with scopes",
-			config: &RemoteAuthConfig{},
+			config: &Config{},
 			authInfo: &discovery.AuthInfo{
 				Type:             "OAuth",
 				ResourceMetadata: "dynamic-scopes", // Special marker for dynamic setup
@@ -269,22 +258,9 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			// Convert to testCase for helper functions
-			tc := &testCase{
-				name:               tt.name,
-				config:             tt.config,
-				authInfo:           tt.authInfo,
-				remoteURL:          tt.remoteURL,
-				mockServers:        tt.mockServers,
-				expectedIssuer:     tt.expectedIssuer,
-				expectedScopes:     tt.expectedScopes,
-				expectedAuthServer: tt.expectedAuthServer,
-				expectError:        tt.expectError,
-				errorContains:      tt.errorContains,
-			}
 
-			// Process test servers using helper function
-			setup, authInfo, remoteURL, expectedIssuer := processTestServers(t, tc)
+			// Process test servers
+			setup, authInfo, remoteURL, expectedIssuer := processTestServers(t, &tt)
 			defer setup.cleanup()
 
 			// Update expected issuer from processing
@@ -292,7 +268,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 				tt.expectedIssuer = expectedIssuer
 			}
 
-			handler := &RemoteAuthHandler{
+			handler := &Handler{
 				config: tt.config,
 			}
 
@@ -402,8 +378,8 @@ func TestDiscoverIssuerAndScopes_Security(t *testing.T) {
 
 	t.Run("prevents issuer injection via realm", func(t *testing.T) {
 		t.Parallel()
-		handler := &RemoteAuthHandler{
-			config: &RemoteAuthConfig{},
+		handler := &Handler{
+			config: &Config{},
 		}
 
 		// Try to inject a malicious issuer via realm
@@ -422,8 +398,8 @@ func TestDiscoverIssuerAndScopes_Security(t *testing.T) {
 
 	t.Run("validates HTTPS for non-localhost", func(t *testing.T) {
 		t.Parallel()
-		handler := &RemoteAuthHandler{
-			config: &RemoteAuthConfig{},
+		handler := &Handler{
+			config: &Config{},
 		}
 
 		authInfo := &discovery.AuthInfo{
@@ -457,8 +433,8 @@ func TestDiscoverIssuerAndScopes_Security(t *testing.T) {
 		}))
 		defer maliciousServer.Close()
 
-		handler := &RemoteAuthHandler{
-			config: &RemoteAuthConfig{},
+		handler := &Handler{
+			config: &Config{},
 		}
 
 		authInfo := &discovery.AuthInfo{
@@ -486,8 +462,8 @@ func TestTryDiscoverFromWellKnown(t *testing.T) {
 		mockServer := createMockAuthServer(t, "") // Will use actual server URL
 		defer mockServer.Close()
 
-		handler := &RemoteAuthHandler{
-			config: &RemoteAuthConfig{},
+		handler := &Handler{
+			config: &Config{},
 		}
 
 		ctx := t.Context()
@@ -505,8 +481,8 @@ func TestTryDiscoverFromWellKnown(t *testing.T) {
 		mockServer := createMockAuthServer(t, "") // Will use actual server URL
 		defer mockServer.Close()
 
-		handler := &RemoteAuthHandler{
-			config: &RemoteAuthConfig{
+		handler := &Handler{
+			config: &Config{
 				Scopes: []string{"custom", "scopes"},
 			},
 		}
@@ -524,8 +500,8 @@ func TestTryDiscoverFromWellKnown(t *testing.T) {
 		mockServer := createMock404Server(t)
 		defer mockServer.Close()
 
-		handler := &RemoteAuthHandler{
-			config: &RemoteAuthConfig{},
+		handler := &Handler{
+			config: &Config{},
 		}
 
 		ctx := t.Context()
@@ -542,8 +518,8 @@ func TestDiscoveryPriorityChain(t *testing.T) {
 
 	t.Run("configured issuer takes highest priority", func(t *testing.T) {
 		t.Parallel()
-		handler := &RemoteAuthHandler{
-			config: &RemoteAuthConfig{
+		handler := &Handler{
+			config: &Config{
 				Issuer: "https://configured.example.com",
 				Scopes: []string{"custom"},
 			},
@@ -565,8 +541,8 @@ func TestDiscoveryPriorityChain(t *testing.T) {
 
 	t.Run("realm URL used when no configured issuer", func(t *testing.T) {
 		t.Parallel()
-		handler := &RemoteAuthHandler{
-			config: &RemoteAuthConfig{},
+		handler := &Handler{
+			config: &Config{},
 		}
 
 		authInfo := &discovery.AuthInfo{
@@ -583,8 +559,8 @@ func TestDiscoveryPriorityChain(t *testing.T) {
 
 	t.Run("non-URL realm falls through to URL derivation", func(t *testing.T) {
 		t.Parallel()
-		handler := &RemoteAuthHandler{
-			config: &RemoteAuthConfig{},
+		handler := &Handler{
+			config: &Config{},
 		}
 
 		authInfo := &discovery.AuthInfo{
@@ -602,8 +578,8 @@ func TestDiscoveryPriorityChain(t *testing.T) {
 
 	t.Run("empty auth info falls through to URL derivation", func(t *testing.T) {
 		t.Parallel()
-		handler := &RemoteAuthHandler{
-			config: &RemoteAuthConfig{},
+		handler := &Handler{
+			config: &Config{},
 		}
 
 		authInfo := &discovery.AuthInfo{

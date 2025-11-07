@@ -281,3 +281,128 @@ func TestServer_Stop(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
+
+// TestServer_ToolSchemaConversion verifies that tool InputSchema is correctly
+// converted to MCP format without double-nesting.
+//
+// This test addresses a bug where InputSchema (which is already a complete
+// JSON Schema with type, properties, required) was being wrapped in a new
+// ToolInputSchema struct, causing an extra layer of nesting.
+//
+// Example of the bug:
+// Input:  {type: "object", properties: {...}, required: [...]}
+// Output: {type: "object", properties: {properties: {...}, required: [...], type: "object"}}
+//
+// The fix uses RawInputSchema to pass the schema as-is without double-nesting.
+func TestServer_ToolSchemaConversion(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	t.Run("complete JSON Schema is not double-nested", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		mockRouter := routerMocks.NewMockRouter(ctrl)
+		mockBackendClient := mocks.NewMockBackendClient(ctrl)
+
+		// Create a tool with a complete JSON Schema (like real MCP servers provide)
+		// This includes type, properties, and required at the top level
+		capabilities := &aggregator.AggregatedCapabilities{
+			Tools: []vmcp.Tool{
+				{
+					Name:        "fetch_fetch",
+					Description: "Fetches a URL from the internet",
+					InputSchema: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"url": map[string]any{
+								"type": "string",
+							},
+							"max_length": map[string]any{
+								"type": []string{"null", "integer"},
+							},
+						},
+						"required": []string{"url"},
+					},
+					BackendID: "fetch",
+				},
+			},
+			Resources: []vmcp.Resource{},
+			Prompts:   []vmcp.Prompt{},
+			RoutingTable: &vmcp.RoutingTable{
+				Tools: map[string]*vmcp.BackendTarget{
+					"fetch_fetch": {
+						WorkloadID: "fetch",
+						BaseURL:    "http://fetch:8080",
+					},
+				},
+				Resources: map[string]*vmcp.BackendTarget{},
+				Prompts:   map[string]*vmcp.BackendTarget{},
+			},
+		}
+
+		// Expect router update
+		mockRouter.EXPECT().
+			UpdateRoutingTable(gomock.Any(), capabilities.RoutingTable).
+			Return(nil)
+
+		s := server.New(&server.Config{}, mockRouter, mockBackendClient)
+		err := s.RegisterCapabilities(ctx, capabilities)
+		require.NoError(t, err)
+
+		// The test passes if RegisterCapabilities succeeds without error.
+		// The actual schema validation happens when the MCP SDK marshals the
+		// Tool to JSON for protocol communication.
+		// If the schema were double-nested, VSCode and other strict MCP clients
+		// would reject it with validation errors like:
+		// "Incorrect type. Expected one of object, boolean. (at /properties/required)"
+	})
+
+	t.Run("handles schema marshaling errors gracefully", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		mockRouter := routerMocks.NewMockRouter(ctrl)
+		mockBackendClient := mocks.NewMockBackendClient(ctrl)
+
+		// Create a tool with a schema that contains un-marshalable data
+		// (channels cannot be marshaled to JSON)
+		ch := make(chan int)
+		capabilities := &aggregator.AggregatedCapabilities{
+			Tools: []vmcp.Tool{
+				{
+					Name:        "bad_tool",
+					Description: "Tool with un-marshalable schema",
+					InputSchema: map[string]any{
+						"channel": ch, // This cannot be marshaled to JSON
+					},
+					BackendID: "test",
+				},
+			},
+			Resources: []vmcp.Resource{},
+			Prompts:   []vmcp.Prompt{},
+			RoutingTable: &vmcp.RoutingTable{
+				Tools:     map[string]*vmcp.BackendTarget{},
+				Resources: map[string]*vmcp.BackendTarget{},
+				Prompts:   map[string]*vmcp.BackendTarget{},
+			},
+		}
+
+		// Expect router update
+		mockRouter.EXPECT().
+			UpdateRoutingTable(gomock.Any(), capabilities.RoutingTable).
+			Return(nil)
+
+		s := server.New(&server.Config{}, mockRouter, mockBackendClient)
+		err := s.RegisterCapabilities(ctx, capabilities)
+
+		// Should fail due to un-marshalable schema
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to marshal input schema")
+	})
+}

@@ -1,0 +1,27 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: test-vmcp-oidc
+  namespace: toolhive-system
+spec:
+  groupRef:
+    name: test-group-controller
+  incomingAuth:
+    type: oidc
+    oidcConfig:
+      type: inline
+      resourceUrl: http://test-vmcp-oidc.toolhive-system.svc.cluster.local:4483
+      inline:
+        issuer: https://auth.example.com
+        clientId: test-client-id
+        audience: vmcp-test
+        # Using ClientSecretRef to reference a Kubernetes Secret (secure approach)
+        clientSecretRef:
+          name: test-oidc-client-secret
+          key: clientSecret
+  outgoingAuth:
+    source: discovered
+  aggregation:
+    conflictResolution: prefix
+    conflictResolutionConfig:
+      prefixFormat: "{workload}_"

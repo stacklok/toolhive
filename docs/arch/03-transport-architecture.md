@@ -190,8 +190,8 @@ ToolHive uses two different proxy implementations:
 
 When stdio transport is selected, the proxy mode determines which HTTP protocol clients use to communicate:
 
-- **SSE Mode**: Default for backward compatibility, provides SSE endpoints for clients
-- **Streamable HTTP Mode**: Modern streaming protocol following MCP specification
+- **Streamable HTTP Mode**: Default mode, modern streaming protocol following MCP specification
+- **SSE Mode**: Legacy mode (deprecated), provides SSE endpoints for clients
 
 **Implementation:**
 - `pkg/runner/config.go` - ProxyMode configuration

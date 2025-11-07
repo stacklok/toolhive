@@ -8,6 +8,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -16,14 +17,23 @@ import (
 type cliBackendDiscoverer struct {
 	workloadsManager workloads.Manager
 	groupsManager    groups.Manager
+	authConfig       *config.OutgoingAuthConfig
 }
 
 // NewCLIBackendDiscoverer creates a new CLI-based backend discoverer.
 // It discovers workloads from Docker/Podman containers managed by ToolHive.
-func NewCLIBackendDiscoverer(workloadsManager workloads.Manager, groupsManager groups.Manager) BackendDiscoverer {
+//
+// The authConfig parameter configures authentication for discovered backends.
+// If nil, backends will have no authentication configured.
+func NewCLIBackendDiscoverer(
+	workloadsManager workloads.Manager,
+	groupsManager groups.Manager,
+	authConfig *config.OutgoingAuthConfig,
+) BackendDiscoverer {
 	return &cliBackendDiscoverer{
 		workloadsManager: workloadsManager,
 		groupsManager:    groupsManager,
+		authConfig:       authConfig,
 	}
 }
 
@@ -90,6 +100,14 @@ func (d *cliBackendDiscoverer) Discover(ctx context.Context, groupRef string) ([
 			TransportType: transportType,
 			HealthStatus:  healthStatus,
 			Metadata:      make(map[string]string),
+		}
+
+		// Apply authentication configuration if provided
+		authStrategy, authMetadata := d.authConfig.ResolveForBackend(name)
+		backend.AuthStrategy = authStrategy
+		backend.AuthMetadata = authMetadata
+		if authStrategy != "" {
+			logger.Debugf("Backend %s configured with auth strategy: %s", name, authStrategy)
 		}
 
 		// Copy user labels to metadata first

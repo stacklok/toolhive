@@ -17,6 +17,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth"
 )
 
 const (
@@ -44,14 +45,30 @@ type httpBackendClient struct {
 	// clientFactory creates MCP clients for backends.
 	// Abstracted as a function to enable testing with mock clients.
 	clientFactory func(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error)
+
+	// registry manages authentication strategies for outgoing requests to backend MCP servers.
+	// Must not be nil - use UnauthenticatedStrategy for no authentication.
+	registry auth.OutgoingAuthRegistry
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
 // This client supports streamable-HTTP and SSE transports.
-func NewHTTPBackendClient() vmcp.BackendClient {
-	return &httpBackendClient{
-		clientFactory: defaultClientFactory,
+//
+// The registry parameter manages authentication strategies for outgoing requests to backend MCP servers.
+// It must not be nil. To disable authentication, use a registry configured with the
+// "unauthenticated" strategy.
+//
+// Returns an error if registry is nil.
+func NewHTTPBackendClient(registry auth.OutgoingAuthRegistry) (vmcp.BackendClient, error) {
+	if registry == nil {
+		return nil, fmt.Errorf("registry cannot be nil; use UnauthenticatedStrategy for no authentication")
 	}
+
+	c := &httpBackendClient{
+		registry: registry,
+	}
+	c.clientFactory = c.defaultClientFactory
+	return c, nil
 }
 
 // roundTripperFunc is a function adapter for http.RoundTripper.
@@ -62,29 +79,103 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+// authRoundTripper is an http.RoundTripper that adds authentication to backend requests.
+// The authentication strategy and metadata are pre-resolved and validated at client creation time,
+// eliminating per-request lookups and validation overhead.
+type authRoundTripper struct {
+	base         http.RoundTripper
+	authStrategy auth.Strategy
+	authMetadata map[string]any
+	target       *vmcp.BackendTarget
+}
+
+// RoundTrip implements http.RoundTripper by adding authentication headers to requests.
+// The authentication strategy was pre-resolved and validated at client creation time,
+// so this method simply applies the authentication without any lookups or validation.
+func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Clone request to avoid modifying the original
+	reqClone := req.Clone(req.Context())
+
+	// Apply pre-resolved authentication strategy
+	if err := a.authStrategy.Authenticate(reqClone.Context(), reqClone, a.authMetadata); err != nil {
+		return nil, fmt.Errorf("authentication failed for backend %s: %w", a.target.WorkloadID, err)
+	}
+
+	logger.Debugf("Applied authentication strategy %q to backend %s", a.authStrategy.Name(), a.target.WorkloadID)
+
+	return a.base.RoundTrip(reqClone)
+}
+
+// resolveAuthStrategy resolves the authentication strategy for a backend target.
+// It handles defaulting to "unauthenticated" when no strategy is specified.
+// This method should be called once at client creation time to enable fail-fast
+// behavior for invalid authentication configurations.
+func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (auth.Strategy, error) {
+	strategyName := target.AuthStrategy
+
+	// Default to unauthenticated if not specified
+	if strategyName == "" {
+		strategyName = "unauthenticated"
+	}
+
+	// Resolve strategy from registry
+	strategy, err := h.registry.GetStrategy(strategyName)
+	if err != nil {
+		return nil, fmt.Errorf("authentication strategy %q not found: %w", strategyName, err)
+	}
+
+	return strategy, nil
+}
+
 // defaultClientFactory creates mark3labs MCP clients for different transport types.
-func defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
-	// Create HTTP client with response size limits for DoS protection
+func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
+	// Build transport chain: size limit → authentication → HTTP
+	var baseTransport = http.DefaultTransport
+
+	// Resolve authentication strategy ONCE at client creation time
+	authStrategy, err := h.resolveAuthStrategy(target)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve authentication for backend %s: %w",
+			target.WorkloadID, err)
+	}
+
+	// Validate metadata ONCE at client creation time
+	if err := authStrategy.Validate(target.AuthMetadata); err != nil {
+		return nil, fmt.Errorf("invalid authentication configuration for backend %s: %w",
+			target.WorkloadID, err)
+	}
+
+	// Add authentication layer with pre-resolved strategy
+	baseTransport = &authRoundTripper{
+		base:         baseTransport,
+		authStrategy: authStrategy,
+		authMetadata: target.AuthMetadata,
+		target:       target,
+	}
+
+	// Add size limit layer for DoS protection
+	sizeLimitedTransport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		resp, err := baseTransport.RoundTrip(req)
+		if err != nil {
+			return nil, err
+		}
+		// Wrap response body with size limit
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{
+			Reader: io.LimitReader(resp.Body, maxResponseSize),
+			Closer: resp.Body,
+		}
+		return resp, nil
+	})
+
+	// Create HTTP client with configured transport chain
 	httpClient := &http.Client{
-		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			resp, err := http.DefaultTransport.RoundTrip(req)
-			if err != nil {
-				return nil, err
-			}
-			// Wrap response body with size limit
-			resp.Body = struct {
-				io.Reader
-				io.Closer
-			}{
-				Reader: io.LimitReader(resp.Body, maxResponseSize),
-				Closer: resp.Body,
-			}
-			return resp, nil
-		}),
+		Transport: sizeLimitedTransport,
 	}
 
 	var c *client.Client
-	var err error
 
 	switch target.TransportType {
 	case "streamable-http", "streamable":
@@ -93,8 +184,6 @@ func defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*cli
 			transport.WithHTTPTimeout(0),
 			transport.WithContinuousListening(),
 			transport.WithHTTPBasicClient(httpClient),
-			// TODO: Add authentication header injection via WithHTTPHeaderFunc
-			// This will be implemented when we add OutgoingAuthenticator support
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create streamable-http client: %w", err)
@@ -118,18 +207,15 @@ func defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*cli
 		return nil, fmt.Errorf("failed to start client connection: %w", err)
 	}
 
-	// Initialize the MCP connection
-	if err := initializeClient(ctx, c); err != nil {
-		_ = c.Close()
-		return nil, fmt.Errorf("failed to initialize MCP connection: %w", err)
-	}
-
+	// Note: Initialization is deferred to the caller (e.g., ListCapabilities)
+	// so that ServerCapabilities can be captured and used for conditional querying
 	return c, nil
 }
 
-// initializeClient performs MCP protocol initialization handshake.
-func initializeClient(ctx context.Context, c *client.Client) error {
-	_, err := c.Initialize(ctx, mcp.InitializeRequest{
+// initializeClient performs MCP protocol initialization handshake and returns server capabilities.
+// This allows the caller to determine which optional features the server supports.
+func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabilities, error) {
+	result, err := c.Initialize(ctx, mcp.InitializeRequest{
 		Params: mcp.InitializeParams{
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 			ClientInfo: mcp.Implementation{
@@ -146,37 +232,88 @@ func initializeClient(ctx context.Context, c *client.Client) error {
 			},
 		},
 	})
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return &result.Capabilities, nil
+}
+
+// queryTools queries tools from a backend if the server advertises tool support.
+func queryTools(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListToolsResult, error) {
+	if supported {
+		result, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list tools from backend %s: %w", backendID, err)
+		}
+		return result, nil
+	}
+	logger.Debugf("Backend %s does not advertise tools capability, skipping tools query", backendID)
+	return &mcp.ListToolsResult{Tools: []mcp.Tool{}}, nil
+}
+
+// queryResources queries resources from a backend if the server advertises resource support.
+func queryResources(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListResourcesResult, error) {
+	if supported {
+		result, err := c.ListResources(ctx, mcp.ListResourcesRequest{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list resources from backend %s: %w", backendID, err)
+		}
+		return result, nil
+	}
+	logger.Debugf("Backend %s does not advertise resources capability, skipping resources query", backendID)
+	return &mcp.ListResourcesResult{Resources: []mcp.Resource{}}, nil
+}
+
+// queryPrompts queries prompts from a backend if the server advertises prompt support.
+func queryPrompts(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListPromptsResult, error) {
+	if supported {
+		result, err := c.ListPrompts(ctx, mcp.ListPromptsRequest{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to list prompts from backend %s: %w", backendID, err)
+		}
+		return result, nil
+	}
+	logger.Debugf("Backend %s does not advertise prompts capability, skipping prompts query", backendID)
+	return &mcp.ListPromptsResult{Prompts: []mcp.Prompt{}}, nil
 }
 
 // ListCapabilities queries a backend for its MCP capabilities.
 // Returns tools, resources, and prompts exposed by the backend.
+// Only queries capabilities that the server advertises during initialization.
 func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
 	logger.Debugf("Querying capabilities from backend %s (%s)", target.WorkloadName, target.BaseURL)
 
-	// Create a client for this backend
+	// Create a client for this backend (not yet initialized)
 	c, err := h.clientFactory(ctx, target)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client for backend %s: %w", target.WorkloadID, err)
 	}
 	defer c.Close()
 
-	// Query tools
-	toolsResp, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+	// Initialize the client and get server capabilities
+	serverCaps, err := initializeClient(ctx, c)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list tools from backend %s: %w", target.WorkloadID, err)
+		return nil, fmt.Errorf("failed to initialize client for backend %s: %w", target.WorkloadID, err)
 	}
 
-	// Query resources
-	resourcesResp, err := c.ListResources(ctx, mcp.ListResourcesRequest{})
+	logger.Debugf("Backend %s capabilities: tools=%v, resources=%v, prompts=%v",
+		target.WorkloadID, serverCaps.Tools != nil, serverCaps.Resources != nil, serverCaps.Prompts != nil)
+
+	// Query each capability type based on server advertisement
+	// Check for nil BEFORE passing to functions to avoid interface{} nil pointer issues
+	toolsResp, err := queryTools(ctx, c, serverCaps.Tools != nil, target.WorkloadID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list resources from backend %s: %w", target.WorkloadID, err)
+		return nil, err
 	}
 
-	// Query prompts
-	promptsResp, err := c.ListPrompts(ctx, mcp.ListPromptsRequest{})
+	resourcesResp, err := queryResources(ctx, c, serverCaps.Resources != nil, target.WorkloadID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list prompts from backend %s: %w", target.WorkloadID, err)
+		return nil, err
+	}
+
+	promptsResp, err := queryPrompts(ctx, c, serverCaps.Prompts != nil, target.WorkloadID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Convert MCP types to vmcp types
@@ -266,6 +403,11 @@ func (h *httpBackendClient) CallTool(
 	}
 	defer c.Close()
 
+	// Initialize the client
+	if _, err := initializeClient(ctx, c); err != nil {
+		return nil, fmt.Errorf("failed to initialize client for backend %s: %w", target.WorkloadID, err)
+	}
+
 	// Call the tool
 	result, err := c.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
@@ -337,6 +479,11 @@ func (h *httpBackendClient) ReadResource(ctx context.Context, target *vmcp.Backe
 	}
 	defer c.Close()
 
+	// Initialize the client
+	if _, err := initializeClient(ctx, c); err != nil {
+		return nil, fmt.Errorf("failed to initialize client for backend %s: %w", target.WorkloadID, err)
+	}
+
 	// Read the resource
 	result, err := c.ReadResource(ctx, mcp.ReadResourceRequest{
 		Params: mcp.ReadResourceParams{
@@ -386,6 +533,11 @@ func (h *httpBackendClient) GetPrompt(
 		return "", fmt.Errorf("failed to create client for backend %s: %w", target.WorkloadID, err)
 	}
 	defer c.Close()
+
+	// Initialize the client
+	if _, err := initializeClient(ctx, c); err != nil {
+		return "", fmt.Errorf("failed to initialize client for backend %s: %w", target.WorkloadID, err)
+	}
 
 	// Get the prompt
 	// Convert map[string]any to map[string]string

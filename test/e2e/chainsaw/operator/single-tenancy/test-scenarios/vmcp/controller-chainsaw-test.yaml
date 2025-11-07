@@ -1,0 +1,325 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: vmcp-controller-integration
+spec:
+  description: Test VirtualMCPServer controller reconciliation, resource creation, and status management
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+    exec: 300s
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+
+  - name: create-backend-servers
+    description: Create MCPServer backends that will be discovered
+    try:
+    - apply:
+        file: mcpserver-backend-1.yaml
+    - apply:
+        file: mcpserver-backend-2.yaml
+    - assert:
+        file: mcpserver-backend-1.yaml
+    - assert:
+        file: mcpserver-backend-2.yaml
+
+  - name: create-mcpgroup
+    description: Create MCPGroup that references the backend servers
+    try:
+    - apply:
+        file: mcpgroup-controller.yaml
+    - assert:
+        file: mcpgroup-controller.yaml
+
+  - name: create-virtualmcpserver
+    description: Create VirtualMCPServer resource
+    try:
+    - apply:
+        file: vmcp-controller.yaml
+    - assert:
+        file: vmcp-controller.yaml
+
+  - name: verify-controller-creates-resources
+    description: Verify controller creates Deployment, Service, and ConfigMap
+    try:
+    - assert:
+        file: assert-vmcp-deployment.yaml
+    - assert:
+        file: assert-vmcp-service.yaml
+    - assert:
+        file: assert-vmcp-configmap.yaml
+
+  - name: verify-rbac-resources
+    description: Verify controller creates RBAC resources
+    try:
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying RBAC resources created by controller..."
+
+          # Check ServiceAccount
+          if kubectl get serviceaccount test-vmcp-controller -n toolhive-system 2>/dev/null; then
+            echo "✓ ServiceAccount created"
+          else
+            echo "✗ ServiceAccount not found"
+            exit 1
+          fi
+
+          # Check Role
+          if kubectl get role test-vmcp-controller -n toolhive-system 2>/dev/null; then
+            echo "✓ Role created"
+          else
+            echo "✗ Role not found"
+            exit 1
+          fi
+
+          # Check RoleBinding
+          if kubectl get rolebinding test-vmcp-controller -n toolhive-system 2>/dev/null; then
+            echo "✓ RoleBinding created"
+          else
+            echo "✗ RoleBinding not found"
+            exit 1
+          fi
+
+          echo "✅ All RBAC resources created successfully"
+
+  - name: verify-status-conditions
+    description: Verify VirtualMCPServer status is updated with conditions
+    try:
+    - assert:
+        file: assert-vmcp-status-ready.yaml
+
+  - name: verify-backend-discovery
+    description: Verify backends are discovered and tracked in status
+    try:
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying backend discovery in VirtualMCPServer status..."
+
+          # Get discovered backends count
+          BACKEND_COUNT=$(kubectl get virtualmcpserver test-vmcp-controller -n toolhive-system -o jsonpath='{.status.discoveredBackends}' | jq 'length' 2>/dev/null || echo "0")
+
+          if [ "$BACKEND_COUNT" -ge 2 ]; then
+            echo "✓ Discovered $BACKEND_COUNT backends"
+          else
+            echo "✗ Expected at least 2 backends, found $BACKEND_COUNT"
+            kubectl get virtualmcpserver test-vmcp-controller -n toolhive-system -o yaml
+            exit 1
+          fi
+
+          # Check that backends are listed
+          BACKENDS=$(kubectl get virtualmcpserver test-vmcp-controller -n toolhive-system -o jsonpath='{.status.discoveredBackends[*].name}' 2>/dev/null || echo "")
+          echo "  Backends: $BACKENDS"
+
+          echo "✅ Backend discovery verified"
+
+  - name: verify-configmap-content
+    description: Verify ConfigMap contains valid vmcp configuration
+    try:
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying ConfigMap contains valid vmcp configuration..."
+
+          # Get ConfigMap config.yaml content
+          CONFIG=$(kubectl get configmap test-vmcp-controller-config -n toolhive-system -o jsonpath='{.data.config\.yaml}' 2>/dev/null || echo "")
+
+          if [ -z "$CONFIG" ]; then
+            echo "✗ ConfigMap config.yaml is empty"
+            kubectl get configmap test-vmcp-controller-config -n toolhive-system -o yaml
+            exit 1
+          fi
+
+          echo "✓ ConfigMap config.yaml has content"
+          echo "$CONFIG" | head -20
+
+          # Verify it's valid YAML
+          if echo "$CONFIG" | yq eval '.' - > /dev/null 2>&1; then
+            echo "✓ Config is valid YAML"
+          else
+            echo "✗ Config is not valid YAML"
+            exit 1
+          fi
+
+          echo "✅ ConfigMap content verified"
+
+  - name: verify-deployment-checksum
+    description: Verify Deployment has config checksum annotation
+    try:
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying Deployment has config checksum annotation..."
+
+          # Get checksum annotation
+          CHECKSUM=$(kubectl get deployment test-vmcp-controller -n toolhive-system -o jsonpath='{.spec.template.metadata.annotations.vmcp\.toolhive\.stacklok\.dev/config-checksum}' 2>/dev/null || echo "")
+
+          if [ -n "$CHECKSUM" ]; then
+            echo "✓ Deployment has config checksum: $CHECKSUM"
+          else
+            echo "✗ Deployment missing config checksum annotation"
+            kubectl get deployment test-vmcp-controller -n toolhive-system -o yaml
+            exit 1
+          fi
+
+          echo "✅ Deployment checksum annotation verified"
+
+  - name: test-config-update-triggers-rollout
+    description: Test that updating VirtualMCPServer triggers config update and pod rollout
+    try:
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Getting current config checksum..."
+          OLD_CHECKSUM=$(kubectl get deployment test-vmcp-controller -n toolhive-system -o jsonpath='{.spec.template.metadata.annotations.vmcp\.toolhive\.stacklok\.dev/config-checksum}' 2>/dev/null || echo "")
+          echo "  Old checksum: $OLD_CHECKSUM"
+
+    - patch:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: VirtualMCPServer
+          metadata:
+            name: test-vmcp-controller
+            namespace: toolhive-system
+          spec:
+            operational:
+              logLevel: debug
+
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Waiting for config checksum to change..."
+
+          OLD_CHECKSUM=$(kubectl get deployment test-vmcp-controller -n toolhive-system -o jsonpath='{.spec.template.metadata.annotations.vmcp\.toolhive\.stacklok\.dev/config-checksum}' 2>/dev/null || echo "")
+
+          # Wait up to 30 seconds for checksum to change
+          for i in {1..30}; do
+            sleep 1
+            NEW_CHECKSUM=$(kubectl get deployment test-vmcp-controller -n toolhive-system -o jsonpath='{.spec.template.metadata.annotations.vmcp\.toolhive\.stacklok\.dev/config-checksum}' 2>/dev/null || echo "")
+
+            if [ "$NEW_CHECKSUM" != "$OLD_CHECKSUM" ] && [ -n "$NEW_CHECKSUM" ]; then
+              echo "✓ Config checksum changed: $NEW_CHECKSUM"
+              echo "✅ Config update triggered deployment rollout"
+              exit 0
+            fi
+          done
+
+          echo "✗ Config checksum did not change after update"
+          exit 1
+
+  - name: verify-status-phase-transitions
+    description: Verify VirtualMCPServer phase is set correctly
+    try:
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying VirtualMCPServer phase..."
+
+          PHASE=$(kubectl get virtualmcpserver test-vmcp-controller -n toolhive-system -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+
+          if [ "$PHASE" = "Running" ]; then
+            echo "✓ VirtualMCPServer phase is Running"
+          elif [ "$PHASE" = "Pending" ]; then
+            echo "⚠ VirtualMCPServer phase is Pending (may need more time)"
+            # This is acceptable in test environment
+          else
+            echo "✗ Unexpected phase: $PHASE"
+            kubectl get virtualmcpserver test-vmcp-controller -n toolhive-system -o yaml
+            exit 1
+          fi
+
+          echo "✅ Phase verification complete"
+
+  - name: test-oidc-client-secret-security
+    description: Verify ClientSecret is securely handled via Kubernetes Secret, not stored in ConfigMap
+    try:
+    - apply:
+        file: oidc-client-secret.yaml
+    - assert:
+        file: oidc-client-secret.yaml
+
+    - apply:
+        file: vmcp-with-oidc.yaml
+    - assert:
+        file: vmcp-with-oidc.yaml
+
+    - assert:
+        file: assert-oidc-security.yaml
+
+    - script:
+        content: |
+          #!/bin/bash
+          set -e
+
+          echo "Verifying OIDC ClientSecret security implementation..."
+
+          # 1. Verify the Secret exists
+          echo "1. Checking Secret exists..."
+          if kubectl get secret test-oidc-client-secret -n toolhive-system &>/dev/null; then
+            echo "✓ Secret test-oidc-client-secret exists"
+          else
+            echo "✗ Secret not found"
+            exit 1
+          fi
+
+          # 2. Verify ConfigMap does NOT contain the secret value
+          echo "2. Verifying ConfigMap security..."
+          CONFIG_CONTENT=$(kubectl get configmap test-vmcp-oidc-vmcp-config -n toolhive-system -o jsonpath='{.data.config\.yaml}' 2>/dev/null || echo "")
+
+          if [ -z "$CONFIG_CONTENT" ]; then
+            echo "✗ ConfigMap not found"
+            exit 1
+          fi
+
+          # Check that literal secret value is NOT in ConfigMap
+          if echo "$CONFIG_CONTENT" | grep -q "super-secret-value-123"; then
+            echo "✗ SECURITY ISSUE: Literal secret value found in ConfigMap!"
+            echo "$CONFIG_CONTENT"
+            exit 1
+          fi
+          echo "✓ ConfigMap does not contain literal secret value"
+
+          # Check that only env var name is stored
+          if echo "$CONFIG_CONTENT" | grep -q "client_secret_env.*VMCP_OIDC_CLIENT_SECRET"; then
+            echo "✓ ConfigMap contains only environment variable name"
+          else
+            echo "✗ ConfigMap missing client_secret_env field"
+            echo "$CONFIG_CONTENT"
+            exit 1
+          fi
+
+          # 3. Verify Deployment mounts Secret as environment variable
+          echo "3. Verifying Deployment env var mounting..."
+          ENV_VAR_NAME=$(kubectl get deployment test-vmcp-oidc -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="VMCP_OIDC_CLIENT_SECRET")].name}' 2>/dev/null || echo "")
+
+          if [ "$ENV_VAR_NAME" = "VMCP_OIDC_CLIENT_SECRET" ]; then
+            echo "✓ Deployment has VMCP_OIDC_CLIENT_SECRET env var"
+          else
+            echo "✗ Deployment missing VMCP_OIDC_CLIENT_SECRET env var"
+            kubectl get deployment test-vmcp-oidc -n toolhive-system -o yaml
+            exit 1
+          fi
+
+          # Verify it's mounted from Secret
+          SECRET_NAME=$(kubectl get deployment test-vmcp-oidc -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="VMCP_OIDC_CLIENT_SECRET")].valueFrom.secretKeyRef.name}' 2>/dev/null || echo "")
+          SECRET_KEY=$(kubectl get deployment test-vmcp-oidc -n toolhive-system -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="VMCP_OIDC_CLIENT_SECRET")].valueFrom.secretKeyRef.key}' 2>/dev/null || echo "")
+
+          if [ "$SECRET_NAME" = "test-oidc-client-secret" ] && [ "$SECRET_KEY" = "clientSecret" ]; then
+            echo "✓ Env var correctly references Secret (name: $SECRET_NAME, key: $SECRET_KEY)"
+          else
+            echo "✗ Env var not correctly mounted from Secret"
+            echo "  Found: name=$SECRET_NAME, key=$SECRET_KEY"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ OIDC ClientSecret security verified:"
+          echo "   - Secret stored in Kubernetes Secret (not ConfigMap)"
+          echo "   - ConfigMap contains only env var name"
+          echo "   - Deployment mounts Secret as environment variable"

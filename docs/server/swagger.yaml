@@ -687,7 +687,7 @@ components:
         predicate_type:
           type: string
       type: object
-    runner.RemoteAuthConfig:
+    remote.Config:
       description: RemoteAuthConfig contains OAuth configuration for remote MCP servers
       properties:
         authorize_url:
@@ -827,7 +827,7 @@ components:
         proxy_mode:
           $ref: '#/components/schemas/types.ProxyMode'
         remote_auth_config:
-          $ref: '#/components/schemas/runner.RemoteAuthConfig'
+          $ref: '#/components/schemas/remote.Config'
         remote_url:
           description: RemoteURL is the URL of the remote MCP server (if running remotely)
           type: string

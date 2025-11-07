@@ -13,6 +13,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -407,7 +408,7 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 	}
 
 	// Create remote authentication handler
-	authHandler := NewRemoteAuthHandler(r.Config.RemoteAuthConfig)
+	authHandler := remote.NewHandler(r.Config.RemoteAuthConfig)
 
 	// Perform authentication
 	tokenSource, err := authHandler.Authenticate(ctx, r.Config.RemoteURL)

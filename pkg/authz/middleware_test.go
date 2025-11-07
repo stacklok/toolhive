@@ -2,7 +2,6 @@ package authz
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -226,7 +225,8 @@ func TestMiddleware(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 
 			// Add claims to the request context
-			req = req.WithContext(context.WithValue(req.Context(), auth.ClaimsContextKey{}, tc.claims))
+			identity := &auth.Identity{Subject: "test-user", Claims: tc.claims}
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
 			// Create a response recorder
 			rr := httptest.NewRecorder()
@@ -629,7 +629,12 @@ func TestMiddlewareToolsListTestkit(t *testing.T) {
 			opts = append(opts, testkit.WithMiddlewares(
 				func(h http.Handler) http.Handler {
 					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						r = r.WithContext(context.WithValue(r.Context(), auth.ClaimsContextKey{}, claims))
+						identity := &auth.Identity{
+							Subject: claims["sub"].(string),
+							Name:    claims["name"].(string),
+							Claims:  claims,
+						}
+						r = r.WithContext(auth.WithIdentity(r.Context(), identity))
 						h.ServeHTTP(w, r)
 					})
 				},
@@ -794,7 +799,12 @@ func TestMiddlewareToolsCallTestkit(t *testing.T) {
 			opts = append(opts, testkit.WithMiddlewares(
 				func(h http.Handler) http.Handler {
 					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						r = r.WithContext(context.WithValue(r.Context(), auth.ClaimsContextKey{}, claims))
+						identity := &auth.Identity{
+							Subject: claims["sub"].(string),
+							Name:    claims["name"].(string),
+							Claims:  claims,
+						}
+						r = r.WithContext(auth.WithIdentity(r.Context(), identity))
 						h.ServeHTTP(w, r)
 					})
 				},

@@ -106,6 +106,7 @@ rules:
   - mcpremoteproxies
   - mcpservers
   - mcptoolconfigs
+  - virtualmcpservers
   verbs:
   - create
   - delete
@@ -133,7 +134,16 @@ rules:
   - mcpremoteproxies/status
   - mcpservers/status
   - mcptoolconfigs/status
+  - virtualmcpservers/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - virtualmcpcompositetooldefinitions
+  verbs:
+  - get
+  - list
+  - watch

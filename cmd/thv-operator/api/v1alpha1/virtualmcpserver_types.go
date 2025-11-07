@@ -42,6 +42,12 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	Operational *OperationalConfig `json:"operational,omitempty"`
 
+	// ServiceType specifies the Kubernetes service type for the Virtual MCP server
+	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
+	// +kubebuilder:default=ClusterIP
+	// +optional
+	ServiceType string `json:"serviceType,omitempty"`
+
 	// PodTemplateSpec defines the pod template to use for the Virtual MCP server
 	// This allows for customizing the pod configuration beyond what is provided by the other fields.
 	// Note that to modify the specific container the Virtual MCP server runs in, you must specify
@@ -62,6 +68,11 @@ type GroupRef struct {
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
 type IncomingAuthConfig struct {
+	// Type defines the authentication type: anonymous, local, or oidc
+	// +kubebuilder:validation:Enum=anonymous;local;oidc
+	// +optional
+	Type string `json:"type,omitempty"`
+
 	// OIDCConfig defines OIDC authentication configuration
 	// Reuses MCPServer OIDC patterns
 	// +optional
@@ -426,14 +437,6 @@ type VirtualMCPServerStatus struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// DiscoveredBackends lists discovered backend configurations when source=discovered
-	// +optional
-	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
-
-	// Capabilities summarizes aggregated capabilities from all backends
-	// +optional
-	Capabilities *CapabilitiesSummary `json:"capabilities,omitempty"`
-
 	// ObservedGeneration is the most recent generation observed for this VirtualMCPServer
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -450,54 +453,6 @@ type VirtualMCPServerStatus struct {
 	// URL is the URL where the Virtual MCP server can be accessed
 	// +optional
 	URL string `json:"url,omitempty"`
-}
-
-// DiscoveredBackend represents a discovered backend MCPServer
-type DiscoveredBackend struct {
-	// Name is the name of the backend MCPServer
-	// +kubebuilder:validation:Required
-	Name string `json:"name"`
-
-	// AuthConfigRef is the name of the discovered MCPExternalAuthConfig
-	// Empty if backend has no external auth config
-	// +optional
-	AuthConfigRef string `json:"authConfigRef,omitempty"`
-
-	// AuthType is the type of authentication configured
-	// +optional
-	AuthType string `json:"authType,omitempty"`
-
-	// Status is the current status of the backend
-	// +kubebuilder:validation:Enum=ready;degraded;unavailable
-	// +optional
-	Status string `json:"status,omitempty"`
-
-	// LastHealthCheck is the timestamp of the last health check
-	// +optional
-	LastHealthCheck *metav1.Time `json:"lastHealthCheck,omitempty"`
-
-	// URL is the URL of the backend MCPServer
-	// +optional
-	URL string `json:"url,omitempty"`
-}
-
-// CapabilitiesSummary summarizes aggregated capabilities
-type CapabilitiesSummary struct {
-	// ToolCount is the total number of tools exposed
-	// +optional
-	ToolCount int `json:"toolCount,omitempty"`
-
-	// ResourceCount is the total number of resources exposed
-	// +optional
-	ResourceCount int `json:"resourceCount,omitempty"`
-
-	// PromptCount is the total number of prompts exposed
-	// +optional
-	PromptCount int `json:"promptCount,omitempty"`
-
-	// CompositeToolCount is the number of composite tools defined
-	// +optional
-	CompositeToolCount int `json:"compositeToolCount,omitempty"`
 }
 
 // VirtualMCPServerPhase represents the lifecycle phase of a VirtualMCPServer
@@ -524,35 +479,17 @@ const (
 	// ConditionTypeVirtualMCPServerReady indicates whether the VirtualMCPServer is ready
 	ConditionTypeVirtualMCPServerReady = "Ready"
 
-	// ConditionTypeBackendsDiscovered indicates whether backends have been discovered
-	ConditionTypeBackendsDiscovered = "BackendsDiscovered"
-
 	// ConditionTypeVirtualMCPServerGroupRefValidated indicates whether the GroupRef is valid
 	ConditionTypeVirtualMCPServerGroupRefValidated = "GroupRefValidated"
 )
 
 // Condition reasons for VirtualMCPServer
 const (
-	// ConditionReasonAllBackendsReady indicates all backends are ready
-	ConditionReasonAllBackendsReady = "AllBackendsReady"
-
-	// ConditionReasonSomeBackendsUnavailable indicates some backends are unavailable
-	ConditionReasonSomeBackendsUnavailable = "SomeBackendsUnavailable"
-
-	// ConditionReasonNoBackends indicates no backends were discovered
-	ConditionReasonNoBackends = "NoBackends"
-
 	// ConditionReasonIncomingAuthValid indicates incoming auth is valid
 	ConditionReasonIncomingAuthValid = "IncomingAuthValid"
 
 	// ConditionReasonIncomingAuthInvalid indicates incoming auth is invalid
 	ConditionReasonIncomingAuthInvalid = "IncomingAuthInvalid"
-
-	// ConditionReasonDiscoveryComplete indicates backend discovery is complete
-	ConditionReasonDiscoveryComplete = "DiscoveryComplete"
-
-	// ConditionReasonDiscoveryFailed indicates backend discovery failed
-	ConditionReasonDiscoveryFailed = "DiscoveryFailed"
 
 	// ConditionReasonGroupRefValid indicates the GroupRef is valid
 	ConditionReasonVirtualMCPServerGroupRefValid = "GroupRefValid"
@@ -604,8 +541,6 @@ const (
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=vmcp;virtualmcp
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="The phase of the VirtualMCPServer"
-//+kubebuilder:printcolumn:name="Tools",type="integer",JSONPath=".status.capabilities.toolCount",description="Total tools"
-//+kubebuilder:printcolumn:name="Backends",type="integer",JSONPath=".status.discoveredBackends[*]",description="Backends"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url",description="Virtual MCP server URL"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Age"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"

@@ -20,7 +20,7 @@ func generateUniqueAuditServerName(prefix string) string {
 	return fmt.Sprintf("%s-%d-%d-%d", prefix, os.Getpid(), time.Now().UnixNano(), GinkgoRandomSeed())
 }
 
-var _ = Describe("Audit Middleware E2E", Label("middleware", "audit", "sse", "e2e"), Serial, func() {
+var _ = Describe("Audit Middleware E2E", Label("middleware", "audit", "streamable-http", "e2e"), Serial, func() {
 	var (
 		config          *e2e.TestConfig
 		mcpServerName   string
@@ -402,7 +402,7 @@ func startMCPServerWithAuditConfig(config *e2e.TestConfig, workloadName, mcpServ
 	args := []string{
 		"run",
 		"--name", workloadName,
-		"--transport", "sse", // Use SSE transport for HTTP-based testing
+		"--transport", "streamable-http", // Use streamable-http transport (default)
 		"--audit-config", auditConfigPath,
 		mcpServerName,
 	}
@@ -428,7 +428,7 @@ func startMCPServerWithEnableAuditFlag(config *e2e.TestConfig, workloadName, mcp
 	args := []string{
 		"run",
 		"--name", workloadName,
-		"--transport", "sse", // Use SSE transport for HTTP-based testing
+		"--transport", "streamable-http", // Use streamable-http transport (default)
 		"--enable-audit",
 		mcpServerName,
 	}
@@ -454,8 +454,8 @@ func makeHTTPMCPRequest(serverURL string, request map[string]any) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Create MCP client for SSE transport
-	mcpClient, err := e2e.NewMCPClientForSSE(&e2e.TestConfig{}, serverURL)
+	// Create MCP client for streamable-http transport
+	mcpClient, err := e2e.NewMCPClientForStreamableHTTP(&e2e.TestConfig{}, serverURL)
 	Expect(err).ToNot(HaveOccurred())
 	defer mcpClient.Close()
 

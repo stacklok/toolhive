@@ -40,6 +40,22 @@ func (m *MockProvider) EXPECT() *MockProviderMockRecorder {
 	return m.recorder
 }
 
+// GetCACert mocks base method.
+func (m *MockProvider) GetCACert() (string, bool, bool) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetCACert")
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(bool)
+	return ret0, ret1, ret2
+}
+
+// GetCACert indicates an expected call of GetCACert.
+func (mr *MockProviderMockRecorder) GetCACert() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetCACert", reflect.TypeOf((*MockProvider)(nil).GetCACert))
+}
+
 // GetConfig mocks base method.
 func (m *MockProvider) GetConfig() *config.Config {
 	m.ctrl.T.Helper()
@@ -86,6 +102,20 @@ func (mr *MockProviderMockRecorder) LoadOrCreateConfig() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadOrCreateConfig", reflect.TypeOf((*MockProvider)(nil).LoadOrCreateConfig))
 }
 
+// SetCACert mocks base method.
+func (m *MockProvider) SetCACert(certPath string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetCACert", certPath)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetCACert indicates an expected call of SetCACert.
+func (mr *MockProviderMockRecorder) SetCACert(certPath any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetCACert", reflect.TypeOf((*MockProvider)(nil).SetCACert), certPath)
+}
+
 // SetRegistryFile mocks base method.
 func (m *MockProvider) SetRegistryFile(registryPath string) error {
 	m.ctrl.T.Helper()
@@ -112,6 +142,20 @@ func (m *MockProvider) SetRegistryURL(registryURL string, allowPrivateRegistryIp
 func (mr *MockProviderMockRecorder) SetRegistryURL(registryURL, allowPrivateRegistryIp any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetRegistryURL", reflect.TypeOf((*MockProvider)(nil).SetRegistryURL), registryURL, allowPrivateRegistryIp)
+}
+
+// UnsetCACert mocks base method.
+func (m *MockProvider) UnsetCACert() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UnsetCACert")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UnsetCACert indicates an expected call of UnsetCACert.
+func (mr *MockProviderMockRecorder) UnsetCACert() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnsetCACert", reflect.TypeOf((*MockProvider)(nil).UnsetCACert))
 }
 
 // UnsetRegistry mocks base method.

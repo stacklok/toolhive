@@ -1,7 +1,6 @@
 package tokenexchange
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -310,7 +309,8 @@ func TestCreateTokenExchangeMiddleware_Success(t *testing.T) {
 				"sub": "user123",
 				"aud": "test-audience",
 			}
-			ctx := context.WithValue(req.Context(), auth.ClaimsContextKey{}, claims)
+			identity := &auth.Identity{Subject: claims["sub"].(string), Claims: claims}
+			ctx := auth.WithIdentity(req.Context(), identity)
 			req = req.WithContext(ctx)
 
 			// Execute middleware
@@ -347,7 +347,8 @@ func TestCreateTokenExchangeMiddleware_PassThrough(t *testing.T) {
 			name: "no Authorization header",
 			setupReq: func(req *http.Request) *http.Request {
 				claims := jwt.MapClaims{"sub": "user123"}
-				ctx := context.WithValue(req.Context(), auth.ClaimsContextKey{}, claims)
+				identity := &auth.Identity{Subject: claims["sub"].(string), Claims: claims}
+				ctx := auth.WithIdentity(req.Context(), identity)
 				return req.WithContext(ctx)
 			},
 			description: "should pass through without token exchange",
@@ -357,7 +358,8 @@ func TestCreateTokenExchangeMiddleware_PassThrough(t *testing.T) {
 			setupReq: func(req *http.Request) *http.Request {
 				req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
 				claims := jwt.MapClaims{"sub": "user123"}
-				ctx := context.WithValue(req.Context(), auth.ClaimsContextKey{}, claims)
+				identity := &auth.Identity{Subject: claims["sub"].(string), Claims: claims}
+				ctx := auth.WithIdentity(req.Context(), identity)
 				return req.WithContext(ctx)
 			},
 			description: "should pass through with non-Bearer auth",
@@ -367,7 +369,8 @@ func TestCreateTokenExchangeMiddleware_PassThrough(t *testing.T) {
 			setupReq: func(req *http.Request) *http.Request {
 				req.Header.Set("Authorization", "Bearer ")
 				claims := jwt.MapClaims{"sub": "user123"}
-				ctx := context.WithValue(req.Context(), auth.ClaimsContextKey{}, claims)
+				identity := &auth.Identity{Subject: claims["sub"].(string), Claims: claims}
+				ctx := auth.WithIdentity(req.Context(), identity)
 				return req.WithContext(ctx)
 			},
 			description: "should pass through with empty Bearer token",
@@ -482,7 +485,8 @@ func TestCreateTokenExchangeMiddleware_Failures(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			req.Header.Set("Authorization", "Bearer original-token")
 			claims := jwt.MapClaims{"sub": "user123"}
-			ctx := context.WithValue(req.Context(), auth.ClaimsContextKey{}, claims)
+			identity := &auth.Identity{Subject: claims["sub"].(string), Claims: claims}
+			ctx := auth.WithIdentity(req.Context(), identity)
 			req = req.WithContext(ctx)
 
 			rec := httptest.NewRecorder()
@@ -720,7 +724,8 @@ func TestCreateTokenExchangeMiddleware_EnvironmentVariable(t *testing.T) {
 				"sub": "user123",
 				"aud": "test-audience",
 			}
-			ctx := context.WithValue(req.Context(), auth.ClaimsContextKey{}, claims)
+			identity := &auth.Identity{Subject: claims["sub"].(string), Claims: claims}
+			ctx := auth.WithIdentity(req.Context(), identity)
 			req = req.WithContext(ctx)
 
 			// Execute middleware
@@ -859,7 +864,8 @@ func TestCreateMiddlewareFromTokenSource(t *testing.T) {
 				"sub": "test-user",
 				"aud": "test-audience",
 			}
-			ctx := context.WithValue(req.Context(), auth.ClaimsContextKey{}, claims)
+			identity := &auth.Identity{Subject: claims["sub"].(string), Claims: claims}
+			ctx := auth.WithIdentity(req.Context(), identity)
 			req = req.WithContext(ctx)
 
 			// Execute middleware

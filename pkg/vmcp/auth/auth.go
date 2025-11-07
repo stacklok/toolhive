@@ -1,42 +1,55 @@
 // Package auth provides authentication for Virtual MCP Server.
 //
 // This package defines:
-//   - Identity: Domain type representing an authenticated user/service
-//   - Claims → Identity conversion (incoming authentication)
-//   - OutgoingAuthenticator: Authenticates vMCP to backend servers
+//   - OutgoingAuthRegistry: Registry for managing backend authentication strategies
 //   - Strategy: Pluggable authentication strategies for backends
 //
-// Incoming authentication uses pkg/auth.TokenValidator + IdentityMiddleware
-// to validate OIDC tokens and convert Claims to Identity.
+// Incoming authentication uses pkg/auth middleware (OIDC, local, anonymous)
+// which directly creates pkg/auth.Identity in context.
 package auth
 
 //go:generate mockgen -destination=mocks/mock_strategy.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/auth Strategy
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"net/http"
+
+	"github.com/stacklok/toolhive/pkg/auth"
 )
 
-// OutgoingAuthenticator handles authentication to backend MCP servers.
-// This is responsible for obtaining and injecting appropriate credentials
-// for each backend based on its authentication strategy.
+// OutgoingAuthRegistry manages authentication strategies for outgoing requests to backend MCP servers.
+// This is a registry that stores and retrieves Strategy implementations.
 //
-// The specific authentication strategies and their behavior will be defined
-// during implementation based on the design decisions documented in the
-// Virtual MCP Server proposal.
-type OutgoingAuthenticator interface {
-	// AuthenticateRequest adds authentication to an outgoing backend request.
-	// The strategy and metadata are provided in the BackendTarget.
-	AuthenticateRequest(ctx context.Context, req *http.Request, strategy string, metadata map[string]any) error
-
-	// GetStrategy returns the authentication strategy handler for a given strategy name.
-	// This enables extensibility - new strategies can be registered.
+// The registry supports dynamic strategy registration, allowing custom authentication
+// strategies to be added at runtime. Once registered, strategies can be retrieved
+// by name and used to authenticate requests to backends.
+//
+// Responsibilities:
+//   - Maintain registry of available strategies
+//   - Retrieve strategies by name
+//   - Register new strategies dynamically
+//
+// This registry does NOT perform authentication itself. Authentication is performed
+// by Strategy implementations retrieved from this registry.
+//
+// Usage Pattern:
+//  1. Register strategies during application initialization
+//  2. Resolve strategy once at client creation time (cold path)
+//  3. Call strategy.Authenticate() directly per-request (hot path)
+//
+// Thread-safety: Implementations must be safe for concurrent access.
+type OutgoingAuthRegistry interface {
+	// GetStrategy retrieves an authentication strategy by name.
+	// Returns an error if the strategy is not found.
 	GetStrategy(name string) (Strategy, error)
 
 	// RegisterStrategy registers a new authentication strategy.
-	// This allows custom auth strategies to be added at runtime.
+	// The strategy name must match the name returned by strategy.Name().
+	// Returns an error if:
+	//   - name is empty
+	//   - strategy is nil
+	//   - a strategy with the same name is already registered
+	//   - strategy.Name() does not match the registration name
 	RegisterStrategy(name string, strategy Strategy) error
 }
 
@@ -54,92 +67,15 @@ type Strategy interface {
 	Validate(metadata map[string]any) error
 }
 
-// Identity represents an authenticated user or service account.
-type Identity struct {
-	// Subject is the unique identifier for the principal.
-	Subject string
-
-	// Name is the human-readable name.
-	Name string
-
-	// Email is the email address (if available).
-	Email string
-
-	// Groups are the groups this identity belongs to.
-	//
-	// NOTE: This field is intentionally NOT populated by OIDCIncomingAuthenticator.
-	// Authorization logic MUST extract groups from the Claims map, as group claim
-	// names vary by provider (e.g., "groups", "roles", "cognito:groups").
-	Groups []string
-
-	// Claims contains additional claims from the auth token.
-	Claims map[string]any
-
-	// Token is the original authentication token (for pass-through).
-	Token string
-
-	// TokenType is the type of token (e.g., "Bearer", "JWT").
-	TokenType string
-
-	// Metadata stores additional identity information.
-	Metadata map[string]string
-}
-
-// String returns a string representation of the Identity with sensitive fields redacted.
-// This prevents accidental token leakage when the Identity is logged or printed.
-func (i *Identity) String() string {
-	if i == nil {
-		return "<nil>"
-	}
-
-	return fmt.Sprintf("Identity{Subject:%q}", i.Subject)
-}
-
-// MarshalJSON implements json.Marshaler to redact sensitive fields during JSON serialization.
-// This prevents accidental token leakage in structured logs, API responses, or audit logs.
-func (i *Identity) MarshalJSON() ([]byte, error) {
-	if i == nil {
-		return []byte("null"), nil
-	}
-
-	// Create a safe representation with lowercase field names and redacted token
-	type SafeIdentity struct {
-		Subject   string            `json:"subject"`
-		Name      string            `json:"name"`
-		Email     string            `json:"email"`
-		Groups    []string          `json:"groups"`
-		Claims    map[string]any    `json:"claims"`
-		Token     string            `json:"token"`
-		TokenType string            `json:"tokenType"`
-		Metadata  map[string]string `json:"metadata"`
-	}
-
-	token := i.Token
-	if token != "" {
-		token = "REDACTED"
-	}
-
-	return json.Marshal(&SafeIdentity{
-		Subject:   i.Subject,
-		Name:      i.Name,
-		Email:     i.Email,
-		Groups:    i.Groups,
-		Claims:    i.Claims,
-		Token:     token,
-		TokenType: i.TokenType,
-		Metadata:  i.Metadata,
-	})
-}
-
 // Authorizer handles authorization decisions.
 // This integrates with ToolHive's existing Cedar-based authorization.
 type Authorizer interface {
 	// Authorize checks if an identity is authorized to perform an action on a resource.
-	Authorize(ctx context.Context, identity *Identity, action string, resource string) error
+	Authorize(ctx context.Context, identity *auth.Identity, action string, resource string) error
 
 	// AuthorizeToolCall checks if an identity can call a specific tool.
-	AuthorizeToolCall(ctx context.Context, identity *Identity, toolName string) error
+	AuthorizeToolCall(ctx context.Context, identity *auth.Identity, toolName string) error
 
 	// AuthorizeResourceAccess checks if an identity can access a specific resource.
-	AuthorizeResourceAccess(ctx context.Context, identity *Identity, resourceURI string) error
+	AuthorizeResourceAccess(ctx context.Context, identity *auth.Identity, resourceURI string) error
 }

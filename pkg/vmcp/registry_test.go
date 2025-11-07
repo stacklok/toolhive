@@ -708,3 +708,87 @@ func TestDomainTypes_RoutingTable(t *testing.T) {
 		assert.Empty(t, table.Prompts)
 	})
 }
+
+func TestBackendTarget_GetBackendCapabilityName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		target              *BackendTarget
+		resolvedName        string
+		expectedBackendName string
+		description         string
+	}{
+		{
+			name: "returns original name when set (prefix strategy)",
+			target: &BackendTarget{
+				WorkloadID:             "fetch",
+				OriginalCapabilityName: "fetch",
+			},
+			resolvedName:        "fetch_fetch",
+			expectedBackendName: "fetch",
+			description:         "Tool renamed from 'fetch' to 'fetch_fetch' via prefix strategy",
+		},
+		{
+			name: "returns original name when set (manual strategy)",
+			target: &BackendTarget{
+				WorkloadID:             "github",
+				OriginalCapabilityName: "create_issue",
+			},
+			resolvedName:        "github_create_issue_custom",
+			expectedBackendName: "create_issue",
+			description:         "Tool renamed from 'create_issue' to 'github_create_issue_custom' via manual override",
+		},
+		{
+			name: "returns resolved name when original is empty (no conflict)",
+			target: &BackendTarget{
+				WorkloadID:             "github",
+				OriginalCapabilityName: "",
+			},
+			resolvedName:        "create_issue",
+			expectedBackendName: "create_issue",
+			description:         "No conflict resolution applied, names match",
+		},
+		{
+			name: "returns resolved name when original is empty (priority strategy winner)",
+			target: &BackendTarget{
+				WorkloadID:             "github",
+				OriginalCapabilityName: "",
+			},
+			resolvedName:        "list_issues",
+			expectedBackendName: "list_issues",
+			description:         "Priority strategy kept original name (winner)",
+		},
+		{
+			name: "handles resource URIs",
+			target: &BackendTarget{
+				WorkloadID:             "files",
+				OriginalCapabilityName: "file:///data/config.json",
+			},
+			resolvedName:        "file:///files/data/config.json",
+			expectedBackendName: "file:///data/config.json",
+			description:         "Resource URI translated for backend",
+		},
+		{
+			name: "handles prompt names",
+			target: &BackendTarget{
+				WorkloadID:             "ai",
+				OriginalCapabilityName: "code_review",
+			},
+			resolvedName:        "ai_code_review",
+			expectedBackendName: "code_review",
+			description:         "Prompt name translated for backend",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := tt.target.GetBackendCapabilityName(tt.resolvedName)
+
+			assert.Equal(t, tt.expectedBackendName, result,
+				"GetBackendCapabilityName should return correct backend name. %s", tt.description)
+		})
+	}
+}

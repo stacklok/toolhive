@@ -92,60 +92,20 @@ func TestVirtualMCPServerConditions(t *testing.T) {
 				{
 					Type:   ConditionTypeVirtualMCPServerReady,
 					Status: metav1.ConditionTrue,
-					Reason: ConditionReasonAllBackendsReady,
+					Reason: "DeploymentReady",
 				},
 				{
 					Type:   ConditionTypeAuthConfigured,
 					Status: metav1.ConditionTrue,
 					Reason: ConditionReasonIncomingAuthValid,
 				},
-				{
-					Type:   ConditionTypeBackendsDiscovered,
-					Status: metav1.ConditionTrue,
-					Reason: ConditionReasonDiscoveryComplete,
-				},
 			},
 			validate: func(t *testing.T, vmcp *VirtualMCPServer) {
 				t.Helper()
-				assert.Len(t, vmcp.Status.Conditions, 3)
+				assert.Len(t, vmcp.Status.Conditions, 2)
 				for _, cond := range vmcp.Status.Conditions {
 					assert.Equal(t, metav1.ConditionTrue, cond.Status)
 				}
-			},
-		},
-		{
-			name: "ready_false_with_backend_issues",
-			conditions: []metav1.Condition{
-				{
-					Type:    ConditionTypeVirtualMCPServerReady,
-					Status:  metav1.ConditionFalse,
-					Reason:  ConditionReasonSomeBackendsUnavailable,
-					Message: "2 out of 5 backends unavailable",
-				},
-			},
-			validate: func(t *testing.T, vmcp *VirtualMCPServer) {
-				t.Helper()
-				assert.Len(t, vmcp.Status.Conditions, 1)
-				cond := vmcp.Status.Conditions[0]
-				assert.Equal(t, metav1.ConditionFalse, cond.Status)
-				assert.Contains(t, cond.Message, "backends unavailable")
-			},
-		},
-		{
-			name: "discovery_failed",
-			conditions: []metav1.Condition{
-				{
-					Type:    ConditionTypeBackendsDiscovered,
-					Status:  metav1.ConditionFalse,
-					Reason:  ConditionReasonDiscoveryFailed,
-					Message: "Failed to discover backends from group",
-				},
-			},
-			validate: func(t *testing.T, vmcp *VirtualMCPServer) {
-				t.Helper()
-				cond := vmcp.Status.Conditions[0]
-				assert.Equal(t, ConditionTypeBackendsDiscovered, cond.Type)
-				assert.Equal(t, metav1.ConditionFalse, cond.Status)
 			},
 		},
 	}
@@ -165,172 +125,6 @@ func TestVirtualMCPServerConditions(t *testing.T) {
 			}
 
 			tt.validate(t, vmcp)
-		})
-	}
-}
-
-func TestDiscoveredBackendsStatus(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name               string
-		discoveredBackends []DiscoveredBackend
-		expectedCount      int
-		validate           func(*testing.T, []DiscoveredBackend)
-	}{
-		{
-			name: "multiple_backends_all_ready",
-			discoveredBackends: []DiscoveredBackend{
-				{
-					Name:          "github",
-					AuthConfigRef: "github-token-exchange",
-					AuthType:      "token_exchange",
-					Status:        "ready",
-					URL:           "http://github-mcp.default.svc:8080",
-				},
-				{
-					Name:          "jira",
-					AuthConfigRef: "jira-token-exchange",
-					AuthType:      "token_exchange",
-					Status:        "ready",
-					URL:           "http://jira-mcp.default.svc:8080",
-				},
-				{
-					Name:     "slack",
-					AuthType: "service_account",
-					Status:   "ready",
-					URL:      "http://slack-mcp.default.svc:8080",
-				},
-			},
-			expectedCount: 3,
-			validate: func(t *testing.T, backends []DiscoveredBackend) {
-				t.Helper()
-				readyCount := 0
-				for _, b := range backends {
-					if b.Status == "ready" {
-						readyCount++
-					}
-				}
-				assert.Equal(t, 3, readyCount, "All backends should be ready")
-			},
-		},
-		{
-			name: "mixed_backend_status",
-			discoveredBackends: []DiscoveredBackend{
-				{
-					Name:          "github",
-					AuthConfigRef: "github-token-exchange",
-					Status:        "ready",
-				},
-				{
-					Name:          "jira",
-					AuthConfigRef: "jira-token-exchange",
-					Status:        "degraded",
-				},
-				{
-					Name:   "slack",
-					Status: "unavailable",
-				},
-			},
-			expectedCount: 3,
-			validate: func(t *testing.T, backends []DiscoveredBackend) {
-				t.Helper()
-				statusCounts := make(map[string]int)
-				for _, b := range backends {
-					statusCounts[b.Status]++
-				}
-				assert.Equal(t, 1, statusCounts["ready"])
-				assert.Equal(t, 1, statusCounts["degraded"])
-				assert.Equal(t, 1, statusCounts["unavailable"])
-			},
-		},
-		{
-			name: "backend_with_no_auth",
-			discoveredBackends: []DiscoveredBackend{
-				{
-					Name:          "internal-api",
-					AuthConfigRef: "", // No auth config
-					AuthType:      "pass_through",
-					Status:        "ready",
-				},
-			},
-			expectedCount: 1,
-			validate: func(t *testing.T, backends []DiscoveredBackend) {
-				t.Helper()
-				assert.Empty(t, backends[0].AuthConfigRef)
-				assert.Equal(t, "pass_through", backends[0].AuthType)
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			vmcp := &VirtualMCPServer{
-				Status: VirtualMCPServerStatus{
-					DiscoveredBackends: tt.discoveredBackends,
-				},
-			}
-
-			assert.Len(t, vmcp.Status.DiscoveredBackends, tt.expectedCount)
-			tt.validate(t, vmcp.Status.DiscoveredBackends)
-		})
-	}
-}
-
-func TestCapabilitiesSummary(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		capabilities *CapabilitiesSummary
-		validate     func(*testing.T, *CapabilitiesSummary)
-	}{
-		{
-			name: "full_capabilities",
-			capabilities: &CapabilitiesSummary{
-				ToolCount:          25,
-				ResourceCount:      10,
-				PromptCount:        5,
-				CompositeToolCount: 3,
-			},
-			validate: func(t *testing.T, caps *CapabilitiesSummary) {
-				t.Helper()
-				assert.Equal(t, 25, caps.ToolCount)
-				assert.Equal(t, 10, caps.ResourceCount)
-				assert.Equal(t, 5, caps.PromptCount)
-				assert.Equal(t, 3, caps.CompositeToolCount)
-			},
-		},
-		{
-			name: "only_tools_no_resources",
-			capabilities: &CapabilitiesSummary{
-				ToolCount:          15,
-				ResourceCount:      0,
-				PromptCount:        0,
-				CompositeToolCount: 1,
-			},
-			validate: func(t *testing.T, caps *CapabilitiesSummary) {
-				t.Helper()
-				assert.Greater(t, caps.ToolCount, 0)
-				assert.Equal(t, 0, caps.ResourceCount)
-				assert.Equal(t, 0, caps.PromptCount)
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			vmcp := &VirtualMCPServer{
-				Status: VirtualMCPServerStatus{
-					Capabilities: tt.capabilities,
-				},
-			}
-
-			tt.validate(t, vmcp.Status.Capabilities)
 		})
 	}
 }

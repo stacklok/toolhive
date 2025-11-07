@@ -37,6 +37,7 @@ A **workload** is the fundamental deployment unit in ToolHive. It represents eve
 - `removing` - Workload is being deleted
 - `error` - Workload encountered an error
 - `unhealthy` - Workload is running but unhealthy
+- `unauthenticated` - Remote workload cannot authenticate (expired tokens)
 
 **Implementation:**
 - Interface: `pkg/workloads/manager.go`
@@ -211,7 +212,80 @@ A **group** is a logical collection of MCP servers that share a common purpose o
 - Group management: `pkg/groups/`
 - Workload group field: `pkg/runner/config.go`
 
-**Related concepts:** Virtual MCP, Workload, Client
+**Related concepts:** Virtual MCP Server, Workload, Client
+
+### Virtual MCP Server
+
+A **Virtual MCP Server** aggregates multiple MCP servers from a group into a single unified interface with advanced composition and orchestration capabilities.
+
+**Purpose:**
+- Combine tools from multiple specialized MCP servers into one endpoint
+- Resolve naming conflicts between backends
+- Create composite tools that orchestrate multiple backend operations
+- Provide unified authentication and authorization
+- Enable token exchange and caching for backend authentication
+
+**Key capabilities:**
+
+1. **Backend Aggregation**:
+   - Automatically discovers MCPServers from an MCPGroup
+   - Aggregates tools, resources, and prompts from all backends
+   - Tracks backend health status
+   - Handles backend failures gracefully
+
+2. **Conflict Resolution**:
+   - `prefix` - Prefix tool names with backend identifier (e.g., `github.create_issue`)
+   - `priority` - First backend in priority list wins conflicts
+   - `manual` - Explicitly map conflicting tools to specific backends
+
+3. **Tool Filtering and Rewriting**:
+   - Allow/deny lists for selective tool exposure
+   - Tool renaming and description overrides
+   - Per-tool backend selection
+
+4. **Composite Tools**:
+   - Define new tools that call multiple backend tools in sequence
+   - Parameter mapping between composite tool and backend tools
+   - Response aggregation from multiple backend calls
+   - Complex workflow orchestration
+
+5. **Authentication and Security**:
+   - Incoming: OIDC authentication for clients
+   - Outgoing: Automatic token exchange for backend authentication
+   - Token caching with configurable TTL and capacity
+   - Cedar authorization policies
+
+**Example use case:**
+```yaml
+# Combine GitHub, Slack, and Jira into one "team-tools" virtual server
+apiVersion: mcp.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: team-tools
+spec:
+  groupRef:
+    name: team-backend-group  # Contains github, slack, jira servers
+  aggregation:
+    conflictResolution: prefix
+    tools:
+    - filter:
+        allow: ["create_issue", "update_issue"]
+      toolConfigRef:
+        name: jira-tool-config
+```
+
+**Deployment:**
+- Kubernetes only (operator-based deployment)
+- Creates Deployment, Service, and ConfigMap
+- Mounts vmcp configuration as ConfigMap
+- Uses `thv-proxyrunner` to run vmcp binary
+
+**Implementation:**
+- CRD: `cmd/thv-operator/api/v1alpha1/virtualmcpserver_types.go`
+- Controller: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
+- Binary: `cmd/vmcp/` (virtual MCP server runtime)
+
+**Related concepts:** Group, MCPServer (Kubernetes), Workload, Client
 
 ### Registry
 
@@ -679,6 +753,7 @@ Registry
 | **RunConfig** | Portable JSON configuration for workloads |
 | **Permission Profile** | Security policy (filesystem, network, privileges) |
 | **Group** | Logical collection of related MCP servers |
+| **Virtual MCP Server** | Aggregates multiple MCP servers into unified interface |
 | **Registry** | Catalog of MCP server definitions |
 | **Session** | State tracking for MCP connections |
 | **Runtime** | Abstraction over container systems |

@@ -127,6 +127,15 @@ func runWithFileBasedConfig(
 		config.EnvVars = validatedEnvVars
 	}
 
+	// Process environment files from EnvFileDir if specified (e.g., for Vault secrets)
+	if config.EnvFileDir != "" {
+		updatedConfig, err := config.WithEnvFilesFromDirectory(config.EnvFileDir)
+		if err != nil {
+			return fmt.Errorf("failed to process environment files from directory %s: %v", config.EnvFileDir, err)
+		}
+		config = updatedConfig
+	}
+
 	// Apply image metadata overrides if needed (similar to what the builder does)
 	if imageMetadata != nil && config.Name == "" {
 		config.Name = imageMetadata.Name

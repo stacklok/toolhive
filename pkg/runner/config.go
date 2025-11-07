@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -18,9 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/oauth"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -47,7 +46,7 @@ type RunConfig struct {
 	RemoteURL string `json:"remote_url,omitempty" yaml:"remote_url,omitempty"`
 
 	// RemoteAuthConfig contains OAuth configuration for remote MCP servers
-	RemoteAuthConfig *RemoteAuthConfig `json:"remote_auth_config,omitempty" yaml:"remote_auth_config,omitempty"`
+	RemoteAuthConfig *remote.Config `json:"remote_auth_config,omitempty" yaml:"remote_auth_config,omitempty"`
 
 	// CmdArgs are the arguments to pass to the container
 	CmdArgs []string `json:"cmd_args,omitempty" yaml:"cmd_args,omitempty"`
@@ -225,7 +224,7 @@ func migrateOAuthClientSecret(config *RunConfig) error {
 	}
 
 	// The client secret is in plain text format - migrate it
-	cliFormatSecret, err := oauth.ProcessOAuthClientSecret(config.Name, config.RemoteAuthConfig.ClientSecret)
+	cliFormatSecret, err := authoauth.ProcessOAuthClientSecret(config.Name, config.RemoteAuthConfig.ClientSecret)
 	if err != nil {
 		return fmt.Errorf("failed to process OAuth client secret: %w", err)
 	}
@@ -470,6 +469,8 @@ func (c *RunConfig) WithStandardLabels() *RunConfig {
 	transportLabel := c.Transport.String()
 	if c.Transport == types.TransportTypeStdio && c.ProxyMode == types.ProxyModeStreamableHTTP {
 		transportLabel = types.TransportTypeStreamableHTTP.String()
+	} else if c.Transport == types.TransportTypeStdio && c.ProxyMode == types.ProxyModeSSE {
+		transportLabel = types.TransportTypeSSE.String()
 	}
 	// Use the Group field from the RunConfig
 	labels.AddStandardLabels(c.ContainerLabels, containerName, c.BaseName, transportLabel, c.Port)
@@ -489,90 +490,6 @@ func (c *RunConfig) SaveState(ctx context.Context) error {
 // LoadState loads a run configuration from the state store
 func LoadState(ctx context.Context, name string) (*RunConfig, error) {
 	return state.LoadRunConfig(ctx, name, ReadJSON)
-}
-
-// RemoteAuthConfig holds configuration for remote authentication
-type RemoteAuthConfig struct {
-	ClientID         string        `json:"client_id,omitempty" yaml:"client_id,omitempty"`
-	ClientSecret     string        `json:"client_secret,omitempty" yaml:"client_secret,omitempty"`
-	ClientSecretFile string        `json:"client_secret_file,omitempty" yaml:"client_secret_file,omitempty"`
-	Scopes           []string      `json:"scopes,omitempty" yaml:"scopes,omitempty"`
-	SkipBrowser      bool          `json:"skip_browser,omitempty" yaml:"skip_browser,omitempty"`
-	Timeout          time.Duration `json:"timeout,omitempty" yaml:"timeout,omitempty" swaggertype:"string" example:"5m"`
-	CallbackPort     int           `json:"callback_port,omitempty" yaml:"callback_port,omitempty"`
-	UsePKCE          bool          `json:"use_pkce" yaml:"use_pkce"`
-
-	// OAuth endpoint configuration (from registry)
-	Issuer       string `json:"issuer,omitempty" yaml:"issuer,omitempty"`
-	AuthorizeURL string `json:"authorize_url,omitempty" yaml:"authorize_url,omitempty"`
-	TokenURL     string `json:"token_url,omitempty" yaml:"token_url,omitempty"`
-
-	// Headers for HTTP requests
-	Headers []*registry.Header `json:"headers,omitempty" yaml:"headers,omitempty"`
-
-	// Environment variables for the client
-	EnvVars []*registry.EnvVar `json:"env_vars,omitempty" yaml:"env_vars,omitempty"`
-
-	// OAuth parameters for server-specific customization
-	OAuthParams map[string]string `json:"oauth_params,omitempty" yaml:"oauth_params,omitempty"`
-}
-
-// UnmarshalJSON implements custom JSON unmarshaling for backward compatibility
-// This handles both the old PascalCase format and the new snake_case format
-func (r *RemoteAuthConfig) UnmarshalJSON(data []byte) error {
-	// Parse the JSON to check which format is being used
-	var raw map[string]interface{}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-
-	// Check if this is the old PascalCase format by looking for old field name
-	// if one old field is present, then it's the old format
-	if _, isOld := raw["ClientID"]; isOld {
-		// Unmarshal using old PascalCase format
-		var oldFormat struct {
-			ClientID         string             `json:"ClientID,omitempty"`
-			ClientSecret     string             `json:"ClientSecret,omitempty"`
-			ClientSecretFile string             `json:"ClientSecretFile,omitempty"`
-			Scopes           []string           `json:"Scopes,omitempty"`
-			SkipBrowser      bool               `json:"SkipBrowser,omitempty"`
-			Timeout          time.Duration      `json:"Timeout,omitempty"`
-			CallbackPort     int                `json:"CallbackPort,omitempty"`
-			UsePKCE          bool               `json:"UsePKCE,omitempty"`
-			Issuer           string             `json:"Issuer,omitempty"`
-			AuthorizeURL     string             `json:"AuthorizeURL,omitempty"`
-			TokenURL         string             `json:"TokenURL,omitempty"`
-			Headers          []*registry.Header `json:"Headers,omitempty"`
-			EnvVars          []*registry.EnvVar `json:"EnvVars,omitempty"`
-			OAuthParams      map[string]string  `json:"OAuthParams,omitempty"`
-		}
-
-		if err := json.Unmarshal(data, &oldFormat); err != nil {
-			return fmt.Errorf("failed to unmarshal RemoteAuthConfig in old format: %w", err)
-		}
-
-		// Copy from old format to new format
-		r.ClientID = oldFormat.ClientID
-		r.ClientSecret = oldFormat.ClientSecret
-		r.ClientSecretFile = oldFormat.ClientSecretFile
-		r.Scopes = oldFormat.Scopes
-		r.SkipBrowser = oldFormat.SkipBrowser
-		r.Timeout = oldFormat.Timeout
-		r.CallbackPort = oldFormat.CallbackPort
-		r.UsePKCE = oldFormat.UsePKCE
-		r.Issuer = oldFormat.Issuer
-		r.AuthorizeURL = oldFormat.AuthorizeURL
-		r.TokenURL = oldFormat.TokenURL
-		r.Headers = oldFormat.Headers
-		r.EnvVars = oldFormat.EnvVars
-		r.OAuthParams = oldFormat.OAuthParams
-		return nil
-	}
-
-	// Use the new snake_case format
-	type Alias RemoteAuthConfig
-	alias := (*Alias)(r)
-	return json.Unmarshal(data, alias)
 }
 
 // ToolOverride represents a tool override.

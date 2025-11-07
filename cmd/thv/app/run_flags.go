@@ -8,6 +8,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/cli"
 	cfg "github.com/stacklok/toolhive/pkg/config"
@@ -17,7 +19,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/oauth"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -122,7 +123,7 @@ type RunFlags struct {
 // AddRunFlags adds all the run flags to a command
 func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.Transport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
-	cmd.Flags().StringVar(&config.ProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
+	cmd.Flags().StringVar(&config.ProxyMode, "proxy-mode", "streamable-http", "Proxy mode for stdio (streamable-http or sse)")
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	cmd.Flags().StringVar(&config.Group, "group", "default",
 		"Name of the group this workload belongs to (defaults to 'default' if not specified)")
@@ -391,7 +392,7 @@ func handleImageRetrieval(
 func validateAndSetupProxyMode(runFlags *RunFlags) error {
 	if !types.IsValidProxyMode(runFlags.ProxyMode) {
 		if runFlags.ProxyMode == "" {
-			runFlags.ProxyMode = types.ProxyModeSSE.String() // default to SSE for backward compatibility
+			runFlags.ProxyMode = types.ProxyModeStreamableHTTP.String() // default to streamable-http (SSE is deprecated)
 		} else {
 			return fmt.Errorf("invalid value for --proxy-mode: %s", runFlags.ProxyMode)
 		}
@@ -615,7 +616,7 @@ func extractTelemetryValues(config *telemetry.Config) (string, float64, []string
 func getRemoteAuthFromRemoteServerMetadata(
 	remoteServerMetadata *registry.RemoteServerMetadata,
 	runFlags *RunFlags,
-) (*runner.RemoteAuthConfig, error) {
+) (*remote.Config, error) {
 	if remoteServerMetadata == nil || remoteServerMetadata.OAuthConfig == nil {
 		return getRemoteAuthFromRunFlags(runFlags)
 	}
@@ -642,12 +643,16 @@ func getRemoteAuthFromRemoteServerMetadata(
 	}
 
 	// Process the resolved client secret (convert plain text to secret reference if needed)
-	clientSecret, err := processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
-	if err != nil {
-		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+	// Only process if a secret was actually provided to avoid unnecessary secrets manager access
+	var clientSecret string
+	if resolvedClientSecret != "" {
+		clientSecret, err = processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+		}
 	}
 
-	authCfg := &runner.RemoteAuthConfig{
+	authCfg := &remote.Config{
 		ClientID:     f.RemoteAuthClientID,
 		ClientSecret: clientSecret,
 		SkipBrowser:  f.RemoteAuthSkipBrowser,
@@ -688,7 +693,7 @@ func getRemoteAuthFromRemoteServerMetadata(
 }
 
 // getRemoteAuthFromRunFlags creates RemoteAuthConfig from RunFlags
-func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*runner.RemoteAuthConfig, error) {
+func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 	// Resolve OAuth client secret from multiple sources (flag, file, environment variable)
 	// This follows the same priority as resolveSecret: flag → file → environment variable
 	resolvedClientSecret, err := resolveSecret(
@@ -701,12 +706,16 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*runner.RemoteAuthConfig, er
 	}
 
 	// Process the resolved client secret (convert plain text to secret reference if needed)
-	clientSecret, err := processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
-	if err != nil {
-		return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+	// Only process if a secret was actually provided to avoid unnecessary secrets manager access
+	var clientSecret string
+	if resolvedClientSecret != "" {
+		clientSecret, err = processOAuthClientSecret(resolvedClientSecret, runFlags.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process OAuth client secret: %w", err)
+		}
 	}
 
-	return &runner.RemoteAuthConfig{
+	return &remote.Config{
 		ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
 		ClientSecret: clientSecret,
 		Scopes:       runFlags.RemoteAuthFlags.RemoteAuthScopes,
@@ -846,5 +855,5 @@ func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath 
 
 // processOAuthClientSecret processes an OAuth client secret, converting plain text to secret reference if needed
 func processOAuthClientSecret(clientSecret, workloadName string) (string, error) {
-	return oauth.ProcessOAuthClientSecret(workloadName, clientSecret)
+	return authoauth.ProcessOAuthClientSecret(workloadName, clientSecret)
 }

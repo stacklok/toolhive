@@ -1,0 +1,25 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: test-vmcp-controller
+  namespace: toolhive-system
+spec:
+  groupRef:
+    name: test-group-controller
+  incomingAuth:
+    # Using anonymous authentication for testing
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+  outgoingAuth:
+    source: discovered
+  aggregation:
+    conflictResolution: prefix
+    conflictResolutionConfig:
+      prefixFormat: "{workload}_"
+  operational:
+    failureHandling:
+      healthCheckInterval: 30s

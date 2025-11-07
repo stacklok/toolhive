@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -92,10 +93,10 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 //
 //nolint:gocyclo // TODO: refactor this into shorter functions
 func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
-	// Default proxy mode to SSE if not specified
+	// Default proxy mode to streamable-http if not specified (SSE is deprecated)
 	if !types.IsValidProxyMode(req.ProxyMode) {
 		if req.ProxyMode == "" {
-			req.ProxyMode = types.ProxyModeSSE.String()
+			req.ProxyMode = types.ProxyModeStreamableHTTP.String()
 		} else {
 			return nil, fmt.Errorf("%w: %s", retriever.ErrInvalidRunConfig, fmt.Sprintf("Invalid proxy_mode: %s", req.ProxyMode))
 		}
@@ -116,7 +117,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		return nil, fmt.Errorf("group '%s' does not exist", groupName)
 	}
 
-	var remoteAuthConfig *runner.RemoteAuthConfig
+	var remoteAuthConfig *remote.Config
 	var imageURL string
 	var imageMetadata *registry.ImageMetadata
 	var serverMetadata registry.ServerMetadata
@@ -151,7 +152,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 
 		if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
 			if remoteServerMetadata.OAuthConfig != nil {
-				remoteAuthConfig = &runner.RemoteAuthConfig{
+				remoteAuthConfig = &remote.Config{
 					ClientID:     req.OAuthConfig.ClientID,
 					Scopes:       remoteServerMetadata.OAuthConfig.Scopes,
 					CallbackPort: remoteServerMetadata.OAuthConfig.CallbackPort,
@@ -251,10 +252,10 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 func createRequestToRemoteAuthConfig(
 	_ context.Context,
 	req *createRequest,
-) *runner.RemoteAuthConfig {
+) *remote.Config {
 
 	// Create RemoteAuthConfig
-	remoteAuthConfig := &runner.RemoteAuthConfig{
+	remoteAuthConfig := &remote.Config{
 		ClientID:     req.OAuthConfig.ClientID,
 		Scopes:       req.OAuthConfig.Scopes,
 		Issuer:       req.OAuthConfig.Issuer,

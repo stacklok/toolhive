@@ -19,8 +19,8 @@ func TestValidator_ValidateBasicFields(t *testing.T) {
 		{
 			name: "valid configuration",
 			cfg: &Config{
-				Name:     "test-vmcp",
-				GroupRef: "test-group",
+				Name:  "test-vmcp",
+				Group: "test-group",
 				IncomingAuth: &IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -39,7 +39,7 @@ func TestValidator_ValidateBasicFields(t *testing.T) {
 		{
 			name: "missing name",
 			cfg: &Config{
-				GroupRef: "test-group",
+				Group: "test-group",
 				IncomingAuth: &IncomingAuthConfig{
 					Type: "anonymous",
 				},
@@ -118,11 +118,11 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 			auth: &IncomingAuthConfig{
 				Type: "oidc",
 				OIDC: &OIDCConfig{
-					Issuer:       "https://example.com",
-					ClientID:     "test-client",
-					ClientSecret: "test-secret",
-					Audience:     "vmcp",
-					Scopes:       []string{"openid"},
+					Issuer:          "https://example.com",
+					ClientID:        "test-client",
+					ClientSecretEnv: "OIDC_CLIENT_SECRET",
+					Audience:        "vmcp",
+					Scopes:          []string{"openid"},
 				},
 			},
 			wantErr: false,
@@ -148,9 +148,9 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 			auth: &IncomingAuthConfig{
 				Type: "oidc",
 				OIDC: &OIDCConfig{
-					ClientID:     "test-client",
-					ClientSecret: "test-secret",
-					Audience:     "vmcp",
+					ClientID:        "test-client",
+					ClientSecretEnv: "OIDC_CLIENT_SECRET",
+					Audience:        "vmcp",
 				},
 			},
 			wantErr: true,
@@ -187,32 +187,60 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 		errMsg  string
 	}{
 		{
-			name: "valid inline source with pass_through default",
+			name: "valid inline source with unauthenticated default",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
 				Default: &BackendAuthStrategy{
-					Type: "pass_through",
+					Type: "unauthenticated",
 				},
 			},
 			wantErr: false,
 		},
 		{
-			name: "valid token_exchange backend",
+			name: "valid header_injection backend",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
 				Backends: map[string]*BackendAuthStrategy{
 					"github": {
-						Type: "token_exchange",
+						Type: "header_injection",
 						Metadata: map[string]any{
-							"token_url": "https://example.com/token",
-							"client_id": "test-client",
-							"audience":  "github-api",
+							"header_name":  "Authorization",
+							"header_value": "secret-token",
 						},
 					},
 				},
 			},
 			wantErr: false,
 		},
+		// TODO: Uncomment when pass_through strategy is implemented
+		// {
+		// 	name: "valid inline source with pass_through default",
+		// 	auth: &OutgoingAuthConfig{
+		// 		Source: "inline",
+		// 		Default: &BackendAuthStrategy{
+		// 			Type: "pass_through",
+		// 		},
+		// 	},
+		// 	wantErr: false,
+		// },
+		// TODO: Uncomment when token_exchange strategy is implemented
+		// {
+		// 	name: "valid token_exchange backend",
+		// 	auth: &OutgoingAuthConfig{
+		// 		Source: "inline",
+		// 		Backends: map[string]*BackendAuthStrategy{
+		// 			"github": {
+		// 				Type: "token_exchange",
+		// 				Metadata: map[string]any{
+		// 					"token_url": "https://example.com/token",
+		// 					"client_id": "test-client",
+		// 					"audience":  "github-api",
+		// 				},
+		// 			},
+		// 		},
+		// 	},
+		// 	wantErr: false,
+		// },
 		{
 			name: "invalid source",
 			auth: &OutgoingAuthConfig{
@@ -234,23 +262,24 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			wantErr: true,
 			errMsg:  "type must be one of",
 		},
-		{
-			name: "token_exchange missing required metadata",
-			auth: &OutgoingAuthConfig{
-				Source: "inline",
-				Backends: map[string]*BackendAuthStrategy{
-					"github": {
-						Type: "token_exchange",
-						Metadata: map[string]any{
-							"client_id": "test-client",
-							// Missing token_url and audience
-						},
-					},
-				},
-			},
-			wantErr: true,
-			errMsg:  "token_exchange requires metadata field",
-		},
+		// TODO: Uncomment when token_exchange strategy is implemented
+		// {
+		// 	name: "token_exchange missing required metadata",
+		// 	auth: &OutgoingAuthConfig{
+		// 		Source: "inline",
+		// 		Backends: map[string]*BackendAuthStrategy{
+		// 			"github": {
+		// 				Type: "token_exchange",
+		// 				Metadata: map[string]any{
+		// 					"client_id": "test-client",
+		// 					// Missing token_url and audience
+		// 				},
+		// 			},
+		// 		},
+		// 	},
+		// 	wantErr: true,
+		// 	errMsg:  "token_exchange requires metadata field",
+		// },
 	}
 
 	for _, tt := range tests {
@@ -387,7 +416,7 @@ func TestValidator_ValidateTokenCache(t *testing.T) {
 				Provider: CacheProviderMemory,
 				Memory: &MemoryCacheConfig{
 					MaxEntries: 1000,
-					TTLOffset:  5 * time.Minute,
+					TTLOffset:  Duration(5 * time.Minute),
 				},
 			},
 			wantErr: false,
@@ -398,7 +427,7 @@ func TestValidator_ValidateTokenCache(t *testing.T) {
 				Provider: "redis",
 				Redis: &RedisCacheConfig{
 					Address:   "localhost:6379",
-					TTLOffset: 5 * time.Minute,
+					TTLOffset: Duration(5 * time.Minute),
 				},
 			},
 			wantErr: false,
@@ -463,7 +492,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 				{
 					Name:        "deploy_workflow",
 					Description: "Deploy workflow",
-					Timeout:     30 * time.Minute,
+					Timeout:     Duration(30 * time.Minute),
 					Steps: []*WorkflowStepConfig{
 						{
 							ID:   "merge",
@@ -480,7 +509,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 			tools: []*CompositeToolConfig{
 				{
 					Description: "Deploy workflow",
-					Timeout:     30 * time.Minute,
+					Timeout:     Duration(30 * time.Minute),
 					Steps: []*WorkflowStepConfig{
 						{
 							ID:   "merge",
@@ -499,7 +528,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 				{
 					Name:        "deploy",
 					Description: "Deploy workflow",
-					Timeout:     30 * time.Minute,
+					Timeout:     Duration(30 * time.Minute),
 					Steps: []*WorkflowStepConfig{
 						{
 							ID:   "merge",
@@ -511,7 +540,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 				{
 					Name:        "deploy",
 					Description: "Another deploy workflow",
-					Timeout:     30 * time.Minute,
+					Timeout:     Duration(30 * time.Minute),
 					Steps: []*WorkflowStepConfig{
 						{
 							ID:   "merge",

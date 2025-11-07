@@ -3,9 +3,13 @@ package remote
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/validation"
 )
 
 // Config holds authentication configuration for remote MCP servers.
@@ -98,3 +102,50 @@ func (r *Config) UnmarshalJSON(data []byte) error {
 
 // DefaultCallbackPort is the default port for the OAuth callback server
 const DefaultCallbackPort = 8666
+
+// DefaultResourceIndicator derives the resource indicator (RFC 8707) from the remote server URL.
+// This function should only be called when the user has not explicitly provided a resource indicator.
+// If the resource indicator cannot be derived, it returns an empty string.
+func DefaultResourceIndicator(remoteServerURL string) string {
+	// Normalize the remote server URL
+	normalized, err := normalizeResourceURI(remoteServerURL)
+	if err != nil {
+		// Normalization failed - log warning and leave resource empty
+		logger.Warnf("Failed to normalize resource indicator from remote server URL %s: %v", remoteServerURL, err)
+		return ""
+	}
+
+	// Validate the normalized result
+	if err := validation.ValidateResourceURI(normalized); err != nil {
+		// Validation failed - log warning and leave resource empty
+		logger.Warnf("Normalized resource indicator is invalid %s: %v", normalized, err)
+		return ""
+	}
+
+	return normalized
+}
+
+// normalizeResourceURI normalizes a resource URI to conform to MCP specification requirements.
+// This function performs the following normalizations:
+// - Lowercase scheme and host
+// - Strip fragments
+func normalizeResourceURI(resourceURI string) (string, error) {
+	if resourceURI == "" {
+		return "", fmt.Errorf("resource URI cannot be empty")
+	}
+
+	// Parse the URI
+	parsed, err := url.Parse(resourceURI)
+	if err != nil {
+		return "", fmt.Errorf("invalid resource URI: %w", err)
+	}
+
+	// Normalize: lowercase scheme and host
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Host = strings.ToLower(parsed.Host)
+
+	// Strip fragment if present (fragments are not allowed in resource indicators)
+	parsed.Fragment = ""
+
+	return parsed.String(), nil
+}

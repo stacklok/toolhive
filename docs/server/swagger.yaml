@@ -910,6 +910,7 @@ components:
       - WorkloadStatusUnhealthy
       - WorkloadStatusRemoving
       - WorkloadStatusUnknown
+      - WorkloadStatusUnauthenticated
     secrets.SecretParameter:
       properties:
         name:
@@ -1650,6 +1651,7 @@ components:
           - WorkloadStatusUnhealthy
           - WorkloadStatusRemoving
           - WorkloadStatusUnknown
+          - WorkloadStatusUnauthenticated
       type: object
 externalDocs:
   description: ""

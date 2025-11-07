@@ -26,6 +26,7 @@ thv registry info [server] [flags]
 ```
       --format string   Output format (json or text) (default "text")
   -h, --help            help for info
+      --refresh         Force refresh registry cache
 ```
 
 ### Options inherited from parent commands

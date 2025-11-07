@@ -526,7 +526,7 @@ func waitForInitializeSuccess(ctx context.Context, serverURL, transportType stri
 			if err == nil {
 				//nolint:errcheck // Ignoring close error on response body in error path
 				defer resp.Body.Close()
-				
+
 				// Accept 200 OK as success
 				if resp.StatusCode == http.StatusOK {
 					elapsed := time.Since(startTime)

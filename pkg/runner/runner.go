@@ -502,7 +502,7 @@ func waitForInitializeSuccess(ctx context.Context, serverURL, transportType stri
 	// Setup retry logic with exponential backoff
 	startTime := time.Now()
 	attempt := 0
-	baseDelay := 100 * time.Millisecond
+	delay := 100 * time.Millisecond
 	maxDelay := 2 * time.Second // Cap at 2 seconds between retries
 
 	logger.Infof("Waiting for MCP server to be ready at %s (timeout: %v)", endpoint, maxWaitTime)
@@ -558,23 +558,18 @@ func waitForInitializeSuccess(ctx context.Context, serverURL, transportType stri
 			return fmt.Errorf("initialize not successful after %v (%d attempts)", elapsed, attempt)
 		}
 
-		// Calculate delay with exponential backoff
-		// Cap the exponent to prevent overflow
-		exp := attempt - 1
-		if exp > 10 {
-			exp = 10
-		}
-		delay := baseDelay * time.Duration(1<<uint(exp)) //nolint:gosec // Overflow prevented by capping exp
-		if delay > maxDelay {
-			delay = maxDelay
-		}
-
 		// Wait before retrying
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("context cancelled while waiting for initialize")
 		case <-time.After(delay):
 			// Continue to next attempt
+		}
+
+		// Update delay for next iteration with exponential backoff
+		delay *= 2
+		if delay > maxDelay {
+			delay = maxDelay
 		}
 	}
 }

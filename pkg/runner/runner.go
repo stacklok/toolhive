@@ -463,38 +463,41 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 	return lastErr
 }
 
-// waitForInitializeSuccess repeatedly calls the MCP server's initialize endpoint until it succeeds.
+// waitForInitializeSuccess repeatedly checks if the MCP server is ready to accept requests.
 // This prevents timing issues where clients try to connect before the server is fully ready.
 // It makes repeated attempts with exponential backoff up to a maximum timeout.
 func waitForInitializeSuccess(ctx context.Context, serverURL, transportType string, maxWaitTime time.Duration) error {
-	// Construct the endpoint URL based on transport type
+	// Determine the endpoint and method to use based on transport type
 	var endpoint string
+	var method string
+	var payload string
+
 	switch transportType {
 	case "streamable-http", "streamable":
-		// For streamable-http, serverURL already contains the /mcp path
+		// For streamable-http, send initialize request to /mcp endpoint
 		// Format: http://localhost:port/mcp
 		endpoint = serverURL
+		method = "POST"
+		payload = `{"jsonrpc":"2.0","method":"initialize","id":"toolhive-init-check",` +
+			`"params":{"protocolVersion":"2024-11-05","capabilities":{},` +
+			`"clientInfo":{"name":"toolhive","version":"1.0"}}}`
 	case "sse", "stdio":
-		// For SSE/stdio, serverURL contains /sse#container-name
-		// Format: http://localhost:port/sse#container-name
-		// We need to change it to /messages (without the fragment)
+		// For SSE/stdio, just check if the SSE endpoint is available
+		// We can't easily call initialize without establishing a full SSE connection,
+		// so we just verify the endpoint responds.
+		// Format: http://localhost:port/sse#container-name -> http://localhost:port/sse
 		endpoint = serverURL
 		// Remove fragment if present (everything after #)
 		if idx := strings.Index(endpoint, "#"); idx != -1 {
 			endpoint = endpoint[:idx]
 		}
-		// Replace /sse with /messages for the initialize call
-		endpoint = strings.Replace(endpoint, "/sse", "/messages", 1)
+		method = "GET"
+		payload = ""
 	default:
-		// For other transports, no HTTP initialize check is needed
-		logger.Debugf("Skipping initialize check for transport type: %s", transportType)
+		// For other transports, no HTTP check is needed
+		logger.Debugf("Skipping readiness check for transport type: %s", transportType)
 		return nil
 	}
-
-	// Create the initialize request payload
-	initPayload := `{"jsonrpc":"2.0","method":"initialize","id":"toolhive-init-check",` +
-		`"params":{"protocolVersion":"2024-11-05","capabilities":{},` +
-		`"clientInfo":{"name":"toolhive","version":"1.0"}}}`
 
 	// Setup retry logic with exponential backoff
 	startTime := time.Now()
@@ -502,7 +505,7 @@ func waitForInitializeSuccess(ctx context.Context, serverURL, transportType stri
 	baseDelay := 100 * time.Millisecond
 	maxDelay := 2 * time.Second // Cap at 2 seconds between retries
 
-	logger.Infof("Waiting for MCP server to accept initialize requests at %s (timeout: %v)", endpoint, maxWaitTime)
+	logger.Infof("Waiting for MCP server to be ready at %s (timeout: %v)", endpoint, maxWaitTime)
 
 	for {
 		attempt++
@@ -512,31 +515,40 @@ func waitForInitializeSuccess(ctx context.Context, serverURL, transportType stri
 			Timeout: 10 * time.Second,
 		}
 
-		// Make the initialize request
-		req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBufferString(initPayload))
-		if err != nil {
-			logger.Debugf("Failed to create initialize request (attempt %d): %v", attempt, err)
+		// Make the readiness check request
+		var req *http.Request
+		var err error
+		if payload != "" {
+			req, err = http.NewRequestWithContext(ctx, method, endpoint, bytes.NewBufferString(payload))
 		} else {
-			req.Header.Set("Content-Type", "application/json")
-			// MCP servers may require clients to accept both JSON and SSE responses
-			req.Header.Set("Accept", "application/json, text/event-stream")
-			req.Header.Set("MCP-Protocol-Version", "2024-11-05")
+			req, err = http.NewRequestWithContext(ctx, method, endpoint, nil)
+		}
+
+		if err != nil {
+			logger.Debugf("Failed to create request (attempt %d): %v", attempt, err)
+		} else {
+			if method == "POST" {
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Accept", "application/json, text/event-stream")
+				req.Header.Set("MCP-Protocol-Version", "2024-11-05")
+			}
 
 			resp, err := httpClient.Do(req)
 			if err == nil {
 				//nolint:errcheck // Ignoring close error on response body in error path
 				defer resp.Body.Close()
 
-				// Accept 200 OK as success
+				// For GET (SSE), accept 200 OK
+				// For POST (streamable-http), also accept 200 OK
 				if resp.StatusCode == http.StatusOK {
 					elapsed := time.Since(startTime)
-					logger.Infof("MCP server successfully responded to initialize after %v (attempt %d)", elapsed, attempt)
+					logger.Infof("MCP server is ready after %v (attempt %d)", elapsed, attempt)
 					return nil
 				}
 
-				logger.Debugf("Initialize returned status %d (attempt %d)", resp.StatusCode, attempt)
+				logger.Debugf("Server returned status %d (attempt %d)", resp.StatusCode, attempt)
 			} else {
-				logger.Debugf("Failed to reach initialize endpoint (attempt %d): %v", attempt, err)
+				logger.Debugf("Failed to reach endpoint (attempt %d): %v", attempt, err)
 			}
 		}
 

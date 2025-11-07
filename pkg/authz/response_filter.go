@@ -49,8 +49,9 @@ func (rfw *ResponseFilteringWriter) WriteHeader(statusCode int) {
 	rfw.statusCode = statusCode
 }
 
-// Flush processes the captured response and applies filtering if needed
-func (rfw *ResponseFilteringWriter) Flush() error {
+// FlushAndFilter processes the captured response and applies filtering if needed.
+// Returns an error if filtering or writing fails.
+func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 	// If it's not a successful response, just pass it through
 	if rfw.statusCode != http.StatusOK && rfw.statusCode != http.StatusAccepted {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
@@ -85,6 +86,14 @@ func (rfw *ResponseFilteringWriter) Flush() error {
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		_, err := rfw.ResponseWriter.Write(rawResponse)
 		return err
+	}
+}
+
+// Flush implements http.Flusher if the underlying ResponseWriter supports it.
+// This method is required for streaming support (SSE, streamable-http).
+func (rfw *ResponseFilteringWriter) Flush() {
+	if flusher, ok := rfw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
 	}
 }
 

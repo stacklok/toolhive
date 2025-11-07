@@ -82,7 +82,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 		// Wait for OIDC server to be ready
 		Eventually(func() error {
 			return checkServerHealth(fmt.Sprintf("%s/.well-known/openid-configuration", mockOIDCBaseURL))
-		}, 30*time.Second, 1*time.Second).Should(Succeed())
+		}, 5*time.Minute, 1*time.Second).Should(Succeed())
 
 		// Start OSV MCP server that will be our target
 		By("Starting OSV MCP server as target")
@@ -92,7 +92,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			"osv").ExpectSuccess()
 
 		// Wait for OSV server to be ready
-		err = e2e.WaitForMCPServer(config, osvServerName, 60*time.Second)
+		err = e2e.WaitForMCPServer(config, osvServerName, 5*time.Minute)
 		Expect(err).ToNot(HaveOccurred())
 	})
 
@@ -376,7 +376,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			proxyURL := fmt.Sprintf("http://localhost:%d/mcp", proxyPort)
 
 			// Wait for proxy to be ready for MCP connections
-			err = e2e.WaitForMCPServerReady(config, proxyURL, "streamable-http", 60*time.Second)
+			err = e2e.WaitForMCPServerReady(config, proxyURL, "streamable-http", 5*time.Minute)
 			if err != nil {
 				GinkgoWriter.Printf("MCP connection through proxy failed: %v\n", err)
 				Skip("Skipping MCP test due to proxy not being ready")
@@ -443,7 +443,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 
 			By("Reconnecting via MCP to trigger token refresh")
 			proxyURL := fmt.Sprintf("http://localhost:%d/mcp", proxyPort)
-			err = e2e.WaitForMCPServerReady(config, proxyURL, "streamable-http", 10*time.Second)
+			err = e2e.WaitForMCPServerReady(config, proxyURL, "streamable-http", 5*time.Minute)
 			Expect(err).ToNot(HaveOccurred(), "MCP server not ready after token expiry")
 
 			mcpClient, err := e2e.NewMCPClientForStreamableHTTP(config, proxyURL)

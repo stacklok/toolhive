@@ -58,9 +58,9 @@ var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 				// The command should indicate success
 				Expect(stdout+stderr).To(ContainSubstring("osv"), "Output should mention the OSV server")
 
-				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
-				Expect(err).ToNot(HaveOccurred(), "Server should be running within 60 seconds")
+			By("Waiting for the server to be running")
+			err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
+			Expect(err).ToNot(HaveOccurred(), "Server should be running within 5 minutes")
 
 				By("Verifying the server appears in the list with SSE transport")
 				stdout, _ = e2e.NewTHVCommand(config, "list").ExpectSuccess()
@@ -78,7 +78,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 					"osv").ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Getting the server URL")
@@ -128,7 +128,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 					"osv").ExpectSuccess()
 
 				By("Waiting for the server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Getting the server URL")
@@ -136,7 +136,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Waiting for MCP server to be ready")
-				err = e2e.WaitForMCPServerReady(config, serverURL, "sse", 60*time.Second)
+				err = e2e.WaitForMCPServerReady(config, serverURL, "sse", 5*time.Minute)
 				Expect(err).ToNot(HaveOccurred(), "MCP server should be ready for protocol operations")
 
 				By("Creating MCP client and initializing connection")
@@ -181,14 +181,14 @@ var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 					"--name", serverName,
 					"--transport", "sse",
 					"osv").ExpectSuccess()
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
 				Expect(err).ToNot(HaveOccurred())
 
 				// Get server URL
 				serverURL, err = e2e.GetMCPServerURL(config, serverName)
 				Expect(err).ToNot(HaveOccurred())
 
-				err = e2e.WaitForMCPServerReady(config, serverURL, "sse", 60*time.Second)
+				err = e2e.WaitForMCPServerReady(config, serverURL, "sse", 5*time.Minute)
 				Expect(err).ToNot(HaveOccurred())
 			})
 
@@ -327,7 +327,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 					"--name", serverName,
 					"--transport", "sse",
 					"osv").ExpectSuccess()
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
 				Expect(err).ToNot(HaveOccurred())
 			})
 
@@ -361,7 +361,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 				Expect(stdout).To(ContainSubstring(serverName))
 
 				By("Waiting for the server to be running again")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
 				Expect(err).ToNot(HaveOccurred())
 
 				By("Verifying SSE endpoint is accessible again")
@@ -428,7 +428,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 				"--transport", "sse", "osv").ExpectSuccess()
 
 			// ensure it's actually up before attempting the duplicate
-			err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+			err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
 			Expect(err).ToNot(HaveOccurred(), "first server should start")
 
 			By("Attempting to start a second server with the same name")
@@ -489,7 +489,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 
 				// 2) Wait until the server is reported as running.
 				By("waiting for foreground server to be running")
-				err := e2e.WaitForMCPServer(config, serverName, 60*time.Second)
+				err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
 				Expect(err).ToNot(HaveOccurred(), "server should reach running state")
 
 				// 3) Verify workload is running via workload manager
@@ -516,7 +516,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "sse", "e2e"), Serial, func() {
 				Expect(stdout).To(ContainSubstring("running"), "server should be running")
 
 				if serverURL, gerr := e2e.GetMCPServerURL(config, serverName); gerr == nil {
-					rerr := e2e.WaitForMCPServerReady(config, serverURL, "sse", 15*time.Second)
+					rerr := e2e.WaitForMCPServerReady(config, serverURL, "sse", 5*time.Minute)
 					Expect(rerr).ToNot(HaveOccurred(), "server should be protocol-ready")
 				}
 

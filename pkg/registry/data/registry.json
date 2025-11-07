@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-06T00:18:31Z",
+  "last_updated": "2025-11-07T00:18:50Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -457,6 +457,105 @@
         {
           "name": "ENABLED_TOOLS",
           "description": "Comma-separated list of tool names to enable (if not set, all tools are enabled)",
+          "required": false
+        }
+      ]
+    },
+    "aws-api": {
+      "description": "Enables AI assistants to interact with AWS services and resources through AWS CLI commands",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "stdio",
+      "tools": [
+        "call_aws",
+        "suggest_aws_commands"
+      ],
+      "repository_url": "https://github.com/awslabs/mcp",
+      "tags": [
+        "aws",
+        "cli",
+        "cloud",
+        "infrastructure",
+        "api",
+        "devops"
+      ],
+      "image": "public.ecr.aws/awslabs-mcp/awslabs/aws-api-mcp-server:1.1.3",
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [
+              "aws.amazon.com",
+              ".amazonaws.com"
+            ],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "env_vars": [
+        {
+          "name": "AWS_REGION",
+          "description": "Default AWS region for CLI commands unless a specific region is provided in the request",
+          "required": false,
+          "default": "us-east-1"
+        },
+        {
+          "name": "AWS_ACCESS_KEY_ID",
+          "description": "AWS access key ID for authentication",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "AWS_SECRET_ACCESS_KEY",
+          "description": "AWS secret access key for authentication",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "AWS_SESSION_TOKEN",
+          "description": "AWS session token for temporary credentials",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "READ_OPERATIONS_ONLY",
+          "description": "When set to \"true\", restricts execution to read-only operations",
+          "required": false,
+          "default": "false"
+        },
+        {
+          "name": "REQUIRE_MUTATION_CONSENT",
+          "description": "When set to \"true\", asks explicit consent before executing non-read-only operations",
+          "required": false,
+          "default": "false"
+        },
+        {
+          "name": "AWS_API_MCP_WORKING_DIR",
+          "description": "Working directory path for MCP server operations (must be absolute path)",
+          "required": false
+        },
+        {
+          "name": "AWS_API_MCP_ALLOW_UNRESTRICTED_LOCAL_FILE_ACCESS",
+          "description": "When set to \"true\", enables system-wide file access (may cause unintended overwrites)",
+          "required": false,
+          "default": "false"
+        },
+        {
+          "name": "AWS_API_MCP_TELEMETRY",
+          "description": "Allow sending additional telemetry data to AWS related to server configuration",
+          "required": false,
+          "default": "true"
+        },
+        {
+          "name": "EXPERIMENTAL_AGENT_SCRIPTS",
+          "description": "When set to \"true\", enables experimental agent scripts functionality",
+          "required": false,
+          "default": "false"
+        },
+        {
+          "name": "AWS_API_MCP_AGENT_SCRIPTS_DIR",
+          "description": "Directory path containing custom user scripts for agent scripts functionality",
           "required": false
         }
       ]
@@ -1014,7 +1113,7 @@
         "devops",
         "testing"
       ],
-      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.7.2",
+      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.7.3",
       "permissions": {
         "network": {
           "outbound": {
@@ -1873,9 +1972,9 @@
         "git_init"
       ],
       "metadata": {
-        "stars": 70561,
+        "stars": 72000,
         "pulls": 10404,
-        "last_updated": "2025-10-17T02:30:04Z"
+        "last_updated": "2025-11-06T02:33:24Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1944,9 +2043,9 @@
         "update_pull_request_branch"
       ],
       "metadata": {
-        "stars": 23700,
+        "stars": 24254,
         "pulls": 5000,
-        "last_updated": "2025-10-18T02:26:51Z"
+        "last_updated": "2025-11-06T02:33:26Z"
       },
       "repository_url": "https://github.com/github/github-mcp-server",
       "tags": [
@@ -2942,7 +3041,7 @@
       "metadata": {
         "stars": 13,
         "pulls": 4946,
-        "last_updated": "2025-10-17T02:30:05Z"
+        "last_updated": "2025-11-06T02:33:25Z"
       },
       "repository_url": "https://github.com/nirmata/kyverno-mcp",
       "tags": [
@@ -4376,45 +4475,44 @@
       "description": "Provides browser automation capabilities using Playwright",
       "tier": "Official",
       "status": "Active",
-      "transport": "streamable-http",
+      "transport": "stdio",
       "tools": [
+        "browser_click",
         "browser_close",
-        "browser_resize",
         "browser_console_messages",
-        "browser_handle_dialog",
+        "browser_drag",
+        "browser_evaluate",
         "browser_file_upload",
+        "browser_fill_form",
+        "browser_handle_dialog",
+        "browser_hover",
         "browser_install",
-        "browser_press_key",
         "browser_navigate",
         "browser_navigate_back",
-        "browser_navigate_forward",
         "browser_network_requests",
-        "browser_pdf_save",
-        "browser_take_screenshot",
-        "browser_snapshot",
-        "browser_click",
-        "browser_drag",
-        "browser_hover",
-        "browser_type",
+        "browser_press_key",
+        "browser_resize",
         "browser_select_option",
-        "browser_tab_list",
-        "browser_tab_new",
-        "browser_tab_select",
-        "browser_tab_close",
-        "browser_generate_playwright_test",
+        "browser_snapshot",
+        "browser_tabs",
+        "browser_take_screenshot",
+        "browser_type",
         "browser_wait_for"
       ],
       "metadata": {
-        "stars": 22223,
+        "stars": 22839,
         "pulls": 23622,
-        "last_updated": "2025-10-22T02:32:29Z"
+        "last_updated": "2025-11-05T21:23:31Z"
       },
       "repository_url": "https://github.com/microsoft/playwright-mcp",
       "tags": [
         "playwright",
         "automation",
         "browser",
-        "navigate"
+        "navigate",
+        "testing",
+        "web",
+        "accessibility"
       ],
       "image": "mcr.microsoft.com/playwright/mcp:v0.0.45",
       "target_port": 8931,
@@ -4427,13 +4525,7 @@
             ]
           }
         }
-      },
-      "args": [
-        "--port",
-        "8931",
-        "--allowed-hosts",
-        "*"
-      ]
+      }
     },
     "plotting": {
       "description": "Provides plotting capabilities for visualizing data in various formats.",
@@ -4492,9 +4584,9 @@
         "analyze_db_health"
       ],
       "metadata": {
-        "stars": 1336,
-        "pulls": 36198,
-        "last_updated": "2025-10-17T02:30:04Z"
+        "stars": 1449,
+        "pulls": 41060,
+        "last_updated": "2025-11-06T02:33:24Z"
       },
       "repository_url": "https://github.com/crystaldba/postgres-mcp",
       "tags": [
@@ -4749,6 +4841,10 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
+        "analyze_issue_with_seer",
+        "create_dsn",
+        "create_project",
+        "create_team",
         "find_dsns",
         "find_organizations",
         "find_projects",
@@ -4761,7 +4857,8 @@
         "search_docs",
         "search_events",
         "search_issues",
-        "use_sentry",
+        "update_issue",
+        "update_project",
         "whoami"
       ],
       "metadata": {
@@ -4777,7 +4874,7 @@
         "error-tracking",
         "observability"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.20.0",
+      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.21.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -5145,9 +5242,9 @@
         "convert_time"
       ],
       "metadata": {
-        "stars": 70561,
+        "stars": 72000,
         "pulls": 10986,
-        "last_updated": "2025-10-17T02:30:05Z"
+        "last_updated": "2025-11-06T02:33:25Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -5224,6 +5321,36 @@
         "homepage": "https://www.atlassian.com/platform/remote-mcp-server"
       },
       "url": "https://mcp.atlassian.com/v1/sse"
+    },
+    "aws-knowledge": {
+      "description": "Documentation, code samples, regional availability knowledge, and other official AWS content",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "search_documentation",
+        "read_documentation",
+        "recommend",
+        "list_regions",
+        "get_regional_availability"
+      ],
+      "repository_url": "https://github.com/awslabs/mcp",
+      "tags": [
+        "remote",
+        "aws",
+        "documentation",
+        "cloudformation",
+        "reference",
+        "blogs",
+        "well-architected",
+        "code-samples",
+        "regional-availability"
+      ],
+      "custom_metadata": {
+        "author": "AWS Labs",
+        "homepage": "https://awslabs.github.io/mcp/servers/aws-knowledge-mcp-server/"
+      },
+      "url": "https://knowledge-mcp.global.api.aws"
     },
     "canva": {
       "description": "Canva's official remote MCP server for design creation and template management",

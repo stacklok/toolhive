@@ -344,7 +344,7 @@ spec:
                 minimum: 1
                 type: integer
               proxyMode:
-                default: sse
+                default: streamable-http
                 description: |-
                   ProxyMode is the proxy mode for stdio transport (sse or streamable-http)
                   This setting is only used when Transport is "stdio"

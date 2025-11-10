@@ -27,7 +27,12 @@ func DetectRegistryType(input string) (registryType string, cleanPath string) {
 
 	// Check for HTTP/HTTPS URLs
 	if networking.IsURL(input) {
-		return RegistryTypeURL, input
+		// If URL ends with .json, treat as static registry file
+		// Otherwise, treat as MCP Registry API endpoint
+		if strings.HasSuffix(input, ".json") {
+			return RegistryTypeURL, input
+		}
+		return RegistryTypeAPI, input
 	}
 
 	// Default: treat as file path

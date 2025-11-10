@@ -677,10 +677,17 @@ func getRemoteAuthFromRemoteServerMetadata(
 		authCfg.CallbackPort = runner.DefaultCallbackPort
 	}
 
-	// Issuer / URLs: CLI non-empty wins
+	// Issuer / URLs / Resource: CLI non-empty wins
 	authCfg.Issuer = firstNonEmpty(f.RemoteAuthIssuer, oc.Issuer)
 	authCfg.AuthorizeURL = firstNonEmpty(f.RemoteAuthAuthorizeURL, oc.AuthorizeURL)
 	authCfg.TokenURL = firstNonEmpty(f.RemoteAuthTokenURL, oc.TokenURL)
+
+	resourceIndicator := firstNonEmpty(f.RemoteAuthResource, oc.Resource)
+	if resourceIndicator != "" {
+		authCfg.Resource = resourceIndicator
+	} else {
+		authCfg.Resource = remote.DefaultResourceIndicator(remoteServerMetadata.URL)
+	}
 
 	// OAuthParams: REPLACE metadata when CLI provides any key/value.
 	if len(runFlags.OAuthParams) > 0 {
@@ -715,6 +722,12 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 		}
 	}
 
+	// Derive the resource parameter (RFC 8707)
+	resource := runFlags.RemoteAuthFlags.RemoteAuthResource
+	if resource == "" && runFlags.ResourceURL != "" {
+		resource = remote.DefaultResourceIndicator(runFlags.RemoteURL)
+	}
+
 	return &remote.Config{
 		ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
 		ClientSecret: clientSecret,
@@ -725,6 +738,7 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 		Issuer:       runFlags.RemoteAuthFlags.RemoteAuthIssuer,
 		AuthorizeURL: runFlags.RemoteAuthFlags.RemoteAuthAuthorizeURL,
 		TokenURL:     runFlags.RemoteAuthFlags.RemoteAuthTokenURL,
+		Resource:     resource,
 		OAuthParams:  runFlags.OAuthParams,
 	}, nil
 }

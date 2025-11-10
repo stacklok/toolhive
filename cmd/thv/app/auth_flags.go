@@ -75,6 +75,7 @@ type RemoteAuthFlags struct {
 	RemoteAuthIssuer           string
 	RemoteAuthAuthorizeURL     string
 	RemoteAuthTokenURL         string
+	RemoteAuthResource         string
 
 	// Token Exchange Configuration
 	TokenExchangeURL              string
@@ -162,6 +163,8 @@ func AddRemoteAuthFlags(cmd *cobra.Command, config *RemoteAuthFlags) {
 		"OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)")
 	cmd.Flags().StringVar(&config.RemoteAuthTokenURL, "remote-auth-token-url", "",
 		"OAuth token endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)")
+	cmd.Flags().StringVar(&config.RemoteAuthResource, "remote-auth-resource", "",
+		"OAuth 2.0 resource indicator (RFC 8707)")
 
 	// Token Exchange flags
 	cmd.Flags().StringVar(&config.TokenExchangeURL, "token-exchange-url", "",

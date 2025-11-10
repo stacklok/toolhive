@@ -14,6 +14,7 @@ func CreateOAuthConfigManual(
 	scopes []string,
 	usePKCE bool,
 	callbackPort int,
+	resource string,
 	oauthParams map[string]string,
 ) (*Config, error) {
 	if clientID == "" {
@@ -47,6 +48,7 @@ func CreateOAuthConfigManual(
 		Scopes:       scopes,
 		UsePKCE:      usePKCE,
 		CallbackPort: callbackPort,
+		Resource:     resource,
 		OAuthParams:  oauthParams,
 	}, nil
 }

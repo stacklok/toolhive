@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-07T00:18:50Z",
+  "last_updated": "2025-11-10T00:19:26Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -470,6 +470,11 @@
         "call_aws",
         "suggest_aws_commands"
       ],
+      "metadata": {
+        "stars": 6955,
+        "pulls": 0,
+        "last_updated": "2025-11-07T02:32:29Z"
+      },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
         "aws",
@@ -479,7 +484,7 @@
         "api",
         "devops"
       ],
-      "image": "public.ecr.aws/awslabs-mcp/awslabs/aws-api-mcp-server:1.1.3",
+      "image": "public.ecr.aws/awslabs-mcp/awslabs/aws-api-mcp-server:1.1.4",
       "permissions": {
         "network": {
           "outbound": {
@@ -700,7 +705,7 @@
         "aws-costs",
         "aws-pricing"
       ],
-      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:1.0.16",
+      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:1.0.17",
       "permissions": {
         "network": {
           "outbound": {
@@ -1462,7 +1467,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.18.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.19.1",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -1709,9 +1714,9 @@
         "annotatedMessage"
       ],
       "metadata": {
-        "stars": 70658,
+        "stars": 72067,
         "pulls": 17019,
-        "last_updated": "2025-10-18T02:26:52Z"
+        "last_updated": "2025-11-07T02:32:30Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1942,7 +1947,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.18.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.19.1",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -2217,7 +2222,7 @@
         "milestones",
         "pipelines"
       ],
-      "image": "iwakitakuma/gitlab-mcp:2.0.9",
+      "image": "iwakitakuma/gitlab-mcp:2.0.11",
       "target_port": 3002,
       "permissions": {
         "network": {
@@ -2301,43 +2306,62 @@
       "status": "Active",
       "transport": "sse",
       "tools": [
-        "list_teams",
-        "search_dashboards",
-        "get_dashboard_by_uid",
-        "update_dashboard",
-        "get_dashboard_panel_queries",
-        "list_datasources",
-        "get_datasource_by_uid",
-        "get_datasource_by_name",
-        "query_prometheus",
-        "list_prometheus_metric_metadata",
-        "list_prometheus_metric_names",
-        "list_prometheus_label_names",
-        "list_prometheus_label_values",
-        "list_incidents",
-        "create_incident",
         "add_activity_to_incident",
-        "resolve_incident",
-        "query_loki_logs",
-        "list_loki_label_names",
-        "list_loki_label_values",
-        "query_loki_stats",
-        "list_alert_rules",
-        "get_alert_rule_by_uid",
-        "list_oncall_schedules",
-        "get_oncall_shift",
-        "get_current_oncall_users",
-        "list_oncall_teams",
-        "list_oncall_users",
-        "get_investigation",
-        "get_analysis",
-        "list_investigations",
+        "create_alert_rule",
+        "create_annotation",
+        "create_folder",
+        "create_graphite_annotation",
+        "create_incident",
+        "delete_alert_rule",
+        "fetch_pyroscope_profile",
         "find_error_pattern_logs",
         "find_slow_requests",
+        "generate_deeplink",
+        "get_alert_group",
+        "get_alert_rule_by_uid",
+        "get_annotation_tags",
+        "get_annotations",
+        "get_assertions",
+        "get_current_oncall_users",
+        "get_dashboard_by_uid",
+        "get_dashboard_panel_queries",
+        "get_dashboard_property",
+        "get_dashboard_summary",
+        "get_datasource_by_name",
+        "get_datasource_by_uid",
+        "get_incident",
+        "get_oncall_shift",
+        "get_sift_analysis",
+        "get_sift_investigation",
+        "list_alert_groups",
+        "list_alert_rules",
+        "list_contact_points",
+        "list_datasources",
+        "list_incidents",
+        "list_loki_label_names",
+        "list_loki_label_values",
+        "list_oncall_schedules",
+        "list_oncall_teams",
+        "list_oncall_users",
+        "list_prometheus_label_names",
+        "list_prometheus_label_values",
+        "list_prometheus_metric_metadata",
+        "list_prometheus_metric_names",
         "list_pyroscope_label_names",
         "list_pyroscope_label_values",
         "list_pyroscope_profile_types",
-        "fetch_pyroscope_profile"
+        "list_sift_investigations",
+        "list_teams",
+        "list_users_by_org",
+        "patch_annotation",
+        "query_loki_logs",
+        "query_loki_stats",
+        "query_prometheus",
+        "search_dashboards",
+        "search_folders",
+        "update_alert_rule",
+        "update_annotation",
+        "update_dashboard"
       ],
       "metadata": {
         "stars": 1728,
@@ -2387,6 +2411,11 @@
           "description": "Service account token with appropriate permissions",
           "required": true,
           "secret": true
+        },
+        {
+          "name": "GRAFANA_ORG_ID",
+          "description": "Organization ID for multi-organization Grafana instances",
+          "required": false
         }
       ]
     },
@@ -2991,8 +3020,8 @@
       ],
       "metadata": {
         "stars": 7,
-        "pulls": 473,
-        "last_updated": "2025-10-18T02:26:51Z"
+        "pulls": 508,
+        "last_updated": "2025-11-07T02:32:30Z"
       },
       "repository_url": "https://github.com/kionsoftware/kion-mcp",
       "tags": [
@@ -4319,9 +4348,9 @@
         "get_vulnerability"
       ],
       "metadata": {
-        "stars": 24,
+        "stars": 25,
         "pulls": 10318,
-        "last_updated": "2025-10-18T02:26:52Z"
+        "last_updated": "2025-11-07T02:32:30Z"
       },
       "repository_url": "https://github.com/StacklokLabs/osv-mcp",
       "tags": [
@@ -4441,7 +4470,7 @@
         "evaluation",
         "ai"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.22",
+      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.23",
       "permissions": {
         "network": {
           "outbound": {
@@ -4514,7 +4543,7 @@
         "web",
         "accessibility"
       ],
-      "image": "mcr.microsoft.com/playwright/mcp:v0.0.45",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.46",
       "target_port": 8931,
       "permissions": {
         "network": {
@@ -5182,20 +5211,45 @@
       }
     },
     "terraform": {
-      "description": "Terraform ecosystem integration with IaC development capabilities and provider documentation",
+      "description": "Terraform registry and Cloud/Enterprise integration for providers, modules, policies, and workspaces",
       "tier": "Official",
       "status": "Active",
       "transport": "stdio",
       "tools": [
+        "attach_variable_set_to_workspaces",
+        "create_no_code_workspace",
+        "create_run",
+        "create_variable_in_variable_set",
+        "create_variable_set",
+        "create_workspace",
+        "create_workspace_tags",
+        "create_workspace_variable",
+        "delete_variable_in_variable_set",
+        "detach_variable_set_from_workspaces",
         "get_latest_module_version",
         "get_latest_provider_version",
         "get_module_details",
         "get_policy_details",
+        "get_private_module_details",
+        "get_private_provider_details",
         "get_provider_capabilities",
         "get_provider_details",
+        "get_run_details",
+        "get_workspace_details",
+        "list_runs",
+        "list_terraform_orgs",
+        "list_terraform_projects",
+        "list_variable_sets",
+        "list_workspace_variables",
+        "list_workspaces",
+        "read_workspace_tags",
         "search_modules",
         "search_policies",
-        "search_providers"
+        "search_private_modules",
+        "search_private_providers",
+        "search_providers",
+        "update_workspace",
+        "update_workspace_variable"
       ],
       "metadata": {
         "stars": 1008,
@@ -5211,26 +5265,58 @@
         "providers",
         "modules",
         "hcl",
-        "plan",
-        "apply",
-        "destroy",
-        "aws",
-        "gcp",
-        "azure"
+        "workspace",
+        "variables",
+        "governance",
+        "policy",
+        "registry"
       ],
       "image": "docker.io/hashicorp/terraform-mcp-server:0.3.2",
       "permissions": {
         "network": {
           "outbound": {
             "allow_host": [
-              "registry.terraform.io"
+              "registry.terraform.io",
+              "app.terraform.io"
             ],
             "allow_port": [
               443
             ]
           }
         }
-      }
+      },
+      "env_vars": [
+        {
+          "name": "TFE_TOKEN",
+          "description": "API authentication token for Terraform Cloud/Enterprise access",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "TFE_ADDRESS",
+          "description": "HCP Terraform/Enterprise endpoint URL",
+          "required": false,
+          "default": "https://app.terraform.io"
+        },
+        {
+          "name": "ENABLE_TF_OPERATIONS",
+          "description": "Enable destructive operations (use cautiously in production)",
+          "required": false,
+          "default": "false"
+        },
+        {
+          "name": "TFE_SKIP_TLS_VERIFY",
+          "description": "Bypass TLS certificate validation (development only)",
+          "required": false,
+          "default": "false"
+        },
+        {
+          "name": "TRANSPORT_MODE",
+          "description": "Protocol selection (stdio or streamable-http)",
+          "required": false,
+          "default": "stdio"
+        }
+      ]
     },
     "time": {
       "description": "Provides time information and IANA timezone conversions with auto system timezone detection.",
@@ -5334,6 +5420,11 @@
         "list_regions",
         "get_regional_availability"
       ],
+      "metadata": {
+        "stars": 6955,
+        "pulls": 0,
+        "last_updated": "2025-11-07T02:32:30Z"
+      },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
         "remote",

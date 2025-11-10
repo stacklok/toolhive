@@ -35,12 +35,14 @@ type TokenExchangeConfig struct {
 	TokenURL string `json:"tokenUrl"`
 
 	// ClientID is the OAuth 2.0 client identifier
-	// +kubebuilder:validation:Required
-	ClientID string `json:"clientId"`
+	// Optional for some token exchange flows (e.g., Google Cloud Workforce Identity)
+	// +optional
+	ClientID string `json:"clientId,omitempty"`
 
 	// ClientSecretRef is a reference to a secret containing the OAuth 2.0 client secret
-	// +kubebuilder:validation:Required
-	ClientSecretRef SecretKeyRef `json:"clientSecretRef"`
+	// Optional for some token exchange flows (e.g., Google Cloud Workforce Identity)
+	// +optional
+	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
 	// Audience is the target audience for the exchanged token
 	// +kubebuilder:validation:Required

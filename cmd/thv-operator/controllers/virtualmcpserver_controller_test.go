@@ -17,6 +17,7 @@ package controllers
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -34,6 +36,10 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
+)
+
+const (
+	testChecksumValue = "test-checksum-123"
 )
 
 // TestVirtualMCPServerValidateGroupRef tests the GroupRef validation
@@ -698,6 +704,7 @@ func TestVirtualMCPServerNaming(t *testing.T) {
 }
 
 // TestVirtualMCPServerAuthConfiguredCondition tests AuthConfigured condition setting
+// with various secret validation scenarios
 func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 	t.Parallel()
 
@@ -715,7 +722,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 		expectError         bool
 	}{
 		{
-			name: "valid auth with no secrets required",
+			name: "valid auth with no secrets required (anonymous)",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-vmcp",
@@ -736,9 +743,399 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthValid,
 			expectError:         false,
 		},
-		// Note: We can't easily test OIDC secret validation without creating the full
-		// OIDCConfigRef structure with ConfigMaps, which is complex for a unit test.
-		// The secret validation is tested implicitly through the ensureAllResources flow.
+		{
+			name: "OIDC with missing client secret",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "oidc",
+						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+							Type: "inline",
+							Inline: &mcpv1alpha1.InlineOIDCConfig{
+								Issuer:   "https://issuer.example.com",
+								Audience: "test-audience",
+								ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "missing-secret",
+									Key:  "client-secret",
+								},
+							},
+						},
+					},
+				},
+			},
+			secrets:             []client.Object{},
+			expectAuthCondition: true,
+			expectedAuthStatus:  metav1.ConditionFalse,
+			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthInvalid,
+			expectError:         true,
+		},
+		{
+			name: "OIDC with valid client secret",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "oidc",
+						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+							Type: "inline",
+							Inline: &mcpv1alpha1.InlineOIDCConfig{
+								Issuer:   "https://issuer.example.com",
+								Audience: "test-audience",
+								ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "oidc-secret",
+									Key:  "client-secret",
+								},
+							},
+						},
+					},
+				},
+			},
+			secrets: []client.Object{
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "oidc-secret",
+						Namespace: "default",
+					},
+					Data: map[string][]byte{
+						"client-secret": []byte("supersecret"),
+					},
+				},
+			},
+			expectAuthCondition: true,
+			expectedAuthStatus:  metav1.ConditionTrue,
+			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthValid,
+			expectError:         false,
+		},
+		{
+			name: "backend auth with missing service account credentials",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Source: "explicit",
+						Default: &mcpv1alpha1.BackendAuthConfig{
+							Type: mcpv1alpha1.BackendAuthTypeServiceAccount,
+							ServiceAccount: &mcpv1alpha1.ServiceAccountAuth{
+								CredentialsRef: mcpv1alpha1.SecretKeyRef{
+									Name: "missing-backend-secret",
+									Key:  "token",
+								},
+							},
+						},
+					},
+				},
+			},
+			secrets:             []client.Object{},
+			expectAuthCondition: true,
+			expectedAuthStatus:  metav1.ConditionFalse,
+			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthInvalid,
+			expectError:         true,
+		},
+		{
+			name: "backend auth with valid service account credentials",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Source: "explicit",
+						Default: &mcpv1alpha1.BackendAuthConfig{
+							Type: mcpv1alpha1.BackendAuthTypeServiceAccount,
+							ServiceAccount: &mcpv1alpha1.ServiceAccountAuth{
+								CredentialsRef: mcpv1alpha1.SecretKeyRef{
+									Name: "backend-secret",
+									Key:  "token",
+								},
+							},
+						},
+					},
+				},
+			},
+			secrets: []client.Object{
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "backend-secret",
+						Namespace: "default",
+					},
+					Data: map[string][]byte{
+						"token": []byte("backend-token-value"),
+					},
+				},
+			},
+			expectAuthCondition: true,
+			expectedAuthStatus:  metav1.ConditionTrue,
+			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthValid,
+			expectError:         false,
+		},
+		{
+			name: "per-backend auth with missing credentials",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Source: "explicit",
+						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
+							"backend1": {
+								Type: mcpv1alpha1.BackendAuthTypeServiceAccount,
+								ServiceAccount: &mcpv1alpha1.ServiceAccountAuth{
+									CredentialsRef: mcpv1alpha1.SecretKeyRef{
+										Name: "missing-backend1-secret",
+										Key:  "token",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			secrets:             []client.Object{},
+			expectAuthCondition: true,
+			expectedAuthStatus:  metav1.ConditionFalse,
+			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthInvalid,
+			expectError:         true,
+		},
+		{
+			name: "Redis token cache with missing password",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+					TokenCache: &mcpv1alpha1.TokenCacheConfig{
+						Provider: "redis",
+						Redis: &mcpv1alpha1.RedisCacheConfig{
+							Address: "redis:6379",
+							PasswordRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "missing-redis-secret",
+								Key:  "password",
+							},
+						},
+					},
+				},
+			},
+			secrets:             []client.Object{},
+			expectAuthCondition: true,
+			expectedAuthStatus:  metav1.ConditionFalse,
+			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthInvalid,
+			expectError:         true,
+		},
+		{
+			name: "Redis token cache with valid password",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+					TokenCache: &mcpv1alpha1.TokenCacheConfig{
+						Provider: "redis",
+						Redis: &mcpv1alpha1.RedisCacheConfig{
+							Address: "redis:6379",
+							PasswordRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "redis-secret",
+								Key:  "password",
+							},
+						},
+					},
+				},
+			},
+			secrets: []client.Object{
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "redis-secret",
+						Namespace: "default",
+					},
+					Data: map[string][]byte{
+						"password": []byte("redis-password"),
+					},
+				},
+			},
+			expectAuthCondition: true,
+			expectedAuthStatus:  metav1.ConditionTrue,
+			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthValid,
+			expectError:         false,
+		},
+		{
+			name: "OIDC secret exists but missing required key",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "oidc",
+						OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+							Type: "inline",
+							Inline: &mcpv1alpha1.InlineOIDCConfig{
+								Issuer:   "https://issuer.example.com",
+								Audience: "test-audience",
+								ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+									Name: "oidc-secret",
+									Key:  "client-secret",
+								},
+							},
+						},
+					},
+				},
+			},
+			secrets: []client.Object{
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "oidc-secret",
+						Namespace: "default",
+					},
+					Data: map[string][]byte{
+						"wrong-key": []byte("supersecret"),
+					},
+				},
+			},
+			expectAuthCondition: true,
+			expectedAuthStatus:  metav1.ConditionFalse,
+			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthInvalid,
+			expectError:         true,
+		},
+		{
+			name: "backend auth secret exists but missing required key",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+						Source: "explicit",
+						Default: &mcpv1alpha1.BackendAuthConfig{
+							Type: mcpv1alpha1.BackendAuthTypeServiceAccount,
+							ServiceAccount: &mcpv1alpha1.ServiceAccountAuth{
+								CredentialsRef: mcpv1alpha1.SecretKeyRef{
+									Name: "backend-secret",
+									Key:  "token",
+								},
+							},
+						},
+					},
+				},
+			},
+			secrets: []client.Object{
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "backend-secret",
+						Namespace: "default",
+					},
+					Data: map[string][]byte{
+						"different-key": []byte("backend-token-value"),
+					},
+				},
+			},
+			expectAuthCondition: true,
+			expectedAuthStatus:  metav1.ConditionFalse,
+			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthInvalid,
+			expectError:         true,
+		},
+		{
+			name: "Redis secret exists but missing required key",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+					TokenCache: &mcpv1alpha1.TokenCacheConfig{
+						Provider: "redis",
+						Redis: &mcpv1alpha1.RedisCacheConfig{
+							Address: "redis:6379",
+							PasswordRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "redis-secret",
+								Key:  "password",
+							},
+						},
+					},
+				},
+			},
+			secrets: []client.Object{
+				&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "redis-secret",
+						Namespace: "default",
+					},
+					Data: map[string][]byte{
+						"not-password": []byte("redis-password"),
+					},
+				},
+			},
+			expectAuthCondition: true,
+			expectedAuthStatus:  metav1.ConditionFalse,
+			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthInvalid,
+			expectError:         true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -787,4 +1184,1609 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestVirtualMCPServerReconcile_NotFound(t *testing.T) {
+	t.Parallel()
+
+	// Setup
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	// Test reconciling a resource that doesn't exist
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "nonexistent",
+			Namespace: "default",
+		},
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+
+	// Should not error and should not requeue
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+}
+
+func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		setupVMCP      func() *mcpv1alpha1.VirtualMCPServer
+		setupCollector func(vmcp *mcpv1alpha1.VirtualMCPServer) virtualmcpserverstatus.StatusManager
+		expectUpdate   bool
+		expectError    bool
+	}{
+		{
+			name: "successful status update",
+			setupVMCP: func() *mcpv1alpha1.VirtualMCPServer {
+				return &mcpv1alpha1.VirtualMCPServer{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       "test-vmcp",
+						Namespace:  "default",
+						Generation: 1,
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						GroupRef: mcpv1alpha1.GroupRef{
+							Name: "test-group",
+						},
+					},
+				}
+			},
+			setupCollector: func(vmcp *mcpv1alpha1.VirtualMCPServer) virtualmcpserverstatus.StatusManager {
+				collector := virtualmcpserverstatus.NewStatusManager(vmcp)
+				collector.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseReady)
+				collector.SetMessage("All resources ready")
+				return collector
+			},
+			expectUpdate: true,
+			expectError:  false,
+		},
+		{
+			name: "no changes to apply",
+			setupVMCP: func() *mcpv1alpha1.VirtualMCPServer {
+				return &mcpv1alpha1.VirtualMCPServer{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       "test-vmcp",
+						Namespace:  "default",
+						Generation: 1,
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						GroupRef: mcpv1alpha1.GroupRef{
+							Name: "test-group",
+						},
+					},
+				}
+			},
+			setupCollector: func(vmcp *mcpv1alpha1.VirtualMCPServer) virtualmcpserverstatus.StatusManager {
+				return virtualmcpserverstatus.NewStatusManager(vmcp)
+			},
+			expectUpdate: false,
+			expectError:  false,
+		},
+		{
+			name: "batch update with multiple changes",
+			setupVMCP: func() *mcpv1alpha1.VirtualMCPServer {
+				return &mcpv1alpha1.VirtualMCPServer{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       "test-vmcp",
+						Namespace:  "default",
+						Generation: 1,
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						GroupRef: mcpv1alpha1.GroupRef{
+							Name: "test-group",
+						},
+					},
+				}
+			},
+			setupCollector: func(vmcp *mcpv1alpha1.VirtualMCPServer) virtualmcpserverstatus.StatusManager {
+				collector := virtualmcpserverstatus.NewStatusManager(vmcp)
+				collector.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseReady)
+				collector.SetMessage("All resources ready")
+				collector.SetURL("http://test.example.com")
+				collector.SetObservedGeneration(1)
+				collector.SetGroupRefValidatedCondition("GroupValid", "group is valid", metav1.ConditionTrue)
+				collector.SetAuthConfiguredCondition("AuthValid", "auth is configured", metav1.ConditionTrue)
+				collector.SetReadyCondition("DeploymentReady", "deployment is ready", metav1.ConditionTrue)
+				return collector
+			},
+			expectUpdate: true,
+			expectError:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			_ = mcpv1alpha1.AddToScheme(scheme)
+			_ = corev1.AddToScheme(scheme)
+			_ = appsv1.AddToScheme(scheme)
+			_ = rbacv1.AddToScheme(scheme)
+
+			vmcp := tt.setupVMCP()
+			k8sClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(vmcp).
+				WithStatusSubresource(vmcp).
+				Build()
+
+			reconciler := &VirtualMCPServerReconciler{
+				Client: k8sClient,
+				Scheme: scheme,
+			}
+
+			collector := tt.setupCollector(vmcp)
+
+			err := reconciler.applyStatusUpdates(context.Background(), vmcp, collector)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+
+				// Verify the status was updated
+				updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
+				err := k8sClient.Get(context.Background(), types.NamespacedName{
+					Name:      vmcp.Name,
+					Namespace: vmcp.Namespace,
+				}, updatedVMCP)
+				require.NoError(t, err)
+
+				if tt.expectUpdate {
+					// Verify updates were applied
+					assert.NotEqual(t, mcpv1alpha1.VirtualMCPServerPhase(""), updatedVMCP.Status.Phase)
+				}
+			}
+		})
+	}
+}
+
+func TestVirtualMCPServerApplyStatusUpdates_ResourceNotFound(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-vmcp",
+			Namespace:  "default",
+			Generation: 1,
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "test-group",
+			},
+		},
+	}
+
+	// Create client WITHOUT the resource
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	collector := virtualmcpserverstatus.NewStatusManager(vmcp)
+	collector.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseReady)
+
+	err := reconciler.applyStatusUpdates(context.Background(), vmcp, collector)
+
+	// Should return error when resource doesn't exist
+	assert.Error(t, err)
+}
+
+func TestVirtualMCPServerEnsureAllResources_Errors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		setupVMCP   func() *mcpv1alpha1.VirtualMCPServer
+		setupClient func(t *testing.T, vmcp *mcpv1alpha1.VirtualMCPServer) client.Client
+		expectError bool
+	}{
+		{
+			name: "no auth configured - valid",
+			setupVMCP: func() *mcpv1alpha1.VirtualMCPServer {
+				return &mcpv1alpha1.VirtualMCPServer{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:       "test-vmcp",
+						Namespace:  "default",
+						Generation: 1,
+					},
+					Spec: mcpv1alpha1.VirtualMCPServerSpec{
+						GroupRef: mcpv1alpha1.GroupRef{
+							Name: "test-group",
+						},
+					},
+				}
+			},
+			setupClient: func(_ *testing.T, vmcp *mcpv1alpha1.VirtualMCPServer) client.Client {
+				scheme := runtime.NewScheme()
+				_ = mcpv1alpha1.AddToScheme(scheme)
+				_ = corev1.AddToScheme(scheme)
+				_ = appsv1.AddToScheme(scheme)
+				_ = rbacv1.AddToScheme(scheme)
+
+				mcpGroup := &mcpv1alpha1.MCPGroup{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-group",
+						Namespace: "default",
+					},
+					Status: mcpv1alpha1.MCPGroupStatus{
+						Phase: mcpv1alpha1.MCPGroupPhaseReady,
+					},
+				}
+				return fake.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(vmcp, mcpGroup).
+					WithStatusSubresource(vmcp).
+					Build()
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := tt.setupVMCP()
+			k8sClient := tt.setupClient(t, vmcp)
+
+			reconciler := &VirtualMCPServerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			collector := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+			err := reconciler.ensureAllResources(context.Background(), vmcp, collector)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	reconciler := &VirtualMCPServerReconciler{
+		Scheme: scheme,
+	}
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "test-group",
+			},
+		},
+	}
+
+	tests := []struct {
+		name           string
+		deployment     *appsv1.Deployment
+		vmcp           *mcpv1alpha1.VirtualMCPServer
+		expectedUpdate bool
+	}{
+		{
+			name:           "nil deployment needs update",
+			deployment:     nil,
+			vmcp:           vmcp,
+			expectedUpdate: true,
+		},
+		{
+			name: "nil vmcp needs update",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: "test-image:latest",
+								},
+							},
+						},
+					},
+				},
+			},
+			vmcp:           nil,
+			expectedUpdate: true,
+		},
+		{
+			name: "empty containers needs update",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{},
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			expectedUpdate: true,
+		},
+		{
+			name: "image change needs update",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: "old-image:v1",
+									Ports: []corev1.ContainerPort{
+										{ContainerPort: 4483},
+									},
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+								},
+							},
+							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			expectedUpdate: true,
+		},
+		{
+			name: "port change needs update",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: getVmcpImage(),
+									Ports: []corev1.ContainerPort{
+										{ContainerPort: 8080},
+									},
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+								},
+							},
+							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			expectedUpdate: true,
+		},
+		{
+			name: "env var change needs update",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: getVmcpImage(),
+									Ports: []corev1.ContainerPort{
+										{ContainerPort: 4483},
+									},
+									Env: []corev1.EnvVar{
+										{Name: "OLD_VAR", Value: "old-value"},
+									},
+								},
+							},
+							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			expectedUpdate: true,
+		},
+		{
+			name: "service account change needs update",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: getVmcpImage(),
+									Ports: []corev1.ContainerPort{
+										{ContainerPort: 4483},
+									},
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+								},
+							},
+							ServiceAccountName: "wrong-service-account",
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			expectedUpdate: true,
+		},
+		{
+			name: "no changes - no update needed",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: getVmcpImage(),
+									Ports: []corev1.ContainerPort{
+										{ContainerPort: 4483},
+									},
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+								},
+							},
+							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			expectedUpdate: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			needsUpdate := reconciler.containerNeedsUpdate(context.Background(), tt.deployment, tt.vmcp)
+			assert.Equal(t, tt.expectedUpdate, needsUpdate)
+		})
+	}
+}
+
+func TestVirtualMCPServerDeploymentMetadataNeedsUpdate(t *testing.T) {
+	t.Parallel()
+
+	reconciler := &VirtualMCPServerReconciler{}
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+	}
+
+	tests := []struct {
+		name           string
+		deployment     *appsv1.Deployment
+		vmcp           *mcpv1alpha1.VirtualMCPServer
+		expectedUpdate bool
+	}{
+		{
+			name:           "nil deployment needs update",
+			deployment:     nil,
+			vmcp:           vmcp,
+			expectedUpdate: true,
+		},
+		{
+			name: "nil vmcp needs update",
+			deployment: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labelsForVirtualMCPServer("test-vmcp"),
+				},
+			},
+			vmcp:           nil,
+			expectedUpdate: true,
+		},
+		{
+			name: "label change needs update",
+			deployment: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"wrong-label": "wrong-value",
+					},
+					Annotations: make(map[string]string),
+				},
+			},
+			vmcp:           vmcp,
+			expectedUpdate: true,
+		},
+		{
+			name: "annotation change needs update",
+			deployment: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labelsForVirtualMCPServer(vmcp.Name),
+					Annotations: map[string]string{
+						"extra-annotation": "extra-value",
+					},
+				},
+			},
+			vmcp:           vmcp,
+			expectedUpdate: true,
+		},
+		{
+			name: "no changes - no update needed",
+			deployment: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      labelsForVirtualMCPServer(vmcp.Name),
+					Annotations: make(map[string]string),
+				},
+			},
+			vmcp:           vmcp,
+			expectedUpdate: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			needsUpdate := reconciler.deploymentMetadataNeedsUpdate(tt.deployment, tt.vmcp)
+			assert.Equal(t, tt.expectedUpdate, needsUpdate)
+		})
+	}
+}
+
+func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+
+	reconciler := &VirtualMCPServerReconciler{
+		Scheme: scheme,
+	}
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+	}
+
+	vmcpConfigChecksum := testChecksumValue
+	expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum,
+	)
+
+	tests := []struct {
+		name           string
+		deployment     *appsv1.Deployment
+		vmcp           *mcpv1alpha1.VirtualMCPServer
+		checksum       string
+		expectedUpdate bool
+	}{
+		{
+			name:           "nil deployment needs update",
+			deployment:     nil,
+			vmcp:           vmcp,
+			checksum:       vmcpConfigChecksum,
+			expectedUpdate: true,
+		},
+		{
+			name: "nil vmcp needs update",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels:      expectedLabels,
+							Annotations: expectedAnnotations,
+						},
+					},
+				},
+			},
+			vmcp:           nil,
+			checksum:       vmcpConfigChecksum,
+			expectedUpdate: true,
+		},
+		{
+			name: "pod template label change needs update",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"wrong-label": "wrong-value",
+							},
+							Annotations: expectedAnnotations,
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			checksum:       vmcpConfigChecksum,
+			expectedUpdate: true,
+		},
+		{
+			name: "pod template annotation change needs update",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: expectedLabels,
+							Annotations: map[string]string{
+								"wrong-annotation": "wrong-value",
+							},
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			checksum:       vmcpConfigChecksum,
+			expectedUpdate: true,
+		},
+		{
+			name: "checksum change needs update",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: expectedLabels,
+							Annotations: map[string]string{
+								checksum.RunConfigChecksumAnnotation: "old-checksum",
+							},
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			checksum:       vmcpConfigChecksum,
+			expectedUpdate: true,
+		},
+		{
+			name: "no changes - no update needed",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels:      expectedLabels,
+							Annotations: expectedAnnotations,
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			checksum:       vmcpConfigChecksum,
+			expectedUpdate: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			needsUpdate := reconciler.podTemplateMetadataNeedsUpdate(tt.deployment, tt.vmcp, tt.checksum)
+			assert.Equal(t, tt.expectedUpdate, needsUpdate)
+		})
+	}
+}
+
+func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	reconciler := &VirtualMCPServerReconciler{
+		Scheme: scheme,
+	}
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "test-group",
+			},
+		},
+	}
+
+	vmcpConfigChecksum := testChecksumValue
+	expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum,
+	)
+
+	tests := []struct {
+		name           string
+		deployment     *appsv1.Deployment
+		expectedUpdate bool
+	}{
+		{
+			name: "deployment metadata changed",
+			deployment: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"wrong-label": "wrong-value",
+					},
+					Annotations: make(map[string]string),
+				},
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels:      expectedLabels,
+							Annotations: expectedAnnotations,
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: getVmcpImage(),
+									Ports: []corev1.ContainerPort{
+										{ContainerPort: 4483},
+									},
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+								},
+							},
+							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+						},
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "pod template metadata changed",
+			deployment: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      labelsForVirtualMCPServer(vmcp.Name),
+					Annotations: make(map[string]string),
+				},
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"wrong-label": "wrong-value",
+							},
+							Annotations: expectedAnnotations,
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: getVmcpImage(),
+									Ports: []corev1.ContainerPort{
+										{ContainerPort: 4483},
+									},
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+								},
+							},
+							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+						},
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "container changed",
+			deployment: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      labelsForVirtualMCPServer(vmcp.Name),
+					Annotations: make(map[string]string),
+				},
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels:      expectedLabels,
+							Annotations: expectedAnnotations,
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: "old-image:v1",
+									Ports: []corev1.ContainerPort{
+										{ContainerPort: 4483},
+									},
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+								},
+							},
+							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+						},
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "no changes - no update needed",
+			deployment: &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      labelsForVirtualMCPServer(vmcp.Name),
+					Annotations: make(map[string]string),
+				},
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels:      expectedLabels,
+							Annotations: expectedAnnotations,
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: getVmcpImage(),
+									Ports: []corev1.ContainerPort{
+										{ContainerPort: 4483},
+									},
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+								},
+							},
+							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+						},
+					},
+				},
+			},
+			expectedUpdate: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			needsUpdate := reconciler.deploymentNeedsUpdate(context.Background(), tt.deployment, vmcp, vmcpConfigChecksum)
+			assert.Equal(t, tt.expectedUpdate, needsUpdate)
+		})
+	}
+}
+
+func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-vmcp",
+			Namespace:  "default",
+			Generation: 1,
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "test-group",
+			},
+		},
+	}
+
+	mcpGroup := &mcpv1alpha1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-group",
+			Namespace: "default",
+		},
+		Status: mcpv1alpha1.MCPGroupStatus{
+			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		},
+	}
+
+	// Create deployment that will be found by ensureDeployment
+	replicas := int32(1)
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+			Labels:    labelsForVirtualMCPServer(vmcp.Name),
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labelsForVirtualMCPServer(vmcp.Name),
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labelsForVirtualMCPServer(vmcp.Name),
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "vmcp",
+							Image: "test-image:latest",
+						},
+					},
+				},
+			},
+		},
+		Status: appsv1.DeploymentStatus{
+			ReadyReplicas: 1,
+		},
+	}
+
+	// Create service that will be found by ensureService
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpServiceName(vmcp.Name),
+			Namespace: "default",
+			Labels:    labelsForVirtualMCPServer(vmcp.Name),
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: labelsForVirtualMCPServer(vmcp.Name),
+			Ports: []corev1.ServicePort{
+				{
+					Port:       4483,
+					TargetPort: intstr.FromInt(4483),
+				},
+			},
+		},
+	}
+
+	// Create pod for status update
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp-pod",
+			Namespace: "default",
+			Labels:    labelsForVirtualMCPServer(vmcp.Name),
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{
+				{
+					Type:   corev1.PodReady,
+					Status: corev1.ConditionTrue,
+				},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, mcpGroup, deployment, service, pod).
+		WithStatusSubresource(vmcp).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      vmcp.Name,
+			Namespace: vmcp.Namespace,
+		},
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	// Verify status was updated
+	updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
+	err = k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      vmcp.Name,
+		Namespace: vmcp.Namespace,
+	}, updatedVMCP)
+	require.NoError(t, err)
+
+	// Verify conditions were set
+	assert.NotEmpty(t, updatedVMCP.Status.Conditions)
+}
+
+func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-vmcp",
+			Namespace:  "default",
+			Generation: 1,
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "nonexistent-group",
+			},
+		},
+	}
+
+	// Don't create the MCPGroup so validation fails
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		WithStatusSubresource(vmcp).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      vmcp.Name,
+			Namespace: vmcp.Namespace,
+		},
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	// Verify status was updated with error condition
+	updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
+	err = k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      vmcp.Name,
+		Namespace: vmcp.Namespace,
+	}, updatedVMCP)
+	require.NoError(t, err)
+
+	assert.Equal(t, mcpv1alpha1.VirtualMCPServerPhaseFailed, updatedVMCP.Status.Phase)
+	assert.NotEmpty(t, updatedVMCP.Status.Message)
+}
+
+func TestVirtualMCPServerReconcile_GroupNotReady(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = rbacv1.AddToScheme(scheme)
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-vmcp",
+			Namespace:  "default",
+			Generation: 1,
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "test-group",
+			},
+		},
+	}
+
+	mcpGroup := &mcpv1alpha1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-group",
+			Namespace: "default",
+		},
+		Status: mcpv1alpha1.MCPGroupStatus{
+			Phase: mcpv1alpha1.MCPGroupPhasePending, // Not ready
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, mcpGroup).
+		WithStatusSubresource(vmcp).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      vmcp.Name,
+			Namespace: vmcp.Namespace,
+		},
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "is not ready")
+	assert.Equal(t, ctrl.Result{}, result)
+
+	// Verify status was updated
+	updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
+	err = k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      vmcp.Name,
+		Namespace: vmcp.Namespace,
+	}, updatedVMCP)
+	require.NoError(t, err)
+
+	assert.Equal(t, mcpv1alpha1.VirtualMCPServerPhasePending, updatedVMCP.Status.Phase)
+}
+
+func TestVirtualMCPServerReconcile_GetError(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+
+	// Create empty client - resource won't be found but we'll test non-NotFound errors
+	// by using a client that returns a generic error
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+
+	// For a not found error, should not error and not requeue
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+}
+
+func TestVirtualMCPServerEnsureDeployment_ConfigMapNotFound(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "test-group",
+			},
+		},
+	}
+
+	// Don't create ConfigMap - it won't be found
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp)
+
+	// Should requeue after 5 seconds when ConfigMap not found
+	assert.NoError(t, err)
+	assert.Equal(t, 5*time.Second, result.RequeueAfter)
+}
+
+func TestVirtualMCPServerEnsureDeployment_CreateDeployment(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "test-group",
+			},
+		},
+	}
+
+	// Create ConfigMap so checksum can be retrieved
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpConfigMapName(vmcp.Name),
+			Namespace: "default",
+			Annotations: map[string]string{
+				checksum.ContentChecksumAnnotation: "test-checksum",
+			},
+		},
+		Data: map[string]string{
+			"config.yaml": "test-config",
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, configMap).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp)
+
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	// Verify deployment was created
+	deployment := &appsv1.Deployment{}
+	err = k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      vmcp.Name,
+		Namespace: vmcp.Namespace,
+	}, deployment)
+	assert.NoError(t, err)
+	assert.Equal(t, vmcp.Name, deployment.Name)
+}
+
+func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "test-group",
+			},
+		},
+	}
+
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpConfigMapName(vmcp.Name),
+			Namespace: "default",
+			Annotations: map[string]string{
+				checksum.ContentChecksumAnnotation: "test-checksum",
+			},
+		},
+		Data: map[string]string{
+			"config.yaml": "test-config",
+		},
+	}
+
+	// Create existing deployment with old image
+	oldDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+			Labels:    labelsForVirtualMCPServer(vmcp.Name),
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labelsForVirtualMCPServer(vmcp.Name),
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labelsForVirtualMCPServer(vmcp.Name),
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "vmcp",
+							Image: "old-image:v1",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, configMap, oldDeployment).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp)
+
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	// Verify deployment was updated
+	deployment := &appsv1.Deployment{}
+	err = k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      vmcp.Name,
+		Namespace: vmcp.Namespace,
+	}, deployment)
+	assert.NoError(t, err)
+	assert.Equal(t, getVmcpImage(), deployment.Spec.Template.Spec.Containers[0].Image)
+}
+
+func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "test-group",
+			},
+		},
+	}
+
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpConfigMapName(vmcp.Name),
+			Namespace: "default",
+			Annotations: map[string]string{
+				checksum.ContentChecksumAnnotation: "test-checksum",
+			},
+		},
+		Data: map[string]string{
+			"config.yaml": "test-config",
+		},
+	}
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+		Scheme: scheme,
+	}
+
+	// Create deployment matching current spec
+	expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, "test-checksum",
+	)
+
+	correctDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "test-vmcp",
+			Namespace:   "default",
+			Labels:      labelsForVirtualMCPServer(vmcp.Name),
+			Annotations: make(map[string]string),
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labelsForVirtualMCPServer(vmcp.Name),
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      expectedLabels,
+					Annotations: expectedAnnotations,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "vmcp",
+							Image: getVmcpImage(),
+							Ports: []corev1.ContainerPort{
+								{ContainerPort: 4483},
+							},
+							Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+						},
+					},
+					ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+				},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, configMap, correctDeployment).
+		Build()
+
+	reconciler.Client = k8sClient
+
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp)
+
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+}
+
+func TestVirtualMCPServerEnsureService_CreateService(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "test-group",
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	result, err := reconciler.ensureService(context.Background(), vmcp)
+
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	// Verify service was created
+	service := &corev1.Service{}
+	err = k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      vmcpServiceName(vmcp.Name),
+		Namespace: vmcp.Namespace,
+	}, service)
+	assert.NoError(t, err)
+	assert.Equal(t, vmcpServiceName(vmcp.Name), service.Name)
+}
+
+func TestVirtualMCPServerEnsureService_UpdateService(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "test-group",
+			},
+			ServiceType: "LoadBalancer",
+		},
+	}
+
+	// Create existing service with wrong type
+	oldService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpServiceName(vmcp.Name),
+			Namespace: "default",
+			Labels:    labelsForVirtualMCPServer(vmcp.Name),
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: labelsForVirtualMCPServer(vmcp.Name),
+			Ports: []corev1.ServicePort{
+				{
+					Port:       4483,
+					TargetPort: intstr.FromInt(4483),
+				},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, oldService).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	result, err := reconciler.ensureService(context.Background(), vmcp)
+
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	// Verify service was updated
+	service := &corev1.Service{}
+	err = k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      vmcpServiceName(vmcp.Name),
+		Namespace: vmcp.Namespace,
+	}, service)
+	assert.NoError(t, err)
+	assert.Equal(t, corev1.ServiceTypeLoadBalancer, service.Spec.Type)
+}
+
+func TestVirtualMCPServerEnsureService_NoUpdateNeeded(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: "test-group",
+			},
+		},
+	}
+
+	// Create service matching current spec
+	correctService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        vmcpServiceName(vmcp.Name),
+			Namespace:   "default",
+			Labels:      labelsForVirtualMCPServer(vmcp.Name),
+			Annotations: make(map[string]string),
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: labelsForVirtualMCPServer(vmcp.Name),
+			Ports: []corev1.ServicePort{
+				{
+					Port:       4483,
+					TargetPort: intstr.FromInt(4483),
+				},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, correctService).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	result, err := reconciler.ensureService(context.Background(), vmcp)
+
+	assert.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
 }

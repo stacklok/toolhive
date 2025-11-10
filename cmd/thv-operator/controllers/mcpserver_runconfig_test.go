@@ -186,7 +186,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			},
 		},
 		{
-			name: "proxy mode defaults to sse when not specified",
+			name: "proxy mode defaults to streamable-http when not specified",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "default-proxy-mode-server",
@@ -205,7 +205,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Equal(t, testImage, config.Image)
 				assert.Equal(t, transporttypes.TransportTypeStdio, config.Transport)
 				assert.Equal(t, 8080, config.Port)
-				assert.Equal(t, transporttypes.ProxyModeSSE, config.ProxyMode, "Should default to sse")
+				assert.Equal(t, transporttypes.ProxyModeStreamableHTTP, config.ProxyMode, "Should default to streamable-http")
 			},
 		},
 		{

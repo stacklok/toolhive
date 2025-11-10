@@ -152,7 +152,7 @@ func TestResponseFilteringWriter(t *testing.T) {
 			require.NoError(t, err, "Failed to write response data")
 
 			// Flush the response
-			err = filteringWriter.Flush()
+			err = filteringWriter.FlushAndFilter()
 			require.NoError(t, err, "Failed to flush response")
 
 			// Parse the filtered response
@@ -257,7 +257,7 @@ func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 	require.NoError(t, err, "Failed to write response data")
 
 	// Flush the response
-	err = filteringWriter.Flush()
+	err = filteringWriter.FlushAndFilter()
 	require.NoError(t, err, "Failed to flush response")
 
 	// Verify the response passed through unchanged
@@ -299,7 +299,7 @@ func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
 	require.NoError(t, err, "Failed to write response data")
 
 	// Flush the response
-	err = filteringWriter.Flush()
+	err = filteringWriter.FlushAndFilter()
 	require.NoError(t, err, "Failed to flush response")
 
 	// Verify the error response passed through unchanged

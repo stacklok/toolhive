@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
@@ -51,6 +52,29 @@ type Runner struct {
 	prometheusHandler http.Handler
 
 	statusManager statuses.StatusManager
+
+	// authenticatedTokenSource is the wrapped token source for remote workloads with authentication monitoring
+	authenticatedTokenSource *auth.MonitoredTokenSource
+
+	// monitoringCtx is the context for background authentication monitoring
+	// It is cancelled during Cleanup() to stop monitoring
+	monitoringCtx    context.Context
+	monitoringCancel context.CancelFunc
+}
+
+// statusManagerAdapter adapts statuses.StatusManager to auth.StatusUpdater interface
+type statusManagerAdapter struct {
+	sm statuses.StatusManager
+}
+
+func (a *statusManagerAdapter) SetWorkloadStatus(
+	ctx context.Context,
+	workloadName string,
+	status rt.WorkloadStatus,
+	reason string,
+) error {
+	logger.Debugf("Setting workload status: %s, %s, %s", workloadName, status, reason)
+	return a.sm.SetWorkloadStatus(ctx, workloadName, status, reason)
 }
 
 // NewRunner creates a new Runner with the provided configuration
@@ -223,6 +247,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		tokenSource, err := r.handleRemoteAuthentication(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to authenticate to remote server: %w", err)
+		}
+
+		// Wrap the token source with authentication monitoring for remote workloads
+		if tokenSource != nil {
+			// Create a child context for monitoring that can be cancelled during cleanup
+			r.monitoringCtx, r.monitoringCancel = context.WithCancel(ctx)
+			// Create adapter to bridge statuses.StatusManager to auth.StatusUpdater
+			adapter := &statusManagerAdapter{sm: r.statusManager}
+			r.authenticatedTokenSource = auth.NewMonitoredTokenSource(r.monitoringCtx, tokenSource, r.Config.BaseName, adapter)
+			tokenSource = r.authenticatedTokenSource
+			r.authenticatedTokenSource.StartBackgroundMonitoring()
 		}
 
 		// Set the token source on the HTTP transport
@@ -405,5 +440,13 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 			lastErr = err
 		}
 	}
+
+	// Stop background authentication monitoring for remote workloads
+	// Cancel the monitoring context to stop the background goroutine
+	if r.monitoringCancel != nil {
+		r.monitoringCancel()
+		r.monitoringCancel = nil
+	}
+
 	return lastErr
 }

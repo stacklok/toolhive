@@ -13,6 +13,7 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
+	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -108,23 +109,7 @@ func (t *HTTPTransport) SetTokenSource(tokenSource oauth2.TokenSource) {
 
 // createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests
 func (t *HTTPTransport) createTokenInjectionMiddleware() types.MiddlewareFunction {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if t.tokenSource != nil {
-				token, err := t.tokenSource.Token()
-				if err != nil {
-					logger.Warnf("Unable to retrieve OAuth token: %v", err)
-					// Continue without token rather than failing
-				} else {
-					logger.Debugf("Injecting Bearer token into request to %s", r.URL.Path)
-					r.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token.AccessToken))
-				}
-			} else {
-				logger.Debugf("No token source available for request to %s", r.URL.Path)
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
+	return middleware.CreateTokenInjectionMiddleware(t.tokenSource)
 }
 
 // Mode returns the transport mode.

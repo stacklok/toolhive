@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yardstick
+  namespace: test-namespace
+spec:
+  replicas: 1
+status:
+  # Ensure deployment is available and progressing successfully
+  (conditions[?type == 'Available'] | [0].status): "True"
+  (conditions[?type == 'Progressing'] | [0].status): "True"
+  (conditions[?type == 'Progressing'] | [0].reason): "NewReplicaSetAvailable"
+  # Ensure all replicas are ready and available
+  replicas: 1
+  readyReplicas: 1
+  availableReplicas: 1
+  updatedReplicas: 1

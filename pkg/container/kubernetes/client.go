@@ -861,7 +861,7 @@ func (c *Client) createHeadlessService(
 		return fmt.Errorf("failed to apply service: %v", err)
 	}
 
-	logger.Infof("Created headless service %s for SSE transport", containerName)
+	logger.Infof("Created headless service %s for HTTP transport", containerName)
 
 	options.SSEHeadlessServiceName = svcName
 	return nil

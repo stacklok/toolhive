@@ -123,7 +123,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 
 	proxyMode := m.Spec.ProxyMode
 	if proxyMode == "" {
-		proxyMode = "sse" // Default to SSE for backward compatibility
+		proxyMode = "streamable-http" // Default to streamable-http (SSE is deprecated)
 	}
 
 	options := []runner.RunConfigBuilderOption{

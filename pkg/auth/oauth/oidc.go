@@ -200,8 +200,9 @@ func CreateOAuthConfigFromOIDC(
 	scopes []string,
 	usePKCE bool,
 	callbackPort int,
+	resource string,
 ) (*Config, error) {
-	return createOAuthConfigFromOIDCWithClient(ctx, issuer, clientID, clientSecret, scopes, usePKCE, callbackPort, nil)
+	return createOAuthConfigFromOIDCWithClient(ctx, issuer, clientID, clientSecret, scopes, usePKCE, callbackPort, resource, nil)
 }
 
 // createOAuthConfigFromOIDCWithClient creates an OAuth config from OIDC discovery with a custom HTTP client (private for testing)
@@ -211,6 +212,7 @@ func createOAuthConfigFromOIDCWithClient(
 	scopes []string,
 	usePKCE bool,
 	callbackPort int,
+	resource string,
 	client httpClient,
 ) (*Config, error) {
 	// Discover OIDC endpoints (insecureAllowHTTP is false for OAuth config creation)
@@ -243,5 +245,6 @@ func createOAuthConfigFromOIDCWithClient(
 		Scopes:                scopes,
 		UsePKCE:               usePKCE,
 		CallbackPort:          callbackPort,
+		Resource:              resource,
 	}, nil
 }

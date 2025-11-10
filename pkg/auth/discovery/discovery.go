@@ -374,6 +374,7 @@ type OAuthFlowConfig struct {
 	CallbackPort         int
 	Timeout              time.Duration
 	SkipBrowser          bool
+	Resource             string // RFC 8707 resource indicator (optional)
 	OAuthParams          map[string]string
 }
 
@@ -494,6 +495,7 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 			config.Scopes,
 			true, // Enable PKCE by default for security
 			config.CallbackPort,
+			config.Resource,
 			config.OAuthParams,
 		)
 	}
@@ -508,6 +510,7 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 		config.Scopes,
 		true, // Enable PKCE by default for security
 		config.CallbackPort,
+		config.Resource,
 	)
 }
 

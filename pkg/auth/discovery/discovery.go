@@ -192,8 +192,8 @@ func buildWellKnownURI(parsedURL *url.URL, endpointSpecific bool) string {
 	return baseURL.String()
 }
 
-// checkWellKnownURIExists checks if a well-known URI is accessible
-// Per RFC 9728, protected resource metadata MUST be queried using HTTP GET
+// checkWellKnownURIExists checks if a well-known URI is accessible and returns valid JSON metadata
+// Per RFC 9728, protected resource metadata MUST be queried using HTTP GET and MUST return application/json
 func checkWellKnownURIExists(ctx context.Context, client *http.Client, uri string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
@@ -214,9 +214,19 @@ func checkWellKnownURIExists(ctx context.Context, client *http.Client, uri strin
 		resp.Body.Close()
 	}()
 
-	// Consider 200 OK as success
-	// Note: 401 might indicate metadata exists but requires auth - we'll try anyway
-	return resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized
+	// RFC 9728 requires 200 OK status code - metadata endpoints must be publicly accessible
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	// RFC 9728 requires Content-Type to be application/json
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if !strings.Contains(contentType, "application/json") {
+		logger.Debugf("Well-known URI %s returned unexpected content type: %s", uri, contentType)
+		return false
+	}
+
+	return true
 }
 
 // tryWellKnownDiscovery attempts to discover authentication requirements via well-known URIs

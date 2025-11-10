@@ -834,7 +834,7 @@ func TestCheckWellKnownURIExists(t *testing.T) {
 		expected       bool
 	}{
 		{
-			name: "200 OK response",
+			name: "200 OK response with application/json",
 			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
@@ -843,11 +843,45 @@ func TestCheckWellKnownURIExists(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "401 Unauthorized response",
+			name: "200 OK with application/json; charset=utf-8",
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"resource":"https://example.com"}`))
+			},
+			expected: true,
+		},
+		{
+			name: "200 OK with wrong Content-Type",
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`<html></html>`))
+			},
+			expected: false, // Should reject non-JSON content
+		},
+		{
+			name: "200 OK without Content-Type header",
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"resource":"https://example.com"}`))
+			},
+			expected: false, // Should reject missing Content-Type
+		},
+		{
+			name: "401 Unauthorized with application/json",
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+			},
+			expected: false, // Well-known metadata must be publicly accessible (200 OK only)
+		},
+		{
+			name: "401 Unauthorized without Content-Type",
 			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusUnauthorized)
 			},
-			expected: true, // Still considered as "exists"
+			expected: false, // Well-known metadata must be publicly accessible
 		},
 		{
 			name: "404 Not Found response",

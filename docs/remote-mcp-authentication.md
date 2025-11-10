@@ -184,7 +184,8 @@ Per MCP spec priority, ToolHive tries well-known URIs in this order:
 **HTTP Method:**
 - Uses `GET` requests per RFC 9728 requirement
 - Sets `Accept: application/json` header
-- Returns on first successful response (200 or 401)
+- Validates `Content-Type: application/json` header in response
+- Returns on first successful response (200 OK only - metadata must be publicly accessible)
 
 **Response Processing:**
 - Extracts `authorization_servers` array from metadata

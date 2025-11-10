@@ -161,7 +161,7 @@ func runWithFileBasedConfig(
 	rt runtime.Runtime,
 	debugMode bool,
 	envVarValidator runner.EnvVarValidator,
-	imageMetadata *registry.ImageMetadata,
+	imageMetadata *regtypes.ImageMetadata,
 ) error {
 	// Use the file config directly with minimal essential overrides
 	config.Image = mcpServerImage

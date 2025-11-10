@@ -651,7 +651,7 @@ func TestTryDiscoverFromResourceMetadata_EmptyScopes(t *testing.T) {
 						"authorization_servers":    []string{authServer.URL}, // Point to our mock auth server
 						"bearer_methods_supported": []string{"header"},
 					}
-					if tt.metadataScopes != nil && len(tt.metadataScopes) > 0 {
+					if len(tt.metadataScopes) > 0 {
 						metadata["scopes_supported"] = tt.metadataScopes
 					}
 					// If metadataScopes is nil, don't include the field (RFC 9728: scopes_supported is optional)

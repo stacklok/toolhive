@@ -211,7 +211,7 @@ func checkWellKnownURIExists(ctx context.Context, client *http.Client, uri strin
 	defer func() {
 		// Drain and close response body to enable connection reuse
 		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}()
 
 	// RFC 9728 requires 200 OK status code - metadata endpoints must be publicly accessible

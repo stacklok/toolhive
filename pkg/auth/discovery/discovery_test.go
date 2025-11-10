@@ -17,6 +17,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
+const wellKnownOAuthPath = "/.well-known/oauth-protected-resource"
+
 func init() {
 	// Initialize logger for tests
 	logger.Initialize()
@@ -982,9 +984,9 @@ func TestTryWellKnownDiscovery(t *testing.T) {
 			t.Parallel()
 			// Create a test server that routes to different handlers
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource/") {
+				if strings.HasPrefix(r.URL.Path, wellKnownOAuthPath+"/") {
 					tt.endpointSpecificResp(w, r)
-				} else if r.URL.Path == "/.well-known/oauth-protected-resource" {
+				} else if r.URL.Path == wellKnownOAuthPath {
 					tt.rootLevelResp(w, r)
 				} else {
 					w.WriteHeader(http.StatusNotFound)
@@ -1108,10 +1110,9 @@ func TestDetectAuthenticationFromServer_WellKnownFallback(t *testing.T) {
 					assert.NotEmpty(t, result.ResourceMetadata, "Expected ResourceMetadata to be set")
 					assert.True(t, strings.Contains(result.ResourceMetadata, "/.well-known/oauth-protected-resource"),
 						"ResourceMetadata should contain well-known path")
-				} else {
-					// When WWW-Authenticate is used, ResourceMetadata might or might not be set
-					// depending on the header content
 				}
+				// When WWW-Authenticate is used (expectedResourceMeta=false), ResourceMetadata might
+				// or might not be set depending on the header content
 			} else {
 				assert.Nil(t, result, "Expected nil AuthInfo but got %v", result)
 			}

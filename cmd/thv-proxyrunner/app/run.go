@@ -147,7 +147,7 @@ func tryLoadConfigFromFile() (*runner.RunConfig, error) {
 	}
 
 	// No configuration file found
-	return nil, fmt.Errorf("configuration file required but no configuration file was found.")
+	return nil, fmt.Errorf("configuration file required but no configuration file was found")
 }
 
 // runWithFileBasedConfig handles execution when a runconfig.json file is found.

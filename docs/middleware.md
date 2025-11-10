@@ -12,9 +12,10 @@ The middleware chain consists of the following components:
 2. **Token Exchange Middleware**: Exchanges JWT tokens for external service tokens (optional)
 3. **MCP Parsing Middleware**: Parses JSON-RPC MCP requests and extracts structured data
 4. **Tool Mapping Middleware**: Enables tool filtering and override capabilities through two complementary middleware components that process outgoing `tools/list` responses and incoming `tools/call` requests (optional)
-5. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
-6. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
-7. **Audit Middleware**: Logs request events for compliance and monitoring (optional)
+5. **Usage Metrics Middleware**: Collects anonymous usage metrics for ToolHive development (optional)
+6. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
+7. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
+8. **Audit Middleware**: Logs request events for compliance and monitoring (optional)
 
 ## Architecture Diagram
 
@@ -177,7 +178,48 @@ Both components must be in place for the features to work correctly, as they ens
 
 **Note**: When either filtering or override is configured, both middleware components are automatically enabled and configured with the same parameters to ensure consistent behavior, however it is an explicit design choice to avoid sharing any state between the two middleware components.
 
-### 5. Telemetry Middleware
+### 5. Usage Metrics Middleware
+
+**Purpose**: Tracks tool call counts for usage analytics and usage metrics.
+
+**Location**: `pkg/usagemetrics/middleware.go`
+
+**Responsibilities**:
+- Count `tools/call` requests by examining parsed MCP data
+- Aggregate counts in-memory with atomic operations
+- Flush metrics to API endpoint periodically (every 15 minutes)
+- Reset counts daily at midnight UTC
+- Manage background flush goroutine lifecycle
+
+**Configuration**:
+- Enabled by default
+- Can be disabled via config: `thv config usage-metrics disable`
+- Can be disabled via environment variable: `TOOLHIVE_USAGE_METRICS_ENABLED=false`
+- Automatically disabled in CI environments
+
+**Dependencies**:
+- Requires parsed MCP data from MCP Parsing middleware
+
+**Opting Out**:
+
+Users can opt out of anonymous usage metrics in two ways:
+
+```bash
+# Via config (persistent)
+thv config usage-metrics disable
+
+# Via environment variable (session-only)
+export TOOLHIVE_USAGE_METRICS_ENABLED=false
+```
+
+To re-enable:
+```bash
+thv config usage-metrics enable
+```
+
+**Note**: This middleware collects anonymous usage metrics for ToolHive development. Failures do not break request processing.
+
+### 6. Telemetry Middleware
 
 **Purpose**: Instruments HTTP requests with OpenTelemetry tracing and metrics.
 
@@ -197,7 +239,7 @@ Both components must be in place for the features to work correctly, as they ens
 - Sampling rate
 - Custom headers
 
-### 6. Token Exchange Middleware
+### 7. Token Exchange Middleware
 
 **Purpose**: Exchanges incoming JWT tokens for external service tokens using OAuth 2.0 Token Exchange.
 
@@ -220,23 +262,6 @@ Both components must be in place for the features to work correctly, as they ens
 - Header injection strategy (replace or custom)
 
 **Note**: This middleware is currently implemented but not registered in the supported middleware factories (`pkg/runner/middleware.go:15`). It can be used directly via the proxy command but is not available through the standard middleware configuration system.
-
-### 7. Authorization Middleware
-
-**Purpose**: Evaluates Cedar policies to determine if requests are authorized.
-
-**Location**: `pkg/authz/middleware.go`
-
-**Responsibilities**:
-- Retrieve parsed MCP data from context
-- Create Cedar entities (Principal, Action, Resource)
-- Evaluate Cedar policies against the request
-- Allow or deny the request based on policy evaluation
-- Filter list responses based on user permissions
-
-**Dependencies**:
-- Requires JWT claims from Authentication middleware
-- Requires parsed MCP data from MCP Parsing middleware
 
 ### 8. Audit Middleware
 

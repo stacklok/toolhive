@@ -150,6 +150,60 @@ When no client credentials are provided ([`pkg/auth/oauth/dynamic_registration.g
 4. **Store Credentials**: Use returned client_id (and client_secret if provided)
 5. **Proceed with OAuth Flow**: Using registered credentials
 
+## Resource Parameter (RFC 8707) Implementation
+
+ToolHive implements the OAuth 2.0 Resource Indicators (RFC 8707) as required by the MCP specification:
+
+**Location**: [`pkg/auth/remote/handler.go:52-69`](../pkg/auth/remote/handler.go#L52)
+
+### Automatic Defaulting
+When no explicit `--remote-auth-resource` flag is provided, ToolHive automatically:
+1. Defaults the resource parameter to the remote server URL (the canonical URI of the MCP server)
+2. Validates the URI format according to MCP specification requirements
+3. Normalizes the URI (lowercase scheme/host, strips fragments, preserves trailing slashes)
+4. If the resource parameter cannot be derived, then it will not be sent
+
+### Validation Rules
+The resource parameter must conform to MCP canonical URI requirements:
+- **Must** include a scheme (http/https)
+- **Must** include a host
+- **Must not** contain fragments (#)
+
+When the resource parameter is **defaulted** from the remote URL:
+- Scheme and host are normalized to lowercase
+- Fragments are stripped (not allowed in resource indicators per spec)
+- Trailing slashes are preserved (we cannot determine semantic significance)
+
+When the resource parameter is **explicitly provided** by the user:
+- Value is validated but **not modified**
+- Returns an error if the value is invalid
+- User must provide a properly formatted canonical URI
+
+### Examples
+```bash
+# Automatic resource parameter (defaults and normalizes to remote URL)
+thv run https://MCP.Example.COM/api#section
+# Resource defaults to: https://mcp.example.com/api (normalized, fragment stripped)
+
+# Explicit resource parameter (not modified, must be valid)
+thv run https://mcp.example.com/api \
+  --remote-auth-resource https://mcp.example.com
+
+# Invalid explicit resource parameter with fragment (returns error)
+thv run https://mcp.example.com/api \
+  --remote-auth-resource https://mcp.example.com#fragment
+# Error: invalid resource parameter: resource URI must not contain fragments
+
+# Invalid explicit resource parameter without scheme (returns error)
+thv run https://mcp.example.com/api \
+  --remote-auth-resource mcp.example.com
+# Error: invalid resource parameter: resource URI must include a scheme
+```
+
+The validated and normalized resource parameter is sent in both:
+- Authorization requests (as `resource` query parameter)
+- Token exchange requests (as `resource` parameter)
+
 ## Security Features
 
 ### HTTPS Enforcement
@@ -277,17 +331,18 @@ The `oauth_config` section supports:
 | OAuth 2.1 PKCE | ✅ Compliant | Enabled by default |
 | WWW-Authenticate Parsing | ✅ Compliant | Supports Bearer with realm/resource_metadata |
 | Multiple Auth Servers | ✅ Compliant | Iterates and validates all servers |
-| Resource Parameter (RFC 8707) | ⚠️ Partial | Infrastructure ready, not yet sent in requests |
+| Resource Parameter (RFC 8707) | ✅ Compliant | Automatically defaults to remote server URL, validated and normalized |
 | Token Audience Validation | ⚠️ Partial | Server-side validation support ready |
+
+
 
 ## Future Enhancements
 
 While ToolHive is highly compliant with the current MCP specification, potential improvements include:
 
-1. **Resource Parameter**: Add explicit `resource` parameter to OAuth requests (infrastructure exists)
-2. **Token Audience Validation**: Enhanced client-side validation of token audience claims
-3. **Refresh Token Rotation**: Implement automatic refresh token rotation for long-lived sessions
-4. **Client Credential Caching**: Persist dynamically registered clients across sessions
+1. **Token Audience Validation**: Enhanced client-side validation of token audience claims
+2. **Refresh Token Rotation**: Implement automatic refresh token rotation for long-lived sessions
+3. **Client Credential Caching**: Persist dynamically registered clients across sessions
 
 ## Conclusion
 

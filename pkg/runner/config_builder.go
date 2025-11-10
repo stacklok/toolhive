@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
 
 // BuildContext defines the context in which the RunConfigBuilder is being used
@@ -454,6 +455,7 @@ func WithMiddlewareFromFlags(
 	auditConfigPath string,
 	serverName string,
 	transportType string,
+	disableUsageMetrics bool,
 ) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		var middlewareConfigs []types.MiddlewareConfig
@@ -472,7 +474,7 @@ func WithMiddlewareFromFlags(
 		middlewareConfigs = addToolFilterMiddlewares(middlewareConfigs, toolsFilter, toolsOverride)
 
 		// Add core middlewares (always present)
-		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig, tokenExchangeConfig)
+		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig, tokenExchangeConfig, disableUsageMetrics)
 
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
@@ -539,6 +541,7 @@ func addCoreMiddlewares(
 	middlewareConfigs []types.MiddlewareConfig,
 	oidcConfig *auth.TokenValidatorConfig,
 	tokenExchangeConfig *tokenexchange.Config,
+	disableUsageMetrics bool,
 ) []types.MiddlewareConfig {
 	// Authentication middleware (always present)
 	authParams := auth.MiddlewareParams{
@@ -564,6 +567,14 @@ func addCoreMiddlewares(
 	mcpParserParams := mcp.ParserMiddlewareParams{}
 	if mcpParserConfig, err := types.NewMiddlewareConfig(mcp.ParserMiddlewareType, mcpParserParams); err == nil {
 		middlewareConfigs = append(middlewareConfigs, *mcpParserConfig)
+	}
+
+	// Usage metrics middleware (if enabled)
+	if usagemetrics.ShouldEnableMetrics(disableUsageMetrics) {
+		usageMetricsParams := usagemetrics.MiddlewareParams{}
+		if usageMetricsConfig, err := types.NewMiddlewareConfig(usagemetrics.MiddlewareType, usageMetricsParams); err == nil {
+			middlewareConfigs = append(middlewareConfigs, *usageMetricsConfig)
+		}
 	}
 
 	return middlewareConfigs

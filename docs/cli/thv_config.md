@@ -39,4 +39,5 @@ The config command provides subcommands to manage application configuration sett
 * [thv config set-registry](thv_config_set-registry.md)	 - Set the MCP server registry
 * [thv config unset-ca-cert](thv_config_unset-ca-cert.md)	 - Remove the configured CA certificate
 * [thv config unset-registry](thv_config_unset-registry.md)	 - Remove the configured registry
+* [thv config usage-metrics](thv_config_usage-metrics.md)	 - Enable or disable anonymous usage metrics
 

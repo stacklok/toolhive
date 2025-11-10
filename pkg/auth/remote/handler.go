@@ -57,6 +57,7 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 				CallbackPort: h.config.CallbackPort,
 				Timeout:      h.config.Timeout,
 				SkipBrowser:  h.config.SkipBrowser,
+				Resource:     h.config.Resource,
 				OAuthParams:  h.config.OAuthParams,
 			}
 

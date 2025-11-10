@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -459,6 +460,16 @@ func validateRunFlags(cmd *cobra.Command, args []string) error {
 	// Validate group flag
 	if err := validateGroupFlag()(cmd, args); err != nil {
 		return err
+	}
+
+	// Validate --remote-auth-resource flag (RFC 8707)
+	if resourceFlag := cmd.Flags().Lookup("remote-auth-resource"); resourceFlag != nil && resourceFlag.Changed {
+		resource := resourceFlag.Value.String()
+		if resource != "" {
+			if err := validation.ValidateResourceURI(resource); err != nil {
+				return fmt.Errorf("invalid --remote-auth-resource: %w", err)
+			}
+		}
 	}
 
 	// Validate --from-config flag usage

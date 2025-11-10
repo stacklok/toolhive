@@ -3,6 +3,7 @@ package validation
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -82,6 +83,43 @@ func ValidateHTTPHeaderValue(value string) error {
 	// Use httpguts validation
 	if !httpguts.ValidHeaderFieldValue(value) {
 		return fmt.Errorf("invalid HTTP header value: contains control characters")
+	}
+
+	return nil
+}
+
+// ValidateResourceURI validates that a resource URI conforms to MCP specification requirements
+// for canonical URIs (RFC 8707).
+// This is used for user-provided values that should not be normalized.
+//
+// According to MCP spec, a valid canonical URI must:
+// - Include a scheme (http/https)
+// - Include a host
+// - Not contain fragments
+func ValidateResourceURI(resourceURI string) error {
+	if resourceURI == "" {
+		return fmt.Errorf("resource URI cannot be empty")
+	}
+
+	// Parse the URI
+	parsed, err := url.Parse(resourceURI)
+	if err != nil {
+		return fmt.Errorf("invalid resource URI: %w", err)
+	}
+
+	// Must have a scheme
+	if parsed.Scheme == "" {
+		return fmt.Errorf("resource URI must include a scheme (e.g., https://): %s", resourceURI)
+	}
+
+	// Must have a host
+	if parsed.Host == "" {
+		return fmt.Errorf("resource URI must include a host: %s", resourceURI)
+	}
+
+	// Must not contain fragments
+	if parsed.Fragment != "" {
+		return fmt.Errorf("resource URI must not contain fragments (#): %s", resourceURI)
 	}
 
 	return nil

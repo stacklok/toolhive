@@ -1184,7 +1184,8 @@ func TestCreateOAuthConfigFromOIDC_Production(t *testing.T) {
 				tt.clientSecret,
 				tt.scopes,
 				tt.usePKCE,
-				0, // Use auto-select port for tests
+				0,  // Use auto-select port for tests
+				"", // No resource
 				client,
 			)
 

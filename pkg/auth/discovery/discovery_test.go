@@ -1200,6 +1200,29 @@ func TestCheckWellKnownURIExists_ErrorPaths(t *testing.T) {
 		result := checkWellKnownURIExists(ctx, client, uri)
 		assert.False(t, result, "Expected false for cancelled context")
 	})
+
+	t.Run("large response body is safely drained with limit", func(t *testing.T) {
+		t.Parallel()
+		// Create a server that returns a very large response body
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			// Write 5 MB of data (exceeds MaxResponseBodyDrain of 1 MB)
+			for i := 0; i < 5*1024*1024; i++ {
+				w.Write([]byte("X"))
+			}
+		}))
+		defer server.Close()
+
+		ctx := context.Background()
+		client := &http.Client{Timeout: 5 * time.Second}
+
+		// This should complete quickly even with a large response because we limit draining
+		result := checkWellKnownURIExists(ctx, client, server.URL)
+
+		// Should return true (200 OK with correct content-type)
+		assert.True(t, result, "Expected true for valid response even with large body")
+	})
 }
 
 // TestTryWellKnownDiscovery_ErrorPaths tests error handling in tryWellKnownDiscovery

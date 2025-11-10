@@ -34,6 +34,7 @@ const (
 	DefaultAuthDetectTimeout = 10 * time.Second
 	MaxRetryAttempts         = 3
 	RetryBaseDelay           = 2 * time.Second
+	MaxResponseBodyDrain     = 1 * 1024 * 1024 // 1 MB - limit response body draining to prevent resource exhaustion
 )
 
 // AuthInfo contains authentication information extracted from WWW-Authenticate header
@@ -210,7 +211,8 @@ func checkWellKnownURIExists(ctx context.Context, client *http.Client, uri strin
 	}
 	defer func() {
 		// Drain and close response body to enable connection reuse
-		_, _ = io.Copy(io.Discard, resp.Body)
+		// Limit draining to MaxResponseBodyDrain to prevent resource exhaustion from large responses
+		_, _ = io.CopyN(io.Discard, resp.Body, MaxResponseBodyDrain)
 		_ = resp.Body.Close()
 	}()
 

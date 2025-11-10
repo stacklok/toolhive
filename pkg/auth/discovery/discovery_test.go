@@ -1119,3 +1119,135 @@ func TestDetectAuthenticationFromServer_WellKnownFallback(t *testing.T) {
 		})
 	}
 }
+
+// TestDetectAuthenticationFromServer_ErrorPaths tests error handling paths
+func TestDetectAuthenticationFromServer_ErrorPaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("malformed target URL returns error", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		// Use an invalid URL with control characters
+		invalidURL := "http://example.com/path\x00with\x00nulls"
+
+		result, err := DetectAuthenticationFromServer(ctx, invalidURL, nil)
+
+		// Should return error because the URL is malformed
+		require.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "failed to create GET request")
+	})
+
+	t.Run("network error returns error", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		// Use a URL that will cause network errors (non-routable IP)
+		invalidURL := "http://192.0.2.1:9999/mcp"
+
+		config := &Config{
+			Timeout:               1 * time.Millisecond,
+			TLSHandshakeTimeout:   1 * time.Millisecond,
+			ResponseHeaderTimeout: 1 * time.Millisecond,
+			EnablePOSTDetection:   false,
+		}
+
+		result, err := DetectAuthenticationFromServer(ctx, invalidURL, config)
+
+		// Should return error due to network failure
+		require.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "failed to make GET request")
+	})
+}
+
+// TestCheckWellKnownURIExists_ErrorPaths tests error handling in checkWellKnownURIExists
+func TestCheckWellKnownURIExists_ErrorPaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("invalid URI causes request creation to fail", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		client := &http.Client{Timeout: 5 * time.Second}
+
+		// Create an invalid URI with control characters that will fail http.NewRequestWithContext
+		invalidURI := "http://example.com/path\x00with\x00nulls"
+
+		result := checkWellKnownURIExists(ctx, client, invalidURI)
+		assert.False(t, result, "Expected false for invalid URI")
+	})
+
+	t.Run("network error during request", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		client := &http.Client{Timeout: 1 * time.Millisecond} // Very short timeout
+
+		// Use a non-routable IP to cause network timeout/error
+		// 192.0.2.0/24 is TEST-NET-1, reserved for documentation
+		invalidURI := "http://192.0.2.1:9999/.well-known/oauth-protected-resource"
+
+		result := checkWellKnownURIExists(ctx, client, invalidURI)
+		assert.False(t, result, "Expected false for network error")
+	})
+
+	t.Run("cancelled context", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+
+		client := &http.Client{Timeout: 5 * time.Second}
+		uri := "http://example.com/.well-known/oauth-protected-resource"
+
+		result := checkWellKnownURIExists(ctx, client, uri)
+		assert.False(t, result, "Expected false for cancelled context")
+	})
+}
+
+// TestTryWellKnownDiscovery_ErrorPaths tests error handling in tryWellKnownDiscovery
+func TestTryWellKnownDiscovery_ErrorPaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("malformed target URL", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		client := &http.Client{Timeout: 5 * time.Second}
+
+		// Use a malformed URL that will fail url.Parse
+		malformedURL := "ht!tp://not a valid url with spaces"
+
+		result, err := tryWellKnownDiscovery(ctx, client, malformedURL)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid target URI")
+		assert.Nil(t, result)
+	})
+
+	t.Run("target URL with control characters", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		client := &http.Client{Timeout: 5 * time.Second}
+
+		// URL with null bytes
+		invalidURL := "http://example.com/path\x00with\x00control\x00chars"
+
+		result, err := tryWellKnownDiscovery(ctx, client, invalidURL)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid target URI")
+		assert.Nil(t, result)
+	})
+
+	t.Run("URL with scheme but no host", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		client := &http.Client{Timeout: 5 * time.Second}
+
+		// URL with scheme but no host - causes issues when building well-known URIs
+		invalidURL := "http://"
+
+		result, err := tryWellKnownDiscovery(ctx, client, invalidURL)
+
+		// Should not find any well-known URIs and return nil, nil
+		require.NoError(t, err)
+		assert.Nil(t, result)
+	})
+}

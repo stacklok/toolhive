@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"net/http"
@@ -1207,10 +1208,8 @@ func TestCheckWellKnownURIExists_ErrorPaths(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			// Write 5 MB of data (exceeds MaxResponseBodyDrain of 1 MB)
-			for i := 0; i < 5*1024*1024; i++ {
-				w.Write([]byte("X"))
-			}
+			// Write 2x MaxResponseBodyDrain to exceed the drain limit
+			_, _ = w.Write(bytes.Repeat([]byte("X"), 2*MaxResponseBodyDrain))
 		}))
 		defer server.Close()
 

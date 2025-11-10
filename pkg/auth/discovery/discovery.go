@@ -192,7 +192,7 @@ func buildWellKnownURI(parsedURL *url.URL, endpointSpecific bool) string {
 	return baseURL.String()
 }
 
-// checkWellKnownURIExists checks if a well-known URI is accessible and returns valid JSON metadata
+// checkWellKnownURIExists returns true if a well-known URI is accessible and returns application/json
 // Per RFC 9728, protected resource metadata MUST be queried using HTTP GET and MUST return application/json
 func checkWellKnownURIExists(ctx context.Context, client *http.Client, uri string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)

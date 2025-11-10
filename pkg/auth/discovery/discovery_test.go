@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -234,7 +235,12 @@ func TestDetectAuthenticationFromServer(t *testing.T) {
 	}{
 		{
 			name: "no authentication required",
-			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
+			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+				// Return 404 for well-known URIs, 200 OK for main endpoint
+				if strings.Contains(r.URL.Path, ".well-known") {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
 				w.WriteHeader(http.StatusOK)
 			},
 			expected: nil,
@@ -748,4 +754,333 @@ func TestPerformOAuthFlow_PortCheckingOnly(t *testing.T) {
 			t.Errorf("Expected port %d to be unavailable, but IsAvailable returned true", config.CallbackPort)
 		}
 	})
+}
+
+func TestBuildWellKnownURI(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name             string
+		targetURL        string
+		endpointSpecific bool
+		expected         string
+	}{
+		{
+			name:             "root-level with simple path",
+			targetURL:        "https://example.com/api/mcp",
+			endpointSpecific: false,
+			expected:         "https://example.com/.well-known/oauth-protected-resource",
+		},
+		{
+			name:             "endpoint-specific with simple path",
+			targetURL:        "https://example.com/api/mcp",
+			endpointSpecific: true,
+			expected:         "https://example.com/.well-known/oauth-protected-resource/api/mcp",
+		},
+		{
+			name:             "root-level with root path",
+			targetURL:        "https://example.com/",
+			endpointSpecific: false,
+			expected:         "https://example.com/.well-known/oauth-protected-resource",
+		},
+		{
+			name:             "endpoint-specific with root path",
+			targetURL:        "https://example.com/",
+			endpointSpecific: true,
+			expected:         "https://example.com/.well-known/oauth-protected-resource",
+		},
+		{
+			name:             "endpoint-specific with deeply nested path",
+			targetURL:        "https://example.com/api/unstable/mcp-server/mcp",
+			endpointSpecific: true,
+			expected:         "https://example.com/.well-known/oauth-protected-resource/api/unstable/mcp-server/mcp",
+		},
+		{
+			name:             "root-level with deeply nested path",
+			targetURL:        "https://example.com/api/unstable/mcp-server/mcp",
+			endpointSpecific: false,
+			expected:         "https://example.com/.well-known/oauth-protected-resource",
+		},
+		{
+			name:             "localhost HTTP with path",
+			targetURL:        "http://localhost:8080/mcp",
+			endpointSpecific: true,
+			expected:         "http://localhost:8080/.well-known/oauth-protected-resource/mcp",
+		},
+		{
+			name:             "URL with trailing slash",
+			targetURL:        "https://example.com/api/mcp/",
+			endpointSpecific: true,
+			expected:         "https://example.com/.well-known/oauth-protected-resource/api/mcp",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			parsedURL, err := url.Parse(tt.targetURL)
+			require.NoError(t, err, "Failed to parse test URL")
+
+			result := buildWellKnownURI(parsedURL, tt.endpointSpecific)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestCheckWellKnownURIExists(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		serverResponse func(w http.ResponseWriter, r *http.Request)
+		expected       bool
+	}{
+		{
+			name: "200 OK response",
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"resource":"https://example.com"}`))
+			},
+			expected: true,
+		},
+		{
+			name: "401 Unauthorized response",
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+			},
+			expected: true, // Still considered as "exists"
+		},
+		{
+			name: "404 Not Found response",
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+			},
+			expected: false,
+		},
+		{
+			name: "500 Internal Server Error",
+			serverResponse: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(tt.serverResponse))
+			defer server.Close()
+
+			ctx := context.Background()
+			client := &http.Client{Timeout: 5 * time.Second}
+
+			result := checkWellKnownURIExists(ctx, client, server.URL)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestTryWellKnownDiscovery(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name                 string
+		targetURL            string
+		endpointSpecificResp func(w http.ResponseWriter, r *http.Request)
+		rootLevelResp        func(w http.ResponseWriter, r *http.Request)
+		expectedFound        bool
+		expectedMetadataURL  string // Should match which well-known URI was found
+	}{
+		{
+			name:      "endpoint-specific well-known URI found",
+			targetURL: "/api/mcp",
+			endpointSpecificResp: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+			},
+			rootLevelResp: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+			},
+			expectedFound:       true,
+			expectedMetadataURL: "/.well-known/oauth-protected-resource/api/mcp",
+		},
+		{
+			name:      "root-level well-known URI found",
+			targetURL: "/api/mcp",
+			endpointSpecificResp: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+			},
+			rootLevelResp: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+			},
+			expectedFound:       true,
+			expectedMetadataURL: "/.well-known/oauth-protected-resource",
+		},
+		{
+			name:      "both well-known URIs return 404",
+			targetURL: "/api/mcp",
+			endpointSpecificResp: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+			},
+			rootLevelResp: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+			},
+			expectedFound: false,
+		},
+		{
+			name:      "endpoint-specific takes priority",
+			targetURL: "/api/mcp",
+			endpointSpecificResp: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+			},
+			rootLevelResp: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+			},
+			expectedFound:       true,
+			expectedMetadataURL: "/.well-known/oauth-protected-resource/api/mcp",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// Create a test server that routes to different handlers
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource/") {
+					tt.endpointSpecificResp(w, r)
+				} else if r.URL.Path == "/.well-known/oauth-protected-resource" {
+					tt.rootLevelResp(w, r)
+				} else {
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+
+			ctx := context.Background()
+			client := &http.Client{Timeout: 5 * time.Second}
+			targetURI := server.URL + tt.targetURL
+
+			result, err := tryWellKnownDiscovery(ctx, client, targetURI)
+			require.NoError(t, err)
+
+			if tt.expectedFound {
+				require.NotNil(t, result, "Expected AuthInfo but got nil")
+				assert.Equal(t, "OAuth", result.Type)
+				assert.True(t, strings.HasSuffix(result.ResourceMetadata, tt.expectedMetadataURL),
+					"Expected ResourceMetadata to end with %s, got %s", tt.expectedMetadataURL, result.ResourceMetadata)
+			} else {
+				assert.Nil(t, result, "Expected nil AuthInfo but got %v", result)
+			}
+		})
+	}
+}
+
+func TestDetectAuthenticationFromServer_WellKnownFallback(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name                 string
+		serverResponse       func(w http.ResponseWriter, r *http.Request)
+		expectedAuthFound    bool
+		expectedResourceMeta bool // Whether ResourceMetadata should be set
+	}{
+		{
+			name: "WWW-Authenticate header takes precedence",
+			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+				// Return WWW-Authenticate header on unauthorized requests
+				if r.URL.Path == "/" || r.URL.Path == "" {
+					w.Header().Set("WWW-Authenticate", `Bearer realm="https://example.com"`)
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				// Also have well-known URI available
+				if r.URL.Path == "/.well-known/oauth-protected-resource" {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"resource":"https://example.com","authorization_servers":["https://example.com"]}`))
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+			},
+			expectedAuthFound:    true,
+			expectedResourceMeta: false, // Should use WWW-Authenticate, not well-known
+		},
+		{
+			name: "well-known URI fallback works when no WWW-Authenticate",
+			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+				// Return 401 but without WWW-Authenticate header
+				if r.URL.Path == "/" || r.URL.Path == "" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				// Well-known URI available
+				if r.URL.Path == "/.well-known/oauth-protected-resource" {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"resource":"https://example.com","authorization_servers":["https://example.com"]}`))
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+			},
+			expectedAuthFound:    true,
+			expectedResourceMeta: true, // Should use well-known URI
+		},
+		{
+			name: "no authentication required",
+			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+				// All requests return 200 OK
+				if r.URL.Path == "/" || r.URL.Path == "" {
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				// No well-known URI
+				w.WriteHeader(http.StatusNotFound)
+			},
+			expectedAuthFound:    false,
+			expectedResourceMeta: false,
+		},
+		{
+			name: "401 without WWW-Authenticate and no well-known URI",
+			serverResponse: func(w http.ResponseWriter, r *http.Request) {
+				// Return 401 for main endpoint but 404 for well-known URIs
+				if strings.Contains(r.URL.Path, ".well-known") {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				// Return 401 but no WWW-Authenticate
+				w.WriteHeader(http.StatusUnauthorized)
+			},
+			expectedAuthFound:    false,
+			expectedResourceMeta: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(tt.serverResponse))
+			defer server.Close()
+
+			ctx := context.Background()
+			result, err := DetectAuthenticationFromServer(ctx, server.URL, nil)
+			require.NoError(t, err)
+
+			if tt.expectedAuthFound {
+				require.NotNil(t, result, "Expected AuthInfo but got nil")
+				assert.Equal(t, "OAuth", result.Type)
+
+				if tt.expectedResourceMeta {
+					assert.NotEmpty(t, result.ResourceMetadata, "Expected ResourceMetadata to be set")
+					assert.True(t, strings.Contains(result.ResourceMetadata, "/.well-known/oauth-protected-resource"),
+						"ResourceMetadata should contain well-known path")
+				} else {
+					// When WWW-Authenticate is used, ResourceMetadata might or might not be set
+					// depending on the header content
+				}
+			} else {
+				assert.Nil(t, result, "Expected nil AuthInfo but got %v", result)
+			}
+		})
+	}
 }

@@ -204,6 +204,82 @@ func TestNewDynamicClientRegistrationRequest(t *testing.T) {
 	}
 }
 
+func TestDynamicClientRegistrationRequest_EmptyScopeSerialization(t *testing.T) {
+	t.Parallel()
+
+	// NOTE: This test documents current behavior where non-empty scopes are serialized
+	// as JSON arrays (e.g., ["openid", "profile"]), which violates RFC 7591 Section 2
+	// requirement for space-delimited strings (e.g., "openid profile").
+	//
+	// The critical behavior tested here is that empty/nil scopes result in the scope
+	// field being omitted entirely (omitempty), which is RFC 7591 compliant since
+	// the scope parameter is optional per RFC 7591 Section 2.
+	//
+	// TODO: The RFC 7591 format violation for non-empty scopes should be addressed
+	// in a separate PR to serialize as space-delimited strings. This keeps the
+	// MCP well-known URI discovery compliance fix cleanly separated from the
+	// RFC 7591 scope serialization format fix.
+
+	tests := []struct {
+		name              string
+		scopes            []string
+		shouldOmitScope   bool
+		expectedScopeJSON string // Expected scope field in JSON, empty if omitted
+	}{
+		{
+			name:            "nil scopes should omit scope field entirely",
+			scopes:          nil,
+			shouldOmitScope: true,
+		},
+		{
+			name:            "empty slice scopes should omit scope field entirely",
+			scopes:          []string{},
+			shouldOmitScope: true,
+		},
+		{
+			name:              "single scope should include scope field as array",
+			scopes:            []string{"openid"},
+			shouldOmitScope:   false,
+			expectedScopeJSON: `"scope":["openid"]`, // TODO: Should be "scope":"openid" per RFC 7591
+		},
+		{
+			name:              "multiple scopes should include scope field as array",
+			scopes:            []string{"openid", "profile"},
+			shouldOmitScope:   false,
+			expectedScopeJSON: `"scope":["openid","profile"]`, // TODO: Should be "scope":"openid profile" per RFC 7591
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create request with specified scopes
+			request := NewDynamicClientRegistrationRequest(tt.scopes, 8666)
+
+			// Marshal to JSON
+			jsonBytes, err := json.Marshal(request)
+			require.NoError(t, err, "JSON marshaling should succeed")
+
+			jsonStr := string(jsonBytes)
+
+			// Verify scope field behavior
+			if tt.shouldOmitScope {
+				assert.NotContains(t, jsonStr, `"scope"`,
+					"JSON should NOT contain scope field when scopes are empty/nil (omitempty behavior)")
+			} else {
+				assert.Contains(t, jsonStr, tt.expectedScopeJSON,
+					"JSON should contain expected scope field")
+			}
+
+			// Verify other required fields are always present
+			assert.Contains(t, jsonStr, `"redirect_uris"`, "redirect_uris should be present")
+			assert.Contains(t, jsonStr, `"client_name"`, "client_name should be present")
+			assert.Contains(t, jsonStr, `"grant_types"`, "grant_types should be present")
+		})
+	}
+}
+
 func TestRegisterClientDynamically(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -13,9 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/workloads/k8s"
 )
 
 const (
@@ -106,7 +104,7 @@ func TestK8SManager_GetWorkload(t *testing.T) {
 		setupMock    func(*mockClient)
 		wantError    bool
 		errorMsg     string
-		expected     core.Workload
+		expected     k8s.Workload
 	}{
 		{
 			name:         "successful get",
@@ -119,7 +117,7 @@ func TestK8SManager_GetWorkload(t *testing.T) {
 						mcpServer.Status.Phase = mcpv1alpha1.MCPServerPhaseRunning
 						mcpServer.Spec.Transport = "streamable-http"
 						mcpServer.Spec.ProxyPort = 8080
-						mcpServer.Labels = map[string]string{
+						mcpServer.Annotations = map[string]string{
 							"group": "test-group",
 						}
 					}
@@ -127,10 +125,11 @@ func TestK8SManager_GetWorkload(t *testing.T) {
 				}
 			},
 			wantError: false,
-			expected: core.Workload{
-				Name:   "test-workload",
-				Status: rt.WorkloadStatusRunning,
-				URL:    "http://127.0.0.1:8080/mcp", // URL is generated from spec
+			expected: k8s.Workload{
+				Name:      "test-workload",
+				Namespace: defaultNamespace,
+				Phase:     mcpv1alpha1.MCPServerPhaseRunning,
+				URL:       "http://127.0.0.1:8080/mcp", // URL is generated from spec
 				Labels: map[string]string{
 					"group": "test-group",
 				},
@@ -183,7 +182,7 @@ func TestK8SManager_GetWorkload(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 				assert.Equal(t, tt.expected.Name, result.Name)
-				assert.Equal(t, tt.expected.Status, result.Status)
+				assert.Equal(t, tt.expected.Phase, result.Phase)
 				assert.Equal(t, tt.expected.URL, result.URL)
 			}
 		})
@@ -604,48 +603,6 @@ func TestK8SManager_NoOpMethods(t *testing.T) {
 
 	ctx := context.Background()
 
-	t.Run("StopWorkloads returns empty group", func(t *testing.T) {
-		t.Parallel()
-		group, err := manager.StopWorkloads(ctx, []string{testWorkload1})
-		require.NoError(t, err)
-		require.NotNil(t, group)
-	})
-
-	t.Run("RunWorkload returns error", func(t *testing.T) {
-		t.Parallel()
-		err := manager.RunWorkload(ctx, &runner.RunConfig{})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not supported in Kubernetes mode")
-	})
-
-	t.Run("RunWorkloadDetached returns error", func(t *testing.T) {
-		t.Parallel()
-		err := manager.RunWorkloadDetached(ctx, &runner.RunConfig{})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not supported in Kubernetes mode")
-	})
-
-	t.Run("DeleteWorkloads returns empty group", func(t *testing.T) {
-		t.Parallel()
-		group, err := manager.DeleteWorkloads(ctx, []string{testWorkload1})
-		require.NoError(t, err)
-		require.NotNil(t, group)
-	})
-
-	t.Run("RestartWorkloads returns empty group", func(t *testing.T) {
-		t.Parallel()
-		group, err := manager.RestartWorkloads(ctx, []string{testWorkload1}, false)
-		require.NoError(t, err)
-		require.NotNil(t, group)
-	})
-
-	t.Run("UpdateWorkload returns empty group", func(t *testing.T) {
-		t.Parallel()
-		group, err := manager.UpdateWorkload(ctx, testWorkload1, &runner.RunConfig{})
-		require.NoError(t, err)
-		require.NotNil(t, group)
-	})
-
 	t.Run("GetLogs returns error", func(t *testing.T) {
 		t.Parallel()
 		logs, err := manager.GetLogs(ctx, testWorkload1, false)
@@ -663,19 +620,20 @@ func TestK8SManager_NoOpMethods(t *testing.T) {
 	})
 }
 
-func TestK8SManager_mcpServerToWorkload(t *testing.T) {
+func TestK8SManager_mcpServerToK8SWorkload(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name      string
 		mcpServer *mcpv1alpha1.MCPServer
-		expected  core.Workload
+		expected  k8s.Workload
 	}{
 		{
 			name: "running workload with HTTP transport",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-workload",
+					Name:      "test-workload",
+					Namespace: defaultNamespace,
 					Annotations: map[string]string{
 						"group": "test-group",
 						"env":   "prod",
@@ -690,41 +648,46 @@ func TestK8SManager_mcpServerToWorkload(t *testing.T) {
 					ProxyPort: 8080,
 				},
 			},
-			expected: core.Workload{
-				Name:   "test-workload",
-				Status: rt.WorkloadStatusRunning,
-				URL:    "http://localhost:8080",
-				Labels: map[string]string{"group": "test-group", "env": "prod"},
+			expected: k8s.Workload{
+				Name:      "test-workload",
+				Namespace: defaultNamespace,
+				Phase:     mcpv1alpha1.MCPServerPhaseRunning,
+				URL:       "http://localhost:8080",
+				Labels:    map[string]string{"group": "test-group", "env": "prod"},
 			},
 		},
 		{
 			name: "terminating workload",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "terminating-workload",
+					Name:      "terminating-workload",
+					Namespace: defaultNamespace,
 				},
 				Status: mcpv1alpha1.MCPServerStatus{
 					Phase: mcpv1alpha1.MCPServerPhaseTerminating,
 				},
 			},
-			expected: core.Workload{
-				Name:   "terminating-workload",
-				Status: rt.WorkloadStatusStopping,
+			expected: k8s.Workload{
+				Name:      "terminating-workload",
+				Namespace: defaultNamespace,
+				Phase:     mcpv1alpha1.MCPServerPhaseTerminating,
 			},
 		},
 		{
 			name: "failed workload",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "failed-workload",
+					Name:      "failed-workload",
+					Namespace: defaultNamespace,
 				},
 				Status: mcpv1alpha1.MCPServerStatus{
 					Phase: mcpv1alpha1.MCPServerPhaseFailed,
 				},
 			},
-			expected: core.Workload{
-				Name:   "failed-workload",
-				Status: rt.WorkloadStatusError,
+			expected: k8s.Workload{
+				Name:      "failed-workload",
+				Namespace: defaultNamespace,
+				Phase:     mcpv1alpha1.MCPServerPhaseFailed,
 			},
 		},
 	}
@@ -737,41 +700,16 @@ func TestK8SManager_mcpServerToWorkload(t *testing.T) {
 				namespace: defaultNamespace,
 			}
 
-			result, err := manager.mcpServerToWorkload(tt.mcpServer)
+			result, err := manager.mcpServerToK8SWorkload(tt.mcpServer)
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.expected.Name, result.Name)
-			assert.Equal(t, tt.expected.Status, result.Status)
+			assert.Equal(t, tt.expected.Namespace, result.Namespace)
+			assert.Equal(t, tt.expected.Phase, result.Phase)
 			assert.Equal(t, tt.expected.URL, result.URL)
 			if tt.expected.Labels != nil {
 				assert.Equal(t, tt.expected.Labels, result.Labels)
 			}
-		})
-	}
-}
-
-func TestK8SManager_mcpServerPhaseToWorkloadStatus(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		phase    mcpv1alpha1.MCPServerPhase
-		expected rt.WorkloadStatus
-	}{
-		{"running", mcpv1alpha1.MCPServerPhaseRunning, rt.WorkloadStatusRunning},
-		{"pending", mcpv1alpha1.MCPServerPhasePending, rt.WorkloadStatusStarting},
-		{"failed", mcpv1alpha1.MCPServerPhaseFailed, rt.WorkloadStatusError},
-		{"terminating", mcpv1alpha1.MCPServerPhaseTerminating, rt.WorkloadStatusStopping},
-		{"unknown", mcpv1alpha1.MCPServerPhase(""), rt.WorkloadStatusUnknown},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			manager := &k8sManager{}
-			result := manager.mcpServerPhaseToWorkloadStatus(tt.phase)
-			assert.Equal(t, tt.expected, result)
 		})
 	}
 }

@@ -1,4 +1,4 @@
-// Package workloads provides a Kubernetes-based implementation of the Manager interface.
+// Package workloads provides a Kubernetes-based implementation of the K8SManager interface.
 // This file contains the Kubernetes implementation for operator environments.
 package workloads
 
@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
@@ -15,16 +14,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/workloads/k8s"
 	workloadtypes "github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
-// k8sManager implements the Manager interface for Kubernetes environments.
+// k8sManager implements the K8SManager interface for Kubernetes environments.
 // In Kubernetes, the operator manages workload lifecycle via MCPServer CRDs.
 // This manager provides read-only operations and CRD-based storage.
 type k8sManager struct {
@@ -33,24 +30,24 @@ type k8sManager struct {
 }
 
 // NewK8SManager creates a new Kubernetes-based workload manager.
-func NewK8SManager(k8sClient client.Client, namespace string) (Manager, error) {
+func NewK8SManager(k8sClient client.Client, namespace string) (K8SManager, error) {
 	return &k8sManager{
 		k8sClient: k8sClient,
 		namespace: namespace,
 	}, nil
 }
 
-func (k *k8sManager) GetWorkload(ctx context.Context, workloadName string) (core.Workload, error) {
+func (k *k8sManager) GetWorkload(ctx context.Context, workloadName string) (k8s.Workload, error) {
 	mcpServer := &mcpv1alpha1.MCPServer{}
 	key := types.NamespacedName{Name: workloadName, Namespace: k.namespace}
 	if err := k.k8sClient.Get(ctx, key, mcpServer); err != nil {
 		if errors.IsNotFound(err) {
-			return core.Workload{}, fmt.Errorf("%w: %s", rt.ErrWorkloadNotFound, workloadName)
+			return k8s.Workload{}, fmt.Errorf("MCPServer %s not found", workloadName)
 		}
-		return core.Workload{}, fmt.Errorf("failed to get MCPServer: %w", err)
+		return k8s.Workload{}, fmt.Errorf("failed to get MCPServer: %w", err)
 	}
 
-	return k.mcpServerToWorkload(mcpServer)
+	return k.mcpServerToK8SWorkload(mcpServer)
 }
 
 func (k *k8sManager) DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error) {
@@ -65,7 +62,7 @@ func (k *k8sManager) DoesWorkloadExist(ctx context.Context, workloadName string)
 	return true, nil
 }
 
-func (k *k8sManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]core.Workload, error) {
+func (k *k8sManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]k8s.Workload, error) {
 	mcpServerList := &mcpv1alpha1.MCPServerList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(k.namespace),
@@ -94,7 +91,7 @@ func (k *k8sManager) ListWorkloads(ctx context.Context, listAll bool, labelFilte
 		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
 	}
 
-	var workloads []core.Workload
+	var workloads []k8s.Workload
 	for i := range mcpServerList.Items {
 		mcpServer := &mcpServerList.Items[i]
 
@@ -106,7 +103,7 @@ func (k *k8sManager) ListWorkloads(ctx context.Context, listAll bool, labelFilte
 			}
 		}
 
-		workload, err := k.mcpServerToWorkload(mcpServer)
+		workload, err := k.mcpServerToK8SWorkload(mcpServer)
 		if err != nil {
 			logger.Warnf("Failed to convert MCPServer %s to workload: %v", mcpServer.Name, err)
 			continue
@@ -118,53 +115,13 @@ func (k *k8sManager) ListWorkloads(ctx context.Context, listAll bool, labelFilte
 	return workloads, nil
 }
 
-// StopWorkloads is a no-op in Kubernetes mode.
-// The operator manages workload lifecycle via MCPServer CRDs.
-func (*k8sManager) StopWorkloads(_ context.Context, _ []string) (*errgroup.Group, error) {
-	logger.Warnf("StopWorkloads is not supported in Kubernetes mode. Use kubectl to manage MCPServer CRDs.")
-	group := &errgroup.Group{}
-	// Return empty group - no operations to perform
-	return group, nil
-}
-
-// RunWorkload is a no-op in Kubernetes mode.
-// Workloads are created via MCPServer CRDs managed by the operator.
-func (*k8sManager) RunWorkload(_ context.Context, _ *runner.RunConfig) error {
-	return fmt.Errorf("RunWorkload is not supported in Kubernetes mode. Create MCPServer CRD instead")
-}
-
-// RunWorkloadDetached is a no-op in Kubernetes mode.
-// Workloads are created via MCPServer CRDs managed by the operator.
-func (*k8sManager) RunWorkloadDetached(_ context.Context, _ *runner.RunConfig) error {
-	return fmt.Errorf("RunWorkloadDetached is not supported in Kubernetes mode. Create MCPServer CRD instead")
-}
-
-// DeleteWorkloads is a no-op in Kubernetes mode.
-// The operator manages workload lifecycle via MCPServer CRDs.
-func (*k8sManager) DeleteWorkloads(_ context.Context, _ []string) (*errgroup.Group, error) {
-	logger.Warnf("DeleteWorkloads is not supported in Kubernetes mode. Use kubectl to delete MCPServer CRDs.")
-	group := &errgroup.Group{}
-	// Return empty group - no operations to perform
-	return group, nil
-}
-
-// RestartWorkloads is a no-op in Kubernetes mode.
-// The operator manages workload lifecycle via MCPServer CRDs.
-func (*k8sManager) RestartWorkloads(_ context.Context, _ []string, _ bool) (*errgroup.Group, error) {
-	logger.Warnf("RestartWorkloads is not supported in Kubernetes mode. Use kubectl to restart MCPServer CRDs.")
-	group := &errgroup.Group{}
-	// Return empty group - no operations to perform
-	return group, nil
-}
-
-// UpdateWorkload is a no-op in Kubernetes mode.
-// The operator manages workload lifecycle via MCPServer CRDs.
-func (*k8sManager) UpdateWorkload(_ context.Context, _ string, _ *runner.RunConfig) (*errgroup.Group, error) {
-	logger.Warnf("UpdateWorkload is not supported in Kubernetes mode. Update MCPServer CRD instead.")
-	group := &errgroup.Group{}
-	// Return empty group - no operations to perform
-	return group, nil
-}
+// Note: The following operations are not part of K8SManager interface:
+// - StopWorkloads: Use kubectl to manage MCPServer CRDs
+// - RunWorkload: Create MCPServer CRD instead
+// - RunWorkloadDetached: Create MCPServer CRD instead
+// - DeleteWorkloads: Use kubectl to delete MCPServer CRDs
+// - RestartWorkloads: Use kubectl to restart MCPServer CRDs
+// - UpdateWorkload: Update MCPServer CRD directly
 
 // GetLogs retrieves logs from the pod associated with the MCPServer.
 // Note: This requires a Kubernetes clientset for log streaming.
@@ -240,11 +197,8 @@ func (k *k8sManager) ListWorkloadsInGroup(ctx context.Context, groupName string)
 	return groupWorkloads, nil
 }
 
-// mcpServerToWorkload converts an MCPServer CRD to a core.Workload.
-func (k *k8sManager) mcpServerToWorkload(mcpServer *mcpv1alpha1.MCPServer) (core.Workload, error) {
-	// Map MCPServerPhase to runtime.WorkloadStatus
-	status := k.mcpServerPhaseToWorkloadStatus(mcpServer.Status.Phase)
-
+// mcpServerToK8SWorkload converts an MCPServer CRD to a k8s.Workload.
+func (k *k8sManager) mcpServerToK8SWorkload(mcpServer *mcpv1alpha1.MCPServer) (k8s.Workload, error) {
 	// Parse transport type
 	transportType, err := transporttypes.ParseTransportType(mcpServer.Spec.Transport)
 	if err != nil {
@@ -297,38 +251,23 @@ func (k *k8sManager) mcpServerToWorkload(mcpServer *mcpv1alpha1.MCPServer) (core
 		createdAt = time.Now()
 	}
 
-	return core.Workload{
+	return k8s.Workload{
 		Name:          mcpServer.Name,
+		Namespace:     mcpServer.Namespace,
 		Package:       mcpServer.Spec.Image,
 		URL:           url,
 		ToolType:      "mcp",
 		TransportType: transportType,
 		ProxyMode:     effectiveProxyMode,
-		Status:        status,
+		Phase:         mcpServer.Status.Phase,
 		StatusContext: mcpServer.Status.Message,
 		CreatedAt:     createdAt,
 		Port:          port,
 		Labels:        userLabels,
 		Group:         mcpServer.Spec.GroupRef,
+		GroupRef:      mcpServer.Spec.GroupRef,
 		ToolsFilter:   toolsFilter,
-		Remote:        false, // MCPServers are always container workloads in Kubernetes
 	}, nil
-}
-
-// mcpServerPhaseToWorkloadStatus maps MCPServerPhase to runtime.WorkloadStatus.
-func (*k8sManager) mcpServerPhaseToWorkloadStatus(phase mcpv1alpha1.MCPServerPhase) rt.WorkloadStatus {
-	switch phase {
-	case mcpv1alpha1.MCPServerPhaseRunning:
-		return rt.WorkloadStatusRunning
-	case mcpv1alpha1.MCPServerPhasePending:
-		return rt.WorkloadStatusStarting
-	case mcpv1alpha1.MCPServerPhaseFailed:
-		return rt.WorkloadStatusError
-	case mcpv1alpha1.MCPServerPhaseTerminating:
-		return rt.WorkloadStatusStopping
-	default:
-		return rt.WorkloadStatusUnknown
-	}
 }
 
 // isStandardK8sAnnotation checks if an annotation key is a standard Kubernetes annotation.

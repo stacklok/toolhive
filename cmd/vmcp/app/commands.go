@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -220,9 +221,17 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 
 	// Initialize managers for backend discovery
 	logger.Info("Initializing workload and group managers")
-	workloadsManager, err := workloads.NewManager(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create workloads manager: %w", err)
+	var workloadsManager interface{}
+	if rt.IsKubernetesRuntime() {
+		workloadsManager, err = workloads.NewK8SManagerFromContext(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create Kubernetes workloads manager: %w", err)
+		}
+	} else {
+		workloadsManager, err = workloads.NewManager(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create CLI workloads manager: %w", err)
+		}
 	}
 
 	groupsManager, err := groups.NewManager()
@@ -231,7 +240,10 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 	}
 
 	// Create backend discoverer and discover backends
-	discoverer := aggregator.NewBackendDiscoverer(workloadsManager, groupsManager, cfg.OutgoingAuth)
+	discoverer, err := aggregator.NewBackendDiscoverer(workloadsManager, groupsManager, cfg.OutgoingAuth)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create backend discoverer: %w", err)
+	}
 
 	logger.Infof("Discovering backends in group: %s", cfg.Group)
 	backends, err := discoverer.Discover(ctx, cfg.Group)

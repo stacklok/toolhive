@@ -64,46 +64,46 @@ type Manager interface {
 // ErrWorkloadNotRunning is returned when a container cannot be found by name.
 var ErrWorkloadNotRunning = fmt.Errorf("workload not running")
 
-// NewManager creates a new workload manager based on the runtime environment:
-// - In Kubernetes mode: returns a CRD-based manager that uses MCPServer CRDs
-// - In local mode: returns a CLI/filesystem-based manager
+// NewManager creates a new CLI workload manager.
+// Returns Manager interface (existing behavior, unchanged).
+// IMPORTANT: This function only works in CLI mode. For Kubernetes, use NewK8SManager() directly.
 func NewManager(ctx context.Context) (Manager, error) {
 	if rt.IsKubernetesRuntime() {
-		return newK8SManager(ctx)
+		return nil, fmt.Errorf("use workloads.NewK8SManager() for Kubernetes environments")
 	}
 	return NewCLIManager(ctx)
 }
 
-// NewManagerWithProvider creates a new workload manager with a custom config provider.
+// NewManagerWithProvider creates a new CLI workload manager with a custom config provider.
+// IMPORTANT: This function only works in CLI mode. For Kubernetes, use NewK8SManager() directly.
 func NewManagerWithProvider(ctx context.Context, configProvider config.Provider) (Manager, error) {
 	if rt.IsKubernetesRuntime() {
-		return newK8SManager(ctx)
+		return nil, fmt.Errorf("use workloads.NewK8SManager() for Kubernetes environments")
 	}
 	return NewCLIManagerWithProvider(ctx, configProvider)
 }
 
-// NewManagerFromRuntime creates a new workload manager from an existing runtime.
+// NewManagerFromRuntime creates a new CLI workload manager from an existing runtime.
+// IMPORTANT: This function only works in CLI mode. For Kubernetes, use NewK8SManager() directly.
 func NewManagerFromRuntime(rtRuntime rt.Runtime) (Manager, error) {
 	if rt.IsKubernetesRuntime() {
-		// In Kubernetes mode, we need a k8s client, not a runtime
-		ctx := context.Background()
-		return newK8SManager(ctx)
+		return nil, fmt.Errorf("use workloads.NewK8SManager() for Kubernetes environments")
 	}
 	return NewCLIManagerFromRuntime(rtRuntime)
 }
 
-// NewManagerFromRuntimeWithProvider creates a new workload manager from an existing runtime with a custom config provider.
+// NewManagerFromRuntimeWithProvider creates a new CLI workload manager from an existing runtime with a custom config provider.
+// IMPORTANT: This function only works in CLI mode. For Kubernetes, use NewK8SManager() directly.
 func NewManagerFromRuntimeWithProvider(rtRuntime rt.Runtime, configProvider config.Provider) (Manager, error) {
 	if rt.IsKubernetesRuntime() {
-		// In Kubernetes mode, we need a k8s client, not a runtime
-		ctx := context.Background()
-		return newK8SManager(ctx)
+		return nil, fmt.Errorf("use workloads.NewK8SManager() for Kubernetes environments")
 	}
 	return NewCLIManagerFromRuntimeWithProvider(rtRuntime, configProvider)
 }
 
-// newK8SManager creates a Kubernetes-based workload manager for Kubernetes environments
-func newK8SManager(context.Context) (Manager, error) {
+// NewK8SManagerFromContext creates a Kubernetes-based workload manager from context.
+// It automatically sets up the Kubernetes client and detects the namespace.
+func NewK8SManagerFromContext(ctx context.Context) (K8SManager, error) {
 	// Create a scheme for controller-runtime client
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))

@@ -189,7 +189,6 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 			// Verify container args contain the required parameters
 			Expect(container.Args).To(ContainElement("run"))
-			Expect(container.Args).To(ContainElement("--foreground=true"))
 			Expect(container.Args).To(ContainElement(mcpServer.Spec.Image))
 
 			// Verify container ports

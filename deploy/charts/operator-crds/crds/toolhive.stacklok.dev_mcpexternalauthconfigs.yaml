@@ -66,11 +66,14 @@ spec:
                       token
                     type: string
                   clientId:
-                    description: ClientID is the OAuth 2.0 client identifier
+                    description: |-
+                      ClientID is the OAuth 2.0 client identifier
+                      Optional for some token exchange flows (e.g., Google Cloud Workforce Identity)
                     type: string
                   clientSecretRef:
-                    description: ClientSecretRef is a reference to a secret containing
-                      the OAuth 2.0 client secret
+                    description: |-
+                      ClientSecretRef is a reference to a secret containing the OAuth 2.0 client secret
+                      Optional for some token exchange flows (e.g., Google Cloud Workforce Identity)
                     properties:
                       key:
                         description: Key is the key within the secret
@@ -100,8 +103,6 @@ spec:
                     type: string
                 required:
                 - audience
-                - clientId
-                - clientSecretRef
                 - tokenUrl
                 type: object
               type:

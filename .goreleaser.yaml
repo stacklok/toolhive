@@ -104,11 +104,9 @@ signs:
   - cmd: cosign
     args:
       - "sign-blob"
-      - "--output-signature=${signature}"
-      - "--output-certificate=${certificate}"
-      - "--bundle=${signature}" # added for cosign v3: required when using --output-signature or --signing-config
+      - "--bundle=${signature}" # cosign v3+: bundles signature and certificate together
       - "${artifact}"
       - "--yes" # needed on cosign 2.0.0+
     artifacts: archive
     output: true
-    certificate: '{{ trimsuffix (trimsuffix .Env.artifact ".zip") ".tar.gz" }}.pem'
+    signature: "${artifact}.sigstore.json"

@@ -492,7 +492,7 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://keycloak.com/token",
 						ClientID: "client-id",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "secret",
 							Key:  "key",
 						},
@@ -532,7 +532,7 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://keycloak.com/token",
 						ClientID: "client-id",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "secret",
 							Key:  "key",
 						},

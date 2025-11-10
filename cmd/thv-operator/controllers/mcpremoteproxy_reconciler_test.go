@@ -185,7 +185,7 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "client-id",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "oauth-secret",
 							Key:  "client-secret",
 						},
@@ -752,7 +752,7 @@ func TestGenerateTokenExchangeEnvVarsShared(t *testing.T) {
 			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 				TokenURL: "https://oauth.com/token",
 				ClientID: "client-id",
-				ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 					Name: "secret",
 					Key:  "key",
 				},

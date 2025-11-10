@@ -273,7 +273,7 @@ func TestCreateRunConfigFromMCPRemoteProxy_WithTokenExchange(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://keycloak.company.com/token",
 						ClientID: "exchange-client",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "exchange-creds",
 							Key:  "client-secret",
 						},

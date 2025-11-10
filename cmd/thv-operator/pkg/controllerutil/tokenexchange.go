@@ -74,17 +74,20 @@ func GenerateTokenExchangeEnvVars(
 		return envVars, nil
 	}
 
-	envVars = append(envVars, corev1.EnvVar{
-		Name: "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
-		ValueFrom: &corev1.EnvVarSource{
-			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{
-					Name: tokenExchangeSpec.ClientSecretRef.Name,
+	// Only add client secret env var if ClientSecretRef is provided
+	if tokenExchangeSpec.ClientSecretRef != nil {
+		envVars = append(envVars, corev1.EnvVar{
+			Name: "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: tokenExchangeSpec.ClientSecretRef.Name,
+					},
+					Key: tokenExchangeSpec.ClientSecretRef.Key,
 				},
-				Key: tokenExchangeSpec.ClientSecretRef.Key,
 			},
-		},
-	})
+		})
+	}
 
 	return envVars, nil
 }
@@ -118,19 +121,21 @@ func AddExternalAuthConfigOptions(
 		return fmt.Errorf("token exchange configuration is nil for type tokenExchange")
 	}
 
-	// Validate that the referenced Kubernetes secret exists
-	var secret corev1.Secret
-	if err := c.Get(ctx, types.NamespacedName{
-		Namespace: namespace,
-		Name:      tokenExchangeSpec.ClientSecretRef.Name,
-	}, &secret); err != nil {
-		return fmt.Errorf("failed to get client secret %s/%s: %w",
-			namespace, tokenExchangeSpec.ClientSecretRef.Name, err)
-	}
+	// Validate that the referenced Kubernetes secret exists (if ClientSecretRef is provided)
+	if tokenExchangeSpec.ClientSecretRef != nil {
+		var secret corev1.Secret
+		if err := c.Get(ctx, types.NamespacedName{
+			Namespace: namespace,
+			Name:      tokenExchangeSpec.ClientSecretRef.Name,
+		}, &secret); err != nil {
+			return fmt.Errorf("failed to get client secret %s/%s: %w",
+				namespace, tokenExchangeSpec.ClientSecretRef.Name, err)
+		}
 
-	if _, ok := secret.Data[tokenExchangeSpec.ClientSecretRef.Key]; !ok {
-		return fmt.Errorf("client secret %s/%s is missing key %q",
-			namespace, tokenExchangeSpec.ClientSecretRef.Name, tokenExchangeSpec.ClientSecretRef.Key)
+		if _, ok := secret.Data[tokenExchangeSpec.ClientSecretRef.Key]; !ok {
+			return fmt.Errorf("client secret %s/%s is missing key %q",
+				namespace, tokenExchangeSpec.ClientSecretRef.Name, tokenExchangeSpec.ClientSecretRef.Key)
+		}
 	}
 
 	// Use scopes array directly from spec

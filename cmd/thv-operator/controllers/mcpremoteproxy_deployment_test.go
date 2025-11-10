@@ -595,7 +595,7 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://oauth.com/token",
 						ClientID: "client",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "secret",
 							Key:  "key",
 						},

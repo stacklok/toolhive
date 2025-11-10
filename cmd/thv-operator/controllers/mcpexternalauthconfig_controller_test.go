@@ -37,7 +37,7 @@ func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
 				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 					TokenURL: "https://oauth.example.com/token",
 					ClientID: "test-client-id",
-					ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 						Name: "test-secret",
 						Key:  "client-secret",
 					},
@@ -53,7 +53,7 @@ func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
 				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 					TokenURL: "https://oauth.example.com/token",
 					ClientID: "test-client-id",
-					ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 						Name: "test-secret",
 						Key:  "client-secret",
 					},
@@ -88,7 +88,7 @@ func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
 			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "client1",
-				ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 					Name: "secret1",
 					Key:  "key1",
 				},
@@ -100,7 +100,7 @@ func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
 			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "client2",
-				ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 					Name: "secret2",
 					Key:  "key2",
 				},
@@ -137,7 +137,7 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "test-secret",
 							Key:  "client-secret",
 						},
@@ -160,7 +160,7 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "test-secret",
 							Key:  "client-secret",
 						},
@@ -268,7 +268,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingMCPServers(t *testing.T)
 			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 					Name: "test-secret",
 					Key:  "client-secret",
 				},
@@ -387,7 +387,7 @@ func TestGetExternalAuthConfigForMCPServer(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "test-secret",
 							Key:  "client-secret",
 						},
@@ -480,7 +480,7 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "test-secret",
 							Key:  "client-secret",
 						},
@@ -507,7 +507,7 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "test-secret",
 							Key:  "client-secret",
 						},
@@ -603,7 +603,7 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 					Name: "test-secret",
 					Key:  "client-secret",
 				},

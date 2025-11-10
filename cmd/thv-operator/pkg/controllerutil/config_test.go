@@ -56,7 +56,7 @@ func TestCalculateConfigHash(t *testing.T) {
 			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 				TokenURL: "https://oauth.example.com/token",
 				ClientID: "test-client",
-				ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 					Name: "test-secret",
 					Key:  "client-secret",
 				},

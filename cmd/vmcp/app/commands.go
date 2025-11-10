@@ -11,6 +11,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
@@ -75,7 +76,7 @@ func NewRootCmd() *cobra.Command {
 
 // newServeCmd creates the serve command for starting the vMCP server
 func newServeCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the Virtual MCP Server",
 		Long: `Start the Virtual MCP Server to aggregate and proxy multiple MCP servers.
@@ -85,6 +86,12 @@ listening for MCP client connections. It will aggregate tools, resources, and pr
 from all configured backend MCP servers.`,
 		RunE: runServe,
 	}
+
+	// Add serve-specific flags
+	cmd.Flags().String("host", "127.0.0.1", "Host address to bind to")
+	cmd.Flags().Int("port", 4483, "Port to listen on")
+
+	return cmd
 }
 
 // newVersionCmd creates the version command
@@ -139,7 +146,7 @@ This command checks:
 
 			logger.Infof("✓ Configuration is valid")
 			logger.Infof("  Name: %s", cfg.Name)
-			logger.Infof("  Group: %s", cfg.GroupRef)
+			logger.Infof("  Group: %s", cfg.Group)
 			logger.Infof("  Incoming Auth: %s", cfg.IncomingAuth.Type)
 			logger.Infof("  Outgoing Auth: %s (source: %s)",
 				func() string {
@@ -170,6 +177,85 @@ func getVersion() string {
 	return "dev"
 }
 
+// loadAndValidateConfig loads and validates the vMCP configuration file
+func loadAndValidateConfig(configPath string) (*config.Config, error) {
+	logger.Infof("Loading configuration from: %s", configPath)
+
+	loader := config.NewYAMLLoader(configPath)
+	cfg, err := loader.Load()
+	if err != nil {
+		logger.Errorf("Failed to load configuration: %v", err)
+		return nil, fmt.Errorf("configuration loading failed: %w", err)
+	}
+
+	validator := config.NewValidator()
+	if err := validator.Validate(cfg); err != nil {
+		logger.Errorf("Configuration validation failed: %v", err)
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	logger.Infof("Configuration loaded and validated successfully")
+	logger.Infof("  Name: %s", cfg.Name)
+	logger.Infof("  Group: %s", cfg.Group)
+	logger.Infof("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution)
+
+	return cfg, nil
+}
+
+// discoverBackends initializes managers, discovers backends, and creates backend client
+// Returns empty backends list with no error if running in Kubernetes where CLI discovery doesn't work
+func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, vmcp.BackendClient, error) {
+	// Create outgoing authentication registry from configuration
+	logger.Info("Initializing outgoing authentication")
+	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, cfg.OutgoingAuth)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
+	}
+
+	// Create backend client first (needed even with empty backends)
+	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create backend client: %w", err)
+	}
+
+	// Initialize managers for backend discovery
+	logger.Info("Initializing workload and group managers")
+	workloadsManager, err := workloads.NewManager(ctx)
+	if err != nil {
+		logger.Warnf("Failed to create workloads manager (expected in Kubernetes): %v", err)
+		logger.Warnf("Backend discovery will be skipped - continuing with empty backend list")
+		return []vmcp.Backend{}, backendClient, nil
+	}
+
+	groupsManager, err := groups.NewManager()
+	if err != nil {
+		logger.Warnf("Failed to create groups manager (expected in Kubernetes): %v", err)
+		logger.Warnf("Backend discovery will be skipped - continuing with empty backend list")
+		return []vmcp.Backend{}, backendClient, nil
+	}
+
+	// Create backend discoverer and discover backends
+	discoverer := aggregator.NewCLIBackendDiscoverer(workloadsManager, groupsManager, cfg.OutgoingAuth)
+
+	logger.Infof("Discovering backends in group: %s", cfg.Group)
+	backends, err := discoverer.Discover(ctx, cfg.Group)
+	if err != nil {
+		// Handle discovery errors gracefully - this is expected in Kubernetes
+		logger.Warnf("CLI backend discovery failed (likely running in Kubernetes): %v", err)
+		logger.Warnf("Kubernetes backend discovery is not yet implemented - continuing with empty backend list")
+		logger.Warnf("The vmcp server will start but won't proxy any backends until this feature is implemented")
+		return []vmcp.Backend{}, backendClient, nil
+	}
+
+	if len(backends) == 0 {
+		logger.Warnf("No backends discovered in group %s - vmcp will start but have no backends to proxy", cfg.Group)
+		return []vmcp.Backend{}, backendClient, nil
+	}
+
+	logger.Infof("Discovered %d backends", len(backends))
+	return backends, backendClient, nil
+}
+
 // runServe implements the serve command logic
 func runServe(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
@@ -179,71 +265,19 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("no configuration file specified, use --config flag")
 	}
 
-	logger.Infof("Loading configuration from: %s", configPath)
-
-	// Load configuration from YAML
-	loader := config.NewYAMLLoader(configPath)
-	cfg, err := loader.Load()
+	// Load and validate configuration
+	cfg, err := loadAndValidateConfig(configPath)
 	if err != nil {
-		logger.Errorf("Failed to load configuration: %v", err)
-		return fmt.Errorf("configuration loading failed: %w", err)
+		return err
 	}
 
-	// Validate configuration
-	validator := config.NewValidator()
-	if err := validator.Validate(cfg); err != nil {
-		logger.Errorf("Configuration validation failed: %v", err)
-		return fmt.Errorf("validation failed: %w", err)
-	}
-
-	logger.Infof("Configuration loaded and validated successfully")
-	logger.Infof("  Name: %s", cfg.Name)
-	logger.Infof("  Group: %s", cfg.GroupRef)
-	logger.Infof("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution)
-
-	// Initialize managers for backend discovery
-	logger.Info("Initializing workload and group managers")
-	workloadsManager, err := workloads.NewManager(ctx)
+	// Discover backends and create client
+	backends, backendClient, err := discoverBackends(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("failed to create workloads manager: %w", err)
-	}
-
-	groupsManager, err := groups.NewManager()
-	if err != nil {
-		return fmt.Errorf("failed to create groups manager: %w", err)
-	}
-
-	// Create outgoing authentication registry from configuration
-	logger.Info("Initializing outgoing authentication")
-	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, cfg.OutgoingAuth)
-	if err != nil {
-		return fmt.Errorf("failed to create outgoing authentication registry: %w", err)
-	}
-
-	// Create backend discoverer
-	discoverer := aggregator.NewCLIBackendDiscoverer(workloadsManager, groupsManager, cfg.OutgoingAuth)
-
-	// Discover backends from the configured group
-	logger.Infof("Discovering backends in group: %s", cfg.GroupRef)
-	backends, err := discoverer.Discover(ctx, cfg.GroupRef)
-	if err != nil {
-		return fmt.Errorf("failed to discover backends: %w", err)
-	}
-
-	if len(backends) == 0 {
-		return fmt.Errorf("no backends found in group %s", cfg.GroupRef)
-	}
-
-	logger.Infof("Discovered %d backends", len(backends))
-
-	// Create backend client
-	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
-	if err != nil {
-		return fmt.Errorf("failed to create backend client: %w", err)
+		return err
 	}
 
 	// Create conflict resolver based on configuration
-	// Use the factory method that handles all strategies
 	conflictResolver, err := aggregator.NewConflictResolver(cfg.Aggregation)
 	if err != nil {
 		return fmt.Errorf("failed to create conflict resolver: %w", err)
@@ -252,21 +286,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Create aggregator
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools)
 
-	// Aggregate capabilities from all backends with timeout
-	logger.Info("Aggregating capabilities from backends")
-	aggCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	capabilities, err := agg.AggregateCapabilities(aggCtx, backends)
+	// Aggregate capabilities
+	capabilities, err := aggregateCapabilities(ctx, agg, backends)
 	if err != nil {
-		return fmt.Errorf("failed to aggregate capabilities: %w", err)
+		return err
 	}
-
-	logger.Infof("Aggregated %d tools, %d resources, %d prompts from %d backends",
-		capabilities.Metadata.ToolCount,
-		capabilities.Metadata.ResourceCount,
-		capabilities.Metadata.PromptCount,
-		capabilities.Metadata.BackendCount)
 
 	// Create router
 	rtr := vmcprouter.NewDefaultRouter()
@@ -281,12 +305,16 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	logger.Infof("Incoming authentication configured: %s", cfg.IncomingAuth.Type)
 
-	// Create server configuration
+	// Create server configuration with flags
+	// Cobra validates flag types at parse time, so these values are safe to use directly
+	host, _ := cmd.Flags().GetString("host")
+	port, _ := cmd.Flags().GetInt("port")
+
 	serverCfg := &vmcpserver.Config{
 		Name:            cfg.Name,
 		Version:         getVersion(),
-		Host:            "127.0.0.1", // TODO: Make configurable
-		Port:            4483,        // TODO: Make configurable
+		Host:            host,
+		Port:            port,
 		AuthMiddleware:  authMiddleware,
 		AuthInfoHandler: authInfoHandler,
 	}
@@ -303,4 +331,50 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Start server (blocks until shutdown signal)
 	logger.Infof("Starting Virtual MCP Server at %s", srv.Address())
 	return srv.Start(ctx)
+}
+
+// aggregateCapabilities aggregates capabilities from backends or creates empty capabilities
+func aggregateCapabilities(
+	ctx context.Context,
+	agg aggregator.Aggregator,
+	backends []vmcp.Backend,
+) (*aggregator.AggregatedCapabilities, error) {
+	logger.Info("Aggregating capabilities from backends")
+
+	if len(backends) > 0 {
+		aggCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		capabilities, err := agg.AggregateCapabilities(aggCtx, backends)
+		if err != nil {
+			return nil, fmt.Errorf("failed to aggregate capabilities: %w", err)
+		}
+
+		logger.Infof("Aggregated %d tools, %d resources, %d prompts from %d backends",
+			capabilities.Metadata.ToolCount,
+			capabilities.Metadata.ResourceCount,
+			capabilities.Metadata.PromptCount,
+			capabilities.Metadata.BackendCount)
+
+		return capabilities, nil
+	}
+
+	// No backends available - create empty capabilities
+	logger.Warnf("No backends available - starting with empty capabilities")
+	return &aggregator.AggregatedCapabilities{
+		Tools:     []vmcp.Tool{},
+		Resources: []vmcp.Resource{},
+		Prompts:   []vmcp.Prompt{},
+		RoutingTable: &vmcp.RoutingTable{
+			Tools:     make(map[string]*vmcp.BackendTarget),
+			Resources: make(map[string]*vmcp.BackendTarget),
+			Prompts:   make(map[string]*vmcp.BackendTarget),
+		},
+		Metadata: &aggregator.AggregationMetadata{
+			BackendCount:  0,
+			ToolCount:     0,
+			ResourceCount: 0,
+			PromptCount:   0,
+		},
+	}, nil
 }

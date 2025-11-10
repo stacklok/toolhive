@@ -1,12 +1,11 @@
-package validation_test
+package validation
 
 import (
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-
-	"github.com/stacklok/toolhive/pkg/validation"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateGroupName(t *testing.T) {
@@ -52,7 +51,7 @@ func TestValidateGroupName(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := validation.ValidateGroupName(tc.input)
+			err := ValidateGroupName(tc.input)
 			if tc.expectErr {
 				assert.Error(t, err, "Expected error for input: %q", tc.input)
 			} else {
@@ -93,7 +92,7 @@ func TestValidateHTTPHeaderName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validation.ValidateHTTPHeaderName(tt.input)
+			err := ValidateHTTPHeaderName(tt.input)
 			if tt.expectErr {
 				assert.Error(t, err)
 			} else {
@@ -135,11 +134,103 @@ func TestValidateHTTPHeaderValue(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validation.ValidateHTTPHeaderValue(tt.input)
+			err := ValidateHTTPHeaderValue(tt.input)
 			if tt.expectErr {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateResourceURI(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		input         string
+		expectError   bool
+		errorContains string
+	}{
+		// Valid cases
+		{
+			name:        "valid https URL with path",
+			input:       "https://mcp.example.com/mcp",
+			expectError: false,
+		},
+		{
+			name:        "valid https URL without path",
+			input:       "https://mcp.example.com",
+			expectError: false,
+		},
+		{
+			name:        "valid https URL with port",
+			input:       "https://mcp.example.com:8443",
+			expectError: false,
+		},
+		{
+			name:        "valid https URL with port and path",
+			input:       "https://mcp.example.com:8443/api/mcp",
+			expectError: false,
+		},
+		{
+			name:        "valid http URL",
+			input:       "http://localhost:3000",
+			expectError: false,
+		},
+		{
+			name:        "root path slash is valid",
+			input:       "https://mcp.example.com/",
+			expectError: false,
+		},
+		// Invalid cases
+		{
+			name:          "empty string",
+			input:         "",
+			expectError:   true,
+			errorContains: "cannot be empty",
+		},
+		{
+			name:          "missing scheme",
+			input:         "mcp.example.com",
+			expectError:   true,
+			errorContains: "must include a scheme",
+		},
+		{
+			name:          "missing host",
+			input:         "https://",
+			expectError:   true,
+			errorContains: "must include a host",
+		},
+		{
+			name:          "contains fragment",
+			input:         "https://mcp.example.com/mcp#section",
+			expectError:   true,
+			errorContains: "must not contain fragments",
+		},
+		{
+			name:          "invalid URL format",
+			input:         "ht!tp://invalid",
+			expectError:   true,
+			errorContains: "invalid resource URI",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := ValidateResourceURI(tt.input)
+
+			if tt.expectError {
+				require.Error(t, err, "Expected an error but got none")
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains,
+						"Error message should contain expected text")
+				}
+			} else {
+				require.NoError(t, err, "Expected no error but got: %v", err)
 			}
 		})
 	}

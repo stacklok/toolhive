@@ -126,7 +126,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --otel-tracing-enabled                       Enable distributed tracing (when OTLP endpoint is configured) (default true)
       --permission-profile string                  Permission profile to use (none, network, or path to JSON file)
       --print-resolved-overlays                    Debug: show resolved container paths for tmpfs overlays
-      --proxy-mode string                          Proxy mode for stdio transport (sse or streamable-http) (default "sse")
+      --proxy-mode string                          Proxy mode for stdio (streamable-http or sse) (default "streamable-http")
       --proxy-port int                             Port for the HTTP proxy to listen on (host port)
       --remote-auth                                Enable OAuth/OIDC authentication to remote MCP server
       --remote-auth-authorize-url string           OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
@@ -135,6 +135,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --remote-auth-client-secret string           OAuth client secret for remote server authentication (optional for PKCE)
       --remote-auth-client-secret-file string      Path to file containing OAuth client secret (alternative to --remote-auth-client-secret)
       --remote-auth-issuer string                  OAuth/OIDC issuer URL for remote server authentication (e.g., https://accounts.google.com)
+      --remote-auth-resource string                OAuth 2.0 resource indicator (RFC 8707)
       --remote-auth-scopes strings                 OAuth scopes to request for remote server authentication (defaults: OIDC uses 'openid,profile,email')
       --remote-auth-skip-browser                   Skip opening browser for remote server OAuth flow
       --remote-auth-timeout duration               Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s) (default 30s)

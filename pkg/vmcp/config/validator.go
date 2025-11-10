@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 )
 
 // DefaultValidator implements comprehensive configuration validation.
@@ -70,7 +71,7 @@ func (*DefaultValidator) validateBasicFields(cfg *Config) error {
 		return fmt.Errorf("name is required")
 	}
 
-	if cfg.GroupRef == "" {
+	if cfg.Group == "" {
 		return fmt.Errorf("group reference is required")
 	}
 
@@ -106,9 +107,9 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 			return fmt.Errorf("incoming_auth.oidc.audience is required")
 		}
 
-		// Client secret should be set (either directly or via env var reference)
-		if auth.OIDC.ClientSecret == "" {
-			return fmt.Errorf("incoming_auth.oidc.client_secret is required")
+		// Client secret env var should be set (references a Kubernetes Secret mounted as env var)
+		if auth.OIDC.ClientSecretEnv == "" {
+			return fmt.Errorf("incoming_auth.oidc.client_secret_env is required")
 		}
 	}
 
@@ -169,7 +170,7 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *Backend
 	}
 
 	validTypes := []string{
-		"unauthenticated", "header_injection",
+		strategies.StrategyTypeUnauthenticated, strategies.StrategyTypeHeaderInjection,
 		// TODO: Add more as strategies are implemented:
 		// "pass_through", "token_exchange", "client_credentials",
 		// "service_account", "oauth_proxy",
@@ -195,13 +196,13 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *Backend
 			return fmt.Errorf("service_account requires metadata field: credentials_env")
 		}
 
-	case "header_injection":
+	case strategies.StrategyTypeHeaderInjection:
 		// Header injection requires header name and value
-		if _, ok := strategy.Metadata["header_name"]; !ok {
-			return fmt.Errorf("header_injection requires metadata field: header_name")
+		if _, ok := strategy.Metadata[strategies.MetadataHeaderName]; !ok {
+			return fmt.Errorf("header_injection requires metadata field: %s", strategies.MetadataHeaderName)
 		}
-		if _, ok := strategy.Metadata["header_value"]; !ok {
-			return fmt.Errorf("header_injection requires metadata field: header_value")
+		if _, ok := strategy.Metadata[strategies.MetadataHeaderValue]; !ok {
+			return fmt.Errorf("header_injection requires metadata field: %s", strategies.MetadataHeaderValue)
 		}
 	}
 

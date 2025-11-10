@@ -21,11 +21,15 @@ stateDiagram-v2
 
     Running --> Stopping: Stop
     Running --> Unhealthy: Health Failed
+    Running --> Unauthenticated: Auth Failed
     Running --> Stopped: Container Exit
 
     Stopping --> Stopped: Success
     Stopped --> Starting: Restart
     Stopped --> Removing: Delete
+
+    Unauthenticated --> Starting: Re-authenticate
+    Unauthenticated --> Removing: Delete
 
     Removing --> [*]: Success
     Error --> Starting: Restart
@@ -34,7 +38,7 @@ stateDiagram-v2
 
 **States**: `pkg/container/runtime/types.go`
 - `starting`, `running`, `stopping`, `stopped`
-- `removing`, `error`, `unhealthy`
+- `removing`, `error`, `unhealthy`, `unauthenticated`
 
 ## Core Operations
 

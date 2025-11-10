@@ -51,6 +51,37 @@ func TestHTTPBackendClient_ListCapabilities_WithMockFactory(t *testing.T) {
 	})
 }
 
+func TestQueryHelpers_PartialCapabilities(t *testing.T) {
+	t.Parallel()
+
+	t.Run("queryTools with unsupported capability returns empty slice", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := queryTools(context.Background(), nil, false, "test-backend")
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Empty(t, result.Tools)
+	})
+
+	t.Run("queryResources with unsupported capability returns empty slice", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := queryResources(context.Background(), nil, false, "test-backend")
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Empty(t, result.Resources)
+	})
+
+	t.Run("queryPrompts with unsupported capability returns empty slice", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := queryPrompts(context.Background(), nil, false, "test-backend")
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Empty(t, result.Prompts)
+	})
+}
+
 func TestDefaultClientFactory_UnsupportedTransport(t *testing.T) {
 	t.Parallel()
 

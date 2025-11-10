@@ -110,6 +110,8 @@ type remoteOAuthConfig struct {
 	CallbackPort int `json:"callback_port,omitempty"`
 	// Whether to skip opening browser for OAuth flow (defaults to false)
 	SkipBrowser bool `json:"skip_browser,omitempty"`
+	// OAuth 2.0 resource indicator (RFC 8707)
+	Resource string `json:"resource,omitempty"`
 }
 
 // createRequest represents the request to create a new workload
@@ -222,6 +224,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			OAuthParams:  runConfig.RemoteAuthConfig.OAuthParams,
 			CallbackPort: runConfig.RemoteAuthConfig.CallbackPort,
 			SkipBrowser:  runConfig.RemoteAuthConfig.SkipBrowser,
+			Resource:     runConfig.RemoteAuthConfig.Resource,
 		}
 		headers = runConfig.RemoteAuthConfig.Headers
 	}

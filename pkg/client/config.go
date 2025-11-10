@@ -90,7 +90,7 @@ type mcpClientConfig struct {
 	PlatformPrefix                map[string][]string
 	MCPServersPathPrefix          string
 	Extension                     Extension
-	SupportedTransportTypesMap    map[types.TransportType]string // stdio should be mapped to sse
+	SupportedTransportTypesMap    map[types.TransportType]string // stdio mapped to streamable-http (SSE deprecated)
 	IsTransportTypeFieldSupported bool
 	MCPServersUrlLabel            string
 	// YAML-specific configuration (only used when Extension == YAML)
@@ -120,7 +120,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		MCPServersPathPrefix: "/mcpServers",
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "streamable-http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "streamable-http",
 		},
@@ -142,7 +142,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		MCPServersPathPrefix: "/mcpServers",
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "streamableHttp",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "streamableHttp",
 		},
@@ -164,7 +164,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		MCPServersPathPrefix: "/servers",
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -186,7 +186,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -201,7 +201,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:              []string{".cursor"},
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -218,7 +218,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:              []string{},
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -233,7 +233,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:              []string{".codeium", "windsurf"},
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -248,7 +248,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:              []string{".codeium"},
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -268,7 +268,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -287,7 +287,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -306,7 +306,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -325,7 +325,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -344,7 +344,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -358,7 +358,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:              []string{".lmstudio"},
 		Extension:            JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -378,7 +378,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		Extension: YAML,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "streamable_http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "streamable_http",
 		},
@@ -404,7 +404,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		Extension: JSON,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "http",
 		},
@@ -419,7 +419,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 		RelPath:              []string{".continue"},
 		Extension:            YAML,
 		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "sse",
+			types.TransportTypeStdio:          "streamable-http",
 			types.TransportTypeSSE:            "sse",
 			types.TransportTypeStreamableHTTP: "streamable-http",
 		},

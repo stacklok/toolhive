@@ -309,7 +309,7 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	var errs []error
 
-	// Stop HTTP server
+	// Stop HTTP server (this internally closes the listener)
 	if s.httpServer != nil {
 		// Create shutdown context with timeout
 		shutdownCtx, cancel := context.WithTimeout(ctx, defaultShutdownTimeout)
@@ -320,19 +320,12 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
-	// Close listener
+	// Clear listener reference (already closed by httpServer.Shutdown)
 	s.listenerMu.Lock()
-	listener := s.listener
 	s.listener = nil
 	s.listenerMu.Unlock()
 
-	if listener != nil {
-		if err := listener.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to close listener: %w", err))
-		}
-	}
-
-	// Stop session manager
+	// Stop session manager after HTTP server shutdown
 	if s.sessionManager != nil {
 		if err := s.sessionManager.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to stop session manager: %w", err))

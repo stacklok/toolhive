@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-05T00:18:57Z",
+  "last_updated": "2025-11-10T00:19:26Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -348,9 +348,9 @@
         "jira_batch_create_versions"
       ],
       "metadata": {
-        "stars": 3332,
+        "stars": 3502,
         "pulls": 12849,
-        "last_updated": "2025-10-16T02:30:32Z"
+        "last_updated": "2025-11-04T02:32:44Z"
       },
       "repository_url": "https://github.com/sooperset/mcp-atlassian",
       "tags": [
@@ -457,6 +457,110 @@
         {
           "name": "ENABLED_TOOLS",
           "description": "Comma-separated list of tool names to enable (if not set, all tools are enabled)",
+          "required": false
+        }
+      ]
+    },
+    "aws-api": {
+      "description": "Enables AI assistants to interact with AWS services and resources through AWS CLI commands",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "stdio",
+      "tools": [
+        "call_aws",
+        "suggest_aws_commands"
+      ],
+      "metadata": {
+        "stars": 6955,
+        "pulls": 0,
+        "last_updated": "2025-11-07T02:32:29Z"
+      },
+      "repository_url": "https://github.com/awslabs/mcp",
+      "tags": [
+        "aws",
+        "cli",
+        "cloud",
+        "infrastructure",
+        "api",
+        "devops"
+      ],
+      "image": "public.ecr.aws/awslabs-mcp/awslabs/aws-api-mcp-server:1.1.4",
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [
+              "aws.amazon.com",
+              ".amazonaws.com"
+            ],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "env_vars": [
+        {
+          "name": "AWS_REGION",
+          "description": "Default AWS region for CLI commands unless a specific region is provided in the request",
+          "required": false,
+          "default": "us-east-1"
+        },
+        {
+          "name": "AWS_ACCESS_KEY_ID",
+          "description": "AWS access key ID for authentication",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "AWS_SECRET_ACCESS_KEY",
+          "description": "AWS secret access key for authentication",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "AWS_SESSION_TOKEN",
+          "description": "AWS session token for temporary credentials",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "READ_OPERATIONS_ONLY",
+          "description": "When set to \"true\", restricts execution to read-only operations",
+          "required": false,
+          "default": "false"
+        },
+        {
+          "name": "REQUIRE_MUTATION_CONSENT",
+          "description": "When set to \"true\", asks explicit consent before executing non-read-only operations",
+          "required": false,
+          "default": "false"
+        },
+        {
+          "name": "AWS_API_MCP_WORKING_DIR",
+          "description": "Working directory path for MCP server operations (must be absolute path)",
+          "required": false
+        },
+        {
+          "name": "AWS_API_MCP_ALLOW_UNRESTRICTED_LOCAL_FILE_ACCESS",
+          "description": "When set to \"true\", enables system-wide file access (may cause unintended overwrites)",
+          "required": false,
+          "default": "false"
+        },
+        {
+          "name": "AWS_API_MCP_TELEMETRY",
+          "description": "Allow sending additional telemetry data to AWS related to server configuration",
+          "required": false,
+          "default": "true"
+        },
+        {
+          "name": "EXPERIMENTAL_AGENT_SCRIPTS",
+          "description": "When set to \"true\", enables experimental agent scripts functionality",
+          "required": false,
+          "default": "false"
+        },
+        {
+          "name": "AWS_API_MCP_AGENT_SCRIPTS_DIR",
+          "description": "Directory path containing custom user scripts for agent scripts functionality",
           "required": false
         }
       ]
@@ -587,9 +691,9 @@
         "get_price_list_urls"
       ],
       "metadata": {
-        "stars": 6742,
+        "stars": 6915,
         "pulls": 8179,
-        "last_updated": "2025-10-16T02:30:32Z"
+        "last_updated": "2025-11-04T02:32:44Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -601,7 +705,7 @@
         "aws-costs",
         "aws-pricing"
       ],
-      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:1.0.16",
+      "image": "public.ecr.aws/f3y8w4n0/awslabs/aws-pricing-mcp-server:1.0.17",
       "permissions": {
         "network": {
           "outbound": {
@@ -1014,7 +1118,7 @@
         "devops",
         "testing"
       ],
-      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.7.2",
+      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.7.3",
       "permissions": {
         "network": {
           "outbound": {
@@ -1363,7 +1467,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.18.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.19.1",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -1610,9 +1714,9 @@
         "annotatedMessage"
       ],
       "metadata": {
-        "stars": 70658,
+        "stars": 72067,
         "pulls": 17019,
-        "last_updated": "2025-10-18T02:26:52Z"
+        "last_updated": "2025-11-07T02:32:30Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1699,9 +1803,9 @@
         "list_allowed_directories"
       ],
       "metadata": {
-        "stars": 70459,
+        "stars": 71855,
         "pulls": 20619,
-        "last_updated": "2025-10-16T02:30:32Z"
+        "last_updated": "2025-11-04T02:32:45Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1740,9 +1844,9 @@
         "firecrawl_search"
       ],
       "metadata": {
-        "stars": 4728,
+        "stars": 4844,
         "pulls": 12644,
-        "last_updated": "2025-10-17T02:30:04Z"
+        "last_updated": "2025-11-04T02:32:46Z"
       },
       "repository_url": "https://github.com/firecrawl/firecrawl-mcp-server",
       "tags": [
@@ -1843,7 +1947,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.18.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.19.1",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -1873,9 +1977,9 @@
         "git_init"
       ],
       "metadata": {
-        "stars": 70561,
+        "stars": 72000,
         "pulls": 10404,
-        "last_updated": "2025-10-17T02:30:04Z"
+        "last_updated": "2025-11-06T02:33:24Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1944,9 +2048,9 @@
         "update_pull_request_branch"
       ],
       "metadata": {
-        "stars": 23700,
+        "stars": 24254,
         "pulls": 5000,
-        "last_updated": "2025-10-18T02:26:51Z"
+        "last_updated": "2025-11-06T02:33:26Z"
       },
       "repository_url": "https://github.com/github/github-mcp-server",
       "tags": [
@@ -2118,7 +2222,7 @@
         "milestones",
         "pipelines"
       ],
-      "image": "iwakitakuma/gitlab-mcp:2.0.8",
+      "image": "iwakitakuma/gitlab-mcp:2.0.11",
       "target_port": 3002,
       "permissions": {
         "network": {
@@ -2202,43 +2306,62 @@
       "status": "Active",
       "transport": "sse",
       "tools": [
-        "list_teams",
-        "search_dashboards",
-        "get_dashboard_by_uid",
-        "update_dashboard",
-        "get_dashboard_panel_queries",
-        "list_datasources",
-        "get_datasource_by_uid",
-        "get_datasource_by_name",
-        "query_prometheus",
-        "list_prometheus_metric_metadata",
-        "list_prometheus_metric_names",
-        "list_prometheus_label_names",
-        "list_prometheus_label_values",
-        "list_incidents",
-        "create_incident",
         "add_activity_to_incident",
-        "resolve_incident",
-        "query_loki_logs",
-        "list_loki_label_names",
-        "list_loki_label_values",
-        "query_loki_stats",
-        "list_alert_rules",
-        "get_alert_rule_by_uid",
-        "list_oncall_schedules",
-        "get_oncall_shift",
-        "get_current_oncall_users",
-        "list_oncall_teams",
-        "list_oncall_users",
-        "get_investigation",
-        "get_analysis",
-        "list_investigations",
+        "create_alert_rule",
+        "create_annotation",
+        "create_folder",
+        "create_graphite_annotation",
+        "create_incident",
+        "delete_alert_rule",
+        "fetch_pyroscope_profile",
         "find_error_pattern_logs",
         "find_slow_requests",
+        "generate_deeplink",
+        "get_alert_group",
+        "get_alert_rule_by_uid",
+        "get_annotation_tags",
+        "get_annotations",
+        "get_assertions",
+        "get_current_oncall_users",
+        "get_dashboard_by_uid",
+        "get_dashboard_panel_queries",
+        "get_dashboard_property",
+        "get_dashboard_summary",
+        "get_datasource_by_name",
+        "get_datasource_by_uid",
+        "get_incident",
+        "get_oncall_shift",
+        "get_sift_analysis",
+        "get_sift_investigation",
+        "list_alert_groups",
+        "list_alert_rules",
+        "list_contact_points",
+        "list_datasources",
+        "list_incidents",
+        "list_loki_label_names",
+        "list_loki_label_values",
+        "list_oncall_schedules",
+        "list_oncall_teams",
+        "list_oncall_users",
+        "list_prometheus_label_names",
+        "list_prometheus_label_values",
+        "list_prometheus_metric_metadata",
+        "list_prometheus_metric_names",
         "list_pyroscope_label_names",
         "list_pyroscope_label_values",
         "list_pyroscope_profile_types",
-        "fetch_pyroscope_profile"
+        "list_sift_investigations",
+        "list_teams",
+        "list_users_by_org",
+        "patch_annotation",
+        "query_loki_logs",
+        "query_loki_stats",
+        "query_prometheus",
+        "search_dashboards",
+        "search_folders",
+        "update_alert_rule",
+        "update_annotation",
+        "update_dashboard"
       ],
       "metadata": {
         "stars": 1728,
@@ -2288,6 +2411,11 @@
           "description": "Service account token with appropriate permissions",
           "required": true,
           "secret": true
+        },
+        {
+          "name": "GRAFANA_ORG_ID",
+          "description": "Organization ID for multi-organization Grafana instances",
+          "required": false
         }
       ]
     },
@@ -2892,8 +3020,8 @@
       ],
       "metadata": {
         "stars": 7,
-        "pulls": 473,
-        "last_updated": "2025-10-18T02:26:51Z"
+        "pulls": 508,
+        "last_updated": "2025-11-07T02:32:30Z"
       },
       "repository_url": "https://github.com/kionsoftware/kion-mcp",
       "tags": [
@@ -2942,7 +3070,7 @@
       "metadata": {
         "stars": 13,
         "pulls": 4946,
-        "last_updated": "2025-10-17T02:30:05Z"
+        "last_updated": "2025-11-06T02:33:25Z"
       },
       "repository_url": "https://github.com/nirmata/kyverno-mcp",
       "tags": [
@@ -3352,7 +3480,7 @@
         "query",
         "graph-database"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-cypher:0.4.1",
+      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-cypher:0.5.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -3808,9 +3936,9 @@
         "open_nodes"
       ],
       "metadata": {
-        "stars": 70459,
+        "stars": 71855,
         "pulls": 15854,
-        "last_updated": "2025-10-16T02:30:32Z"
+        "last_updated": "2025-11-04T02:32:46Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -4220,9 +4348,9 @@
         "get_vulnerability"
       ],
       "metadata": {
-        "stars": 24,
+        "stars": 25,
         "pulls": 10318,
-        "last_updated": "2025-10-18T02:26:52Z"
+        "last_updated": "2025-11-07T02:32:30Z"
       },
       "repository_url": "https://github.com/StacklokLabs/osv-mcp",
       "tags": [
@@ -4342,7 +4470,7 @@
         "evaluation",
         "ai"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.19",
+      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.23",
       "permissions": {
         "network": {
           "outbound": {
@@ -4376,47 +4504,46 @@
       "description": "Provides browser automation capabilities using Playwright",
       "tier": "Official",
       "status": "Active",
-      "transport": "streamable-http",
+      "transport": "stdio",
       "tools": [
+        "browser_click",
         "browser_close",
-        "browser_resize",
         "browser_console_messages",
-        "browser_handle_dialog",
+        "browser_drag",
+        "browser_evaluate",
         "browser_file_upload",
+        "browser_fill_form",
+        "browser_handle_dialog",
+        "browser_hover",
         "browser_install",
-        "browser_press_key",
         "browser_navigate",
         "browser_navigate_back",
-        "browser_navigate_forward",
         "browser_network_requests",
-        "browser_pdf_save",
-        "browser_take_screenshot",
-        "browser_snapshot",
-        "browser_click",
-        "browser_drag",
-        "browser_hover",
-        "browser_type",
+        "browser_press_key",
+        "browser_resize",
         "browser_select_option",
-        "browser_tab_list",
-        "browser_tab_new",
-        "browser_tab_select",
-        "browser_tab_close",
-        "browser_generate_playwright_test",
+        "browser_snapshot",
+        "browser_tabs",
+        "browser_take_screenshot",
+        "browser_type",
         "browser_wait_for"
       ],
       "metadata": {
-        "stars": 22223,
+        "stars": 22839,
         "pulls": 23622,
-        "last_updated": "2025-10-22T02:32:29Z"
+        "last_updated": "2025-11-05T21:23:31Z"
       },
       "repository_url": "https://github.com/microsoft/playwright-mcp",
       "tags": [
         "playwright",
         "automation",
         "browser",
-        "navigate"
+        "navigate",
+        "testing",
+        "web",
+        "accessibility"
       ],
-      "image": "mcr.microsoft.com/playwright/mcp:v0.0.45",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.46",
       "target_port": 8931,
       "permissions": {
         "network": {
@@ -4427,13 +4554,7 @@
             ]
           }
         }
-      },
-      "args": [
-        "--port",
-        "8931",
-        "--allowed-hosts",
-        "*"
-      ]
+      }
     },
     "plotting": {
       "description": "Provides plotting capabilities for visualizing data in various formats.",
@@ -4492,9 +4613,9 @@
         "analyze_db_health"
       ],
       "metadata": {
-        "stars": 1336,
-        "pulls": 36198,
-        "last_updated": "2025-10-17T02:30:04Z"
+        "stars": 1449,
+        "pulls": 41060,
+        "last_updated": "2025-11-06T02:33:24Z"
       },
       "repository_url": "https://github.com/crystaldba/postgres-mcp",
       "tags": [
@@ -4749,6 +4870,10 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
+        "analyze_issue_with_seer",
+        "create_dsn",
+        "create_project",
+        "create_team",
         "find_dsns",
         "find_organizations",
         "find_projects",
@@ -4761,7 +4886,8 @@
         "search_docs",
         "search_events",
         "search_issues",
-        "use_sentry",
+        "update_issue",
+        "update_project",
         "whoami"
       ],
       "metadata": {
@@ -4777,7 +4903,7 @@
         "error-tracking",
         "observability"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.20.0",
+      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.21.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -5085,20 +5211,45 @@
       }
     },
     "terraform": {
-      "description": "Terraform ecosystem integration with IaC development capabilities and provider documentation",
+      "description": "Terraform registry and Cloud/Enterprise integration for providers, modules, policies, and workspaces",
       "tier": "Official",
       "status": "Active",
       "transport": "stdio",
       "tools": [
+        "attach_variable_set_to_workspaces",
+        "create_no_code_workspace",
+        "create_run",
+        "create_variable_in_variable_set",
+        "create_variable_set",
+        "create_workspace",
+        "create_workspace_tags",
+        "create_workspace_variable",
+        "delete_variable_in_variable_set",
+        "detach_variable_set_from_workspaces",
         "get_latest_module_version",
         "get_latest_provider_version",
         "get_module_details",
         "get_policy_details",
+        "get_private_module_details",
+        "get_private_provider_details",
         "get_provider_capabilities",
         "get_provider_details",
+        "get_run_details",
+        "get_workspace_details",
+        "list_runs",
+        "list_terraform_orgs",
+        "list_terraform_projects",
+        "list_variable_sets",
+        "list_workspace_variables",
+        "list_workspaces",
+        "read_workspace_tags",
         "search_modules",
         "search_policies",
-        "search_providers"
+        "search_private_modules",
+        "search_private_providers",
+        "search_providers",
+        "update_workspace",
+        "update_workspace_variable"
       ],
       "metadata": {
         "stars": 1008,
@@ -5114,26 +5265,58 @@
         "providers",
         "modules",
         "hcl",
-        "plan",
-        "apply",
-        "destroy",
-        "aws",
-        "gcp",
-        "azure"
+        "workspace",
+        "variables",
+        "governance",
+        "policy",
+        "registry"
       ],
       "image": "docker.io/hashicorp/terraform-mcp-server:0.3.2",
       "permissions": {
         "network": {
           "outbound": {
             "allow_host": [
-              "registry.terraform.io"
+              "registry.terraform.io",
+              "app.terraform.io"
             ],
             "allow_port": [
               443
             ]
           }
         }
-      }
+      },
+      "env_vars": [
+        {
+          "name": "TFE_TOKEN",
+          "description": "API authentication token for Terraform Cloud/Enterprise access",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "TFE_ADDRESS",
+          "description": "HCP Terraform/Enterprise endpoint URL",
+          "required": false,
+          "default": "https://app.terraform.io"
+        },
+        {
+          "name": "ENABLE_TF_OPERATIONS",
+          "description": "Enable destructive operations (use cautiously in production)",
+          "required": false,
+          "default": "false"
+        },
+        {
+          "name": "TFE_SKIP_TLS_VERIFY",
+          "description": "Bypass TLS certificate validation (development only)",
+          "required": false,
+          "default": "false"
+        },
+        {
+          "name": "TRANSPORT_MODE",
+          "description": "Protocol selection (stdio or streamable-http)",
+          "required": false,
+          "default": "stdio"
+        }
+      ]
     },
     "time": {
       "description": "Provides time information and IANA timezone conversions with auto system timezone detection.",
@@ -5145,9 +5328,9 @@
         "convert_time"
       ],
       "metadata": {
-        "stars": 70561,
+        "stars": 72000,
         "pulls": 10986,
-        "last_updated": "2025-10-17T02:30:05Z"
+        "last_updated": "2025-11-06T02:33:25Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -5224,6 +5407,41 @@
         "homepage": "https://www.atlassian.com/platform/remote-mcp-server"
       },
       "url": "https://mcp.atlassian.com/v1/sse"
+    },
+    "aws-knowledge": {
+      "description": "Documentation, code samples, regional availability knowledge, and other official AWS content",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "search_documentation",
+        "read_documentation",
+        "recommend",
+        "list_regions",
+        "get_regional_availability"
+      ],
+      "metadata": {
+        "stars": 6955,
+        "pulls": 0,
+        "last_updated": "2025-11-07T02:32:30Z"
+      },
+      "repository_url": "https://github.com/awslabs/mcp",
+      "tags": [
+        "remote",
+        "aws",
+        "documentation",
+        "cloudformation",
+        "reference",
+        "blogs",
+        "well-architected",
+        "code-samples",
+        "regional-availability"
+      ],
+      "custom_metadata": {
+        "author": "AWS Labs",
+        "homepage": "https://awslabs.github.io/mcp/servers/aws-knowledge-mcp-server/"
+      },
+      "url": "https://knowledge-mcp.global.api.aws"
     },
     "canva": {
       "description": "Canva's official remote MCP server for design creation and template management",

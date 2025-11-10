@@ -88,6 +88,23 @@ The test framework uses Ginkgo and Gomega for BDD-style testing.
    - `transport/`: Communication protocols (HTTP, SSE, stdio, streamable)
    - `workloads/`: Workload lifecycle management
 
+4. **Virtual MCP Server (`cmd/vmcp/`)**
+   - Core packages in `pkg/vmcp/`:
+     - `aggregator/`: Backend discovery (CLI/K8s), capability querying, conflict resolution (prefix/priority/manual)
+     - `router/`: Routes MCP requests (tools/resources/prompts) to backends
+     - `auth/`: Two-boundary auth model (incoming: clients→vMCP; outgoing: vMCP→backends)
+     - `composer/`: Multi-step workflow execution with DAG-based parallel/sequential support
+     - `config/`: Platform-agnostic config model (works for CLI YAML and K8s CRDs)
+     - `server/`: HTTP server implementation with session management and auth middleware
+     - `client/`: Backend MCP client using mark3labs/mcp-go SDK
+     - `cache/`: Token caching with pluggable backends
+   - K8s CRDs in `cmd/thv-operator/api/v1alpha1/`:
+     - `VirtualMCPServer`: Main vMCP server resource (GroupRef, auth configs, aggregation, composite tools)
+     - `VirtualMCPCompositeToolDefinition`: Reusable composite tool workflows
+     - `MCPGroup`: Defines backend workload collections
+     - `MCPServer`, `MCPRegistry`, `MCPRemoteProxy`: Backend workload types
+     - `MCPExternalAuthConfig`, `ToolConfig`: Supporting config resources
+
 ### Key Design Patterns
 
 - **Factory Pattern**: Used extensively for creating runtime-specific implementations (Docker/Colima/Podman vs Kubernetes)

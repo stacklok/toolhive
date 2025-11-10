@@ -100,12 +100,19 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 //
 //nolint:gocyclo // TODO: refactor this into shorter functions
 func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
-	// Default proxy mode to SSE if not specified
+	// Default proxy mode to streamable-http if not specified (SSE is deprecated)
 	if !types.IsValidProxyMode(req.ProxyMode) {
 		if req.ProxyMode == "" {
-			req.ProxyMode = types.ProxyModeSSE.String()
+			req.ProxyMode = types.ProxyModeStreamableHTTP.String()
 		} else {
 			return nil, fmt.Errorf("%w: %s", retriever.ErrInvalidRunConfig, fmt.Sprintf("Invalid proxy_mode: %s", req.ProxyMode))
+		}
+	}
+
+	// Validate user-provided resource indicator (RFC 8707)
+	if req.OAuthConfig.Resource != "" {
+		if err := validation.ValidateResourceURI(req.OAuthConfig.Resource); err != nil {
+			return nil, fmt.Errorf("%w: invalid resource parameter: %v", retriever.ErrInvalidRunConfig, err)
 		}
 	}
 
@@ -159,6 +166,15 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 
 		if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
 			if remoteServerMetadata.OAuthConfig != nil {
+				// Default resource: user-provided > registry metadata > derived from remote URL
+				resource := req.OAuthConfig.Resource
+				if resource == "" {
+					resource = remoteServerMetadata.OAuthConfig.Resource
+				}
+				if resource == "" && remoteServerMetadata.URL != "" {
+					resource = remote.DefaultResourceIndicator(remoteServerMetadata.URL)
+				}
+
 				remoteAuthConfig = &remote.Config{
 					ClientID:     req.OAuthConfig.ClientID,
 					Scopes:       remoteServerMetadata.OAuthConfig.Scopes,
@@ -167,6 +183,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 					AuthorizeURL: remoteServerMetadata.OAuthConfig.AuthorizeURL,
 					TokenURL:     remoteServerMetadata.OAuthConfig.TokenURL,
 					UsePKCE:      remoteServerMetadata.OAuthConfig.UsePKCE,
+					Resource:     resource,
 					OAuthParams:  remoteServerMetadata.OAuthConfig.OAuthParams,
 					Headers:      remoteServerMetadata.Headers,
 					EnvVars:      remoteServerMetadata.EnvVars,
@@ -262,6 +279,12 @@ func createRequestToRemoteAuthConfig(
 	req *createRequest,
 ) *remote.Config {
 
+	// Default resource: user-provided > derived from remote URL
+	resource := req.OAuthConfig.Resource
+	if resource == "" && req.URL != "" {
+		resource = remote.DefaultResourceIndicator(req.URL)
+	}
+
 	// Create RemoteAuthConfig
 	remoteAuthConfig := &remote.Config{
 		ClientID:     req.OAuthConfig.ClientID,
@@ -270,6 +293,7 @@ func createRequestToRemoteAuthConfig(
 		AuthorizeURL: req.OAuthConfig.AuthorizeURL,
 		TokenURL:     req.OAuthConfig.TokenURL,
 		UsePKCE:      req.OAuthConfig.UsePKCE,
+		Resource:     resource,
 		OAuthParams:  req.OAuthConfig.OAuthParams,
 		CallbackPort: req.OAuthConfig.CallbackPort,
 		SkipBrowser:  req.OAuthConfig.SkipBrowser,

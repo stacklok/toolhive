@@ -61,7 +61,7 @@ type MCPServerSpec struct {
 	// ProxyMode is the proxy mode for stdio transport (sse or streamable-http)
 	// This setting is only used when Transport is "stdio"
 	// +kubebuilder:validation:Enum=sse;streamable-http
-	// +kubebuilder:default=sse
+	// +kubebuilder:default=streamable-http
 	// +optional
 	ProxyMode string `json:"proxyMode,omitempty"`
 

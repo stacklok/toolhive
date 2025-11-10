@@ -96,7 +96,6 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Always try to load runconfig.json from filesystem first
 	fileBasedConfig, err := tryLoadConfigFromFile()
-
 	if err != nil {
 		logger.Debugf("No configuration file found or failed to load: %v", err)
 		// Continue without configuration file - will use flags instead
@@ -148,7 +147,7 @@ func tryLoadConfigFromFile() (*runner.RunConfig, error) {
 	}
 
 	// No configuration file found
-	return nil, nil
+	return nil, fmt.Errorf("configuration file required but no configuration file was found")
 }
 
 // runWithFileBasedConfig handles execution when a runconfig.json file is found.

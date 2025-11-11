@@ -509,6 +509,8 @@ components:
           description: ThvCABundle is the path to the CA certificate bundle for ToolHive
             HTTP operations
           type: string
+        token_exchange_config:
+          $ref: '#/components/schemas/tokenexchange.Config'
         tools_filter:
           description: ToolsFilter is the list of tools to filter
           items:
@@ -634,6 +636,44 @@ components:
             TracingEnabled controls whether distributed tracing is enabled
             When false, no tracer provider is created even if an endpoint is configured
           type: boolean
+      type: object
+    tokenexchange.Config:
+      description: TokenExchangeConfig contains token exchange configuration for external
+        authentication
+      properties:
+        audience:
+          description: Audience is the target audience for the exchanged token
+          type: string
+        client_id:
+          description: ClientID is the OAuth 2.0 client identifier
+          type: string
+        client_secret:
+          description: ClientSecret is the OAuth 2.0 client secret
+          type: string
+        external_token_header_name:
+          description: ExternalTokenHeaderName is the name of the custom header to
+            use when HeaderStrategy is "custom"
+          type: string
+        header_strategy:
+          description: |-
+            HeaderStrategy determines how to inject the token
+            Valid values: HeaderStrategyReplace (default), HeaderStrategyCustom
+          type: string
+        scopes:
+          description: Scopes is the list of scopes to request for the exchanged token
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        subject_token_type:
+          description: |-
+            SubjectTokenType specifies the type of the subject token being exchanged.
+            Common values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.
+            If empty, defaults to tokenTypeAccessToken.
+          type: string
+        token_url:
+          description: TokenURL is the OAuth 2.0 token endpoint URL
+          type: string
       type: object
     types.EnvVar:
       properties:

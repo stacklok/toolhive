@@ -2,7 +2,6 @@ package controllerutil
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -11,9 +10,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
-	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/runner"
-	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // AddOIDCConfigOptions adds OIDC configuration options to builder options
@@ -35,6 +32,9 @@ func AddOIDCConfigOptions(
 	}
 
 	// Add OIDC config to options
+	// The auth middleware will be automatically created from this config by
+	// PopulateMiddlewareConfigs() when the runner starts. This avoids code duplication
+	// and ensures consistent middleware creation between CLI and operator.
 	*options = append(*options, runner.WithOIDCConfig(
 		oidcConfig.Issuer,
 		oidcConfig.Audience,
@@ -48,37 +48,6 @@ func AddOIDCConfigOptions(
 		oidcConfig.JWKSAllowPrivateIP,
 		oidcConfig.InsecureAllowHTTP,
 	))
-
-	// Create auth middleware configuration from OIDC config
-	// This is needed for the authInfoHandler to be created, which enables OAuth discovery endpoints
-	authMiddlewareParams := auth.MiddlewareParams{
-		OIDCConfig: &auth.TokenValidatorConfig{
-			Issuer:            oidcConfig.Issuer,
-			Audience:          oidcConfig.Audience,
-			JWKSURL:           oidcConfig.JWKSURL,
-			IntrospectionURL:  oidcConfig.IntrospectionURL,
-			ClientID:          oidcConfig.ClientID,
-			ClientSecret:      oidcConfig.ClientSecret,
-			ResourceURL:       oidcConfig.ResourceURL,
-			AllowPrivateIP:    oidcConfig.JWKSAllowPrivateIP,
-			InsecureAllowHTTP: oidcConfig.InsecureAllowHTTP,
-		},
-	}
-
-	// Marshal parameters to JSON
-	authParamsJSON, err := json.Marshal(authMiddlewareParams)
-	if err != nil {
-		return fmt.Errorf("failed to marshal auth middleware parameters: %w", err)
-	}
-
-	// Create auth middleware config
-	authMiddlewareConfig := transporttypes.MiddlewareConfig{
-		Type:       auth.MiddlewareType,
-		Parameters: json.RawMessage(authParamsJSON),
-	}
-
-	// Use WithAppendMiddlewareConfig to append instead of replacing
-	*options = append(*options, runner.WithAppendMiddlewareConfig(authMiddlewareConfig))
 
 	return nil
 }

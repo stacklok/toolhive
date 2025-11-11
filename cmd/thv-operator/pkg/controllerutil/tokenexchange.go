@@ -185,8 +185,8 @@ func AddExternalAuthConfigOptions(
 		Parameters: json.RawMessage(paramsJSON),
 	}
 
-	// Add to options using the WithMiddlewareConfig builder option
-	*options = append(*options, runner.WithMiddlewareConfig([]transporttypes.MiddlewareConfig{middlewareConfig}))
+	// Use WithAppendMiddlewareConfig to append instead of replacing existing middlewares
+	*options = append(*options, runner.WithAppendMiddlewareConfig(middlewareConfig))
 
 	return nil
 }

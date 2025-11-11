@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 	"github.com/stacklok/toolhive/pkg/validation"
 )
 
@@ -33,10 +33,10 @@ type Config struct {
 	TokenURL     string `json:"token_url,omitempty" yaml:"token_url,omitempty"`
 
 	// Headers for HTTP requests
-	Headers []*registry.Header `json:"headers,omitempty" yaml:"headers,omitempty"`
+	Headers []*types.Header `json:"headers,omitempty" yaml:"headers,omitempty"`
 
 	// Environment variables for the client
-	EnvVars []*registry.EnvVar `json:"env_vars,omitempty" yaml:"env_vars,omitempty"`
+	EnvVars []*types.EnvVar `json:"env_vars,omitempty" yaml:"env_vars,omitempty"`
 
 	// OAuth parameters for server-specific customization
 	OAuthParams map[string]string `json:"oauth_params,omitempty" yaml:"oauth_params,omitempty"`
@@ -56,20 +56,20 @@ func (r *Config) UnmarshalJSON(data []byte) error {
 	if _, isOld := raw["ClientID"]; isOld {
 		// Unmarshal using old PascalCase format
 		var oldFormat struct {
-			ClientID         string             `json:"ClientID,omitempty"`
-			ClientSecret     string             `json:"ClientSecret,omitempty"`
-			ClientSecretFile string             `json:"ClientSecretFile,omitempty"`
-			Scopes           []string           `json:"Scopes,omitempty"`
-			SkipBrowser      bool               `json:"SkipBrowser,omitempty"`
-			Timeout          time.Duration      `json:"Timeout,omitempty"`
-			CallbackPort     int                `json:"CallbackPort,omitempty"`
-			UsePKCE          bool               `json:"UsePKCE,omitempty"`
-			Issuer           string             `json:"Issuer,omitempty"`
-			AuthorizeURL     string             `json:"AuthorizeURL,omitempty"`
-			TokenURL         string             `json:"TokenURL,omitempty"`
-			Headers          []*registry.Header `json:"Headers,omitempty"`
-			EnvVars          []*registry.EnvVar `json:"EnvVars,omitempty"`
-			OAuthParams      map[string]string  `json:"OAuthParams,omitempty"`
+			ClientID         string            `json:"ClientID,omitempty"`
+			ClientSecret     string            `json:"ClientSecret,omitempty"`
+			ClientSecretFile string            `json:"ClientSecretFile,omitempty"`
+			Scopes           []string          `json:"Scopes,omitempty"`
+			SkipBrowser      bool              `json:"SkipBrowser,omitempty"`
+			Timeout          time.Duration     `json:"Timeout,omitempty"`
+			CallbackPort     int               `json:"CallbackPort,omitempty"`
+			UsePKCE          bool              `json:"UsePKCE,omitempty"`
+			Issuer           string            `json:"Issuer,omitempty"`
+			AuthorizeURL     string            `json:"AuthorizeURL,omitempty"`
+			TokenURL         string            `json:"TokenURL,omitempty"`
+			Headers          []*types.Header   `json:"Headers,omitempty"`
+			EnvVars          []*types.EnvVar   `json:"EnvVars,omitempty"`
+			OAuthParams      map[string]string `json:"OAuthParams,omitempty"`
 		}
 
 		if err := json.Unmarshal(data, &oldFormat); err != nil {

@@ -14,7 +14,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/git"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 const (
@@ -66,12 +66,12 @@ type MockSourceDataValidator struct {
 	mock.Mock
 }
 
-func (m *MockSourceDataValidator) ValidateData(data []byte, format string) (*registry.Registry, error) {
+func (m *MockSourceDataValidator) ValidateData(data []byte, format string) (*regtypes.Registry, error) {
 	args := m.Called(data, format)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
-	return args.Get(0).(*registry.Registry), args.Error(1)
+	return args.Get(0).(*regtypes.Registry), args.Error(1)
 }
 
 func TestNewGitSourceHandler(t *testing.T) {
@@ -288,10 +288,10 @@ func TestGitSourceHandler_FetchRegistry(t *testing.T) {
 					RemoteURL: testGitRepoURL,
 				}
 				testData := []byte(`{"version": "1.0.0"}`)
-				testRegistry := &registry.Registry{
+				testRegistry := &regtypes.Registry{
 					Version:       "1.0.0",
-					Servers:       make(map[string]*registry.ImageMetadata),
-					RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+					Servers:       make(map[string]*regtypes.ImageMetadata),
+					RemoteServers: make(map[string]*regtypes.RemoteServerMetadata),
 				}
 
 				gitClient.On("Clone", mock.Anything, mock.MatchedBy(func(config *git.CloneConfig) bool {
@@ -329,10 +329,10 @@ func TestGitSourceHandler_FetchRegistry(t *testing.T) {
 					RemoteURL: testGitRepoURL,
 				}
 				testData := []byte(`{"version": "1.0.0"}`)
-				testRegistry := &registry.Registry{
+				testRegistry := &regtypes.Registry{
 					Version:       "1.0.0",
-					Servers:       make(map[string]*registry.ImageMetadata),
-					RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+					Servers:       make(map[string]*regtypes.ImageMetadata),
+					RemoteServers: make(map[string]*regtypes.RemoteServerMetadata),
 				}
 
 				gitClient.On("Clone", mock.Anything, mock.MatchedBy(func(config *git.CloneConfig) bool {
@@ -699,10 +699,10 @@ func TestGitSourceHandler_CleanupFailure(t *testing.T) {
 		RemoteURL: testGitRepoURL,
 	}
 	testData := []byte(`{"version": "1.0.0"}`)
-	testRegistry := &registry.Registry{
+	testRegistry := &regtypes.Registry{
 		Version:       "1.0.0",
-		Servers:       make(map[string]*registry.ImageMetadata),
-		RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+		Servers:       make(map[string]*regtypes.ImageMetadata),
+		RemoteServers: make(map[string]*regtypes.RemoteServerMetadata),
 	}
 
 	mockGitClient.On("Clone", mock.Anything, mock.Anything).Return(repoInfo, nil)

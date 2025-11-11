@@ -1,5 +1,5 @@
-// Package registry provides access to the MCP server registry
-package registry
+// Package types contains the core type definitions for the MCP registry system.
+package types
 
 import (
 	"sort"

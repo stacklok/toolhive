@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/permissions"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 func TestConvertUpstreamToToolhive_DockerPackage(t *testing.T) {
@@ -60,7 +61,7 @@ func TestConvertUpstreamToToolhive_DockerPackage(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	imageMetadata, ok := result.(*ImageMetadata)
+	imageMetadata, ok := result.(*types.ImageMetadata)
 	require.True(t, ok, "Expected ImageMetadata")
 
 	assert.Equal(t, "io.modelcontextprotocol/filesystem", imageMetadata.GetName())
@@ -122,7 +123,7 @@ func TestConvertUpstreamToToolhive_NPMPackage(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	imageMetadata, ok := result.(*ImageMetadata)
+	imageMetadata, ok := result.(*types.ImageMetadata)
 	require.True(t, ok, "Expected ImageMetadata")
 
 	assert.Equal(t, "io.modelcontextprotocol/brave-search", imageMetadata.GetName())
@@ -182,7 +183,7 @@ func TestConvertUpstreamToToolhive_RemoteServer(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	remoteMetadata, ok := result.(*RemoteServerMetadata)
+	remoteMetadata, ok := result.(*types.RemoteServerMetadata)
 	require.True(t, ok, "Expected RemoteServerMetadata")
 
 	assert.Equal(t, "Remote Filesystem Server", remoteMetadata.GetName())
@@ -205,8 +206,8 @@ func TestConvertUpstreamToToolhive_RemoteServer(t *testing.T) {
 
 func TestConvertToolhiveToUpstream_ImageMetadata(t *testing.T) {
 	t.Parallel()
-	imageMetadata := &ImageMetadata{
-		BaseServerMetadata: BaseServerMetadata{
+	imageMetadata := &types.ImageMetadata{
+		BaseServerMetadata: types.BaseServerMetadata{
 			Name:          "test-server",
 			Description:   "Test MCP server",
 			Tier:          "Official",
@@ -228,7 +229,7 @@ func TestConvertToolhiveToUpstream_ImageMetadata(t *testing.T) {
 				},
 			},
 		},
-		EnvVars: []*EnvVar{
+		EnvVars: []*types.EnvVar{
 			{
 				Name:        "TEST_VAR",
 				Description: "Test environment variable",
@@ -506,7 +507,7 @@ func TestConvertUpstreamToToolhive_PythonPackage(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	imageMetadata, ok := result.(*ImageMetadata)
+	imageMetadata, ok := result.(*types.ImageMetadata)
 	require.True(t, ok, "Expected ImageMetadata")
 
 	assert.Equal(t, "weather-mcp-server", imageMetadata.GetName())

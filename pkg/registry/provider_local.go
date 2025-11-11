@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 //go:embed data/registry.json
@@ -35,7 +37,7 @@ func NewLocalRegistryProvider(filePath ...string) *LocalRegistryProvider {
 }
 
 // GetRegistry returns the registry data from file path or embedded data
-func (p *LocalRegistryProvider) GetRegistry() (*Registry, error) {
+func (p *LocalRegistryProvider) GetRegistry() (*types.Registry, error) {
 	var data []byte
 	var err error
 
@@ -88,8 +90,8 @@ func (p *LocalRegistryProvider) GetRegistry() (*Registry, error) {
 }
 
 // parseRegistryData parses JSON data into a Registry struct
-func parseRegistryData(data []byte) (*Registry, error) {
-	registry := &Registry{}
+func parseRegistryData(data []byte) (*types.Registry, error) {
+	registry := &types.Registry{}
 	if err := json.Unmarshal(data, registry); err != nil {
 		return nil, fmt.Errorf("failed to parse registry data: %w", err)
 	}

@@ -42,6 +42,13 @@ func GetVersionInfo() VersionInfo {
 	return getVersionInfoWithValues(Version, Commit, BuildDate)
 }
 
+// GetUserAgent returns a User-Agent string for HTTP clients
+// Format: ToolHive/version (platform) go/version
+func GetUserAgent() string {
+	info := GetVersionInfo()
+	return fmt.Sprintf("ToolHive/%s (%s) go/%s", info.Version, info.Platform, info.GoVersion)
+}
+
 // getVersionInfoWithValues returns version info with provided values (for testing)
 func getVersionInfoWithValues(version, commit, buildDate string) VersionInfo {
 	ver := version

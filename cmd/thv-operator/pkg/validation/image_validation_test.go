@@ -13,7 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 func TestAlwaysAllowValidator(t *testing.T) {
@@ -692,14 +692,14 @@ func TestFindImageInRegistry(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		registry *registry.Registry
+		registry *regtypes.Registry
 		image    string
 		expected bool
 	}{
 		{
 			name: "finds image in top-level servers",
-			registry: &registry.Registry{
-				Servers: map[string]*registry.ImageMetadata{
+			registry: &regtypes.Registry{
+				Servers: map[string]*regtypes.ImageMetadata{
 					"server1": {
 						Image: "docker.io/toolhive/test:v1.0.0",
 					},
@@ -713,12 +713,12 @@ func TestFindImageInRegistry(t *testing.T) {
 		},
 		{
 			name: "finds image in group servers",
-			registry: &registry.Registry{
-				Servers: map[string]*registry.ImageMetadata{},
-				Groups: []*registry.Group{
+			registry: &regtypes.Registry{
+				Servers: map[string]*regtypes.ImageMetadata{},
+				Groups: []*regtypes.Group{
 					{
 						Name: "group1",
-						Servers: map[string]*registry.ImageMetadata{
+						Servers: map[string]*regtypes.ImageMetadata{
 							"group-server": {
 								Image: "docker.io/toolhive/group:v1.0.0",
 							},
@@ -731,16 +731,16 @@ func TestFindImageInRegistry(t *testing.T) {
 		},
 		{
 			name: "does not find missing image",
-			registry: &registry.Registry{
-				Servers: map[string]*registry.ImageMetadata{
+			registry: &regtypes.Registry{
+				Servers: map[string]*regtypes.ImageMetadata{
 					"server1": {
 						Image: "docker.io/toolhive/test:v1.0.0",
 					},
 				},
-				Groups: []*registry.Group{
+				Groups: []*regtypes.Group{
 					{
 						Name: "group1",
-						Servers: map[string]*registry.ImageMetadata{
+						Servers: map[string]*regtypes.ImageMetadata{
 							"group-server": {
 								Image: "docker.io/toolhive/group:v1.0.0",
 							},
@@ -753,15 +753,15 @@ func TestFindImageInRegistry(t *testing.T) {
 		},
 		{
 			name: "handles empty registry",
-			registry: &registry.Registry{
-				Servers: map[string]*registry.ImageMetadata{},
+			registry: &regtypes.Registry{
+				Servers: map[string]*regtypes.ImageMetadata{},
 			},
 			image:    "docker.io/toolhive/test:v1.0.0",
 			expected: false,
 		},
 		{
 			name:     "handles nil maps",
-			registry: &registry.Registry{},
+			registry: &regtypes.Registry{},
 			image:    "docker.io/toolhive/test:v1.0.0",
 			expected: false,
 		},

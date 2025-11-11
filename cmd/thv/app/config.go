@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/registry"
 )
 
 var configCmd = &cobra.Command{
@@ -45,11 +46,15 @@ var unsetCACertCmd = &cobra.Command{
 var setRegistryCmd = &cobra.Command{
 	Use:   "set-registry <url-or-path>",
 	Short: "Set the MCP server registry",
-	Long: `Set the MCP server registry to either a remote URL or local file path.
-The command automatically detects whether the input is a URL or file path.
+	Long: `Set the MCP server registry to a remote URL, local file path, or API endpoint.
+The command automatically detects the registry type:
+  - URLs ending with .json are treated as static registry files
+  - Other URLs are treated as MCP Registry API endpoints (v0.1 spec)
+  - Local paths are treated as local registry files
 
 Examples:
-  thv config set-registry https://example.com/registry.json           # Remote URL
+  thv config set-registry https://example.com/registry.json           # Static remote file
+  thv config set-registry https://registry.example.com                # API endpoint
   thv config set-registry /path/to/local-registry.json               # Local file path
   thv config set-registry file:///path/to/local-registry.json        # Explicit file URL`,
 	Args: cobra.ExactArgs(1),
@@ -95,7 +100,7 @@ func init() {
 		"allow-private-ip",
 		"p",
 		false,
-		"Allow setting the registry URL, even if it references a private IP address",
+		"Allow setting the registry URL or API endpoint, even if it references a private IP address",
 	)
 	configCmd.AddCommand(getRegistryCmd)
 	configCmd.AddCommand(unsetRegistryCmd)
@@ -166,18 +171,41 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Successfully set registry URL: %s\n", cleanPath)
+		// Reset the cached provider so it re-initializes with the new config
+		registry.ResetDefaultProvider()
+		fmt.Printf("Successfully set static registry file: %s\n", cleanPath)
 		if allowPrivateRegistryIp {
 			fmt.Print("Successfully enabled use of private IP addresses for the remote registry\n")
 			fmt.Print("Caution: allowing registry URLs containing private IP addresses may decrease your security.\n" +
-				"Make sure you trust any remote registries you configure with ToolHive.")
+				"Make sure you trust any remote registries you configure with ToolHive.\n")
 		} else {
 			fmt.Printf("Use of private IP addresses for the remote registry has been disabled" +
 				" as it's not needed for the provided registry.\n")
 		}
 		return nil
+	case config.RegistryTypeAPI:
+		err := provider.SetRegistryAPI(cleanPath, allowPrivateRegistryIp)
+		if err != nil {
+			return err
+		}
+		// Reset the cached provider so it re-initializes with the new config
+		registry.ResetDefaultProvider()
+		fmt.Printf("Successfully set registry API endpoint: %s\n", cleanPath)
+		if allowPrivateRegistryIp {
+			fmt.Print("Successfully enabled use of private IP addresses for the registry API\n")
+			fmt.Print("Caution: allowing registry API URLs containing private IP addresses may decrease your security.\n" +
+				"Make sure you trust any registry APIs you configure with ToolHive.\n")
+		}
+		return nil
 	case config.RegistryTypeFile:
-		return provider.SetRegistryFile(cleanPath)
+		err := provider.SetRegistryFile(cleanPath)
+		if err != nil {
+			return err
+		}
+		// Reset the cached provider so it re-initializes with the new config
+		registry.ResetDefaultProvider()
+		fmt.Printf("Successfully set local registry file: %s\n", cleanPath)
+		return nil
 	default:
 		return fmt.Errorf("unsupported registry type")
 	}
@@ -188,6 +216,8 @@ func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 	url, localPath, _, registryType := provider.GetRegistryConfig()
 
 	switch registryType {
+	case config.RegistryTypeAPI:
+		fmt.Printf("Current registry: %s (API endpoint)\n", url)
 	case config.RegistryTypeURL:
 		fmt.Printf("Current registry: %s (remote URL)\n", url)
 	case config.RegistryTypeFile:
@@ -215,6 +245,9 @@ func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
 	}
+
+	// Reset the cached provider so it re-initializes with the new config
+	registry.ResetDefaultProvider()
 
 	if url != "" {
 		fmt.Printf("Successfully removed registry URL: %s\n", url)

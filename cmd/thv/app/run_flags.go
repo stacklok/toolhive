@@ -20,7 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -358,7 +358,7 @@ func handleImageRetrieval(
 	groupName string,
 ) (
 	string,
-	registry.ServerMetadata,
+	regtypes.ServerMetadata,
 	error,
 ) {
 
@@ -409,7 +409,7 @@ func buildRunnerConfig(
 	validatedHost string,
 	rt runtime.Deployer,
 	imageURL string,
-	serverMetadata registry.ServerMetadata,
+	serverMetadata regtypes.ServerMetadata,
 	envVars map[string]string,
 	envVarValidator runner.EnvVarValidator,
 	oidcConfig *auth.TokenValidatorConfig,
@@ -425,7 +425,7 @@ func buildRunnerConfig(
 
 	// Determine server name for telemetry (similar to validateConfig logic)
 	// This ensures telemetry middleware gets the correct server name
-	imageMetadata, _ := serverMetadata.(*registry.ImageMetadata)
+	imageMetadata, _ := serverMetadata.(*regtypes.ImageMetadata)
 	serverName := runFlags.Name
 	if serverName == "" && imageMetadata != nil {
 		serverName = imageMetadata.Name
@@ -484,7 +484,7 @@ func buildRunnerConfig(
 // configureMiddlewareAndOptions configures middleware and additional runner options
 func configureMiddlewareAndOptions(
 	runFlags *RunFlags,
-	serverMetadata registry.ServerMetadata,
+	serverMetadata regtypes.ServerMetadata,
 	toolsOverride map[string]runner.ToolOverride,
 	oidcConfig *auth.TokenValidatorConfig,
 	telemetryConfig *telemetry.Config,
@@ -566,10 +566,10 @@ func configureMiddlewareAndOptions(
 }
 
 // configureRemoteAuth configures remote authentication options if applicable
-func configureRemoteAuth(runFlags *RunFlags, serverMetadata registry.ServerMetadata) ([]runner.RunConfigBuilderOption, error) {
+func configureRemoteAuth(runFlags *RunFlags, serverMetadata regtypes.ServerMetadata) ([]runner.RunConfigBuilderOption, error) {
 	var opts []runner.RunConfigBuilderOption
 
-	if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
+	if remoteServerMetadata, ok := serverMetadata.(*regtypes.RemoteServerMetadata); ok {
 		remoteAuthConfig, err := getRemoteAuthFromRemoteServerMetadata(remoteServerMetadata, runFlags)
 		if err != nil {
 			return nil, err
@@ -619,7 +619,7 @@ func extractTelemetryValues(config *telemetry.Config) (string, float64, []string
 // getRemoteAuthFromRemoteServerMetadata creates RemoteAuthConfig from RemoteServerMetadata,
 // giving CLI flags priority. For OAuthParams: if CLI provides any, they REPLACE metadata entirely.
 func getRemoteAuthFromRemoteServerMetadata(
-	remoteServerMetadata *registry.RemoteServerMetadata,
+	remoteServerMetadata *regtypes.RemoteServerMetadata,
 	runFlags *RunFlags,
 ) (*remote.Config, error) {
 	if remoteServerMetadata == nil || remoteServerMetadata.OAuthConfig == nil {

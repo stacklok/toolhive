@@ -13,7 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 // Sentinel errors for image validation.
@@ -221,7 +221,7 @@ func (v *RegistryEnforcingValidator) checkImageInRegistry(
 	}
 
 	// Parse the registry data
-	var reg registry.Registry
+	var reg regtypes.Registry
 	if err := json.Unmarshal([]byte(registryData), &reg); err != nil {
 		// Invalid registry data
 		return false, fmt.Errorf("failed to parse registry data: %w", err)
@@ -232,7 +232,7 @@ func (v *RegistryEnforcingValidator) checkImageInRegistry(
 }
 
 // findImageInRegistry searches for an image in a registry
-func findImageInRegistry(reg *registry.Registry, image string) bool {
+func findImageInRegistry(reg *regtypes.Registry, image string) bool {
 	// Check top-level servers
 	for _, server := range reg.Servers {
 		if server.Image == image {

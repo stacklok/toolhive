@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 // RemoteRegistryProvider provides registry data from a remote HTTP endpoint
@@ -30,7 +31,7 @@ func NewRemoteRegistryProvider(registryURL string, allowPrivateIp bool) *RemoteR
 }
 
 // GetRegistry returns the remote registry data
-func (p *RemoteRegistryProvider) GetRegistry() (*Registry, error) {
+func (p *RemoteRegistryProvider) GetRegistry() (*types.Registry, error) {
 	client, err := networking.NewHttpClientBuilder().
 		WithPrivateIPs(p.allowPrivateIp).
 		Build()
@@ -55,7 +56,7 @@ func (p *RemoteRegistryProvider) GetRegistry() (*Registry, error) {
 		return nil, fmt.Errorf("failed to read registry data from response body: %w", err)
 	}
 
-	registry := &Registry{}
+	registry := &types.Registry{}
 	if err := json.Unmarshal(data, registry); err != nil {
 		return nil, fmt.Errorf("failed to parse registry data: %w", err)
 	}

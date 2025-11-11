@@ -7,12 +7,13 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 // SourceDataValidator is an interface for validating registry source configurations
 type SourceDataValidator interface {
 	// ValidateData validates raw data and returns a parsed Registry
-	ValidateData(data []byte, format string) (*registry.Registry, error)
+	ValidateData(data []byte, format string) (*regtypes.Registry, error)
 }
 
 //go:generate mockgen -destination=mocks/mock_source_handler.go -package=mocks -source=types.go SourceHandler,SourceHandlerFactory
@@ -32,7 +33,7 @@ type SourceHandler interface {
 // FetchResult contains the result of a fetch operation
 type FetchResult struct {
 	// Registry is the parsed registry data (replaces raw Data field)
-	Registry *registry.Registry
+	Registry *regtypes.Registry
 
 	// Hash is the SHA256 hash of the serialized data for change detection
 	Hash string
@@ -46,7 +47,7 @@ type FetchResult struct {
 
 // NewFetchResult creates a new FetchResult from a Registry instance and pre-calculated hash
 // The hash should be calculated by the source handler to ensure consistency with CurrentHash
-func NewFetchResult(reg *registry.Registry, hash string, format string) *FetchResult {
+func NewFetchResult(reg *regtypes.Registry, hash string, format string) *FetchResult {
 	serverCount := len(reg.Servers) + len(reg.RemoteServers)
 
 	return &FetchResult{
@@ -72,7 +73,7 @@ func NewSourceDataValidator() SourceDataValidator {
 }
 
 // ValidateData validates raw data and returns a parsed Registry
-func (*DefaultSourceDataValidator) ValidateData(data []byte, format string) (*registry.Registry, error) {
+func (*DefaultSourceDataValidator) ValidateData(data []byte, format string) (*regtypes.Registry, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("data cannot be empty")
 	}
@@ -88,14 +89,14 @@ func (*DefaultSourceDataValidator) ValidateData(data []byte, format string) (*re
 }
 
 // validateToolhiveFormatAndParse validates data against ToolHive registry format and returns parsed Registry
-func validateToolhiveFormatAndParse(data []byte) (*registry.Registry, error) {
+func validateToolhiveFormatAndParse(data []byte) (*regtypes.Registry, error) {
 	// Use the existing schema validation from pkg/registry
 	if err := registry.ValidateRegistrySchema(data); err != nil {
 		return nil, err
 	}
 
 	// Parse the validated data
-	var reg registry.Registry
+	var reg regtypes.Registry
 	if err := json.Unmarshal(data, &reg); err != nil {
 		return nil, fmt.Errorf("failed to parse ToolHive registry format: %w", err)
 	}
@@ -104,7 +105,7 @@ func validateToolhiveFormatAndParse(data []byte) (*registry.Registry, error) {
 }
 
 // validateUpstreamFormatAndParse validates data against upstream registry format and returns converted Registry
-func validateUpstreamFormatAndParse(data []byte) (*registry.Registry, error) {
+func validateUpstreamFormatAndParse(data []byte) (*regtypes.Registry, error) {
 	// Parse as upstream format to validate structure
 	var upstreamServers []registry.UpstreamServerDetail
 	if err := json.Unmarshal(data, &upstreamServers); err != nil {
@@ -126,11 +127,11 @@ func validateUpstreamFormatAndParse(data []byte) (*registry.Registry, error) {
 	}
 
 	// Convert upstream format to ToolHive Registry format
-	toolhiveRegistry := &registry.Registry{
+	toolhiveRegistry := &regtypes.Registry{
 		Version:       "1.0",
 		LastUpdated:   "", // Will be set during sync
-		Servers:       make(map[string]*registry.ImageMetadata),
-		RemoteServers: make(map[string]*registry.RemoteServerMetadata),
+		Servers:       make(map[string]*regtypes.ImageMetadata),
+		RemoteServers: make(map[string]*regtypes.RemoteServerMetadata),
 	}
 
 	for _, upstreamServer := range upstreamServers {
@@ -141,9 +142,9 @@ func validateUpstreamFormatAndParse(data []byte) (*registry.Registry, error) {
 
 		// Add to appropriate map based on server type
 		switch server := serverMetadata.(type) {
-		case *registry.ImageMetadata:
+		case *regtypes.ImageMetadata:
 			toolhiveRegistry.Servers[upstreamServer.Server.Name] = server
-		case *registry.RemoteServerMetadata:
+		case *regtypes.RemoteServerMetadata:
 			toolhiveRegistry.RemoteServers[upstreamServer.Server.Name] = server
 		default:
 			return nil, fmt.Errorf("unknown server type for %s", upstreamServer.Server.Name)

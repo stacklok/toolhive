@@ -17,6 +17,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
 
+//go:generate mockgen -destination=mocks/mock_handler_factory.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/server/adapter HandlerFactory
+
 // HandlerFactory creates handlers that route MCP requests to backends.
 type HandlerFactory interface {
 	// CreateToolHandler creates a handler that routes tool calls to backends.

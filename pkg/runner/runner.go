@@ -119,11 +119,11 @@ func (c *RunConfig) GetPort() int {
 //
 //nolint:gocyclo // This function is complex but manageable
 func (r *Runner) Run(ctx context.Context) error {
-	// Populate default middlewares from old config fields
-	// This now runs ALWAYS and appends to existing middlewares (avoiding duplicates)
-	// This allows both operator-provided middlewares and default middlewares to coexist
-	if err := PopulateMiddlewareConfigs(r.Config); err != nil {
-		return fmt.Errorf("failed to populate middleware configs: %v", err)
+	// Populate default middlewares from old config fields if not already populated
+	if len(r.Config.MiddlewareConfigs) == 0 {
+		if err := PopulateMiddlewareConfigs(r.Config); err != nil {
+			return fmt.Errorf("failed to populate middleware configs: %v", err)
+		}
 	}
 
 	// Create transport with runtime

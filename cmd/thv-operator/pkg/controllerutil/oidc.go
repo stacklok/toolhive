@@ -32,9 +32,6 @@ func AddOIDCConfigOptions(
 	}
 
 	// Add OIDC config to options
-	// The auth middleware will be automatically created from this config by
-	// PopulateMiddlewareConfigs() when the runner starts. This avoids code duplication
-	// and ensures consistent middleware creation between CLI and operator.
 	*options = append(*options, runner.WithOIDCConfig(
 		oidcConfig.Issuer,
 		oidcConfig.Audience,

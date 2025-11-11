@@ -29,56 +29,67 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 	}
 }
 
-// hasMiddlewareType checks if a middleware of the given type already exists
-func hasMiddlewareType(middlewares []types.MiddlewareConfig, middlewareType string) bool {
-	for _, m := range middlewares {
-		if m.Type == middlewareType {
-			return true
-		}
-	}
-	return false
-}
-
 // PopulateMiddlewareConfigs populates the MiddlewareConfigs slice based on the RunConfig settings
 // This function serves as a bridge between the old configuration style and the new generic middleware system
-// It appends default middlewares to any existing middlewares, avoiding duplicates
+//
+//nolint:gocyclo // Function complexity is acceptable for middleware configuration
 func PopulateMiddlewareConfigs(config *RunConfig) error {
-	// Start with existing middlewares (may already contain operator-provided middlewares)
-	middlewareConfigs := config.MiddlewareConfigs
-	var err error
+	var middlewareConfigs []types.MiddlewareConfig
 	// TODO: Consider extracting other middleware setup into helper functions like addUsageMetricsMiddleware
 
-	// Authentication middleware (add if not already present)
-	if !hasMiddlewareType(middlewareConfigs, auth.MiddlewareType) {
-		authParams := auth.MiddlewareParams{
-			OIDCConfig: config.OIDCConfig,
-		}
-		authConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, authParams)
-		if err != nil {
-			return fmt.Errorf("failed to create auth middleware config: %w", err)
-		}
-		middlewareConfigs = append(middlewareConfigs, *authConfig)
+	// Authentication middleware (always present)
+	authParams := auth.MiddlewareParams{
+		OIDCConfig: config.OIDCConfig,
+	}
+	authConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, authParams)
+	if err != nil {
+		return fmt.Errorf("failed to create auth middleware config: %w", err)
+	}
+	middlewareConfigs = append(middlewareConfigs, *authConfig)
+
+	// Token exchange middleware (if configured)
+	middlewareConfigs, err = addTokenExchangeMiddleware(middlewareConfigs, config.TokenExchangeConfig)
+	if err != nil {
+		return err
 	}
 
-	// Tools filter and override middleware (add if enabled and not already present)
-	hasToolFiltering := len(config.ToolsFilter) > 0 || len(config.ToolsOverride) > 0
-	if hasToolFiltering && !hasMiddlewareType(middlewareConfigs, mcp.ToolFilterMiddlewareType) {
-		middlewareConfigs = addToolFilterMiddlewares(
-			middlewareConfigs,
-			config.ToolsFilter,
-			config.ToolsOverride,
-		)
+	// Tools filter and override middleware (if enabled)
+	if len(config.ToolsFilter) > 0 || len(config.ToolsOverride) > 0 {
+		// Prepare overrides map (convert runner.ToolOverride -> mcp.ToolOverride)
+		overrides := make(map[string]mcp.ToolOverride)
+		for actualName, tool := range config.ToolsOverride {
+			overrides[actualName] = mcp.ToolOverride{
+				Name:        tool.Name,
+				Description: tool.Description,
+			}
+		}
+
+		// Add tool filter middleware with both filter and overrides
+		toolFilterParams := mcp.ToolFilterMiddlewareParams{
+			FilterTools:   config.ToolsFilter,
+			ToolsOverride: overrides,
+		}
+		toolFilterConfig, err := types.NewMiddlewareConfig(mcp.ToolFilterMiddlewareType, toolFilterParams)
+		if err != nil {
+			return fmt.Errorf("failed to create tool filter middleware config: %w", err)
+		}
+		middlewareConfigs = append(middlewareConfigs, *toolFilterConfig)
+
+		// Add tool call filter middleware with same params
+		toolCallFilterConfig, err := types.NewMiddlewareConfig(mcp.ToolCallFilterMiddlewareType, toolFilterParams)
+		if err != nil {
+			return fmt.Errorf("failed to create tool call filter middleware config: %w", err)
+		}
+		middlewareConfigs = append(middlewareConfigs, *toolCallFilterConfig)
 	}
 
-	// MCP Parser middleware (add if not already present)
-	if !hasMiddlewareType(middlewareConfigs, mcp.ParserMiddlewareType) {
-		mcpParserParams := mcp.ParserMiddlewareParams{}
-		mcpParserConfig, err := types.NewMiddlewareConfig(mcp.ParserMiddlewareType, mcpParserParams)
-		if err != nil {
-			return fmt.Errorf("failed to create MCP parser middleware config: %w", err)
-		}
-		middlewareConfigs = append(middlewareConfigs, *mcpParserConfig)
+	// MCP Parser middleware (always present)
+	mcpParserParams := mcp.ParserMiddlewareParams{}
+	mcpParserConfig, err := types.NewMiddlewareConfig(mcp.ParserMiddlewareType, mcpParserParams)
+	if err != nil {
+		return fmt.Errorf("failed to create MCP parser middleware config: %w", err)
 	}
+	middlewareConfigs = append(middlewareConfigs, *mcpParserConfig)
 
 	// Load application config for global settings
 	configProvider := cfg.NewDefaultProvider()
@@ -91,29 +102,72 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	}
 
 	// Telemetry middleware (if enabled)
-	middlewareConfigs = addTelemetryMiddleware(
-		middlewareConfigs,
-		config.TelemetryConfig,
-		config.Name,
-		config.Transport.String(),
-	)
+	if config.TelemetryConfig != nil {
+		telemetryParams := telemetry.FactoryMiddlewareParams{
+			Config:     config.TelemetryConfig,
+			ServerName: config.Name,
+			Transport:  config.Transport.String(),
+		}
+		telemetryConfig, err := types.NewMiddlewareConfig(telemetry.MiddlewareType, telemetryParams)
+		if err != nil {
+			return fmt.Errorf("failed to create telemetry middleware config: %w", err)
+		}
+		middlewareConfigs = append(middlewareConfigs, *telemetryConfig)
+	}
 
 	// Authorization middleware (if enabled)
-	middlewareConfigs = addAuthzMiddleware(middlewareConfigs, config.AuthzConfigPath)
+	if config.AuthzConfig != nil {
+		authzParams := authz.FactoryMiddlewareParams{
+			ConfigPath: config.AuthzConfigPath, // Keep for backwards compatibility
+			ConfigData: config.AuthzConfig,     // Use the loaded config data
+		}
+		authzConfig, err := types.NewMiddlewareConfig(authz.MiddlewareType, authzParams)
+		if err != nil {
+			return fmt.Errorf("failed to create authorization middleware config: %w", err)
+		}
+		middlewareConfigs = append(middlewareConfigs, *authzConfig)
+	}
 
 	// Audit middleware (if enabled)
-	enableAudit := config.AuditConfig != nil
-	middlewareConfigs = addAuditMiddleware(
-		middlewareConfigs,
-		enableAudit,
-		config.AuditConfigPath,
-		config.Name,
-		config.Transport.String(),
-	)
+	if config.AuditConfig != nil {
+		auditParams := audit.MiddlewareParams{
+			ConfigPath:    config.AuditConfigPath, // Keep for backwards compatibility
+			ConfigData:    config.AuditConfig,     // Use the loaded config data
+			Component:     config.AuditConfig.Component,
+			TransportType: config.Transport.String(), // Pass the actual transport type
+		}
+		auditConfig, err := types.NewMiddlewareConfig(audit.MiddlewareType, auditParams)
+		if err != nil {
+			return fmt.Errorf("failed to create audit middleware config: %w", err)
+		}
+		middlewareConfigs = append(middlewareConfigs, *auditConfig)
+	}
 
 	// Set the populated middleware configs
 	config.MiddlewareConfigs = middlewareConfigs
 	return nil
+}
+
+// addTokenExchangeMiddleware adds token exchange middleware if configured
+func addTokenExchangeMiddleware(
+	middlewares []types.MiddlewareConfig,
+	tokenExchangeConfig *tokenexchange.Config,
+) ([]types.MiddlewareConfig, error) {
+	if tokenExchangeConfig == nil {
+		return middlewares, nil
+	}
+
+	tokenExchangeParams := tokenexchange.MiddlewareParams{
+		TokenExchangeConfig: tokenExchangeConfig,
+	}
+	tokenExchangeMwConfig, err := types.NewMiddlewareConfig(
+		tokenexchange.MiddlewareType,
+		tokenExchangeParams,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create token exchange middleware config: %w", err)
+	}
+	return append(middlewares, *tokenExchangeMwConfig), nil
 }
 
 // addUsageMetricsMiddleware adds usage metrics middleware if enabled

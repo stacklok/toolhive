@@ -107,14 +107,6 @@ func WithMiddlewareConfig(middlewareConfig []types.MiddlewareConfig) RunConfigBu
 	}
 }
 
-// WithAppendMiddlewareConfig appends a middleware configuration to the existing list
-func WithAppendMiddlewareConfig(middlewareConfig types.MiddlewareConfig) RunConfigBuilderOption {
-	return func(b *runConfigBuilder) error {
-		b.config.MiddlewareConfigs = append(b.config.MiddlewareConfigs, middlewareConfig)
-		return nil
-	}
-}
-
 // WithCmdArgs sets the command arguments
 func WithCmdArgs(args []string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
@@ -361,6 +353,14 @@ func WithOIDCConfig(
 			}
 		}
 
+		return nil
+	}
+}
+
+// WithTokenExchangeConfig sets the token exchange configuration
+func WithTokenExchangeConfig(config *tokenexchange.Config) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.TokenExchangeConfig = config
 		return nil
 	}
 }

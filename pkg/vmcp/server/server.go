@@ -22,7 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
 
@@ -101,8 +101,11 @@ type Server struct {
 	// Backend client for making requests to backends
 	backendClient vmcp.BackendClient
 
-	// Aggregated capabilities (cached)
-	aggregatedCapabilities *aggregator.AggregatedCapabilities
+	// Discovery manager for lazy per-user capability discovery
+	discoveryMgr discovery.Manager
+
+	// Backends for capability discovery
+	backends []vmcp.Backend
 
 	// Session manager for tracking MCP protocol sessions
 	// This is ToolHive's session.Manager (pkg/transport/session) - the same component
@@ -125,6 +128,8 @@ func New(
 	cfg *Config,
 	rt router.Router,
 	backendClient vmcp.BackendClient,
+	discoveryMgr discovery.Manager,
+	backends []vmcp.Backend,
 ) *Server {
 	// Apply defaults
 	if cfg.Host == "" {
@@ -162,64 +167,15 @@ func New(
 		mcpServer:      mcpServer,
 		router:         rt,
 		backendClient:  backendClient,
+		discoveryMgr:   discoveryMgr,
+		backends:       backends,
 		sessionManager: sessionManager,
 		ready:          make(chan struct{}),
 	}
 }
 
-// RegisterCapabilities registers the aggregated capabilities with the MCP server.
-// This must be called before starting the server.
-func (s *Server) RegisterCapabilities(ctx context.Context, capabilities *aggregator.AggregatedCapabilities) error {
-	logger.Infof("Registering %d tools, %d resources, %d prompts",
-		len(capabilities.Tools), len(capabilities.Resources), len(capabilities.Prompts))
-
-	// Cache the aggregated capabilities
-	s.aggregatedCapabilities = capabilities
-
-	// Note: MCP protocol initialization is handled automatically by the mark3labs SDK.
-	// When an MCP client sends an 'initialize' request:
-	//   - SDK returns server name and version (from NewMCPServer constructor)
-	//   - SDK auto-discovers capabilities from tools/resources/prompts registered below
-	//   - SDK calls sessionIDAdapter.Generate() to create session ID if client didn't provide one
-	//   - Session is stored and managed by ToolHive's session.Manager (not SDK)
-	// No custom initialize handler is needed or exposed by the SDK.
-
-	// Update router with routing table
-	if err := s.router.UpdateRoutingTable(ctx, capabilities.RoutingTable); err != nil {
-		return fmt.Errorf("failed to update routing table: %w", err)
-	}
-
-	// Register all tools
-	for _, tool := range capabilities.Tools {
-		if err := s.registerTool(tool); err != nil {
-			return fmt.Errorf("failed to register tool %s: %w", tool.Name, err)
-		}
-	}
-
-	// Register all resources
-	for _, resource := range capabilities.Resources {
-		if err := s.registerResource(resource); err != nil {
-			return fmt.Errorf("failed to register resource %s: %w", resource.URI, err)
-		}
-	}
-
-	// Register all prompts
-	for _, prompt := range capabilities.Prompts {
-		if err := s.registerPrompt(prompt); err != nil {
-			return fmt.Errorf("failed to register prompt %s: %w", prompt.Name, err)
-		}
-	}
-
-	logger.Infof("Successfully registered all capabilities")
-	return nil
-}
-
 // Start starts the Virtual MCP Server and begins serving requests.
 func (s *Server) Start(ctx context.Context) error {
-	if s.aggregatedCapabilities == nil {
-		return fmt.Errorf("capabilities not registered, call RegisterCapabilities first")
-	}
-
 	// Create session adapter to expose ToolHive's session.Manager via SDK interface
 	// Sessions are ENTIRELY managed by ToolHive's session.Manager (storage, TTL, cleanup).
 	// The SDK only calls our Generate/Validate/Terminate methods during MCP protocol flows.
@@ -246,12 +202,20 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/")
 	}
 
-	// MCP endpoint - apply authentication if configured
+	// MCP endpoint - apply middleware chain: auth → discovery
 	var mcpHandler http.Handler = streamableServer
+
+	// Apply discovery middleware (runs after auth middleware)
+	// Discovery middleware performs per-request capability aggregation with user context
+	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backends)(mcpHandler)
+	logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
+
+	// Apply authentication middleware if configured (runs first in chain)
 	if s.config.AuthMiddleware != nil {
-		mcpHandler = s.config.AuthMiddleware(streamableServer)
+		mcpHandler = s.config.AuthMiddleware(mcpHandler)
 		logger.Info("Authentication middleware enabled for MCP endpoints")
 	}
+
 	mux.Handle("/", mcpHandler)
 
 	// Create HTTP server
@@ -356,7 +320,11 @@ func (s *Server) Address() string {
 // registerTool registers a single tool with the MCP server.
 // The tool handler routes the request to the appropriate backend.
 //
-//nolint:unparam // Error return kept for future extensibility
+// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
+// It will be used when we implement dynamic handler registration based on discovered capabilities.
+// Keeping it for now as it contains important handler logic.
+//
+//nolint:unparam,unused // Error return kept for future extensibility; unused until dynamic registration
 func (s *Server) registerTool(tool vmcp.Tool) error {
 	// Convert vmcp.Tool to mcp.Tool
 	// Note: tool.InputSchema is already a complete JSON Schema (map[string]any)
@@ -386,7 +354,10 @@ func (s *Server) registerTool(tool vmcp.Tool) error {
 // registerResource registers a single resource with the MCP server.
 // The resource handler routes the request to the appropriate backend.
 //
-//nolint:unparam // Error return kept for future extensibility
+// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
+// It will be used when we implement dynamic handler registration based on discovered capabilities.
+//
+//nolint:unparam,unused // Error return kept for future extensibility; unused until dynamic registration
 func (s *Server) registerResource(resource vmcp.Resource) error {
 	// Convert vmcp.Resource to mcp.Resource
 	mcpResource := mcp.Resource{
@@ -409,7 +380,10 @@ func (s *Server) registerResource(resource vmcp.Resource) error {
 // registerPrompt registers a single prompt with the MCP server.
 // The prompt handler routes the request to the appropriate backend.
 //
-//nolint:unparam // Error return kept for future extensibility
+// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
+// It will be used when we implement dynamic handler registration based on discovered capabilities.
+//
+//nolint:unparam,unused // Error return kept for future extensibility; unused until dynamic registration
 func (s *Server) registerPrompt(prompt vmcp.Prompt) error {
 	// Convert vmcp.Prompt to mcp.Prompt
 	mcpArguments := make([]mcp.PromptArgument, len(prompt.Arguments))
@@ -438,6 +412,10 @@ func (s *Server) registerPrompt(prompt vmcp.Prompt) error {
 }
 
 // createToolHandler creates a tool handler that routes to the appropriate backend.
+//
+// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
+//
+//nolint:unused // Unused until dynamic handler registration
 func (s *Server) createToolHandler(toolName string) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		logger.Debugf("Handling tool call: %s", toolName)
@@ -495,11 +473,22 @@ func (s *Server) createToolHandler(toolName string) func(context.Context, mcp.Ca
 }
 
 // createResourceHandler creates a resource handler that routes to the appropriate backend.
+//
+// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
+//
+//nolint:unused // Unused until dynamic handler registration
 func (s *Server) createResourceHandler(uri string) func(
 	context.Context, mcp.ReadResourceRequest,
 ) ([]mcp.ResourceContents, error) {
 	return func(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 		logger.Debugf("Handling resource read: %s", uri)
+
+		// Get discovered capabilities from context
+		caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
+		if !ok {
+			logger.Warn("Capabilities not discovered in context")
+			return nil, fmt.Errorf("capabilities not discovered")
+		}
 
 		// Route to backend
 		target, err := s.router.RouteResource(ctx, uri)
@@ -530,14 +519,12 @@ func (s *Server) createResourceHandler(uri string) func(
 			return nil, fmt.Errorf("resource read failed: %w", err)
 		}
 
-		// Get resource MIME type from aggregated capabilities
+		// Get resource MIME type from discovered capabilities
 		mimeType := "application/octet-stream" // Default for unknown resources
-		if s.aggregatedCapabilities != nil {
-			for _, res := range s.aggregatedCapabilities.Resources {
-				if res.URI == uri && res.MimeType != "" {
-					mimeType = res.MimeType
-					break
-				}
+		for _, res := range caps.Resources {
+			if res.URI == uri && res.MimeType != "" {
+				mimeType = res.MimeType
+				break
 			}
 		}
 
@@ -555,6 +542,10 @@ func (s *Server) createResourceHandler(uri string) func(
 }
 
 // createPromptHandler creates a prompt handler that routes to the appropriate backend.
+//
+// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
+//
+//nolint:unused // Unused until dynamic handler registration
 func (s *Server) createPromptHandler(promptName string) func(
 	context.Context, mcp.GetPromptRequest,
 ) (*mcp.GetPromptResult, error) {

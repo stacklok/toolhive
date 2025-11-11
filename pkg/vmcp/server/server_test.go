@@ -9,7 +9,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	routerMocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -74,8 +74,9 @@ func TestNew(t *testing.T) {
 
 			mockRouter := routerMocks.NewMockRouter(ctrl)
 			mockBackendClient := mocks.NewMockBackendClient(ctrl)
+			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
-			s := server.New(tt.config, mockRouter, mockBackendClient)
+			s := server.New(tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{})
 			require.NotNil(t, s)
 
 			// Address() returns formatted string
@@ -85,136 +86,9 @@ func TestNew(t *testing.T) {
 	}
 }
 
-func TestServer_RegisterCapabilities(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-
-	t.Run("successfully registers tools, resources, and prompts", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		t.Cleanup(ctrl.Finish)
-
-		mockRouter := routerMocks.NewMockRouter(ctrl)
-		mockBackendClient := mocks.NewMockBackendClient(ctrl)
-
-		// Create test capabilities
-		capabilities := &aggregator.AggregatedCapabilities{
-			Tools: []vmcp.Tool{
-				{
-					Name:        "test_tool",
-					Description: "A test tool",
-					InputSchema: map[string]any{
-						"param1": map[string]any{
-							"type": "string",
-						},
-					},
-					BackendID: "backend1",
-				},
-			},
-			Resources: []vmcp.Resource{
-				{
-					URI:         "file:///test",
-					Name:        "test_resource",
-					Description: "A test resource",
-					MimeType:    "text/plain",
-					BackendID:   "backend1",
-				},
-			},
-			Prompts: []vmcp.Prompt{
-				{
-					Name:        "test_prompt",
-					Description: "A test prompt",
-					Arguments: []vmcp.PromptArgument{
-						{
-							Name:        "arg1",
-							Description: "First argument",
-							Required:    true,
-						},
-					},
-					BackendID: "backend1",
-				},
-			},
-			RoutingTable: &vmcp.RoutingTable{
-				Tools: map[string]*vmcp.BackendTarget{
-					"test_tool": {
-						WorkloadID: "backend1",
-						BaseURL:    "http://backend1:8080",
-					},
-				},
-				Resources: map[string]*vmcp.BackendTarget{
-					"file:///test": {
-						WorkloadID: "backend1",
-						BaseURL:    "http://backend1:8080",
-					},
-				},
-				Prompts: map[string]*vmcp.BackendTarget{
-					"test_prompt": {
-						WorkloadID: "backend1",
-						BaseURL:    "http://backend1:8080",
-					},
-				},
-			},
-		}
-
-		// Expect router update
-		mockRouter.EXPECT().
-			UpdateRoutingTable(gomock.Any(), capabilities.RoutingTable).
-			Return(nil)
-
-		s := server.New(&server.Config{}, mockRouter, mockBackendClient)
-		err := s.RegisterCapabilities(ctx, capabilities)
-		require.NoError(t, err)
-	})
-
-	t.Run("fails when routing table update fails", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		t.Cleanup(ctrl.Finish)
-
-		mockRouter := routerMocks.NewMockRouter(ctrl)
-		mockBackendClient := mocks.NewMockBackendClient(ctrl)
-
-		capabilities := &aggregator.AggregatedCapabilities{
-			Tools:        []vmcp.Tool{},
-			Resources:    []vmcp.Resource{},
-			Prompts:      []vmcp.Prompt{},
-			RoutingTable: &vmcp.RoutingTable{},
-		}
-
-		// Expect router update to fail
-		mockRouter.EXPECT().
-			UpdateRoutingTable(gomock.Any(), gomock.Any()).
-			Return(assert.AnError)
-
-		s := server.New(&server.Config{}, mockRouter, mockBackendClient)
-		err := s.RegisterCapabilities(ctx, capabilities)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to update routing table")
-	})
-
-	t.Run("fails when starting without registered capabilities", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		t.Cleanup(ctrl.Finish)
-
-		mockRouter := routerMocks.NewMockRouter(ctrl)
-		mockBackendClient := mocks.NewMockBackendClient(ctrl)
-
-		s := server.New(&server.Config{}, mockRouter, mockBackendClient)
-
-		// Create a context that we can cancel immediately
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // Cancel immediately to prevent actual server start
-
-		err := s.Start(ctx)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "capabilities not registered")
-	})
-}
+// TestServer_RegisterCapabilities has been removed because with lazy discovery,
+// capabilities are no longer registered upfront. Instead, they are discovered
+// per-user via the discovery middleware when requests are made.
 
 func TestServer_Address(t *testing.T) {
 	t.Parallel()
@@ -256,8 +130,9 @@ func TestServer_Address(t *testing.T) {
 
 			mockRouter := routerMocks.NewMockRouter(ctrl)
 			mockBackendClient := mocks.NewMockBackendClient(ctrl)
+			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
-			s := server.New(tt.config, mockRouter, mockBackendClient)
+			s := server.New(tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{})
 			addr := s.Address()
 			assert.Equal(t, tt.expected, addr)
 		})
@@ -275,8 +150,9 @@ func TestServer_Stop(t *testing.T) {
 
 		mockRouter := routerMocks.NewMockRouter(ctrl)
 		mockBackendClient := mocks.NewMockBackendClient(ctrl)
+		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
-		s := server.New(&server.Config{}, mockRouter, mockBackendClient)
+		s := server.New(&server.Config{}, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{})
 		err := s.Stop(context.Background())
 		require.NoError(t, err)
 	})
@@ -294,115 +170,7 @@ func TestServer_Stop(t *testing.T) {
 // Output: {type: "object", properties: {properties: {...}, required: [...], type: "object"}}
 //
 // The fix uses RawInputSchema to pass the schema as-is without double-nesting.
-func TestServer_ToolSchemaConversion(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-
-	t.Run("complete JSON Schema is not double-nested", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		t.Cleanup(ctrl.Finish)
-
-		mockRouter := routerMocks.NewMockRouter(ctrl)
-		mockBackendClient := mocks.NewMockBackendClient(ctrl)
-
-		// Create a tool with a complete JSON Schema (like real MCP servers provide)
-		// This includes type, properties, and required at the top level
-		capabilities := &aggregator.AggregatedCapabilities{
-			Tools: []vmcp.Tool{
-				{
-					Name:        "fetch_fetch",
-					Description: "Fetches a URL from the internet",
-					InputSchema: map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"url": map[string]any{
-								"type": "string",
-							},
-							"max_length": map[string]any{
-								"type": []string{"null", "integer"},
-							},
-						},
-						"required": []string{"url"},
-					},
-					BackendID: "fetch",
-				},
-			},
-			Resources: []vmcp.Resource{},
-			Prompts:   []vmcp.Prompt{},
-			RoutingTable: &vmcp.RoutingTable{
-				Tools: map[string]*vmcp.BackendTarget{
-					"fetch_fetch": {
-						WorkloadID: "fetch",
-						BaseURL:    "http://fetch:8080",
-					},
-				},
-				Resources: map[string]*vmcp.BackendTarget{},
-				Prompts:   map[string]*vmcp.BackendTarget{},
-			},
-		}
-
-		// Expect router update
-		mockRouter.EXPECT().
-			UpdateRoutingTable(gomock.Any(), capabilities.RoutingTable).
-			Return(nil)
-
-		s := server.New(&server.Config{}, mockRouter, mockBackendClient)
-		err := s.RegisterCapabilities(ctx, capabilities)
-		require.NoError(t, err)
-
-		// The test passes if RegisterCapabilities succeeds without error.
-		// The actual schema validation happens when the MCP SDK marshals the
-		// Tool to JSON for protocol communication.
-		// If the schema were double-nested, VSCode and other strict MCP clients
-		// would reject it with validation errors like:
-		// "Incorrect type. Expected one of object, boolean. (at /properties/required)"
-	})
-
-	t.Run("handles schema marshaling errors gracefully", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		t.Cleanup(ctrl.Finish)
-
-		mockRouter := routerMocks.NewMockRouter(ctrl)
-		mockBackendClient := mocks.NewMockBackendClient(ctrl)
-
-		// Create a tool with a schema that contains un-marshalable data
-		// (channels cannot be marshaled to JSON)
-		ch := make(chan int)
-		capabilities := &aggregator.AggregatedCapabilities{
-			Tools: []vmcp.Tool{
-				{
-					Name:        "bad_tool",
-					Description: "Tool with un-marshalable schema",
-					InputSchema: map[string]any{
-						"channel": ch, // This cannot be marshaled to JSON
-					},
-					BackendID: "test",
-				},
-			},
-			Resources: []vmcp.Resource{},
-			Prompts:   []vmcp.Prompt{},
-			RoutingTable: &vmcp.RoutingTable{
-				Tools:     map[string]*vmcp.BackendTarget{},
-				Resources: map[string]*vmcp.BackendTarget{},
-				Prompts:   map[string]*vmcp.BackendTarget{},
-			},
-		}
-
-		// Expect router update
-		mockRouter.EXPECT().
-			UpdateRoutingTable(gomock.Any(), capabilities.RoutingTable).
-			Return(nil)
-
-		s := server.New(&server.Config{}, mockRouter, mockBackendClient)
-		err := s.RegisterCapabilities(ctx, capabilities)
-
-		// Should fail due to un-marshalable schema
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to marshal input schema")
-	})
-}
+// TestServer_ToolSchemaConversion has been removed because with lazy discovery,
+// capabilities (including tool schemas) are discovered per-user via the discovery
+// middleware when requests are made. Schema validation now happens in the
+// aggregator and is tested there.

@@ -13,6 +13,8 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -147,40 +149,46 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 	assert.Equal(t, 1, len(aggregatedCaps.RoutingTable.Resources))
 	assert.Equal(t, 1, len(aggregatedCaps.RoutingTable.Prompts))
 
-	// Step 4: Create router and update with routing table
+	// Step 4: Create router and add capabilities to context
 	rt := router.NewDefaultRouter()
-	err = rt.UpdateRoutingTable(ctx, aggregatedCaps.RoutingTable)
-	require.NoError(t, err)
 
-	// Step 5: Verify router can route to correct backends
-	target, err := rt.RouteTool(ctx, "github_create_issue")
+	// Add discovered capabilities to context
+	ctxWithCaps := discovery.WithDiscoveredCapabilities(ctx, aggregatedCaps)
+
+	// Step 5: Verify router can route to correct backends (using context with capabilities)
+	target, err := rt.RouteTool(ctxWithCaps, "github_create_issue")
 	require.NoError(t, err)
 	assert.Equal(t, "github", target.WorkloadID)
 	assert.Equal(t, "http://github-mcp:8080", target.BaseURL)
 
-	target, err = rt.RouteTool(ctx, "jira_create_issue")
+	target, err = rt.RouteTool(ctxWithCaps, "jira_create_issue")
 	require.NoError(t, err)
 	assert.Equal(t, "jira", target.WorkloadID)
 	assert.Equal(t, "http://jira-mcp:8080", target.BaseURL)
 
-	target, err = rt.RouteResource(ctx, "file:///github/repos")
+	target, err = rt.RouteResource(ctxWithCaps, "file:///github/repos")
 	require.NoError(t, err)
 	assert.Equal(t, "github", target.WorkloadID)
 
-	target, err = rt.RoutePrompt(ctx, "code_review")
+	target, err = rt.RoutePrompt(ctxWithCaps, "code_review")
 	require.NoError(t, err)
 	assert.Equal(t, "github", target.WorkloadID)
 
-	// Step 6: Create server and register capabilities
+	// Step 6: Create discovery manager and server
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+
+	// Mock discovery to return our aggregated capabilities
+	mockDiscoveryMgr.EXPECT().
+		Discover(gomock.Any(), gomock.Any()).
+		Return(aggregatedCaps, nil).
+		AnyTimes()
+
 	srv := server.New(&server.Config{
 		Name:    "test-vmcp",
 		Version: "1.0.0",
 		Host:    "127.0.0.1",
 		Port:    4484,
-	}, rt, mockBackendClient)
-
-	err = srv.RegisterCapabilities(ctx, aggregatedCaps)
-	require.NoError(t, err)
+	}, rt, mockBackendClient, mockDiscoveryMgr, backends)
 
 	// Validate server address
 	assert.Equal(t, "127.0.0.1:4484", srv.Address())

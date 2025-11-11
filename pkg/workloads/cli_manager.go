@@ -1180,9 +1180,9 @@ func (d *cliManager) getRemoteWorkloadsFromState(
 		// Map to core.Workload
 		workload := core.Workload{
 			Name:          name,
-			Package:       runConfig.RemoteURL,
+			Package:       "remote",
 			URL:           runConfig.RemoteURL,
-			ToolType:      "mcp",
+			ToolType:      "remote",
 			TransportType: runConfig.Transport,
 			ProxyMode:     runConfig.ProxyMode.String(),
 			Status:        workloadStatus.Status,

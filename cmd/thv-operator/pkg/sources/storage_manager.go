@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 const (
@@ -32,10 +32,10 @@ const (
 // StorageManager defines the interface for registry data persistence
 type StorageManager interface {
 	// Store saves a Registry instance to persistent storage
-	Store(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, reg *registry.Registry) error
+	Store(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, reg *regtypes.Registry) error
 
 	// Get retrieves and parses registry data from persistent storage
-	Get(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*registry.Registry, error)
+	Get(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*regtypes.Registry, error)
 
 	// Delete removes registry data from persistent storage
 	Delete(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) error
@@ -62,7 +62,7 @@ func NewConfigMapStorageManager(k8sClient client.Client, scheme *runtime.Scheme)
 }
 
 // Store saves a Registry instance to a ConfigMap
-func (s *ConfigMapStorageManager) Store(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, reg *registry.Registry) error {
+func (s *ConfigMapStorageManager) Store(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, reg *regtypes.Registry) error {
 	// Serialize the registry to JSON
 	data, err := json.Marshal(reg)
 	if err != nil {
@@ -129,7 +129,7 @@ func (s *ConfigMapStorageManager) Store(ctx context.Context, mcpRegistry *mcpv1a
 }
 
 // Get retrieves and parses registry data from a ConfigMap
-func (s *ConfigMapStorageManager) Get(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*registry.Registry, error) {
+func (s *ConfigMapStorageManager) Get(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (*regtypes.Registry, error) {
 	configMapName := s.getConfigMapName(mcpRegistry)
 
 	configMap := &corev1.ConfigMap{}
@@ -148,7 +148,7 @@ func (s *ConfigMapStorageManager) Get(ctx context.Context, mcpRegistry *mcpv1alp
 	}
 
 	// Parse the JSON data into a Registry
-	var reg registry.Registry
+	var reg regtypes.Registry
 	if err := json.Unmarshal([]byte(data), &reg); err != nil {
 		return nil, NewStorageError("parse", mcpRegistry.Name, "failed to parse registry data", err)
 	}

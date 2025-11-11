@@ -6,7 +6,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 // searchRegistryArgs holds the arguments for searching the registry
@@ -54,7 +54,7 @@ func (h *Handler) SearchRegistry(_ context.Context, request mcp.CallToolRequest)
 		}
 
 		// Add image-specific fields if it's an ImageMetadata
-		if imgMeta, ok := srv.(*registry.ImageMetadata); ok {
+		if imgMeta, ok := srv.(*types.ImageMetadata); ok {
 			info.Image = imgMeta.Image
 			info.Args = imgMeta.Args
 			info.Tools = imgMeta.Tools

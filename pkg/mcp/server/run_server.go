@@ -8,7 +8,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -48,7 +48,7 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 	}
 
 	// Build run configuration
-	imageMetadata, _ := serverMetadata.(*registry.ImageMetadata)
+	imageMetadata, _ := serverMetadata.(*types.ImageMetadata)
 
 	runConfig, err := buildServerConfig(ctx, args, imageURL, imageMetadata)
 	if err != nil {
@@ -107,7 +107,7 @@ func buildServerConfig(
 	ctx context.Context,
 	args *runServerArgs,
 	imageURL string,
-	imageMetadata *registry.ImageMetadata,
+	imageMetadata *types.ImageMetadata,
 ) (*runner.RunConfig, error) {
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
@@ -141,7 +141,7 @@ func buildServerConfig(
 }
 
 // configureTransport sets up transport configuration from metadata
-func configureTransport(opts *[]runner.RunConfigBuilderOption, imageMetadata *registry.ImageMetadata) string {
+func configureTransport(opts *[]runner.RunConfigBuilderOption, imageMetadata *types.ImageMetadata) string {
 	transport := transporttypes.TransportTypeSSE.String()
 
 	if imageMetadata != nil {
@@ -155,7 +155,7 @@ func configureTransport(opts *[]runner.RunConfigBuilderOption, imageMetadata *re
 }
 
 // prepareEnvironmentVariables merges default and user environment variables
-func prepareEnvironmentVariables(imageMetadata *registry.ImageMetadata, userEnv map[string]string) map[string]string {
+func prepareEnvironmentVariables(imageMetadata *types.ImageMetadata, userEnv map[string]string) map[string]string {
 	envVarsMap := make(map[string]string)
 
 	// Add default environment variables from metadata

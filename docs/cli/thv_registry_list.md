@@ -26,6 +26,7 @@ thv registry list [flags]
 ```
       --format string   Output format (json or text) (default "text")
   -h, --help            help for list
+      --refresh         Force refresh registry cache
 ```
 
 ### Options inherited from parent commands

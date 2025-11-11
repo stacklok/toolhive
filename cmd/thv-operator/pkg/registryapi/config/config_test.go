@@ -1,4 +1,4 @@
-package registryapi
+package config
 
 import (
 	"testing"
@@ -25,7 +25,7 @@ func TestBuildConfig_EmptyRegistryName(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManager()
+	manager := NewConfigManagerForTesting()
 	config, err := manager.BuildConfig(mcpRegistry)
 
 	require.Error(t, err)
@@ -47,7 +47,7 @@ func TestBuildConfig_MissingSource(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManager()
+	manager := NewConfigManagerForTesting()
 	config, err := manager.BuildConfig(mcpRegistry)
 
 	require.Error(t, err)
@@ -70,7 +70,7 @@ func TestBuildConfig_EmptyFormat(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManager()
+	manager := NewConfigManagerForTesting()
 	config, err := manager.BuildConfig(mcpRegistry)
 
 	require.Error(t, err)
@@ -93,7 +93,7 @@ func TestBuildConfig_UnsupportedSourceType(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManager()
+	manager := NewConfigManagerForTesting()
 	config, err := manager.BuildConfig(mcpRegistry)
 
 	require.Error(t, err)
@@ -126,7 +126,7 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		// Currently this succeeds even with nil ConfigMap
@@ -159,7 +159,7 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -190,7 +190,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.Error(t, err)
@@ -215,7 +215,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.Error(t, err)
@@ -241,7 +241,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.Error(t, err)
@@ -270,7 +270,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -306,7 +306,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -342,7 +342,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -377,7 +377,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.Error(t, err)
@@ -402,7 +402,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.Error(t, err)
@@ -430,7 +430,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -468,7 +468,7 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.Error(t, err)
@@ -496,7 +496,7 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.Error(t, err)
@@ -524,7 +524,7 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -561,7 +561,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -597,7 +597,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -637,7 +637,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -680,7 +680,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -725,7 +725,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)

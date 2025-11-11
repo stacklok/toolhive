@@ -1,27 +1,62 @@
-package registryapi
+package config
 
 import (
+	"context"
 	"fmt"
 
 	"gopkg.in/yaml.v2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
 // ConfigManager provides methods to build registry server configuration from MCPRegistry resources
+// and its persistence into a ConfigMap
+//
+//nolint:revive
 type ConfigManager interface {
 	BuildConfig(mcpRegistry *mcpv1alpha1.MCPRegistry) (*Config, error)
+	UpsertConfigMap(ctx context.Context,
+		mcpRegistry *mcpv1alpha1.MCPRegistry,
+		desired *corev1.ConfigMap,
+	) error
 }
 
-// NewConfigManager creates a new instance of ConfigManager
-func NewConfigManager() ConfigManager {
+// NewConfigManager creates a new instance of ConfigManager with required dependencies
+func NewConfigManager(
+	k8sClient client.Client,
+	scheme *runtime.Scheme,
+	checksumManager checksum.RunConfigConfigMapChecksum,
+) (ConfigManager, error) {
+	if k8sClient == nil {
+		return nil, fmt.Errorf("k8sClient is required and cannot be nil")
+	}
+	if scheme == nil {
+		return nil, fmt.Errorf("scheme is required and cannot be nil")
+	}
+	if checksumManager == nil {
+		return nil, fmt.Errorf("checksumManager is required and cannot be nil")
+	}
+	return &configManager{client: k8sClient, scheme: scheme, checksum: checksumManager}, nil
+}
+
+// NewConfigManagerForTesting creates a ConfigManager for testing purposes only.
+// WARNING: This manager will panic if methods requiring dependencies are called.
+// Only use this for testing BuildConfig or other methods that don't use k8s client.
+func NewConfigManagerForTesting() ConfigManager {
 	return &configManager{}
 }
 
-type configManager struct{}
+type configManager struct {
+	client   client.Client
+	scheme   *runtime.Scheme
+	checksum checksum.RunConfigConfigMapChecksum
+}
 
 const (
 	// SourceTypeGit is the type for registry data stored in Git repositories

@@ -221,28 +221,25 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 
 	// Initialize managers for backend discovery
 	logger.Info("Initializing workload and group managers")
-	var workloadsManager interface{}
-	if rt.IsKubernetesRuntime() {
-		workloadsManager, err = workloads.NewK8SManagerFromContext(ctx)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create Kubernetes workloads manager: %w", err)
-		}
-	} else {
-		workloadsManager, err = workloads.NewManager(ctx)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create CLI workloads manager: %w", err)
-		}
-	}
-
 	groupsManager, err := groups.NewManager()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
 	}
 
-	// Create backend discoverer and discover backends
-	discoverer, err := aggregator.NewBackendDiscoverer(workloadsManager, groupsManager, cfg.OutgoingAuth)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create backend discoverer: %w", err)
+	// Create backend discoverer based on runtime environment
+	var discoverer aggregator.BackendDiscoverer
+	if rt.IsKubernetesRuntime() {
+		k8sWorkloadsManager, err := workloads.NewK8SManagerFromContext(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create Kubernetes workloads manager: %w", err)
+		}
+		discoverer = aggregator.NewK8SBackendDiscoverer(k8sWorkloadsManager, groupsManager, cfg.OutgoingAuth)
+	} else {
+		cliWorkloadsManager, err := workloads.NewManager(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to create CLI workloads manager: %w", err)
+		}
+		discoverer = aggregator.NewCLIBackendDiscoverer(cliWorkloadsManager, groupsManager, cfg.OutgoingAuth)
 	}
 
 	logger.Infof("Discovering backends in group: %s", cfg.Group)

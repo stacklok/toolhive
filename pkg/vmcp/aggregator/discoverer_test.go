@@ -45,8 +45,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		mockWorkloads.EXPECT().GetWorkload(gomock.Any(), "workload1").Return(workload1, nil)
 		mockWorkloads.EXPECT().GetWorkload(gomock.Any(), "workload2").Return(workload2, nil)
 
-		discoverer, err := NewBackendDiscoverer(mockWorkloads, mockGroups, nil)
-		require.NoError(t, err)
+		discoverer := NewCLIBackendDiscoverer(mockWorkloads, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)
 
 		require.NoError(t, err)
@@ -80,8 +79,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		mockWorkloads.EXPECT().GetWorkload(gomock.Any(), "running-workload").Return(runningWorkload, nil)
 		mockWorkloads.EXPECT().GetWorkload(gomock.Any(), "stopped-workload").Return(stoppedWorkload, nil)
 
-		discoverer, err := NewBackendDiscoverer(mockWorkloads, mockGroups, nil)
-		require.NoError(t, err)
+		discoverer := NewCLIBackendDiscoverer(mockWorkloads, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)
 
 		require.NoError(t, err)
@@ -110,8 +108,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		mockWorkloads.EXPECT().GetWorkload(gomock.Any(), "workload1").Return(workloadWithURL, nil)
 		mockWorkloads.EXPECT().GetWorkload(gomock.Any(), "workload2").Return(workloadWithoutURL, nil)
 
-		discoverer, err := NewBackendDiscoverer(mockWorkloads, mockGroups, nil)
-		require.NoError(t, err)
+		discoverer := NewCLIBackendDiscoverer(mockWorkloads, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)
 
 		require.NoError(t, err)
@@ -136,8 +133,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		mockWorkloads.EXPECT().GetWorkload(gomock.Any(), "workload1").Return(workload1, nil)
 		mockWorkloads.EXPECT().GetWorkload(gomock.Any(), "workload2").Return(workload2, nil)
 
-		discoverer, err := NewBackendDiscoverer(mockWorkloads, mockGroups, nil)
-		require.NoError(t, err)
+		discoverer := NewCLIBackendDiscoverer(mockWorkloads, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)
 
 		require.NoError(t, err)
@@ -154,8 +150,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 
 		mockGroups.EXPECT().Exists(gomock.Any(), "nonexistent-group").Return(false, nil)
 
-		discoverer, err := NewBackendDiscoverer(mockWorkloads, mockGroups, nil)
-		require.NoError(t, err)
+		discoverer := NewCLIBackendDiscoverer(mockWorkloads, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), "nonexistent-group")
 
 		require.Error(t, err)
@@ -173,8 +168,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(false, errors.New("database error"))
 
-		discoverer, err := NewBackendDiscoverer(mockWorkloads, mockGroups, nil)
-		require.NoError(t, err)
+		discoverer := NewCLIBackendDiscoverer(mockWorkloads, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)
 
 		require.Error(t, err)
@@ -193,8 +187,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		mockGroups.EXPECT().Exists(gomock.Any(), "empty-group").Return(true, nil)
 		mockWorkloads.EXPECT().ListWorkloadsInGroup(gomock.Any(), "empty-group").Return([]string{}, nil)
 
-		discoverer, err := NewBackendDiscoverer(mockWorkloads, mockGroups, nil)
-		require.NoError(t, err)
+		discoverer := NewCLIBackendDiscoverer(mockWorkloads, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), "empty-group")
 
 		require.NoError(t, err)
@@ -221,8 +214,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		mockWorkloads.EXPECT().GetWorkload(gomock.Any(), "stopped1").Return(stoppedWorkload, nil)
 		mockWorkloads.EXPECT().GetWorkload(gomock.Any(), "error1").Return(errorWorkload, nil)
 
-		discoverer, err := NewBackendDiscoverer(mockWorkloads, mockGroups, nil)
-		require.NoError(t, err)
+		discoverer := NewCLIBackendDiscoverer(mockWorkloads, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)
 
 		require.NoError(t, err)
@@ -248,8 +240,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		mockWorkloads.EXPECT().GetWorkload(gomock.Any(), "failing-workload").
 			Return(core.Workload{}, errors.New("workload query failed"))
 
-		discoverer, err := NewBackendDiscoverer(mockWorkloads, mockGroups, nil)
-		require.NoError(t, err)
+		discoverer := NewCLIBackendDiscoverer(mockWorkloads, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)
 
 		require.NoError(t, err)

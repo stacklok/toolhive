@@ -103,7 +103,7 @@ func NewManagerFromRuntimeWithProvider(rtRuntime rt.Runtime, configProvider conf
 
 // NewK8SManagerFromContext creates a Kubernetes-based workload manager from context.
 // It automatically sets up the Kubernetes client and detects the namespace.
-func NewK8SManagerFromContext(ctx context.Context) (K8SManager, error) {
+func NewK8SManagerFromContext(_ context.Context) (K8SManager, error) {
 	// Create a scheme for controller-runtime client
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))

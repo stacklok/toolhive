@@ -23,7 +23,13 @@ type k8sBackendDiscoverer struct {
 	authConfig       *config.OutgoingAuthConfig
 }
 
-// NewK8SBackendDiscoverer creates a new Kubernetes backend discoverer.
+// NewK8SBackendDiscoverer creates a new Kubernetes-based backend discoverer.
+// It discovers workloads from MCPServer CRDs managed by the ToolHive operator in Kubernetes.
+//
+// The authConfig parameter configures authentication for discovered backends.
+// If nil, backends will have no authentication configured.
+//
+// This is the Kubernetes-specific constructor. For CLI workloads, use NewCLIBackendDiscoverer.
 func NewK8SBackendDiscoverer(
 	workloadsManager workloads.K8SManager,
 	groupsManager groups.Manager,

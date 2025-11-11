@@ -144,7 +144,7 @@ func TestK8SManager_GetWorkload(t *testing.T) {
 				}
 			},
 			wantError: true,
-			errorMsg:  "workload not found",
+			errorMsg:  "MCPServer non-existent not found",
 		},
 		{
 			name:         "get error",

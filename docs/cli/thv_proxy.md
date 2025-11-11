@@ -113,6 +113,7 @@ thv proxy [flags] SERVER_NAME
       --remote-auth-client-secret string           OAuth client secret for remote server authentication (optional for PKCE)
       --remote-auth-client-secret-file string      Path to file containing OAuth client secret (alternative to --remote-auth-client-secret)
       --remote-auth-issuer string                  OAuth/OIDC issuer URL for remote server authentication (e.g., https://accounts.google.com)
+      --remote-auth-resource string                OAuth 2.0 resource indicator (RFC 8707)
       --remote-auth-scopes strings                 OAuth scopes to request for remote server authentication (defaults: OIDC uses 'openid,profile,email')
       --remote-auth-skip-browser                   Skip opening browser for remote server OAuth flow
       --remote-auth-timeout duration               Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s) (default 30s)

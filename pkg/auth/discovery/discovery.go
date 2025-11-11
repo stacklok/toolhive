@@ -34,6 +34,7 @@ const (
 	DefaultAuthDetectTimeout = 10 * time.Second
 	MaxRetryAttempts         = 3
 	RetryBaseDelay           = 2 * time.Second
+	MaxResponseBodyDrain     = 1 * 1024 * 1024 // 1 MB - limit response body draining to prevent resource exhaustion
 )
 
 // AuthInfo contains authentication information extracted from WWW-Authenticate header
@@ -112,6 +113,21 @@ func DetectAuthenticationFromServer(ctx context.Context, targetURI string, confi
 		}
 	}
 
+	// NEW: Well-known URI fallback per MCP specification
+	// When no WWW-Authenticate header found, try well-known URIs
+	logger.Debugf("No WWW-Authenticate header found, attempting well-known URI discovery")
+
+	wellKnownAuthInfo, err := tryWellKnownDiscovery(detectCtx, client, targetURI)
+	if err != nil {
+		logger.Debugf("Well-known URI discovery failed: %v", err)
+		return nil, nil // Not an error, just no auth detected
+	}
+
+	if wellKnownAuthInfo != nil {
+		logger.Infof("Discovered authentication via well-known URI")
+		return wellKnownAuthInfo, nil
+	}
+
 	return nil, nil // No authentication required
 }
 
@@ -154,6 +170,104 @@ func detectAuthWithRequest(
 	}
 
 	return nil, nil
+}
+
+// buildWellKnownURI constructs a well-known URI for OAuth Protected Resource metadata
+// per RFC 9728 Section 3.1 and MCP specification
+func buildWellKnownURI(parsedURL *url.URL, endpointSpecific bool) string {
+	baseURL := url.URL{
+		Scheme: parsedURL.Scheme,
+		Host:   parsedURL.Host,
+	}
+
+	if endpointSpecific && parsedURL.Path != "" && parsedURL.Path != "/" {
+		// Endpoint-specific: /.well-known/oauth-protected-resource/<original-path>
+		// Remove leading slash from original path to avoid double slashes
+		cleanPath := strings.TrimPrefix(parsedURL.Path, "/")
+		baseURL.Path = path.Join(auth.WellKnownOAuthResourcePath, cleanPath)
+	} else {
+		// Root-level: /.well-known/oauth-protected-resource
+		baseURL.Path = auth.WellKnownOAuthResourcePath
+	}
+
+	return baseURL.String()
+}
+
+// checkWellKnownURIExists returns true if a well-known URI is accessible and returns application/json
+// Per RFC 9728, protected resource metadata MUST be queried using HTTP GET and MUST return application/json
+func checkWellKnownURIExists(ctx context.Context, client *http.Client, uri string) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
+	if err != nil {
+		logger.Debugf("Failed to create GET request for %s: %v", uri, err)
+		return false
+	}
+
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Debugf("Failed to check %s: %v", uri, err)
+		return false
+	}
+	defer func() {
+		// Drain and close response body to enable connection reuse
+		// Limit draining to MaxResponseBodyDrain to prevent resource exhaustion from large responses
+		_, _ = io.CopyN(io.Discard, resp.Body, MaxResponseBodyDrain)
+		_ = resp.Body.Close()
+	}()
+
+	// RFC 9728 requires 200 OK status code - metadata endpoints must be publicly accessible
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	// RFC 9728 requires Content-Type to be application/json
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if !strings.Contains(contentType, "application/json") {
+		logger.Debugf("Well-known URI %s returned unexpected content type: %s", uri, contentType)
+		return false
+	}
+
+	return true
+}
+
+// tryWellKnownDiscovery attempts to discover authentication requirements via well-known URIs
+// per MCP specification Section: Protected Resource Metadata Discovery Requirements.
+// Tries endpoint-specific path first, then root-level path.
+func tryWellKnownDiscovery(ctx context.Context, client *http.Client, targetURI string) (*AuthInfo, error) {
+	parsedURL, err := url.Parse(targetURI)
+	if err != nil {
+		return nil, fmt.Errorf("invalid target URI: %w", err)
+	}
+
+	// Build well-known URIs to try (in priority order per MCP spec)
+	wellKnownURIs := []string{
+		// 1. Endpoint-specific: /.well-known/oauth-protected-resource/<path>
+		buildWellKnownURI(parsedURL, true),
+		// 2. Root-level: /.well-known/oauth-protected-resource
+		buildWellKnownURI(parsedURL, false),
+	}
+
+	// Try each well-known URI in order
+	for _, wellKnownURI := range wellKnownURIs {
+		logger.Debugf("Trying well-known URI: %s", wellKnownURI)
+
+		// Check if the URI exists before attempting to fetch
+		if !checkWellKnownURIExists(ctx, client, wellKnownURI) {
+			logger.Debugf("Well-known URI not found: %s", wellKnownURI)
+			continue
+		}
+
+		// URI exists - return AuthInfo with ResourceMetadata set
+		// Downstream handler will use FetchResourceMetadata to get the actual metadata
+		logger.Infof("Found well-known URI: %s", wellKnownURI)
+		return &AuthInfo{
+			Type:             "OAuth",
+			ResourceMetadata: wellKnownURI,
+		}, nil
+	}
+
+	return nil, nil // No well-known metadata found
 }
 
 // ParseWWWAuthenticate parses the WWW-Authenticate header to extract authentication information
@@ -374,6 +488,7 @@ type OAuthFlowConfig struct {
 	CallbackPort         int
 	Timeout              time.Duration
 	SkipBrowser          bool
+	Resource             string // RFC 8707 resource indicator (optional)
 	OAuthParams          map[string]string
 }
 
@@ -494,6 +609,7 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 			config.Scopes,
 			true, // Enable PKCE by default for security
 			config.CallbackPort,
+			config.Resource,
 			config.OAuthParams,
 		)
 	}
@@ -508,6 +624,7 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 		config.Scopes,
 		true, // Enable PKCE by default for security
 		config.CallbackPort,
+		config.Resource,
 	)
 }
 

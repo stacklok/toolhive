@@ -7,9 +7,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
+	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
 
 // GetSupportedMiddlewareFactories returns a map of supported middleware types to their factory functions
@@ -20,6 +22,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		mcp.ParserMiddlewareType:         mcp.CreateParserMiddleware,
 		mcp.ToolFilterMiddlewareType:     mcp.CreateToolFilterMiddleware,
 		mcp.ToolCallFilterMiddlewareType: mcp.CreateToolCallFilterMiddleware,
+		usagemetrics.MiddlewareType:      usagemetrics.CreateMiddleware,
 		telemetry.MiddlewareType:         telemetry.CreateMiddleware,
 		authz.MiddlewareType:             authz.CreateMiddleware,
 		audit.MiddlewareType:             audit.CreateMiddleware,
@@ -30,6 +33,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 // This function serves as a bridge between the old configuration style and the new generic middleware system
 func PopulateMiddlewareConfigs(config *RunConfig) error {
 	var middlewareConfigs []types.MiddlewareConfig
+	// TODO: Consider extracting other middleware setup into helper functions like addUsageMetricsMiddleware
 
 	// Authentication middleware (always present)
 	authParams := auth.MiddlewareParams{
@@ -79,6 +83,16 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	}
 	middlewareConfigs = append(middlewareConfigs, *mcpParserConfig)
 
+	// Load application config for global settings
+	configProvider := cfg.NewDefaultProvider()
+	appConfig := configProvider.GetConfig()
+
+	// Usage metrics middleware (if enabled)
+	middlewareConfigs, err = addUsageMetricsMiddleware(middlewareConfigs, appConfig.DisableUsageMetrics)
+	if err != nil {
+		return err
+	}
+
 	// Telemetry middleware (if enabled)
 	if config.TelemetryConfig != nil {
 		telemetryParams := telemetry.FactoryMiddlewareParams{
@@ -124,4 +138,18 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	// Set the populated middleware configs
 	config.MiddlewareConfigs = middlewareConfigs
 	return nil
+}
+
+// addUsageMetricsMiddleware adds usage metrics middleware if enabled
+func addUsageMetricsMiddleware(middlewares []types.MiddlewareConfig, configDisabled bool) ([]types.MiddlewareConfig, error) {
+	if !usagemetrics.ShouldEnableMetrics(configDisabled) {
+		return middlewares, nil
+	}
+
+	usageMetricsParams := usagemetrics.MiddlewareParams{}
+	usageMetricsConfig, err := types.NewMiddlewareConfig(usagemetrics.MiddlewareType, usageMetricsParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create usage metrics middleware config: %w", err)
+	}
+	return append(middlewares, *usageMetricsConfig), nil
 }

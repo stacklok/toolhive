@@ -16,12 +16,29 @@ ToolHive is **highly compliant** with the MCP authorization specification, imple
 - Extracts `realm` and `resource_metadata` parameters as per RFC 9728
 - Handles error and error_description parameters
 
-#### 2. Protected Resource Metadata (RFC 9728)
-- **Location**: [`pkg/auth/discovery/discovery.go:531-593`](../pkg/auth/discovery/discovery.go#L531)
-- Fetches metadata from `resource_metadata` URL in WWW-Authenticate header
+#### 2. Protected Resource Metadata Discovery (RFC 9728 & MCP Specification)
+
+ToolHive implements BOTH discovery mechanisms required by the MCP specification:
+
+**Method 1: WWW-Authenticate Header (Primary)**
+- **Location**: [`pkg/auth/discovery/discovery.go:148-156`](../pkg/auth/discovery/discovery.go#L148)
+- Extracts `resource_metadata` parameter from `Bearer` scheme in WWW-Authenticate header
+- Takes precedence when present (most efficient path)
+
+**Method 2: Well-Known URI Fallback (MCP Specification Requirement)**
+- **Location**: [`pkg/auth/discovery/discovery.go:176-254`](../pkg/auth/discovery/discovery.go#L176)
+- **Specification**: [MCP Protected Resource Metadata Discovery Requirements](https://modelcontextprotocol.io/specification/draft/basic/authorization#protected-resource-metadata-discovery-requirements)
+- Triggers when no WWW-Authenticate header present
+- Tries endpoint-specific URI: `/.well-known/oauth-protected-resource/{path}`
+- Falls back to root-level URI: `/.well-known/oauth-protected-resource`
+- Uses HTTP GET per RFC 9728 requirement
+
+**Metadata Processing (Common to Both Methods)**
+- **Location**: [`pkg/auth/discovery/discovery.go:575-637`](../pkg/auth/discovery/discovery.go#L575)
 - Validates HTTPS requirement (with localhost exception for development)
 - Verifies required `resource` field presence
 - Extracts and processes `authorization_servers` array
+- Enables automatic discovery for servers that only implement well-known URIs
 
 #### 3. Authorization Server Discovery (RFC 8414)
 - **Location**: [`pkg/auth/discovery/discovery.go:595-621`](../pkg/auth/discovery/discovery.go#L595)
@@ -48,16 +65,29 @@ When ToolHive connects to a remote MCP server ([`pkg/runner/remote_auth.go:27-87
 
 1. Makes test request to the remote server (GET, then optionally POST)
 2. Checks for 401 Unauthorized response with WWW-Authenticate header
-3. Parses authentication requirements from the header
+3. **If WWW-Authenticate header found:** Parses authentication requirements from the header
+4. **If no WWW-Authenticate header:** Falls back to RFC 9728 well-known URI discovery:
+   - Tries `{baseURL}/.well-known/oauth-protected-resource/{path}` (endpoint-specific)
+   - Falls back to `{baseURL}/.well-known/oauth-protected-resource` (root-level)
 
 ### Discovery Priority Chain
 ToolHive follows this priority order for discovering the OAuth issuer ([`pkg/runner/remote_auth.go:95-145`](../pkg/runner/remote_auth.go#L95)):
 
-1. **Configured Issuer**: Uses `--remote-auth-issuer` flag if provided
-2. **Realm-Derived**: Derives from `realm` parameter in WWW-Authenticate header (RFC 8414)
-3. **Resource Metadata**: Fetches from `resource_metadata` URL (RFC 9728)
-4. **Well-Known Discovery**: Probes server's well-known endpoints to discover actual issuer (handles issuer mismatch)
-5. **URL-Derived**: Falls back to deriving from the remote URL (last resort)
+**Phase 1: WWW-Authenticate Header Detection**
+1. **Configured Issuer**: Uses `--remote-auth-issuer` flag if provided (highest priority)
+2. **WWW-Authenticate Header**: Checks for `Bearer` scheme with:
+   - **Realm-Derived**: Derives from `realm` parameter (RFC 8414)
+   - **Resource Metadata**: Fetches from `resource_metadata` URL (RFC 9728)
+
+**Phase 2: Well-Known URI Fallback (MCP Specification Requirement)**
+When no WWW-Authenticate header is present, tries RFC 9728 well-known URIs:
+3. **Endpoint-Specific Well-Known URI**: `{baseURL}/.well-known/oauth-protected-resource/{path}`
+4. **Root-Level Well-Known URI**: `{baseURL}/.well-known/oauth-protected-resource`
+5. **Authorization Server Discovery**: Validates each server in metadata via OIDC discovery
+6. **Issuer Mismatch Handling**: Accepts authoritative issuer from well-known endpoints per RFC 8414
+
+**Phase 3: Fallback Discovery**
+7. **URL-Derived**: Falls back to deriving from the remote URL (last resort)
 
 ### Authentication Branches
 
@@ -66,24 +96,32 @@ graph TD
     A[Remote MCP Server Request] --> B{401 Response?}
     B -->|No| C[No Authentication Required]
     B -->|Yes| D{WWW-Authenticate Header?}
-    D -->|No| E[No Authentication Required]
     D -->|Yes| F{Parse Header}
-    
+
+    %% NEW: Well-known URI fallback when no WWW-Authenticate
+    D -->|No| WK1[Try Well-Known URI Discovery]
+    WK1 --> WK2{Try Endpoint-Specific URI}
+    WK2 -->|Found| WK4[Extract Auth Info]
+    WK2 -->|404| WK3{Try Root-Level URI}
+    WK3 -->|Found| WK4
+    WK3 -->|404| E[No Authentication Required]
+    WK4 --> K[Fetch Resource Metadata]
+
     F --> G{Has Realm URL?}
     G -->|Yes| H[Derive Issuer from Realm]
     H --> I[OIDC Discovery]
-    
+
     F --> J{Has resource_metadata?}
-    J -->|Yes| K[Fetch Resource Metadata]
+    J -->|Yes| K
     K --> L[Validate Auth Servers]
     L --> M[Use First Valid Server]
-    
+
     F --> S{No Realm/Metadata?}
     S -->|Yes| T[Probe Well-Known Endpoints]
     T --> U{Found Valid Issuer?}
     U -->|Yes| V[Use Discovered Issuer]
     U -->|No| W[Derive from URL]
-    
+
     I --> N{Client Credentials?}
     M --> N
     V --> N
@@ -91,7 +129,7 @@ graph TD
     N -->|No| O[Dynamic Registration]
     N -->|Yes| P[OAuth Flow]
     O --> P
-    
+
     P --> Q[Get Access Token]
     Q --> R[Authenticated Request]
 ```
@@ -120,16 +158,66 @@ When `resource_metadata` URL is provided:
    - Uses first valid server found
 4. **Handle Issuer Mismatch**: Supports cases where metadata URL differs from actual issuer
 
-## Well-Known Endpoint Discovery
+## Well-Known URI Discovery (RFC 9728 & MCP Specification)
 
-When no realm URL or resource metadata is provided ([`pkg/runner/remote_auth.go:175-211`](../pkg/runner/remote_auth.go#L175)):
+ToolHive implements the MCP specification's **Protected Resource Metadata Discovery Requirements**, which mandates trying well-known URIs when no WWW-Authenticate header is present.
 
-1. **Derive Base URL**: Creates a base URL from the server URL
-2. **Probe Well-Known Endpoints**: Attempts to fetch OAuth metadata without requiring issuer match
-3. **Accept Authoritative Issuer**: Uses the issuer from the well-known response as authoritative per RFC 8414
-4. **Log Mismatch**: Records when discovered issuer differs from server URL for debugging
+### Discovery Process
 
-This approach handles cases where the OAuth provider's issuer differs from the server's public URL, such as when using CDN or worker deployments.
+**When to Trigger:**
+- Server returns 401 Unauthorized
+- No WWW-Authenticate header in response
+- No manual `--remote-auth-issuer` configured
+
+**Discovery Sequence** ([`pkg/auth/discovery/discovery.go:222-254`](../pkg/auth/discovery/discovery.go#L222)):
+
+Per MCP spec priority, ToolHive tries well-known URIs in this order:
+
+1. **Endpoint-Specific URI**: `{baseURL}/.well-known/oauth-protected-resource/{original-path}`
+   - Example: For `https://mcp.example.com/api/v1/mcp`
+   - Tries: `https://mcp.example.com/.well-known/oauth-protected-resource/api/v1/mcp`
+
+2. **Root-Level URI**: `{baseURL}/.well-known/oauth-protected-resource`
+   - Example: For `https://mcp.example.com/api/v1/mcp`
+   - Falls back to: `https://mcp.example.com/.well-known/oauth-protected-resource`
+
+**HTTP Method:**
+- Uses `GET` requests per RFC 9728 requirement
+- Sets `Accept: application/json` header
+- Validates `Content-Type: application/json` header in response
+- Returns on first successful response (200 OK only - metadata must be publicly accessible)
+
+**Response Processing:**
+- Extracts `authorization_servers` array from metadata
+- Validates each authorization server via OIDC discovery
+- Uses first valid server found
+- Accepts authoritative issuer from well-known response per RFC 8414
+
+**Example: Server with Well-Known URI Only**
+
+Some MCP servers implement RFC 9728 well-known URI but don't send WWW-Authenticate headers:
+
+```bash
+# Request to MCP endpoint
+GET https://mcp.example.com/api/v1/mcp
+→ 401 Unauthorized (no WWW-Authenticate header)
+
+# Well-known URI fallback (root-level)
+GET https://mcp.example.com/.well-known/oauth-protected-resource
+→ 200 OK
+
+# Response
+{
+  "resource": "https://mcp.example.com",
+  "authorization_servers": ["https://auth.example.com"],
+  "bearer_methods_supported": ["header"]
+}
+
+# Result
+ToolHive automatically discovers and authenticates without manual configuration
+```
+
+This approach handles cases where servers implement RFC 9728 well-known URI discovery but don't send WWW-Authenticate headers, making authentication completely automatic.
 
 ## Dynamic Client Registration Flow
 
@@ -149,6 +237,60 @@ When no client credentials are provided ([`pkg/auth/oauth/dynamic_registration.g
 3. **Register Client**: POST to registration endpoint
 4. **Store Credentials**: Use returned client_id (and client_secret if provided)
 5. **Proceed with OAuth Flow**: Using registered credentials
+
+## Resource Parameter (RFC 8707) Implementation
+
+ToolHive implements the OAuth 2.0 Resource Indicators (RFC 8707) as required by the MCP specification:
+
+**Location**: [`pkg/auth/remote/handler.go:52-69`](../pkg/auth/remote/handler.go#L52)
+
+### Automatic Defaulting
+When no explicit `--remote-auth-resource` flag is provided, ToolHive automatically:
+1. Defaults the resource parameter to the remote server URL (the canonical URI of the MCP server)
+2. Validates the URI format according to MCP specification requirements
+3. Normalizes the URI (lowercase scheme/host, strips fragments, preserves trailing slashes)
+4. If the resource parameter cannot be derived, then it will not be sent
+
+### Validation Rules
+The resource parameter must conform to MCP canonical URI requirements:
+- **Must** include a scheme (http/https)
+- **Must** include a host
+- **Must not** contain fragments (#)
+
+When the resource parameter is **defaulted** from the remote URL:
+- Scheme and host are normalized to lowercase
+- Fragments are stripped (not allowed in resource indicators per spec)
+- Trailing slashes are preserved (we cannot determine semantic significance)
+
+When the resource parameter is **explicitly provided** by the user:
+- Value is validated but **not modified**
+- Returns an error if the value is invalid
+- User must provide a properly formatted canonical URI
+
+### Examples
+```bash
+# Automatic resource parameter (defaults and normalizes to remote URL)
+thv run https://MCP.Example.COM/api#section
+# Resource defaults to: https://mcp.example.com/api (normalized, fragment stripped)
+
+# Explicit resource parameter (not modified, must be valid)
+thv run https://mcp.example.com/api \
+  --remote-auth-resource https://mcp.example.com
+
+# Invalid explicit resource parameter with fragment (returns error)
+thv run https://mcp.example.com/api \
+  --remote-auth-resource https://mcp.example.com#fragment
+# Error: invalid resource parameter: resource URI must not contain fragments
+
+# Invalid explicit resource parameter without scheme (returns error)
+thv run https://mcp.example.com/api \
+  --remote-auth-resource mcp.example.com
+# Error: invalid resource parameter: resource URI must include a scheme
+```
+
+The validated and normalized resource parameter is sent in both:
+- Authorization requests (as `resource` query parameter)
+- Token exchange requests (as `resource` parameter)
 
 ## Security Features
 
@@ -271,23 +413,25 @@ The `oauth_config` section supports:
 
 | Specification | Status | Implementation |
 |--------------|--------|----------------|
-| RFC 9728 (Protected Resource Metadata) | ✅ Compliant | Full implementation with validation |
+| RFC 9728 (Protected Resource Metadata) | ✅ Fully Compliant | WWW-Authenticate + well-known URI fallback |
+| MCP Well-Known URI Fallback | ✅ Compliant | Tries endpoint-specific and root-level URIs per spec |
 | RFC 8414 (Authorization Server Metadata) | ✅ Compliant | Accepts authoritative issuer from well-known endpoints |
 | RFC 7591 (Dynamic Client Registration) | ✅ Compliant | Automatic registration when needed |
 | OAuth 2.1 PKCE | ✅ Compliant | Enabled by default |
 | WWW-Authenticate Parsing | ✅ Compliant | Supports Bearer with realm/resource_metadata |
 | Multiple Auth Servers | ✅ Compliant | Iterates and validates all servers |
-| Resource Parameter (RFC 8707) | ⚠️ Partial | Infrastructure ready, not yet sent in requests |
+| Resource Parameter (RFC 8707) | ✅ Compliant | Automatically defaults to remote server URL, validated and normalized |
 | Token Audience Validation | ⚠️ Partial | Server-side validation support ready |
+
+
 
 ## Future Enhancements
 
 While ToolHive is highly compliant with the current MCP specification, potential improvements include:
 
-1. **Resource Parameter**: Add explicit `resource` parameter to OAuth requests (infrastructure exists)
-2. **Token Audience Validation**: Enhanced client-side validation of token audience claims
-3. **Refresh Token Rotation**: Implement automatic refresh token rotation for long-lived sessions
-4. **Client Credential Caching**: Persist dynamically registered clients across sessions
+1. **Token Audience Validation**: Enhanced client-side validation of token audience claims
+2. **Refresh Token Rotation**: Implement automatic refresh token rotation for long-lived sessions
+3. **Client Credential Caching**: Persist dynamically registered clients across sessions
 
 ## Conclusion
 

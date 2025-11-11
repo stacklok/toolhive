@@ -91,6 +91,13 @@ func (rw *responseWriter) Write(data []byte) (int, error) {
 	return rw.ResponseWriter.Write(data)
 }
 
+// Flush implements http.Flusher if the underlying ResponseWriter supports it.
+func (rw *responseWriter) Flush() {
+	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 // isMCPStreamOpenRequest returns true only for MCP "stream" opens:
 // - SSE transport's SSE endpoint (GET + Accept: text/event-stream)
 // - Streamable HTTP's GET stream (same header pattern)

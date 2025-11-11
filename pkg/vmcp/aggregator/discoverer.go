@@ -10,7 +10,6 @@ import (
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -39,21 +38,4 @@ func NewBackendDiscoverer(
 		return nil, fmt.Errorf("expected workloads.Manager in CLI mode, got %T", workloadsManager)
 	}
 	return NewCLIBackendDiscoverer(cliMgr, groupsManager, authConfig), nil
-}
-
-// mapWorkloadStatusToHealth converts a workload status to a backend health status.
-// This is used by the CLI discoverer.
-func mapWorkloadStatusToHealth(status rt.WorkloadStatus) vmcp.BackendHealthStatus {
-	switch status {
-	case rt.WorkloadStatusRunning:
-		return vmcp.BackendHealthy
-	case rt.WorkloadStatusUnhealthy:
-		return vmcp.BackendUnhealthy
-	case rt.WorkloadStatusStopped, rt.WorkloadStatusError, rt.WorkloadStatusStopping, rt.WorkloadStatusRemoving:
-		return vmcp.BackendUnhealthy
-	case rt.WorkloadStatusStarting, rt.WorkloadStatusUnknown:
-		return vmcp.BackendUnknown
-	default:
-		return vmcp.BackendUnknown
-	}
 }

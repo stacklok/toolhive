@@ -123,7 +123,7 @@ type RunFlags struct {
 // AddRunFlags adds all the run flags to a command
 func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.Transport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
-	cmd.Flags().StringVar(&config.ProxyMode, "proxy-mode", "sse", "Proxy mode for stdio transport (sse or streamable-http)")
+	cmd.Flags().StringVar(&config.ProxyMode, "proxy-mode", "streamable-http", "Proxy mode for stdio (streamable-http or sse)")
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (auto-generated from image if not provided)")
 	cmd.Flags().StringVar(&config.Group, "group", "default",
 		"Name of the group this workload belongs to (defaults to 'default' if not specified)")
@@ -392,7 +392,7 @@ func handleImageRetrieval(
 func validateAndSetupProxyMode(runFlags *RunFlags) error {
 	if !types.IsValidProxyMode(runFlags.ProxyMode) {
 		if runFlags.ProxyMode == "" {
-			runFlags.ProxyMode = types.ProxyModeSSE.String() // default to SSE for backward compatibility
+			runFlags.ProxyMode = types.ProxyModeStreamableHTTP.String() // default to streamable-http (SSE is deprecated)
 		} else {
 			return fmt.Errorf("invalid value for --proxy-mode: %s", runFlags.ProxyMode)
 		}
@@ -493,6 +493,10 @@ func configureMiddlewareAndOptions(
 ) ([]runner.RunConfigBuilderOption, error) {
 	var opts []runner.RunConfigBuilderOption
 
+	// Load application config for global settings
+	configProvider := cfg.NewDefaultProvider()
+	appConfig := configProvider.GetConfig()
+
 	// Configure middleware from flags
 	tokenExchangeConfig, err := runFlags.RemoteAuthFlags.BuildTokenExchangeConfig()
 	if err != nil {
@@ -514,6 +518,7 @@ func configureMiddlewareAndOptions(
 			runFlags.AuditConfig,
 			serverName,
 			transportType,
+			appConfig.DisableUsageMetrics,
 		),
 	)
 
@@ -677,10 +682,17 @@ func getRemoteAuthFromRemoteServerMetadata(
 		authCfg.CallbackPort = runner.DefaultCallbackPort
 	}
 
-	// Issuer / URLs: CLI non-empty wins
+	// Issuer / URLs / Resource: CLI non-empty wins
 	authCfg.Issuer = firstNonEmpty(f.RemoteAuthIssuer, oc.Issuer)
 	authCfg.AuthorizeURL = firstNonEmpty(f.RemoteAuthAuthorizeURL, oc.AuthorizeURL)
 	authCfg.TokenURL = firstNonEmpty(f.RemoteAuthTokenURL, oc.TokenURL)
+
+	resourceIndicator := firstNonEmpty(f.RemoteAuthResource, oc.Resource)
+	if resourceIndicator != "" {
+		authCfg.Resource = resourceIndicator
+	} else {
+		authCfg.Resource = remote.DefaultResourceIndicator(remoteServerMetadata.URL)
+	}
 
 	// OAuthParams: REPLACE metadata when CLI provides any key/value.
 	if len(runFlags.OAuthParams) > 0 {
@@ -715,6 +727,12 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 		}
 	}
 
+	// Derive the resource parameter (RFC 8707)
+	resource := runFlags.RemoteAuthFlags.RemoteAuthResource
+	if resource == "" && runFlags.ResourceURL != "" {
+		resource = remote.DefaultResourceIndicator(runFlags.RemoteURL)
+	}
+
 	return &remote.Config{
 		ClientID:     runFlags.RemoteAuthFlags.RemoteAuthClientID,
 		ClientSecret: clientSecret,
@@ -725,6 +743,7 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 		Issuer:       runFlags.RemoteAuthFlags.RemoteAuthIssuer,
 		AuthorizeURL: runFlags.RemoteAuthFlags.RemoteAuthAuthorizeURL,
 		TokenURL:     runFlags.RemoteAuthFlags.RemoteAuthTokenURL,
+		Resource:     resource,
 		OAuthParams:  runFlags.OAuthParams,
 	}, nil
 }

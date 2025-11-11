@@ -32,6 +32,13 @@ jobs:
         with:
           fetch-depth: 1
 
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Setup helm-docs
+        run: go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
+
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@8a1c4371755898f67cd97006ba7c97702d5fc4bf # v1

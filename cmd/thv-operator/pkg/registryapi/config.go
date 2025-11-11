@@ -3,7 +3,12 @@ package registryapi
 import (
 	"fmt"
 
+	"gopkg.in/yaml.v2"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
 // ConfigManager provides methods to build registry server configuration from MCPRegistry resources
@@ -108,6 +113,28 @@ type NameFilterConfig struct {
 type TagFilterConfig struct {
 	Include []string `yaml:"include,omitempty"`
 	Exclude []string `yaml:"exclude,omitempty"`
+}
+
+// ToConfigMapWithContentChecksum converts the Config to a ConfigMap with a content checksum annotation
+func (c *Config) ToConfigMapWithContentChecksum(mcpRegistry *mcpv1alpha1.MCPRegistry) (*corev1.ConfigMap, error) {
+	yamlData, err := yaml.Marshal(c)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal config to YAML: %w", err)
+	}
+
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-configmap", c.RegistryName),
+			Namespace: mcpRegistry.Namespace,
+			Annotations: map[string]string{
+				"toolhive.dev/content-checksum": ctrlutil.CalculateConfigHash(yamlData),
+			},
+		},
+		Data: map[string]string{
+			"config.yaml": string(yamlData),
+		},
+	}
+	return configMap, nil
 }
 
 func (*configManager) BuildConfig(mcpRegistry *mcpv1alpha1.MCPRegistry) (*Config, error) {

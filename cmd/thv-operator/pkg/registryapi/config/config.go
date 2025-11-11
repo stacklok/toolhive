@@ -162,7 +162,7 @@ func (c *Config) ToConfigMapWithContentChecksum(mcpRegistry *mcpv1alpha1.MCPRegi
 			Name:      fmt.Sprintf("%s-configmap", c.RegistryName),
 			Namespace: mcpRegistry.Namespace,
 			Annotations: map[string]string{
-				"toolhive.dev/content-checksum": ctrlutil.CalculateConfigHash(yamlData),
+				checksum.ContentChecksumAnnotation: ctrlutil.CalculateConfigHash(yamlData),
 			},
 		},
 		Data: map[string]string{

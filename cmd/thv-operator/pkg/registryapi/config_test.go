@@ -735,3 +735,81 @@ func TestBuildConfig_Filter(t *testing.T) {
 		assert.Empty(t, config.Filter.Tags.Exclude)
 	})
 }
+
+// TestToConfigMapWithContentChecksum tests that ToConfigMapWithContentChecksum creates
+// a ConfigMap with the correct checksum annotation based on the YAML content.
+func TestToConfigMapWithContentChecksum(t *testing.T) {
+	t.Parallel()
+
+	// Create a populated Config object
+	config := &Config{
+		RegistryName: "checksum-test-registry",
+		Source: &SourceConfig{
+			Format: "toolhive",
+			Git: &GitConfig{
+				Repository: "https://github.com/example/mcp-servers.git",
+				Branch:     "main",
+			},
+		},
+		SyncPolicy: &SyncPolicyConfig{
+			Interval: "15m",
+		},
+		Filter: &FilterConfig{
+			Names: &NameFilterConfig{
+				Include: []string{"mcp-*"},
+				Exclude: []string{"*-dev"},
+			},
+		},
+	}
+
+	mcpRegistry := &mcpv1alpha1.MCPRegistry{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-registry",
+			Namespace: "test-namespace",
+		},
+	}
+
+	// Call ToConfigMapWithContentChecksum
+	configMap, err := config.ToConfigMapWithContentChecksum(mcpRegistry)
+
+	// Verify no error occurred
+	require.NoError(t, err)
+	require.NotNil(t, configMap)
+
+	// Verify basic ConfigMap properties
+	assert.Equal(t, "checksum-test-registry-configmap", configMap.Name)
+	assert.Equal(t, "test-namespace", configMap.Namespace)
+
+	// Verify the checksum annotation exists
+	require.NotNil(t, configMap.Annotations)
+	checksum, exists := configMap.Annotations["toolhive.dev/content-checksum"]
+	require.True(t, exists, "Expected checksum annotation to exist")
+	require.NotEmpty(t, checksum, "Checksum should not be empty")
+
+	// Verify the checksum format (should be a hex string)
+	// The actual checksum is calculated by ctrlutil.CalculateConfigHash
+	assert.Regexp(t, "^[a-f0-9]+$", checksum, "Checksum should be a hex string")
+
+	// Verify the Data contains config.yaml
+	require.Contains(t, configMap.Data, "config.yaml")
+	yamlData := configMap.Data["config.yaml"]
+	require.NotEmpty(t, yamlData)
+
+	// Verify YAML content includes expected fields
+	assert.Contains(t, yamlData, "registryName: checksum-test-registry")
+	assert.Contains(t, yamlData, "repository: https://github.com/example/mcp-servers.git")
+	assert.Contains(t, yamlData, "interval: 15m")
+
+	// Test that the same config produces the same checksum
+	configMap2, err := config.ToConfigMapWithContentChecksum(mcpRegistry)
+	require.NoError(t, err)
+	checksum2 := configMap2.Annotations["toolhive.dev/content-checksum"]
+	assert.Equal(t, checksum, checksum2, "Same config should produce same checksum")
+
+	// Test that different config produces different checksum
+	config.SyncPolicy.Interval = "30m"
+	configMap3, err := config.ToConfigMapWithContentChecksum(mcpRegistry)
+	require.NoError(t, err)
+	checksum3 := configMap3.Annotations["toolhive.dev/content-checksum"]
+	assert.NotEqual(t, checksum, checksum3, "Different config should produce different checksum")
+}

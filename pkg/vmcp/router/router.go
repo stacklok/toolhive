@@ -17,9 +17,9 @@ import (
 // Router routes MCP protocol requests to appropriate backend workloads.
 // Implementations must be safe for concurrent use.
 //
-// The router maintains mappings from capability names (tools, resources, prompts)
-// to backend targets, enabling the virtual MCP server to forward requests to the
-// correct backend workload.
+// With lazy discovery, the router retrieves capabilities from the request context
+// rather than maintaining cached state. This enables per-request routing decisions
+// based on real-time backend availability.
 type Router interface {
 	// RouteTool resolves a tool name to its backend target.
 	// Returns ErrToolNotFound if the tool doesn't exist in any backend.
@@ -32,10 +32,6 @@ type Router interface {
 	// RoutePrompt resolves a prompt name to its backend target.
 	// Returns ErrPromptNotFound if the prompt doesn't exist in any backend.
 	RoutePrompt(ctx context.Context, name string) (*vmcp.BackendTarget, error)
-
-	// UpdateRoutingTable updates the router's internal mappings.
-	// Called after capability aggregation completes.
-	UpdateRoutingTable(ctx context.Context, table *vmcp.RoutingTable) error
 }
 
 // RoutingStrategy defines how requests are routed when multiple backends

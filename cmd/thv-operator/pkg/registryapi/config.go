@@ -19,6 +19,15 @@ func NewConfigManager() ConfigManager {
 type configManager struct{}
 
 const (
+	// SourceTypeGit is the type for registry data stored in Git repositories
+	SourceTypeGit = "git"
+
+	// SourceTypeAPI is the type for registry data fetched from API endpoints
+	SourceTypeAPI = "api"
+
+	// SourceTypeFile is the type for registry data stored in local files
+	SourceTypeFile = "file"
+
 	// RegistryJSONFilePath is the file path where the registry JSON file will be mounted
 	RegistryJSONFilePath = "/etc/registry/registry.json"
 )
@@ -185,18 +194,21 @@ func buildSourceConfig(source *mcpv1alpha1.MCPRegistrySource, config *Config) er
 		sourceConfig.File = &FileConfig{
 			Path: RegistryJSONFilePath,
 		}
+		sourceConfig.Type = SourceTypeFile
 	case mcpv1alpha1.RegistrySourceTypeGit:
 		gitConfig, err := buildGitSourceConfig(source.Git)
 		if err != nil {
 			return fmt.Errorf("failed to build Git source configuration: %w", err)
 		}
 		sourceConfig.Git = gitConfig
+		sourceConfig.Type = SourceTypeGit
 	case mcpv1alpha1.RegistrySourceTypeAPI:
 		apiConfig, err := buildAPISourceConfig(source.API)
 		if err != nil {
 			return fmt.Errorf("failed to build API source configuration: %w", err)
 		}
 		sourceConfig.API = apiConfig
+		sourceConfig.Type = SourceTypeAPI
 	default:
 		return fmt.Errorf("unsupported source type: %s", source.Type)
 	}

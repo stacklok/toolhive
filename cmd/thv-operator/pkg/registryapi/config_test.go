@@ -135,6 +135,7 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 		assert.Equal(t, "test-registry", config.RegistryName)
 		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Source.Format)
 		require.NotNil(t, config.Source.File)
+		assert.Equal(t, SourceTypeFile, config.Source.Type)
 		assert.Equal(t, RegistryJSONFilePath, config.Source.File.Path)
 	})
 
@@ -165,7 +166,7 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
 		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Source.Format)
-		require.NotNil(t, config.Source.File)
+		assert.Equal(t, SourceTypeFile, config.Source.Type)
 		assert.Equal(t, RegistryJSONFilePath, config.Source.File.Path)
 	})
 }
@@ -276,6 +277,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
 		assert.Equal(t, mcpv1alpha1.RegistryFormatUpstream, config.Source.Format)
+		assert.Equal(t, SourceTypeGit, config.Source.Type)
 		require.NotNil(t, config.Source.Git)
 		assert.Equal(t, "https://github.com/example/repo.git", config.Source.Git.Repository)
 		assert.Equal(t, "main", config.Source.Git.Branch)
@@ -311,6 +313,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
 		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Source.Format)
+		assert.Equal(t, SourceTypeGit, config.Source.Type)
 		require.NotNil(t, config.Source.Git)
 		assert.Equal(t, "git@github.com:example/repo.git", config.Source.Git.Repository)
 		assert.Empty(t, config.Source.Git.Branch)
@@ -346,6 +349,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
 		assert.Equal(t, mcpv1alpha1.RegistryFormatUpstream, config.Source.Format)
+		assert.Equal(t, SourceTypeGit, config.Source.Type)
 		require.NotNil(t, config.Source.Git)
 		assert.Equal(t, "https://github.com/example/repo.git", config.Source.Git.Repository)
 		assert.Empty(t, config.Source.Git.Branch)
@@ -433,6 +437,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
 		assert.Equal(t, mcpv1alpha1.RegistryFormatUpstream, config.Source.Format)
+		assert.Equal(t, SourceTypeAPI, config.Source.Type)
 		require.NotNil(t, config.Source.API)
 		assert.Equal(t, "https://api.example.com/registry", config.Source.API.Endpoint)
 		// Verify that other source types are nil

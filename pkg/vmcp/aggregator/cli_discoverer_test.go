@@ -19,7 +19,7 @@ import (
 
 const testGroupName = "test-group"
 
-func TestBackendDiscoverer_Discover(t *testing.T) {
+func TestCLIBackendDiscoverer_Discover(t *testing.T) {
 	t.Parallel()
 
 	t.Run("successful discovery with multiple backends", func(t *testing.T) {
@@ -246,5 +246,25 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, backends, 1)
 		assert.Equal(t, "good-workload", backends[0].ID)
+	})
+
+	t.Run("returns error when list workloads fails", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockWorkloads := workloadmocks.NewMockManager(ctrl)
+		mockGroups := mocks.NewMockManager(ctrl)
+
+		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
+		mockWorkloads.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
+			Return(nil, errors.New("failed to list workloads"))
+
+		discoverer := NewCLIBackendDiscoverer(mockWorkloads, mockGroups, nil)
+		backends, err := discoverer.Discover(context.Background(), testGroupName)
+
+		require.Error(t, err)
+		assert.Nil(t, backends)
+		assert.Contains(t, err.Error(), "failed to list workloads in group")
 	})
 }

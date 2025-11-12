@@ -27,7 +27,7 @@ func newTestEngine(t *testing.T) *testEngine {
 
 	mockRouter := routermocks.NewMockRouter(ctrl)
 	mockBackend := mocks.NewMockBackendClient(ctrl)
-	engine := NewWorkflowEngine(mockRouter, mockBackend)
+	engine := NewWorkflowEngine(mockRouter, mockBackend, nil) // nil elicitationHandler for simple tests
 
 	return &testEngine{
 		Engine:  engine,

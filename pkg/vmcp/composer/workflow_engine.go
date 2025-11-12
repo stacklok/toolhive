@@ -3,6 +3,7 @@ package composer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -42,18 +43,26 @@ type workflowEngine struct {
 
 	// contextManager manages workflow execution contexts.
 	contextManager *workflowContextManager
+
+	// elicitationHandler handles MCP elicitation protocol for user interaction.
+	elicitationHandler ElicitationProtocolHandler
 }
 
 // NewWorkflowEngine creates a new workflow execution engine.
+//
+// The elicitationHandler parameter is optional. If nil, elicitation steps will fail.
+// This allows the engine to be used without elicitation support for simple workflows.
 func NewWorkflowEngine(
 	rtr router.Router,
 	backendClient vmcp.BackendClient,
+	elicitationHandler ElicitationProtocolHandler,
 ) Composer {
 	return &workflowEngine{
-		router:           rtr,
-		backendClient:    backendClient,
-		templateExpander: NewTemplateExpander(),
-		contextManager:   newWorkflowContextManager(),
+		router:             rtr,
+		backendClient:      backendClient,
+		templateExpander:   NewTemplateExpander(),
+		contextManager:     newWorkflowContextManager(),
+		elicitationHandler: elicitationHandler,
 	}
 }
 
@@ -188,10 +197,7 @@ func (e *workflowEngine) executeStep(
 	case StepTypeTool:
 		return e.executeToolStep(stepCtx, step, workflowCtx)
 	case StepTypeElicitation:
-		// Elicitation is not implemented in Phase 2 (basic workflow engine)
-		err := fmt.Errorf("elicitation steps are not yet supported")
-		workflowCtx.RecordStepFailure(step.ID, err)
-		return err
+		return e.executeElicitationStep(stepCtx, step, workflowCtx)
 	case StepTypeConditional:
 		// Conditional steps are not implemented in Phase 2
 		err := fmt.Errorf("conditional steps are not yet supported")
@@ -346,6 +352,183 @@ func (*workflowEngine) handleToolStepSuccess(
 
 	logger.Debugf("Step %s completed successfully", step.ID)
 	return nil
+}
+
+// executeElicitationStep executes an elicitation step.
+// Per MCP 2025-06-18: SDK handles JSON-RPC ID correlation, we provide validation and error handling.
+func (e *workflowEngine) executeElicitationStep(
+	ctx context.Context,
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+) error {
+	logger.Debugf("Executing elicitation step: %s", step.ID)
+
+	// Check if elicitation handler is configured
+	if e.elicitationHandler == nil {
+		err := fmt.Errorf("elicitation handler not configured for step %s", step.ID)
+		workflowCtx.RecordStepFailure(step.ID, err)
+		return err
+	}
+
+	// Validate elicitation config
+	if step.Elicitation == nil {
+		err := fmt.Errorf("elicitation config is missing for step %s", step.ID)
+		workflowCtx.RecordStepFailure(step.ID, err)
+		return err
+	}
+
+	// Request elicitation (synchronous - blocks until response or timeout)
+	// Per MCP 2025-06-18: SDK handles JSON-RPC ID correlation internally
+	response, err := e.elicitationHandler.RequestElicitation(ctx, workflowCtx.WorkflowID, step.ID, step.Elicitation)
+	if err != nil {
+		// Handle timeout
+		if errors.Is(err, ErrElicitationTimeout) {
+			return e.handleElicitationTimeout(step, workflowCtx)
+		}
+
+		// Handle other errors
+		requestErr := fmt.Errorf("elicitation request failed for step %s: %w", step.ID, err)
+		workflowCtx.RecordStepFailure(step.ID, requestErr)
+		return requestErr
+	}
+
+	// Handle response based on action
+	switch response.Action {
+	case elicitationActionAccept:
+		return e.handleElicitationAccept(step, workflowCtx, response)
+	case elicitationActionDecline:
+		return e.handleElicitationDecline(step, workflowCtx)
+	case elicitationActionCancel:
+		return e.handleElicitationCancel(step, workflowCtx)
+	default:
+		err := fmt.Errorf("invalid elicitation response action %q for step %s", response.Action, step.ID)
+		workflowCtx.RecordStepFailure(step.ID, err)
+		return err
+	}
+}
+
+// handleElicitationAccept handles when the user accepts and provides data.
+func (*workflowEngine) handleElicitationAccept(
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+	response *ElicitationResponse,
+) error {
+	logger.Debugf("User accepted elicitation for step %s", step.ID)
+
+	// Store both the content and action in step output
+	// This allows templates to access:
+	//   - {{.steps.stepid.output.content}} for the data
+	//   - {{.steps.stepid.output.action}} for the action
+	output := map[string]any{
+		"action":  response.Action,
+		"content": response.Content,
+	}
+
+	workflowCtx.RecordStepSuccess(step.ID, output)
+	logger.Debugf("Step %s completed with user-provided data", step.ID)
+	return nil
+}
+
+// handleElicitationDecline handles when the user explicitly declines.
+func (e *workflowEngine) handleElicitationDecline(
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+) error {
+	logger.Debugf("User declined elicitation for step %s", step.ID)
+
+	// Check if we have an OnDecline handler
+	if step.Elicitation != nil && step.Elicitation.OnDecline != nil {
+		return e.handleElicitationAction(step, workflowCtx, step.Elicitation.OnDecline.Action, "decline")
+	}
+
+	// Default: treat as error
+	err := fmt.Errorf("%w: step %s", ErrElicitationDeclined, step.ID)
+	workflowCtx.RecordStepFailure(step.ID, err)
+	return err
+}
+
+// handleElicitationCancel handles when the user cancels/dismisses.
+func (e *workflowEngine) handleElicitationCancel(
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+) error {
+	logger.Debugf("User cancelled elicitation for step %s", step.ID)
+
+	// Check if we have an OnCancel handler
+	if step.Elicitation != nil && step.Elicitation.OnCancel != nil {
+		return e.handleElicitationAction(step, workflowCtx, step.Elicitation.OnCancel.Action, "cancel")
+	}
+
+	// Default: treat as error
+	err := fmt.Errorf("%w: step %s", ErrElicitationCancelled, step.ID)
+	workflowCtx.RecordStepFailure(step.ID, err)
+	return err
+}
+
+// handleElicitationTimeout handles when the elicitation times out.
+func (e *workflowEngine) handleElicitationTimeout(
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+) error {
+	logger.Warnf("Elicitation timed out for step %s", step.ID)
+
+	// Timeout is treated as cancel by default
+	if step.Elicitation != nil && step.Elicitation.OnCancel != nil {
+		return e.handleElicitationAction(step, workflowCtx, step.Elicitation.OnCancel.Action, "timeout")
+	}
+
+	// Default: treat as error
+	err := fmt.Errorf("%w: step %s", ErrElicitationTimeout, step.ID)
+	workflowCtx.RecordStepFailure(step.ID, err)
+	return err
+}
+
+// handleElicitationAction handles elicitation response actions (decline/cancel).
+func (*workflowEngine) handleElicitationAction(
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+	action string,
+	reason string,
+) error {
+	switch action {
+	case "skip_remaining":
+		// Mark this step as skipped and signal to skip remaining steps
+		logger.Debugf("Skipping remaining steps after %s for step %s", reason, step.ID)
+		output := map[string]any{
+			"action":  reason,
+			"skipped": true,
+		}
+		workflowCtx.RecordStepSuccess(step.ID, output)
+		// Return a special error that the workflow engine can detect
+		// For now, we'll just complete the step successfully
+		return nil
+
+	case "abort":
+		// Abort the workflow
+		logger.Debugf("Aborting workflow after %s for step %s", reason, step.ID)
+		if reason == "decline" {
+			err := fmt.Errorf("%w: step %s", ErrElicitationDeclined, step.ID)
+			workflowCtx.RecordStepFailure(step.ID, err)
+			return err
+		}
+		err := fmt.Errorf("%w: step %s", ErrElicitationCancelled, step.ID)
+		workflowCtx.RecordStepFailure(step.ID, err)
+		return err
+
+	case "continue":
+		// Continue to next step
+		logger.Debugf("Continuing workflow after %s for step %s", reason, step.ID)
+		output := map[string]any{
+			"action": reason,
+		}
+		workflowCtx.RecordStepSuccess(step.ID, output)
+		return nil
+
+	default:
+		err := fmt.Errorf("invalid elicitation action: %s", action)
+		workflowCtx.RecordStepFailure(step.ID, err)
+		return err
+	}
 }
 
 // ValidateWorkflow checks if a workflow definition is valid.

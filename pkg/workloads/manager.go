@@ -7,15 +7,8 @@ import (
 	"fmt"
 
 	"golang.org/x/sync/errgroup"
-	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/config"
-	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -66,19 +59,19 @@ var ErrWorkloadNotRunning = fmt.Errorf("workload not running")
 
 // NewManager creates a new CLI workload manager.
 // Returns Manager interface (existing behavior, unchanged).
-// IMPORTANT: This function only works in CLI mode. For Kubernetes, use NewK8SManager() directly.
+// IMPORTANT: This function only works in CLI mode. For Kubernetes, use k8s.NewManagerFromContext() directly.
 func NewManager(ctx context.Context) (Manager, error) {
 	if rt.IsKubernetesRuntime() {
-		return nil, fmt.Errorf("use workloads.NewK8SManager() for Kubernetes environments")
+		return nil, fmt.Errorf("use k8s.NewManagerFromContext() for Kubernetes environments")
 	}
 	return NewCLIManager(ctx)
 }
 
 // NewManagerWithProvider creates a new CLI workload manager with a custom config provider.
-// IMPORTANT: This function only works in CLI mode. For Kubernetes, use NewK8SManager() directly.
+// IMPORTANT: This function only works in CLI mode. For Kubernetes, use k8s.NewManagerFromContext() directly.
 func NewManagerWithProvider(ctx context.Context, configProvider config.Provider) (Manager, error) {
 	if rt.IsKubernetesRuntime() {
-		return nil, fmt.Errorf("use workloads.NewK8SManager() for Kubernetes environments")
+		return nil, fmt.Errorf("use k8s.NewManagerFromContext() for Kubernetes environments")
 	}
 	return NewCLIManagerWithProvider(ctx, configProvider)
 }
@@ -97,30 +90,4 @@ func NewManagerFromRuntime(rtRuntime rt.Runtime) (Manager, error) {
 // Proxyrunner uses this with Kubernetes runtime to create StatefulSets.
 func NewManagerFromRuntimeWithProvider(rtRuntime rt.Runtime, configProvider config.Provider) (Manager, error) {
 	return NewCLIManagerFromRuntimeWithProvider(rtRuntime, configProvider)
-}
-
-// NewK8SManagerFromContext creates a Kubernetes-based workload manager from context.
-// It automatically sets up the Kubernetes client and detects the namespace.
-func NewK8SManagerFromContext(_ context.Context) (K8SManager, error) {
-	// Create a scheme for controller-runtime client
-	scheme := runtime.NewScheme()
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(mcpv1alpha1.AddToScheme(scheme))
-
-	// Get Kubernetes config
-	cfg, err := ctrl.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get Kubernetes config: %w", err)
-	}
-
-	// Create controller-runtime client
-	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
-	}
-
-	// Detect namespace
-	namespace := kubernetes.GetCurrentNamespace()
-
-	return NewK8SManager(k8sClient, namespace)
 }

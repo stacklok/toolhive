@@ -11,14 +11,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
-	"github.com/stacklok/toolhive/pkg/workloads"
 	"github.com/stacklok/toolhive/pkg/workloads/k8s"
 )
 
 // k8sBackendDiscoverer discovers backend MCP servers from Kubernetes workloads (MCPServer CRDs).
-// It works with workloads.K8SManager and k8s.Workload.
+// It works with k8s.Manager and k8s.Workload.
 type k8sBackendDiscoverer struct {
-	workloadsManager workloads.K8SManager
+	workloadsManager k8s.Manager
 	groupsManager    groups.Manager
 	authConfig       *config.OutgoingAuthConfig
 }
@@ -31,7 +30,7 @@ type k8sBackendDiscoverer struct {
 //
 // This is the Kubernetes-specific constructor. For CLI workloads, use NewCLIBackendDiscoverer.
 func NewK8SBackendDiscoverer(
-	workloadsManager workloads.K8SManager,
+	workloadsManager k8s.Manager,
 	groupsManager groups.Manager,
 	authConfig *config.OutgoingAuthConfig,
 ) BackendDiscoverer {

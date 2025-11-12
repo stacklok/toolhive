@@ -1716,7 +1716,7 @@ func TestNewCLIManagerWithProvider(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
+	t.Cleanup(ctrl.Finish)
 
 	mockConfigProvider := configMocks.NewMockProvider(ctrl)
 
@@ -1762,7 +1762,7 @@ func TestCLIManager_stopRemoteWorkload(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
+	t.Cleanup(ctrl.Finish)
 
 	tests := []struct {
 		name         string
@@ -2008,7 +2008,7 @@ func TestCLIManager_deleteRemoteWorkload(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
+	t.Cleanup(ctrl.Finish)
 
 	tests := []struct {
 		name         string

@@ -14,7 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/workloads/k8s"
-	workloadmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
+	k8smocks "github.com/stacklok/toolhive/pkg/workloads/k8s/mocks"
 )
 
 func TestK8SBackendDiscoverer_Discover(t *testing.T) {
@@ -25,7 +25,7 @@ func TestK8SBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		mockWorkloads := workloadmocks.NewMockK8SManager(ctrl)
+		mockWorkloads := k8smocks.NewMockManager(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		workload1 := newTestK8SWorkload("workload1",
@@ -65,7 +65,7 @@ func TestK8SBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		mockWorkloads := workloadmocks.NewMockK8SManager(ctrl)
+		mockWorkloads := k8smocks.NewMockManager(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		runningWorkload := newTestK8SWorkload("running-workload",
@@ -98,7 +98,7 @@ func TestK8SBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		mockWorkloads := workloadmocks.NewMockK8SManager(ctrl)
+		mockWorkloads := k8smocks.NewMockManager(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		workloadWithURL := newTestK8SWorkload("workload1")
@@ -123,7 +123,7 @@ func TestK8SBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		mockWorkloads := workloadmocks.NewMockK8SManager(ctrl)
+		mockWorkloads := k8smocks.NewMockManager(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		workload1 := newTestK8SWorkload("workload1", withK8SURL(""))
@@ -149,7 +149,7 @@ func TestK8SBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		mockWorkloads := workloadmocks.NewMockK8SManager(ctrl)
+		mockWorkloads := k8smocks.NewMockManager(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		mockGroups.EXPECT().Exists(gomock.Any(), "nonexistent-group").Return(false, nil)
@@ -167,7 +167,7 @@ func TestK8SBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		mockWorkloads := workloadmocks.NewMockK8SManager(ctrl)
+		mockWorkloads := k8smocks.NewMockManager(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(false, errors.New("database error"))
@@ -185,7 +185,7 @@ func TestK8SBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		mockWorkloads := workloadmocks.NewMockK8SManager(ctrl)
+		mockWorkloads := k8smocks.NewMockManager(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		mockGroups.EXPECT().Exists(gomock.Any(), "empty-group").Return(true, nil)
@@ -203,7 +203,7 @@ func TestK8SBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		mockWorkloads := workloadmocks.NewMockK8SManager(ctrl)
+		mockWorkloads := k8smocks.NewMockManager(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		terminatingWorkload := newTestK8SWorkload("terminating1",
@@ -233,7 +233,7 @@ func TestK8SBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		mockWorkloads := workloadmocks.NewMockK8SManager(ctrl)
+		mockWorkloads := k8smocks.NewMockManager(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		goodWorkload := newTestK8SWorkload("good-workload")
@@ -258,7 +258,7 @@ func TestK8SBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		mockWorkloads := workloadmocks.NewMockK8SManager(ctrl)
+		mockWorkloads := k8smocks.NewMockManager(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
@@ -278,7 +278,7 @@ func TestK8SBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		mockWorkloads := workloadmocks.NewMockK8SManager(ctrl)
+		mockWorkloads := k8smocks.NewMockManager(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		pendingWorkload := newTestK8SWorkload("pending-workload",
@@ -303,7 +303,7 @@ func TestK8SBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 
-		mockWorkloads := workloadmocks.NewMockK8SManager(ctrl)
+		mockWorkloads := k8smocks.NewMockManager(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		workload := newTestK8SWorkload("workload1",

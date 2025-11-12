@@ -1,4 +1,4 @@
-package workloads
+package k8s
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/workloads/k8s"
 )
 
 const (
@@ -50,7 +49,7 @@ func (m *mockClient) Update(ctx context.Context, obj client.Object, opts ...clie
 	return nil
 }
 
-func TestNewK8SManager(t *testing.T) {
+func TestNewManager(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -77,25 +76,25 @@ func TestNewK8SManager(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			manager, err := NewK8SManager(tt.k8sClient, tt.namespace)
+			k8sManager, err := NewManager(tt.k8sClient, tt.namespace)
 
 			if tt.wantError {
 				require.Error(t, err)
-				assert.Nil(t, manager)
+				assert.Nil(t, k8sManager)
 			} else {
 				require.NoError(t, err)
-				require.NotNil(t, manager)
+				require.NotNil(t, k8sManager)
 
-				k8sMgr, ok := manager.(*k8sManager)
+				mgr, ok := k8sManager.(*manager)
 				require.True(t, ok)
-				assert.Equal(t, tt.k8sClient, k8sMgr.k8sClient)
-				assert.Equal(t, tt.namespace, k8sMgr.namespace)
+				assert.Equal(t, tt.k8sClient, mgr.k8sClient)
+				assert.Equal(t, tt.namespace, mgr.namespace)
 			}
 		})
 	}
 }
 
-func TestK8SManager_GetWorkload(t *testing.T) {
+func TestManager_GetWorkload(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -104,7 +103,7 @@ func TestK8SManager_GetWorkload(t *testing.T) {
 		setupMock    func(*mockClient)
 		wantError    bool
 		errorMsg     string
-		expected     k8s.Workload
+		expected     Workload
 	}{
 		{
 			name:         "successful get",
@@ -125,7 +124,7 @@ func TestK8SManager_GetWorkload(t *testing.T) {
 				}
 			},
 			wantError: false,
-			expected: k8s.Workload{
+			expected: Workload{
 				Name:      "test-workload",
 				Namespace: defaultNamespace,
 				Phase:     mcpv1alpha1.MCPServerPhaseRunning,
@@ -166,13 +165,13 @@ func TestK8SManager_GetWorkload(t *testing.T) {
 			mockClient := &mockClient{}
 			tt.setupMock(mockClient)
 
-			manager := &k8sManager{
+			mgr := &manager{
 				k8sClient: mockClient,
 				namespace: defaultNamespace,
 			}
 
 			ctx := context.Background()
-			result, err := manager.GetWorkload(ctx, tt.workloadName)
+			result, err := mgr.GetWorkload(ctx, tt.workloadName)
 
 			if tt.wantError {
 				require.Error(t, err)
@@ -189,7 +188,7 @@ func TestK8SManager_GetWorkload(t *testing.T) {
 	}
 }
 
-func TestK8SManager_DoesWorkloadExist(t *testing.T) {
+func TestManager_DoesWorkloadExist(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -244,13 +243,13 @@ func TestK8SManager_DoesWorkloadExist(t *testing.T) {
 			mockClient := &mockClient{}
 			tt.setupMock(mockClient)
 
-			manager := &k8sManager{
+			mgr := &manager{
 				k8sClient: mockClient,
 				namespace: defaultNamespace,
 			}
 
 			ctx := context.Background()
-			result, err := manager.DoesWorkloadExist(ctx, tt.workloadName)
+			result, err := mgr.DoesWorkloadExist(ctx, tt.workloadName)
 
 			if tt.wantError {
 				require.Error(t, err)
@@ -262,7 +261,7 @@ func TestK8SManager_DoesWorkloadExist(t *testing.T) {
 	}
 }
 
-func TestK8SManager_ListWorkloadsInGroup(t *testing.T) {
+func TestManager_ListWorkloadsInGroup(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -347,13 +346,13 @@ func TestK8SManager_ListWorkloadsInGroup(t *testing.T) {
 			mockClient := &mockClient{}
 			tt.setupMock(mockClient)
 
-			manager := &k8sManager{
+			mgr := &manager{
 				k8sClient: mockClient,
 				namespace: defaultNamespace,
 			}
 
 			ctx := context.Background()
-			result, err := manager.ListWorkloadsInGroup(ctx, tt.groupName)
+			result, err := mgr.ListWorkloadsInGroup(ctx, tt.groupName)
 
 			if tt.wantError {
 				require.Error(t, err)
@@ -368,7 +367,7 @@ func TestK8SManager_ListWorkloadsInGroup(t *testing.T) {
 	}
 }
 
-func TestK8SManager_ListWorkloads(t *testing.T) {
+func TestManager_ListWorkloads(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -458,13 +457,13 @@ func TestK8SManager_ListWorkloads(t *testing.T) {
 			mockClient := &mockClient{}
 			tt.setupMock(mockClient)
 
-			manager := &k8sManager{
+			mgr := &manager{
 				k8sClient: mockClient,
 				namespace: defaultNamespace,
 			}
 
 			ctx := context.Background()
-			result, err := manager.ListWorkloads(ctx, tt.listAll, tt.labelFilters...)
+			result, err := mgr.ListWorkloads(ctx, tt.listAll, tt.labelFilters...)
 
 			if tt.wantError {
 				require.Error(t, err)
@@ -479,7 +478,7 @@ func TestK8SManager_ListWorkloads(t *testing.T) {
 	}
 }
 
-func TestK8SManager_MoveToGroup(t *testing.T) {
+func TestManager_MoveToGroup(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -572,13 +571,13 @@ func TestK8SManager_MoveToGroup(t *testing.T) {
 			mockClient := &mockClient{}
 			tt.setupMock(mockClient)
 
-			manager := &k8sManager{
+			mgr := &manager{
 				k8sClient: mockClient,
 				namespace: defaultNamespace,
 			}
 
 			ctx := context.Background()
-			err := manager.MoveToGroup(ctx, tt.workloadNames, tt.groupFrom, tt.groupTo)
+			err := mgr.MoveToGroup(ctx, tt.workloadNames, tt.groupFrom, tt.groupTo)
 
 			if tt.wantError {
 				require.Error(t, err)
@@ -592,11 +591,11 @@ func TestK8SManager_MoveToGroup(t *testing.T) {
 	}
 }
 
-func TestK8SManager_NoOpMethods(t *testing.T) {
+func TestManager_NoOpMethods(t *testing.T) {
 	t.Parallel()
 
 	mockClient := &mockClient{}
-	manager := &k8sManager{
+	mgr := &manager{
 		k8sClient: mockClient,
 		namespace: defaultNamespace,
 	}
@@ -605,7 +604,7 @@ func TestK8SManager_NoOpMethods(t *testing.T) {
 
 	t.Run("GetLogs returns error", func(t *testing.T) {
 		t.Parallel()
-		logs, err := manager.GetLogs(ctx, testWorkload1, false)
+		logs, err := mgr.GetLogs(ctx, testWorkload1, false)
 		require.Error(t, err)
 		assert.Empty(t, logs)
 		assert.Contains(t, err.Error(), "not fully implemented")
@@ -613,20 +612,20 @@ func TestK8SManager_NoOpMethods(t *testing.T) {
 
 	t.Run("GetProxyLogs returns error", func(t *testing.T) {
 		t.Parallel()
-		logs, err := manager.GetProxyLogs(ctx, testWorkload1)
+		logs, err := mgr.GetProxyLogs(ctx, testWorkload1)
 		require.Error(t, err)
 		assert.Empty(t, logs)
 		assert.Contains(t, err.Error(), "not fully implemented")
 	})
 }
 
-func TestK8SManager_mcpServerToK8SWorkload(t *testing.T) {
+func TestManager_mcpServerToWorkload(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name      string
 		mcpServer *mcpv1alpha1.MCPServer
-		expected  k8s.Workload
+		expected  Workload
 	}{
 		{
 			name: "running workload with HTTP transport",
@@ -648,7 +647,7 @@ func TestK8SManager_mcpServerToK8SWorkload(t *testing.T) {
 					ProxyPort: 8080,
 				},
 			},
-			expected: k8s.Workload{
+			expected: Workload{
 				Name:      "test-workload",
 				Namespace: defaultNamespace,
 				Phase:     mcpv1alpha1.MCPServerPhaseRunning,
@@ -667,7 +666,7 @@ func TestK8SManager_mcpServerToK8SWorkload(t *testing.T) {
 					Phase: mcpv1alpha1.MCPServerPhaseTerminating,
 				},
 			},
-			expected: k8s.Workload{
+			expected: Workload{
 				Name:      "terminating-workload",
 				Namespace: defaultNamespace,
 				Phase:     mcpv1alpha1.MCPServerPhaseTerminating,
@@ -684,7 +683,7 @@ func TestK8SManager_mcpServerToK8SWorkload(t *testing.T) {
 					Phase: mcpv1alpha1.MCPServerPhaseFailed,
 				},
 			},
-			expected: k8s.Workload{
+			expected: Workload{
 				Name:      "failed-workload",
 				Namespace: defaultNamespace,
 				Phase:     mcpv1alpha1.MCPServerPhaseFailed,
@@ -696,11 +695,11 @@ func TestK8SManager_mcpServerToK8SWorkload(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			manager := &k8sManager{
+			mgr := &manager{
 				namespace: defaultNamespace,
 			}
 
-			result, err := manager.mcpServerToK8SWorkload(tt.mcpServer)
+			result, err := mgr.mcpServerToWorkload(tt.mcpServer)
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.expected.Name, result.Name)
@@ -714,10 +713,10 @@ func TestK8SManager_mcpServerToK8SWorkload(t *testing.T) {
 	}
 }
 
-func TestK8SManager_isStandardK8sAnnotation(t *testing.T) {
+func TestManager_isStandardK8sAnnotation(t *testing.T) {
 	t.Parallel()
 
-	manager := &k8sManager{}
+	mgr := &manager{}
 
 	tests := []struct {
 		name     string
@@ -771,7 +770,7 @@ func TestK8SManager_isStandardK8sAnnotation(t *testing.T) {
 		},
 		{
 			name:     "case sensitive - uppercase",
-			key:      "KUBECTL.kubernetes.io/annotation",
+			key:      "KUBECTL.KUBERNETES.IO/annotation",
 			expected: false,
 		},
 	}
@@ -779,8 +778,8 @@ func TestK8SManager_isStandardK8sAnnotation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := manager.isStandardK8sAnnotation(tt.key)
-			assert.Equal(t, tt.expected, result, "isStandardK8sAnnotation(%q) = %v, want %v", tt.key, result, tt.expected)
+			result := mgr.isStandardK8sAnnotation(tt.key)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }

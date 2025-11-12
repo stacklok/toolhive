@@ -1,6 +1,6 @@
-// Package workloads provides a Kubernetes-based implementation of the K8SManager interface.
+// Package k8s provides Kubernetes-specific workload management.
 // This file contains the Kubernetes implementation for operator environments.
-package workloads
+package k8s
 
 import (
 	"context"
@@ -10,48 +10,78 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
-	"github.com/stacklok/toolhive/pkg/workloads/k8s"
 	workloadtypes "github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
-// k8sManager implements the K8SManager interface for Kubernetes environments.
+// manager implements the Manager interface for Kubernetes environments.
 // In Kubernetes, the operator manages workload lifecycle via MCPServer CRDs.
 // This manager provides read-only operations and CRD-based storage.
-type k8sManager struct {
+type manager struct {
 	k8sClient client.Client
 	namespace string
 }
 
-// NewK8SManager creates a new Kubernetes-based workload manager.
-func NewK8SManager(k8sClient client.Client, namespace string) (K8SManager, error) {
-	return &k8sManager{
+// NewManager creates a new Kubernetes-based workload manager.
+func NewManager(k8sClient client.Client, namespace string) (Manager, error) {
+	return &manager{
 		k8sClient: k8sClient,
 		namespace: namespace,
 	}, nil
 }
 
-func (k *k8sManager) GetWorkload(ctx context.Context, workloadName string) (k8s.Workload, error) {
+// NewManagerFromContext creates a Kubernetes-based workload manager from context.
+// It automatically sets up the Kubernetes client and detects the namespace.
+func NewManagerFromContext(_ context.Context) (Manager, error) {
+	// Create a scheme for controller-runtime client
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(mcpv1alpha1.AddToScheme(scheme))
+
+	// Get Kubernetes config
+	cfg, err := ctrl.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Kubernetes config: %w", err)
+	}
+
+	// Create controller-runtime client
+	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
+	}
+
+	// Detect namespace
+	namespace := kubernetes.GetCurrentNamespace()
+
+	return NewManager(k8sClient, namespace)
+}
+
+func (k *manager) GetWorkload(ctx context.Context, workloadName string) (Workload, error) {
 	mcpServer := &mcpv1alpha1.MCPServer{}
 	key := types.NamespacedName{Name: workloadName, Namespace: k.namespace}
 	if err := k.k8sClient.Get(ctx, key, mcpServer); err != nil {
 		if errors.IsNotFound(err) {
-			return k8s.Workload{}, fmt.Errorf("MCPServer %s not found", workloadName)
+			return Workload{}, fmt.Errorf("MCPServer %s not found", workloadName)
 		}
-		return k8s.Workload{}, fmt.Errorf("failed to get MCPServer: %w", err)
+		return Workload{}, fmt.Errorf("failed to get MCPServer: %w", err)
 	}
 
-	return k.mcpServerToK8SWorkload(mcpServer)
+	return k.mcpServerToWorkload(mcpServer)
 }
 
-func (k *k8sManager) DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error) {
+func (k *manager) DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error) {
 	mcpServer := &mcpv1alpha1.MCPServer{}
 	key := types.NamespacedName{Name: workloadName, Namespace: k.namespace}
 	if err := k.k8sClient.Get(ctx, key, mcpServer); err != nil {
@@ -63,7 +93,7 @@ func (k *k8sManager) DoesWorkloadExist(ctx context.Context, workloadName string)
 	return true, nil
 }
 
-func (k *k8sManager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]k8s.Workload, error) {
+func (k *manager) ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]Workload, error) {
 	mcpServerList := &mcpv1alpha1.MCPServerList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(k.namespace),
@@ -92,7 +122,7 @@ func (k *k8sManager) ListWorkloads(ctx context.Context, listAll bool, labelFilte
 		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
 	}
 
-	var workloads []k8s.Workload
+	var workloads []Workload
 	for i := range mcpServerList.Items {
 		mcpServer := &mcpServerList.Items[i]
 
@@ -104,7 +134,7 @@ func (k *k8sManager) ListWorkloads(ctx context.Context, listAll bool, labelFilte
 			}
 		}
 
-		workload, err := k.mcpServerToK8SWorkload(mcpServer)
+		workload, err := k.mcpServerToWorkload(mcpServer)
 		if err != nil {
 			logger.Warnf("Failed to convert MCPServer %s to workload: %v", mcpServer.Name, err)
 			continue
@@ -116,7 +146,7 @@ func (k *k8sManager) ListWorkloads(ctx context.Context, listAll bool, labelFilte
 	return workloads, nil
 }
 
-// Note: The following operations are not part of K8SManager interface:
+// Note: The following operations are not part of Manager interface:
 // - StopWorkloads: Use kubectl to manage MCPServer CRDs
 // - RunWorkload: Create MCPServer CRD instead
 // - RunWorkloadDetached: Create MCPServer CRD instead
@@ -128,7 +158,7 @@ func (k *k8sManager) ListWorkloads(ctx context.Context, listAll bool, labelFilte
 // Note: This requires a Kubernetes clientset for log streaming.
 // For now, this returns an error indicating logs should be retrieved via kubectl.
 // TODO: Implement proper log retrieval using clientset or REST client.
-func (k *k8sManager) GetLogs(_ context.Context, _ string, follow bool) (string, error) {
+func (k *manager) GetLogs(_ context.Context, _ string, follow bool) (string, error) {
 	if follow {
 		return "", fmt.Errorf("follow mode is not supported. Use 'kubectl logs -f <pod-name> -n %s' to stream logs", k.namespace)
 	}
@@ -141,14 +171,14 @@ func (k *k8sManager) GetLogs(_ context.Context, _ string, follow bool) (string, 
 // Note: This requires a Kubernetes clientset for log streaming.
 // For now, this returns an error indicating logs should be retrieved via kubectl.
 // TODO: Implement proper log retrieval using clientset or REST client.
-func (k *k8sManager) GetProxyLogs(_ context.Context, _ string) (string, error) {
+func (k *manager) GetProxyLogs(_ context.Context, _ string) (string, error) {
 	return "", fmt.Errorf(
 		"GetProxyLogs is not fully implemented in Kubernetes mode. Use 'kubectl logs <pod-name> -c proxy -n %s' to retrieve proxy logs",
 		k.namespace)
 }
 
 // MoveToGroup moves the specified workloads from one group to another.
-func (k *k8sManager) MoveToGroup(ctx context.Context, workloadNames []string, groupFrom string, groupTo string) error {
+func (k *manager) MoveToGroup(ctx context.Context, workloadNames []string, groupFrom string, groupTo string) error {
 	for _, name := range workloadNames {
 		mcpServer := &mcpv1alpha1.MCPServer{}
 		key := types.NamespacedName{Name: name, Namespace: k.namespace}
@@ -177,7 +207,7 @@ func (k *k8sManager) MoveToGroup(ctx context.Context, workloadNames []string, gr
 }
 
 // ListWorkloadsInGroup returns all workload names that belong to the specified group.
-func (k *k8sManager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error) {
+func (k *manager) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error) {
 	mcpServerList := &mcpv1alpha1.MCPServerList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(k.namespace),
@@ -198,8 +228,8 @@ func (k *k8sManager) ListWorkloadsInGroup(ctx context.Context, groupName string)
 	return groupWorkloads, nil
 }
 
-// mcpServerToK8SWorkload converts an MCPServer CRD to a k8s.Workload.
-func (k *k8sManager) mcpServerToK8SWorkload(mcpServer *mcpv1alpha1.MCPServer) (k8s.Workload, error) {
+// mcpServerToWorkload converts an MCPServer CRD to a Workload.
+func (k *manager) mcpServerToWorkload(mcpServer *mcpv1alpha1.MCPServer) (Workload, error) {
 	// Parse transport type
 	transportType, err := transporttypes.ParseTransportType(mcpServer.Spec.Transport)
 	if err != nil {
@@ -252,7 +282,7 @@ func (k *k8sManager) mcpServerToK8SWorkload(mcpServer *mcpv1alpha1.MCPServer) (k
 		createdAt = time.Now()
 	}
 
-	return k8s.Workload{
+	return Workload{
 		Name:          mcpServer.Name,
 		Namespace:     mcpServer.Namespace,
 		Package:       mcpServer.Spec.Image,
@@ -272,7 +302,7 @@ func (k *k8sManager) mcpServerToK8SWorkload(mcpServer *mcpv1alpha1.MCPServer) (k
 }
 
 // isStandardK8sAnnotation checks if an annotation key is a standard Kubernetes annotation.
-func (*k8sManager) isStandardK8sAnnotation(key string) bool {
+func (*manager) isStandardK8sAnnotation(key string) bool {
 	// Common Kubernetes annotation prefixes
 	standardPrefixes := []string{
 		"kubectl.kubernetes.io/",

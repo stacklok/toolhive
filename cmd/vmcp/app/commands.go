@@ -20,6 +20,7 @@ import (
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 	"github.com/stacklok/toolhive/pkg/workloads"
+	"github.com/stacklok/toolhive/pkg/workloads/k8s"
 )
 
 var rootCmd = &cobra.Command{
@@ -229,7 +230,7 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 	// Create backend discoverer based on runtime environment
 	var discoverer aggregator.BackendDiscoverer
 	if rt.IsKubernetesRuntime() {
-		k8sWorkloadsManager, err := workloads.NewK8SManagerFromContext(ctx)
+		k8sWorkloadsManager, err := k8s.NewManagerFromContext(ctx)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create Kubernetes workloads manager: %w", err)
 		}

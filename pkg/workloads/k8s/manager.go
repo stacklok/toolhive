@@ -1,26 +1,23 @@
-// Package workloads contains high-level logic for managing the lifecycle of
-// ToolHive-managed containers.
-package workloads
+// Package k8s provides Kubernetes-specific workload management.
+package k8s
 
 import (
 	"context"
-
-	"github.com/stacklok/toolhive/pkg/workloads/k8s"
 )
 
-// K8SManager manages MCPServer CRD workloads in Kubernetes.
-// This interface is separate from Manager to avoid coupling Kubernetes workloads
+// Manager manages MCPServer CRD workloads in Kubernetes.
+// This interface is separate from workloads.Manager to avoid coupling Kubernetes workloads
 // to the CLI container runtime interface.
 //
-//go:generate mockgen -destination=mocks/mock_k8s_manager.go -package=mocks -source=k8s_manager_interface.go K8SManager
-type K8SManager interface {
+//go:generate mockgen -destination=mocks/mock_manager.go -package=mocks github.com/stacklok/toolhive/pkg/workloads/k8s Manager
+type Manager interface {
 	// GetWorkload retrieves an MCPServer CRD by name
-	GetWorkload(ctx context.Context, workloadName string) (k8s.Workload, error)
+	GetWorkload(ctx context.Context, workloadName string) (Workload, error)
 
 	// ListWorkloads lists all MCPServer CRDs, optionally filtered by labels
 	// The `listAll` parameter determines whether to include workloads that are not running
 	// The optional `labelFilters` parameter allows filtering workloads by labels (format: key=value)
-	ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]k8s.Workload, error)
+	ListWorkloads(ctx context.Context, listAll bool, labelFilters ...string) ([]Workload, error)
 
 	// ListWorkloadsInGroup returns all workload names that belong to the specified group
 	ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error)

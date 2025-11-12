@@ -1016,17 +1016,24 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			// So we insert the override args after "run" (position 1)
 			insertPosition := 1
 
-			// linter-ignore-begin(codeql/go/incorrect-integer-conversion)
-			// Reason: Integer overflow is extremely unlikely in practice as args are typically
-			// < 100 elements. Kubernetes API server limits CRs to ~1.5MB, which bounds the
-			// maximum number of args. The overflow check would add unnecessary complexity.
-			newArgs := make([]string, 0, len(args)+len(m.Spec.ResourceOverrides.ProxyDeployment.Args))
-			// linter-ignore-end(codeql/go/incorrect-integer-conversion)
-
-			newArgs = append(newArgs, args[:insertPosition]...)
-			newArgs = append(newArgs, m.Spec.ResourceOverrides.ProxyDeployment.Args...)
-			newArgs = append(newArgs, args[insertPosition:]...)
-			args = newArgs
+			// Prevent size computation overflow by ensuring the total number of args is within safe bounds.
+			const maxAllowedArgs = 10000
+			totalArgs := len(args) + len(m.Spec.ResourceOverrides.ProxyDeployment.Args)
+			if totalArgs > maxAllowedArgs {
+				ctxLogger := log.FromContext(ctx)
+				ctxLogger.Error(
+					fmt.Errorf("too many proxy deployment arguments"),
+					"Skipping proxy deployment args override",
+					"totalArgs", totalArgs,
+					"maxAllowedArgs", maxAllowedArgs,
+				)
+			} else {
+				newArgs := make([]string, 0, totalArgs)
+				newArgs = append(newArgs, args[:insertPosition]...)
+				newArgs = append(newArgs, m.Spec.ResourceOverrides.ProxyDeployment.Args...)
+				newArgs = append(newArgs, args[insertPosition:]...)
+				args = newArgs
+			}
 		}
 	}
 

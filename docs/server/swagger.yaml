@@ -132,6 +132,7 @@ components:
       - Goose
       - Trae
       - Continue
+      - Kiro
     client.MCPClientStatus:
       properties:
         client_type:
@@ -155,6 +156,7 @@ components:
           - Goose
           - Trae
           - Continue
+          - Kiro
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -1077,6 +1079,7 @@ components:
             - Goose
             - Trae
             - Continue
+            - Kiro
           type: array
           uniqueItems: false
       type: object
@@ -1129,6 +1132,7 @@ components:
           - Goose
           - Trae
           - Continue
+          - Kiro
       type: object
     v1.createClientResponse:
       properties:
@@ -1159,6 +1163,7 @@ components:
           - Goose
           - Trae
           - Continue
+          - Kiro
       type: object
     v1.createGroupRequest:
       properties:

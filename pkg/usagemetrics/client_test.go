@@ -3,12 +3,14 @@ package usagemetrics
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	envmocks "github.com/stacklok/toolhive/pkg/env/mocks"
 )
 
 // newTestClient creates a client for testing with a pre-set anonymous ID
@@ -50,15 +52,24 @@ func TestGenerateUserAgent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Set environment variable
-			if tt.k8sEnvValue != "" {
-				os.Setenv("KUBERNETES_SERVICE_HOST", tt.k8sEnvValue)
-				defer os.Unsetenv("KUBERNETES_SERVICE_HOST")
-			} else {
-				os.Unsetenv("KUBERNETES_SERVICE_HOST")
-			}
+			// Create mock environment reader
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
 
-			userAgent := generateUserAgent()
+			mockEnv := envmocks.NewMockReader(ctrl)
+
+			// Set up mock expectations
+			mockEnv.EXPECT().
+				Getenv("TOOLHIVE_RUNTIME").
+				Return("").
+				AnyTimes()
+
+			mockEnv.EXPECT().
+				Getenv("KUBERNETES_SERVICE_HOST").
+				Return(tt.k8sEnvValue).
+				AnyTimes()
+
+			userAgent := generateUserAgentWithEnv(mockEnv)
 
 			// Verify it starts with expected prefix
 			assert.True(t, strings.HasPrefix(userAgent, tt.expectedPrefix),

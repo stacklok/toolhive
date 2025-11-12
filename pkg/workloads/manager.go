@@ -85,18 +85,29 @@ func NewManagerWithProvider(ctx context.Context, configProvider config.Provider)
 
 // NewManagerFromRuntime creates a new CLI workload manager from an existing runtime.
 // IMPORTANT: This function only works in CLI mode. For Kubernetes, use NewK8SManager() directly.
+// This function checks the runtime type directly, not the environment, to support
+// cases like proxyrunner which runs in Kubernetes pods but uses Docker runtime.
 func NewManagerFromRuntime(rtRuntime rt.Runtime) (Manager, error) {
-	if rt.IsKubernetesRuntime() {
-		return nil, fmt.Errorf("use workloads.NewK8SManager() for Kubernetes environments")
+	// Check if the runtime is actually a Kubernetes runtime by type assertion
+	// The proxyrunner runs in pods but uses Docker runtime, so we check the runtime type,
+	// not the environment (which would always be Kubernetes in pods)
+	if _, ok := rtRuntime.(*kubernetes.Client); ok {
+		return nil, fmt.Errorf("use workloads.NewK8SManager() for Kubernetes runtime")
 	}
+
 	return NewCLIManagerFromRuntime(rtRuntime)
 }
 
 // NewManagerFromRuntimeWithProvider creates a new CLI workload manager from an existing runtime with a custom config provider.
 // IMPORTANT: This function only works in CLI mode. For Kubernetes, use NewK8SManager() directly.
+// This function checks the runtime type directly, not the environment, to support
+// cases like proxyrunner which runs in Kubernetes pods but uses Docker runtime.
 func NewManagerFromRuntimeWithProvider(rtRuntime rt.Runtime, configProvider config.Provider) (Manager, error) {
-	if rt.IsKubernetesRuntime() {
-		return nil, fmt.Errorf("use workloads.NewK8SManager() for Kubernetes environments")
+	// Check if the runtime is actually a Kubernetes runtime by type assertion
+	// The proxyrunner runs in pods but uses Docker runtime, so we check the runtime type,
+	// not the environment (which would always be Kubernetes in pods)
+	if _, ok := rtRuntime.(*kubernetes.Client); ok {
+		return nil, fmt.Errorf("use workloads.NewK8SManager() for Kubernetes runtime")
 	}
 	return NewCLIManagerFromRuntimeWithProvider(rtRuntime, configProvider)
 }

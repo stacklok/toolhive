@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -47,93 +48,151 @@ func Middleware(
 			ctx := r.Context()
 			sessionID := r.Header.Get("Mcp-Session-Id")
 
-			// Initialize request: discover and cache capabilities in session.
+			var err error
 			if sessionID == "" {
-				discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
-				defer cancel()
-
-				logger.Debugw("starting capability discovery for initialize request",
-					"method", r.Method,
-					"path", r.URL.Path,
-					"backend_count", len(backends))
-
-				capabilities, err := manager.Discover(discoveryCtx, backends)
-				if err != nil {
-					logger.Errorw("capability discovery failed",
-						"error", err,
-						"method", r.Method,
-						"path", r.URL.Path)
-
-					if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-						http.Error(w, http.StatusText(http.StatusGatewayTimeout), http.StatusGatewayTimeout)
-						return
-					}
-
-					http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
-					return
-				}
-
-				logger.Debugw("capability discovery completed",
-					"method", r.Method,
-					"path", r.URL.Path,
-					"tool_count", len(capabilities.Tools),
-					"resource_count", len(capabilities.Resources),
-					"prompt_count", len(capabilities.Prompts))
-
-				ctx = WithDiscoveredCapabilities(ctx, capabilities)
+				// Initialize request: discover and cache capabilities in session.
+				ctx, err = handleInitializeRequest(ctx, r, manager, backends)
 			} else {
-				// Retrieve cached capabilities from session
-				logger.Debugw("retrieving capabilities from session for subsequent request",
-					"session_id", sessionID,
-					"method", r.Method,
-					"path", r.URL.Path)
+				// Subsequent request: retrieve cached capabilities from session.
+				ctx, err = handleSubsequentRequest(ctx, r, sessionID, sessionManager)
+			}
 
-				sess, ok := sessionManager.Get(sessionID)
-				if !ok {
-					logger.Errorw("session not found",
-						"session_id", sessionID,
-						"method", r.Method,
-						"path", r.URL.Path)
-					http.Error(w, "Session not found", http.StatusUnauthorized)
-					return
-				}
-
-				vmcpSess, ok := sess.(*vmcpsession.VMCPSession)
-				if !ok {
-					logger.Errorw("session is not a VMCPSession - factory misconfiguration",
-						"session_id", sessionID,
-						"actual_type", fmt.Sprintf("%T", sess),
-						"method", r.Method,
-						"path", r.URL.Path)
-					http.Error(w, "Invalid session type", http.StatusInternalServerError)
-					return
-				}
-
-				routingTable := vmcpSess.GetRoutingTable()
-				if routingTable == nil {
-					logger.Errorw("routing table not initialized in VMCPSession",
-						"session_id", sessionID,
-						"method", r.Method,
-						"path", r.URL.Path)
-					http.Error(w, "Session capabilities not initialized", http.StatusInternalServerError)
-					return
-				}
-
-				// Reconstruct minimal AggregatedCapabilities for routing
-				capabilities := &aggregator.AggregatedCapabilities{
-					RoutingTable: routingTable,
-				}
-
-				logger.Debugw("capabilities retrieved from session",
-					"session_id", sessionID,
-					"tool_count", len(routingTable.Tools),
-					"resource_count", len(routingTable.Resources),
-					"prompt_count", len(routingTable.Prompts))
-
-				ctx = WithDiscoveredCapabilities(ctx, capabilities)
+			if err != nil {
+				handleDiscoveryError(w, r, err)
+				return
 			}
 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// handleInitializeRequest performs capability discovery for initialize requests.
+// Returns updated context with discovered capabilities or an error.
+func handleInitializeRequest(
+	ctx context.Context,
+	r *http.Request,
+	manager Manager,
+	backends []vmcp.Backend,
+) (context.Context, error) {
+	discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
+	defer cancel()
+
+	logger.Debugw("starting capability discovery for initialize request",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"backend_count", len(backends))
+
+	capabilities, err := manager.Discover(discoveryCtx, backends)
+	if err != nil {
+		logger.Errorw("capability discovery failed",
+			"error", err,
+			"method", r.Method,
+			"path", r.URL.Path)
+		return ctx, fmt.Errorf("discovery failed: %w", err)
+	}
+
+	logger.Debugw("capability discovery completed",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"tool_count", len(capabilities.Tools),
+		"resource_count", len(capabilities.Resources),
+		"prompt_count", len(capabilities.Prompts))
+
+	return WithDiscoveredCapabilities(ctx, capabilities), nil
+}
+
+// handleSubsequentRequest retrieves cached capabilities from the session.
+// Returns updated context with capabilities or an error.
+func handleSubsequentRequest(
+	ctx context.Context,
+	r *http.Request,
+	sessionID string,
+	sessionManager *transportsession.Manager,
+) (context.Context, error) {
+	logger.Debugw("retrieving capabilities from session for subsequent request",
+		"session_id", sessionID,
+		"method", r.Method,
+		"path", r.URL.Path)
+
+	// Retrieve and validate session
+	vmcpSess, err := getVMCPSession(sessionID, sessionManager, r)
+	if err != nil {
+		return ctx, err
+	}
+
+	// Get routing table from session
+	routingTable := vmcpSess.GetRoutingTable()
+	if routingTable == nil {
+		logger.Errorw("routing table not initialized in VMCPSession",
+			"session_id", sessionID,
+			"method", r.Method,
+			"path", r.URL.Path)
+		return ctx, fmt.Errorf("routing table not initialized")
+	}
+
+	// Reconstruct minimal AggregatedCapabilities for routing
+	capabilities := &aggregator.AggregatedCapabilities{
+		RoutingTable: routingTable,
+	}
+
+	logger.Debugw("capabilities retrieved from session",
+		"session_id", sessionID,
+		"tool_count", len(routingTable.Tools),
+		"resource_count", len(routingTable.Resources),
+		"prompt_count", len(routingTable.Prompts))
+
+	return WithDiscoveredCapabilities(ctx, capabilities), nil
+}
+
+// getVMCPSession retrieves and validates a VMCPSession from the session manager.
+func getVMCPSession(
+	sessionID string,
+	sessionManager *transportsession.Manager,
+	r *http.Request,
+) (*vmcpsession.VMCPSession, error) {
+	sess, ok := sessionManager.Get(sessionID)
+	if !ok {
+		logger.Errorw("session not found",
+			"session_id", sessionID,
+			"method", r.Method,
+			"path", r.URL.Path)
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	vmcpSess, ok := sess.(*vmcpsession.VMCPSession)
+	if !ok {
+		logger.Errorw("session is not a VMCPSession - factory misconfiguration",
+			"session_id", sessionID,
+			"actual_type", fmt.Sprintf("%T", sess),
+			"method", r.Method,
+			"path", r.URL.Path)
+		return nil, fmt.Errorf("invalid session type: %T", sess)
+	}
+
+	return vmcpSess, nil
+}
+
+// handleDiscoveryError writes appropriate HTTP error responses based on the error type.
+func handleDiscoveryError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		http.Error(w, http.StatusText(http.StatusGatewayTimeout), http.StatusGatewayTimeout)
+		return
+	}
+
+	// Check for session-related errors
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "session not found") {
+		http.Error(w, "Session not found", http.StatusUnauthorized)
+		return
+	}
+
+	if strings.Contains(errMsg, "invalid session type") ||
+		strings.Contains(errMsg, "routing table not initialized") {
+		http.Error(w, errMsg, http.StatusInternalServerError)
+		return
+	}
+
+	// Default to service unavailable for other errors
+	http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 }

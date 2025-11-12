@@ -61,6 +61,8 @@ const (
 	Continue MCPClient = "continue"
 	// OpenCode represents the OpenCode editor.
 	OpenCode MCPClient = "opencode"
+	// Kiro represents the Kiro AI IDE.
+	Kiro MCPClient = "kiro"
 )
 
 // Extension is extension of the client config file.
@@ -445,6 +447,20 @@ var supportedClientIntegrations = []mcpClientConfig{
 		},
 		IsTransportTypeFieldSupported: true, // OpenCode requires "type": "remote" for URL-based servers
 		MCPServersUrlLabel:            "url",
+	},
+	{
+		ClientType:           Kiro,
+		Description:          "Kiro AI IDE",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".kiro", "settings"},
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "http",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: false,
 	},
 }
 

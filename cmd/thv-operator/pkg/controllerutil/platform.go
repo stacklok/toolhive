@@ -9,6 +9,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/k8s"
 )
 
 // PlatformDetectorInterface provides platform detection capabilities
@@ -48,9 +49,9 @@ func (s *SharedPlatformDetector) DetectPlatform(ctx context.Context) (kubernetes
 			cfg = s.config
 		} else {
 			var configErr error
-			cfg, configErr = rest.InClusterConfig()
+			cfg, configErr = k8s.GetConfig()
 			if configErr != nil {
-				err = fmt.Errorf("failed to get in-cluster config for platform detection: %w", configErr)
+				err = fmt.Errorf("failed to get kubernetes config for platform detection: %w", configErr)
 				return
 			}
 		}

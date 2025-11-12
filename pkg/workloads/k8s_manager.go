@@ -5,6 +5,7 @@ package workloads
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -281,10 +282,9 @@ func (*k8sManager) isStandardK8sAnnotation(key string) bool {
 	}
 
 	for _, prefix := range standardPrefixes {
-		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+		if strings.HasPrefix(key, prefix) {
 			return true
 		}
 	}
-
 	return false
 }

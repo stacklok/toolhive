@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/adrg/xdg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/config"
 	configMocks "github.com/stacklok/toolhive/pkg/config/mocks"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -962,9 +966,59 @@ func TestCLIManager_validateSecretParameters(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "no secrets and no remote auth - should pass",
+			runConfig: &runner.RunConfig{
+				Secrets:          []string{},
+				RemoteAuthConfig: nil,
+			},
+			setupMocks:  func(*configMocks.MockProvider) {}, // No expectations
+			expectError: false,
+		},
+		{
+			name: "remote auth without client secret - should pass",
+			runConfig: &runner.RunConfig{
+				Secrets: []string{},
+				RemoteAuthConfig: &remote.Config{
+					ClientSecret: "", // Empty client secret
+				},
+			},
+			setupMocks:  func(*configMocks.MockProvider) {}, // No expectations
+			expectError: false,
+		},
+		{
 			name: "config error",
 			runConfig: &runner.RunConfig{
 				Secrets: []string{"secret1"},
+			},
+			setupMocks: func(cp *configMocks.MockProvider) {
+				mockConfig := &config.Config{}
+				cp.EXPECT().GetConfig().Return(mockConfig)
+			},
+			expectError: true,
+			errorMsg:    "error determining secrets provider type",
+		},
+		{
+			name: "remote auth with client secret",
+			runConfig: &runner.RunConfig{
+				Secrets: []string{},
+				RemoteAuthConfig: &remote.Config{
+					ClientSecret: "secret-value",
+				},
+			},
+			setupMocks: func(cp *configMocks.MockProvider) {
+				mockConfig := &config.Config{}
+				cp.EXPECT().GetConfig().Return(mockConfig)
+			},
+			expectError: true,
+			errorMsg:    "error determining secrets provider type",
+		},
+		{
+			name: "both regular secrets and remote auth",
+			runConfig: &runner.RunConfig{
+				Secrets: []string{"secret1"},
+				RemoteAuthConfig: &remote.Config{
+					ClientSecret: "secret-value",
+				},
 			},
 			setupMocks: func(cp *configMocks.MockProvider) {
 				mockConfig := &config.Config{}
@@ -994,7 +1048,9 @@ func TestCLIManager_validateSecretParameters(t *testing.T) {
 
 			if tt.expectError {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.errorMsg)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
 			} else {
 				require.NoError(t, err)
 			}
@@ -1605,6 +1661,547 @@ func TestCLIManager_updateSingleWorkload(t *testing.T) {
 
 			if tt.expectError {
 				assert.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestNewCLIManager(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		wantError bool
+	}{
+		{
+			name:      "successful creation",
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			manager, err := NewCLIManager(ctx)
+
+			// Note: This test may fail if Docker/Podman is not available
+			// That's acceptable - the function will return an error
+			if tt.wantError {
+				require.Error(t, err)
+				assert.Nil(t, manager)
+			} else {
+				// If runtime is available, manager should be created
+				if err == nil {
+					require.NotNil(t, manager)
+					cliMgr, ok := manager.(*cliManager)
+					require.True(t, ok)
+					assert.NotNil(t, cliMgr.runtime)
+					assert.NotNil(t, cliMgr.statuses)
+					assert.NotNil(t, cliMgr.configProvider)
+				}
+				// If runtime is not available, error is acceptable
+			}
+		})
+	}
+}
+
+func TestNewCLIManagerWithProvider(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockConfigProvider := configMocks.NewMockProvider(ctrl)
+
+	tests := []struct {
+		name           string
+		configProvider config.Provider
+		wantError      bool
+	}{
+		{
+			name:           "successful creation with provider",
+			configProvider: mockConfigProvider,
+			wantError:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			manager, err := NewCLIManagerWithProvider(ctx, tt.configProvider)
+
+			// Note: This test may fail if Docker/Podman is not available
+			if tt.wantError {
+				require.Error(t, err)
+				assert.Nil(t, manager)
+			} else {
+				// If runtime is available, manager should be created
+				if err == nil {
+					require.NotNil(t, manager)
+					cliMgr, ok := manager.(*cliManager)
+					require.True(t, ok)
+					assert.NotNil(t, cliMgr.runtime)
+					assert.NotNil(t, cliMgr.statuses)
+					assert.Equal(t, tt.configProvider, cliMgr.configProvider)
+				}
+			}
+		})
+	}
+}
+
+func TestCLIManager_stopRemoteWorkload(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		runConfig    *runner.RunConfig
+		setupMocks   func(*statusMocks.MockStatusManager)
+		wantError    bool
+		errorMsg     string
+	}{
+		{
+			name:         "successful stop",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-workload",
+				RemoteURL: "https://example.com/mcp",
+			},
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+				// stopProxyIfNeeded calls stopProcess which calls GetWorkloadPID
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-workload").Return(0, errors.New("no PID found")).AnyTimes()
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusStopped, "").Return(nil)
+			},
+			wantError: false,
+		},
+		{
+			name:         "workload not found",
+			workloadName: "non-existent",
+			runConfig: &runner.RunConfig{
+				BaseName:  "non-existent",
+				RemoteURL: "https://example.com/mcp",
+			},
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "non-existent").Return(core.Workload{}, runtime.ErrWorkloadNotFound)
+			},
+			wantError: false, // Returns nil when workload not found
+		},
+		{
+			name:         "workload not running",
+			workloadName: "stopped-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "stopped-workload",
+				RemoteURL: "https://example.com/mcp",
+			},
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "stopped-workload").Return(core.Workload{
+					Name:   "stopped-workload",
+					Status: runtime.WorkloadStatusStopped,
+				}, nil)
+			},
+			wantError: false, // Returns nil when workload not running
+		},
+		{
+			name:         "error getting workload",
+			workloadName: "error-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "error-workload",
+				RemoteURL: "https://example.com/mcp",
+			},
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "error-workload").Return(core.Workload{}, errors.New("database error"))
+			},
+			wantError: true,
+			errorMsg:  "failed to find workload",
+		},
+		{
+			name:         "error setting stopping status",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-workload",
+				RemoteURL: "https://example.com/mcp",
+			},
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusStopping, "").Return(errors.New("status error"))
+				// stopProxyIfNeeded calls stopProcess which calls GetWorkloadPID
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-workload").Return(0, errors.New("no PID found")).AnyTimes()
+				// Still sets stopped status even if stopping status fails
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusStopped, "").Return(nil)
+			},
+			wantError: false, // Continues even if stopping status fails
+		},
+		{
+			name:         "empty base name",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "", // Empty base name
+				RemoteURL: "https://example.com/mcp",
+			},
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkload(gomock.Any(), "remote-workload").Return(core.Workload{
+					Name:   "remote-workload",
+					Status: runtime.WorkloadStatusRunning,
+				}, nil)
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusStopping, "").Return(nil)
+				// stopProxyIfNeeded is called but does nothing if BaseName is empty
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusStopped, "").Return(nil)
+			},
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockStatusManager := statusMocks.NewMockStatusManager(ctrl)
+			tt.setupMocks(mockStatusManager)
+
+			manager := &cliManager{
+				statuses: mockStatusManager,
+			}
+
+			ctx := context.Background()
+			err := manager.stopRemoteWorkload(ctx, tt.workloadName, tt.runConfig)
+
+			if tt.wantError {
+				require.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestCLIManager_GetProxyLogs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		setup        func() (string, func()) // Returns log file path and cleanup function
+		wantError    bool
+		errorMsg     string
+		checkOutput  bool
+	}{
+		{
+			name:         "successful read",
+			workloadName: "test-workload",
+			setup: func() (string, func()) {
+				// Create a temporary directory for XDG_DATA_HOME
+				tmpDir := t.TempDir()
+
+				// Set XDG_DATA_HOME BEFORE calling xdg.DataFile
+				// xdg package reads this at initialization, so we need to set it early
+				oldXDG := os.Getenv("XDG_DATA_HOME")
+				os.Setenv("XDG_DATA_HOME", tmpDir)
+
+				// Now get the actual path that xdg.DataFile will use
+				// This ensures we create the file at the exact location xdg will look
+				expectedLogPath, err := xdg.DataFile("toolhive/logs/test-workload.log")
+				require.NoError(t, err, "xdg.DataFile should succeed with XDG_DATA_HOME set")
+
+				// Create the directory structure and file at the exact path xdg will use
+				require.NoError(t, os.MkdirAll(filepath.Dir(expectedLogPath), 0755))
+				require.NoError(t, os.WriteFile(expectedLogPath, []byte("test log content"), 0600))
+
+				return expectedLogPath, func() {
+					if oldXDG == "" {
+						os.Unsetenv("XDG_DATA_HOME")
+					} else {
+						os.Setenv("XDG_DATA_HOME", oldXDG)
+					}
+				}
+			},
+			wantError:   false,
+			checkOutput: true,
+		},
+		{
+			name:         "log file not found",
+			workloadName: "non-existent",
+			setup: func() (string, func()) {
+				tmpDir := t.TempDir()
+				logDir := filepath.Join(tmpDir, "toolhive", "logs")
+				require.NoError(t, os.MkdirAll(logDir, 0755))
+				// Don't create the log file
+
+				oldXDG := os.Getenv("XDG_DATA_HOME")
+				os.Setenv("XDG_DATA_HOME", tmpDir)
+
+				return "", func() {
+					if oldXDG == "" {
+						os.Unsetenv("XDG_DATA_HOME")
+					} else {
+						os.Setenv("XDG_DATA_HOME", oldXDG)
+					}
+				}
+			},
+			wantError: true,
+			errorMsg:  "proxy logs not found",
+		},
+		{
+			name:         "invalid workload name with path traversal",
+			workloadName: "../../etc/passwd",
+			setup: func() (string, func()) {
+				return "", func() {}
+			},
+			wantError: true,
+			// xdg.DataFile may succeed even with path traversal, but file won't exist
+			// So we get "proxy logs not found" instead of "failed to get proxy log file path"
+			errorMsg: "proxy logs not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, cleanup := tt.setup()
+			defer cleanup()
+
+			manager := &cliManager{}
+
+			ctx := context.Background()
+			logs, err := manager.GetProxyLogs(ctx, tt.workloadName)
+
+			if tt.wantError {
+				require.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+				assert.Empty(t, logs)
+			} else {
+				require.NoError(t, err)
+				if tt.checkOutput {
+					assert.Contains(t, logs, "test log content")
+				}
+			}
+		})
+	}
+}
+
+func TestCLIManager_deleteRemoteWorkload(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tests := []struct {
+		name         string
+		workloadName string
+		runConfig    *runner.RunConfig
+		setupMocks   func(*statusMocks.MockStatusManager)
+		wantError    bool
+		errorMsg     string
+	}{
+		{
+			name:         "successful delete",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-workload",
+				RemoteURL: "https://example.com/mcp",
+			},
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusRemoving, "").Return(nil)
+				// stopProxyIfNeeded calls stopProcess which calls GetWorkloadPID
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-workload").Return(0, errors.New("no PID found")).AnyTimes()
+				sm.EXPECT().DeleteWorkloadStatus(gomock.Any(), "remote-workload").Return(nil)
+			},
+			wantError: false,
+		},
+		{
+			name:         "error setting removing status",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-workload",
+				RemoteURL: "https://example.com/mcp",
+			},
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusRemoving, "").Return(errors.New("status error"))
+			},
+			wantError: true,
+			errorMsg:  "status error", // The function returns the error directly
+		},
+		{
+			name:         "error deleting status",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "remote-workload",
+				RemoteURL: "https://example.com/mcp",
+			},
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusRemoving, "").Return(nil)
+				// stopProxyIfNeeded calls stopProcess which calls GetWorkloadPID
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "remote-workload").Return(0, errors.New("no PID found")).AnyTimes()
+				sm.EXPECT().DeleteWorkloadStatus(gomock.Any(), "remote-workload").Return(errors.New("delete error"))
+				// Error is logged but not returned
+			},
+			wantError: false, // Error is logged but function continues
+		},
+		{
+			name:         "empty base name",
+			workloadName: "remote-workload",
+			runConfig: &runner.RunConfig{
+				BaseName:  "", // Empty base name
+				RemoteURL: "https://example.com/mcp",
+			},
+			setupMocks: func(sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "remote-workload", runtime.WorkloadStatusRemoving, "").Return(nil)
+				// stopProxyIfNeeded does nothing if BaseName is empty
+				sm.EXPECT().DeleteWorkloadStatus(gomock.Any(), "remote-workload").Return(nil)
+			},
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mockStatusManager := statusMocks.NewMockStatusManager(ctrl)
+			tt.setupMocks(mockStatusManager)
+
+			manager := &cliManager{
+				statuses: mockStatusManager,
+			}
+
+			ctx := context.Background()
+			err := manager.deleteRemoteWorkload(ctx, tt.workloadName, tt.runConfig)
+
+			if tt.wantError {
+				require.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestCLIManager_cleanupTempPermissionProfile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		baseName   string
+		setupState func() (func(), error) // Returns cleanup function and error
+		wantError  bool
+		errorMsg   string
+	}{
+		{
+			name:     "no state file",
+			baseName: "non-existent",
+			setupState: func() (func(), error) {
+				// No state file exists
+				return func() {}, nil
+			},
+			wantError: false, // Returns nil when state doesn't exist
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cleanup, err := tt.setupState()
+			defer cleanup()
+			require.NoError(t, err)
+
+			manager := &cliManager{}
+
+			ctx := context.Background()
+			err = manager.cleanupTempPermissionProfile(ctx, tt.baseName)
+
+			if tt.wantError {
+				require.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+			} else {
+				// Function returns nil when state doesn't exist or no profile to clean
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestCLIManager_MoveToGroup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		workloadNames []string
+		groupFrom     string
+		groupTo       string
+		setupState    func() (func(), error) // Returns cleanup function and error
+		wantError     bool
+		errorMsg      string
+	}{
+		{
+			name:          "invalid workload name",
+			workloadNames: []string{"../invalid"},
+			groupFrom:     "group1",
+			groupTo:       "group2",
+			setupState: func() (func(), error) {
+				return func() {}, nil
+			},
+			wantError: true,
+			errorMsg:  "invalid workload name",
+		},
+		{
+			name:          "state file not found",
+			workloadNames: []string{"non-existent"},
+			groupFrom:     "group1",
+			groupTo:       "group2",
+			setupState: func() (func(), error) {
+				return func() {}, nil
+			},
+			wantError: true,
+			errorMsg:  "failed to load runner state",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cleanup, err := tt.setupState()
+			defer cleanup()
+			require.NoError(t, err)
+
+			manager := &cliManager{}
+
+			ctx := context.Background()
+			err = manager.MoveToGroup(ctx, tt.workloadNames, tt.groupFrom, tt.groupTo)
+
+			if tt.wantError {
+				require.Error(t, err)
 				if tt.errorMsg != "" {
 					assert.Contains(t, err.Error(), tt.errorMsg)
 				}

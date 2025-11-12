@@ -713,3 +713,74 @@ func TestK8SManager_mcpServerToK8SWorkload(t *testing.T) {
 		})
 	}
 }
+
+func TestK8SManager_isStandardK8sAnnotation(t *testing.T) {
+	t.Parallel()
+
+	manager := &k8sManager{}
+
+	tests := []struct {
+		name     string
+		key      string
+		expected bool
+	}{
+		{
+			name:     "kubectl annotation",
+			key:      "kubectl.kubernetes.io/last-applied-configuration",
+			expected: true,
+		},
+		{
+			name:     "kubernetes.io annotation",
+			key:      "kubernetes.io/created-by",
+			expected: true,
+		},
+		{
+			name:     "deployment.kubernetes.io annotation",
+			key:      "deployment.kubernetes.io/revision",
+			expected: true,
+		},
+		{
+			name:     "k8s.io annotation",
+			key:      "k8s.io/annotation",
+			expected: true,
+		},
+		{
+			name:     "user-defined annotation",
+			key:      "custom/annotation",
+			expected: false,
+		},
+		{
+			name:     "empty string",
+			key:      "",
+			expected: false,
+		},
+		{
+			name:     "short key",
+			key:      "k",
+			expected: false,
+		},
+		{
+			name:     "partial match - not a prefix",
+			key:      "my-kubectl.kubernetes.io/annotation",
+			expected: false,
+		},
+		{
+			name:     "exact prefix match",
+			key:      "kubectl.kubernetes.io/",
+			expected: true,
+		},
+		{
+			name:     "case sensitive - uppercase",
+			key:      "KUBECTL.kubernetes.io/annotation",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := manager.isStandardK8sAnnotation(tt.key)
+			assert.Equal(t, tt.expected, result, "isStandardK8sAnnotation(%q) = %v, want %v", tt.key, result, tt.expected)
+		})
+	}
+}

@@ -170,9 +170,11 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *Backend
 	}
 
 	validTypes := []string{
-		strategies.StrategyTypeUnauthenticated, strategies.StrategyTypeHeaderInjection,
+		strategies.StrategyTypeUnauthenticated,
+		strategies.StrategyTypeHeaderInjection,
+		strategies.StrategyTypeTokenExchange,
 		// TODO: Add more as strategies are implemented:
-		// "pass_through", "token_exchange", "client_credentials",
+		// "pass_through", "client_credentials",
 		// "service_account", "oauth_proxy",
 	}
 	if !contains(validTypes, strategy.Type) {
@@ -181,13 +183,10 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *Backend
 
 	// Validate type-specific requirements
 	switch strategy.Type {
-	case "token_exchange":
-		// Token exchange requires specific metadata
-		required := []string{"token_url", "client_id", "audience"}
-		for _, field := range required {
-			if _, ok := strategy.Metadata[field]; !ok {
-				return fmt.Errorf("token_exchange requires metadata field: %s", field)
-			}
+	case strategies.StrategyTypeTokenExchange:
+		// Token exchange requires token_url (other fields are optional)
+		if _, ok := strategy.Metadata["token_url"]; !ok {
+			return fmt.Errorf("token_exchange requires metadata field: token_url")
 		}
 
 	case "service_account":

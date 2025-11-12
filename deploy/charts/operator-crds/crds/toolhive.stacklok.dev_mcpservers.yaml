@@ -372,6 +372,14 @@ spec:
                           type: string
                         description: Annotations to add or override on the resource
                         type: object
+                      args:
+                        description: |-
+                          Args are additional command-line arguments to pass to the proxy container (thv-proxyrunner)
+                          These are appended to the default args (e.g., ["--debug"])
+                          Common use case: adding --debug flag to enable debug logging
+                        items:
+                          type: string
+                        type: array
                       env:
                         description: |-
                           Env are environment variables to set in the proxy container (thv run process)

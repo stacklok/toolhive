@@ -1006,6 +1006,21 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 				Value: envVar.Value,
 			})
 		}
+
+		// Add user-specified proxy args from ResourceOverrides
+		// These are inserted after "run" but before the image positional argument
+		if len(m.Spec.ResourceOverrides.ProxyDeployment.Args) > 0 {
+			// Insert additional args between "run" and the image
+			// Current structure: ["run", "--k8s-pod-patch=...", image]
+			// We want: ["run", "--debug", "--k8s-pod-patch=...", image]
+			// So we insert the override args after "run" (position 1)
+			insertPosition := 1
+			newArgs := make([]string, 0, len(args)+len(m.Spec.ResourceOverrides.ProxyDeployment.Args))
+			newArgs = append(newArgs, args[:insertPosition]...)
+			newArgs = append(newArgs, m.Spec.ResourceOverrides.ProxyDeployment.Args...)
+			newArgs = append(newArgs, args[insertPosition:]...)
+			args = newArgs
+		}
 	}
 
 	// Add volume mounts for user-defined volumes

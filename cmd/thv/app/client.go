@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -136,6 +137,11 @@ func clientSetupCmdFunc(cmd *cobra.Command, _ []string) error {
 		fmt.Println("No new clients found.")
 		return nil
 	}
+
+	// Sort clients alphabetically by ClientType
+	sort.Slice(availableClients, func(i, j int) bool {
+		return availableClients[i].ClientType < availableClients[j].ClientType
+	})
 	// Get available groups for the UI
 	groupManager, err := groups.NewManager()
 	if err != nil {

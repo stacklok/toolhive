@@ -67,7 +67,6 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				container := dep.Spec.Template.Spec.Containers[0]
 				assert.Equal(t, "toolhive", container.Name)
 				assert.Contains(t, container.Args, "run")
-				assert.Contains(t, container.Args, "--foreground=true")
 				assert.Contains(t, container.Args, "placeholder-for-remote-proxy")
 
 				// Verify port
@@ -139,6 +138,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 							Env: []mcpv1alpha1.EnvVar{
 								{Name: "CUSTOM_ENV", Value: "custom-value"},
 							},
+							Args: []string{"--debug", "--verbose"},
 						},
 					},
 				},
@@ -162,6 +162,12 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 					}
 				}
 				assert.True(t, found, "Custom environment variable should be present")
+
+				// Verify custom args are appended
+				assert.Contains(t, container.Args, "run")
+				assert.Contains(t, container.Args, "placeholder-for-remote-proxy")
+				assert.Contains(t, container.Args, "--debug")
+				assert.Contains(t, container.Args, "--verbose")
 			},
 		},
 	}

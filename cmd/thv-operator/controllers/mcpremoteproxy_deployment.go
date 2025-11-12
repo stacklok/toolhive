@@ -80,41 +80,16 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 }
 
 // buildContainerArgs builds the container arguments for the proxy
-func (*MCPRemoteProxyReconciler) buildContainerArgs(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) []string {
-	// The third argument is required by proxyrunner command signature but is ignored
+func (*MCPRemoteProxyReconciler) buildContainerArgs(_ context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) []string {
+	// The second argument is required by proxyrunner command signature but is ignored
 	// when RemoteURL is set (HTTPTransport.Setup returns early for remote servers)
-	args := []string{"run", "--foreground=true", "placeholder-for-remote-proxy"}
+	args := []string{"run", "placeholder-for-remote-proxy"}
 
 	// Add user-specified proxy args from ResourceOverrides
-	// These are inserted after "run" but before other arguments
+	// Cobra parses flags regardless of position, so we can simply append them
 	if proxy.Spec.ResourceOverrides != nil &&
-		proxy.Spec.ResourceOverrides.ProxyDeployment != nil &&
-		len(proxy.Spec.ResourceOverrides.ProxyDeployment.Args) > 0 {
-
-		// Insert additional args between "run" and "--foreground=true"
-		// Current structure: ["run", "--foreground=true", "placeholder-for-remote-proxy"]
-		// We want: ["run", "--debug", "--foreground=true", "placeholder-for-remote-proxy"]
-		// So we insert the override args after "run" (position 1)
-		insertPosition := 1
-
-		// Prevent size computation overflow by ensuring the total number of args is within safe bounds.
-		const maxAllowedArgs = 10000
-		totalArgs := len(args) + len(proxy.Spec.ResourceOverrides.ProxyDeployment.Args)
-		if totalArgs > maxAllowedArgs {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(
-				fmt.Errorf("too many proxy deployment arguments"),
-				"Skipping proxy deployment args override",
-				"totalArgs", totalArgs,
-				"maxAllowedArgs", maxAllowedArgs,
-			)
-		} else {
-			newArgs := make([]string, 0, totalArgs)
-			newArgs = append(newArgs, args[:insertPosition]...)
-			newArgs = append(newArgs, proxy.Spec.ResourceOverrides.ProxyDeployment.Args...)
-			newArgs = append(newArgs, args[insertPosition:]...)
-			args = newArgs
-		}
+		proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
+		args = ctrlutil.AppendProxyArgs(args, proxy.Spec.ResourceOverrides.ProxyDeployment.Args)
 	}
 
 	return args

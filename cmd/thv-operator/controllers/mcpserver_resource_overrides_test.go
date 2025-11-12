@@ -192,6 +192,40 @@ func TestResourceOverrides(t *testing.T) {
 			expectedServiceAnns: map[string]string{},
 		},
 		{
+			name: "with proxy args",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "test-image",
+					ProxyPort: 8080,
+					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
+						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
+							Args: []string{"--debug"},
+						},
+					},
+				},
+			},
+			expectedDeploymentLabels: map[string]string{
+				"app":                        "mcpserver",
+				"app.kubernetes.io/name":     "mcpserver",
+				"app.kubernetes.io/instance": "test-server",
+				"toolhive":                   "true",
+				"toolhive-name":              "test-server",
+			},
+			expectedDeploymentAnns: map[string]string{},
+			expectedServiceLabels: map[string]string{
+				"app":                        "mcpserver",
+				"app.kubernetes.io/name":     "mcpserver",
+				"app.kubernetes.io/instance": "test-server",
+				"toolhive":                   "true",
+				"toolhive-name":              "test-server",
+			},
+			expectedServiceAnns: map[string]string{},
+		},
+		{
 			name: "with both metadata overrides and proxy environment variables",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -354,6 +388,19 @@ func TestResourceOverrides(t *testing.T) {
 					assert.True(t, exists, "Unexpected environment variable: %s", env.Name)
 					assert.Equal(t, expectedValue, env.Value, "Environment variable %s has incorrect value", env.Name)
 				}
+			}
+
+			// For test cases with args, verify they are set correctly
+			if tt.name == "with proxy args" {
+				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+				container := deployment.Spec.Template.Spec.Containers[0]
+
+				// Verify base args are present
+				assert.Contains(t, container.Args, "run")
+				assert.Contains(t, container.Args, "test-image")
+
+				// Verify custom args are appended
+				assert.Contains(t, container.Args, "--debug")
 			}
 		})
 	}

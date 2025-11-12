@@ -29,6 +29,7 @@ Valid clients:
   - cursor: Cursor editor
   - goose: Goose AI agent
   - lm-studio: LM Studio application
+  - opencode: OpenCode editor
   - roo-code: Roo Code extension for VS Code
   - trae: Trae IDE
   - vscode: Visual Studio Code

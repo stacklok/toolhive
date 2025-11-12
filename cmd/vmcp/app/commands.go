@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -286,10 +287,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Create aggregator
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools)
 
-	// Aggregate capabilities
-	capabilities, err := aggregateCapabilities(ctx, agg, backends)
+	// Create discovery manager for lazy per-user capability discovery
+	discoveryMgr, err := discovery.NewManager(agg)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create discovery manager: %w", err)
 	}
 
 	// Create router
@@ -319,21 +320,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuthInfoHandler: authInfoHandler,
 	}
 
-	// Create server
-	srv := vmcpserver.New(serverCfg, rtr, backendClient)
-
-	// Register capabilities
-	logger.Info("Registering capabilities with server")
-	if err := srv.RegisterCapabilities(ctx, capabilities); err != nil {
-		return fmt.Errorf("failed to register capabilities: %w", err)
-	}
+	// Create server with discovery manager and backends
+	srv := vmcpserver.New(serverCfg, rtr, backendClient, discoveryMgr, backends)
 
 	// Start server (blocks until shutdown signal)
 	logger.Infof("Starting Virtual MCP Server at %s", srv.Address())
 	return srv.Start(ctx)
 }
 
-// aggregateCapabilities aggregates capabilities from backends or creates empty capabilities
+// aggregateCapabilities aggregates capabilities from backends or creates empty capabilities.
+//
+// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
+// It may be removed in a future cleanup or used for startup-time capability caching.
+//
+//nolint:unused // Unused until we implement startup aggregation or caching
 func aggregateCapabilities(
 	ctx context.Context,
 	agg aggregator.Aggregator,

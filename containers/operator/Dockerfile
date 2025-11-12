@@ -29,7 +29,7 @@ RUN CGO_ENABLED=0 LDFLAGS="-s -w \
 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o main ./${CODEDIR}/main.go
 
 # Use micro base image to package the binary
-FROM  --platform=linux/amd64 registry.access.redhat.com/ubi10/ubi-minimal:10.0-1762851739
+FROM  --platform=linux/amd64 registry.access.redhat.com/ubi10/ubi-minimal:10.1-1762189639
 
 COPY --from=builder /workspace/main /
 COPY LICENSE /licenses/LICENSE

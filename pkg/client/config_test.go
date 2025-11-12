@@ -423,6 +423,9 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case LMStudio, Trae:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"LMStudio config should contain mcpServers key")
+			case OpenCode:
+				assert.Contains(t, string(content), `"mcpServers":`,
+					"OpenCode config should contain mcpServers key")
 			case Goose:
 				// YAML files are created empty and initialized on first use
 				// Just verify the file exists and is readable
@@ -464,7 +467,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue:
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}

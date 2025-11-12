@@ -56,36 +56,6 @@ func (mr *MockManagerMockRecorder) DoesWorkloadExist(ctx, workloadName any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DoesWorkloadExist", reflect.TypeOf((*MockManager)(nil).DoesWorkloadExist), ctx, workloadName)
 }
 
-// GetLogs mocks base method.
-func (m *MockManager) GetLogs(ctx context.Context, containerName string, follow bool) (string, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetLogs", ctx, containerName, follow)
-	ret0, _ := ret[0].(string)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetLogs indicates an expected call of GetLogs.
-func (mr *MockManagerMockRecorder) GetLogs(ctx, containerName, follow any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLogs", reflect.TypeOf((*MockManager)(nil).GetLogs), ctx, containerName, follow)
-}
-
-// GetProxyLogs mocks base method.
-func (m *MockManager) GetProxyLogs(ctx context.Context, workloadName string) (string, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetProxyLogs", ctx, workloadName)
-	ret0, _ := ret[0].(string)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetProxyLogs indicates an expected call of GetProxyLogs.
-func (mr *MockManagerMockRecorder) GetProxyLogs(ctx, workloadName any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetProxyLogs", reflect.TypeOf((*MockManager)(nil).GetProxyLogs), ctx, workloadName)
-}
-
 // GetWorkload mocks base method.
 func (m *MockManager) GetWorkload(ctx context.Context, workloadName string) (k8s.Workload, error) {
 	m.ctrl.T.Helper()

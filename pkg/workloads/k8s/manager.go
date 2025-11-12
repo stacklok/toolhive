@@ -28,14 +28,6 @@ type Manager interface {
 	// MoveToGroup moves the specified workloads from one group to another by updating their GroupRef
 	MoveToGroup(ctx context.Context, workloadNames []string, groupFrom string, groupTo string) error
 
-	// GetLogs retrieves logs from the pod associated with the MCPServer
-	// Note: This may not be fully implemented and may return an error
-	GetLogs(ctx context.Context, containerName string, follow bool) (string, error)
-
-	// GetProxyLogs retrieves logs from the proxy container in the pod associated with the MCPServer
-	// Note: This may not be fully implemented and may return an error
-	GetProxyLogs(ctx context.Context, workloadName string) (string, error)
-
 	// The following operations are not supported in Kubernetes mode (operator manages lifecycle):
 	// - RunWorkload: Workloads are created via MCPServer CRDs
 	// - RunWorkloadDetached: Workloads are created via MCPServer CRDs
@@ -43,4 +35,6 @@ type Manager interface {
 	// - DeleteWorkloads: Use kubectl to manage MCPServer CRDs
 	// - RestartWorkloads: Use kubectl to manage MCPServer CRDs
 	// - UpdateWorkload: Update MCPServer CRD directly
+	// - GetLogs: Use 'kubectl logs <pod-name> -n <namespace>' to retrieve logs
+	// - GetProxyLogs: Use 'kubectl logs <pod-name> -c proxy -n <namespace>' to retrieve proxy logs
 }

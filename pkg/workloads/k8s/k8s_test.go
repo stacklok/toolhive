@@ -591,34 +591,6 @@ func TestManager_MoveToGroup(t *testing.T) {
 	}
 }
 
-func TestManager_NoOpMethods(t *testing.T) {
-	t.Parallel()
-
-	mockClient := &mockClient{}
-	mgr := &manager{
-		k8sClient: mockClient,
-		namespace: defaultNamespace,
-	}
-
-	ctx := context.Background()
-
-	t.Run("GetLogs returns error", func(t *testing.T) {
-		t.Parallel()
-		logs, err := mgr.GetLogs(ctx, testWorkload1, false)
-		require.Error(t, err)
-		assert.Empty(t, logs)
-		assert.Contains(t, err.Error(), "not fully implemented")
-	})
-
-	t.Run("GetProxyLogs returns error", func(t *testing.T) {
-		t.Parallel()
-		logs, err := mgr.GetProxyLogs(ctx, testWorkload1)
-		require.Error(t, err)
-		assert.Empty(t, logs)
-		assert.Contains(t, err.Error(), "not fully implemented")
-	})
-}
-
 func TestManager_mcpServerToWorkload(t *testing.T) {
 	t.Parallel()
 

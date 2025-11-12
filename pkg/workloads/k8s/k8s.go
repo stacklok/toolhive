@@ -153,29 +153,8 @@ func (k *manager) ListWorkloads(ctx context.Context, listAll bool, labelFilters 
 // - DeleteWorkloads: Use kubectl to delete MCPServer CRDs
 // - RestartWorkloads: Use kubectl to restart MCPServer CRDs
 // - UpdateWorkload: Update MCPServer CRD directly
-
-// GetLogs retrieves logs from the pod associated with the MCPServer.
-// Note: This requires a Kubernetes clientset for log streaming.
-// For now, this returns an error indicating logs should be retrieved via kubectl.
-// TODO: Implement proper log retrieval using clientset or REST client.
-func (k *manager) GetLogs(_ context.Context, _ string, follow bool) (string, error) {
-	if follow {
-		return "", fmt.Errorf("follow mode is not supported. Use 'kubectl logs -f <pod-name> -n %s' to stream logs", k.namespace)
-	}
-	return "", fmt.Errorf(
-		"GetLogs is not fully implemented in Kubernetes mode. Use 'kubectl logs <pod-name> -n %s' to retrieve logs",
-		k.namespace)
-}
-
-// GetProxyLogs retrieves logs from the proxy container in the pod associated with the MCPServer.
-// Note: This requires a Kubernetes clientset for log streaming.
-// For now, this returns an error indicating logs should be retrieved via kubectl.
-// TODO: Implement proper log retrieval using clientset or REST client.
-func (k *manager) GetProxyLogs(_ context.Context, _ string) (string, error) {
-	return "", fmt.Errorf(
-		"GetProxyLogs is not fully implemented in Kubernetes mode. Use 'kubectl logs <pod-name> -c proxy -n %s' to retrieve proxy logs",
-		k.namespace)
-}
+// - GetLogs: Use 'kubectl logs <pod-name> -n <namespace>' to retrieve logs
+// - GetProxyLogs: Use 'kubectl logs <pod-name> -c proxy -n <namespace>' to retrieve proxy logs
 
 // MoveToGroup moves the specified workloads from one group to another.
 func (k *manager) MoveToGroup(ctx context.Context, workloadNames []string, groupFrom string, groupTo string) error {

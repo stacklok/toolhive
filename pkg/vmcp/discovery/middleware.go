@@ -116,8 +116,13 @@ func handleSubsequentRequest(
 		"path", r.URL.Path)
 
 	// Retrieve and validate session
-	vmcpSess, err := getVMCPSession(sessionID, sessionManager, r)
+	vmcpSess, err := vmcpsession.GetVMCPSession(sessionID, sessionManager)
 	if err != nil {
+		logger.Errorw("failed to get VMCPSession",
+			"error", err,
+			"session_id", sessionID,
+			"method", r.Method,
+			"path", r.URL.Path)
 		return ctx, err
 	}
 
@@ -145,36 +150,8 @@ func handleSubsequentRequest(
 	return WithDiscoveredCapabilities(ctx, capabilities), nil
 }
 
-// getVMCPSession retrieves and validates a VMCPSession from the session manager.
-func getVMCPSession(
-	sessionID string,
-	sessionManager *transportsession.Manager,
-	r *http.Request,
-) (*vmcpsession.VMCPSession, error) {
-	sess, ok := sessionManager.Get(sessionID)
-	if !ok {
-		logger.Errorw("session not found",
-			"session_id", sessionID,
-			"method", r.Method,
-			"path", r.URL.Path)
-		return nil, fmt.Errorf("session not found: %s", sessionID)
-	}
-
-	vmcpSess, ok := sess.(*vmcpsession.VMCPSession)
-	if !ok {
-		logger.Errorw("session is not a VMCPSession - factory misconfiguration",
-			"session_id", sessionID,
-			"actual_type", fmt.Sprintf("%T", sess),
-			"method", r.Method,
-			"path", r.URL.Path)
-		return nil, fmt.Errorf("invalid session type: %T", sess)
-	}
-
-	return vmcpSess, nil
-}
-
 // handleDiscoveryError writes appropriate HTTP error responses based on the error type.
-func handleDiscoveryError(w http.ResponseWriter, r *http.Request, err error) {
+func handleDiscoveryError(w http.ResponseWriter, _ *http.Request, err error) {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		http.Error(w, http.StatusText(http.StatusGatewayTimeout), http.StatusGatewayTimeout)
 		return

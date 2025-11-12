@@ -88,3 +88,27 @@ func VMCPSessionFactory() transportsession.Factory {
 		return NewVMCPSession(id)
 	}
 }
+
+// GetVMCPSession retrieves and validates a VMCPSession from the session manager.
+//
+// This helper abstracts the common pattern of:
+//  1. Retrieving a session from the manager
+//  2. Type-asserting to *VMCPSession
+//  3. Handling errors with clear messages
+func GetVMCPSession(sessionID string, mgr *transportsession.Manager) (*VMCPSession, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("empty session ID")
+	}
+
+	sess, ok := mgr.Get(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	vmcpSess, ok := sess.(*VMCPSession)
+	if !ok {
+		return nil, fmt.Errorf("invalid session type: %T (expected *VMCPSession)", sess)
+	}
+
+	return vmcpSess, nil
+}

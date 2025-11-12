@@ -224,23 +224,20 @@ func New(
 		// Store routing table in VMCPSession for subsequent requests
 		// This enables the middleware to reconstruct capabilities from session
 		// without re-running discovery for every request
-		if sess, ok := sessionManager.Get(sessionID); ok {
-			if vmcpSess, ok := sess.(*vmcpsession.VMCPSession); ok {
-				vmcpSess.SetRoutingTable(caps.RoutingTable)
-				logger.Debugw("routing table stored in VMCPSession",
-					"session_id", sessionID,
-					"tool_count", len(caps.RoutingTable.Tools),
-					"resource_count", len(caps.RoutingTable.Resources),
-					"prompt_count", len(caps.RoutingTable.Prompts))
-			} else {
-				logger.Errorw("session is not a VMCPSession - factory misconfiguration",
-					"session_id", sessionID,
-					"actual_type", fmt.Sprintf("%T", sess))
-			}
-		} else {
-			logger.Warnw("session not found when storing routing table",
+		vmcpSess, err := vmcpsession.GetVMCPSession(sessionID, sessionManager)
+		if err != nil {
+			logger.Errorw("failed to get VMCPSession for routing table storage",
+				"error", err,
 				"session_id", sessionID)
+			return
 		}
+
+		vmcpSess.SetRoutingTable(caps.RoutingTable)
+		logger.Debugw("routing table stored in VMCPSession",
+			"session_id", sessionID,
+			"tool_count", len(caps.RoutingTable.Tools),
+			"resource_count", len(caps.RoutingTable.Resources),
+			"prompt_count", len(caps.RoutingTable.Prompts))
 
 		// Inject capabilities into SDK session
 		if err := srv.injectCapabilities(sessionID, caps); err != nil {

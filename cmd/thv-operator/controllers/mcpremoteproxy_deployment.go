@@ -25,7 +25,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	replicas := int32(1)
 
 	// Build deployment components using helper functions
-	args := r.buildContainerArgs()
+	args := r.buildContainerArgs(proxy)
 	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
 	env := r.buildEnvVarsForProxy(ctx, proxy)
 	resources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
@@ -80,10 +80,37 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 }
 
 // buildContainerArgs builds the container arguments for the proxy
-func (*MCPRemoteProxyReconciler) buildContainerArgs() []string {
+func (*MCPRemoteProxyReconciler) buildContainerArgs(proxy *mcpv1alpha1.MCPRemoteProxy) []string {
 	// The third argument is required by proxyrunner command signature but is ignored
 	// when RemoteURL is set (HTTPTransport.Setup returns early for remote servers)
-	return []string{"run", "--foreground=true", "placeholder-for-remote-proxy"}
+	args := []string{"run", "--foreground=true", "placeholder-for-remote-proxy"}
+
+	// Add user-specified proxy args from ResourceOverrides
+	// These are inserted after "run" but before other arguments
+	if proxy.Spec.ResourceOverrides != nil &&
+		proxy.Spec.ResourceOverrides.ProxyDeployment != nil &&
+		len(proxy.Spec.ResourceOverrides.ProxyDeployment.Args) > 0 {
+
+		// Insert additional args between "run" and "--foreground=true"
+		// Current structure: ["run", "--foreground=true", "placeholder-for-remote-proxy"]
+		// We want: ["run", "--debug", "--foreground=true", "placeholder-for-remote-proxy"]
+		// So we insert the override args after "run" (position 1)
+		insertPosition := 1
+
+		// linter-ignore-begin(codeql/go/incorrect-integer-conversion)
+		// Reason: Integer overflow is extremely unlikely in practice as args are typically
+		// < 100 elements. Kubernetes API server limits CRs to ~1.5MB, which bounds the
+		// maximum number of args. The overflow check would add unnecessary complexity.
+		newArgs := make([]string, 0, len(args)+len(proxy.Spec.ResourceOverrides.ProxyDeployment.Args))
+		// linter-ignore-end(codeql/go/incorrect-integer-conversion)
+
+		newArgs = append(newArgs, args[:insertPosition]...)
+		newArgs = append(newArgs, proxy.Spec.ResourceOverrides.ProxyDeployment.Args...)
+		newArgs = append(newArgs, args[insertPosition:]...)
+		args = newArgs
+	}
+
+	return args
 }
 
 // buildVolumesForProxy builds volumes and volume mounts for the proxy

@@ -204,7 +204,7 @@ type ProxyDeploymentOverrides struct {
 	Env []EnvVar `json:"env,omitempty"`
 
 	// Args are additional command-line arguments to pass to the proxy container (thv-proxyrunner)
-	// These are appended to the default args (e.g., ["--debug"])
+	// These are inserted after the 'run' command but before other arguments (e.g., ["--debug"])
 	// Common use case: adding --debug flag to enable debug logging
 	// +optional
 	Args []string `json:"args,omitempty"`

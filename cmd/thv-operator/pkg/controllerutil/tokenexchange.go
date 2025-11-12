@@ -151,6 +151,7 @@ func AddExternalAuthConfigOptions(
 		ClientID:                tokenExchangeSpec.ClientID,
 		Audience:                tokenExchangeSpec.Audience,
 		Scopes:                  tokenExchangeSpec.Scopes,
+		SubjectTokenType:        tokenExchangeSpec.SubjectTokenType,
 		HeaderStrategy:          headerStrategy,
 		ExternalTokenHeaderName: tokenExchangeSpec.ExternalTokenHeaderName,
 	}

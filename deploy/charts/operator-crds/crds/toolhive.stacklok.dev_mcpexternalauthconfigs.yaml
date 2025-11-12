@@ -97,6 +97,13 @@ spec:
                     items:
                       type: string
                     type: array
+                  subjectTokenType:
+                    description: |-
+                      SubjectTokenType is the type of the incoming subject token.
+                      Valid values: "urn:ietf:params:oauth:token-type:jwt", "urn:ietf:params:oauth:token-type:access_token", "urn:ietf:params:oauth:token-type:id_token"
+                      If not specified, defaults to "urn:ietf:params:oauth:token-type:access_token"
+                      For OIDC/JWT tokens (like Okta), use "urn:ietf:params:oauth:token-type:jwt"
+                    type: string
                   tokenUrl:
                     description: TokenURL is the OAuth 2.0 token endpoint URL for
                       token exchange

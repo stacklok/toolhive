@@ -52,6 +52,13 @@ type TokenExchangeConfig struct {
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 
+	// SubjectTokenType is the type of the incoming subject token.
+	// Valid values: "urn:ietf:params:oauth:token-type:jwt", "urn:ietf:params:oauth:token-type:access_token", "urn:ietf:params:oauth:token-type:id_token"
+	// If not specified, defaults to "urn:ietf:params:oauth:token-type:access_token"
+	// For OIDC/JWT tokens (like Okta), use "urn:ietf:params:oauth:token-type:jwt"
+	// +optional
+	SubjectTokenType string `json:"subjectTokenType,omitempty"`
+
 	// ExternalTokenHeaderName is the name of the custom header to use for the exchanged token.
 	// If set, the exchanged token will be added to this custom header (e.g., "X-Upstream-Token").
 	// If empty or not set, the exchanged token will replace the Authorization header (default behavior).

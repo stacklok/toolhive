@@ -132,6 +132,7 @@ components:
       - Goose
       - Trae
       - Continue
+      - OpenCode
       - Kiro
     client.MCPClientStatus:
       properties:
@@ -156,6 +157,7 @@ components:
           - Goose
           - Trae
           - Continue
+          - OpenCode
           - Kiro
         installed:
           description: Installed indicates whether the client is installed on the
@@ -1079,6 +1081,7 @@ components:
             - Goose
             - Trae
             - Continue
+            - OpenCode
             - Kiro
           type: array
           uniqueItems: false
@@ -1132,6 +1135,7 @@ components:
           - Goose
           - Trae
           - Continue
+          - OpenCode
           - Kiro
       type: object
     v1.createClientResponse:
@@ -1163,6 +1167,7 @@ components:
           - Goose
           - Trae
           - Continue
+          - OpenCode
           - Kiro
       type: object
     v1.createGroupRequest:

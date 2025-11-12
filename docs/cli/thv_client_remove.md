@@ -30,6 +30,7 @@ Valid clients:
   - goose: Goose AI agent
   - kiro: Kiro AI IDE
   - lm-studio: LM Studio application
+  - opencode: OpenCode editor
   - roo-code: Roo Code extension for VS Code
   - trae: Trae IDE
   - vscode: Visual Studio Code (GitHub Copilot)

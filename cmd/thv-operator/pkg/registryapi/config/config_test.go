@@ -1,4 +1,4 @@
-package registryapi
+package config
 
 import (
 	"testing"
@@ -8,6 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
 func TestBuildConfig_EmptyRegistryName(t *testing.T) {
@@ -25,7 +26,7 @@ func TestBuildConfig_EmptyRegistryName(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManager()
+	manager := NewConfigManagerForTesting()
 	config, err := manager.BuildConfig(mcpRegistry)
 
 	require.Error(t, err)
@@ -47,7 +48,7 @@ func TestBuildConfig_MissingSource(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManager()
+	manager := NewConfigManagerForTesting()
 	config, err := manager.BuildConfig(mcpRegistry)
 
 	require.Error(t, err)
@@ -70,7 +71,7 @@ func TestBuildConfig_EmptyFormat(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManager()
+	manager := NewConfigManagerForTesting()
 	config, err := manager.BuildConfig(mcpRegistry)
 
 	require.Error(t, err)
@@ -93,7 +94,7 @@ func TestBuildConfig_UnsupportedSourceType(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManager()
+	manager := NewConfigManagerForTesting()
 	config, err := manager.BuildConfig(mcpRegistry)
 
 	require.Error(t, err)
@@ -126,7 +127,7 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		// Currently this succeeds even with nil ConfigMap
@@ -159,7 +160,7 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -190,7 +191,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.Error(t, err)
@@ -215,7 +216,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.Error(t, err)
@@ -241,7 +242,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.Error(t, err)
@@ -270,7 +271,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -306,7 +307,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -342,7 +343,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -377,7 +378,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.Error(t, err)
@@ -402,7 +403,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.Error(t, err)
@@ -430,7 +431,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -468,7 +469,7 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.Error(t, err)
@@ -496,7 +497,7 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.Error(t, err)
@@ -524,7 +525,7 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -561,7 +562,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -597,7 +598,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -637,7 +638,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -680,7 +681,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -725,7 +726,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManager()
+		manager := NewConfigManagerForTesting()
 		config, err := manager.BuildConfig(mcpRegistry)
 
 		require.NoError(t, err)
@@ -787,13 +788,13 @@ func TestToConfigMapWithContentChecksum(t *testing.T) {
 
 	// Verify the checksum annotation exists
 	require.NotNil(t, configMap.Annotations)
-	checksum, exists := configMap.Annotations["toolhive.dev/content-checksum"]
+	checksumValue, exists := configMap.Annotations[checksum.ContentChecksumAnnotation]
 	require.True(t, exists, "Expected checksum annotation to exist")
-	require.NotEmpty(t, checksum, "Checksum should not be empty")
+	require.NotEmpty(t, checksumValue, "Checksum should not be empty")
 
 	// Verify the checksum format (should be a hex string)
 	// The actual checksum is calculated by ctrlutil.CalculateConfigHash
-	assert.Regexp(t, "^[a-f0-9]+$", checksum, "Checksum should be a hex string")
+	assert.Regexp(t, "^[a-f0-9]+$", checksumValue, "Checksum should be a hex string")
 
 	// Verify the Data contains config.yaml
 	require.Contains(t, configMap.Data, "config.yaml")
@@ -808,13 +809,13 @@ func TestToConfigMapWithContentChecksum(t *testing.T) {
 	// Test that the same config produces the same checksum
 	configMap2, err := config.ToConfigMapWithContentChecksum(mcpRegistry)
 	require.NoError(t, err)
-	checksum2 := configMap2.Annotations["toolhive.dev/content-checksum"]
-	assert.Equal(t, checksum, checksum2, "Same config should produce same checksum")
+	checksum2Value := configMap2.Annotations[checksum.ContentChecksumAnnotation]
+	assert.Equal(t, checksumValue, checksum2Value, "Same config should produce same checksum")
 
 	// Test that different config produces different checksum
 	config.SyncPolicy.Interval = "30m"
 	configMap3, err := config.ToConfigMapWithContentChecksum(mcpRegistry)
 	require.NoError(t, err)
-	checksum3 := configMap3.Annotations["toolhive.dev/content-checksum"]
-	assert.NotEqual(t, checksum, checksum3, "Different config should produce different checksum")
+	checksum3Value := configMap3.Annotations[checksum.ContentChecksumAnnotation]
+	assert.NotEqual(t, checksumValue, checksum3Value, "Different config should produce different checksum")
 }

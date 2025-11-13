@@ -196,7 +196,9 @@ func New(
 
 	// Create workflow engine (composer) for executing composite tools
 	// The composer orchestrates multi-step workflows across backends
-	workflowComposer := composer.NewWorkflowEngine(rt, backendClient, elicitationHandler)
+	// Use in-memory state store with 5-minute cleanup interval and 1-hour max age for completed workflows
+	stateStore := composer.NewInMemoryStateStore(5*time.Minute, 1*time.Hour)
+	workflowComposer := composer.NewWorkflowEngine(rt, backendClient, elicitationHandler, stateStore)
 
 	// Validate workflows and create executors (fail fast on invalid workflows)
 	workflowDefs, workflowExecutors, err := validateAndCreateExecutors(workflowComposer, workflowDefs)

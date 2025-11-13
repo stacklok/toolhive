@@ -7,6 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 )
@@ -14,12 +15,16 @@ import (
 // YAMLLoader loads configuration from a YAML file.
 // This is the CLI-specific loader that parses the YAML format defined in the proposal.
 type YAMLLoader struct {
-	filePath string
+	filePath  string
+	envReader env.Reader
 }
 
 // NewYAMLLoader creates a new YAML configuration loader.
-func NewYAMLLoader(filePath string) *YAMLLoader {
-	return &YAMLLoader{filePath: filePath}
+func NewYAMLLoader(filePath string, envReader env.Reader) *YAMLLoader {
+	return &YAMLLoader{
+		filePath:  filePath,
+		envReader: envReader,
+	}
 }
 
 // Load reads and parses the YAML configuration file.
@@ -299,7 +304,7 @@ func (l *YAMLLoader) transformOutgoingAuth(raw *rawOutgoingAuth) (*OutgoingAuthC
 	return cfg, nil
 }
 
-func (*YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*BackendAuthStrategy, error) {
+func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*BackendAuthStrategy, error) {
 	strategy := &BackendAuthStrategy{
 		Type:     raw.Type,
 		Metadata: make(map[string]any),
@@ -326,7 +331,7 @@ func (*YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*B
 
 		// Validate that environment variable is set (but don't resolve it yet)
 		if raw.TokenExchange.ClientSecretEnv != "" {
-			if os.Getenv(raw.TokenExchange.ClientSecretEnv) == "" {
+			if l.envReader.Getenv(raw.TokenExchange.ClientSecretEnv) == "" {
 				return nil, fmt.Errorf("environment variable %s not set", raw.TokenExchange.ClientSecretEnv)
 			}
 		}
@@ -346,7 +351,7 @@ func (*YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*B
 		}
 
 		// Resolve credentials from environment
-		credentials := os.Getenv(raw.ServiceAccount.CredentialsEnv)
+		credentials := l.envReader.Getenv(raw.ServiceAccount.CredentialsEnv)
 		if credentials == "" {
 			return nil, fmt.Errorf("environment variable %s not set", raw.ServiceAccount.CredentialsEnv)
 		}

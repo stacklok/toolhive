@@ -9,8 +9,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/env/mocks"
 )
 
 // Test helpers for reducing boilerplate
@@ -20,6 +22,16 @@ func createTestIdentity(subject, token string) *auth.Identity {
 		Subject: subject,
 		Token:   token,
 	}
+}
+
+// createMockEnvReader creates a mock env.Reader that returns empty strings for all env vars.
+// This is sufficient for tests that don't use client_secret_env.
+func createMockEnvReader(t *testing.T) *mocks.MockReader {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	mockEnv := mocks.NewMockReader(ctrl)
+	mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+	return mockEnv
 }
 
 func createContextWithIdentity(subject, token string) context.Context {
@@ -203,7 +215,8 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 				defer server.Close()
 			}
 
-			strategy := NewTokenExchangeStrategy()
+			mockEnv := createMockEnvReader(t)
+			strategy := NewTokenExchangeStrategy(mockEnv)
 			ctx := tt.setupCtx()
 
 			metadata := tt.metadata
@@ -263,7 +276,8 @@ func TestTokenExchangeStrategy_Validate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			strategy := NewTokenExchangeStrategy()
+			mockEnv := createMockEnvReader(t)
+			strategy := NewTokenExchangeStrategy(mockEnv)
 			err := strategy.Validate(tt.metadata)
 
 			if tt.expectError != "" {
@@ -286,7 +300,8 @@ func TestTokenExchangeStrategy_CacheSeparation(t *testing.T) {
 	server2 := createSuccessfulTokenServer(t, "token-scope-write", nil)
 	defer server2.Close()
 
-	strategy := NewTokenExchangeStrategy()
+	mockEnv := createMockEnvReader(t)
+	strategy := NewTokenExchangeStrategy(mockEnv)
 	ctx := createContextWithIdentity("cache-test-user", "test-token")
 
 	// First request with "read" scope
@@ -331,7 +346,8 @@ func TestTokenExchangeStrategy_CacheHitWithDifferentScopeOrder(t *testing.T) {
 	}))
 	defer server.Close()
 
-	strategy := NewTokenExchangeStrategy()
+	mockEnv := createMockEnvReader(t)
+	strategy := NewTokenExchangeStrategy(mockEnv)
 	ctx := createContextWithIdentity("scope-order-user", "test-token")
 
 	// First request with scopes in one order
@@ -370,7 +386,8 @@ func TestTokenExchangeStrategy_SharedConfigAcrossUsers(t *testing.T) {
 	server := createSuccessfulTokenServer(t, "backend-token", nil)
 	defer server.Close()
 
-	strategy := NewTokenExchangeStrategy()
+	mockEnv := createMockEnvReader(t)
+	strategy := NewTokenExchangeStrategy(mockEnv)
 	metadata := map[string]any{
 		"token_url": server.URL,
 		"scopes":    []string{"read", "write"},
@@ -415,7 +432,8 @@ func TestTokenExchangeStrategy_CurrentTokenUsed(t *testing.T) {
 	}))
 	defer server.Close()
 
-	strategy := NewTokenExchangeStrategy()
+	mockEnv := createMockEnvReader(t)
+	strategy := NewTokenExchangeStrategy(mockEnv)
 	metadata := map[string]any{
 		"token_url": server.URL,
 	}
@@ -435,11 +453,12 @@ func TestTokenExchangeStrategy_CurrentTokenUsed(t *testing.T) {
 	assert.Equal(t, "refreshed-token", capturedToken, "Should use current refreshed token, not cached stale token")
 }
 
-//nolint:paralleltest // Cannot use t.Parallel() with t.Setenv()
 func TestTokenExchangeStrategy_ClientSecretEnv(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name          string
-		setupEnv      func(t *testing.T)
+		setupMock     func(t *testing.T, mockEnv *mocks.MockReader)
 		metadata      map[string]any
 		expectError   bool
 		errorContains string
@@ -447,9 +466,9 @@ func TestTokenExchangeStrategy_ClientSecretEnv(t *testing.T) {
 	}{
 		{
 			name: "successfully resolves client_secret from environment variable",
-			setupEnv: func(t *testing.T) {
+			setupMock: func(t *testing.T, mockEnv *mocks.MockReader) {
 				t.Helper()
-				t.Setenv("TEST_CLIENT_SECRET", "secret-from-env")
+				mockEnv.EXPECT().Getenv("TEST_CLIENT_SECRET").Return("secret-from-env").AnyTimes()
 			},
 			metadata: map[string]any{
 				"client_id":         "test-client",
@@ -466,9 +485,9 @@ func TestTokenExchangeStrategy_ClientSecretEnv(t *testing.T) {
 		},
 		{
 			name: "error when environment variable is not set",
-			setupEnv: func(t *testing.T) {
+			setupMock: func(t *testing.T, mockEnv *mocks.MockReader) {
 				t.Helper()
-				// Don't set the environment variable
+				mockEnv.EXPECT().Getenv("MISSING_ENV_VAR").Return("").AnyTimes()
 			},
 			metadata: map[string]any{
 				"client_id":         "test-client",
@@ -479,9 +498,9 @@ func TestTokenExchangeStrategy_ClientSecretEnv(t *testing.T) {
 		},
 		{
 			name: "error when environment variable is empty",
-			setupEnv: func(t *testing.T) {
+			setupMock: func(t *testing.T, mockEnv *mocks.MockReader) {
 				t.Helper()
-				t.Setenv("EMPTY_SECRET", "")
+				mockEnv.EXPECT().Getenv("EMPTY_SECRET").Return("").AnyTimes()
 			},
 			metadata: map[string]any{
 				"client_id":         "test-client",
@@ -492,9 +511,9 @@ func TestTokenExchangeStrategy_ClientSecretEnv(t *testing.T) {
 		},
 		{
 			name: "client_secret takes precedence over client_secret_env",
-			setupEnv: func(t *testing.T) {
+			setupMock: func(t *testing.T, _ *mocks.MockReader) {
 				t.Helper()
-				t.Setenv("TEST_SECRET_ENV", "env-secret")
+				// Mock should not be called since client_secret takes precedence
 			},
 			metadata: map[string]any{
 				"client_id":         "test-client",
@@ -514,11 +533,15 @@ func TestTokenExchangeStrategy_ClientSecretEnv(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.setupEnv != nil {
-				tt.setupEnv(t)
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockEnv := mocks.NewMockReader(ctrl)
+			if tt.setupMock != nil {
+				tt.setupMock(t, mockEnv)
 			}
 
-			strategy := NewTokenExchangeStrategy()
+			strategy := NewTokenExchangeStrategy(mockEnv)
 
 			// Validation test
 			metadata := tt.metadata

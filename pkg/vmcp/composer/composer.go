@@ -346,13 +346,31 @@ type WorkflowStateStore interface {
 }
 
 // ElicitationProtocolHandler handles MCP elicitation protocol interactions.
+//
+// This interface provides an SDK-agnostic abstraction for elicitation requests,
+// enabling migration from mark3labs SDK to official SDK without changing workflow code.
+//
+// Per MCP 2025-06-18 spec: Elicitation is a synchronous request/response protocol
+// where the server sends a request and blocks until the client responds.
 type ElicitationProtocolHandler interface {
-	// SendElicitation sends an elicitation request to the client.
-	SendElicitation(ctx context.Context, workflowID string, stepID string, config *ElicitationConfig) error
-
-	// ReceiveElicitationResponse waits for and returns the user's response.
-	// Blocks until response is received or timeout occurs.
-	ReceiveElicitationResponse(ctx context.Context, workflowID string, stepID string) (*ElicitationResponse, error)
+	// RequestElicitation sends an elicitation request to the client and waits for response.
+	//
+	// This is a synchronous blocking call that:
+	//   1. Validates configuration and enforces security limits
+	//   2. Sends the elicitation request to the client via underlying SDK
+	//   3. Blocks until the client responds or timeout occurs
+	//   4. Returns the user's response (accept/decline/cancel)
+	//
+	// Per MCP 2025-06-18: The SDK handles JSON-RPC ID correlation internally.
+	// The workflowID and stepID are for internal tracking/logging only.
+	//
+	// Returns ElicitationResponse or error if timeout/cancelled/failed.
+	RequestElicitation(
+		ctx context.Context,
+		workflowID string,
+		stepID string,
+		config *ElicitationConfig,
+	) (*ElicitationResponse, error)
 }
 
 // ElicitationResponse represents a user's response to an elicitation.

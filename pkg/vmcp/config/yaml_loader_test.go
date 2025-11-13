@@ -7,8 +7,29 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/mock/gomock"
+
+	"github.com/stacklok/toolhive/pkg/env"
+	"github.com/stacklok/toolhive/pkg/env/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
+
+// createMockEnvReader creates a mock env.Reader with expectations based on the envVars map.
+func createMockEnvReader(t *testing.T, envVars map[string]string) *mocks.MockReader {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	mockEnv := mocks.NewMockReader(ctrl)
+
+	// Set up expectations for each env var
+	for key, value := range envVars {
+		mockEnv.EXPECT().Getenv(key).Return(value).AnyTimes()
+	}
+
+	// For any other keys, return empty string
+	mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+
+	return mockEnv
+}
 
 func TestYAMLLoader_Load(t *testing.T) {
 	t.Parallel()
@@ -323,11 +344,9 @@ composite_tools:
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			// Set up environment variables
-			for k, v := range tt.envVars {
-				os.Setenv(k, v)
-				defer os.Unsetenv(k)
-			}
+
+			// Create mock env reader with test-specific env vars
+			mockEnv := createMockEnvReader(t, tt.envVars)
 
 			// Create temporary file with YAML content
 			tmpDir := t.TempDir()
@@ -337,7 +356,7 @@ composite_tools:
 			}
 
 			// Load configuration
-			loader := NewYAMLLoader(tmpFile)
+			loader := NewYAMLLoader(tmpFile, mockEnv)
 			cfg, err := loader.Load()
 
 			// Check error expectation
@@ -363,7 +382,8 @@ composite_tools:
 
 func TestYAMLLoader_LoadFileNotFound(t *testing.T) {
 	t.Parallel()
-	loader := NewYAMLLoader("/non/existent/file.yaml")
+	envReader := &env.OSReader{}
+	loader := NewYAMLLoader("/non/existent/file.yaml", envReader)
 	_, err := loader.Load()
 
 	if err == nil {
@@ -453,11 +473,9 @@ aggregation:
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			// Set up environment variables
-			for k, v := range tt.envVars {
-				os.Setenv(k, v)
-				defer os.Unsetenv(k)
-			}
+
+			// Create mock env reader with test-specific env vars
+			mockEnv := createMockEnvReader(t, tt.envVars)
 
 			// Create temporary file
 			tmpDir := t.TempDir()
@@ -467,7 +485,7 @@ aggregation:
 			}
 
 			// Load and validate
-			loader := NewYAMLLoader(tmpFile)
+			loader := NewYAMLLoader(tmpFile, mockEnv)
 			cfg, err := loader.Load()
 			if err != nil {
 				if tt.shouldPass {

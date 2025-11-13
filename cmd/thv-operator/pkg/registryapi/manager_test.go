@@ -10,8 +10,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-
-	sourcesmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources/mocks"
 )
 
 func TestNewManager(t *testing.T) {
@@ -33,13 +31,10 @@ func TestNewManager(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
-			// Create mock dependencies
-			mockSourceHandlerFactory := sourcesmocks.NewMockSourceHandlerFactory(ctrl)
-
 			scheme := runtime.NewScheme()
 
 			// Create manager
-			manager := NewManager(nil, scheme, mockSourceHandlerFactory)
+			manager := NewManager(nil, scheme)
 
 			// Verify manager is created
 			assert.NotNil(t, manager)

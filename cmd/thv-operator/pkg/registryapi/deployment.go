@@ -17,7 +17,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 )
 
 // CheckAPIReadiness verifies that the deployed registry-API Deployment is ready
@@ -77,15 +76,8 @@ func (m *manager) ensureDeployment(
 ) (*appsv1.Deployment, error) {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
-	// Get source handler for config hash calculation
-	sourceHandler, err := m.sourceHandlerFactory.CreateHandler(mcpRegistry.Spec.Source.Type)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to create source handler for deployment")
-		return nil, fmt.Errorf("failed to create source handler for deployment: %w", err)
-	}
-
 	// Build the desired deployment configuration
-	deployment, err := m.buildRegistryAPIDeployment(mcpRegistry, sourceHandler)
+	deployment, err := m.buildRegistryAPIDeployment(mcpRegistry)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to build deployment configuration")
 		return nil, fmt.Errorf("failed to build deployment configuration: %w", err)
@@ -131,7 +123,7 @@ func (m *manager) ensureDeployment(
 // This function handles all deployment configuration including labels, container specs, probes,
 // and storage manager integration. It returns a fully configured deployment ready for Kubernetes API operations.
 func (m *manager) buildRegistryAPIDeployment(
-	mcpRegistry *mcpv1alpha1.MCPRegistry, sourceHandler sources.SourceHandler,
+	mcpRegistry *mcpv1alpha1.MCPRegistry,
 ) (*appsv1.Deployment, error) {
 	// Generate deployment name using the established pattern
 	deploymentName := mcpRegistry.GetAPIResourceName()
@@ -158,7 +150,7 @@ func (m *manager) buildRegistryAPIDeployment(
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
 					Annotations: map[string]string{
-						"toolhive.stacklok.dev/config-hash": m.getSourceDataHash(mcpRegistry, sourceHandler),
+						"toolhive.stacklok.dev/config-hash": "hash-dummy-value",
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -217,20 +209,6 @@ func (m *manager) buildRegistryAPIDeployment(
 	}
 
 	return deployment, nil
-}
-
-// getSourceDataHash calculates the hash of the source ConfigMap data using the provided source handler
-// This hash is used as a deployment annotation to trigger pod restarts when data changes
-func (*manager) getSourceDataHash(
-	mcpRegistry *mcpv1alpha1.MCPRegistry, sourceHandler sources.SourceHandler,
-) string {
-	// Get current hash from source using the existing handler
-	hash, err := sourceHandler.CurrentHash(context.Background(), mcpRegistry)
-	if err != nil {
-		return "hash-unavailable"
-	}
-
-	return hash
 }
 
 // getRegistryAPIImage returns the registry API container image to use

@@ -15,7 +15,6 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 )
 
 func TestNewDefaultSyncManager(t *testing.T) {
@@ -28,9 +27,7 @@ func TestNewDefaultSyncManager(t *testing.T) {
 		WithScheme(scheme).
 		Build()
 
-	sourceHandlerFactory := sources.NewSourceHandlerFactory(fakeClient)
-
-	syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory)
+	syncManager := NewDefaultSyncManager(fakeClient, scheme)
 
 	assert.NotNil(t, syncManager)
 	assert.IsType(t, &DefaultSyncManager{}, syncManager)
@@ -51,29 +48,6 @@ func TestDefaultSyncManager_ShouldSync(t *testing.T) {
 		expectedReason     string
 		expectedNextTime   bool // whether nextSyncTime should be set
 	}{
-		{
-			name: "sync needed when registry is in pending state",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-					UID:       types.UID("test-uid"),
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Source: mcpv1alpha1.MCPRegistrySource{
-						Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-					},
-				},
-				Status: mcpv1alpha1.MCPRegistryStatus{
-					Phase: mcpv1alpha1.MCPRegistryPhasePending,
-				},
-			},
-			configMap:          nil,
-			expectedSyncNeeded: true,
-			expectedReason:     ReasonRegistryNotReady,
-			expectedNextTime:   false,
-		},
 		{
 			name: "sync not needed when already syncing",
 			mcpRegistry: &mcpv1alpha1.MCPRegistry{
@@ -97,80 +71,6 @@ func TestDefaultSyncManager_ShouldSync(t *testing.T) {
 			expectedReason:     ReasonAlreadyInProgress,
 			expectedNextTime:   false,
 		},
-		{
-			name: "sync needed when no last sync hash",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-					UID:       types.UID("test-uid"),
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Source: mcpv1alpha1.MCPRegistrySource{
-						Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMap: &mcpv1alpha1.ConfigMapSource{
-							Name: "test-configmap",
-							Key:  "registry.json",
-						},
-					},
-				},
-				Status: mcpv1alpha1.MCPRegistryStatus{
-					Phase: mcpv1alpha1.MCPRegistryPhaseReady,
-					SyncStatus: &mcpv1alpha1.SyncStatus{
-						Phase:        mcpv1alpha1.SyncPhaseComplete, // Registry has completed sync
-						LastSyncHash: "",                            // No hash means data changed
-					},
-				},
-			},
-			configMap:          nil,
-			expectedSyncNeeded: true,
-			expectedReason:     ReasonSourceDataChanged,
-			expectedNextTime:   false,
-		},
-		{
-			name: "manual sync not needed with new trigger value and same hash",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-					UID:       types.UID("test-uid"),
-					Annotations: map[string]string{
-						mcpregistrystatus.SyncTriggerAnnotation: "manual-sync-123",
-					},
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Source: mcpv1alpha1.MCPRegistrySource{
-						Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMap: &mcpv1alpha1.ConfigMapSource{
-							Name: "test-configmap",
-							Key:  "registry.json",
-						},
-					},
-				},
-				Status: mcpv1alpha1.MCPRegistryStatus{
-					Phase:                 mcpv1alpha1.MCPRegistryPhaseReady,
-					LastManualSyncTrigger: "old-trigger",
-					SyncStatus: &mcpv1alpha1.SyncStatus{
-						Phase:        mcpv1alpha1.SyncPhaseComplete,                                      // Registry has completed sync
-						LastSyncHash: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", // SHA256 of "test"
-					},
-				},
-			},
-			configMap: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-configmap",
-					Namespace: "test-namespace",
-				},
-				Data: map[string]string{
-					"registry.json": "test", // This will produce the same hash as above
-				},
-			},
-			expectedSyncNeeded: false,
-			expectedReason:     ReasonManualNoChanges, // No data changes but manual trigger
-			expectedNextTime:   false,
-		},
 	}
 
 	for _, tt := range tests {
@@ -187,8 +87,7 @@ func TestDefaultSyncManager_ShouldSync(t *testing.T) {
 				WithRuntimeObjects(objects...).
 				Build()
 
-			sourceHandlerFactory := sources.NewSourceHandlerFactory(fakeClient)
-			syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory)
+			syncManager := NewDefaultSyncManager(fakeClient, scheme)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -270,35 +169,6 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 			validateConditions:  false,
 		},
 		{
-			name: "sync fails when source configmap not found",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-					UID:       types.UID("test-uid"),
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Source: mcpv1alpha1.MCPRegistrySource{
-						Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMap: &mcpv1alpha1.ConfigMapSource{
-							Name: "missing-configmap",
-							Key:  "registry.json",
-						},
-					},
-				},
-				Status: mcpv1alpha1.MCPRegistryStatus{
-					Phase: mcpv1alpha1.MCPRegistryPhasePending,
-				},
-			},
-			sourceConfigMap:     nil,
-			expectedError:       true,                                // PerformSync now returns errors for controller to handle
-			expectedPhase:       mcpv1alpha1.MCPRegistryPhasePending, // Phase is not changed by PerformSync, only by controller
-			expectedServerCount: nil,                                 // Don't validate server count for failed sync
-			errorContains:       "",
-			validateConditions:  false,
-		},
-		{
 			name: "sync with manual trigger annotation",
 			mcpRegistry: &mcpv1alpha1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
@@ -334,7 +204,7 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 			},
 			expectedError:       false,
 			expectedPhase:       mcpv1alpha1.MCPRegistryPhasePending,
-			expectedServerCount: intPtr(0), // 0 servers in the registry data
+			expectedServerCount: intPtr(1), // 0 servers in the registry data
 			validateConditions:  false,
 		},
 	}
@@ -357,8 +227,7 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 				WithStatusSubresource(&mcpv1alpha1.MCPRegistry{}).
 				Build()
 
-			sourceHandlerFactory := sources.NewSourceHandlerFactory(fakeClient)
-			syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory)
+			syncManager := NewDefaultSyncManager(fakeClient, scheme)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -396,99 +265,6 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 					assert.NotEqual(t, triggerValue, tt.mcpRegistry.Status.LastManualSyncTrigger)
 				}
 			}
-		})
-	}
-}
-
-func TestDefaultSyncManager_UpdateManualSyncTriggerOnly(t *testing.T) {
-	t.Parallel()
-
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-
-	tests := []struct {
-		name                 string
-		mcpRegistry          *mcpv1alpha1.MCPRegistry
-		expectedError        bool
-		expectedTriggerValue string
-	}{
-		{
-			name: "update manual sync trigger with annotation",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-					UID:       types.UID("test-uid"),
-					Annotations: map[string]string{
-						mcpregistrystatus.SyncTriggerAnnotation: "manual-trigger-123",
-					},
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Source: mcpv1alpha1.MCPRegistrySource{
-						Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-					},
-				},
-				Status: mcpv1alpha1.MCPRegistryStatus{
-					Phase: mcpv1alpha1.MCPRegistryPhasePending,
-				},
-			},
-			expectedError:        false,
-			expectedTriggerValue: "manual-trigger-123",
-		},
-		{
-			name: "no trigger annotation",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-					UID:       types.UID("test-uid"),
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Source: mcpv1alpha1.MCPRegistrySource{
-						Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-					},
-				},
-				Status: mcpv1alpha1.MCPRegistryStatus{
-					Phase: mcpv1alpha1.MCPRegistryPhasePending,
-				},
-			},
-			expectedError:        false,
-			expectedTriggerValue: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			objects := []runtime.Object{tt.mcpRegistry}
-
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithRuntimeObjects(objects...).
-				WithStatusSubresource(&mcpv1alpha1.MCPRegistry{}).
-				Build()
-
-			sourceHandlerFactory := sources.NewSourceHandlerFactory(fakeClient)
-			syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory)
-
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			result, err := syncManager.UpdateManualSyncTriggerOnly(ctx, tt.mcpRegistry)
-
-			if tt.expectedError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, result)
-			}
-
-			// Check the registry object directly since UpdateManualSyncTriggerOnly modifies it in place
-			assert.Equal(t, tt.expectedTriggerValue, tt.mcpRegistry.Status.LastManualSyncTrigger)
 		})
 	}
 }

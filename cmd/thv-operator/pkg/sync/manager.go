@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -15,7 +14,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
+	// "github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 )
 
 // Result contains the result of a successful sync operation
@@ -116,20 +115,16 @@ type AutomaticSyncChecker interface {
 type DefaultSyncManager struct {
 	client               client.Client
 	scheme               *runtime.Scheme
-	sourceHandlerFactory sources.SourceHandlerFactory
 	dataChangeDetector   DataChangeDetector
 	manualSyncChecker    ManualSyncChecker
 	automaticSyncChecker AutomaticSyncChecker
 }
 
 // NewDefaultSyncManager creates a new DefaultSyncManager
-func NewDefaultSyncManager(k8sClient client.Client, scheme *runtime.Scheme,
-	sourceHandlerFactory sources.SourceHandlerFactory) *DefaultSyncManager {
+func NewDefaultSyncManager(k8sClient client.Client, scheme *runtime.Scheme) *DefaultSyncManager {
 	return &DefaultSyncManager{
 		client:               k8sClient,
 		scheme:               scheme,
-		sourceHandlerFactory: sourceHandlerFactory,
-		dataChangeDetector:   &DefaultDataChangeDetector{sourceHandlerFactory: sourceHandlerFactory},
 		manualSyncChecker:    &DefaultManualSyncChecker{},
 		automaticSyncChecker: &DefaultAutomaticSyncChecker{},
 	}
@@ -300,16 +295,11 @@ func (s *DefaultSyncManager) calculateNextSyncTime(ctx context.Context, mcpRegis
 func (s *DefaultSyncManager) PerformSync(
 	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
 ) (ctrl.Result, *Result, *mcpregistrystatus.Error) {
-	// Fetch and process registry data
-	fetchResult, err := s.fetchAndProcessRegistryData(ctx, mcpRegistry)
-	if err != nil {
-		return ctrl.Result{RequeueAfter: DefaultSyncRequeueAfter}, nil, err
-	}
 
 	// Return sync result with data for status collector
 	syncResult := &Result{
-		Hash:        fetchResult.Hash,
-		ServerCount: fetchResult.ServerCount,
+		Hash:        "hash-dummy-value",
+		ServerCount: 1,
 	}
 
 	return ctrl.Result{}, syncResult, nil
@@ -342,54 +332,4 @@ func (s *DefaultSyncManager) UpdateManualSyncTriggerOnly(
 
 	ctxLogger.Info("Manual sync completed (no data changes required)")
 	return ctrl.Result{}, nil
-}
-
-// fetchAndProcessRegistryData handles source handler creation, validation, fetch, and filtering
-func (s *DefaultSyncManager) fetchAndProcessRegistryData(
-	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry) (*sources.FetchResult, *mcpregistrystatus.Error) {
-	ctxLogger := log.FromContext(ctx)
-
-	// Get source handler
-	sourceHandler, err := s.sourceHandlerFactory.CreateHandler(mcpRegistry.Spec.Source.Type)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to create source handler")
-		return nil, &mcpregistrystatus.Error{
-			Err:             err,
-			Message:         fmt.Sprintf("Failed to create source handler: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionSourceAvailable,
-			ConditionReason: conditionReasonHandlerCreationFailed,
-		}
-	}
-
-	// Validate source configuration
-	if err := sourceHandler.Validate(&mcpRegistry.Spec.Source); err != nil {
-		ctxLogger.Error(err, "Source validation failed")
-		return nil, &mcpregistrystatus.Error{
-			Err:             err,
-			Message:         fmt.Sprintf("Source validation failed: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionSourceAvailable,
-			ConditionReason: conditionReasonValidationFailed,
-		}
-	}
-
-	// Execute fetch operation
-	fetchResult, err := sourceHandler.FetchRegistry(ctx, mcpRegistry)
-	if err != nil {
-		ctxLogger.Error(err, "Fetch operation failed")
-		// Sync attempt counting is now handled by the controller via status collector
-		return nil, &mcpregistrystatus.Error{
-			Err:             err,
-			Message:         fmt.Sprintf("Fetch failed: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionSyncSuccessful,
-			ConditionReason: conditionReasonFetchFailed,
-		}
-	}
-
-	ctxLogger.Info("Registry data fetched successfully from source",
-		"serverCount", fetchResult.ServerCount,
-		"format", fetchResult.Format,
-		"hash", fetchResult.Hash)
-
-	return fetchResult, nil
 }

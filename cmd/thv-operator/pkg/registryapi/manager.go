@@ -11,26 +11,22 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 )
 
 // manager implements the Manager interface
 type manager struct {
-	client               client.Client
-	scheme               *runtime.Scheme
-	sourceHandlerFactory sources.SourceHandlerFactory
+	client client.Client
+	scheme *runtime.Scheme
 }
 
 // NewManager creates a new registry API manager
 func NewManager(
 	k8sClient client.Client,
 	scheme *runtime.Scheme,
-	sourceHandlerFactory sources.SourceHandlerFactory,
 ) Manager {
 	return &manager{
-		client:               k8sClient,
-		scheme:               scheme,
-		sourceHandlerFactory: sourceHandlerFactory,
+		client: k8sClient,
+		scheme: scheme,
 	}
 }
 

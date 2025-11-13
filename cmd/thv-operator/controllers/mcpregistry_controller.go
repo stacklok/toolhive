@@ -21,7 +21,6 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sync"
 )
 
@@ -44,8 +43,7 @@ type MCPRegistryReconciler struct {
 	Scheme *runtime.Scheme
 
 	// Sync manager handles all sync operations
-	syncManager          sync.Manager
-	sourceHandlerFactory sources.SourceHandlerFactory
+	syncManager sync.Manager
 	// Registry API manager handles API deployment operations
 	registryAPIManager registryapi.Manager
 }
@@ -60,16 +58,14 @@ func getCurrentAttemptCount(mcpRegistry *mcpv1alpha1.MCPRegistry) int {
 
 // NewMCPRegistryReconciler creates a new MCPRegistryReconciler with required dependencies
 func NewMCPRegistryReconciler(k8sClient client.Client, scheme *runtime.Scheme) *MCPRegistryReconciler {
-	sourceHandlerFactory := sources.NewSourceHandlerFactory(k8sClient)
-	syncManager := sync.NewDefaultSyncManager(k8sClient, scheme, sourceHandlerFactory)
-	registryAPIManager := registryapi.NewManager(k8sClient, scheme, sourceHandlerFactory)
+	syncManager := sync.NewDefaultSyncManager(k8sClient, scheme)
+	registryAPIManager := registryapi.NewManager(k8sClient, scheme)
 
 	return &MCPRegistryReconciler{
-		Client:               k8sClient,
-		Scheme:               scheme,
-		syncManager:          syncManager,
-		sourceHandlerFactory: sourceHandlerFactory,
-		registryAPIManager:   registryAPIManager,
+		Client:             k8sClient,
+		Scheme:             scheme,
+		syncManager:        syncManager,
+		registryAPIManager: registryAPIManager,
 	}
 }
 

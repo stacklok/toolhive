@@ -14,7 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/filtering"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 )
@@ -118,7 +117,6 @@ type DefaultSyncManager struct {
 	client               client.Client
 	scheme               *runtime.Scheme
 	sourceHandlerFactory sources.SourceHandlerFactory
-	filterService        filtering.FilterService
 	dataChangeDetector   DataChangeDetector
 	manualSyncChecker    ManualSyncChecker
 	automaticSyncChecker AutomaticSyncChecker
@@ -131,7 +129,6 @@ func NewDefaultSyncManager(k8sClient client.Client, scheme *runtime.Scheme,
 		client:               k8sClient,
 		scheme:               scheme,
 		sourceHandlerFactory: sourceHandlerFactory,
-		filterService:        filtering.NewDefaultFilterService(),
 		dataChangeDetector:   &DefaultDataChangeDetector{sourceHandlerFactory: sourceHandlerFactory},
 		manualSyncChecker:    &DefaultManualSyncChecker{},
 		automaticSyncChecker: &DefaultAutomaticSyncChecker{},
@@ -394,49 +391,5 @@ func (s *DefaultSyncManager) fetchAndProcessRegistryData(
 		"format", fetchResult.Format,
 		"hash", fetchResult.Hash)
 
-	// Apply filtering if configured
-	if err := s.applyFilteringIfConfigured(ctx, mcpRegistry, fetchResult); err != nil {
-		return nil, err
-	}
-
 	return fetchResult, nil
-}
-
-// applyFilteringIfConfigured applies filtering to fetch result if registry has filter configuration
-func (s *DefaultSyncManager) applyFilteringIfConfigured(
-	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
-	fetchResult *sources.FetchResult) *mcpregistrystatus.Error {
-	ctxLogger := log.FromContext(ctx)
-
-	if mcpRegistry.Spec.Filter != nil {
-		ctxLogger.Info("Applying registry filters",
-			"hasNameFilters", mcpRegistry.Spec.Filter.NameFilters != nil,
-			"hasTagFilters", mcpRegistry.Spec.Filter.Tags != nil)
-
-		filteredRegistry, err := s.filterService.ApplyFilters(ctx, fetchResult.Registry, mcpRegistry.Spec.Filter)
-		if err != nil {
-			ctxLogger.Error(err, "Registry filtering failed")
-			return &mcpregistrystatus.Error{
-				Err:             err,
-				Message:         fmt.Sprintf("Filtering failed: %v", err),
-				ConditionType:   mcpv1alpha1.ConditionSyncSuccessful,
-				ConditionReason: conditionReasonFetchFailed,
-			}
-		}
-
-		// Update fetch result with filtered data
-		originalServerCount := fetchResult.ServerCount
-		fetchResult.Registry = filteredRegistry
-		fetchResult.ServerCount = len(filteredRegistry.Servers) + len(filteredRegistry.RemoteServers)
-
-		ctxLogger.Info("Registry filtering completed",
-			"originalServerCount", originalServerCount,
-			"filteredServerCount", fetchResult.ServerCount,
-			"serversFiltered", originalServerCount-fetchResult.ServerCount)
-	} else {
-		ctxLogger.Info("No filtering configured, using original registry data")
-	}
-
-	return nil
 }

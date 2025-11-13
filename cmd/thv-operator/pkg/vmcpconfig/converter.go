@@ -165,19 +165,6 @@ func (*Converter) convertBackendAuthConfig(
 	}
 
 	// Convert type-specific configuration to metadata
-	if crdConfig.ServiceAccount != nil {
-		strategy.Metadata["credentialsRef"] = map[string]string{
-			"name": crdConfig.ServiceAccount.CredentialsRef.Name,
-			"key":  crdConfig.ServiceAccount.CredentialsRef.Key,
-		}
-		if crdConfig.ServiceAccount.HeaderName != "" {
-			strategy.Metadata["headerName"] = crdConfig.ServiceAccount.HeaderName
-		}
-		if crdConfig.ServiceAccount.HeaderFormat != "" {
-			strategy.Metadata["headerFormat"] = crdConfig.ServiceAccount.HeaderFormat
-		}
-	}
-
 	if crdConfig.ExternalAuthConfigRef != nil {
 		strategy.Metadata["externalAuthConfigRef"] = crdConfig.ExternalAuthConfigRef.Name
 	}

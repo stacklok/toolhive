@@ -25,7 +25,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	replicas := int32(1)
 
 	// Build deployment components using helper functions
-	args := r.buildContainerArgs(ctx, proxy)
+	args := r.buildContainerArgs()
 	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
 	env := r.buildEnvVarsForProxy(ctx, proxy)
 	resources := ctrlutil.BuildResourceRequirements(proxy.Spec.Resources)
@@ -80,19 +80,10 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 }
 
 // buildContainerArgs builds the container arguments for the proxy
-func (*MCPRemoteProxyReconciler) buildContainerArgs(_ context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) []string {
-	// The second argument is required by proxyrunner command signature but is ignored
+func (*MCPRemoteProxyReconciler) buildContainerArgs() []string {
+	// The third argument is required by proxyrunner command signature but is ignored
 	// when RemoteURL is set (HTTPTransport.Setup returns early for remote servers)
-	args := []string{"run", "placeholder-for-remote-proxy"}
-
-	// Add user-specified proxy args from ResourceOverrides
-	// Cobra parses flags regardless of position, so we can simply append them
-	if proxy.Spec.ResourceOverrides != nil &&
-		proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
-		args = ctrlutil.AppendProxyArgs(args, proxy.Spec.ResourceOverrides.ProxyDeployment.Args)
-	}
-
-	return args
+	return []string{"run", "--foreground=true", "placeholder-for-remote-proxy"}
 }
 
 // buildVolumesForProxy builds volumes and volume mounts for the proxy

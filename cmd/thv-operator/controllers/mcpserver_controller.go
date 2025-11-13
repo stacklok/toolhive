@@ -1006,10 +1006,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 				Value: envVar.Value,
 			})
 		}
-
-		// Add user-specified proxy args from ResourceOverrides
-		// Cobra parses flags regardless of position, so we can simply append them
-		args = ctrlutil.AppendProxyArgs(args, m.Spec.ResourceOverrides.ProxyDeployment.Args)
 	}
 
 	// Add volume mounts for user-defined volumes

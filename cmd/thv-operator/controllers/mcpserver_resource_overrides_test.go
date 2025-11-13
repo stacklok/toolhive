@@ -192,7 +192,7 @@ func TestResourceOverrides(t *testing.T) {
 			expectedServiceAnns: map[string]string{},
 		},
 		{
-			name: "with proxy args",
+			name: "with debug logging via TOOLHIVE_DEBUG env var",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-server",
@@ -203,7 +203,9 @@ func TestResourceOverrides(t *testing.T) {
 					ProxyPort: 8080,
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							Args: []string{"--debug"},
+							Env: []mcpv1alpha1.EnvVar{
+								{Name: "TOOLHIVE_DEBUG", Value: "true"},
+							},
 						},
 					},
 				},
@@ -354,13 +356,14 @@ func TestResourceOverrides(t *testing.T) {
 			assert.Equal(t, tt.expectedServiceAnns, service.Annotations)
 
 			// For test cases with environment variables, verify they are set correctly
-			if tt.name == "with proxy environment variables" || tt.name == "with both metadata overrides and proxy environment variables" {
+			if tt.name == "with proxy environment variables" || tt.name == "with both metadata overrides and proxy environment variables" || tt.name == "with debug logging via TOOLHIVE_DEBUG env var" {
 				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
 				container := deployment.Spec.Template.Spec.Containers[0]
 
 				// Define expected environment variables based on test case
 				var expectedEnvVars map[string]string
-				if tt.name == "with proxy environment variables" {
+				switch tt.name {
+				case "with proxy environment variables":
 					expectedEnvVars = map[string]string{
 						"HTTP_PROXY":        "http://proxy.example.com:8080",
 						"NO_PROXY":          "localhost,127.0.0.1",
@@ -370,7 +373,15 @@ func TestResourceOverrides(t *testing.T) {
 						"TOOLHIVE_RUNTIME":  "kubernetes",
 						"UNSTRUCTURED_LOGS": "false",
 					}
-				} else {
+				case "with debug logging via TOOLHIVE_DEBUG env var":
+					expectedEnvVars = map[string]string{
+						"TOOLHIVE_DEBUG":    "true",
+						"XDG_CONFIG_HOME":   "/tmp",
+						"HOME":              "/tmp",
+						"TOOLHIVE_RUNTIME":  "kubernetes",
+						"UNSTRUCTURED_LOGS": "false",
+					}
+				default:
 					expectedEnvVars = map[string]string{
 						"LOG_LEVEL":         "debug",
 						"METRICS_ENABLED":   "true",
@@ -388,19 +399,6 @@ func TestResourceOverrides(t *testing.T) {
 					assert.True(t, exists, "Unexpected environment variable: %s", env.Name)
 					assert.Equal(t, expectedValue, env.Value, "Environment variable %s has incorrect value", env.Name)
 				}
-			}
-
-			// For test cases with args, verify they are set correctly
-			if tt.name == "with proxy args" {
-				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
-				container := deployment.Spec.Template.Spec.Containers[0]
-
-				// Verify base args are present
-				assert.Contains(t, container.Args, "run")
-				assert.Contains(t, container.Args, "test-image")
-
-				// Verify custom args are appended
-				assert.Contains(t, container.Args, "--debug")
 			}
 		})
 	}

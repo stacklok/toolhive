@@ -67,6 +67,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				container := dep.Spec.Template.Spec.Containers[0]
 				assert.Equal(t, "toolhive", container.Name)
 				assert.Contains(t, container.Args, "run")
+				assert.Contains(t, container.Args, "--foreground=true")
 				assert.Contains(t, container.Args, "placeholder-for-remote-proxy")
 
 				// Verify port
@@ -137,8 +138,8 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 							},
 							Env: []mcpv1alpha1.EnvVar{
 								{Name: "CUSTOM_ENV", Value: "custom-value"},
+								{Name: "TOOLHIVE_DEBUG", Value: "true"},
 							},
-							Args: []string{"--debug", "--verbose"},
 						},
 					},
 				},
@@ -151,23 +152,28 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				// Verify custom annotations
 				assert.Equal(t, "custom-annotation-value", dep.Annotations["custom-annotation"])
 
-				// Verify custom environment variable
+				// Verify custom environment variables
 				container := dep.Spec.Template.Spec.Containers[0]
-				found := false
+				customEnvFound := false
+				debugEnvFound := false
 				for _, env := range container.Env {
 					if env.Name == "CUSTOM_ENV" {
 						assert.Equal(t, "custom-value", env.Value)
-						found = true
-						break
+						customEnvFound = true
+					}
+					if env.Name == "TOOLHIVE_DEBUG" {
+						assert.Equal(t, "true", env.Value)
+						debugEnvFound = true
 					}
 				}
-				assert.True(t, found, "Custom environment variable should be present")
+				assert.True(t, customEnvFound, "Custom environment variable should be present")
+				assert.True(t, debugEnvFound, "TOOLHIVE_DEBUG environment variable should be present")
 
-				// Verify custom args are appended
+				// Verify args only contain base arguments
 				assert.Contains(t, container.Args, "run")
+				assert.Contains(t, container.Args, "--foreground=true")
 				assert.Contains(t, container.Args, "placeholder-for-remote-proxy")
-				assert.Contains(t, container.Args, "--debug")
-				assert.Contains(t, container.Args, "--verbose")
+				assert.Len(t, container.Args, 3, "Args should only contain base arguments")
 			},
 		},
 	}

@@ -34,6 +34,13 @@ func NewRootCmd() *cobra.Command {
 		logger.Errorf("Error binding debug flag: %v", err)
 	}
 
+	// Bind TOOLHIVE_DEBUG environment variable to viper debug config
+	// This allows setting debug mode via environment variable
+	err = viper.BindEnv("debug", "TOOLHIVE_DEBUG")
+	if err != nil {
+		logger.Errorf("Error binding TOOLHIVE_DEBUG env var: %v", err)
+	}
+
 	// Add subcommands
 	rootCmd.AddCommand(runCmd)
 

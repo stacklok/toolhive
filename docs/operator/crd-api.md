@@ -1353,8 +1353,7 @@ _Appears in:_
 | `annotations` _object (keys:string, values:string)_ | Annotations to add or override on the resource |  |  |
 | `labels` _object (keys:string, values:string)_ | Labels to add or override on the resource |  |  |
 | `podTemplateMetadataOverrides` _[ResourceMetadataOverrides](#resourcemetadataoverrides)_ |  |  |  |
-| `env` _[EnvVar](#envvar) array_ | Env are environment variables to set in the proxy container (thv run process)<br />These affect the toolhive proxy itself, not the MCP server it manages |  |  |
-| `args` _string array_ | Args are additional command-line arguments to pass to the proxy container (thv-proxyrunner)<br />These are inserted after the 'run' command but before other arguments (e.g., ["--debug"])<br />Common use case: adding --debug flag to enable debug logging |  |  |
+| `env` _[EnvVar](#envvar) array_ | Env are environment variables to set in the proxy container (thv run process)<br />These affect the toolhive proxy itself, not the MCP server it manages<br />Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy |  |  |
 
 
 #### RedisCacheConfig

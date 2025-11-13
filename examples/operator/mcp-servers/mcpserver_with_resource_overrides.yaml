@@ -39,11 +39,8 @@ spec:
       env:
         - name: CUSTOM_PROXY_VAR
           value: "custom-value"
-
-      # Additional command-line arguments for the proxy runner
-      # Common use case: adding --debug flag to enable debug logging
-      args:
-        - --debug  # Enable debug logging to see detailed token exchange, middleware, and proxy logs
+        - name: TOOLHIVE_DEBUG
+          value: "true"  # Enable debug logging to see detailed token exchange, middleware, and proxy logs
     proxyService:
       annotations:
         example.com/service-annotation: "custom-service-value"

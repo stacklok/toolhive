@@ -1,5 +1,18 @@
 # Virtual MCP Server Configuration Example
+#
+# This example demonstrates all available configuration options for the Virtual MCP Server.
+# The Virtual MCP Server aggregates multiple MCP server workloads from a ToolHive group
+# into a single unified MCP endpoint.
+#
 # References: docs/proposals/THV-2106-virtual-mcp-server.md
+#
+# Usage:
+#   vmcp serve --config vmcp-config.yaml
+#
+# Prerequisites:
+#   1. Create a ToolHive group: thv group create engineering-team
+#   2. Run backend MCP servers: thv run github --group engineering-team
+#   3. Start Virtual MCP: vmcp serve --config this-file.yaml
 
 # Virtual MCP metadata
 name: "engineering-vmcp"
@@ -7,7 +20,8 @@ group: "engineering-team"  # Reference to ToolHive group
 
 # ===== INCOMING AUTHENTICATION (Client → Virtual MCP) =====
 incoming_auth:
-  type: oidc  # oidc | anonymous | local
+  type: oidc  # Options: oidc | anonymous | local
+  # OIDC configuration
   oidc:
     issuer: "https://keycloak.example.com/realms/myrealm"
     client_id: "vmcp-client"
@@ -30,7 +44,7 @@ incoming_auth:
 # ===== OUTGOING AUTHENTICATION (Virtual MCP → Backend APIs) =====
 outgoing_auth:
   # Configuration source (CLI only supports 'inline')
-  source: inline  # inline (CLI only)
+  source: inline  # Options: inline | discovered
 
   # Default behavior for backends without explicit config
   default:
@@ -85,8 +99,9 @@ outgoing_auth:
     #   type: pass_through  # Forward client token unchanged
 
 # ===== TOKEN CACHING =====
+# Token cache configuration
 token_cache:
-  provider: memory  # memory | redis | custom
+  provider: memory  # Options: memory | redis | custom
   config:
     max_entries: 1000
     ttl_offset: "5m"  # Refresh tokens 5 minutes before expiry

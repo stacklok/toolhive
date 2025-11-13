@@ -55,7 +55,6 @@
 //		RouteTool(ctx context.Context, toolName string) (*vmcp.BackendTarget, error)
 //		RouteResource(ctx context.Context, uri string) (*vmcp.BackendTarget, error)
 //		RoutePrompt(ctx context.Context, name string) (*vmcp.BackendTarget, error)
-//		UpdateRoutingTable(ctx context.Context, table *vmcp.RoutingTable) error
 //	}
 //
 // Aggregator (pkg/vmcp/aggregator):
@@ -124,8 +123,8 @@
 //	backends, err := agg.DiscoverBackends(ctx)
 //	capabilities, err := agg.AggregateCapabilities(ctx, backends)
 //
-//	// Update router with aggregated capabilities
-//	err = rtr.UpdateRoutingTable(ctx, capabilities.RoutingTable)
+//	// With lazy discovery, capabilities are stored in request context
+//	// by the discovery middleware, not in the router
 //
 //	// Handle incoming requests
 //	http.Handle("/tools/call", inAuth.Middleware()(
@@ -133,7 +132,7 @@
 //			// Authenticate request
 //			identity, err := inAuth.Authenticate(ctx, r)
 //
-//			// Route to backend
+//			// Route to backend (router gets capabilities from context)
 //			target, err := rtr.RouteTool(ctx, toolName)
 //
 //			// Authenticate to backend (resolve strategy and call it)

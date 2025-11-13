@@ -324,16 +324,17 @@ func (*YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*B
 			return nil, fmt.Errorf("token_exchange configuration is required")
 		}
 
-		// Resolve client secret from environment
-		clientSecret := os.Getenv(raw.TokenExchange.ClientSecretEnv)
-		if clientSecret == "" && raw.TokenExchange.ClientSecretEnv != "" {
-			return nil, fmt.Errorf("environment variable %s not set", raw.TokenExchange.ClientSecretEnv)
+		// Validate that environment variable is set (but don't resolve it yet)
+		if raw.TokenExchange.ClientSecretEnv != "" {
+			if os.Getenv(raw.TokenExchange.ClientSecretEnv) == "" {
+				return nil, fmt.Errorf("environment variable %s not set", raw.TokenExchange.ClientSecretEnv)
+			}
 		}
 
 		strategy.Metadata = map[string]any{
 			"token_url":          raw.TokenExchange.TokenURL,
 			"client_id":          raw.TokenExchange.ClientID,
-			"client_secret":      clientSecret,
+			"client_secret_env":  raw.TokenExchange.ClientSecretEnv,
 			"audience":           raw.TokenExchange.Audience,
 			"scopes":             raw.TokenExchange.Scopes,
 			"subject_token_type": raw.TokenExchange.SubjectTokenType,

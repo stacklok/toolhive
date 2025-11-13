@@ -158,6 +158,8 @@ func createStrategy(strategyType string) (auth.Strategy, error) {
 	switch strategyType {
 	case strategies.StrategyTypeHeaderInjection:
 		return strategies.NewHeaderInjectionStrategy(), nil
+	case strategies.StrategyTypeTokenExchange:
+		return strategies.NewTokenExchangeStrategy(), nil
 	case strategies.StrategyTypeUnauthenticated:
 		return strategies.NewUnauthenticatedStrategy(), nil
 	default:

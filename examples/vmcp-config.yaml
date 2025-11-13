@@ -34,7 +34,7 @@ outgoing_auth:
 
   # Default behavior for backends without explicit config
   default:
-    type: unauthenticated  # unauthenticated | header_injection
+    type: unauthenticated  # unauthenticated | header_injection | token_exchange
     # TODO: Uncomment when pass_through is implemented
     # type: pass_through  # Forward client token unchanged
 
@@ -48,24 +48,24 @@ outgoing_auth:
       type: header_injection
       header_injection:
         header_name: "Authorization"
-        header_value: "${GITHUB_API_TOKEN}"  # Read from environment variable
+        header_value: "your-github-api-token-here"
 
-    # TODO: Uncomment when token_exchange strategy is implemented
+    # Example: OAuth 2.0 Token Exchange (RFC 8693) for GitHub API access
     # github:
     #   type: token_exchange
-    #   metadata:
+    #   token_exchange:
     #     # RFC 8693 token exchange for GitHub API access
     #     token_url: "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token"
     #     client_id: "vmcp-github-exchange"
     #     client_secret_env: "GITHUB_EXCHANGE_SECRET"
     #     audience: "github-api"  # Token audience for GitHub API
     #     scopes: ["repo", "read:org"]  # GitHub API scopes
-    #     subject_token_type: "access_token"  # access_token | id_token
+    #     subject_token_type: "access_token"  # Optional: access_token | id_token | jwt
 
-    # TODO: Uncomment when token_exchange strategy is implemented
+    # Example: Token Exchange for Jira API access
     # jira:
     #   type: token_exchange
-    #   metadata:
+    #   token_exchange:
     #     token_url: "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token"
     #     client_id: "vmcp-jira-exchange"
     #     client_secret_env: "JIRA_EXCHANGE_SECRET"

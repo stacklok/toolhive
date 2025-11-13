@@ -9,6 +9,7 @@ import (
 	"time"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/versions"
@@ -87,12 +88,18 @@ func (c *Client) SendMetrics(instanceID string, record MetricRecord) error {
 	return nil
 }
 
-// generateUserAgent creates the user agent string
+// generateUserAgent creates the user agent string using the OS environment
 // Format: toolhive/[local|operator] [version] [build_type] (os/arch)
 func generateUserAgent() string {
+	return generateUserAgentWithEnv(&env.OSReader{})
+}
+
+// generateUserAgentWithEnv creates the user agent string using the provided environment reader
+// Format: toolhive/[local|operator] [version] [build_type] (os/arch)
+func generateUserAgentWithEnv(envReader env.Reader) string {
 	// Determine component type
 	envType := "local"
-	if rt.IsKubernetesRuntime() {
+	if rt.IsKubernetesRuntimeWithEnv(envReader) {
 		envType = "operator"
 	}
 

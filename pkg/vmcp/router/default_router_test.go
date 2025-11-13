@@ -8,6 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
 
@@ -51,11 +53,11 @@ func TestDefaultRouter_RouteTool(t *testing.T) {
 			errorContains: "tool not found",
 		},
 		{
-			name:          "routing table not initialized",
+			name:          "capabilities not in context",
 			setupTable:    nil,
 			toolName:      "test_tool",
 			expectError:   true,
-			errorContains: "routing table not initialized",
+			errorContains: "capabilities not found in context",
 		},
 		{
 			name: "routing table tools map is nil",
@@ -77,10 +79,12 @@ func TestDefaultRouter_RouteTool(t *testing.T) {
 			ctx := context.Background()
 			r := router.NewDefaultRouter()
 
-			// Setup routing table if provided
+			// Setup routing table in context if provided
 			if tt.setupTable != nil {
-				err := r.UpdateRoutingTable(ctx, tt.setupTable)
-				require.NoError(t, err)
+				caps := &aggregator.AggregatedCapabilities{
+					RoutingTable: tt.setupTable,
+				}
+				ctx = discovery.WithDiscoveredCapabilities(ctx, caps)
 			}
 
 			// Test routing
@@ -139,11 +143,11 @@ func TestDefaultRouter_RouteResource(t *testing.T) {
 			errorContains: "resource not found",
 		},
 		{
-			name:          "routing table not initialized",
+			name:          "capabilities not in context",
 			setupTable:    nil,
 			uri:           "file:///test",
 			expectError:   true,
-			errorContains: "routing table not initialized",
+			errorContains: "capabilities not found in context",
 		},
 		{
 			name: "routing table resources map is nil",
@@ -165,10 +169,12 @@ func TestDefaultRouter_RouteResource(t *testing.T) {
 			ctx := context.Background()
 			r := router.NewDefaultRouter()
 
-			// Setup routing table if provided
+			// Setup routing table in context if provided
 			if tt.setupTable != nil {
-				err := r.UpdateRoutingTable(ctx, tt.setupTable)
-				require.NoError(t, err)
+				caps := &aggregator.AggregatedCapabilities{
+					RoutingTable: tt.setupTable,
+				}
+				ctx = discovery.WithDiscoveredCapabilities(ctx, caps)
 			}
 
 			// Test routing
@@ -227,11 +233,11 @@ func TestDefaultRouter_RoutePrompt(t *testing.T) {
 			errorContains: "prompt not found",
 		},
 		{
-			name:          "routing table not initialized",
+			name:          "capabilities not in context",
 			setupTable:    nil,
 			promptName:    "test",
 			expectError:   true,
-			errorContains: "routing table not initialized",
+			errorContains: "capabilities not found in context",
 		},
 		{
 			name: "routing table prompts map is nil",
@@ -253,10 +259,12 @@ func TestDefaultRouter_RoutePrompt(t *testing.T) {
 			ctx := context.Background()
 			r := router.NewDefaultRouter()
 
-			// Setup routing table if provided
+			// Setup routing table in context if provided
 			if tt.setupTable != nil {
-				err := r.UpdateRoutingTable(ctx, tt.setupTable)
-				require.NoError(t, err)
+				caps := &aggregator.AggregatedCapabilities{
+					RoutingTable: tt.setupTable,
+				}
+				ctx = discovery.WithDiscoveredCapabilities(ctx, caps)
 			}
 
 			// Test routing
@@ -275,113 +283,10 @@ func TestDefaultRouter_RoutePrompt(t *testing.T) {
 	}
 }
 
-func TestDefaultRouter_UpdateRoutingTable(t *testing.T) {
-	t.Parallel()
-
-	t.Run("successful update", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := context.Background()
-		r := router.NewDefaultRouter()
-
-		table := &vmcp.RoutingTable{
-			Tools: map[string]*vmcp.BackendTarget{
-				"tool1": {WorkloadID: "backend1"},
-				"tool2": {WorkloadID: "backend2"},
-			},
-			Resources: map[string]*vmcp.BackendTarget{
-				"res1": {WorkloadID: "backend1"},
-			},
-			Prompts: map[string]*vmcp.BackendTarget{
-				"prompt1": {WorkloadID: "backend2"},
-			},
-		}
-
-		err := r.UpdateRoutingTable(ctx, table)
-		require.NoError(t, err)
-
-		// Verify tools can be routed
-		target, err := r.RouteTool(ctx, "tool1")
-		require.NoError(t, err)
-		assert.Equal(t, "backend1", target.WorkloadID)
-
-		target, err = r.RouteTool(ctx, "tool2")
-		require.NoError(t, err)
-		assert.Equal(t, "backend2", target.WorkloadID)
-
-		// Verify resources can be routed
-		target, err = r.RouteResource(ctx, "res1")
-		require.NoError(t, err)
-		assert.Equal(t, "backend1", target.WorkloadID)
-
-		// Verify prompts can be routed
-		target, err = r.RoutePrompt(ctx, "prompt1")
-		require.NoError(t, err)
-		assert.Equal(t, "backend2", target.WorkloadID)
-	})
-
-	t.Run("update with nil table", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := context.Background()
-		r := router.NewDefaultRouter()
-
-		err := r.UpdateRoutingTable(ctx, nil)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "routing table cannot be nil")
-	})
-
-	t.Run("atomic update - old table remains until update completes", func(t *testing.T) {
-		t.Parallel()
-
-		ctx := context.Background()
-		r := router.NewDefaultRouter()
-
-		// Setup initial table
-		oldTable := &vmcp.RoutingTable{
-			Tools: map[string]*vmcp.BackendTarget{
-				"old_tool": {WorkloadID: "backend_old"},
-			},
-			Resources: make(map[string]*vmcp.BackendTarget),
-			Prompts:   make(map[string]*vmcp.BackendTarget),
-		}
-		err := r.UpdateRoutingTable(ctx, oldTable)
-		require.NoError(t, err)
-
-		// Verify old tool is routable
-		target, err := r.RouteTool(ctx, "old_tool")
-		require.NoError(t, err)
-		assert.Equal(t, "backend_old", target.WorkloadID)
-
-		// Update to new table
-		newTable := &vmcp.RoutingTable{
-			Tools: map[string]*vmcp.BackendTarget{
-				"new_tool": {WorkloadID: "backend_new"},
-			},
-			Resources: make(map[string]*vmcp.BackendTarget),
-			Prompts:   make(map[string]*vmcp.BackendTarget),
-		}
-		err = r.UpdateRoutingTable(ctx, newTable)
-		require.NoError(t, err)
-
-		// Old tool should no longer be routable
-		_, err = r.RouteTool(ctx, "old_tool")
-		require.Error(t, err)
-
-		// New tool should be routable
-		target, err = r.RouteTool(ctx, "new_tool")
-		require.NoError(t, err)
-		assert.Equal(t, "backend_new", target.WorkloadID)
-	})
-}
-
 func TestDefaultRouter_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	r := router.NewDefaultRouter()
-
-	// Setup initial routing table
+	// Setup routing table
 	table := &vmcp.RoutingTable{
 		Tools: map[string]*vmcp.BackendTarget{
 			"tool1": {WorkloadID: "backend1"},
@@ -394,17 +299,21 @@ func TestDefaultRouter_ConcurrentAccess(t *testing.T) {
 			"prompt1": {WorkloadID: "backend2"},
 		},
 	}
-	err := r.UpdateRoutingTable(ctx, table)
-	require.NoError(t, err)
 
-	// Run concurrent reads and writes
+	caps := &aggregator.AggregatedCapabilities{
+		RoutingTable: table,
+	}
+	ctx := discovery.WithDiscoveredCapabilities(context.Background(), caps)
+
+	r := router.NewDefaultRouter()
+
+	// Run concurrent readers - router is stateless so this should be safe
 	const numGoroutines = 10
 	const numOperations = 100
 
 	done := make(chan bool, numGoroutines)
 
-	// Concurrent readers
-	for i := 0; i < numGoroutines/2; i++ {
+	for i := 0; i < numGoroutines; i++ {
 		go func() {
 			for j := 0; j < numOperations; j++ {
 				_, _ = r.RouteTool(ctx, "tool1")
@@ -413,28 +322,6 @@ func TestDefaultRouter_ConcurrentAccess(t *testing.T) {
 			}
 			done <- true
 		}()
-	}
-
-	// Concurrent updaters
-	for i := 0; i < numGoroutines/2; i++ {
-		go func(_ int) {
-			for j := 0; j < numOperations; j++ {
-				newTable := &vmcp.RoutingTable{
-					Tools: map[string]*vmcp.BackendTarget{
-						"tool1": {WorkloadID: "backend1"},
-						"tool2": {WorkloadID: "backend2"},
-					},
-					Resources: map[string]*vmcp.BackendTarget{
-						"res1": {WorkloadID: "backend1"},
-					},
-					Prompts: map[string]*vmcp.BackendTarget{
-						"prompt1": {WorkloadID: "backend2"},
-					},
-				}
-				_ = r.UpdateRoutingTable(ctx, newTable)
-			}
-			done <- true
-		}(i)
 	}
 
 	// Wait for all goroutines to complete

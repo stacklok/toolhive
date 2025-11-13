@@ -86,20 +86,6 @@ func (mr *MockRouterMockRecorder) RouteTool(ctx, toolName any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RouteTool", reflect.TypeOf((*MockRouter)(nil).RouteTool), ctx, toolName)
 }
 
-// UpdateRoutingTable mocks base method.
-func (m *MockRouter) UpdateRoutingTable(ctx context.Context, table *vmcp.RoutingTable) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateRoutingTable", ctx, table)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// UpdateRoutingTable indicates an expected call of UpdateRoutingTable.
-func (mr *MockRouterMockRecorder) UpdateRoutingTable(ctx, table any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateRoutingTable", reflect.TypeOf((*MockRouter)(nil).UpdateRoutingTable), ctx, table)
-}
-
 // MockRoutingStrategy is a mock of RoutingStrategy interface.
 type MockRoutingStrategy struct {
 	ctrl     *gomock.Controller

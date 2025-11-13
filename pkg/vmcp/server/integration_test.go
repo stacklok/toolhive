@@ -1,9 +1,13 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 
@@ -11,11 +15,15 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
 // TestIntegration_AggregatorToRouterToServer tests the complete integration
@@ -147,40 +155,46 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 	assert.Equal(t, 1, len(aggregatedCaps.RoutingTable.Resources))
 	assert.Equal(t, 1, len(aggregatedCaps.RoutingTable.Prompts))
 
-	// Step 4: Create router and update with routing table
+	// Step 4: Create router and add capabilities to context
 	rt := router.NewDefaultRouter()
-	err = rt.UpdateRoutingTable(ctx, aggregatedCaps.RoutingTable)
-	require.NoError(t, err)
 
-	// Step 5: Verify router can route to correct backends
-	target, err := rt.RouteTool(ctx, "github_create_issue")
+	// Add discovered capabilities to context
+	ctxWithCaps := discovery.WithDiscoveredCapabilities(ctx, aggregatedCaps)
+
+	// Step 5: Verify router can route to correct backends (using context with capabilities)
+	target, err := rt.RouteTool(ctxWithCaps, "github_create_issue")
 	require.NoError(t, err)
 	assert.Equal(t, "github", target.WorkloadID)
 	assert.Equal(t, "http://github-mcp:8080", target.BaseURL)
 
-	target, err = rt.RouteTool(ctx, "jira_create_issue")
+	target, err = rt.RouteTool(ctxWithCaps, "jira_create_issue")
 	require.NoError(t, err)
 	assert.Equal(t, "jira", target.WorkloadID)
 	assert.Equal(t, "http://jira-mcp:8080", target.BaseURL)
 
-	target, err = rt.RouteResource(ctx, "file:///github/repos")
+	target, err = rt.RouteResource(ctxWithCaps, "file:///github/repos")
 	require.NoError(t, err)
 	assert.Equal(t, "github", target.WorkloadID)
 
-	target, err = rt.RoutePrompt(ctx, "code_review")
+	target, err = rt.RoutePrompt(ctxWithCaps, "code_review")
 	require.NoError(t, err)
 	assert.Equal(t, "github", target.WorkloadID)
 
-	// Step 6: Create server and register capabilities
+	// Step 6: Create discovery manager and server
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+
+	// Mock discovery to return our aggregated capabilities
+	mockDiscoveryMgr.EXPECT().
+		Discover(gomock.Any(), gomock.Any()).
+		Return(aggregatedCaps, nil).
+		AnyTimes()
+
 	srv := server.New(&server.Config{
 		Name:    "test-vmcp",
 		Version: "1.0.0",
 		Host:    "127.0.0.1",
 		Port:    4484,
-	}, rt, mockBackendClient)
-
-	err = srv.RegisterCapabilities(ctx, aggregatedCaps)
-	require.NoError(t, err)
+	}, rt, mockBackendClient, mockDiscoveryMgr, backends)
 
 	// Validate server address
 	assert.Equal(t, "127.0.0.1:4484", srv.Address())
@@ -222,6 +236,205 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 	// Clean up: stop the server
 	cancelServer()
 	time.Sleep(100 * time.Millisecond) // Give server time to shutdown
+}
+
+// TestIntegration_HTTPRequestFlowWithRoutingTable reproduces the routing table initialization issue.
+// This test verifies that the routing table is properly stored in VMCPSession during initialization
+// and can be retrieved for subsequent requests via the complete HTTP request flow.
+func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	ctx := context.Background()
+
+	// Create mock backend with test tool
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+
+	testCapabilities := &vmcp.CapabilityList{
+		Tools: []vmcp.Tool{
+			{
+				Name:        "test_tool",
+				Description: "A test tool",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"input": map[string]any{"type": "string"},
+					},
+				},
+				BackendID: "test-backend",
+			},
+		},
+		Resources:        []vmcp.Resource{},
+		Prompts:          []vmcp.Prompt{},
+		SupportsLogging:  false,
+		SupportsSampling: false,
+	}
+
+	// Mock ListCapabilities for discovery
+	mockBackendClient.EXPECT().
+		ListCapabilities(gomock.Any(), gomock.Any()).
+		Return(testCapabilities, nil).
+		AnyTimes()
+
+	// Mock CallTool for tool execution
+	mockBackendClient.EXPECT().
+		CallTool(gomock.Any(), gomock.Any(), "test_tool", gomock.Any()).
+		Return(map[string]any{"result": "success"}, nil).
+		AnyTimes()
+
+	// Create real components
+	backends := []vmcp.Backend{
+		{
+			ID:            "test-backend",
+			Name:          "Test Backend",
+			BaseURL:       "http://test-backend:8080",
+			TransportType: "streamable-http",
+			HealthStatus:  vmcp.BackendHealthy,
+		},
+	}
+
+	// Create discovery manager
+	conflictResolver := aggregator.NewPrefixConflictResolver("{workload}_")
+	agg := aggregator.NewDefaultAggregator(mockBackendClient, conflictResolver, nil)
+	discoveryMgr, err := discovery.NewManager(agg)
+	require.NoError(t, err)
+
+	// Create router
+	rt := router.NewDefaultRouter()
+
+	// Create identity middleware for auth (must set identity for discovery)
+	identityMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			identity := &auth.Identity{
+				Subject: "test-user",
+				Name:    "testuser",
+				Email:   "test@example.com",
+			}
+			ctx := auth.WithIdentity(r.Context(), identity)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+
+	// Create and start server
+	srv := server.New(&server.Config{
+		Name:           "test-vmcp",
+		Version:        "1.0.0",
+		Host:           "127.0.0.1",
+		Port:           0, // Use random available port
+		SessionTTL:     5 * time.Minute,
+		AuthMiddleware: identityMiddleware,
+	}, rt, mockBackendClient, discoveryMgr, backends)
+
+	serverCtx, cancelServer := context.WithCancel(ctx)
+	t.Cleanup(cancelServer)
+
+	serverErrCh := make(chan error, 1)
+	go func() {
+		if err := srv.Start(serverCtx); err != nil && err != context.Canceled {
+			serverErrCh <- err
+		}
+	}()
+
+	// Wait for server ready
+	select {
+	case <-srv.Ready():
+	case err := <-serverErrCh:
+		t.Fatalf("Server failed to start: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Server timeout waiting for ready")
+	}
+
+	baseURL := "http://" + srv.Address()
+
+	// STEP 1: Send initialize request (no session ID)
+	t.Log("Sending initialize request")
+	initReq := map[string]any{
+		"method": "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2024-11-05",
+			"capabilities":    map[string]any{},
+			"clientInfo": map[string]any{
+				"name":    "test-client",
+				"version": "1.0.0",
+			},
+		},
+	}
+
+	initReqBody, err := json.Marshal(initReq)
+	require.NoError(t, err)
+
+	initResp, err := http.Post(baseURL+"/mcp", "application/json", bytes.NewReader(initReqBody))
+	require.NoError(t, err)
+	defer initResp.Body.Close()
+
+	require.Equal(t, http.StatusOK, initResp.StatusCode, "Initialize request should succeed")
+
+	// Extract session ID
+	sessionID := initResp.Header.Get("Mcp-Session-Id")
+	require.NotEmpty(t, sessionID, "Session ID should be returned")
+
+	t.Logf("Got session ID: %s", sessionID)
+
+	// Give server time to complete AfterInitialize hook
+	time.Sleep(100 * time.Millisecond)
+
+	// CRITICAL CHECK: Verify routing table is stored in session
+	sess, ok := srv.SessionManager().Get(sessionID)
+	require.True(t, ok, "Session should exist in manager")
+	require.NotNil(t, sess, "Session should not be nil")
+
+	t.Logf("Session type: %T", sess)
+
+	vmcpSess, ok := sess.(*vmcpsession.VMCPSession)
+	require.True(t, ok, "Session should be VMCPSession type, got: %T", sess)
+
+	routingTable := vmcpSess.GetRoutingTable()
+	if routingTable == nil {
+		// Debug: Check session data
+		t.Logf("Session ID: %s", vmcpSess.ID())
+		t.Logf("Session Type: %v", vmcpSess.Type())
+		t.Logf("Session Data: %v", vmcpSess.GetData())
+		t.Fatal("REPRODUCER: Routing table is nil after initialization - this is the bug!")
+	}
+
+	t.Logf("Routing table has %d tools", len(routingTable.Tools))
+	require.NotNil(t, routingTable, "Routing table should be stored")
+	// Note: Tool name is prefixed with backend ID due to conflict resolution
+	require.Contains(t, routingTable.Tools, "test-backend_test_tool", "Routing table should have prefixed test_tool")
+
+	// STEP 2: Send tool call request (with session ID)
+	t.Log("Sending tool call request")
+	toolCallReq := map[string]any{
+		"method": "tools/call",
+		"params": map[string]any{
+			"name":      "test-backend_test_tool", // Prefixed name from conflict resolution
+			"arguments": map[string]any{"input": "test"},
+		},
+	}
+
+	toolCallReqBody, err := json.Marshal(toolCallReq)
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", bytes.NewReader(toolCallReqBody))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Mcp-Session-Id", sessionID)
+
+	toolCallResp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer toolCallResp.Body.Close()
+
+	if toolCallResp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(toolCallResp.Body)
+		t.Logf("Tool call failed with status %d: %s", toolCallResp.StatusCode, string(bodyBytes))
+	}
+
+	require.Equal(t, http.StatusOK, toolCallResp.StatusCode, "Tool call should succeed")
+
+	t.Log("Test passed - routing table working correctly")
+	cancelServer()
 }
 
 // TestIntegration_ConflictResolutionStrategies tests that different

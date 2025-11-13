@@ -97,6 +97,16 @@ spec:
                     items:
                       type: string
                     type: array
+                  subjectTokenType:
+                    description: |-
+                      SubjectTokenType is the type of the incoming subject token.
+                      Accepts short forms: "access_token" (default), "id_token", "jwt"
+                      Or full URNs: "urn:ietf:params:oauth:token-type:access_token",
+                                    "urn:ietf:params:oauth:token-type:id_token",
+                                    "urn:ietf:params:oauth:token-type:jwt"
+                      For Google Workload Identity Federation with OIDC providers (like Okta), use "id_token"
+                    pattern: ^(access_token|id_token|jwt|urn:ietf:params:oauth:token-type:(access_token|id_token|jwt))?$
+                    type: string
                   tokenUrl:
                     description: TokenURL is the OAuth 2.0 token endpoint URL for
                       token exchange

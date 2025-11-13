@@ -357,6 +357,14 @@ func WithOIDCConfig(
 	}
 }
 
+// WithTokenExchangeConfig sets the token exchange configuration
+func WithTokenExchangeConfig(config *tokenexchange.Config) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.TokenExchangeConfig = config
+		return nil
+	}
+}
+
 // WithTelemetryConfig configures telemetry settings (legacy - custom attributes handled via middleware)
 func WithTelemetryConfig(
 	otelEndpoint string,

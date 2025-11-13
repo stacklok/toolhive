@@ -218,13 +218,24 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1alpha1.MCPSer
 	}
 
 	// Use the RunConfigBuilder for operator context with full builder pattern
-	return runner.NewOperatorRunConfigBuilder(
+	runConfig, err := runner.NewOperatorRunConfigBuilder(
 		context.Background(),
 		nil,
 		envVars,
 		nil,
 		options...,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Populate middleware configs from the configuration fields
+	// This ensures that middleware_configs is properly set for serialization
+	if err := runner.PopulateMiddlewareConfigs(runConfig); err != nil {
+		return nil, fmt.Errorf("failed to populate middleware configs: %w", err)
+	}
+
+	return runConfig, nil
 }
 
 // labelsForRunConfig returns labels for run config ConfigMap

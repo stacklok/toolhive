@@ -85,13 +85,13 @@ const (
 	SourceTypeFile = "file"
 
 	// RegistryJSONFilePath is the file path where the registry JSON file will be mounted
-	RegistryJSONFilePath = "/data"
+	RegistryJSONFilePath = "/config/registry"
 
 	// RegistryJSONFileName is the name of the registry JSON file
 	RegistryJSONFileName = "registry.json"
 
 	// RegistryServerConfigFilePath is the file path where the registry server config file will be mounted
-	RegistryServerConfigFilePath = "/data/config"
+	RegistryServerConfigFilePath = "/config"
 
 	// RegistryServerConfigFileName is the name of the registry server config file
 	RegistryServerConfigFileName = "config.yaml"

@@ -129,7 +129,6 @@ func (m *manager) IsAPIReady(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRe
 
 func (m *manager) configureRegistryServerConfigMounts(
 	deployment *appsv1.Deployment,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
 	containerName string,
 	configManager config.ConfigManager,
 ) error {
@@ -168,7 +167,7 @@ func (m *manager) configureRegistryServerConfigMounts(
 		volumeMount := corev1.VolumeMount{
 			Name:      configVolumeName,
 			MountPath: config.RegistryServerConfigFilePath, // Mount to directory, not the file path
-			ReadOnly:  true, // ConfigMaps are always read-only anyway
+			ReadOnly:  true,                                // ConfigMaps are always read-only anyway
 		}
 		container.VolumeMounts = append(container.VolumeMounts, volumeMount)
 	}
@@ -176,11 +175,44 @@ func (m *manager) configureRegistryServerConfigMounts(
 	return nil
 }
 
+func (*manager) configureRegistryStorageMounts(
+	deployment *appsv1.Deployment,
+	containerName string,
+) error {
+	// Find the container by name
+	container := findContainerByName(deployment.Spec.Template.Spec.Containers, containerName)
+	if container == nil {
+		return fmt.Errorf("container '%s' not found in deployment", containerName)
+	}
+
+	// Add emptyDir volume for storage data if not already present
+	storageDataVolumeName := "storage-data"
+	if !hasVolume(deployment.Spec.Template.Spec.Volumes, storageDataVolumeName) {
+		storageDataVolume := corev1.Volume{
+			Name: storageDataVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		}
+		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, storageDataVolume)
+	}
+
+	// Add emptyDir mount to the container if not already present
+	if !hasVolumeMount(container.VolumeMounts, storageDataVolumeName) {
+		storageDataVolumeMount := corev1.VolumeMount{
+			Name:      storageDataVolumeName,
+			MountPath: "/data", // You can modify this path as needed
+			ReadOnly:  false,
+		}
+		container.VolumeMounts = append(container.VolumeMounts, storageDataVolumeMount)
+	}
+	return nil
+}
+
 func (*manager) configureRegistrySourceMounts(
 	deployment *appsv1.Deployment,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
 	containerName string,
-	configManager config.ConfigManager,
 ) error {
 
 	// Find the container by name
@@ -209,7 +241,7 @@ func (*manager) configureRegistrySourceMounts(
 			registryDataVolumeMount := corev1.VolumeMount{
 				Name:      registryDataVolumeName,
 				MountPath: config.RegistryJSONFilePath, // Mount only this key from the ConfigMap as a file
-				ReadOnly:  true, // ConfigMaps are always read-only
+				ReadOnly:  true,                        // ConfigMaps are always read-only
 			}
 			container.VolumeMounts = append(container.VolumeMounts, registryDataVolumeMount)
 		}

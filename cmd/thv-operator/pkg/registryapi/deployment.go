@@ -212,12 +212,16 @@ func (m *manager) buildRegistryAPIDeployment(
 	}
 
 	// Configure storage-specific aspects using the new inverted dependency approach
-	if err := m.configureRegistryServerConfigMounts(deployment, mcpRegistry, registryAPIContainerName, configManager); err != nil {
+	if err := m.configureRegistryServerConfigMounts(deployment, registryAPIContainerName, configManager); err != nil {
 		return nil, fmt.Errorf("failed to configure registry server config mounts: %w", err)
 	}
 
-	if err := m.configureRegistrySourceMounts(deployment, mcpRegistry, registryAPIContainerName, configManager); err != nil {
+	if err := m.configureRegistrySourceMounts(deployment, mcpRegistry, registryAPIContainerName); err != nil {
 		return nil, fmt.Errorf("failed to configure registry source mounts: %w", err)
+	}
+
+	if err := m.configureRegistryStorageMounts(deployment, registryAPIContainerName); err != nil {
+		return nil, fmt.Errorf("failed to configure registry storage mounts: %w", err)
 	}
 
 	return deployment, nil

@@ -154,6 +154,29 @@ var _ = Describe("MCPRegistry Server Config", Label("k8s", "registry", "config")
 			}
 			Expect(sourceDataMountFound).To(BeTrue(), "Deployment should have a volume mount for the source data ConfigMap")
 
+			By("checking storage emptyDir volume and mount")
+			// Check that the deployment has an emptyDir volume for writable storage
+			storageVolumeFound := false
+			for _, volume := range deployment.Spec.Template.Spec.Volumes {
+				if volume.Name == "storage-data" && volume.EmptyDir != nil {
+					storageVolumeFound = true
+					break
+				}
+			}
+			Expect(storageVolumeFound).To(BeTrue(), "Deployment should have an emptyDir volume for storage")
+
+			// Check that the storage volume mount exists with write permissions
+			storageMountFound := false
+			for _, mount := range deployment.Spec.Template.Spec.Containers[0].VolumeMounts {
+				if mount.Name == "storage-data" {
+					Expect(mount.MountPath).To(Equal("/data"))
+					Expect(mount.ReadOnly).To(BeFalse(), "Storage mount should be writable")
+					storageMountFound = true
+					break
+				}
+			}
+			Expect(storageMountFound).To(BeTrue(), "Deployment should have a volume mount for the storage emptyDir")
+
 			By("verifying container arguments use the server config")
 			// Verify the container has the correct arguments
 			container := deployment.Spec.Template.Spec.Containers[0]
@@ -269,6 +292,29 @@ var _ = Describe("MCPRegistry Server Config", Label("k8s", "registry", "config")
 			}
 			Expect(sourceDataVolumeFound).To(BeFalse(), "Deployment should NOT have a ConfigMap volume for the source data when using Git source")
 
+			By("checking storage emptyDir volume and mount")
+			// Check that the deployment has an emptyDir volume for writable storage
+			storageVolumeFound := false
+			for _, volume := range deployment.Spec.Template.Spec.Volumes {
+				if volume.Name == "storage-data" && volume.EmptyDir != nil {
+					storageVolumeFound = true
+					break
+				}
+			}
+			Expect(storageVolumeFound).To(BeTrue(), "Deployment should have an emptyDir volume for storage")
+
+			// Check that the storage volume mount exists with write permissions
+			storageMountFound := false
+			for _, mount := range deployment.Spec.Template.Spec.Containers[0].VolumeMounts {
+				if mount.Name == "storage-data" {
+					Expect(mount.MountPath).To(Equal("/data"))
+					Expect(mount.ReadOnly).To(BeFalse(), "Storage mount should be writable")
+					storageMountFound = true
+					break
+				}
+			}
+			Expect(storageMountFound).To(BeTrue(), "Deployment should have a volume mount for the storage emptyDir")
+
 			By("verifying container arguments use the server config")
 			// Verify the container has the correct arguments
 			container := deployment.Spec.Template.Spec.Containers[0]
@@ -378,6 +424,29 @@ var _ = Describe("MCPRegistry Server Config", Label("k8s", "registry", "config")
 				}
 			}
 			Expect(sourceDataVolumeFound).To(BeFalse(), "Deployment should NOT have a ConfigMap volume for the source data when using API source")
+
+			By("checking storage emptyDir volume and mount")
+			// Check that the deployment has an emptyDir volume for writable storage
+			storageVolumeFound := false
+			for _, volume := range deployment.Spec.Template.Spec.Volumes {
+				if volume.Name == "storage-data" && volume.EmptyDir != nil {
+					storageVolumeFound = true
+					break
+				}
+			}
+			Expect(storageVolumeFound).To(BeTrue(), "Deployment should have an emptyDir volume for storage")
+
+			// Check that the storage volume mount exists with write permissions
+			storageMountFound := false
+			for _, mount := range deployment.Spec.Template.Spec.Containers[0].VolumeMounts {
+				if mount.Name == "storage-data" {
+					Expect(mount.MountPath).To(Equal("/data"))
+					Expect(mount.ReadOnly).To(BeFalse(), "Storage mount should be writable")
+					storageMountFound = true
+					break
+				}
+			}
+			Expect(storageMountFound).To(BeTrue(), "Deployment should have a volume mount for the storage emptyDir")
 
 			By("verifying container arguments use the server config")
 			// Verify the container has the correct arguments

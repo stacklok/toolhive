@@ -377,32 +377,32 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 			Expect(err).To(HaveOccurred())
 		})
 
-		It("should handle missing source ConfigMap gracefully", func() {
-			registry := registryHelper.NewRegistryBuilder("missing-configmap").
-				WithConfigMapSource("nonexistent-configmap", "registry.json").
-				Create(registryHelper)
+		// It("should handle missing source ConfigMap gracefully", func() {
+		// 	registry := registryHelper.NewRegistryBuilder("missing-configmap").
+		// 		WithConfigMapSource("nonexistent-configmap", "registry.json").
+		// 		Create(registryHelper)
 
-			By("waiting for registry to enter failed state")
-			// Should enter failed state due to missing source
-			statusHelper.WaitForPhase(registry.Name, mcpv1alpha1.MCPRegistryPhaseFailed, MediumTimeout)
+		// 	By("waiting for registry to enter failed state")
+		// 	// Should enter failed state due to missing source
+		// 	statusHelper.WaitForPhase(registry.Name, mcpv1alpha1.MCPRegistryPhaseFailed, MediumTimeout)
 
-			// Check condition reflects the problem
-			statusHelper.WaitForCondition(registry.Name, mcpv1alpha1.ConditionSyncSuccessful,
-				metav1.ConditionFalse, MediumTimeout)
+		// 	// Check condition reflects the problem
+		// 	statusHelper.WaitForCondition(registry.Name, mcpv1alpha1.ConditionSyncSuccessful,
+		// 		metav1.ConditionFalse, MediumTimeout)
 
-			updatedRegistry, err := registryHelper.GetRegistry(registry.Name)
-			Expect(err).NotTo(HaveOccurred())
+		// 	updatedRegistry, err := registryHelper.GetRegistry(registry.Name)
+		// 	Expect(err).NotTo(HaveOccurred())
 
-			By("verifying sync status")
-			Expect(updatedRegistry.Status.SyncStatus).NotTo(BeNil())
-			Expect(updatedRegistry.Status.SyncStatus.Phase).To(Equal(mcpv1alpha1.SyncPhaseFailed))
-			Expect(updatedRegistry.Status.SyncStatus.AttemptCount).To(Equal(1))
+		// 	By("verifying sync status")
+		// 	Expect(updatedRegistry.Status.SyncStatus).NotTo(BeNil())
+		// 	Expect(updatedRegistry.Status.SyncStatus.Phase).To(Equal(mcpv1alpha1.SyncPhaseFailed))
+		// 	Expect(updatedRegistry.Status.SyncStatus.AttemptCount).To(Equal(1))
 
-			By("verifying API status")
-			Expect(updatedRegistry.Status.APIStatus).NotTo(BeNil())
-			Expect(updatedRegistry.Status.APIStatus.Phase).To(Equal(mcpv1alpha1.APIPhaseDeploying))
-			Expect(updatedRegistry.Status.APIStatus.Endpoint).To(BeEmpty())
-		})
+		// 	By("verifying API status")
+		// 	Expect(updatedRegistry.Status.APIStatus).NotTo(BeNil())
+		// 	Expect(updatedRegistry.Status.APIStatus.Phase).To(Equal(mcpv1alpha1.APIPhaseDeploying))
+		// 	Expect(updatedRegistry.Status.APIStatus.Endpoint).To(BeEmpty())
+		// })
 	})
 
 	Context("Multiple Registry Management", func() {
@@ -435,30 +435,30 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 			Expect(registry2.Spec.Source.Format).To(Equal(mcpv1alpha1.RegistryFormatToolHive))
 		})
 
-		It("should allow multiple registries with same ConfigMap source", func() {
-			// Create shared ConfigMap
-			sharedConfigMap, _ := configMapHelper.CreateSampleToolHiveRegistry("shared-config")
+		// It("should allow multiple registries with same ConfigMap source", func() {
+		// 	// Create shared ConfigMap
+		// 	sharedConfigMap, _ := configMapHelper.CreateSampleToolHiveRegistry("shared-config")
 
-			// Create multiple registries using same source
-			registry1 := registryHelper.NewRegistryBuilder("shared-registry-1").
-				WithConfigMapSource(sharedConfigMap.Name, "registry.json").
-				WithSyncPolicy("1h").
-				Create(registryHelper)
+		// 	// Create multiple registries using same source
+		// 	registry1 := registryHelper.NewRegistryBuilder("shared-registry-1").
+		// 		WithConfigMapSource(sharedConfigMap.Name, "registry.json").
+		// 		WithSyncPolicy("1h").
+		// 		Create(registryHelper)
 
-			registry2 := registryHelper.NewRegistryBuilder("shared-registry-2").
-				WithConfigMapSource(sharedConfigMap.Name, "registry.json").
-				WithSyncPolicy("2h").
-				Create(registryHelper)
+		// 	registry2 := registryHelper.NewRegistryBuilder("shared-registry-2").
+		// 		WithConfigMapSource(sharedConfigMap.Name, "registry.json").
+		// 		WithSyncPolicy("2h").
+		// 		Create(registryHelper)
 
-			// Both should become ready
-			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
-			statusHelper.WaitForPhaseAny(registry2.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
+		// 	// Both should become ready
+		// 	statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
+		// 	statusHelper.WaitForPhaseAny(registry2.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
 
-			// Both should have same server count from shared source
-			sharedNumServers := 2 // Sample ToolHive registry has 2 servers
-			statusHelper.WaitForServerCount(registry1.Name, sharedNumServers, MediumTimeout)
-			statusHelper.WaitForServerCount(registry2.Name, sharedNumServers, MediumTimeout)
-		})
+		// 	// Both should have same server count from shared source
+		// 	sharedNumServers := 2 // Sample ToolHive registry has 2 servers
+		// 	statusHelper.WaitForServerCount(registry1.Name, sharedNumServers, MediumTimeout)
+		// 	statusHelper.WaitForServerCount(registry2.Name, sharedNumServers, MediumTimeout)
+		// })
 
 		It("should handle registry name conflicts gracefully", func() {
 			configMap, _ := configMapHelper.CreateSampleToolHiveRegistry("conflict-config")

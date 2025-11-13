@@ -127,7 +127,7 @@ func (m *manager) IsAPIReady(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRe
 	return m.CheckAPIReadiness(ctx, deployment)
 }
 
-func (m *manager) configureRegistryServerConfigMounts(
+func (*manager) configureRegistryServerConfigMounts(
 	deployment *appsv1.Deployment,
 	containerName string,
 	configManager config.ConfigManager,
@@ -266,7 +266,7 @@ func labelsForRegistryAPI(mcpRegistry *mcpv1alpha1.MCPRegistry, resourceName str
 	}
 }
 
-func (m *manager) ensureRegistryServerConfigConfigMap(
+func (*manager) ensureRegistryServerConfigConfigMap(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
 	configManager config.ConfigManager,

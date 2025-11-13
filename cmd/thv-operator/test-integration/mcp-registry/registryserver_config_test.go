@@ -242,7 +242,7 @@ func (h *serverConfigTestHelpers) waitForAndGetServerConfigMap(registryName stri
 }
 
 // verifyConfigMapBasics verifies the ConfigMap has required annotations and data
-func (h *serverConfigTestHelpers) verifyConfigMapBasics(configMap *corev1.ConfigMap) {
+func (*serverConfigTestHelpers) verifyConfigMapBasics(configMap *corev1.ConfigMap) {
 	// Verify the ConfigMap has the expected annotations
 	Expect(configMap.Annotations).To(HaveKey("toolhive.stacklok.dev/content-checksum"))
 
@@ -252,7 +252,7 @@ func (h *serverConfigTestHelpers) verifyConfigMapBasics(configMap *corev1.Config
 }
 
 // verifyConfigMapOwnership verifies the ConfigMap is owned by the MCPRegistry
-func (h *serverConfigTestHelpers) verifyConfigMapOwnership(configMap *corev1.ConfigMap, registry *mcpv1alpha1.MCPRegistry) {
+func (*serverConfigTestHelpers) verifyConfigMapOwnership(configMap *corev1.ConfigMap, registry *mcpv1alpha1.MCPRegistry) {
 	Expect(configMap.OwnerReferences).To(HaveLen(1))
 	Expect(configMap.OwnerReferences[0].Kind).To(Equal("MCPRegistry"))
 	Expect(configMap.OwnerReferences[0].Name).To(Equal(registry.Name))
@@ -260,7 +260,7 @@ func (h *serverConfigTestHelpers) verifyConfigMapOwnership(configMap *corev1.Con
 }
 
 // verifyConfigMapContent verifies source-specific content in the config.yaml
-func (h *serverConfigTestHelpers) verifyConfigMapContent(configYAML string, registryName string, expectedContent map[string]string) {
+func (*serverConfigTestHelpers) verifyConfigMapContent(configYAML string, registryName string, expectedContent map[string]string) {
 	Expect(configYAML).To(ContainSubstring(fmt.Sprintf("registryName: %s", registryName)))
 	Expect(configYAML).To(ContainSubstring("format: toolhive"))
 
@@ -270,7 +270,7 @@ func (h *serverConfigTestHelpers) verifyConfigMapContent(configYAML string, regi
 }
 
 // verifyServerConfigVolume verifies the deployment has the server config volume and mount
-func (h *serverConfigTestHelpers) verifyServerConfigVolume(deployment *appsv1.Deployment, expectedConfigMapName string) {
+func (*serverConfigTestHelpers) verifyServerConfigVolume(deployment *appsv1.Deployment, expectedConfigMapName string) {
 	// Check volume
 	volumeFound := false
 	for _, volume := range deployment.Spec.Template.Spec.Volumes {
@@ -294,7 +294,7 @@ func (h *serverConfigTestHelpers) verifyServerConfigVolume(deployment *appsv1.De
 }
 
 // verifyStorageVolume verifies the deployment has the storage emptyDir volume and mount
-func (h *serverConfigTestHelpers) verifyStorageVolume(deployment *appsv1.Deployment) {
+func (*serverConfigTestHelpers) verifyStorageVolume(deployment *appsv1.Deployment) {
 	// Check volume
 	storageVolumeFound := false
 	for _, volume := range deployment.Spec.Template.Spec.Volumes {
@@ -319,7 +319,7 @@ func (h *serverConfigTestHelpers) verifyStorageVolume(deployment *appsv1.Deploym
 }
 
 // verifySourceDataVolume verifies the source data ConfigMap volume for ConfigMap sources
-func (h *serverConfigTestHelpers) verifySourceDataVolume(deployment *appsv1.Deployment, registry *mcpv1alpha1.MCPRegistry) {
+func (*serverConfigTestHelpers) verifySourceDataVolume(deployment *appsv1.Deployment, registry *mcpv1alpha1.MCPRegistry) {
 	expectedSourceConfigMapName := registry.GetConfigMapSourceName()
 
 	// Check volume
@@ -347,7 +347,7 @@ func (h *serverConfigTestHelpers) verifySourceDataVolume(deployment *appsv1.Depl
 }
 
 // verifyNoSourceDataVolume verifies there's no source data ConfigMap volume (for Git/API sources)
-func (h *serverConfigTestHelpers) verifyNoSourceDataVolume(deployment *appsv1.Deployment, sourceType string) {
+func (*serverConfigTestHelpers) verifyNoSourceDataVolume(deployment *appsv1.Deployment, sourceType string) {
 	sourceDataVolumeFound := false
 	for _, volume := range deployment.Spec.Template.Spec.Volumes {
 		if volume.Name == registryapi.RegistryDataVolumeName && volume.ConfigMap != nil {
@@ -360,7 +360,7 @@ func (h *serverConfigTestHelpers) verifyNoSourceDataVolume(deployment *appsv1.De
 }
 
 // verifyContainerArguments verifies the container has the correct arguments
-func (h *serverConfigTestHelpers) verifyContainerArguments(deployment *appsv1.Deployment) {
+func (*serverConfigTestHelpers) verifyContainerArguments(deployment *appsv1.Deployment) {
 	container := deployment.Spec.Template.Spec.Containers[0]
 	Expect(container.Args).To(ContainElement("serve"))
 

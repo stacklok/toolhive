@@ -21,7 +21,7 @@ const (
 )
 
 // DetectRegistryType determines if input is a URL or file path and returns cleaned path
-func DetectRegistryType(input string) (registryType string, cleanPath string) {
+func DetectRegistryType(input string, allowPrivateIPs bool) (registryType string, cleanPath string) {
 	// Check for explicit file:// protocol
 	if strings.HasPrefix(input, "file://") {
 		return RegistryTypeFile, strings.TrimPrefix(input, "file://")
@@ -35,7 +35,7 @@ func DetectRegistryType(input string) (registryType string, cleanPath string) {
 		}
 
 		// For URLs without .json extension, probe to determine the type
-		registryType := probeRegistryURL(input)
+		registryType := probeRegistryURL(input, allowPrivateIPs)
 		return registryType, input
 	}
 
@@ -45,8 +45,9 @@ func DetectRegistryType(input string) (registryType string, cleanPath string) {
 
 // probeRegistryURL attempts to determine if a URL is a static JSON file or an API endpoint
 // by checking if the URL returns valid ToolHive registry JSON or has an /openapi.yaml endpoint.
-func probeRegistryURL(url string) string {
-	client, err := networking.NewHttpClientBuilder().Build()
+func probeRegistryURL(url string, allowPrivateIPs bool) string {
+	// Create HTTP client for probing with user's private IP preference
+	client, err := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateIPs).Build()
 	if err != nil {
 		// If we can't create a client, default to static JSON
 		return RegistryTypeURL
@@ -62,9 +63,11 @@ func probeRegistryURL(url string) string {
 	if err == nil {
 		resp, err := client.Head(openapiURL)
 		if err == nil {
-			resp.Body.Close()
-			// If openapi.yaml exists, treat as API endpoint
-			return RegistryTypeAPI
+			_ = resp.Body.Close()
+			// If openapi.yaml exists (200 OK), treat as API endpoint
+			if resp.StatusCode == http.StatusOK {
+				return RegistryTypeAPI
+			}
 		}
 	}
 

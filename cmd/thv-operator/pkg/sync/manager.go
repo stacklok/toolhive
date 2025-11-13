@@ -94,8 +94,6 @@ type Manager interface {
 
 // DataChangeDetector detects changes in source data
 type DataChangeDetector interface {
-	// IsDataChanged checks if source data has changed by comparing hashes
-	IsDataChanged(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, error)
 }
 
 // ManualSyncChecker handles manual sync detection logic
@@ -125,6 +123,7 @@ func NewDefaultSyncManager(k8sClient client.Client, scheme *runtime.Scheme) *Def
 	return &DefaultSyncManager{
 		client:               k8sClient,
 		scheme:               scheme,
+		dataChangeDetector:   &DefaultDataChangeDetector{},
 		manualSyncChecker:    &DefaultManualSyncChecker{},
 		automaticSyncChecker: &DefaultAutomaticSyncChecker{},
 	}
@@ -177,29 +176,24 @@ func (s *DefaultSyncManager) ShouldSync(
 		reason = ReasonFilterChanged
 	} else if shouldSync || requeueElapsed {
 		// Check if source data has changed by comparing hash
-		dataChanged, err := s.dataChangeDetector.IsDataChanged(ctx, mcpRegistry)
-		if err != nil {
-			ctxLogger.Error(err, "Failed to determine if data has changed")
+		// force to true for now, will remove in later PR when removing sync
+		dataChanged := true
+		ctxLogger.Info("Checked data changes", "dataChanged", dataChanged)
+		if dataChanged {
 			shouldSync = true
-			reason = ReasonErrorCheckingChanges
-		} else {
-			ctxLogger.Info("Checked data changes", "dataChanged", dataChanged)
-			if dataChanged {
-				shouldSync = true
-				if syncNeededForState {
-					reason = ReasonRegistryNotReady
-				} else if manualSyncRequested {
-					reason = ReasonManualWithChanges
-				} else {
-					reason = ReasonSourceDataChanged
-				}
+			if syncNeededForState {
+				reason = ReasonRegistryNotReady
+			} else if manualSyncRequested {
+				reason = ReasonManualWithChanges
 			} else {
-				shouldSync = false
-				if syncNeededForState {
-					reason = ReasonUpToDateWithPolicy
-				} else {
-					reason = ReasonManualNoChanges
-				}
+				reason = ReasonSourceDataChanged
+			}
+		} else {
+			shouldSync = false
+			if syncNeededForState {
+				reason = ReasonUpToDateWithPolicy
+			} else {
+				reason = ReasonManualNoChanges
 			}
 		}
 	}

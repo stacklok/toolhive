@@ -42,6 +42,10 @@ const (
 
 	// RegistryDataVolumeName is the name of the volume used for registry data
 	RegistryDataVolumeName = "registry-data"
+
+	// RegistryServerConfigVolumeName is the name of the volume used for registry server config
+	RegistryServerConfigVolumeName = "registry-server-config"
+
 	// RegistryDataMountPath is the mount path for registry data in containers
 	RegistryDataMountPath = "/data/registry"
 

@@ -26,8 +26,8 @@ func TestBuildConfig_EmptyRegistryName(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManagerForTesting()
-	config, err := manager.BuildConfig(mcpRegistry)
+	manager := NewConfigManagerForTesting(mcpRegistry)
+	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
 	assert.Equal(t, "registry name is required", err.Error())
@@ -48,8 +48,8 @@ func TestBuildConfig_MissingSource(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManagerForTesting()
-	config, err := manager.BuildConfig(mcpRegistry)
+	manager := NewConfigManagerForTesting(mcpRegistry)
+	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "source type is required")
@@ -71,8 +71,8 @@ func TestBuildConfig_EmptyFormat(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManagerForTesting()
-	config, err := manager.BuildConfig(mcpRegistry)
+	manager := NewConfigManagerForTesting(mcpRegistry)
+	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "source format is required")
@@ -94,8 +94,8 @@ func TestBuildConfig_UnsupportedSourceType(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManagerForTesting()
-	config, err := manager.BuildConfig(mcpRegistry)
+	manager := NewConfigManagerForTesting(mcpRegistry)
+	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported source type: unsupported-type")
@@ -108,18 +108,17 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 
 	t.Run("nil configmap source object", func(t *testing.T) {
 		t.Parallel()
-		// Note: Currently, nil ConfigMap doesn't cause an error since the code
-		// directly creates a FileConfig without checking if ConfigMap is nil.
-		// This test documents the current behavior.
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Source: mcpv1alpha1.MCPRegistrySource{
-					Type:      mcpv1alpha1.RegistrySourceTypeConfigMap,
-					Format:    mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMap: nil, // Currently doesn't cause an error
+					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMap: &mcpv1alpha1.ConfigMapSource{
+						Name: "registry-configmap",
+					},
 				},
 				SyncPolicy: &mcpv1alpha1.SyncPolicy{
 					Interval: "1h",
@@ -127,8 +126,8 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		// Currently this succeeds even with nil ConfigMap
 		require.NoError(t, err)
@@ -160,8 +159,8 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -191,8 +190,8 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "git source configuration is required")
@@ -216,8 +215,8 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "git repository is required")
@@ -242,8 +241,8 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "git branch, tag, and commit are mutually exclusive")
@@ -271,8 +270,8 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -307,8 +306,8 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -343,8 +342,8 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -378,8 +377,8 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "api source configuration is required")
@@ -403,8 +402,8 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "api endpoint is required")
@@ -431,8 +430,8 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -469,8 +468,8 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "sync policy configuration is required")
@@ -497,8 +496,8 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "sync policy interval is required")
@@ -525,8 +524,8 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -562,8 +561,8 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -598,8 +597,8 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -638,8 +637,8 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -681,8 +680,8 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -726,8 +725,8 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -783,7 +782,7 @@ func TestToConfigMapWithContentChecksum(t *testing.T) {
 	require.NotNil(t, configMap)
 
 	// Verify basic ConfigMap properties
-	assert.Equal(t, "checksum-test-registry-configmap", configMap.Name)
+	assert.Equal(t, "checksum-test-registry-registry-server-config", configMap.Name)
 	assert.Equal(t, "test-namespace", configMap.Namespace)
 
 	// Verify the checksum annotation exists

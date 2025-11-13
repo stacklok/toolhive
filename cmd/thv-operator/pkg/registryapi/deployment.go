@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 )
 
 // CheckAPIReadiness verifies that the deployed registry-API Deployment is ready
@@ -73,11 +74,16 @@ func (*manager) CheckAPIReadiness(ctx context.Context, deployment *appsv1.Deploy
 func (m *manager) ensureDeployment(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	configManager config.ConfigManager,
 ) (*appsv1.Deployment, error) {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
 	// Build the desired deployment configuration
-	deployment := m.buildRegistryAPIDeployment(mcpRegistry)
+	deployment, err := m.buildRegistryAPIDeployment(mcpRegistry, configManager)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to build deployment configuration")
+		return nil, fmt.Errorf("failed to build deployment configuration: %w", err)
+	}
 	deploymentName := deployment.Name
 
 	// Set owner reference for automatic garbage collection
@@ -88,7 +94,7 @@ func (m *manager) ensureDeployment(
 
 	// Check if deployment already exists
 	existing := &appsv1.Deployment{}
-	err := m.client.Get(ctx, client.ObjectKey{
+	err = m.client.Get(ctx, client.ObjectKey{
 		Name:      deploymentName,
 		Namespace: mcpRegistry.Namespace,
 	}, existing)
@@ -118,9 +124,10 @@ func (m *manager) ensureDeployment(
 // buildRegistryAPIDeployment creates and configures a Deployment object for the registry API.
 // This function handles all deployment configuration including labels, container specs, probes,
 // and storage manager integration. It returns a fully configured deployment ready for Kubernetes API operations.
-func (*manager) buildRegistryAPIDeployment(
+func (m *manager) buildRegistryAPIDeployment(
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
-) *appsv1.Deployment {
+	configManager config.ConfigManager,
+) (*appsv1.Deployment, error) {
 	// Generate deployment name using the established pattern
 	deploymentName := mcpRegistry.GetAPIResourceName()
 
@@ -204,7 +211,16 @@ func (*manager) buildRegistryAPIDeployment(
 		},
 	}
 
-	return deployment
+	// Configure storage-specific aspects using the new inverted dependency approach
+	if err := m.configureRegistryServerConfigMounts(deployment, mcpRegistry, registryAPIContainerName, configManager); err != nil {
+		return nil, fmt.Errorf("failed to configure registry server config mounts: %w", err)
+	}
+
+	if err := m.configureRegistrySourceMounts(deployment, mcpRegistry, registryAPIContainerName, configManager); err != nil {
+		return nil, fmt.Errorf("failed to configure registry source mounts: %w", err)
+	}
+
+	return deployment, nil
 }
 
 // getRegistryAPIImage returns the registry API container image to use

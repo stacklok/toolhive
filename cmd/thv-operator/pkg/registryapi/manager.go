@@ -5,12 +5,15 @@ import (
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
 // manager implements the Manager interface
@@ -39,8 +42,31 @@ func (m *manager) ReconcileAPIService(
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 	ctxLogger.Info("Reconciling API service")
 
+	// Create ConfigManager locally to avoid concurrency issues
+	configManager, err := config.NewConfigManager(m.client, m.scheme, checksum.NewRunConfigConfigMapChecksum(), mcpRegistry)
+	if err != nil {
+		return &mcpregistrystatus.Error{
+			Err:             err,
+			Message:         fmt.Sprintf("failed to create config manager: %v", err),
+			ConditionType:   mcpv1alpha1.ConditionAPIReady,
+			ConditionReason: "ConfigManagerFailed",
+		}
+	}
+
+	// Pass configManager to methods that need it
+	err = m.ensureRegistryServerConfigConfigMap(ctx, mcpRegistry, configManager)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to ensure registry server config config map")
+		return &mcpregistrystatus.Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to ensure registry server config config map: %v", err),
+			ConditionType:   mcpv1alpha1.ConditionAPIReady,
+			ConditionReason: "ConfigMapFailed",
+		}
+	}
+
 	// Step 1: Ensure deployment exists and is configured correctly
-	deployment, err := m.ensureDeployment(ctx, mcpRegistry)
+	deployment, err := m.ensureDeployment(ctx, mcpRegistry, configManager)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to ensure deployment")
 		return &mcpregistrystatus.Error{
@@ -100,6 +126,98 @@ func (m *manager) IsAPIReady(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRe
 	return m.CheckAPIReadiness(ctx, deployment)
 }
 
+func (m *manager) configureRegistryServerConfigMounts(
+	deployment *appsv1.Deployment,
+	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	containerName string,
+	configManager config.ConfigManager,
+) error {
+
+	// Find the container by name
+	container := findContainerByName(deployment.Spec.Template.Spec.Containers, containerName)
+	if container == nil {
+		return fmt.Errorf("container '%s' not found in deployment", containerName)
+	}
+
+	// Replace container args completely with the correct set of arguments
+	// This ensures idempotent behavior across multiple reconciliations
+	container.Args = []string{
+		ServeCommand,
+		fmt.Sprintf("--config=%s", config.RegistryServerConfigFilePath),
+		fmt.Sprintf("--registry-name=%s", mcpRegistry.Name),
+	}
+
+	// Add ConfigMap volume to deployment if not already present
+	configVolumeName := RegistryServerConfigVolumeName
+	if !hasVolume(deployment.Spec.Template.Spec.Volumes, configVolumeName) {
+		configVolume := corev1.Volume{
+			Name: configVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: configManager.GetRegistryServerConfigMapName(),
+					},
+				},
+			},
+		}
+		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, configVolume)
+	}
+
+	// Add volume mount to the container if not already present
+	if !hasVolumeMount(container.VolumeMounts, configVolumeName) {
+		volumeMount := corev1.VolumeMount{
+			Name:      configVolumeName,
+			MountPath: config.RegistryServerConfigFilePath,
+			ReadOnly:  true,
+		}
+		container.VolumeMounts = append(container.VolumeMounts, volumeMount)
+	}
+
+	return nil
+}
+
+func (*manager) configureRegistrySourceMounts(
+	deployment *appsv1.Deployment,
+	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	containerName string,
+	configManager config.ConfigManager,
+) error {
+
+	// Find the container by name
+	container := findContainerByName(deployment.Spec.Template.Spec.Containers, containerName)
+	if container == nil {
+		return fmt.Errorf("container '%s' not found in deployment", containerName)
+	}
+
+	if mcpRegistry.IsConfigMapRegistrySource() {
+		registryDataVolumeName := RegistryDataVolumeName
+		if !hasVolume(deployment.Spec.Template.Spec.Volumes, registryDataVolumeName) {
+			registryDataVolume := corev1.Volume{
+				Name: registryDataVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: mcpRegistry.GetConfigMapSourceName(),
+						},
+					},
+				},
+			}
+			deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, registryDataVolume)
+		}
+
+		if !hasVolumeMount(container.VolumeMounts, registryDataVolumeName) {
+			registryDataVolumeMount := corev1.VolumeMount{
+				Name:      registryDataVolumeName,
+				MountPath: config.RegistryJSONFilePath,
+				ReadOnly:  true,
+			}
+			container.VolumeMounts = append(container.VolumeMounts, registryDataVolumeMount)
+		}
+	}
+
+	return nil
+}
+
 // getConfigMapName generates the ConfigMap name for registry storage
 // This mirrors the logic in ConfigMapStorageManager to maintain consistency
 func getConfigMapName(mcpRegistry *mcpv1alpha1.MCPRegistry) string {
@@ -114,4 +232,26 @@ func labelsForRegistryAPI(mcpRegistry *mcpv1alpha1.MCPRegistry, resourceName str
 		"app.kubernetes.io/managed-by":       "toolhive-operator",
 		"toolhive.stacklok.io/registry-name": mcpRegistry.Name,
 	}
+}
+
+func (m *manager) ensureRegistryServerConfigConfigMap(
+	ctx context.Context,
+	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	configManager config.ConfigManager,
+) error {
+	cfg, err := configManager.BuildConfig()
+	if err != nil {
+		return fmt.Errorf("failed to build registry server config configuration: %w", err)
+	}
+
+	configMap, err := cfg.ToConfigMapWithContentChecksum(mcpRegistry)
+	if err != nil {
+		return fmt.Errorf("failed to create config map: %w", err)
+	}
+
+	err = configManager.UpsertConfigMap(ctx, mcpRegistry, configMap)
+	if err != nil {
+		return fmt.Errorf("failed to upsert registry server config config map: %w", err)
+	}
+	return nil
 }

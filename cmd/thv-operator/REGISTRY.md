@@ -2,7 +2,7 @@
 
 ## Overview
 
-MCPRegistry is a Kubernetes Custom Resource that manages MCP (Model Context Protocol) server registries. It provides centralized server discovery, automated synchronization, content filtering, and image validation for MCP servers in your cluster.
+MCPRegistry is a Kubernetes Custom Resource that manages MCP (Model Context Protocol) server registries. It provides centralized server discovery, automated synchronization, and image validation for MCP servers in your cluster.
 
 ## Quick Start
 
@@ -204,63 +204,6 @@ spec:
 - Automatically converted to ToolHive format
 - **Note**: Not supported until the upstream schema is more stable
 
-## Content Filtering
-
-### Tag-Based Filtering
-
-Filter servers by tags:
-
-```yaml
-spec:
-  filter:
-    tags:
-      include:
-        - "production"
-        - "database"
-      exclude:
-        - "experimental"
-        - "deprecated"
-```
-
-### Name-Based Filtering
-
-Filter servers by name patterns:
-
-```yaml
-spec:
-  filter:
-    names:
-      include:
-        - "github*"      # Include github-* servers
-        - "*-prod"       # Include *-prod servers
-      exclude:
-        - "*-beta"       # Exclude beta servers
-        - "test-*"       # Exclude test servers
-```
-
-### Filter Precedence
-
-1. **Include filters** are applied first (if specified)
-2. **Exclude filters** are applied second
-3. Empty include list means "include all"
-4. Exclusions always take precedence over inclusions
-
-Example behavior:
-```yaml
-filter:
-  tags:
-    include: ["database", "production"]
-    exclude: ["experimental"]
-# Result: Include database AND production servers, but exclude any experimental ones
-```
-
-### Automatic Filter Change Detection
-
-The operator automatically detects when filters are modified and triggers a resync:
-- Filter changes are detected using SHA256 hash comparison
-- No manual intervention required when updating filter configuration
-- Changes are tracked in the `status.lastAppliedFilterHash` field
-
 ## Image Validation
 
 ### Registry-Based Enforcement
@@ -393,7 +336,6 @@ status:
     phase: Ready
     endpoint: "http://my-registry-api.toolhive-system.svc.cluster.local:8080"
     readySince: "2025-01-14T10:25:00Z"
-  lastAppliedFilterHash: "def456"
   storageRef:
     type: configmap
     configMapRef:
@@ -497,7 +439,7 @@ kubectl logs -n toolhive-system deployment/toolhive-operator | grep "my-registry
 
 ## Examples
 
-### Production Registry with Filtering
+### Production Registry
 ```yaml
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPRegistry
@@ -511,10 +453,6 @@ spec:
       name: prod-registry-data
   syncPolicy:
     interval: "1h"
-  filter:
-    tags:
-      include: ["production"]
-      exclude: ["experimental", "deprecated"]
   enforceServers: true
 ```
 
@@ -532,9 +470,6 @@ spec:
       repository: "https://github.com/org/dev-mcp-registry"
       branch: "develop"
   # No sync policy = manual sync only
-  filter:
-    names:
-      include: ["dev-*", "*-test"]
 ```
 
 ## See Also

@@ -92,9 +92,6 @@ type Manager interface {
 
 	// UpdateManualSyncTriggerOnly updates manual sync trigger tracking without performing actual sync
 	UpdateManualSyncTriggerOnly(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, error)
-
-	// Delete cleans up storage resources for the MCPRegistry
-	Delete(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) error
 }
 
 // DataChangeDetector detects changes in source data
@@ -121,7 +118,6 @@ type DefaultSyncManager struct {
 	client               client.Client
 	scheme               *runtime.Scheme
 	sourceHandlerFactory sources.SourceHandlerFactory
-	storageManager       sources.StorageManager
 	filterService        filtering.FilterService
 	dataChangeDetector   DataChangeDetector
 	manualSyncChecker    ManualSyncChecker
@@ -130,12 +126,11 @@ type DefaultSyncManager struct {
 
 // NewDefaultSyncManager creates a new DefaultSyncManager
 func NewDefaultSyncManager(k8sClient client.Client, scheme *runtime.Scheme,
-	sourceHandlerFactory sources.SourceHandlerFactory, storageManager sources.StorageManager) *DefaultSyncManager {
+	sourceHandlerFactory sources.SourceHandlerFactory) *DefaultSyncManager {
 	return &DefaultSyncManager{
 		client:               k8sClient,
 		scheme:               scheme,
 		sourceHandlerFactory: sourceHandlerFactory,
-		storageManager:       storageManager,
 		filterService:        filtering.NewDefaultFilterService(),
 		dataChangeDetector:   &DefaultDataChangeDetector{sourceHandlerFactory: sourceHandlerFactory},
 		manualSyncChecker:    &DefaultManualSyncChecker{},
@@ -314,11 +309,6 @@ func (s *DefaultSyncManager) PerformSync(
 		return ctrl.Result{RequeueAfter: DefaultSyncRequeueAfter}, nil, err
 	}
 
-	// Store the processed registry data
-	if err := s.storeRegistryData(ctx, mcpRegistry, fetchResult); err != nil {
-		return ctrl.Result{RequeueAfter: DefaultSyncRequeueAfter}, nil, err
-	}
-
 	// Return sync result with data for status collector
 	syncResult := &Result{
 		Hash:        fetchResult.Hash,
@@ -355,11 +345,6 @@ func (s *DefaultSyncManager) UpdateManualSyncTriggerOnly(
 
 	ctxLogger.Info("Manual sync completed (no data changes required)")
 	return ctrl.Result{}, nil
-}
-
-// Delete cleans up storage resources for the MCPRegistry
-func (s *DefaultSyncManager) Delete(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) error {
-	return s.storageManager.Delete(ctx, mcpRegistry)
 }
 
 // fetchAndProcessRegistryData handles source handler creation, validation, fetch, and filtering
@@ -452,30 +437,6 @@ func (s *DefaultSyncManager) applyFilteringIfConfigured(
 	} else {
 		ctxLogger.Info("No filtering configured, using original registry data")
 	}
-
-	return nil
-}
-
-// storeRegistryData stores the registry data using the storage manager
-func (s *DefaultSyncManager) storeRegistryData(
-	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
-	fetchResult *sources.FetchResult) *mcpregistrystatus.Error {
-	ctxLogger := log.FromContext(ctx)
-
-	if err := s.storageManager.Store(ctx, mcpRegistry, fetchResult.Registry); err != nil {
-		ctxLogger.Error(err, "Failed to store registry data")
-		return &mcpregistrystatus.Error{
-			Err:             err,
-			Message:         fmt.Sprintf("Storage failed: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionSyncSuccessful,
-			ConditionReason: conditionReasonStorageFailed,
-		}
-	}
-
-	ctxLogger.Info("Registry data stored successfully",
-		"namespace", mcpRegistry.Namespace,
-		"registryName", mcpRegistry.Name)
 
 	return nil
 }

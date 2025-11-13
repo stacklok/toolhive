@@ -14,7 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 	sourcesmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources/mocks"
 )
 
@@ -43,7 +42,6 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 			},
 			setupMocks: func(handler *sourcesmocks.MockSourceHandler, storage *sourcesmocks.MockStorageManager) {
 				handler.EXPECT().CurrentHash(gomock.Any(), gomock.Any()).Return("abc123hash", nil)
-				storage.EXPECT().GetType().Return(sources.StorageTypeConfigMap).AnyTimes()
 			},
 			validateResult: func(t *testing.T, deployment *appsv1.Deployment) {
 				t.Helper()
@@ -114,55 +112,7 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 				assert.Equal(t, int32(ReadinessInitialDelay), container.ReadinessProbe.InitialDelaySeconds)
 				assert.Equal(t, int32(ReadinessPeriod), container.ReadinessProbe.PeriodSeconds)
 
-				// Verify storage configuration was applied (ConfigMap volume and mount)
-				foundVolume := false
-				for _, volume := range deployment.Spec.Template.Spec.Volumes {
-					if volume.Name == RegistryDataVolumeName {
-						foundVolume = true
-						assert.NotNil(t, volume.ConfigMap)
-						break
-					}
-				}
-				assert.True(t, foundVolume, "ConfigMap volume should be configured")
-
-				foundMount := false
-				for _, mount := range container.VolumeMounts {
-					if mount.Name == RegistryDataVolumeName {
-						foundMount = true
-						assert.Equal(t, RegistryDataMountPath, mount.MountPath)
-						assert.True(t, mount.ReadOnly)
-						break
-					}
-				}
-				assert.True(t, foundMount, "Volume mount should be configured")
-
-				// Verify container args include ConfigMap-specific arguments
-				expectedArgs := []string{
-					ServeCommand,
-					"--from-file=/data/registry/registry.json",
-					"--registry-name=test-registry",
-				}
-				assert.Equal(t, expectedArgs, container.Args)
 			},
-		},
-		{
-			name: "storage configuration failure",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Source: mcpv1alpha1.MCPRegistrySource{
-						Type: "github",
-					},
-				},
-			},
-			setupMocks: func(handler *sourcesmocks.MockSourceHandler, storage *sourcesmocks.MockStorageManager) {
-				handler.EXPECT().CurrentHash(gomock.Any(), gomock.Any()).Return("abc123hash", nil)
-				storage.EXPECT().GetType().Return("unsupported-type").AnyTimes()
-			},
-			expectedError: "failed to configure deployment storage: unsupported storage manager type: unsupported-type",
 		},
 	}
 
@@ -176,9 +126,7 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 			mockSourceHandler := sourcesmocks.NewMockSourceHandler(ctrl)
 			tt.setupMocks(mockSourceHandler, mockStorageManager)
 
-			manager := &manager{
-				storageManager: mockStorageManager,
-			}
+			manager := &manager{}
 
 			deployment, err := manager.buildRegistryAPIDeployment(tt.mcpRegistry, mockSourceHandler)
 

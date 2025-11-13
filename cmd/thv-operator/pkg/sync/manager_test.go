@@ -29,9 +29,8 @@ func TestNewDefaultSyncManager(t *testing.T) {
 		Build()
 
 	sourceHandlerFactory := sources.NewSourceHandlerFactory(fakeClient)
-	storageManager := sources.NewConfigMapStorageManager(fakeClient, scheme)
 
-	syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory, storageManager)
+	syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory)
 
 	assert.NotNil(t, syncManager)
 	assert.IsType(t, &DefaultSyncManager{}, syncManager)
@@ -189,8 +188,7 @@ func TestDefaultSyncManager_ShouldSync(t *testing.T) {
 				Build()
 
 			sourceHandlerFactory := sources.NewSourceHandlerFactory(fakeClient)
-			storageManager := sources.NewConfigMapStorageManager(fakeClient, scheme)
-			syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory, storageManager)
+			syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -489,8 +487,7 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 				Build()
 
 			sourceHandlerFactory := sources.NewSourceHandlerFactory(fakeClient)
-			storageManager := sources.NewConfigMapStorageManager(fakeClient, scheme)
-			syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory, storageManager)
+			syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -605,8 +602,7 @@ func TestDefaultSyncManager_UpdateManualSyncTriggerOnly(t *testing.T) {
 				Build()
 
 			sourceHandlerFactory := sources.NewSourceHandlerFactory(fakeClient)
-			storageManager := sources.NewConfigMapStorageManager(fakeClient, scheme)
-			syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory, storageManager)
+			syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -622,95 +618,6 @@ func TestDefaultSyncManager_UpdateManualSyncTriggerOnly(t *testing.T) {
 
 			// Check the registry object directly since UpdateManualSyncTriggerOnly modifies it in place
 			assert.Equal(t, tt.expectedTriggerValue, tt.mcpRegistry.Status.LastManualSyncTrigger)
-		})
-	}
-}
-
-func TestDefaultSyncManager_Delete(t *testing.T) {
-	t.Parallel()
-
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-
-	tests := []struct {
-		name             string
-		mcpRegistry      *mcpv1alpha1.MCPRegistry
-		storageConfigMap *corev1.ConfigMap
-		expectedError    bool
-	}{
-		{
-			name: "delete with existing storage configmap",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-					UID:       types.UID("test-uid"),
-				},
-			},
-			storageConfigMap: &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry-registry-storage",
-					Namespace: "test-namespace",
-				},
-				Data: map[string]string{
-					"registry.json": `{"version": "1.0.0", "servers": {}}`,
-				},
-			},
-			expectedError: false,
-		},
-		{
-			name: "delete with no storage configmap (should succeed)",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-					UID:       types.UID("test-uid"),
-				},
-			},
-			storageConfigMap: nil,
-			expectedError:    false, // Delete should be idempotent
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			objects := []runtime.Object{tt.mcpRegistry}
-			if tt.storageConfigMap != nil {
-				objects = append(objects, tt.storageConfigMap)
-			}
-
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithRuntimeObjects(objects...).
-				Build()
-
-			sourceHandlerFactory := sources.NewSourceHandlerFactory(fakeClient)
-			storageManager := sources.NewConfigMapStorageManager(fakeClient, scheme)
-			syncManager := NewDefaultSyncManager(fakeClient, scheme, sourceHandlerFactory, storageManager)
-
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			err := syncManager.Delete(ctx, tt.mcpRegistry)
-
-			if tt.expectedError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-
-				// Verify storage ConfigMap was deleted if it existed
-				if tt.storageConfigMap != nil {
-					configMap := &corev1.ConfigMap{}
-					err = fakeClient.Get(ctx, types.NamespacedName{
-						Name:      tt.storageConfigMap.Name,
-						Namespace: tt.storageConfigMap.Namespace,
-					}, configMap)
-					assert.Error(t, err) // Should get not found error
-				}
-			}
 		})
 	}
 }

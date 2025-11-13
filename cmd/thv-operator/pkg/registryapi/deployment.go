@@ -216,11 +216,6 @@ func (m *manager) buildRegistryAPIDeployment(
 		},
 	}
 
-	// Configure storage-specific aspects using the new inverted dependency approach
-	if err := m.configureDeploymentStorage(deployment, mcpRegistry, registryAPIContainerName); err != nil {
-		return nil, fmt.Errorf("failed to configure deployment storage: %w", err)
-	}
-
 	return deployment, nil
 }
 

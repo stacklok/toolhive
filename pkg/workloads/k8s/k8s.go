@@ -15,11 +15,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/k8s"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -50,20 +49,14 @@ func NewManagerFromContext(_ context.Context) (Manager, error) {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(mcpv1alpha1.AddToScheme(scheme))
 
-	// Get Kubernetes config
-	cfg, err := ctrl.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get Kubernetes config: %w", err)
-	}
-
 	// Create controller-runtime client
-	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme})
+	k8sClient, err := k8s.NewControllerRuntimeClient(scheme)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 
 	// Detect namespace
-	namespace := kubernetes.GetCurrentNamespace()
+	namespace := k8s.GetCurrentNamespace()
 
 	return NewManager(k8sClient, namespace)
 }

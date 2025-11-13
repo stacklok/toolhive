@@ -77,11 +77,7 @@ func (m *manager) ensureDeployment(
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
 	// Build the desired deployment configuration
-	deployment, err := m.buildRegistryAPIDeployment(mcpRegistry)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to build deployment configuration")
-		return nil, fmt.Errorf("failed to build deployment configuration: %w", err)
-	}
+	deployment := m.buildRegistryAPIDeployment(mcpRegistry)
 	deploymentName := deployment.Name
 
 	// Set owner reference for automatic garbage collection
@@ -92,7 +88,7 @@ func (m *manager) ensureDeployment(
 
 	// Check if deployment already exists
 	existing := &appsv1.Deployment{}
-	err = m.client.Get(ctx, client.ObjectKey{
+	err := m.client.Get(ctx, client.ObjectKey{
 		Name:      deploymentName,
 		Namespace: mcpRegistry.Namespace,
 	}, existing)
@@ -122,9 +118,9 @@ func (m *manager) ensureDeployment(
 // buildRegistryAPIDeployment creates and configures a Deployment object for the registry API.
 // This function handles all deployment configuration including labels, container specs, probes,
 // and storage manager integration. It returns a fully configured deployment ready for Kubernetes API operations.
-func (m *manager) buildRegistryAPIDeployment(
+func (*manager) buildRegistryAPIDeployment(
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
-) (*appsv1.Deployment, error) {
+) *appsv1.Deployment {
 	// Generate deployment name using the established pattern
 	deploymentName := mcpRegistry.GetAPIResourceName()
 
@@ -208,7 +204,7 @@ func (m *manager) buildRegistryAPIDeployment(
 		},
 	}
 
-	return deployment, nil
+	return deployment
 }
 
 // getRegistryAPIImage returns the registry API container image to use

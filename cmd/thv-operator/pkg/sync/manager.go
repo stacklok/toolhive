@@ -14,7 +14,6 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
-	// "github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 )
 
 // Result contains the result of a successful sync operation
@@ -286,8 +285,8 @@ func (s *DefaultSyncManager) calculateNextSyncTime(ctx context.Context, mcpRegis
 
 // PerformSync performs the complete sync operation for the MCPRegistry
 // The controller is responsible for setting sync status via the status collector
-func (s *DefaultSyncManager) PerformSync(
-	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
+func (*DefaultSyncManager) PerformSync(
+	_ context.Context, _ *mcpv1alpha1.MCPRegistry,
 ) (ctrl.Result, *Result, *mcpregistrystatus.Error) {
 
 	// Return sync result with data for status collector

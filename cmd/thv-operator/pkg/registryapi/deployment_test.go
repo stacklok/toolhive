@@ -123,17 +123,9 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 
 			manager := &manager{}
 
-			deployment, err := manager.buildRegistryAPIDeployment(tt.mcpRegistry)
+			deployment := manager.buildRegistryAPIDeployment(tt.mcpRegistry)
 
-			if tt.expectedError != "" {
-				assert.EqualError(t, err, tt.expectedError)
-				assert.Nil(t, deployment)
-			} else {
-				assert.NoError(t, err)
-				if tt.validateResult != nil {
-					tt.validateResult(t, deployment)
-				}
-			}
+			tt.validateResult(t, deployment)
 		})
 	}
 }

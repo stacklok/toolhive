@@ -119,6 +119,7 @@ func setRegistryURL(provider Provider, registryURL string, allowPrivateRegistryI
 	// Update the configuration
 	err = provider.UpdateConfig(func(c *Config) {
 		c.RegistryUrl = registryURL
+		c.RegistryApiUrl = ""    // Clear API URL when setting static URL
 		c.LocalRegistryPath = "" // Clear local path when setting URL
 		c.AllowPrivateRegistryIp = allowPrivateRegistryIp
 	})
@@ -151,7 +152,8 @@ func setRegistryFile(provider Provider, registryPath string) error {
 	// Update the configuration
 	err = provider.UpdateConfig(func(c *Config) {
 		c.LocalRegistryPath = absPath
-		c.RegistryUrl = "" // Clear URL when setting local path
+		c.RegistryUrl = ""    // Clear URL when setting local path
+		c.RegistryApiUrl = "" // Clear API URL when setting local path
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)

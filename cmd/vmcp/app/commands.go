@@ -324,8 +324,17 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuthInfoHandler: authInfoHandler,
 	}
 
-	// Create server with discovery manager and backends
-	srv := vmcpserver.New(serverCfg, rtr, backendClient, discoveryMgr, backends)
+	// Convert composite tool configurations to workflow definitions
+	workflowDefs, err := vmcpserver.ConvertConfigToWorkflowDefinitions(cfg.CompositeTools)
+	if err != nil {
+		return fmt.Errorf("failed to convert composite tool definitions: %w", err)
+	}
+	if len(workflowDefs) > 0 {
+		logger.Infof("Loaded %d composite tool workflow definitions", len(workflowDefs))
+	}
+
+	// Create server with discovery manager, backends, and workflow definitions
+	srv := vmcpserver.New(serverCfg, rtr, backendClient, discoveryMgr, backends, workflowDefs)
 
 	// Start server (blocks until shutdown signal)
 	logger.Infof("Starting Virtual MCP Server at %s", srv.Address())

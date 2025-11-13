@@ -76,7 +76,7 @@ func TestNew(t *testing.T) {
 			mockBackendClient := mocks.NewMockBackendClient(ctrl)
 			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
-			s := server.New(tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{})
+			s := server.New(tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
 			require.NotNil(t, s)
 
 			// Address() returns formatted string
@@ -132,7 +132,7 @@ func TestServer_Address(t *testing.T) {
 			mockBackendClient := mocks.NewMockBackendClient(ctrl)
 			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
-			s := server.New(tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{})
+			s := server.New(tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
 			addr := s.Address()
 			assert.Equal(t, tt.expected, addr)
 		})
@@ -152,7 +152,7 @@ func TestServer_Stop(t *testing.T) {
 		mockBackendClient := mocks.NewMockBackendClient(ctrl)
 		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
-		s := server.New(&server.Config{}, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{})
+		s := server.New(&server.Config{}, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
 		err := s.Stop(context.Background())
 		require.NoError(t, err)
 	})

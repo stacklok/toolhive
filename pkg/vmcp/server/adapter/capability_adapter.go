@@ -149,3 +149,57 @@ func (a *CapabilityAdapter) ToSDKPrompts(prompts []vmcp.Prompt) []server.ServerP
 
 	return sdkPrompts
 }
+
+// ToCompositeToolSDKTools converts composite tools to SDK ServerTool format with workflow handlers.
+//
+// This method is similar to ToSDKTools but uses composite tool workflow handlers instead of
+// backend routing handlers. For each composite tool:
+//   - Marshals InputSchema to JSON (SDK expects RawInputSchema as []byte)
+//   - Creates workflow handler via HandlerFactory.CreateCompositeToolHandler
+//   - Wraps in server.ServerTool struct
+//
+// The workflowExecutors map provides the workflow executor for each tool name.
+// Returns error if schema marshaling fails or workflow executor is missing for any tool.
+func (a *CapabilityAdapter) ToCompositeToolSDKTools(
+	tools []vmcp.Tool,
+	workflowExecutors map[string]WorkflowExecutor,
+) ([]server.ServerTool, error) {
+	if len(tools) == 0 {
+		return nil, nil
+	}
+
+	sdkTools := make([]server.ServerTool, 0, len(tools))
+	for _, tool := range tools {
+		// Get workflow executor for this tool
+		executor, exists := workflowExecutors[tool.Name]
+		if !exists {
+			logger.Warnw("workflow executor not found for composite tool",
+				"tool", tool.Name)
+			return nil, fmt.Errorf("workflow executor not found for composite tool: %s", tool.Name)
+		}
+
+		// Marshal schema to JSON
+		schemaJSON, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			logger.Warnw("failed to marshal composite tool schema",
+				"tool", tool.Name,
+				"error", err)
+			return nil, fmt.Errorf("failed to marshal schema for composite tool %s: %w", tool.Name, err)
+		}
+
+		// Create handler via factory (uses composite tool handler instead of backend router)
+		handler := a.handlerFactory.CreateCompositeToolHandler(tool.Name, executor)
+
+		// Create SDK tool
+		sdkTools = append(sdkTools, server.ServerTool{
+			Tool: mcp.Tool{
+				Name:           tool.Name,
+				Description:    tool.Description,
+				RawInputSchema: schemaJSON,
+			},
+			Handler: handler,
+		})
+	}
+
+	return sdkTools, nil
+}

@@ -968,3 +968,105 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultHandlerFactory_CreateCompositeToolHandler(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		toolName  string
+		setupMock func(*mockWorkflowExecutor)
+		request   mcp.CallToolRequest
+		wantError bool
+		contains  string
+	}{
+		{
+			name:     "successful workflow execution",
+			toolName: "deploy",
+			setupMock: func(m *mockWorkflowExecutor) {
+				m.executeFunc = func(_ context.Context, params map[string]any) (*adapter.WorkflowResult, error) {
+					return &adapter.WorkflowResult{
+						Output: map[string]any{"deployed": true, "pr": params["pr_number"]},
+					}, nil
+				}
+			},
+			request: mcp.CallToolRequest{
+				Params: mcp.CallToolParams{
+					Arguments: map[string]any{"pr_number": 123},
+				},
+			},
+			wantError: false,
+		},
+		{
+			name:     "workflow execution error",
+			toolName: "failing",
+			setupMock: func(m *mockWorkflowExecutor) {
+				m.executeFunc = func(context.Context, map[string]any) (*adapter.WorkflowResult, error) {
+					return nil, errors.New("step timeout")
+				}
+			},
+			request:   mcp.CallToolRequest{Params: mcp.CallToolParams{Arguments: map[string]any{}}},
+			wantError: true,
+			contains:  "Workflow execution failed",
+		},
+		{
+			name:     "workflow result with error",
+			toolName: "error_result",
+			setupMock: func(m *mockWorkflowExecutor) {
+				m.executeFunc = func(context.Context, map[string]any) (*adapter.WorkflowResult, error) {
+					return &adapter.WorkflowResult{Error: errors.New("backend unavailable")}, nil
+				}
+			},
+			request:   mcp.CallToolRequest{Params: mcp.CallToolParams{Arguments: map[string]any{}}},
+			wantError: true,
+			contains:  "backend unavailable",
+		},
+		{
+			name:      "invalid arguments type",
+			toolName:  "test",
+			setupMock: func(*mockWorkflowExecutor) {},
+			request:   mcp.CallToolRequest{Params: mcp.CallToolParams{Arguments: "invalid"}},
+			wantError: true,
+			contains:  "arguments must be object",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockRouter := routermocks.NewMockRouter(ctrl)
+			mockClient := vmcpmocks.NewMockBackendClient(ctrl)
+			mockWorkflow := &mockWorkflowExecutor{}
+			tt.setupMock(mockWorkflow)
+
+			factory := adapter.NewDefaultHandlerFactory(mockRouter, mockClient)
+			handler := factory.CreateCompositeToolHandler(tt.toolName, mockWorkflow)
+
+			result, err := handler(context.Background(), tt.request)
+
+			assert.NoError(t, err)
+			assert.NotNil(t, result)
+			assert.Equal(t, tt.wantError, result.IsError)
+			if tt.contains != "" {
+				textContent := result.Content[0].(mcp.TextContent)
+				assert.Contains(t, textContent.Text, tt.contains)
+			}
+		})
+	}
+}
+
+type mockWorkflowExecutor struct {
+	executeFunc func(context.Context, map[string]any) (*adapter.WorkflowResult, error)
+}
+
+func (m *mockWorkflowExecutor) ExecuteWorkflow(
+	ctx context.Context,
+	params map[string]any,
+) (*adapter.WorkflowResult, error) {
+	if m.executeFunc != nil {
+		return m.executeFunc(ctx, params)
+	}
+	return nil, errors.New("not implemented")
+}

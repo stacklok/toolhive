@@ -14,6 +14,7 @@ import (
 	reflect "reflect"
 
 	mcp "github.com/mark3labs/mcp-go/mcp"
+	adapter "github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -39,6 +40,20 @@ func NewMockHandlerFactory(ctrl *gomock.Controller) *MockHandlerFactory {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockHandlerFactory) EXPECT() *MockHandlerFactoryMockRecorder {
 	return m.recorder
+}
+
+// CreateCompositeToolHandler mocks base method.
+func (m *MockHandlerFactory) CreateCompositeToolHandler(toolName string, workflow adapter.WorkflowExecutor) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CreateCompositeToolHandler", toolName, workflow)
+	ret0, _ := ret[0].(func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error))
+	return ret0
+}
+
+// CreateCompositeToolHandler indicates an expected call of CreateCompositeToolHandler.
+func (mr *MockHandlerFactoryMockRecorder) CreateCompositeToolHandler(toolName, workflow any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateCompositeToolHandler", reflect.TypeOf((*MockHandlerFactory)(nil).CreateCompositeToolHandler), toolName, workflow)
 }
 
 // CreatePromptHandler mocks base method.

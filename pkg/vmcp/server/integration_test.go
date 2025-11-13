@@ -194,7 +194,7 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 		Version: "1.0.0",
 		Host:    "127.0.0.1",
 		Port:    4484,
-	}, rt, mockBackendClient, mockDiscoveryMgr, backends)
+	}, rt, mockBackendClient, mockDiscoveryMgr, backends, nil)
 
 	// Validate server address
 	assert.Equal(t, "127.0.0.1:4484", srv.Address())
@@ -325,7 +325,7 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 		Port:           0, // Use random available port
 		SessionTTL:     5 * time.Minute,
 		AuthMiddleware: identityMiddleware,
-	}, rt, mockBackendClient, discoveryMgr, backends)
+	}, rt, mockBackendClient, discoveryMgr, backends, nil)
 
 	serverCtx, cancelServer := context.WithCancel(ctx)
 	t.Cleanup(cancelServer)

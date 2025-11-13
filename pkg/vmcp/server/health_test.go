@@ -61,7 +61,7 @@ func createTestServer(t *testing.T) *server.Server {
 		Version: "1.0.0",
 		Host:    "127.0.0.1",
 		Port:    port,
-	}, rt, mockBackendClient, mockDiscoveryMgr, backends)
+	}, rt, mockBackendClient, mockDiscoveryMgr, backends, nil)
 
 	// Start server in background
 	ctx, cancel := context.WithCancel(t.Context())
@@ -175,7 +175,7 @@ func TestServer_SessionManager(t *testing.T) {
 			Name:       "test-vmcp",
 			Version:    "1.0.0",
 			SessionTTL: 10 * time.Minute,
-		}, rt, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{})
+		}, rt, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
 
 		// SessionManager should be accessible
 		mgr := srv.SessionManager()
@@ -197,7 +197,7 @@ func TestServer_SessionManager(t *testing.T) {
 			Name:       "test-vmcp",
 			Version:    "1.0.0",
 			SessionTTL: customTTL,
-		}, rt, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{})
+		}, rt, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
 
 		mgr := srv.SessionManager()
 		assert.NotNil(t, mgr)

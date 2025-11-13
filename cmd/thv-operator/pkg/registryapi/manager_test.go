@@ -41,8 +41,6 @@ func TestNewManager(t *testing.T) {
 
 			scheme := runtime.NewScheme()
 
-			// configManager := config.NewConfigManagerForTesting(nil)
-
 			// Create manager
 			manager := NewManager(nil, scheme)
 

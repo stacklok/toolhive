@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -136,7 +137,7 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Source.Format)
 		require.NotNil(t, config.Source.File)
 		assert.Equal(t, SourceTypeFile, config.Source.Type)
-		assert.Equal(t, RegistryJSONFilePath, config.Source.File.Path)
+		assert.Equal(t, filepath.Join(RegistryJSONFilePath, RegistryJSONFileName), config.Source.File.Path)
 	})
 
 	t.Run("valid configmap source", func(t *testing.T) {
@@ -167,7 +168,7 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 		assert.Equal(t, "test-registry", config.RegistryName)
 		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Source.Format)
 		assert.Equal(t, SourceTypeFile, config.Source.Type)
-		assert.Equal(t, RegistryJSONFilePath, config.Source.File.Path)
+		assert.Equal(t, filepath.Join(RegistryJSONFilePath, RegistryJSONFileName), config.Source.File.Path)
 	})
 }
 

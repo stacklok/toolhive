@@ -3,6 +3,7 @@ package operator_test
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -87,7 +88,7 @@ var _ = Describe("MCPRegistry Server Config", Label("k8s", "registry", "config")
 			configYAML := serverConfigMap.Data["config.yaml"]
 			Expect(configYAML).To(ContainSubstring("registryName: test-registry"))
 			Expect(configYAML).To(ContainSubstring("type: file")) // ConfigMap sources become file type in the server config
-			Expect(configYAML).To(ContainSubstring("path: /etc/registry/registry.json"))
+			Expect(configYAML).To(ContainSubstring("path: " + filepath.Join(config.RegistryJSONFilePath, config.RegistryJSONFileName)))
 			Expect(configYAML).To(ContainSubstring("format: toolhive"))
 			Expect(configYAML).To(ContainSubstring("interval: 1h"))
 
@@ -159,17 +160,13 @@ var _ = Describe("MCPRegistry Server Config", Label("k8s", "registry", "config")
 			Expect(container.Args).To(ContainElement("serve"))
 			// Should have --config argument pointing to the server config file
 			configArgFound := false
-			registryNameArgFound := false
+			expectedConfigArg := fmt.Sprintf("--config=%s", filepath.Join(config.RegistryServerConfigFilePath, config.RegistryServerConfigFileName))
 			for _, arg := range container.Args {
-				if arg == fmt.Sprintf("--config=%s", config.RegistryServerConfigFilePath) {
+				if arg == expectedConfigArg {
 					configArgFound = true
-				}
-				if arg == fmt.Sprintf("--registry-name=%s", registry.Name) {
-					registryNameArgFound = true
 				}
 			}
 			Expect(configArgFound).To(BeTrue(), "Container should have --config argument pointing to server config file")
-			Expect(registryNameArgFound).To(BeTrue(), "Container should have --registry-name argument pointing to registry name")
 		})
 	})
 
@@ -278,17 +275,13 @@ var _ = Describe("MCPRegistry Server Config", Label("k8s", "registry", "config")
 			Expect(container.Args).To(ContainElement("serve"))
 			// Should have --config argument pointing to the server config file
 			configArgFound := false
-			registryNameArgFound := false
+			expectedConfigArg := fmt.Sprintf("--config=%s", filepath.Join(config.RegistryServerConfigFilePath, config.RegistryServerConfigFileName))
 			for _, arg := range container.Args {
-				if arg == fmt.Sprintf("--config=%s", config.RegistryServerConfigFilePath) {
+				if arg == expectedConfigArg {
 					configArgFound = true
-				}
-				if arg == fmt.Sprintf("--registry-name=%s", registry.Name) {
-					registryNameArgFound = true
 				}
 			}
 			Expect(configArgFound).To(BeTrue(), "Container should have --config argument pointing to server config file")
-			Expect(registryNameArgFound).To(BeTrue(), "Container should have --registry-name argument pointing to registry name")
 		})
 	})
 
@@ -392,17 +385,13 @@ var _ = Describe("MCPRegistry Server Config", Label("k8s", "registry", "config")
 			Expect(container.Args).To(ContainElement("serve"))
 			// Should have --config argument pointing to the server config file
 			configArgFound := false
-			registryNameArgFound := false
+			expectedConfigArg := fmt.Sprintf("--config=%s", filepath.Join(config.RegistryServerConfigFilePath, config.RegistryServerConfigFileName))
 			for _, arg := range container.Args {
-				if arg == fmt.Sprintf("--config=%s", config.RegistryServerConfigFilePath) {
+				if arg == expectedConfigArg {
 					configArgFound = true
-				}
-				if arg == fmt.Sprintf("--registry-name=%s", registry.Name) {
-					registryNameArgFound = true
 				}
 			}
 			Expect(configArgFound).To(BeTrue(), "Container should have --config argument pointing to server config file")
-			Expect(registryNameArgFound).To(BeTrue(), "Container should have --registry-name argument pointing to registry name")
 		})
 	})
 })

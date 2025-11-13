@@ -3,6 +3,7 @@ package registryapi
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -143,8 +144,7 @@ func (m *manager) configureRegistryServerConfigMounts(
 	// This ensures idempotent behavior across multiple reconciliations
 	container.Args = []string{
 		ServeCommand,
-		fmt.Sprintf("--config=%s", config.RegistryServerConfigFilePath),
-		fmt.Sprintf("--registry-name=%s", mcpRegistry.Name),
+		fmt.Sprintf("--config=%s", filepath.Join(config.RegistryServerConfigFilePath, config.RegistryServerConfigFileName)),
 	}
 
 	// Add ConfigMap volume to deployment if not already present
@@ -167,8 +167,8 @@ func (m *manager) configureRegistryServerConfigMounts(
 	if !hasVolumeMount(container.VolumeMounts, configVolumeName) {
 		volumeMount := corev1.VolumeMount{
 			Name:      configVolumeName,
-			MountPath: config.RegistryServerConfigFilePath,
-			ReadOnly:  true,
+			MountPath: config.RegistryServerConfigFilePath, // Mount to directory, not the file path
+			ReadOnly:  true, // ConfigMaps are always read-only anyway
 		}
 		container.VolumeMounts = append(container.VolumeMounts, volumeMount)
 	}
@@ -208,8 +208,8 @@ func (*manager) configureRegistrySourceMounts(
 		if !hasVolumeMount(container.VolumeMounts, registryDataVolumeName) {
 			registryDataVolumeMount := corev1.VolumeMount{
 				Name:      registryDataVolumeName,
-				MountPath: config.RegistryJSONFilePath,
-				ReadOnly:  true,
+				MountPath: config.RegistryJSONFilePath, // Mount only this key from the ConfigMap as a file
+				ReadOnly:  true, // ConfigMaps are always read-only
 			}
 			container.VolumeMounts = append(container.VolumeMounts, registryDataVolumeMount)
 		}

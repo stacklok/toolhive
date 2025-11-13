@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"gopkg.in/yaml.v2"
 	corev1 "k8s.io/api/core/v1"
@@ -84,9 +85,16 @@ const (
 	SourceTypeFile = "file"
 
 	// RegistryJSONFilePath is the file path where the registry JSON file will be mounted
-	RegistryJSONFilePath = "/etc/registry/registry.json"
+	RegistryJSONFilePath = "/data"
 
-	RegistryServerConfigFilePath = "/etc/registry/config.yaml"
+	// RegistryJSONFileName is the name of the registry JSON file
+	RegistryJSONFileName = "registry.json"
+
+	// RegistryServerConfigFilePath is the file path where the registry server config file will be mounted
+	RegistryServerConfigFilePath = "/data/config"
+
+	// RegistryServerConfigFileName is the name of the registry server config file
+	RegistryServerConfigFileName = "config.yaml"
 )
 
 // Config represents the root configuration structure
@@ -183,7 +191,7 @@ func (c *Config) ToConfigMapWithContentChecksum(mcpRegistry *mcpv1alpha1.MCPRegi
 			},
 		},
 		Data: map[string]string{
-			"config.yaml": string(yamlData),
+			RegistryServerConfigFileName: string(yamlData),
 		},
 	}
 	return configMap, nil
@@ -273,7 +281,7 @@ func buildSourceConfig(source *mcpv1alpha1.MCPRegistrySource, config *Config) er
 		// this stops the registry server worrying about configmap sources when all it has to do
 		// is read the file on startup
 		sourceConfig.File = &FileConfig{
-			Path: RegistryJSONFilePath,
+			Path: filepath.Join(RegistryJSONFilePath, RegistryJSONFileName),
 		}
 		sourceConfig.Type = SourceTypeFile
 	case mcpv1alpha1.RegistrySourceTypeGit:

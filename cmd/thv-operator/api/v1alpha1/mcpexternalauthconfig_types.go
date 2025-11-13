@@ -53,9 +53,12 @@ type TokenExchangeConfig struct {
 	Scopes []string `json:"scopes,omitempty"`
 
 	// SubjectTokenType is the type of the incoming subject token.
-	// Valid values: "urn:ietf:params:oauth:token-type:jwt", "urn:ietf:params:oauth:token-type:access_token", "urn:ietf:params:oauth:token-type:id_token"
-	// If not specified, defaults to "urn:ietf:params:oauth:token-type:access_token"
-	// For OIDC/JWT tokens (like Okta), use "urn:ietf:params:oauth:token-type:jwt"
+	// Accepts short forms: "access_token" (default), "id_token", "jwt"
+	// Or full URNs: "urn:ietf:params:oauth:token-type:access_token",
+	//               "urn:ietf:params:oauth:token-type:id_token",
+	//               "urn:ietf:params:oauth:token-type:jwt"
+	// For Google Workload Identity Federation with OIDC providers (like Okta), use "id_token"
+	// +kubebuilder:validation:Pattern=`^(access_token|id_token|jwt|urn:ietf:params:oauth:token-type:(access_token|id_token|jwt))?$`
 	// +optional
 	SubjectTokenType string `json:"subjectTokenType,omitempty"`
 

@@ -143,6 +143,12 @@ func AddExternalAuthConfigOptions(
 		headerStrategy = "custom"
 	}
 
+	// Normalize SubjectTokenType to full URN (accepts both short forms and full URNs)
+	normalizedTokenType, err := tokenexchange.NormalizeTokenType(tokenExchangeSpec.SubjectTokenType)
+	if err != nil {
+		return fmt.Errorf("invalid subject token type: %w", err)
+	}
+
 	// Build token exchange configuration
 	// Client secret is provided via TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET environment variable
 	// to avoid embedding plaintext secrets in the ConfigMap
@@ -151,7 +157,7 @@ func AddExternalAuthConfigOptions(
 		ClientID:                tokenExchangeSpec.ClientID,
 		Audience:                tokenExchangeSpec.Audience,
 		Scopes:                  tokenExchangeSpec.Scopes,
-		SubjectTokenType:        tokenExchangeSpec.SubjectTokenType,
+		SubjectTokenType:        normalizedTokenType,
 		HeaderStrategy:          headerStrategy,
 		ExternalTokenHeaderName: tokenExchangeSpec.ExternalTokenHeaderName,
 	}

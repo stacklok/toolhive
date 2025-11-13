@@ -19,6 +19,8 @@ import (
 // Required metadata fields:
 //   - header_name: The HTTP header name to use (e.g., "X-API-Key", "Authorization")
 //   - header_value: The header value to inject (can be an API key, token, or any value)
+//     Note: In YAML configuration, use either header_value (literal) or header_value_env (from environment).
+//     The value is resolved at config load time and passed here as header_value.
 //
 // This strategy is appropriate when:
 //   - The backend requires a static header value for authentication
@@ -26,7 +28,6 @@ import (
 //   - No dynamic token exchange or user-specific authentication is required
 //
 // Future enhancements may include:
-//   - Secret reference resolution (e.g., ${SECRET_REF:...})
 //   - Support for multiple header formats (e.g., "Bearer <key>")
 //   - Value rotation and refresh mechanisms
 type HeaderInjectionStrategy struct{}
@@ -65,14 +66,6 @@ func (*HeaderInjectionStrategy) Authenticate(_ context.Context, req *http.Reques
 	if !ok || headerValue == "" {
 		return fmt.Errorf("header_value required in metadata")
 	}
-
-	// TODO: Future enhancement - resolve secret references
-	// if strings.HasPrefix(headerValue, "${SECRET_REF:") {
-	//     headerValue, err = s.secretResolver.Resolve(ctx, headerValue)
-	//     if err != nil {
-	//         return fmt.Errorf("failed to resolve secret reference: %w", err)
-	//     }
-	// }
 
 	req.Header.Set(headerName, headerValue)
 	return nil

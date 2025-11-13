@@ -43,12 +43,19 @@ outgoing_auth:
   # NOT for authenticating Virtual MCP to backend MCP servers.
   # Backend MCP servers receive properly scoped tokens and use them to call upstream APIs.
   backends:
-    # Example: API key authentication using header_injection
+    # Example 1: API key from environment variable (recommended for secrets)
     github:
       type: header_injection
       header_injection:
         header_name: "Authorization"
-        header_value: "your-github-api-token-here"
+        header_value_env: "GITHUB_API_TOKEN"  # Read from environment variable
+
+    # Example 2: Static header value (for non-secret values only)
+    # api-service:
+    #   type: header_injection
+    #   header_injection:
+    #     header_name: "X-API-Version"
+    #     header_value: "v1"  # Literal value
 
     # Example: OAuth 2.0 Token Exchange (RFC 8693) for GitHub API access
     # github:

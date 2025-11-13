@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -129,7 +130,8 @@ This command checks:
 			logger.Infof("Validating configuration: %s", configPath)
 
 			// Load configuration from YAML
-			loader := config.NewYAMLLoader(configPath)
+			envReader := &env.OSReader{}
+			loader := config.NewYAMLLoader(configPath, envReader)
 			cfg, err := loader.Load()
 			if err != nil {
 				logger.Errorf("Failed to load configuration: %v", err)
@@ -182,7 +184,8 @@ func getVersion() string {
 func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	logger.Infof("Loading configuration from: %s", configPath)
 
-	loader := config.NewYAMLLoader(configPath)
+	envReader := &env.OSReader{}
+	loader := config.NewYAMLLoader(configPath, envReader)
 	cfg, err := loader.Load()
 	if err != nil {
 		logger.Errorf("Failed to load configuration: %v", err)
@@ -208,7 +211,8 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, vmcp.BackendClient, error) {
 	// Create outgoing authentication registry from configuration
 	logger.Info("Initializing outgoing authentication")
-	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, cfg.OutgoingAuth)
+	envReader := &env.OSReader{}
+	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, cfg.OutgoingAuth, envReader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
 	}

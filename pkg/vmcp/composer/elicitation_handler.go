@@ -121,7 +121,7 @@ func NewDefaultElicitationHandler(sdkRequester SDKElicitationRequester) *Default
 //  4. Validates response content size
 //  5. Transforms SDK response to domain type
 //
-// Per security review: Enforces max timeout (1 hour), schema size (100KB), schema depth (10 levels),
+// Per security review: Enforces max timeout (10 minutes), schema size (100KB), schema depth (10 levels),
 // and response content size (1MB) to prevent resource exhaustion attacks.
 //
 // Per MCP 2025-06-18 spec: The SDK handles JSON-RPC ID correlation internally.

@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -20,8 +19,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
-	"github.com/stacklok/toolhive/pkg/workloads"
-	"github.com/stacklok/toolhive/pkg/workloads/k8s"
 )
 
 var rootCmd = &cobra.Command{
@@ -229,19 +226,9 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 	}
 
 	// Create backend discoverer based on runtime environment
-	var discoverer aggregator.BackendDiscoverer
-	if rt.IsKubernetesRuntime() {
-		k8sWorkloadsManager, err := k8s.NewManagerFromContext(ctx)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create Kubernetes workloads manager: %w", err)
-		}
-		discoverer = aggregator.NewK8SBackendDiscoverer(k8sWorkloadsManager, groupsManager, cfg.OutgoingAuth)
-	} else {
-		cliWorkloadsManager, err := workloads.NewManager(ctx)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create CLI workloads manager: %w", err)
-		}
-		discoverer = aggregator.NewCLIBackendDiscoverer(cliWorkloadsManager, groupsManager, cfg.OutgoingAuth)
+	discoverer, err := aggregator.NewBackendDiscoverer(ctx, groupsManager, cfg.OutgoingAuth)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create backend discoverer: %w", err)
 	}
 
 	logger.Infof("Discovering backends in group: %s", cfg.Group)

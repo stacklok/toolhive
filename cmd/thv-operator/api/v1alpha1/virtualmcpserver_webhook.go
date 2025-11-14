@@ -134,17 +134,6 @@ func (*VirtualMCPServer) validateBackendAuth(backendName string, auth BackendAut
 
 	// Validate type-specific configurations
 	switch auth.Type {
-	case BackendAuthTypeServiceAccount:
-		if auth.ServiceAccount == nil {
-			return fmt.Errorf("spec.outgoingAuth.backends[%s].serviceAccount is required when type is service_account", backendName)
-		}
-		if auth.ServiceAccount.CredentialsRef.Name == "" {
-			return fmt.Errorf("spec.outgoingAuth.backends[%s].serviceAccount.credentialsRef.name is required", backendName)
-		}
-		if auth.ServiceAccount.CredentialsRef.Key == "" {
-			return fmt.Errorf("spec.outgoingAuth.backends[%s].serviceAccount.credentialsRef.key is required", backendName)
-		}
-
 	case BackendAuthTypeExternalAuthConfigRef:
 		if auth.ExternalAuthConfigRef == nil {
 			return fmt.Errorf(

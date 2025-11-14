@@ -108,37 +108,14 @@ type OutgoingAuthConfig struct {
 // BackendAuthConfig defines authentication configuration for a backend MCPServer
 type BackendAuthConfig struct {
 	// Type defines the authentication type
-	// +kubebuilder:validation:Enum=discovered;pass_through;service_account;external_auth_config_ref
+	// +kubebuilder:validation:Enum=discovered;pass_through;external_auth_config_ref
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
-
-	// ServiceAccount configures service account authentication
-	// Only used when Type is "service_account"
-	// +optional
-	ServiceAccount *ServiceAccountAuth `json:"serviceAccount,omitempty"`
 
 	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource
 	// Only used when Type is "external_auth_config_ref"
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
-}
-
-// ServiceAccountAuth defines service account authentication
-type ServiceAccountAuth struct {
-	// CredentialsRef references a secret containing the service account credentials
-	// +kubebuilder:validation:Required
-	CredentialsRef SecretKeyRef `json:"credentialsRef"`
-
-	// HeaderName is the HTTP header name for the credentials
-	// +kubebuilder:default=Authorization
-	// +optional
-	HeaderName string `json:"headerName,omitempty"`
-
-	// HeaderFormat is the format string for the header value
-	// Use {token} as placeholder for the credential value
-	// +kubebuilder:default="Bearer {token}"
-	// +optional
-	HeaderFormat string `json:"headerFormat,omitempty"`
 }
 
 // AggregationConfig defines tool aggregation and conflict resolution strategies
@@ -508,9 +485,6 @@ const (
 
 	// BackendAuthTypePassThrough forwards client token unchanged
 	BackendAuthTypePassThrough = "pass_through"
-
-	// BackendAuthTypeServiceAccount uses service account credentials
-	BackendAuthTypeServiceAccount = "service_account"
 
 	// BackendAuthTypeExternalAuthConfigRef references an MCPExternalAuthConfig resource
 	BackendAuthTypeExternalAuthConfigRef = "external_auth_config_ref"

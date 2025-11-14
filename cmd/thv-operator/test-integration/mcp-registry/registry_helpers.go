@@ -67,7 +67,7 @@ func (rb *RegistryBuilder) WithConfigMapSource(configMapName, key string) *Regis
 
 // WithUpstreamFormat configures the registry to use upstream MCP format
 func (rb *RegistryBuilder) WithUpstreamFormat() *RegistryBuilder {
-	rb.registry.Spec.Source.Format = mcpv1alpha1.RegistryFormatUpstream
+	rb.registry.Spec.Source.Format = mcpv1alpha1.RegistryFormatToolHive
 	return rb
 }
 

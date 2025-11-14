@@ -125,16 +125,10 @@ func (f *TestDataFactory) CreateTestConfigMap(name, format string, serverCount i
 	configMapHelper := NewConfigMapTestHelper(f.Context, f.Client, f.Namespace)
 
 	switch format {
-	case mcpv1alpha1.RegistryFormatToolHive:
+	case mcpv1alpha1.RegistryFormatToolHive, "":
 		servers := f.GenerateTestServers(serverCount)
 		return configMapHelper.NewConfigMapBuilder(name).
 			WithToolHiveRegistry("registry.json", servers).
-			Create(configMapHelper), nil
-
-	case mcpv1alpha1.RegistryFormatUpstream:
-		servers := f.GenerateTestServersMap(serverCount)
-		return configMapHelper.NewConfigMapBuilder(name).
-			WithUpstreamRegistry("registry.json", servers).
 			Create(configMapHelper), nil
 
 	default:
@@ -147,16 +141,6 @@ func (f *TestDataFactory) GenerateTestServers(count int) []RegistryServer {
 	servers := make([]RegistryServer, count)
 	for i := 0; i < count; i++ {
 		servers[i] = f.GenerateTestServer(i)
-	}
-	return servers
-}
-
-// GenerateTestServersMap generates a map of test servers for upstream format
-func (f *TestDataFactory) GenerateTestServersMap(count int) map[string]RegistryServer {
-	servers := make(map[string]RegistryServer)
-	for i := 0; i < count; i++ {
-		server := f.GenerateTestServer(i)
-		servers[server.Name] = server
 	}
 	return servers
 }
@@ -246,7 +230,7 @@ func (f *TestDataFactory) CommonTestScenarios() map[string]TestScenario {
 			Registries: []MCPRegistryTemplate{
 				func() MCPRegistryTemplate {
 					template := f.DefaultMCPRegistryTemplate()
-					template.Format = mcpv1alpha1.RegistryFormatUpstream
+					template.Format = mcpv1alpha1.RegistryFormatToolHive
 					return template
 				}(),
 			},
@@ -270,7 +254,7 @@ func (f *TestDataFactory) CommonTestScenarios() map[string]TestScenario {
 				func() MCPRegistryTemplate {
 					template := f.DefaultMCPRegistryTemplate()
 					template.NamePrefix = "secondary-registry"
-					template.Format = mcpv1alpha1.RegistryFormatUpstream
+					template.Format = mcpv1alpha1.RegistryFormatToolHive
 					template.SyncInterval = "30m"
 					return template
 				}(),

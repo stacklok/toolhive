@@ -61,45 +61,6 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			errMsg:  "spec.outgoingAuth.source must be one of: discovered, inline, mixed",
 		},
 		{
-			name: "valid backend service account auth",
-			vmcp: &VirtualMCPServer{
-				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
-					OutgoingAuth: &OutgoingAuthConfig{
-						Backends: map[string]BackendAuthConfig{
-							"test-backend": {
-								Type: BackendAuthTypeServiceAccount,
-								ServiceAccount: &ServiceAccountAuth{
-									CredentialsRef: SecretKeyRef{
-										Name: "test-secret",
-										Key:  "token",
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "invalid backend service account auth - missing credentials",
-			vmcp: &VirtualMCPServer{
-				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
-					OutgoingAuth: &OutgoingAuthConfig{
-						Backends: map[string]BackendAuthConfig{
-							"test-backend": {
-								Type: BackendAuthTypeServiceAccount,
-							},
-						},
-					},
-				},
-			},
-			wantErr: true,
-			errMsg:  "spec.outgoingAuth.backends[test-backend].serviceAccount is required when type is service_account",
-		},
-		{
 			name: "valid backend external auth config ref",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{

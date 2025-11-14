@@ -70,13 +70,8 @@ func (f *DefaultHandlerFactory) CreateToolHandler(
 			return mcp.NewToolResultError(wrappedErr.Error()), nil
 		}
 
-		backendToolName := target.GetBackendCapabilityName(toolName)
-		if backendToolName != toolName {
-			logger.Debugf("Translating tool name %s -> %s for backend %s",
-				toolName, backendToolName, target.WorkloadID)
-		}
-
-		result, err := f.backendClient.CallTool(ctx, target, backendToolName, args)
+		// Call the backend tool - the backend client handles name translation
+		result, err := f.backendClient.CallTool(ctx, target, toolName, args)
 		if err != nil {
 			if errors.Is(err, vmcp.ErrToolExecutionFailed) {
 				logger.Debugf("Tool execution failed for %s: %v", toolName, err)

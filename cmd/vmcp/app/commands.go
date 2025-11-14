@@ -202,6 +202,9 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	logger.Infof("  Name: %s", cfg.Name)
 	logger.Infof("  Group: %s", cfg.Group)
 	logger.Infof("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution)
+	if len(cfg.CompositeTools) > 0 {
+		logger.Infof("  Composite Tools: %d defined", len(cfg.CompositeTools))
+	}
 
 	return cfg, nil
 }

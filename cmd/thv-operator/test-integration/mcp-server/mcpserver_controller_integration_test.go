@@ -551,7 +551,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			}
 
 			Expect(foundCondition).NotTo(BeNil())
-			Expect(foundCondition.Message).To(ContainSubstring("MCPGroup 'non-existent-group' not found"))
+			Expect(foundCondition.Message).To(Equal("MCPGroup 'non-existent-group' not found in namespace 'default'"))
 		})
 
 		It("Should not block creation of other resources despite invalid GroupRef", func() {
@@ -638,7 +638,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			Expect(k8sClient.Delete(ctx, mcpGroup)).Should(Succeed())
 		})
 
-		It("Should set GroupRefValidated condition to True with reason GroupRefValidated", func() {
+		It("Should set GroupRefValidated condition to True with reason GroupRefIsValid", func() {
 			// Wait for the status to be updated with the valid condition
 			Eventually(func() bool {
 				updatedMCPServer := &mcpv1alpha1.MCPServer{}
@@ -654,7 +654,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				for _, cond := range updatedMCPServer.Status.Conditions {
 					if cond.Type == "GroupRefValidated" {
 						return cond.Status == metav1.ConditionTrue &&
-							cond.Reason == "GroupRefValidated"
+							cond.Reason == "GroupRefIsValid"
 					}
 				}
 				return false

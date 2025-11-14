@@ -717,13 +717,11 @@ func (*workflowEngine) CancelWorkflow(_ context.Context, _ string) error {
 // If a parameter is missing from params but has a default in the schema, the default is applied.
 // Parameters explicitly provided by the client are never overwritten.
 func applyParameterDefaults(schema map[string]any, params map[string]any) map[string]any {
-	if schema == nil || params == nil {
-		if params == nil {
-			params = make(map[string]any)
-		}
-		if schema == nil {
-			return params
-		}
+	if params == nil {
+		params = make(map[string]any)
+	}
+	if schema == nil {
+		return params
 	}
 
 	// Extract properties from JSON Schema

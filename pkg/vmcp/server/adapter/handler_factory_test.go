@@ -260,8 +260,10 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 					RouteTool(gomock.Any(), "backend1_fetch").
 					Return(target, nil)
 
+				// Handler factory now passes the client-facing name (backend1_fetch)
+				// Backend client handles translation to original name (fetch)
 				mockClient.EXPECT().
-					CallTool(gomock.Any(), target, "fetch", map[string]any{"url": "https://example.com"}).
+					CallTool(gomock.Any(), target, "backend1_fetch", map[string]any{"url": "https://example.com"}).
 					Return(expectedResult, nil)
 			},
 			request: mcp.CallToolRequest{

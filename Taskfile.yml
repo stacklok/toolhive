@@ -48,8 +48,10 @@ tasks:
     platforms: [linux, darwin]
     internal: true
     cmds:
-      - go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
-      # we have to use ldflags to avoid the LC_DYSYMTAB linker error. 
+      # Only install gotestfmt if not already installed
+      - cmd: which gotestfmt > /dev/null 2>&1 || go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
+        platforms: [linux, darwin]
+      # we have to use ldflags to avoid the LC_DYSYMTAB linker error.
       # https://github.com/stacklok/toolhive/issues/1687
       - go test -ldflags=-extldflags=-Wl,-w -v -json -race $(go list ./... | grep -v '/test/e2e' | grep -v '/cmd/thv-operator/test-integration') | gotestfmt -hide "all"
 
@@ -79,8 +81,10 @@ tasks:
     cmds:
       - cmd: mkdir -p coverage
         platforms: [linux, darwin]
-      - go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
-      # we have to use ldflags to avoid the LC_DYSYMTAB linker error. 
+      # Only install gotestfmt if not already installed
+      - cmd: which gotestfmt > /dev/null 2>&1 || go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
+        platforms: [linux, darwin]
+      # we have to use ldflags to avoid the LC_DYSYMTAB linker error.
       # https://github.com/stacklok/toolhive/issues/1687
       - go test -ldflags=-extldflags=-Wl,-w -json -race -coverprofile=coverage/coverage.out $(go list ./... | grep -v '/test/e2e' | grep -v '/cmd/thv-operator/test-integration') | gotestfmt -hide "all"
       - go tool cover -func=coverage/coverage.out

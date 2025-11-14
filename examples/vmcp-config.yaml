@@ -93,14 +93,6 @@ outgoing_auth:
     #     audience: "jira-api"  # Token audience for Jira API
     #     scopes: ["read:jira-work", "write:jira-work"]
 
-    # TODO: Uncomment when service_account strategy is implemented
-    # slack:
-    #   type: service_account
-    #   metadata:
-    #     credentials_env: "SLACK_BOT_TOKEN"
-    #     header_name: "Authorization"
-    #     header_format: "Bearer {token}"
-
     # TODO: Uncomment when pass_through strategy is implemented
     # internal-db:
     #   type: pass_through  # Forward client token unchanged

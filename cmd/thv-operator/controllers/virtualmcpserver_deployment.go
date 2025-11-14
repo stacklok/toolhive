@@ -438,26 +438,13 @@ func (r *VirtualMCPServerReconciler) validateSecretReferences(
 }
 
 // validateBackendAuthSecrets validates secrets referenced in backend authentication configuration
-func (r *VirtualMCPServerReconciler) validateBackendAuthSecrets(
-	ctx context.Context,
-	namespace string,
-	backendAuth *mcpv1alpha1.BackendAuthConfig,
-	backendDesc string,
+func (*VirtualMCPServerReconciler) validateBackendAuthSecrets(
+	_ context.Context,
+	_ string,
+	_ *mcpv1alpha1.BackendAuthConfig,
+	_ string,
 ) error {
-	if backendAuth == nil {
-		return nil
-	}
-
-	// Only service account auth type has secrets to validate
-	if backendAuth.Type == mcpv1alpha1.BackendAuthTypeServiceAccount &&
-		backendAuth.ServiceAccount != nil {
-		if err := r.validateSecretKeyRef(ctx, namespace,
-			&backendAuth.ServiceAccount.CredentialsRef,
-			fmt.Sprintf("%s service account credentials", backendDesc)); err != nil {
-			return err
-		}
-	}
-
+	// No backend auth types currently require secret validation
 	return nil
 }
 

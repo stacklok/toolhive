@@ -984,8 +984,8 @@ func TestRealWorld_GitHubServer(t *testing.T) {
 	require.NoError(t, err, "Should convert ImageMetadata back to ServerJSON")
 	require.NotNil(t, resultServerJSON)
 
-	// Verify round-trip preserved core data
-	assert.Equal(t, "io.github.stacklok/github-mcp-server", resultServerJSON.Name)
+	// Verify round-trip preserved core data (including original canonical name)
+	assert.Equal(t, "io.github.github/github-mcp-server", resultServerJSON.Name)
 	assert.Equal(t, officialFormat.Description, resultServerJSON.Description)
 	assert.Equal(t, officialFormat.Repository.URL, resultServerJSON.Repository.URL)
 

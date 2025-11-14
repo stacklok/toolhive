@@ -29,6 +29,29 @@ type HandlerFactory interface {
 
 	// CreatePromptHandler creates a handler that routes prompt requests to backends.
 	CreatePromptHandler(promptName string) func(context.Context, mcp.GetPromptRequest) (*mcp.GetPromptResult, error)
+
+	// CreateCompositeToolHandler creates a handler for composite tool workflows.
+	// This handler executes multi-step workflows via the composer instead of routing to a single backend.
+	CreateCompositeToolHandler(
+		toolName string,
+		workflow WorkflowExecutor,
+	) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error)
+}
+
+// WorkflowExecutor executes composite tool workflows.
+// This interface abstracts the composer to enable testing without full composer setup.
+type WorkflowExecutor interface {
+	// ExecuteWorkflow executes the workflow with the given parameters.
+	ExecuteWorkflow(ctx context.Context, params map[string]any) (*WorkflowResult, error)
+}
+
+// WorkflowResult represents the result of a workflow execution.
+type WorkflowResult struct {
+	// Output contains the workflow output data (typically from the last step).
+	Output map[string]any
+
+	// Error contains error information if the workflow failed.
+	Error error
 }
 
 // DefaultHandlerFactory creates MCP request handlers that route to backend workloads.
@@ -194,5 +217,62 @@ func (f *DefaultHandlerFactory) CreatePromptHandler(promptName string) func(
 		}
 
 		return result, nil
+	}
+}
+
+// CreateCompositeToolHandler creates a handler that executes composite tool workflows.
+//
+// This handler differs from backend tool handlers in that it executes multi-step
+// workflows via the composer instead of routing to a single backend. The workflow
+// orchestrates calls to multiple backend tools and handles elicitation, conditions,
+// and error handling.
+//
+// The handler:
+//  1. Extracts parameters from the MCP request
+//  2. Invokes the workflow executor
+//  3. Converts workflow results to MCP tool result format
+//  4. Handles workflow errors gracefully
+//
+// Workflow execution errors are returned as MCP tool errors (not HTTP errors),
+// ensuring consistent error handling across all tool types.
+func (*DefaultHandlerFactory) CreateCompositeToolHandler(
+	toolName string,
+	workflow WorkflowExecutor,
+) func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		logger.Debugf("Handling composite tool call: %s", toolName)
+
+		// Extract parameters from MCP request
+		params, ok := request.Params.Arguments.(map[string]any)
+		if !ok {
+			wrappedErr := fmt.Errorf("%w: arguments must be object, got %T", vmcp.ErrInvalidInput, request.Params.Arguments)
+			logger.Warnf("Invalid arguments for composite tool %s: %v", toolName, wrappedErr)
+			return mcp.NewToolResultError(wrappedErr.Error()), nil
+		}
+
+		// Execute workflow via composer
+		// The workflow engine applies timeout from WorkflowDefinition.Timeout (default: 30 minutes)
+		// and handles context cancellation throughout execution.
+		result, err := workflow.ExecuteWorkflow(ctx, params)
+		if err != nil {
+			// Check for timeout errors and provide user-friendly message
+			if errors.Is(err, context.DeadlineExceeded) {
+				logger.Warnf("Workflow execution timeout for %s: %v", toolName, err)
+				return mcp.NewToolResultError("Workflow execution timeout exceeded"), nil
+			}
+			logger.Errorf("Workflow execution failed for %s: %v", toolName, err)
+			return mcp.NewToolResultError(fmt.Sprintf("Workflow execution failed: %v", err)), nil
+		}
+
+		// Check if workflow result contains an error
+		if result.Error != nil {
+			logger.Errorf("Workflow completed with error for %s: %v", toolName, result.Error)
+			return mcp.NewToolResultError(fmt.Sprintf("Workflow error: %v", result.Error)), nil
+		}
+
+		// Convert workflow output to MCP tool result
+		// The output is typically the result of the last workflow step
+		logger.Debugf("Composite tool %s completed successfully", toolName)
+		return mcp.NewToolResultStructuredOnly(result.Output), nil
 	}
 }

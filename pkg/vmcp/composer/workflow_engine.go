@@ -67,6 +67,14 @@ func NewWorkflowEngine(
 }
 
 // ExecuteWorkflow executes a composite tool workflow.
+//
+// TODO(rate-limiting): Add rate limiting per user/session to prevent workflow execution DoS.
+// Consider implementing:
+//   - Max concurrent workflows per user (e.g., 10)
+//   - Max workflow executions per time window (e.g., 100/minute)
+//   - Exponential backoff for repeated failures
+//
+// See security review: VMCP_COMPOSITE_WORKFLOW_SECURITY_REVIEW.md (M-4)
 func (e *workflowEngine) ExecuteWorkflow(
 	ctx context.Context,
 	def *WorkflowDefinition,

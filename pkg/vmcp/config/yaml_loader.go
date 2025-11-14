@@ -558,6 +558,11 @@ func (*YAMLLoader) transformWorkflowStep(raw *rawWorkflowStep) (*WorkflowStepCon
 		Schema:    raw.Schema,
 	}
 
+	// Apply type inference: if type is empty and tool field is present, infer as "tool"
+	if step.Type == "" && step.Tool != "" {
+		step.Type = "tool"
+	}
+
 	if raw.Timeout != "" {
 		timeout, err := time.ParseDuration(raw.Timeout)
 		if err != nil {

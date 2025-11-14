@@ -453,15 +453,15 @@ func (*DefaultValidator) validateStepBasics(step *WorkflowStepConfig, index int,
 }
 
 // validateStepType validates step type and type-specific requirements.
-// Type inference: If type is not specified and 'tool' field is present, infers type as "tool".
+// The type should have been inferred during loading if the 'tool' field is present.
 // Elicitation steps must always specify type explicitly for clarity.
 func (*DefaultValidator) validateStepType(step *WorkflowStepConfig, index int) error {
-	// Infer type as "tool" if tool field is present and type is unspecified
-	if step.Type == "" && step.Tool != "" {
-		step.Type = "tool"
+	// Check for ambiguous configuration: both tool and message fields present
+	if step.Tool != "" && step.Message != "" {
+		return fmt.Errorf("step[%d] cannot have both tool and message fields - use explicit type to clarify intent", index)
 	}
 
-	// Type is required if it cannot be inferred
+	// Type is required at this point (should have been inferred during loading)
 	if step.Type == "" {
 		return fmt.Errorf("step[%d].type is required (or omit for tool steps with 'tool' field present)", index)
 	}

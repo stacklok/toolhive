@@ -563,7 +563,8 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 					Steps: []*WorkflowStepConfig{
 						{
 							ID:   "fetch",
-							Tool: "fetch_fetch", // Type omitted - should be inferred as "tool"
+							Type: "tool", // Type would be inferred by loader from tool field
+							Tool: "fetch_fetch",
 							Arguments: map[string]any{
 								"url": "https://example.com",
 							},
@@ -583,6 +584,7 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 					Steps: []*WorkflowStepConfig{
 						{
 							ID:   "step1",
+							Type: "tool", // Type would be inferred by loader from tool field
 							Tool: "some_tool",
 						},
 					},
@@ -627,6 +629,27 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "type is required",
+		},
+		{
+			name: "both tool and message fields present",
+			tools: []*CompositeToolConfig{
+				{
+					Name:        "ambiguous_step",
+					Description: "Step with both tool and message",
+					Timeout:     Duration(5 * time.Minute),
+					Steps: []*WorkflowStepConfig{
+						{
+							ID:      "step1",
+							Tool:    "some_tool",    // Tool field present
+							Message: "Some message", // Message field also present
+							// Type will be inferred as "tool" during loading
+							// This should fail validation due to ambiguity
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "cannot have both tool and message fields",
 		},
 	}
 

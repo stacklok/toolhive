@@ -188,3 +188,80 @@ func TestWorkflowEngine_ExecuteWorkflow_Timeout(t *testing.T) {
 	assert.ErrorIs(t, err, ErrWorkflowTimeout)
 	assert.Equal(t, WorkflowStatusTimedOut, result.Status)
 }
+
+func TestWorkflowEngine_ExecuteWorkflow_ParameterDefaults(t *testing.T) {
+	t.Parallel()
+	te := newTestEngine(t)
+
+	// Workflow with parameter that has a default value
+	def := &WorkflowDefinition{
+		Name: "with-defaults",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"url": map[string]any{
+					"type":    "string",
+					"default": "https://default.example.com",
+				},
+				"count": map[string]any{
+					"type":    "integer",
+					"default": 42,
+				},
+			},
+		},
+		Steps: []WorkflowStep{
+			toolStep("fetch", "fetch.tool", map[string]any{
+				"url":   "{{.params.url}}",
+				"count": "{{.params.count}}",
+			}),
+		},
+	}
+
+	// Expect tool call with default values applied
+	te.expectToolCall("fetch.tool",
+		map[string]any{"url": "https://default.example.com", "count": "42"},
+		map[string]any{"status": "ok"})
+
+	// Execute with empty params - defaults should be applied
+	result, err := execute(t, te.Engine, def, map[string]any{})
+
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+}
+
+func TestWorkflowEngine_ExecuteWorkflow_ParameterDefaultsOverride(t *testing.T) {
+	t.Parallel()
+	te := newTestEngine(t)
+
+	// Workflow with parameter defaults
+	def := &WorkflowDefinition{
+		Name: "with-defaults",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"url": map[string]any{
+					"type":    "string",
+					"default": "https://default.example.com",
+				},
+			},
+		},
+		Steps: []WorkflowStep{
+			toolStep("fetch", "fetch.tool", map[string]any{
+				"url": "{{.params.url}}",
+			}),
+		},
+	}
+
+	// Expect tool call with client-provided value (not default)
+	te.expectToolCall("fetch.tool",
+		map[string]any{"url": "https://custom.example.com"},
+		map[string]any{"status": "ok"})
+
+	// Execute with explicit param - should override default
+	result, err := execute(t, te.Engine, def, map[string]any{
+		"url": "https://custom.example.com",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+}

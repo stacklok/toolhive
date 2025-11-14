@@ -74,8 +74,11 @@ func (e *workflowEngine) ExecuteWorkflow(
 ) (*WorkflowResult, error) {
 	logger.Infof("Starting workflow execution: %s", def.Name)
 
+	// Apply parameter defaults from JSON Schema before execution
+	paramsWithDefaults := applyParameterDefaults(def.Parameters, params)
+
 	// Create workflow context
-	workflowCtx := e.contextManager.CreateContext(params)
+	workflowCtx := e.contextManager.CreateContext(paramsWithDefaults)
 	defer e.contextManager.DeleteContext(workflowCtx.WorkflowID)
 
 	// Apply workflow timeout
@@ -697,4 +700,59 @@ func (*workflowEngine) CancelWorkflow(_ context.Context, _ string) error {
 	// In Phase 2, workflows run synchronously and blocking
 	// Cancellation will be implemented in Phase 3
 	return fmt.Errorf("workflow cancellation not yet implemented")
+}
+
+// applyParameterDefaults applies default values from JSON Schema to workflow parameters.
+// This ensures that parameters with defaults are set even if not provided by the client.
+//
+// JSON Schema format:
+//
+//	{
+//	  "type": "object",
+//	  "properties": {
+//	    "param_name": {"type": "string", "default": "default_value"}
+//	  }
+//	}
+//
+// If a parameter is missing from params but has a default in the schema, the default is applied.
+// Parameters explicitly provided by the client are never overwritten.
+func applyParameterDefaults(schema map[string]any, params map[string]any) map[string]any {
+	if schema == nil || params == nil {
+		if params == nil {
+			params = make(map[string]any)
+		}
+		if schema == nil {
+			return params
+		}
+	}
+
+	// Extract properties from JSON Schema
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok || properties == nil {
+		return params
+	}
+
+	// Create result map with provided params
+	result := make(map[string]any, len(params))
+	for k, v := range params {
+		result[k] = v
+	}
+
+	// Apply defaults for missing parameters
+	for paramName, propSchema := range properties {
+		// Skip if parameter was explicitly provided
+		if _, exists := result[paramName]; exists {
+			continue
+		}
+
+		// Extract default value from property schema
+		if propMap, ok := propSchema.(map[string]any); ok {
+			if defaultValue, hasDefault := propMap["default"]; hasDefault {
+				result[paramName] = defaultValue
+				logger.Debugf("Applied default value for parameter %s: %v", paramName, defaultValue)
+			}
+		}
+	}
+
+	return result
 }

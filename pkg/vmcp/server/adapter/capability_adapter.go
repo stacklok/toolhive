@@ -160,15 +160,17 @@ func (a *CapabilityAdapter) ToSDKPrompts(prompts []vmcp.Prompt) []server.ServerP
 //
 // The workflowExecutors map provides the workflow executor for each tool name.
 // Returns error if schema marshaling fails or workflow executor is missing for any tool.
+//
+// Authorization note: Composite tools are registered per-session based on session-discovered
+// tools. Currently, if a workflow references tools that a user lacks access to, the workflow
+// registration will fail hard with an error. Future enhancement: gracefully disable workflows
+// with missing required tools while logging for audit purposes, preventing privilege escalation
+// while improving user experience.
 func (a *CapabilityAdapter) ToCompositeToolSDKTools(
 	tools []vmcp.Tool,
 	workflowExecutors map[string]WorkflowExecutor,
 ) ([]server.ServerTool, error) {
-	if len(tools) == 0 {
-		return nil, nil
-	}
-
-	sdkTools := make([]server.ServerTool, 0, len(tools))
+	var sdkTools []server.ServerTool
 	for _, tool := range tools {
 		// Get workflow executor for this tool
 		executor, exists := workflowExecutors[tool.Name]

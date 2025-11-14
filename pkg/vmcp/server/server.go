@@ -153,7 +153,7 @@ func New(
 	discoveryMgr discovery.Manager,
 	backends []vmcp.Backend,
 	workflowDefs map[string]*composer.WorkflowDefinition,
-) *Server {
+) (*Server, error) {
 	// Apply defaults
 	if cfg.Host == "" {
 		cfg.Host = "127.0.0.1"
@@ -198,8 +198,11 @@ func New(
 	// The composer orchestrates multi-step workflows across backends
 	workflowComposer := composer.NewWorkflowEngine(rt, backendClient, elicitationHandler)
 
-	// Validate workflows and create executors (filters out invalid workflows at startup)
-	workflowDefs, workflowExecutors := validateAndCreateExecutors(workflowComposer, workflowDefs)
+	// Validate workflows and create executors (fail fast on invalid workflows)
+	workflowDefs, workflowExecutors, err := validateAndCreateExecutors(workflowComposer, workflowDefs)
+	if err != nil {
+		return nil, fmt.Errorf("workflow validation failed: %w", err)
+	}
 
 	// Create session manager with VMCPSession factory
 	// This enables type-safe access to routing tables while maintaining session lifecycle management
@@ -305,7 +308,7 @@ func New(
 			"resource_count", len(caps.Resources))
 	})
 
-	return srv
+	return srv, nil
 }
 
 // Start starts the Virtual MCP Server and begins serving requests.
@@ -576,22 +579,21 @@ func (s *Server) injectCapabilities(
 	return nil
 }
 
-// validateAndCreateExecutors validates workflow definitions and creates executors for valid workflows.
+// validateAndCreateExecutors validates workflow definitions and creates executors.
 //
 // This function:
 //  1. Validates each workflow definition (cycle detection, tool references, etc.)
-//  2. Filters out invalid workflows (logs errors but continues)
-//  3. Creates workflow executors only for valid workflows
-//  4. Returns filtered maps containing only valid workflows
+//  2. Returns error on first validation failure (fail-fast)
+//  3. Creates workflow executors for all valid workflows
 //
-// Invalid workflows are excluded from registration to prevent runtime failures and
+// Failing fast on invalid workflows provides immediate user feedback and prevents
 // security issues (resource exhaustion from cycles, information disclosure from errors).
 func validateAndCreateExecutors(
 	validator composer.Composer,
 	workflowDefs map[string]*composer.WorkflowDefinition,
-) (map[string]*composer.WorkflowDefinition, map[string]adapter.WorkflowExecutor) {
+) (map[string]*composer.WorkflowDefinition, map[string]adapter.WorkflowExecutor, error) {
 	if len(workflowDefs) == 0 {
-		return make(map[string]*composer.WorkflowDefinition), make(map[string]adapter.WorkflowExecutor)
+		return nil, nil, nil
 	}
 
 	validDefs := make(map[string]*composer.WorkflowDefinition, len(workflowDefs))
@@ -599,8 +601,7 @@ func validateAndCreateExecutors(
 
 	for name, def := range workflowDefs {
 		if err := validator.ValidateWorkflow(context.Background(), def); err != nil {
-			logger.Errorf("Invalid workflow definition '%s' - excluding from capabilities: %v", name, err)
-			continue
+			return nil, nil, fmt.Errorf("invalid workflow definition '%s': %w", name, err)
 		}
 
 		validDefs[name] = def
@@ -612,5 +613,5 @@ func validateAndCreateExecutors(
 		logger.Infof("Loaded %d valid composite tool workflows", len(validDefs))
 	}
 
-	return validDefs, validExecutors
+	return validDefs, validExecutors, nil
 }

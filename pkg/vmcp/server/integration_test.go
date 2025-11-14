@@ -189,12 +189,13 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 		Return(aggregatedCaps, nil).
 		AnyTimes()
 
-	srv := server.New(&server.Config{
+	srv, err := server.New(&server.Config{
 		Name:    "test-vmcp",
 		Version: "1.0.0",
 		Host:    "127.0.0.1",
 		Port:    4484,
 	}, rt, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	require.NoError(t, err)
 
 	// Validate server address
 	assert.Equal(t, "127.0.0.1:4484", srv.Address())
@@ -318,7 +319,7 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 	}
 
 	// Create and start server
-	srv := server.New(&server.Config{
+	srv, err := server.New(&server.Config{
 		Name:           "test-vmcp",
 		Version:        "1.0.0",
 		Host:           "127.0.0.1",
@@ -326,6 +327,7 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 		SessionTTL:     5 * time.Minute,
 		AuthMiddleware: identityMiddleware,
 	}, rt, mockBackendClient, discoveryMgr, backends, nil)
+	require.NoError(t, err)
 
 	serverCtx, cancelServer := context.WithCancel(ctx)
 	t.Cleanup(cancelServer)

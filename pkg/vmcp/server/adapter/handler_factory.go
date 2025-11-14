@@ -256,8 +256,15 @@ func (*DefaultHandlerFactory) CreateCompositeToolHandler(
 		}
 
 		// Execute workflow via composer
+		// The workflow engine applies timeout from WorkflowDefinition.Timeout (default: 30 minutes)
+		// and handles context cancellation throughout execution.
 		result, err := workflow.ExecuteWorkflow(ctx, params)
 		if err != nil {
+			// Check for timeout errors and provide user-friendly message
+			if errors.Is(err, context.DeadlineExceeded) {
+				logger.Warnf("Workflow execution timeout for %s: %v", toolName, err)
+				return mcp.NewToolResultError("Workflow execution timeout exceeded"), nil
+			}
 			logger.Errorf("Workflow execution failed for %s: %v", toolName, err)
 			return mcp.NewToolResultError(fmt.Sprintf("Workflow execution failed: %v", err)), nil
 		}

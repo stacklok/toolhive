@@ -56,12 +56,13 @@ func createTestServer(t *testing.T) *server.Server {
 		}, nil).
 		AnyTimes()
 
-	srv := server.New(&server.Config{
+	srv, err := server.New(&server.Config{
 		Name:    "test-vmcp",
 		Version: "1.0.0",
 		Host:    "127.0.0.1",
 		Port:    port,
 	}, rt, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	require.NoError(t, err)
 
 	// Start server in background
 	ctx, cancel := context.WithCancel(t.Context())
@@ -171,11 +172,12 @@ func TestServer_SessionManager(t *testing.T) {
 		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 		rt := router.NewDefaultRouter()
 
-		srv := server.New(&server.Config{
+		srv, err := server.New(&server.Config{
 			Name:       "test-vmcp",
 			Version:    "1.0.0",
 			SessionTTL: 10 * time.Minute,
 		}, rt, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
+		require.NoError(t, err)
 
 		// SessionManager should be accessible
 		mgr := srv.SessionManager()
@@ -193,11 +195,12 @@ func TestServer_SessionManager(t *testing.T) {
 		rt := router.NewDefaultRouter()
 
 		customTTL := 15 * time.Minute
-		srv := server.New(&server.Config{
+		srv, err := server.New(&server.Config{
 			Name:       "test-vmcp",
 			Version:    "1.0.0",
 			SessionTTL: customTTL,
 		}, rt, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
+		require.NoError(t, err)
 
 		mgr := srv.SessionManager()
 		assert.NotNil(t, mgr)

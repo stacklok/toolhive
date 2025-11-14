@@ -334,7 +334,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Create server with discovery manager, backends, and workflow definitions
-	srv := vmcpserver.New(serverCfg, rtr, backendClient, discoveryMgr, backends, workflowDefs)
+	srv, err := vmcpserver.New(serverCfg, rtr, backendClient, discoveryMgr, backends, workflowDefs)
+	if err != nil {
+		return fmt.Errorf("failed to create Virtual MCP Server: %w", err)
+	}
 
 	// Start server (blocks until shutdown signal)
 	logger.Infof("Starting Virtual MCP Server at %s", srv.Address())

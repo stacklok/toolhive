@@ -25,7 +25,7 @@ func ConvertConfigToWorkflowDefinitions(
 	compositeTools []*config.CompositeToolConfig,
 ) (map[string]*composer.WorkflowDefinition, error) {
 	if len(compositeTools) == 0 {
-		return make(map[string]*composer.WorkflowDefinition), nil
+		return nil, nil
 	}
 
 	workflowDefs := make(map[string]*composer.WorkflowDefinition, len(compositeTools))

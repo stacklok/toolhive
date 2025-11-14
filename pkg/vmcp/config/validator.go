@@ -396,8 +396,9 @@ func (v *DefaultValidator) validateCompositeTools(tools []*CompositeToolConfig) 
 			return fmt.Errorf("composite_tools[%d].description is required", i)
 		}
 
-		if tool.Timeout <= 0 {
-			return fmt.Errorf("composite_tools[%d].timeout must be positive", i)
+		// Timeout can be 0 (uses default) or positive (explicit timeout)
+		if tool.Timeout < 0 {
+			return fmt.Errorf("composite_tools[%d].timeout cannot be negative", i)
 		}
 
 		// Validate steps
@@ -451,8 +452,20 @@ func (*DefaultValidator) validateStepBasics(step *WorkflowStepConfig, index int,
 	return nil
 }
 
-// validateStepType validates step type and type-specific requirements
+// validateStepType validates step type and type-specific requirements.
+// The type should have been inferred during loading if the 'tool' field is present.
+// Elicitation steps must always specify type explicitly for clarity.
 func (*DefaultValidator) validateStepType(step *WorkflowStepConfig, index int) error {
+	// Check for ambiguous configuration: both tool and message fields present
+	if step.Tool != "" && step.Message != "" {
+		return fmt.Errorf("step[%d] cannot have both tool and message fields - use explicit type to clarify intent", index)
+	}
+
+	// Type is required at this point (should have been inferred during loading)
+	if step.Type == "" {
+		return fmt.Errorf("step[%d].type is required (or omit for tool steps with 'tool' field present)", index)
+	}
+
 	validTypes := []string{"tool", "elicitation"}
 	if !contains(validTypes, step.Type) {
 		return fmt.Errorf("step[%d].type must be one of: %s", index, strings.Join(validTypes, ", "))

@@ -23,8 +23,10 @@ import (
 
 var _ = Describe("MCPServer Controller Integration Tests", func() {
 	const (
-		timeout  = time.Second * 30
-		interval = time.Millisecond * 250
+		timeout                        = time.Second * 30
+		interval                       = time.Millisecond * 250
+		defaultNamespace               = "default"
+		conditionTypeGroupRefValidated = "GroupRefValidated"
 	)
 
 	Context("When creating an Stdio MCPServer", Ordered, func() {
@@ -36,7 +38,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		)
 
 		BeforeAll(func() {
-			namespace = "default"
+			namespace = defaultNamespace
 			mcpServerName = "test-mcpserver"
 
 			// Create namespace if it doesn't exist
@@ -363,7 +365,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		)
 
 		BeforeAll(func() {
-			namespace = "default"
+			namespace = defaultNamespace
 			mcpServerName = "test-invalid-podtemplate"
 
 			// Create namespace if it doesn't exist
@@ -479,7 +481,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		)
 
 		BeforeAll(func() {
-			namespace = "default"
+			namespace = defaultNamespace
 			mcpServerName = "test-invalid-groupref"
 
 			// Create namespace if it doesn't exist
@@ -527,7 +529,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 				// Check for GroupRefValidated condition
 				for _, cond := range updatedMCPServer.Status.Conditions {
-					if cond.Type == "GroupRefValidated" {
+					if cond.Type == conditionTypeGroupRefValidated {
 						return cond.Status == metav1.ConditionFalse &&
 							cond.Reason == "GroupRefNotFound"
 					}
@@ -544,14 +546,14 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 			var foundCondition *metav1.Condition
 			for i, cond := range updatedMCPServer.Status.Conditions {
-				if cond.Type == "GroupRefValidated" {
+				if cond.Type == conditionTypeGroupRefValidated {
 					foundCondition = &updatedMCPServer.Status.Conditions[i]
 					break
 				}
 			}
 
 			Expect(foundCondition).NotTo(BeNil())
-			Expect(foundCondition.Message).To(Equal("MCPGroup 'non-existent-group' not found in namespace 'default'"))
+			Expect(foundCondition.Message).To(Equal(fmt.Sprintf("MCPGroup 'non-existent-group' not found in namespace '%s'", defaultNamespace)))
 		})
 
 		It("Should not block creation of other resources despite invalid GroupRef", func() {
@@ -579,7 +581,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		)
 
 		BeforeAll(func() {
-			namespace = "default"
+			namespace = defaultNamespace
 			mcpServerName = "test-valid-groupref"
 			mcpGroupName = "test-group"
 
@@ -652,7 +654,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 				// Check for GroupRefValidated condition
 				for _, cond := range updatedMCPServer.Status.Conditions {
-					if cond.Type == "GroupRefValidated" {
+					if cond.Type == conditionTypeGroupRefValidated {
 						return cond.Status == metav1.ConditionTrue &&
 							cond.Reason == "GroupRefIsValid"
 					}
@@ -669,7 +671,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 			var foundCondition *metav1.Condition
 			for i, cond := range updatedMCPServer.Status.Conditions {
-				if cond.Type == "GroupRefValidated" {
+				if cond.Type == conditionTypeGroupRefValidated {
 					foundCondition = &updatedMCPServer.Status.Conditions[i]
 					break
 				}
@@ -712,7 +714,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		)
 
 		BeforeAll(func() {
-			namespace = "default"
+			namespace = defaultNamespace
 			mcpServerName = "test-notready-groupref"
 			mcpGroupName = "test-group-pending"
 
@@ -777,7 +779,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 				// Check for GroupRefValidated condition
 				for _, cond := range updatedMCPServer.Status.Conditions {
-					if cond.Type == "GroupRefValidated" {
+					if cond.Type == conditionTypeGroupRefValidated {
 						return cond.Status == metav1.ConditionFalse &&
 							cond.Reason == "GroupRefNotReady"
 					}
@@ -794,7 +796,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 			var foundCondition *metav1.Condition
 			for i, cond := range updatedMCPServer.Status.Conditions {
-				if cond.Type == "GroupRefValidated" {
+				if cond.Type == conditionTypeGroupRefValidated {
 					foundCondition = &updatedMCPServer.Status.Conditions[i]
 					break
 				}

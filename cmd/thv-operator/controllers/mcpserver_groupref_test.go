@@ -95,7 +95,7 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 			},
 			expectedConditionStatus: metav1.ConditionFalse,
 			expectedConditionReason: mcpv1alpha1.ConditionReasonGroupRefNotReady,
-			expectedConditionMsg:    "GroupRef is not in Ready state",
+			expectedConditionMsg:    "MCPGroup 'test-group' is not ready (current phase: Pending)",
 		},
 		{
 			name: "GroupRef not validated when group is Failed",
@@ -122,7 +122,7 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 			},
 			expectedConditionStatus: metav1.ConditionFalse,
 			expectedConditionReason: mcpv1alpha1.ConditionReasonGroupRefNotReady,
-			expectedConditionMsg:    "GroupRef is not in Ready state",
+			expectedConditionMsg:    "MCPGroup 'test-group' is not ready (current phase: Failed)",
 		},
 		{
 			name: "No validation when GroupRef is empty",

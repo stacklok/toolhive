@@ -22,9 +22,6 @@ const (
 const (
 	// RegistryFormatToolHive is the native ToolHive registry format
 	RegistryFormatToolHive = "toolhive"
-
-	// RegistryFormatUpstream is the upstream MCP registry format
-	RegistryFormatUpstream = "upstream"
 )
 
 // MCPRegistrySpec defines the desired state of MCPRegistry

@@ -259,7 +259,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeGit,
-					Format: mcpv1alpha1.RegistryFormatUpstream,
+					Format: mcpv1alpha1.RegistryFormatToolHive,
 					Git: &mcpv1alpha1.GitSource{
 						Repository: "https://github.com/example/repo.git",
 						Branch:     "main",
@@ -277,7 +277,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatUpstream, config.Source.Format)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Source.Format)
 		assert.Equal(t, SourceTypeGit, config.Source.Type)
 		require.NotNil(t, config.Source.Git)
 		assert.Equal(t, "https://github.com/example/repo.git", config.Source.Git.Repository)
@@ -331,7 +331,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeGit,
-					Format: mcpv1alpha1.RegistryFormatUpstream,
+					Format: mcpv1alpha1.RegistryFormatToolHive,
 					Git: &mcpv1alpha1.GitSource{
 						Repository: "https://github.com/example/repo.git",
 						Commit:     "abc123def456",
@@ -349,7 +349,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatUpstream, config.Source.Format)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Source.Format)
 		assert.Equal(t, SourceTypeGit, config.Source.Type)
 		require.NotNil(t, config.Source.Git)
 		assert.Equal(t, "https://github.com/example/repo.git", config.Source.Git.Repository)
@@ -420,7 +420,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeAPI,
-					Format: mcpv1alpha1.RegistryFormatUpstream,
+					Format: mcpv1alpha1.RegistryFormatToolHive,
 					API: &mcpv1alpha1.APISource{
 						Endpoint: "https://api.example.com/registry",
 					},
@@ -437,7 +437,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatUpstream, config.Source.Format)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Source.Format)
 		assert.Equal(t, SourceTypeAPI, config.Source.Type)
 		require.NotNil(t, config.Source.API)
 		assert.Equal(t, "https://api.example.com/registry", config.Source.API.Endpoint)
@@ -620,7 +620,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeGit,
-					Format: mcpv1alpha1.RegistryFormatUpstream,
+					Format: mcpv1alpha1.RegistryFormatToolHive,
 					Git: &mcpv1alpha1.GitSource{
 						Repository: "https://github.com/example/repo.git",
 						Branch:     "main",

@@ -87,12 +87,12 @@ type rawBackendAuthStrategy struct {
 	Type            string                  `yaml:"type"`
 	HeaderInjection *rawHeaderInjectionAuth `yaml:"header_injection"`
 	TokenExchange   *rawTokenExchangeAuth   `yaml:"token_exchange"`
-	ServiceAccount  *rawServiceAccountAuth  `yaml:"service_account"`
 }
 
 type rawHeaderInjectionAuth struct {
-	HeaderName  string `yaml:"header_name"`
-	HeaderValue string `yaml:"header_value"`
+	HeaderName     string `yaml:"header_name"`
+	HeaderValue    string `yaml:"header_value"`
+	HeaderValueEnv string `yaml:"header_value_env"`
 }
 
 type rawTokenExchangeAuth struct {
@@ -102,12 +102,6 @@ type rawTokenExchangeAuth struct {
 	Audience         string   `yaml:"audience"`
 	Scopes           []string `yaml:"scopes"`
 	SubjectTokenType string   `yaml:"subject_token_type"`
-}
-
-type rawServiceAccountAuth struct {
-	CredentialsEnv string `yaml:"credentials_env"`
-	HeaderName     string `yaml:"header_name"`
-	HeaderFormat   string `yaml:"header_format"`
 }
 
 type rawAggregation struct {
@@ -304,6 +298,7 @@ func (l *YAMLLoader) transformOutgoingAuth(raw *rawOutgoingAuth) (*OutgoingAuthC
 	return cfg, nil
 }
 
+//nolint:gocyclo // We should split this into multiple functions per strategy type.
 func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*BackendAuthStrategy, error) {
 	strategy := &BackendAuthStrategy{
 		Type:     raw.Type,
@@ -316,9 +311,31 @@ func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (
 			return nil, fmt.Errorf("header_injection configuration is required")
 		}
 
+		// Validate that exactly one of header_value or header_value_env is set
+		// to make the life of the strategy easier, we read the value here in set preference
+		// order and pass it in metadata in a single value regardless of how it was set.
+		hasValue := raw.HeaderInjection.HeaderValue != ""
+		hasValueEnv := raw.HeaderInjection.HeaderValueEnv != ""
+
+		if hasValue && hasValueEnv {
+			return nil, fmt.Errorf("header_injection: only one of header_value or header_value_env must be set")
+		}
+		if !hasValue && !hasValueEnv {
+			return nil, fmt.Errorf("header_injection: either header_value or header_value_env must be set")
+		}
+
+		// Resolve header value from environment if env var name is provided
+		headerValue := raw.HeaderInjection.HeaderValue
+		if hasValueEnv {
+			headerValue = l.envReader.Getenv(raw.HeaderInjection.HeaderValueEnv)
+			if headerValue == "" {
+				return nil, fmt.Errorf("environment variable %s not set or empty", raw.HeaderInjection.HeaderValueEnv)
+			}
+		}
+
 		strategy.Metadata = map[string]any{
 			strategies.MetadataHeaderName:  raw.HeaderInjection.HeaderName,
-			strategies.MetadataHeaderValue: raw.HeaderInjection.HeaderValue,
+			strategies.MetadataHeaderValue: headerValue,
 		}
 
 	case strategies.StrategyTypeUnauthenticated:
@@ -343,24 +360,6 @@ func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (
 			"audience":           raw.TokenExchange.Audience,
 			"scopes":             raw.TokenExchange.Scopes,
 			"subject_token_type": raw.TokenExchange.SubjectTokenType,
-		}
-
-	case "service_account":
-		if raw.ServiceAccount == nil {
-			return nil, fmt.Errorf("service_account configuration is required")
-		}
-
-		// Resolve credentials from environment
-		credentials := l.envReader.Getenv(raw.ServiceAccount.CredentialsEnv)
-		if credentials == "" {
-			return nil, fmt.Errorf("environment variable %s not set", raw.ServiceAccount.CredentialsEnv)
-		}
-
-		strategy.Metadata = map[string]any{
-			"credentials":     credentials,
-			"credentials_env": raw.ServiceAccount.CredentialsEnv,
-			"header_name":     raw.ServiceAccount.HeaderName,
-			"header_format":   raw.ServiceAccount.HeaderFormat,
 		}
 	}
 

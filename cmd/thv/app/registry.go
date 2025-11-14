@@ -346,7 +346,21 @@ func printTextServerInfo(name string, server types.ServerMetadata) {
 }
 
 // truncateString truncates a string to the specified length and adds "..." if truncated
+// It also sanitizes the string by replacing newlines and multiple spaces with single spaces
 func truncateString(s string, maxLen int) string {
+	// Replace newlines and tabs with spaces
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+
+	// Replace multiple consecutive spaces with a single space
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+
+	// Trim leading/trailing spaces
+	s = strings.TrimSpace(s)
+
 	if len(s) <= maxLen {
 		return s
 	}

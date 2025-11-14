@@ -1,3 +1,6 @@
+// Package registry provides MCP server registry management functionality.
+// It supports multiple registry sources including embedded data, local files,
+// remote URLs, and API endpoints, with optional caching and conversion capabilities.
 package registry
 
 import (

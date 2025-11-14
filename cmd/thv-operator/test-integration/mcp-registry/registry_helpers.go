@@ -65,6 +65,32 @@ func (rb *RegistryBuilder) WithConfigMapSource(configMapName, key string) *Regis
 	return rb
 }
 
+// WithGitSource configures the registry with a Git source
+func (rb *RegistryBuilder) WithGitSource(repository, branch, path string) *RegistryBuilder {
+	rb.registry.Spec.Source = mcpv1alpha1.MCPRegistrySource{
+		Type:   mcpv1alpha1.RegistrySourceTypeGit,
+		Format: mcpv1alpha1.RegistryFormatToolHive, // Default to ToolHive format
+		Git: &mcpv1alpha1.GitSource{
+			Repository: repository,
+			Branch:     branch,
+			Path:       path,
+		},
+	}
+	return rb
+}
+
+// WithAPISource configures the registry with an API source
+func (rb *RegistryBuilder) WithAPISource(endpoint string) *RegistryBuilder {
+	rb.registry.Spec.Source = mcpv1alpha1.MCPRegistrySource{
+		Type:   mcpv1alpha1.RegistrySourceTypeAPI,
+		Format: mcpv1alpha1.RegistryFormatToolHive, // Default to ToolHive format
+		API: &mcpv1alpha1.APISource{
+			Endpoint: endpoint,
+		},
+	}
+	return rb
+}
+
 // WithUpstreamFormat configures the registry to use upstream MCP format
 func (rb *RegistryBuilder) WithUpstreamFormat() *RegistryBuilder {
 	rb.registry.Spec.Source.Format = mcpv1alpha1.RegistryFormatToolHive

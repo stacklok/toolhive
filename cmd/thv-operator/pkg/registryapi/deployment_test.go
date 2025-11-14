@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 )
 
 func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
@@ -123,8 +124,9 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 
 			manager := &manager{}
 
-			deployment := manager.buildRegistryAPIDeployment(tt.mcpRegistry)
-
+			configManager := config.NewConfigManagerForTesting(tt.mcpRegistry)
+			deployment, err := manager.buildRegistryAPIDeployment(tt.mcpRegistry, configManager)
+			require.NoError(t, err)
 			tt.validateResult(t, deployment)
 		})
 	}

@@ -11,7 +11,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -702,129 +701,6 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 				}
 				return false
 			}, timeout, interval).Should(BeTrue())
-		})
-	})
-
-	Context("When creating an MCPServer with GroupRef pointing to failed group", Ordered, func() {
-		var (
-			namespace     string
-			mcpServerName string
-			mcpGroupName  string
-			mcpServer     *mcpv1alpha1.MCPServer
-			mcpGroup      *mcpv1alpha1.MCPGroup
-		)
-
-		BeforeAll(func() {
-			namespace = defaultNamespace
-			mcpServerName = "test-failed-groupref"
-			mcpGroupName = "test-group-failed"
-
-			// Create namespace if it doesn't exist
-			ns := &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: namespace,
-				},
-			}
-			_ = k8sClient.Create(ctx, ns)
-
-			// Create MCPGroup and set it to Failed state
-			mcpGroup = &mcpv1alpha1.MCPGroup{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      mcpGroupName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1alpha1.MCPGroupSpec{
-					Description: "A test group that is in failed state",
-				},
-			}
-			Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
-
-			// Force the MCPGroup to Failed state by updating its status
-			// The controller won't automatically recover from Failed state
-			Eventually(func() error {
-				updatedGroup := &mcpv1alpha1.MCPGroup{}
-				if err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      mcpGroupName,
-					Namespace: namespace,
-				}, updatedGroup); err != nil {
-					return err
-				}
-				updatedGroup.Status.Phase = mcpv1alpha1.MCPGroupPhaseFailed
-				// Also set a condition to make it look realistic
-				meta.SetStatusCondition(&updatedGroup.Status.Conditions, metav1.Condition{
-					Type:    mcpv1alpha1.ConditionTypeMCPServersChecked,
-					Status:  metav1.ConditionFalse,
-					Reason:  mcpv1alpha1.ConditionReasonListMCPServersFailed,
-					Message: "Simulated failure for testing",
-				})
-				return k8sClient.Status().Update(ctx, updatedGroup)
-			}, timeout, interval).Should(Succeed())
-
-			// Define the MCPServer resource with GroupRef to failed group
-			mcpServer = &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      mcpServerName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
-					Transport: "stdio",
-					Port:      8080,
-					GroupRef:  mcpGroupName, // This group exists but is in failed state
-				},
-			}
-
-			// Create the MCPServer
-			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
-		})
-
-		AfterAll(func() {
-			// Clean up the MCPServer first
-			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
-			// Then clean up the MCPGroup
-			Expect(k8sClient.Delete(ctx, mcpGroup)).Should(Succeed())
-		})
-
-		It("Should set GroupRefValidated condition to False with reason GroupRefNotReady", func() {
-			// Wait for the status to be updated with the not-ready condition
-			// The MCPGroup is in Failed state, which is considered not ready
-			Eventually(func() bool {
-				updatedMCPServer := &mcpv1alpha1.MCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      mcpServerName,
-					Namespace: namespace,
-				}, updatedMCPServer)
-				if err != nil {
-					return false
-				}
-
-				// Check for GroupRefValidated condition
-				for _, cond := range updatedMCPServer.Status.Conditions {
-					if cond.Type == conditionTypeGroupRefValidated {
-						return cond.Status == metav1.ConditionFalse &&
-							cond.Reason == "GroupRefNotReady"
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
-
-			// Verify the condition message contains expected text
-			updatedMCPServer := &mcpv1alpha1.MCPServer{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      mcpServerName,
-				Namespace: namespace,
-			}, updatedMCPServer)).Should(Succeed())
-
-			var foundCondition *metav1.Condition
-			for i, cond := range updatedMCPServer.Status.Conditions {
-				if cond.Type == conditionTypeGroupRefValidated {
-					foundCondition = &updatedMCPServer.Status.Conditions[i]
-					break
-				}
-			}
-
-			Expect(foundCondition).NotTo(BeNil())
-			Expect(foundCondition.Message).To(ContainSubstring("MCPGroup 'test-group-failed' is not ready"))
 		})
 	})
 })

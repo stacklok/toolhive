@@ -49,11 +49,6 @@ type ToolHiveRegistryData struct {
 	RemoteServers map[string]RegistryServer `json:"remoteServers"`
 }
 
-// UpstreamRegistryData represents the upstream MCP registry format
-type UpstreamRegistryData struct {
-	Servers map[string]RegistryServer `json:"servers"`
-}
-
 // ConfigMapBuilder provides a fluent interface for building ConfigMaps
 type ConfigMapBuilder struct {
 	configMap *corev1.ConfigMap
@@ -106,15 +101,6 @@ func (cb *ConfigMapBuilder) WithToolHiveRegistry(key string, servers []RegistryS
 	}
 	jsonData, err := json.MarshalIndent(registryData, "", "  ")
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to marshal ToolHive registry data")
-	cb.configMap.Data[key] = string(jsonData)
-	return cb
-}
-
-// WithUpstreamRegistry adds upstream MCP format registry data
-func (cb *ConfigMapBuilder) WithUpstreamRegistry(key string, servers map[string]RegistryServer) *ConfigMapBuilder {
-	registryData := UpstreamRegistryData{Servers: servers}
-	jsonData, err := json.MarshalIndent(registryData, "", "  ")
-	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to marshal upstream registry data")
 	cb.configMap.Data[key] = string(jsonData)
 	return cb
 }

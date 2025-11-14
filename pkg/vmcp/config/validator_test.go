@@ -553,6 +553,81 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 			wantErr: true,
 			errMsg:  "duplicate composite tool name",
 		},
+		{
+			name: "type inferred from tool field",
+			tools: []*CompositeToolConfig{
+				{
+					Name:        "fetch_data",
+					Description: "Fetch data workflow",
+					Timeout:     Duration(5 * time.Minute),
+					Steps: []*WorkflowStepConfig{
+						{
+							ID:   "fetch",
+							Tool: "fetch_fetch", // Type omitted - should be inferred as "tool"
+							Arguments: map[string]any{
+								"url": "https://example.com",
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "timeout omitted uses default",
+			tools: []*CompositeToolConfig{
+				{
+					Name:        "no_timeout",
+					Description: "Workflow without explicit timeout",
+					Timeout:     0, // Omitted - should use default (30 minutes)
+					Steps: []*WorkflowStepConfig{
+						{
+							ID:   "step1",
+							Tool: "some_tool",
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "elicitation requires explicit type",
+			tools: []*CompositeToolConfig{
+				{
+					Name:        "confirm_action",
+					Description: "Confirmation workflow",
+					Timeout:     Duration(5 * time.Minute),
+					Steps: []*WorkflowStepConfig{
+						{
+							ID:      "confirm",
+							Message: "Proceed?", // Elicitation field present
+							Schema:  map[string]any{"type": "object"},
+							// Type is missing - should fail
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "type is required",
+		},
+		{
+			name: "missing both type and identifying fields",
+			tools: []*CompositeToolConfig{
+				{
+					Name:        "invalid_step",
+					Description: "Invalid step workflow",
+					Timeout:     Duration(5 * time.Minute),
+					Steps: []*WorkflowStepConfig{
+						{
+							ID: "step1",
+							// No type, no tool, no message - cannot infer
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "type is required",
+		},
 	}
 
 	for _, tt := range tests {

@@ -495,9 +495,14 @@ func (l *YAMLLoader) transformCompositeTools(raw []*rawCompositeTool) ([]*Compos
 	var tools []*CompositeToolConfig
 
 	for _, rawTool := range raw {
-		timeout, err := time.ParseDuration(rawTool.Timeout)
-		if err != nil {
-			return nil, fmt.Errorf("tool %s: invalid timeout: %w", rawTool.Name, err)
+		// Parse timeout - empty string means use default (0 duration)
+		var timeout time.Duration
+		if rawTool.Timeout != "" {
+			var err error
+			timeout, err = time.ParseDuration(rawTool.Timeout)
+			if err != nil {
+				return nil, fmt.Errorf("tool %s: invalid timeout: %w", rawTool.Name, err)
+			}
 		}
 
 		tool := &CompositeToolConfig{

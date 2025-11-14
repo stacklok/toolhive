@@ -3,6 +3,8 @@ package composer
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +13,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
+	routermocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
 )
 
 func TestWorkflowEngine_ExecuteWorkflow_Success(t *testing.T) {
@@ -167,7 +171,7 @@ func TestWorkflowEngine_ExecuteWorkflow_Timeout(t *testing.T) {
 
 	def := &WorkflowDefinition{
 		Name:    "timeout-test",
-		Timeout: 50 * time.Millisecond,
+		Timeout: 30 * time.Millisecond, // Shorter timeout for reliable test
 		Steps: []WorkflowStep{
 			toolStep("s1", "test.tool", nil),
 			toolStep("s2", "test.tool", nil),
@@ -175,12 +179,18 @@ func TestWorkflowEngine_ExecuteWorkflow_Timeout(t *testing.T) {
 	}
 
 	target := &vmcp.BackendTarget{WorkloadID: "test", BaseURL: "http://test:8080"}
-	te.Router.EXPECT().RouteTool(gomock.Any(), "test.tool").Return(target, nil)
+	// Both steps can run in parallel, so expect multiple calls
+	te.Router.EXPECT().RouteTool(gomock.Any(), "test.tool").Return(target, nil).AnyTimes()
 	te.Backend.EXPECT().CallTool(gomock.Any(), target, "test.tool", gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (map[string]any, error) {
-			time.Sleep(60 * time.Millisecond) // Exceed workflow timeout
-			return map[string]any{"ok": true}, nil
-		})
+		DoAndReturn(func(ctx context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (map[string]any, error) {
+			// Sleep longer than workflow timeout, but respect context cancellation
+			select {
+			case <-time.After(100 * time.Millisecond):
+				return map[string]any{"ok": true}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}).AnyTimes()
 
 	result, err := execute(t, te.Engine, def, nil)
 
@@ -264,4 +274,150 @@ func TestWorkflowEngine_ExecuteWorkflow_ParameterDefaultsOverride(t *testing.T) 
 
 	require.NoError(t, err)
 	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+}
+
+// TestWorkflowEngine_ParallelExecution tests parallel workflow execution
+// with dependencies, demonstrating the DAG-based execution model.
+func TestWorkflowEngine_ParallelExecution(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockRouter := routermocks.NewMockRouter(ctrl)
+	mockBackend := mocks.NewMockBackendClient(ctrl)
+	stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
+	engine := NewWorkflowEngine(mockRouter, mockBackend, nil, stateStore)
+
+	// Track execution timing to verify parallel execution
+	var executionMu sync.Mutex
+	startTimes := make(map[string]time.Time)
+	endTimes := make(map[string]time.Time)
+	var concurrentCount int32
+	var maxConcurrent int32
+
+	// Helper to track execution timing
+	trackStart := func(stepID string) {
+		executionMu.Lock()
+		startTimes[stepID] = time.Now()
+		executionMu.Unlock()
+
+		// Track concurrency
+		current := atomic.AddInt32(&concurrentCount, 1)
+		for {
+			maxVal := atomic.LoadInt32(&maxConcurrent)
+			if current <= maxVal || atomic.CompareAndSwapInt32(&maxConcurrent, maxVal, current) {
+				break
+			}
+		}
+	}
+
+	trackEnd := func(stepID string) {
+		atomic.AddInt32(&concurrentCount, -1)
+		executionMu.Lock()
+		endTimes[stepID] = time.Now()
+		executionMu.Unlock()
+	}
+
+	// Create a simple workflow that demonstrates parallel execution:
+	// Level 1 (parallel): fetch_logs, fetch_metrics
+	// Level 2 (sequential): create_report
+	workflow := &WorkflowDefinition{
+		Name: "incident-investigation-e2e",
+		Steps: []WorkflowStep{
+			{
+				ID:        "fetch_logs",
+				Type:      StepTypeTool,
+				Tool:      "test.fetch",
+				Arguments: map[string]any{"type": "logs"},
+			},
+			{
+				ID:        "fetch_metrics",
+				Type:      StepTypeTool,
+				Tool:      "test.fetch",
+				Arguments: map[string]any{"type": "metrics"},
+			},
+			{
+				ID:        "create_report",
+				Type:      StepTypeTool,
+				Tool:      "test.report",
+				DependsOn: []string{"fetch_logs", "fetch_metrics"},
+				Arguments: map[string]any{
+					"logs":    "{{.steps.fetch_logs.output.data}}",
+					"metrics": "{{.steps.fetch_metrics.output.data}}",
+				},
+			},
+		},
+	}
+
+	// Setup mock expectations with timing tracking
+	target := &vmcp.BackendTarget{WorkloadID: "test-backend", BaseURL: "http://test:8080"}
+
+	// fetch_logs
+	mockRouter.EXPECT().RouteTool(gomock.Any(), "test.fetch").Return(target, nil)
+	mockBackend.EXPECT().CallTool(gomock.Any(), target, "test.fetch", map[string]any{"type": "logs"}).
+		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (map[string]any, error) {
+			trackStart("fetch_logs")
+			time.Sleep(50 * time.Millisecond)
+			trackEnd("fetch_logs")
+			return map[string]any{"data": "log_data"}, nil
+		})
+
+	// fetch_metrics
+	mockRouter.EXPECT().RouteTool(gomock.Any(), "test.fetch").Return(target, nil)
+	mockBackend.EXPECT().CallTool(gomock.Any(), target, "test.fetch", map[string]any{"type": "metrics"}).
+		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (map[string]any, error) {
+			trackStart("fetch_metrics")
+			time.Sleep(50 * time.Millisecond)
+			trackEnd("fetch_metrics")
+			return map[string]any{"data": "metrics_data"}, nil
+		})
+
+	// create_report
+	mockRouter.EXPECT().RouteTool(gomock.Any(), "test.report").Return(target, nil)
+	mockBackend.EXPECT().CallTool(gomock.Any(), target, "test.report", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (map[string]any, error) {
+			trackStart("create_report")
+			time.Sleep(30 * time.Millisecond)
+			trackEnd("create_report")
+			return map[string]any{"issue": "created"}, nil
+		})
+
+	// Execute workflow
+	startTime := time.Now()
+	result, err := engine.ExecuteWorkflow(context.Background(), workflow, nil)
+	totalDuration := time.Since(startTime)
+
+	// Verify execution succeeded
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+
+	// Verify state store captured workflow state
+	status, err := engine.GetWorkflowStatus(context.Background(), result.WorkflowID)
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, status.Status)
+	assert.Equal(t, 3, len(status.CompletedSteps))
+
+	// Verify all steps executed
+	assert.Len(t, result.Steps, 3, "all 3 steps should have results")
+
+	// Verify parallel execution performance
+	// Sequential would be: 50+50+30 = 130ms
+	// Parallel should be: max(50,50)+30 = 80ms
+	// With overhead, should be < 120ms
+	assert.Less(t, totalDuration, 120*time.Millisecond,
+		"parallel execution should be faster than sequential")
+
+	// Verify concurrency - at least 2 steps should run concurrently
+	assert.GreaterOrEqual(t, int(maxConcurrent), 2,
+		"at least 2 steps should run concurrently")
+
+	// Verify both fetch steps completed before report
+	if len(startTimes) >= 3 && len(endTimes) >= 2 {
+		assert.True(t, endTimes["fetch_logs"].Before(startTimes["create_report"]),
+			"fetch_logs should complete before create_report starts")
+		assert.True(t, endTimes["fetch_metrics"].Before(startTimes["create_report"]),
+			"fetch_metrics should complete before create_report starts")
+	}
 }

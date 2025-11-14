@@ -7,6 +7,7 @@ package composer
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -315,18 +316,26 @@ type TemplateExpander interface {
 }
 
 // WorkflowContext contains the execution context for a workflow.
+// Thread-safe for concurrent step execution.
 type WorkflowContext struct {
 	// WorkflowID is the unique workflow execution ID.
 	WorkflowID string
 
 	// Params are the input parameters.
+	// This map is read-only after workflow initialization and does not require synchronization.
 	Params map[string]any
 
 	// Steps contains the results of completed steps.
+	// Access must be synchronized using mu.
 	Steps map[string]*StepResult
 
 	// Variables stores workflow-scoped variables.
+	// This map is read-only during workflow execution (populated before execution starts)
+	// and does not require synchronization. Steps should not modify this map during execution.
 	Variables map[string]any
+
+	// mu protects concurrent access to Steps map during parallel execution.
+	mu sync.RWMutex
 }
 
 // WorkflowStateStore manages workflow execution state.

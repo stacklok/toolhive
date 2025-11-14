@@ -170,7 +170,9 @@ spec:
 **Validation**:
 - Automatic cycle detection prevents circular dependencies
 - All referenced step IDs must exist
-- Phase 1 executes steps sequentially; Phase 2 will support DAG execution
+- **DAG Execution**: Steps are executed using a Directed Acyclic Graph (DAG) model that automatically runs independent steps in parallel while respecting dependencies
+
+> **Note**: For advanced workflow patterns including parallel execution, error handling strategies, and performance optimization, see the [Advanced Workflow Patterns Guide](advanced-workflow-patterns.md).
 
 ### Error Handling
 
@@ -695,16 +697,30 @@ The CRD includes comprehensive validation:
 2. Ensure referenced parameters exist in `spec.parameters`
 3. Check template expressions for typos
 
-## Phase 2 Features (Future)
+## Phase 2 Features
 
-The following features are planned for Phase 2:
+Phase 2 implementation status:
 
-- **DAG Execution**: Parallel execution of independent steps via dependency graph
-- **Step Output Access**: Reference previous step outputs in templates
-- **Advanced Retry Policies**: Configurable backoff strategies
+### ✅ Completed
+
+- ✅ **DAG Execution**: Parallel execution of independent steps via dependency graph
+- ✅ **Step Output Access**: Reference previous step outputs in templates
+- ✅ **Advanced Retry Policies**: Exponential backoff with configurable retry count and delay
+- ✅ **Workflow State Management**: In-memory state tracking with pluggable backend interface
+- ✅ **Advanced Error Handling**: Per-step and workflow-level error strategies (abort, continue, retry)
+- ✅ **Workflow Timeouts**: Configurable timeouts at workflow and step levels
+- ✅ **Conditional Execution**: Skip steps based on template conditions
+
+See the [Advanced Workflow Patterns Guide](advanced-workflow-patterns.md) for detailed documentation and examples.
+
+### 🚧 Planned (Phase 2 Remaining)
+
+The following Phase 2 features are planned for future releases:
+
+- **Distributed State Store**: Redis/Database backend for multi-instance deployments
 - **Step Caching**: Cache step results based on cache keys
-- **Output Transformation**: Transform step outputs using templates
-- **Conditional Execution**: Enhanced condition support with complex expressions
+- **Output Transformation**: Advanced output transformation using templates
+- **Workflow Resumption**: Resume workflows after system restart
 
 ## API Reference
 

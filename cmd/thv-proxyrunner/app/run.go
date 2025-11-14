@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
@@ -73,8 +74,8 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
 
 	// Common setup for both execution paths
-	// Get debug mode flag
-	debugMode, _ := cmd.Flags().GetBool("debug")
+	// Get debug mode from viper (which includes both --debug flag and TOOLHIVE_DEBUG env var)
+	debugMode := viper.GetBool("debug")
 
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)

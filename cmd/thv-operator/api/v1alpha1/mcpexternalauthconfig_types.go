@@ -52,6 +52,16 @@ type TokenExchangeConfig struct {
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
 
+	// SubjectTokenType is the type of the incoming subject token.
+	// Accepts short forms: "access_token" (default), "id_token", "jwt"
+	// Or full URNs: "urn:ietf:params:oauth:token-type:access_token",
+	//               "urn:ietf:params:oauth:token-type:id_token",
+	//               "urn:ietf:params:oauth:token-type:jwt"
+	// For Google Workload Identity Federation with OIDC providers (like Okta), use "id_token"
+	// +kubebuilder:validation:Pattern=`^(access_token|id_token|jwt|urn:ietf:params:oauth:token-type:(access_token|id_token|jwt))?$`
+	// +optional
+	SubjectTokenType string `json:"subjectTokenType,omitempty"`
+
 	// ExternalTokenHeaderName is the name of the custom header to use for the exchanged token.
 	// If set, the exchanged token will be added to this custom header (e.g., "X-Upstream-Token").
 	// If empty or not set, the exchanged token will replace the Authorization header (default behavior).

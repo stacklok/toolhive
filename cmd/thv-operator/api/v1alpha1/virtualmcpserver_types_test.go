@@ -281,21 +281,6 @@ func TestBackendAuthConfigTypes(t *testing.T) {
 			isValid: true,
 		},
 		{
-			name: "service_account_auth_valid",
-			authConfig: BackendAuthConfig{
-				Type: BackendAuthTypeServiceAccount,
-				ServiceAccount: &ServiceAccountAuth{
-					CredentialsRef: SecretKeyRef{
-						Name: "my-secret",
-						Key:  "token",
-					},
-					HeaderName:   "Authorization",
-					HeaderFormat: "Bearer {token}",
-				},
-			},
-			isValid: true,
-		},
-		{
 			name: "external_auth_config_ref_valid",
 			authConfig: BackendAuthConfig{
 				Type: BackendAuthTypeExternalAuthConfigRef,

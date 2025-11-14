@@ -243,19 +243,14 @@ func (c *ExchangeConfig) Validate() error {
 	// don't require client credentials and rely on the trust relationship
 	// configured in the identity provider (e.g., Workload Identity Federation)
 
-	// Validate SubjectTokenType if provided
+	// Validate and normalize SubjectTokenType if provided
 	if c.SubjectTokenType != "" {
-		validTypes := []string{tokenTypeAccessToken, tokenTypeIDToken, tokenTypeJWT}
-		isValid := false
-		for _, validType := range validTypes {
-			if c.SubjectTokenType == validType {
-				isValid = true
-				break
-			}
+		normalized, err := NormalizeTokenType(c.SubjectTokenType)
+		if err != nil {
+			return fmt.Errorf("invalid SubjectTokenType: %w", err)
 		}
-		if !isValid {
-			return fmt.Errorf("invalid SubjectTokenType %q: must be one of %v", c.SubjectTokenType, validTypes)
-		}
+		// Update the config with the normalized value
+		c.SubjectTokenType = normalized
 	}
 
 	// Validate URL format

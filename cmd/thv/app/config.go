@@ -161,7 +161,7 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 
 func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 	input := args[0]
-	registryType, cleanPath := config.DetectRegistryType(input)
+	registryType, cleanPath := config.DetectRegistryType(input, allowPrivateRegistryIp)
 
 	provider := config.NewDefaultProvider()
 

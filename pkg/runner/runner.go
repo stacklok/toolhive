@@ -119,10 +119,8 @@ func (c *RunConfig) GetPort() int {
 //
 //nolint:gocyclo // This function is complex but manageable
 func (r *Runner) Run(ctx context.Context) error {
-	// Check if middleware configs are already populated (new direct configuration)
-	// If not, use backwards compatibility to populate from old config fields
+	// Populate default middlewares from old config fields if not already populated
 	if len(r.Config.MiddlewareConfigs) == 0 {
-		// Use backwards compatibility - populate from old config fields
 		if err := PopulateMiddlewareConfigs(r.Config); err != nil {
 			return fmt.Errorf("failed to populate middleware configs: %v", err)
 		}

@@ -29,6 +29,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // TestAddExternalAuthConfigOptions tests the addExternalAuthConfigOptions function
@@ -532,14 +533,23 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 				assert.Equal(t, "external-auth-server", config.Name)
 				assert.Equal(t, "test:v1", config.Image)
 
-				// Verify middleware config was added
+				// Verify middleware configs are populated (auth, tokenexchange, mcp-parser, usagemetrics)
 				assert.NotNil(t, config.MiddlewareConfigs)
-				assert.Len(t, config.MiddlewareConfigs, 1)
-				assert.Equal(t, "tokenexchange", config.MiddlewareConfigs[0].Type)
+				assert.GreaterOrEqual(t, len(config.MiddlewareConfigs), 1, "Should have at least tokenexchange middleware")
+
+				// Find the tokenexchange middleware
+				var tokenExchangeMw *types.MiddlewareConfig
+				for i := range config.MiddlewareConfigs {
+					if config.MiddlewareConfigs[i].Type == "tokenexchange" {
+						tokenExchangeMw = &config.MiddlewareConfigs[i]
+						break
+					}
+				}
+				require.NotNil(t, tokenExchangeMw, "tokenexchange middleware should be present")
 
 				// Verify middleware parameters
 				var params map[string]interface{}
-				err := json.Unmarshal(config.MiddlewareConfigs[0].Parameters, &params)
+				err := json.Unmarshal(tokenExchangeMw.Parameters, &params)
 				require.NoError(t, err)
 
 				tokenExchangeConfig, ok := params["token_exchange_config"].(map[string]interface{})

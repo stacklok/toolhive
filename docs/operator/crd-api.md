@@ -156,8 +156,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type defines the authentication type |  | Enum: [discovered pass_through service_account external_auth_config_ref] <br />Required: \{\} <br /> |
-| `serviceAccount` _[ServiceAccountAuth](#serviceaccountauth)_ | ServiceAccount configures service account authentication<br />Only used when Type is "service_account" |  |  |
+| `type` _string_ | Type defines the authentication type |  | Enum: [discovered pass_through external_auth_config_ref] <br />Required: \{\} <br /> |
 | `externalAuthConfigRef` _[ExternalAuthConfigRef](#externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "external_auth_config_ref" |  |  |
 
 
@@ -1353,7 +1352,7 @@ _Appears in:_
 | `annotations` _object (keys:string, values:string)_ | Annotations to add or override on the resource |  |  |
 | `labels` _object (keys:string, values:string)_ | Labels to add or override on the resource |  |  |
 | `podTemplateMetadataOverrides` _[ResourceMetadataOverrides](#resourcemetadataoverrides)_ |  |  |  |
-| `env` _[EnvVar](#envvar) array_ | Env are environment variables to set in the proxy container (thv run process)<br />These affect the toolhive proxy itself, not the MCP server it manages |  |  |
+| `env` _[EnvVar](#envvar) array_ | Env are environment variables to set in the proxy container (thv run process)<br />These affect the toolhive proxy itself, not the MCP server it manages<br />Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy |  |  |
 
 
 #### RedisCacheConfig
@@ -1495,7 +1494,6 @@ SecretKeyRef is a reference to a key within a Secret
 _Appears in:_
 - [InlineOIDCConfig](#inlineoidcconfig)
 - [RedisCacheConfig](#rediscacheconfig)
-- [ServiceAccountAuth](#serviceaccountauth)
 - [TokenExchangeConfig](#tokenexchangeconfig)
 
 | Field | Description | Default | Validation |
@@ -1520,24 +1518,6 @@ _Appears in:_
 | `name` _string_ | Name is the name of the secret |  | Required: \{\} <br /> |
 | `key` _string_ | Key is the key in the secret itself |  | Required: \{\} <br /> |
 | `targetEnvName` _string_ | TargetEnvName is the environment variable to be used when setting up the secret in the MCP server<br />If left unspecified, it defaults to the key |  |  |
-
-
-#### ServiceAccountAuth
-
-
-
-ServiceAccountAuth defines service account authentication
-
-
-
-_Appears in:_
-- [BackendAuthConfig](#backendauthconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `credentialsRef` _[SecretKeyRef](#secretkeyref)_ | CredentialsRef references a secret containing the service account credentials |  | Required: \{\} <br /> |
-| `headerName` _string_ | HeaderName is the HTTP header name for the credentials | Authorization |  |
-| `headerFormat` _string_ | HeaderFormat is the format string for the header value<br />Use \{token\} as placeholder for the credential value | Bearer \{token\} |  |
 
 
 #### StorageReference
@@ -1708,6 +1688,7 @@ _Appears in:_
 | `clientSecretRef` _[SecretKeyRef](#secretkeyref)_ | ClientSecretRef is a reference to a secret containing the OAuth 2.0 client secret<br />Optional for some token exchange flows (e.g., Google Cloud Workforce Identity) |  |  |
 | `audience` _string_ | Audience is the target audience for the exchanged token |  | Required: \{\} <br /> |
 | `scopes` _string array_ | Scopes is a list of OAuth 2.0 scopes to request for the exchanged token |  |  |
+| `subjectTokenType` _string_ | SubjectTokenType is the type of the incoming subject token.<br />Accepts short forms: "access_token" (default), "id_token", "jwt"<br />Or full URNs: "urn:ietf:params:oauth:token-type:access_token",<br />              "urn:ietf:params:oauth:token-type:id_token",<br />              "urn:ietf:params:oauth:token-type:jwt"<br />For Google Workload Identity Federation with OIDC providers (like Okta), use "id_token" |  | Pattern: `^(access_token\|id_token\|jwt\|urn:ietf:params:oauth:token-type:(access_token\|id_token\|jwt))?$` <br /> |
 | `externalTokenHeaderName` _string_ | ExternalTokenHeaderName is the name of the custom header to use for the exchanged token.<br />If set, the exchanged token will be added to this custom header (e.g., "X-Upstream-Token").<br />If empty or not set, the exchanged token will replace the Authorization header (default behavior). |  |  |
 
 

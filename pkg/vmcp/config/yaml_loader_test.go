@@ -7,8 +7,29 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/mock/gomock"
+
+	"github.com/stacklok/toolhive/pkg/env"
+	"github.com/stacklok/toolhive/pkg/env/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
+
+// createMockEnvReader creates a mock env.Reader with expectations based on the envVars map.
+func createMockEnvReader(t *testing.T, envVars map[string]string) *mocks.MockReader {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	mockEnv := mocks.NewMockReader(ctrl)
+
+	// Set up expectations for each env var
+	for key, value := range envVars {
+		mockEnv.EXPECT().Getenv(key).Return(value).AnyTimes()
+	}
+
+	// For any other keys, return empty string
+	mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+
+	return mockEnv
+}
 
 func TestYAMLLoader_Load(t *testing.T) {
 	t.Parallel()
@@ -318,16 +339,206 @@ composite_tools:
 			wantErr: true,
 			errMsg:  "missing 'type' field",
 		},
+		{
+			name: "header_injection with header_value_env resolves environment variable",
+			yaml: `
+name: test-vmcp
+group: test-group
+
+incoming_auth:
+  type: anonymous
+
+outgoing_auth:
+  source: inline
+  backends:
+    github:
+      type: header_injection
+      header_injection:
+        header_name: "Authorization"
+        header_value_env: "GITHUB_TOKEN"
+
+aggregation:
+  conflict_resolution: prefix
+  conflict_resolution_config:
+    prefix_format: "{workload}_"
+`,
+			envVars: map[string]string{
+				"GITHUB_TOKEN": "secret-token-123",
+			},
+			want: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				backend, ok := cfg.OutgoingAuth.Backends["github"]
+				if !ok {
+					t.Fatal("github backend not found")
+				}
+				if backend.Type != "header_injection" {
+					t.Errorf("Backend.Type = %v, want header_injection", backend.Type)
+				}
+				// Verify the resolved value is in metadata
+				headerValue, ok := backend.Metadata["header_value"].(string)
+				if !ok {
+					t.Fatal("header_value not found in metadata")
+				}
+				if headerValue != "secret-token-123" {
+					t.Errorf("header_value = %v, want secret-token-123", headerValue)
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "header_injection with literal header_value works",
+			yaml: `
+name: test-vmcp
+group: test-group
+
+incoming_auth:
+  type: anonymous
+
+outgoing_auth:
+  source: inline
+  backends:
+    api-service:
+      type: header_injection
+      header_injection:
+        header_name: "X-API-Version"
+        header_value: "v1"
+
+aggregation:
+  conflict_resolution: prefix
+  conflict_resolution_config:
+    prefix_format: "{workload}_"
+`,
+			want: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				backend, ok := cfg.OutgoingAuth.Backends["api-service"]
+				if !ok {
+					t.Fatal("api-service backend not found")
+				}
+				headerValue, ok := backend.Metadata["header_value"].(string)
+				if !ok {
+					t.Fatal("header_value not found in metadata")
+				}
+				if headerValue != "v1" {
+					t.Errorf("header_value = %v, want v1", headerValue)
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "header_injection fails when env var not set",
+			yaml: `
+name: test-vmcp
+group: test-group
+
+incoming_auth:
+  type: anonymous
+
+outgoing_auth:
+  source: inline
+  backends:
+    github:
+      type: header_injection
+      header_injection:
+        header_name: "Authorization"
+        header_value_env: "MISSING_TOKEN"
+
+aggregation:
+  conflict_resolution: prefix
+  conflict_resolution_config:
+    prefix_format: "{workload}_"
+`,
+			wantErr: true,
+			errMsg:  "environment variable MISSING_TOKEN not set",
+		},
+		{
+			name: "header_injection fails when both header_value and header_value_env set",
+			yaml: `
+name: test-vmcp
+group: test-group
+
+incoming_auth:
+  type: anonymous
+
+outgoing_auth:
+  source: inline
+  backends:
+    github:
+      type: header_injection
+      header_injection:
+        header_name: "Authorization"
+        header_value: "literal-value"
+        header_value_env: "ENV_VALUE"
+
+aggregation:
+  conflict_resolution: prefix
+  conflict_resolution_config:
+    prefix_format: "{workload}_"
+`,
+			wantErr: true,
+			errMsg:  "only one of header_value or header_value_env must be set",
+		},
+		{
+			name: "header_injection fails when neither header_value nor header_value_env set",
+			yaml: `
+name: test-vmcp
+group: test-group
+
+incoming_auth:
+  type: anonymous
+
+outgoing_auth:
+  source: inline
+  backends:
+    github:
+      type: header_injection
+      header_injection:
+        header_name: "Authorization"
+
+aggregation:
+  conflict_resolution: prefix
+  conflict_resolution_config:
+    prefix_format: "{workload}_"
+`,
+			wantErr: true,
+			errMsg:  "either header_value or header_value_env must be set",
+		},
+		{
+			name: "header_injection fails when env var is empty string",
+			yaml: `
+name: test-vmcp
+group: test-group
+
+incoming_auth:
+  type: anonymous
+
+outgoing_auth:
+  source: inline
+  backends:
+    github:
+      type: header_injection
+      header_injection:
+        header_name: "Authorization"
+        header_value_env: "EMPTY_TOKEN"
+
+aggregation:
+  conflict_resolution: prefix
+  conflict_resolution_config:
+    prefix_format: "{workload}_"
+`,
+			envVars: map[string]string{
+				"EMPTY_TOKEN": "",
+			},
+			wantErr: true,
+			errMsg:  "environment variable EMPTY_TOKEN not set or empty",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			// Set up environment variables
-			for k, v := range tt.envVars {
-				os.Setenv(k, v)
-				defer os.Unsetenv(k)
-			}
+
+			// Create mock env reader with test-specific env vars
+			mockEnv := createMockEnvReader(t, tt.envVars)
 
 			// Create temporary file with YAML content
 			tmpDir := t.TempDir()
@@ -337,7 +548,7 @@ composite_tools:
 			}
 
 			// Load configuration
-			loader := NewYAMLLoader(tmpFile)
+			loader := NewYAMLLoader(tmpFile, mockEnv)
 			cfg, err := loader.Load()
 
 			// Check error expectation
@@ -363,7 +574,8 @@ composite_tools:
 
 func TestYAMLLoader_LoadFileNotFound(t *testing.T) {
 	t.Parallel()
-	loader := NewYAMLLoader("/non/existent/file.yaml")
+	envReader := &env.OSReader{}
+	loader := NewYAMLLoader("/non/existent/file.yaml", envReader)
 	_, err := loader.Load()
 
 	if err == nil {
@@ -453,11 +665,9 @@ aggregation:
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			// Set up environment variables
-			for k, v := range tt.envVars {
-				os.Setenv(k, v)
-				defer os.Unsetenv(k)
-			}
+
+			// Create mock env reader with test-specific env vars
+			mockEnv := createMockEnvReader(t, tt.envVars)
 
 			// Create temporary file
 			tmpDir := t.TempDir()
@@ -467,7 +677,7 @@ aggregation:
 			}
 
 			// Load and validate
-			loader := NewYAMLLoader(tmpFile)
+			loader := NewYAMLLoader(tmpFile, mockEnv)
 			cfg, err := loader.Load()
 			if err != nil {
 				if tt.shouldPass {

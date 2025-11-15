@@ -42,12 +42,17 @@ type RequestScopeList []string
 func (r RequestScopeList) MarshalJSON() ([]byte, error) {
 	// Handle nil or empty slice - return null so omitempty works
 	if len(r) == 0 {
+		logger.Infof("RFC 7591: Marshaling empty RequestScopeList -> null (will be omitted)")
 		return []byte("null"), nil
 	}
 
 	// Join scopes with spaces and marshal as a string
 	scopeString := strings.Join(r, " ")
-	return json.Marshal(scopeString)
+	result, err := json.Marshal(scopeString)
+	if err == nil {
+		logger.Infof("RFC 7591: Marshaled RequestScopeList %v -> %q (space-delimited string)", []string(r), scopeString)
+	}
+	return result, err
 }
 
 // DynamicClientRegistrationRequest represents the request for dynamic client registration (RFC 7591)

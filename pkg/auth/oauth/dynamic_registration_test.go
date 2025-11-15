@@ -448,18 +448,18 @@ func TestRequestScopeList_MarshalJSON(t *testing.T) {
 		name     string
 		scopes   RequestScopeList
 		wantJSON string
-		wantOmit bool // If true, expect null (which triggers omitempty)
+		wantOmit bool // If true, expect omitempty to hide the field
 	}{
 		{
-			name:     "nil scopes => null (omitempty will hide)",
+			name:     "nil scopes => empty string (omitempty will hide at struct level)",
 			scopes:   nil,
-			wantJSON: `null`,
+			wantJSON: `""`,
 			wantOmit: true,
 		},
 		{
-			name:     "empty slice => null (omitempty will hide)",
+			name:     "empty slice => empty string (omitempty will hide at struct level)",
 			scopes:   RequestScopeList{},
-			wantJSON: `null`,
+			wantJSON: `""`,
 			wantOmit: true,
 		},
 		{
@@ -495,6 +495,8 @@ func TestRequestScopeList_MarshalJSON(t *testing.T) {
 			assert.Equal(t, tt.wantJSON, jsonStr, "marshaled JSON should match expected format")
 
 			// Verify omitempty behavior in a struct
+			// Note: omitempty checks the Go value (empty slice) before calling MarshalJSON,
+			// so empty slices are omitted regardless of what MarshalJSON returns.
 			if tt.wantOmit {
 				type testStruct struct {
 					Scope RequestScopeList `json:"scope,omitempty"`
@@ -502,7 +504,7 @@ func TestRequestScopeList_MarshalJSON(t *testing.T) {
 				s := testStruct{Scope: tt.scopes}
 				structJSON, err := json.Marshal(s)
 				require.NoError(t, err)
-				assert.Equal(t, "{}", string(structJSON), "omitempty should hide null scope field")
+				assert.Equal(t, "{}", string(structJSON), "omitempty should hide empty scope field")
 			}
 		})
 	}

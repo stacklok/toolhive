@@ -39,14 +39,9 @@ type RequestScopeList []string
 
 // MarshalJSON implements custom encoding for RequestScopeList. It converts the slice
 // of scopes into a space-delimited string as required by RFC 7591 Section 2.
+// Note: Empty slices are handled by omitempty at the struct level before this is called.
 func (r RequestScopeList) MarshalJSON() ([]byte, error) {
-	// Handle nil or empty slice - return null so omitempty works
-	if len(r) == 0 {
-		logger.Debugf("RFC 7591: Marshaling empty RequestScopeList -> null (will be omitted)")
-		return []byte("null"), nil
-	}
-
-	// Join scopes with spaces and marshal as a string
+	// Join scopes with spaces and marshal as a string (RFC 7591 Section 2)
 	scopeString := strings.Join(r, " ")
 	result, err := json.Marshal(scopeString)
 	if err == nil {

@@ -39,7 +39,14 @@ type RequestScopeList []string
 
 // MarshalJSON implements custom encoding for RequestScopeList. It converts the slice
 // of scopes into a space-delimited string as required by RFC 7591 Section 2.
-// Note: Empty slices are handled by omitempty at the struct level before this is called.
+//
+// Important: This method does NOT handle empty slices. Go's encoding/json package
+// evaluates omitempty by checking if the Go value is "empty" (len(slice) == 0)
+// BEFORE calling MarshalJSON. Empty slices are omitted at the struct level, so this
+// method is never invoked for empty slices. This means we don't need to return null
+// or handle the empty case - omitempty does it for us automatically.
+//
+// See: https://pkg.go.dev/encoding/json (omitempty checks zero values before marshaling)
 func (r RequestScopeList) MarshalJSON() ([]byte, error) {
 	// Join scopes with spaces and marshal as a string (RFC 7591 Section 2)
 	scopeString := strings.Join(r, " ")

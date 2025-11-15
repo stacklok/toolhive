@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-14T00:19:18Z",
+  "last_updated": "2025-11-15T00:18:12Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -142,7 +142,7 @@
         "apollo",
         "mcp"
       ],
-      "image": "ghcr.io/apollographql/apollo-mcp-server:v1.1.1",
+      "image": "ghcr.io/apollographql/apollo-mcp-server:v1.2.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -484,7 +484,7 @@
         "api",
         "devops"
       ],
-      "image": "public.ecr.aws/awslabs-mcp/awslabs/aws-api-mcp-server:1.1.4",
+      "image": "public.ecr.aws/awslabs-mcp/awslabs/aws-api-mcp-server:1.1.5",
       "permissions": {
         "network": {
           "outbound": {
@@ -1536,7 +1536,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.19.1",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.20.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -2016,7 +2016,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.19.1",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.20.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -2433,9 +2433,9 @@
         "update_dashboard"
       ],
       "metadata": {
-        "stars": 1728,
+        "stars": 1857,
         "pulls": 8120,
-        "last_updated": "2025-10-21T02:31:32Z"
+        "last_updated": "2025-11-14T02:32:57Z"
       },
       "repository_url": "https://github.com/grafana/mcp-grafana",
       "tags": [
@@ -4167,7 +4167,7 @@
       "metadata": {
         "stars": 41,
         "pulls": 10904,
-        "last_updated": "2025-10-21T02:31:32Z"
+        "last_updated": "2025-11-14T02:32:57Z"
       },
       "repository_url": "https://github.com/aantti/mcp-netbird",
       "tags": [
@@ -4293,7 +4293,7 @@
       "metadata": {
         "stars": 11,
         "pulls": 8029,
-        "last_updated": "2025-10-21T02:31:33Z"
+        "last_updated": "2025-11-14T02:32:58Z"
       },
       "repository_url": "https://github.com/StacklokLabs/ocireg-mcp",
       "tags": [
@@ -4889,9 +4889,9 @@
         "semgrep_scan_with_custom_rule"
       ],
       "metadata": {
-        "stars": 591,
-        "pulls": 12180,
-        "last_updated": "2025-10-20T02:33:41Z"
+        "stars": 13321,
+        "pulls": 18459018,
+        "last_updated": "2025-11-14T02:32:57Z"
       },
       "repository_url": "https://github.com/semgrep/semgrep",
       "tags": [
@@ -5570,9 +5570,9 @@
         "get-library-docs"
       ],
       "metadata": {
-        "stars": 34456,
+        "stars": 37043,
         "pulls": 313,
-        "last_updated": "2025-10-21T02:31:32Z"
+        "last_updated": "2025-11-14T02:32:57Z"
       },
       "repository_url": "https://github.com/upstash/context7",
       "tags": [

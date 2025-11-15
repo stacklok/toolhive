@@ -354,6 +354,33 @@ func TestRegisterClientDynamically(t *testing.T) {
 			},
 			expectedError: true,
 		},
+		{
+			name: "invalid request - scope with spaces",
+			request: &DynamicClientRegistrationRequest{
+				ClientName:   "Test Client",
+				RedirectURIs: []string{"http://localhost:8080/callback"},
+				Scopes:       []string{"openid", "profile email", "another"},
+			},
+			expectedError: true,
+		},
+		{
+			name: "invalid request - scope with leading space",
+			request: &DynamicClientRegistrationRequest{
+				ClientName:   "Test Client",
+				RedirectURIs: []string{"http://localhost:8080/callback"},
+				Scopes:       []string{" openid"},
+			},
+			expectedError: true,
+		},
+		{
+			name: "invalid request - scope with trailing space",
+			request: &DynamicClientRegistrationRequest{
+				ClientName:   "Test Client",
+				RedirectURIs: []string{"http://localhost:8080/callback"},
+				Scopes:       []string{"openid "},
+			},
+			expectedError: true,
+		},
 	}
 
 	for _, tt := range tests {

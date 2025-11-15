@@ -195,6 +195,14 @@ func validateAndSetDefaults(request *DynamicClientRegistrationRequest) error {
 		return fmt.Errorf("at least one redirect URI is required")
 	}
 
+	// Validate that individual scope values don't contain spaces (RFC 6749 Section 3.3)
+	// Scopes must be space-separated tokens, so spaces within a scope value are invalid
+	for _, scope := range request.Scopes {
+		if strings.Contains(scope, " ") {
+			return fmt.Errorf("invalid scope value %q: scope values cannot contain spaces (RFC 6749)", scope)
+		}
+	}
+
 	// Set default values if not provided
 	if request.ClientName == "" {
 		request.ClientName = ToolHiveMCPClientName

@@ -42,7 +42,7 @@ type RequestScopeList []string
 func (r RequestScopeList) MarshalJSON() ([]byte, error) {
 	// Handle nil or empty slice - return null so omitempty works
 	if len(r) == 0 {
-		logger.Infof("RFC 7591: Marshaling empty RequestScopeList -> null (will be omitted)")
+		logger.Debugf("RFC 7591: Marshaling empty RequestScopeList -> null (will be omitted)")
 		return []byte("null"), nil
 	}
 
@@ -50,7 +50,7 @@ func (r RequestScopeList) MarshalJSON() ([]byte, error) {
 	scopeString := strings.Join(r, " ")
 	result, err := json.Marshal(scopeString)
 	if err == nil {
-		logger.Infof("RFC 7591: Marshaled RequestScopeList %v -> %q (space-delimited string)", []string(r), scopeString)
+		logger.Debugf("RFC 7591: Marshaled RequestScopeList %v -> %q (space-delimited string)", []string(r), scopeString)
 	}
 	return result, err
 }

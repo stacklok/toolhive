@@ -27,17 +27,40 @@ const ResponseTypeCode = "code"
 // TokenEndpointAuthMethodNone is the token endpoint auth method for none
 const TokenEndpointAuthMethodNone = "none"
 
+// RequestScopeList represents the "scope" field in a dynamic client registration request.
+// Per RFC 7591 Section 2, this must be marshaled as a space-delimited string, not a JSON array.
+//
+// Examples of marshaled output:
+//
+//	[]string{"openid", "profile", "email"}  → "openid profile email"
+//	[]string{"openid"}                      → "openid"
+//	nil or []string{}                       → omitted (via omitempty)
+type RequestScopeList []string
+
+// MarshalJSON implements custom encoding for RequestScopeList. It converts the slice
+// of scopes into a space-delimited string as required by RFC 7591 Section 2.
+func (r RequestScopeList) MarshalJSON() ([]byte, error) {
+	// Handle nil or empty slice - return null so omitempty works
+	if len(r) == 0 {
+		return []byte("null"), nil
+	}
+
+	// Join scopes with spaces and marshal as a string
+	scopeString := strings.Join(r, " ")
+	return json.Marshal(scopeString)
+}
+
 // DynamicClientRegistrationRequest represents the request for dynamic client registration (RFC 7591)
 type DynamicClientRegistrationRequest struct {
 	// Required field according to RFC 7591
 	RedirectURIs []string `json:"redirect_uris"`
 
 	// Essential fields for OAuth flow
-	ClientName              string   `json:"client_name,omitempty"`
-	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
-	GrantTypes              []string `json:"grant_types,omitempty"`
-	ResponseTypes           []string `json:"response_types,omitempty"`
-	Scopes                  []string `json:"scope,omitempty"`
+	ClientName              string           `json:"client_name,omitempty"`
+	TokenEndpointAuthMethod string           `json:"token_endpoint_auth_method,omitempty"`
+	GrantTypes              []string         `json:"grant_types,omitempty"`
+	ResponseTypes           []string         `json:"response_types,omitempty"`
+	Scopes                  RequestScopeList `json:"scope,omitempty"`
 }
 
 // NewDynamicClientRegistrationRequest creates a new dynamic client registration request

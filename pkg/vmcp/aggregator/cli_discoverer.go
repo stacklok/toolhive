@@ -25,6 +25,8 @@ type cliBackendDiscoverer struct {
 //
 // The authConfig parameter configures authentication for discovered backends.
 // If nil, backends will have no authentication configured.
+//
+// This is the CLI-specific constructor. For Kubernetes workloads, use NewK8SBackendDiscoverer.
 func NewCLIBackendDiscoverer(
 	workloadsManager workloads.Manager,
 	groupsManager groups.Manager,

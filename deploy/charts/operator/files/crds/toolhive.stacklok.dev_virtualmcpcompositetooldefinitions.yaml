@@ -1,0 +1,305 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.3
+  name: virtualmcpcompositetooldefinitions.toolhive.stacklok.dev
+spec:
+  group: toolhive.stacklok.dev
+  names:
+    kind: VirtualMCPCompositeToolDefinition
+    listKind: VirtualMCPCompositeToolDefinitionList
+    plural: virtualmcpcompositetooldefinitions
+    shortNames:
+    - vmcpctd
+    - compositetool
+    singular: virtualmcpcompositetooldefinition
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: Workflow name
+      jsonPath: .spec.name
+      name: Workflow
+      type: string
+    - description: Number of steps
+      jsonPath: .spec.steps[*]
+      name: Steps
+      type: integer
+    - description: Validation status
+      jsonPath: .status.validationStatus
+      name: Status
+      type: string
+    - description: Refs
+      jsonPath: .status.referencingVirtualServers[*]
+      name: Refs
+      type: integer
+    - description: Age
+      jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          VirtualMCPCompositeToolDefinition is the Schema for the virtualmcpcompositetooldefinitions API
+          VirtualMCPCompositeToolDefinition defines reusable composite workflows that can be referenced
+          by multiple VirtualMCPServer instances
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: VirtualMCPCompositeToolDefinitionSpec defines the desired
+              state of VirtualMCPCompositeToolDefinition
+            properties:
+              description:
+                description: Description is a human-readable description of the workflow
+                minLength: 1
+                type: string
+              failureMode:
+                default: abort
+                description: |-
+                  FailureMode defines the failure handling strategy
+                  - abort: Stop execution on first failure (default)
+                  - continue: Continue executing remaining steps
+                  - best_effort: Try all steps, report partial success
+                enum:
+                - abort
+                - continue
+                - best_effort
+                type: string
+              name:
+                description: Name is the workflow name exposed as a composite tool
+                maxLength: 64
+                minLength: 1
+                pattern: ^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$
+                type: string
+              parameters:
+                additionalProperties:
+                  description: ParameterSpec defines a parameter for a composite tool
+                  properties:
+                    default:
+                      description: Default is the default value for the parameter
+                      type: string
+                    description:
+                      description: Description describes the parameter
+                      type: string
+                    required:
+                      default: false
+                      description: Required indicates if the parameter is required
+                      type: boolean
+                    type:
+                      description: Type is the parameter type (string, integer, boolean,
+                        etc.)
+                      type: string
+                  required:
+                  - type
+                  type: object
+                description: |-
+                  Parameters defines the input parameter schema for the workflow
+                  Each key is a parameter name, each value is the parameter specification
+                type: object
+              steps:
+                description: |-
+                  Steps defines the workflow step definitions
+                  Steps are executed sequentially in Phase 1
+                  Phase 2 will support DAG execution via dependsOn
+                items:
+                  description: WorkflowStep defines a step in a composite tool workflow
+                  properties:
+                    arguments:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Arguments is a map of argument templates
+                        Supports Go template syntax with .params and .steps
+                      type: object
+                    condition:
+                      description: Condition is a template expression that determines
+                        if the step should execute
+                      type: string
+                    dependsOn:
+                      description: DependsOn lists step IDs that must complete before
+                        this step
+                      items:
+                        type: string
+                      type: array
+                    id:
+                      description: ID is the unique identifier for this step
+                      type: string
+                    message:
+                      description: |-
+                        Message is the elicitation message
+                        Only used when Type is "elicitation"
+                      type: string
+                    onError:
+                      description: OnError defines error handling behavior
+                      properties:
+                        action:
+                          default: abort
+                          description: Action defines the action to take on error
+                          enum:
+                          - abort
+                          - continue
+                          - retry
+                          type: string
+                        maxRetries:
+                          description: |-
+                            MaxRetries is the maximum number of retries
+                            Only used when Action is "retry"
+                          type: integer
+                      type: object
+                    schema:
+                      description: Schema defines the expected response schema for
+                        elicitation
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    timeout:
+                      description: Timeout is the maximum execution time for this
+                        step
+                      type: string
+                    tool:
+                      description: |-
+                        Tool is the tool to call (format: "workload.tool_name")
+                        Only used when Type is "tool_call"
+                      type: string
+                    type:
+                      default: tool_call
+                      description: Type is the step type (tool_call, elicitation,
+                        etc.)
+                      enum:
+                      - tool_call
+                      - elicitation
+                      type: string
+                  required:
+                  - id
+                  type: object
+                minItems: 1
+                type: array
+              timeout:
+                default: 30m
+                description: |-
+                  Timeout is the overall workflow timeout
+                  Defaults to 30m if not specified
+                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
+                type: string
+            required:
+            - description
+            - name
+            - steps
+            type: object
+          status:
+            description: VirtualMCPCompositeToolDefinitionStatus defines the observed
+              state of VirtualMCPCompositeToolDefinition
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the workflow's state
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the most recent generation observed for this VirtualMCPCompositeToolDefinition
+                  It corresponds to the resource's generation, which is updated on mutation by the API Server
+                format: int64
+                type: integer
+              referencingVirtualServers:
+                description: |-
+                  ReferencingVirtualServers lists VirtualMCPServer resources that reference this workflow
+                  This helps track which servers need to be reconciled when this workflow changes
+                items:
+                  type: string
+                type: array
+              validationErrors:
+                description: ValidationErrors contains validation error messages if
+                  ValidationStatus is Invalid
+                items:
+                  type: string
+                type: array
+              validationStatus:
+                description: |-
+                  ValidationStatus indicates the validation state of the workflow
+                  - Valid: Workflow structure is valid
+                  - Invalid: Workflow has validation errors
+                enum:
+                - Valid
+                - Invalid
+                - Unknown
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

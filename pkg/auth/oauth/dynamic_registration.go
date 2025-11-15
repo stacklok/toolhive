@@ -27,17 +27,47 @@ const ResponseTypeCode = "code"
 // TokenEndpointAuthMethodNone is the token endpoint auth method for none
 const TokenEndpointAuthMethodNone = "none"
 
+// RequestScopeList represents the "scope" field in a dynamic client registration request.
+// Per RFC 7591 Section 2, this must be marshaled as a space-delimited string, not a JSON array.
+//
+// Examples of marshaled output:
+//
+//	[]string{"openid", "profile", "email"}  → "openid profile email"
+//	[]string{"openid"}                      → "openid"
+//	nil or []string{}                       → omitted (via omitempty)
+type RequestScopeList []string
+
+// MarshalJSON implements custom encoding for RequestScopeList. It converts the slice
+// of scopes into a space-delimited string as required by RFC 7591 Section 2.
+//
+// Important: This method does NOT handle empty slices. Go's encoding/json package
+// evaluates omitempty by checking if the Go value is "empty" (len(slice) == 0)
+// BEFORE calling MarshalJSON. Empty slices are omitted at the struct level, so this
+// method is never invoked for empty slices. This means we don't need to return null
+// or handle the empty case - omitempty does it for us automatically.
+//
+// See: https://pkg.go.dev/encoding/json (omitempty checks zero values before marshaling)
+func (r RequestScopeList) MarshalJSON() ([]byte, error) {
+	// Join scopes with spaces and marshal as a string (RFC 7591 Section 2)
+	scopeString := strings.Join(r, " ")
+	result, err := json.Marshal(scopeString)
+	if err == nil {
+		logger.Debugf("RFC 7591: Marshaled RequestScopeList %v -> %q (space-delimited string)", []string(r), scopeString)
+	}
+	return result, err
+}
+
 // DynamicClientRegistrationRequest represents the request for dynamic client registration (RFC 7591)
 type DynamicClientRegistrationRequest struct {
 	// Required field according to RFC 7591
 	RedirectURIs []string `json:"redirect_uris"`
 
 	// Essential fields for OAuth flow
-	ClientName              string   `json:"client_name,omitempty"`
-	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
-	GrantTypes              []string `json:"grant_types,omitempty"`
-	ResponseTypes           []string `json:"response_types,omitempty"`
-	Scopes                  []string `json:"scope,omitempty"`
+	ClientName              string           `json:"client_name,omitempty"`
+	TokenEndpointAuthMethod string           `json:"token_endpoint_auth_method,omitempty"`
+	GrantTypes              []string         `json:"grant_types,omitempty"`
+	ResponseTypes           []string         `json:"response_types,omitempty"`
+	Scopes                  RequestScopeList `json:"scope,omitempty"`
 }
 
 // NewDynamicClientRegistrationRequest creates a new dynamic client registration request
@@ -163,6 +193,14 @@ func validateAndSetDefaults(request *DynamicClientRegistrationRequest) error {
 	}
 	if len(request.RedirectURIs) == 0 {
 		return fmt.Errorf("at least one redirect URI is required")
+	}
+
+	// Validate that individual scope values don't contain spaces (RFC 6749 Section 3.3)
+	// Scopes must be space-separated tokens, so spaces within a scope value are invalid
+	for _, scope := range request.Scopes {
+		if strings.Contains(scope, " ") {
+			return fmt.Errorf("invalid scope value %q: scope values cannot contain spaces (RFC 6749)", scope)
+		}
 	}
 
 	// Set default values if not provided

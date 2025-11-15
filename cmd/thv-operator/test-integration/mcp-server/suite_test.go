@@ -90,6 +90,23 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
+	// Set up field indexing for MCPServer.Spec.GroupRef
+	if err := k8sManager.GetFieldIndexer().IndexField(ctx, &mcpv1alpha1.MCPServer{}, "spec.groupRef", func(obj client.Object) []string {
+		mcpServer := obj.(*mcpv1alpha1.MCPServer)
+		if mcpServer.Spec.GroupRef == "" {
+			return nil
+		}
+		return []string{mcpServer.Spec.GroupRef}
+	}); err != nil {
+		Expect(err).ToNot(HaveOccurred())
+	}
+
+	// Register the MCPGroup controller
+	err = (&controllers.MCPGroupReconciler{
+		Client: k8sManager.GetClient(),
+	}).SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
 	// Register the MCPServer controller
 	err = (&controllers.MCPServerReconciler{
 		Client:           k8sManager.GetClient(),

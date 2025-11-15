@@ -447,7 +447,7 @@ func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *m
 			Type:               mcpv1alpha1.ConditionGroupRefValidated,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1alpha1.ConditionReasonGroupRefNotFound,
-			Message:            err.Error(),
+			Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", mcpServer.Spec.GroupRef, mcpServer.Namespace),
 			ObservedGeneration: mcpServer.Generation,
 		})
 	} else if group.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
@@ -455,7 +455,7 @@ func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *m
 			Type:               mcpv1alpha1.ConditionGroupRefValidated,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1alpha1.ConditionReasonGroupRefNotReady,
-			Message:            "GroupRef is not in Ready state",
+			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", mcpServer.Spec.GroupRef, group.Status.Phase),
 			ObservedGeneration: mcpServer.Generation,
 		})
 	} else {
@@ -463,7 +463,7 @@ func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *m
 			Type:               mcpv1alpha1.ConditionGroupRefValidated,
 			Status:             metav1.ConditionTrue,
 			Reason:             mcpv1alpha1.ConditionReasonGroupRefValidated,
-			Message:            "GroupRef is valid and in Ready state",
+			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", mcpServer.Spec.GroupRef),
 			ObservedGeneration: mcpServer.Generation,
 		})
 	}

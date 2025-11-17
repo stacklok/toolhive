@@ -38,13 +38,14 @@ spec:
   name: investigate_incident
   description: Investigate incident by gathering logs, metrics, and traces in parallel
   parameters:
-    schema:
-      type: object
-      properties:
-        incident_id:
-          type: string
-        time_range:
-          type: string
+    incident_id:
+      type: string
+      description: The incident identifier
+      required: true
+    time_range:
+      type: string
+      description: Time range for data collection
+      required: true
   steps:
     # Level 1: These three steps run in parallel (no dependencies)
     - id: fetch_logs
@@ -72,7 +73,7 @@ spec:
     - id: correlate
       type: tool
       tool: analysis.correlate_data
-      depends_on: [fetch_logs, fetch_metrics, fetch_traces]
+      dependsOn: [fetch_logs, fetch_metrics, fetch_traces]
       arguments:
         logs: "{{.steps.fetch_logs.output}}"
         metrics: "{{.steps.fetch_metrics.output}}"
@@ -82,7 +83,7 @@ spec:
     - id: create_report
       type: tool
       tool: jira.create_issue
-      depends_on: [correlate]
+      dependsOn: [correlate]
       arguments:
         title: "Incident {{.params.incident_id}} Analysis"
         body: "{{.steps.correlate.output.summary}}"
@@ -102,14 +103,14 @@ Time    Level 1 (Parallel)              Level 2         Level 3
 
 ## Step Dependencies
 
-Use the `depends_on` field to define explicit dependencies between steps.
+Use the `dependsOn` field to define explicit dependencies between steps.
 
 ### Syntax
 
 ```yaml
 steps:
   - id: step_name
-    depends_on: [dependency1, dependency2, ...]
+    dependsOn: [dependency1, dependency2, ...]
     # ... rest of step config
 ```
 
@@ -133,18 +134,18 @@ steps:
   - id: process_left
     type: tool
     tool: transform.left
-    depends_on: [fetch_data]
+    dependsOn: [fetch_data]
 
   - id: process_right
     type: tool
     tool: transform.right
-    depends_on: [fetch_data]
+    dependsOn: [fetch_data]
 
   # Level 3: Waits for both Level 2 steps
   - id: merge_results
     type: tool
     tool: combine.merge
-    depends_on: [process_left, process_right]
+    dependsOn: [process_left, process_right]
 ```
 
 **Execution Graph**:
@@ -162,7 +163,7 @@ Use template syntax to access outputs from dependencies:
 
 ```yaml
 - id: analyze
-  depends_on: [fetch_logs, fetch_metrics]
+  dependsOn: [fetch_logs, fetch_metrics]
   arguments:
     # Access specific fields from dependency outputs
     log_count: "{{.steps.fetch_logs.output.count}}"
@@ -170,6 +171,33 @@ Use template syntax to access outputs from dependencies:
 
     # Pass entire output object
     raw_data: "{{.steps.fetch_logs.output}}"
+```
+
+### Template System Overview
+
+Workflows use Go's [text/template](https://pkg.go.dev/text/template) with these additional context variables and functions:
+
+**Context Variables**:
+- `.params.*` - Input parameters
+- `.steps.<id>.output` - Step outputs
+- `.steps.<id>.status` - Step status (completed, failed, skipped, running)
+- `.steps.<id>.error` - Step error messages (if failed)
+- `.vars.*` - Workflow-scoped variables
+
+**Custom Functions**:
+- `json` - JSON encode a value
+- `quote` - Quote a string value
+
+**Built-in Functions**: All Go template built-ins are available (`eq`, `ne`, `lt`, `le`, `gt`, `ge`, `and`, `or`, `not`, `index`, `len`, `range`, `with`, `printf`, etc.)
+
+**Example with Advanced Features**:
+```yaml
+- id: conditional_step
+  dependsOn: [fetch_data]
+  condition: "{{and (eq .steps.fetch_data.status \"completed\") (gt (len .steps.fetch_data.output.items) 0)}}"
+  arguments:
+    message: "{{printf \"Found %d items\" (len .steps.fetch_data.output.items)}}"
+    data: "{{json .steps.fetch_data.output}}"
 ```
 
 ---
@@ -208,7 +236,7 @@ steps:
     type: tool
     tool: slack.notify
     on_error:
-      action: continue_on_error  # Don't fail workflow if Slack is down
+      action: continue  # Don't fail workflow if Slack is down
 
   - id: critical_payment
     type: tool
@@ -227,13 +255,11 @@ steps:
     tool: external.fetch_data
     on_error:
       action: retry
-      retry_count: 3           # Maximum 3 retries (4 total attempts)
-      retry_delay: 1s          # Initial delay: 1 second
-      # Exponential backoff: 1s, 2s, 4s
+      maxRetries: 3           # Maximum 3 retries (4 total attempts)
 ```
 
 **Retry Behavior**:
-- **Exponential Backoff**: Delay doubles each retry (1s → 2s → 4s → 8s...)
+- **Exponential Backoff**: Delay increases by 1.5x each retry with ±50% randomization (1s → ~1.5s → ~2.25s → ~3.4s...), capped at 60 seconds
 - **Maximum Retries**: Capped at 10 (configurable per step)
 - **Context Aware**: Respects workflow timeout (won't retry if timeout exceeded)
 - **Error Propagation**: Final error includes retry count in metadata
@@ -255,29 +281,28 @@ spec:
       tool: s3.download
       on_error:
         action: retry
-        retry_count: 3
-        retry_delay: 2s
+        maxRetries: 3
 
     - id: deploy
       type: tool
       tool: kubernetes.apply
-      depends_on: [fetch_artifact]
+      dependsOn: [fetch_artifact]
       # Critical: uses workflow failureMode (abort)
 
     # Optional post-deployment tasks
     - id: notify_slack
       type: tool
       tool: slack.notify
-      depends_on: [deploy]
+      dependsOn: [deploy]
       on_error:
-        action: continue_on_error  # Don't fail if notification fails
+        action: continue  # Don't fail if notification fails
 
     - id: update_dashboard
       type: tool
       tool: grafana.update
-      depends_on: [deploy]
+      dependsOn: [deploy]
       on_error:
-        action: continue_on_error
+        action: continue
 ```
 
 ---
@@ -332,35 +357,33 @@ Workflow Timeout: 30m
 - Suitable for single-instance deployments
 - Automatic cleanup of completed workflows (configurable)
 - Thread-safe for parallel step execution
-- Workflow status available via API
+- Workflow status available programmatically via the Composer Go API
 
 **Future: Distributed State Store** (Redis/Database):
 - For multi-instance deployments
 - Workflow resumption after restart
 - Cross-instance workflow visibility
 
-### Example: Monitoring Workflow State
+### Monitoring Workflow State
 
-```yaml
-# Query workflow status (future CLI support)
-$ thv workflow status <workflow-id>
+Workflow status is currently available programmatically through the Composer Go API:
 
-Workflow ID: a1b2c3d4-e5f6-7890-abcd-ef1234567890
-Status: running
-Started: 2025-01-15 10:30:00
-Duration: 2m 15s
+```go
+// Get workflow status
+status, err := composer.GetWorkflowStatus(ctx, workflowID)
+if err != nil {
+    // Handle error
+}
 
-Completed Steps:
-  ✓ fetch_logs    (1.2s)
-  ✓ fetch_metrics (0.8s)
-  ✓ fetch_traces  (1.5s)
-
-In Progress:
-  ⏳ correlate
-
-Pending:
-  ⋯ create_report
+// Check workflow state
+fmt.Printf("Workflow ID: %s\n", status.WorkflowID)
+fmt.Printf("Status: %s\n", status.Status)
+fmt.Printf("Started: %s\n", status.StartTime)
+fmt.Printf("Duration: %s\n", status.Duration)
+fmt.Printf("Completed Steps: %v\n", status.CompletedSteps)
 ```
+
+**Note**: HTTP REST API endpoints for external workflow monitoring are planned for a future release.
 
 ---
 
@@ -395,7 +418,7 @@ stats := {
 
 ### Optimization Strategies
 
-1. **Minimize Dependencies**: Reduce `depends_on` where possible
+1. **Minimize Dependencies**: Reduce `dependsOn` where possible
 2. **Group Related Steps**: Steps with similar execution time work well in same level
 3. **Split Large Steps**: Break monolithic steps into parallel sub-steps
 4. **Use Conditional Execution**: Skip unnecessary steps with `condition` field
@@ -436,9 +459,9 @@ steps:
 steps:
   - id: notify_slack
   - id: notify_email
-    depends_on: [notify_slack]  # Unnecessary!
+    dependsOn: [notify_slack]  # Unnecessary!
   - id: notify_pagerduty
-    depends_on: [notify_email]  # Creates false sequencing
+    dependsOn: [notify_email]  # Creates false sequencing
 ```
 
 ### 2. Declare All Dependencies Explicitly
@@ -446,7 +469,7 @@ steps:
 ✅ **DO**: Be explicit about data dependencies
 ```yaml
 - id: aggregate
-  depends_on: [fetch_logs, fetch_metrics]  # Clear intent
+  dependsOn: [fetch_logs, fetch_metrics]  # Clear intent
   arguments:
     logs: "{{.steps.fetch_logs.output}}"
     metrics: "{{.steps.fetch_metrics.output}}"
@@ -482,9 +505,9 @@ steps:
   - id: send_receipt
     type: tool
     tool: email.send
-    depends_on: [charge_payment]
+    dependsOn: [charge_payment]
     on_error:
-      action: continue_on_error
+      action: continue
 ```
 
 ### 4. Set Realistic Timeouts
@@ -498,7 +521,7 @@ spec:
       timeout: 30s  # Individual operation: 30 seconds
       on_error:
         action: retry
-        retry_count: 3
+        maxRetries: 3
 ```
 
 ### 5. Keep Steps Focused
@@ -510,10 +533,10 @@ steps:
     tool: db.query_user
   - id: validate_permissions
     tool: auth.check_permissions
-    depends_on: [fetch_user]
+    dependsOn: [fetch_user]
   - id: perform_action
     tool: api.execute
-    depends_on: [validate_permissions]
+    dependsOn: [validate_permissions]
 ```
 
 ❌ **DON'T**: Combine unrelated operations
@@ -550,7 +573,7 @@ steps:
   - id: aggregate
     type: tool
     tool: analysis.combine
-    depends_on: [fetch_source_a, fetch_source_b, fetch_source_c]
+    dependsOn: [fetch_source_a, fetch_source_b, fetch_source_c]
 ```
 
 **Use Cases**: Data aggregation, multi-source reporting, distributed search
@@ -570,23 +593,23 @@ steps:
   - id: transform_format_a
     type: tool
     tool: transform.to_format_a
-    depends_on: [fetch]
+    dependsOn: [fetch]
 
   - id: transform_format_b
     type: tool
     tool: transform.to_format_b
-    depends_on: [fetch]
+    dependsOn: [fetch]
 
   # Stage 3: Parallel storage
   - id: store_warehouse
     type: tool
     tool: warehouse.store
-    depends_on: [transform_format_a]
+    dependsOn: [transform_format_a]
 
   - id: store_cache
     type: tool
     tool: cache.store
-    depends_on: [transform_format_b]
+    dependsOn: [transform_format_b]
 ```
 
 **Use Cases**: ETL pipelines, data transformation, multi-target deployments
@@ -605,19 +628,19 @@ steps:
   - id: notify_slack
     type: tool
     tool: slack.notify
-    depends_on: [fetch_user]
+    dependsOn: [fetch_user]
     condition: "{{.steps.fetch_user.output.preferences.slack_enabled}}"
 
   - id: notify_email
     type: tool
     tool: email.send
-    depends_on: [fetch_user]
+    dependsOn: [fetch_user]
     condition: "{{.steps.fetch_user.output.preferences.email_enabled}}"
 
   - id: notify_sms
     type: tool
     tool: sms.send
-    depends_on: [fetch_user]
+    dependsOn: [fetch_user]
     condition: "{{.steps.fetch_user.output.preferences.sms_enabled}}"
 ```
 
@@ -634,13 +657,12 @@ steps:
     tool: primary_api.call
     on_error:
       action: retry
-      retry_count: 2
-      retry_delay: 1s
+      maxRetries: 2
 
   - id: use_fallback
     type: tool
     tool: fallback_api.call
-    depends_on: [try_primary]
+    dependsOn: [try_primary]
     condition: "{{ne .steps.try_primary.status \"completed\"}}"
 ```
 
@@ -669,7 +691,7 @@ steps:
   - id: execute_action
     type: tool
     tool: api.execute
-    depends_on: [validate_schema, validate_permissions, validate_quota]
+    dependsOn: [validate_schema, validate_permissions, validate_quota]
 ```
 
 **Use Cases**: Pre-flight checks, authorization, resource validation
@@ -691,7 +713,7 @@ steps:
 
 # After (fixed)
 - id: process
-  depends_on: [fetch]  # Explicit dependency
+  dependsOn: [fetch]  # Explicit dependency
   arguments:
     data: "{{.steps.fetch.output}}"
 ```
@@ -700,18 +722,18 @@ steps:
 
 **Problem**: Workflow validation fails with "circular dependency detected"
 
-**Solution**: Review `depends_on` chains for cycles
+**Solution**: Review `dependsOn` chains for cycles
 ```yaml
 # Circular dependency (invalid)
 - id: step_a
-  depends_on: [step_b]
+  dependsOn: [step_b]
 - id: step_b
-  depends_on: [step_a]  # ❌ Cycle!
+  dependsOn: [step_a]  # ❌ Cycle!
 
 # Fixed (valid)
 - id: step_a
 - id: step_b
-  depends_on: [step_a]  # ✓ Linear dependency
+  dependsOn: [step_a]  # ✓ Linear dependency
 ```
 
 ### Performance Issues
@@ -720,7 +742,7 @@ steps:
 
 **Checklist**:
 1. Verify steps actually run in parallel (check execution levels)
-2. Check for unnecessary `depends_on` constraints
+2. Check for unnecessary `dependsOn` constraints
 3. Review concurrency limits (may be throttling)
 4. Profile individual step execution times
 5. Consider network/external service bottlenecks
@@ -762,7 +784,7 @@ steps:
   - id: step1
   - id: step2
   - id: step3
-    depends_on: [step1]  # Explicit data dependency
+    dependsOn: [step1]  # Explicit data dependency
     arguments:
       data: "{{.steps.step1.output}}"
 ```
@@ -780,7 +802,7 @@ steps:
 
 - [VirtualMCPCompositeToolDefinition Guide](virtualmcpcompositetooldefinition-guide.md) - Basic workflow concepts
 - [Architecture Documentation](../arch/README.md) - System architecture and design
-- [Operator Guide](deploying-mcp-server-with-operator.md) - Kubernetes deployment
+- [Operator Guide](../kind/deploying-mcp-server-with-operator.md) - Kubernetes deployment
 
 ---
 
@@ -789,7 +811,7 @@ steps:
 Key takeaways for advanced workflows:
 
 1. ✅ **Embrace Parallelism**: Design workflows for concurrent execution
-2. ✅ **Explicit Dependencies**: Always declare data dependencies with `depends_on`
+2. ✅ **Explicit Dependencies**: Always declare data dependencies with `dependsOn`
 3. ✅ **Error Resilience**: Use retry for transient failures, continue for optional steps
 4. ✅ **Set Timeouts**: Prevent runaway workflows with appropriate timeouts
 5. ✅ **Monitor State**: Track workflow execution for debugging and optimization

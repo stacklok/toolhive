@@ -17,11 +17,10 @@ spec:
   failureMode: abort             # Optional: abort|continue|best_effort (default: abort)
 
   parameters:                    # Optional: input parameters
-    schema:
-      type: object
-      properties:
-        param_name:
-          type: string
+    param_name:
+      type: string
+      description: Description of the parameter
+      required: false
 
   steps:                         # Required: workflow steps
     - id: step1
@@ -41,7 +40,7 @@ steps:
   - id: fetch_c                  # Level 1: Runs in parallel ─┘
 
   - id: aggregate                # Level 2: Waits for Level 1
-    depends_on: [fetch_a, fetch_b, fetch_c]
+    dependsOn: [fetch_a, fetch_b, fetch_c]
 ```
 
 ## Step Dependencies
@@ -51,13 +50,17 @@ steps:
   - id: step1
 
   - id: step2
-    depends_on: [step1]          # Runs after step1 completes
+    dependsOn: [step1]          # Runs after step1 completes
 
   - id: step3
-    depends_on: [step1, step2]   # Waits for both step1 AND step2
+    dependsOn: [step1, step2]   # Waits for both step1 AND step2
 ```
 
 ## Template Syntax
+
+Workflows use Go's [text/template](https://pkg.go.dev/text/template) syntax with additional context variables and functions.
+
+### Basic Access
 
 ```yaml
 # Access input parameters
@@ -68,15 +71,42 @@ steps:
 "{{.steps.step_id.output.field_name}}"
 "{{.steps.step_id.status}}"     # completed|failed|skipped|running
 
-# Conditional logic
-condition: "{{eq .steps.step1.status \"completed\"}}"
-condition: "{{.params.enabled}}"
-condition: "{{gt .steps.step1.output.count 10}}"
+# Access workflow-scoped variables
+"{{.vars.variable_name}}"
 
+# Access step errors
+"{{.steps.step_id.error}}"
+```
+
+### Functions
+
+```yaml
 # JSON encoding
 arguments:
   data: "{{json .steps.step1.output}}"
+
+# String quoting
+arguments:
+  quoted: "{{quote .params.value}}"
 ```
+
+### Conditional Logic
+
+```yaml
+# Comparison operators (eq, ne, lt, le, gt, ge)
+condition: "{{eq .steps.step1.status \"completed\"}}"
+condition: "{{ne .steps.step1.status \"failed\"}}"
+condition: "{{gt .steps.step1.output.count 10}}"
+
+# Boolean operators (and, or, not)
+condition: "{{and .params.enabled (eq .steps.step1.status \"completed\")}}"
+condition: "{{or .params.force (gt .steps.check.output.count 0)}}"
+condition: "{{not .params.disabled}}"
+```
+
+### Advanced Features
+
+All Go template built-ins are available: `index`, `len`, `range`, `with`, `printf`, etc. See [Go text/template documentation](https://pkg.go.dev/text/template) for complete reference.
 
 ## Error Handling
 
@@ -102,15 +132,14 @@ steps:
   - id: optional
     tool: notification.send
     on_error:
-      action: continue_on_error
+      action: continue
 
   # Retry with exponential backoff
   - id: resilient
     tool: external.api
     on_error:
       action: retry
-      retry_count: 3             # Max 3 retries (4 total attempts)
-      retry_delay: 1s            # Initial delay: 1s, 2s, 4s, 8s...
+      maxRetries: 3             # Max 3 retries (4 total attempts)
 ```
 
 ## Timeouts
@@ -139,7 +168,7 @@ steps:
 
   # Fan-in: Aggregate
   - id: combine
-    depends_on: [fetch_1, fetch_2, fetch_3]
+    dependsOn: [fetch_1, fetch_2, fetch_3]
 ```
 
 ### Sequential Pipeline
@@ -148,9 +177,9 @@ steps:
 steps:
   - id: fetch
   - id: transform
-    depends_on: [fetch]
+    dependsOn: [fetch]
   - id: store
-    depends_on: [transform]
+    dependsOn: [transform]
 ```
 
 ### Diamond Pattern
@@ -160,12 +189,12 @@ steps:
   - id: fetch
 
   - id: process_a
-    depends_on: [fetch]
+    dependsOn: [fetch]
   - id: process_b
-    depends_on: [fetch]
+    dependsOn: [fetch]
 
   - id: merge
-    depends_on: [process_a, process_b]
+    dependsOn: [process_a, process_b]
 ```
 
 ### Retry with Fallback
@@ -176,11 +205,11 @@ steps:
     tool: primary.api
     on_error:
       action: retry
-      retry_count: 2
+      maxRetries: 2
 
   - id: use_fallback
     tool: secondary.api
-    depends_on: [try_primary]
+    dependsOn: [try_primary]
     condition: "{{ne .steps.try_primary.status \"completed\"}}"
 ```
 
@@ -188,11 +217,13 @@ steps:
 
 - ✅ Workflow name: `^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$` (1-64 chars)
 - ✅ Step IDs must be unique
-- ✅ All `depends_on` step IDs must exist
+- ✅ All `dependsOn` step IDs must exist
 - ✅ No circular dependencies
 - ✅ Tool format: `workload_id.tool_name`
-- ✅ Max retry count: 10
-- ✅ Max workflow steps: 100
+- ✅ Max retry count: 10 (runtime capped - values > 10 are silently reduced with warning)
+- ✅ Max workflow steps: 100 (runtime enforced - workflows > 100 steps fail validation)
+
+**Note**: Max retry and max steps limits are currently enforced at runtime. Future work may add CRD-level validation (`+kubebuilder:validation:MaxItems=100`) and webhook validation to fail at submission time rather than execution time.
 
 ## Debugging
 
@@ -213,14 +244,14 @@ status:
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| "output not found" | Missing `depends_on` | Add dependency |
-| "circular dependency" | Cycle in `depends_on` | Remove cycle |
+| "output not found" | Missing `dependsOn` | Add dependency |
+| "circular dependency" | Cycle in `dependsOn` | Remove cycle |
 | "tool not found" | Invalid tool reference | Check `workload.tool` format |
 | "template error" | Invalid Go template | Fix template syntax |
 
 ## Performance Tips
 
-1. ✅ Remove unnecessary `depends_on` constraints
+1. ✅ Remove unnecessary `dependsOn` constraints
 2. ✅ Group related steps in same execution level
 3. ✅ Set realistic timeouts based on SLAs
 4. ✅ Use retry for transient failures only
@@ -230,4 +261,4 @@ status:
 
 - [Detailed Guide](virtualmcpcompositetooldefinition-guide.md)
 - [Advanced Patterns](advanced-workflow-patterns.md)
-- [Operator Installation](deploying-toolhive-operator.md)
+- [Operator Installation](../kind/deploying-toolhive-operator.md)

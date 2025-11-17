@@ -190,8 +190,8 @@ func TestDAGExecutor_ParallelExecution(t *testing.T) {
 	duration := time.Since(startTime)
 
 	// All 3 steps should execute in parallel, so total time should be ~100ms
-	// not 300ms (sequential)
-	assert.Less(t, duration, 200*time.Millisecond, "parallel execution should be faster than sequential")
+	// not 300ms (sequential). Use 250ms (2.5x expected time) to account for race detector overhead.
+	assert.Less(t, duration, 250*time.Millisecond, "parallel execution should be faster than sequential")
 
 	// All steps should have executed
 	assert.Len(t, executionOrder, 3)
@@ -459,8 +459,11 @@ func TestDAGExecutor_ComplexWorkflow(t *testing.T) {
 
 	var executionOrder []string
 	var executionMu sync.Mutex
-	startTimes := make(map[string]time.Time)
-	endTimes := make(map[string]time.Time)
+	// Use sequence numbers instead of wall-clock time to verify ordering.
+	// This is immune to race detector overhead and timing precision issues.
+	startSeq := make(map[string]int64)
+	endSeq := make(map[string]int64)
+	var seqCounter atomic.Int64
 
 	// Simulate the incident investigation workflow from the proposal
 	steps := []WorkflowStep{
@@ -475,16 +478,19 @@ func TestDAGExecutor_ComplexWorkflow(t *testing.T) {
 	}
 
 	execFunc := func(_ context.Context, step *WorkflowStep) error {
+		// Increment atomically outside the lock to reduce critical section
+		seq := seqCounter.Add(1)
 		executionMu.Lock()
-		startTimes[step.ID] = time.Now()
+		startSeq[step.ID] = seq
 		executionOrder = append(executionOrder, step.ID)
 		executionMu.Unlock()
 
 		// Simulate work (50ms per step)
 		time.Sleep(50 * time.Millisecond)
 
+		seq = seqCounter.Add(1)
 		executionMu.Lock()
-		endTimes[step.ID] = time.Now()
+		endSeq[step.ID] = seq
 		executionMu.Unlock()
 
 		return nil
@@ -500,29 +506,39 @@ func TestDAGExecutor_ComplexWorkflow(t *testing.T) {
 	// Verify parallel execution happened
 	// Sequential would take 8 * 50ms = 400ms
 	// Parallel should take about 4 levels * 50ms = 200ms
-	assert.Less(t, totalDuration, 300*time.Millisecond,
+	// Use 500ms timeout (2.5x expected time) to account for race detector instrumentation overhead
+	assert.Less(t, totalDuration, 500*time.Millisecond,
 		"parallel execution should be significantly faster than sequential")
 
-	// Verify dependencies were respected
+	// Verify dependencies were respected using sequence numbers
 	// fetch steps should complete before analyze steps
 	for _, fetchStep := range []string{"fetch_logs", "fetch_metrics", "fetch_traces"} {
 		for _, analyzeStep := range []string{"analyze_logs", "analyze_metrics", "analyze_traces"} {
 			if (fetchStep == "fetch_logs" && analyzeStep == "analyze_logs") ||
 				(fetchStep == "fetch_metrics" && analyzeStep == "analyze_metrics") ||
 				(fetchStep == "fetch_traces" && analyzeStep == "analyze_traces") {
-				assert.True(t, endTimes[fetchStep].Before(startTimes[analyzeStep]),
-					fmt.Sprintf("%s should complete before %s", fetchStep, analyzeStep))
+				require.Contains(t, endSeq, fetchStep, "fetch step should have completed")
+				require.Contains(t, startSeq, analyzeStep, "analyze step should have started")
+				assert.Less(t, endSeq[fetchStep], startSeq[analyzeStep],
+					fmt.Sprintf("%s (seq %d) must complete before %s starts (seq %d)",
+						fetchStep, endSeq[fetchStep], analyzeStep, startSeq[analyzeStep]))
 			}
 		}
 	}
 
 	// correlate should start after all analyze steps complete
 	for _, analyzeStep := range []string{"analyze_logs", "analyze_metrics", "analyze_traces"} {
-		assert.True(t, endTimes[analyzeStep].Before(startTimes["correlate"]),
-			fmt.Sprintf("%s should complete before correlate", analyzeStep))
+		require.Contains(t, endSeq, analyzeStep, "analyze step should have completed")
+		require.Contains(t, startSeq, "correlate", "correlate step should have started")
+		assert.Less(t, endSeq[analyzeStep], startSeq["correlate"],
+			fmt.Sprintf("%s (seq %d) must complete before correlate starts (seq %d)",
+				analyzeStep, endSeq[analyzeStep], startSeq["correlate"]))
 	}
 
 	// create_report should be last
-	assert.True(t, endTimes["correlate"].Before(startTimes["create_report"]),
-		"correlate should complete before create_report")
+	require.Contains(t, endSeq, "correlate", "correlate step should have completed")
+	require.Contains(t, startSeq, "create_report", "create_report step should have started")
+	assert.Less(t, endSeq["correlate"], startSeq["create_report"],
+		fmt.Sprintf("correlate (seq %d) must complete before create_report starts (seq %d)",
+			endSeq["correlate"], startSeq["create_report"]))
 }

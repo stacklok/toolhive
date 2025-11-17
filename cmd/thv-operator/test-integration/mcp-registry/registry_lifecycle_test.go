@@ -64,7 +64,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 
 		// 	// Verify initial spec
 		// 	Expect(registry.Spec.Source.Type).To(Equal(mcpv1alpha1.RegistrySourceTypeConfigMap))
-		// 	Expect(registry.Spec.Source.ConfigMap.Name).To(Equal(configMap.Name))
+		// 	Expect(registry.Spec.Source.ConfigMapRef.Name).To(Equal(configMap.Name))
 		// 	Expect(registry.Spec.SyncPolicy.Interval).To(Equal("1h"))
 
 		// 	// Wait for registry initialization (finalizer + initial status)
@@ -346,7 +346,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 			err := k8sClient.Create(ctx, invalidRegistry)
 			By("verifying validation error")
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("configMap field is required"))
+			Expect(err.Error()).To(ContainSubstring("configMapRef field is required"))
 		})
 
 		It("should reject invalid sync interval", func() {
@@ -360,9 +360,11 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 				Spec: mcpv1alpha1.MCPRegistrySpec{
 					Source: mcpv1alpha1.MCPRegistrySource{
 						Type: mcpv1alpha1.RegistrySourceTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapSource{
-							Name: configMap.Name,
-							Key:  "registry.json",
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: configMap.Name,
+							},
+							Key: "registry.json",
 						},
 					},
 					SyncPolicy: &mcpv1alpha1.SyncPolicy{
@@ -477,9 +479,11 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 				Spec: mcpv1alpha1.MCPRegistrySpec{
 					Source: mcpv1alpha1.MCPRegistrySource{
 						Type: mcpv1alpha1.RegistrySourceTypeConfigMap,
-						ConfigMap: &mcpv1alpha1.ConfigMapSource{
-							Name: configMap.Name,
-							Key:  "registry.json",
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: configMap.Name,
+							},
+							Key: "registry.json",
 						},
 					},
 				},

@@ -152,5 +152,6 @@ spec:
   enforceServers: true
   source:
     type: configmap
-    configmap:
+    configMapRef:
       name: enforcing-registry-data
+      key: registry.json

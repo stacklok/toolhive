@@ -233,7 +233,7 @@ spec:
   source:
     type: configmap
     format: toolhive
-    configmap:
+    configMapRef:
       name: auto-sync-registry-data
       key: registry.json
   syncPolicy:

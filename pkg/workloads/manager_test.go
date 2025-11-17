@@ -160,7 +160,7 @@ func TestDefaultManager_ListWorkloadsInGroup(t *testing.T) {
 			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
 			tt.setupStatusMgr(mockStatusMgr)
 
-			manager := &defaultManager{
+			manager := &DefaultManager{
 				runtime:  nil, // Not needed for this test
 				statuses: mockStatusMgr,
 			}
@@ -196,7 +196,7 @@ func TestNewManagerFromRuntime(t *testing.T) {
 	require.NotNil(t, manager)
 
 	// Verify it's a defaultManager with the runtime set
-	defaultMgr, ok := manager.(*defaultManager)
+	defaultMgr, ok := manager.(*DefaultManager)
 	require.True(t, ok)
 	assert.Equal(t, mockRuntime, defaultMgr.runtime)
 	assert.NotNil(t, defaultMgr.statuses)
@@ -217,7 +217,7 @@ func TestNewManagerFromRuntimeWithProvider(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, manager)
 
-	defaultMgr, ok := manager.(*defaultManager)
+	defaultMgr, ok := manager.(*DefaultManager)
 	require.True(t, ok)
 	assert.Equal(t, mockRuntime, defaultMgr.runtime)
 	assert.Equal(t, mockConfigProvider, defaultMgr.configProvider)
@@ -288,7 +288,7 @@ func TestDefaultManager_DoesWorkloadExist(t *testing.T) {
 			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
 			tt.setupMocks(mockStatusMgr)
 
-			manager := &defaultManager{
+			manager := &DefaultManager{
 				statuses: mockStatusMgr,
 			}
 
@@ -320,7 +320,7 @@ func TestDefaultManager_GetWorkload(t *testing.T) {
 
 	mockStatusMgr.EXPECT().GetWorkload(gomock.Any(), "test-workload").Return(expectedWorkload, nil)
 
-	manager := &defaultManager{
+	manager := &DefaultManager{
 		statuses: mockStatusMgr,
 	}
 
@@ -387,7 +387,7 @@ func TestDefaultManager_GetLogs(t *testing.T) {
 			mockRuntime := runtimeMocks.NewMockRuntime(ctrl)
 			tt.setupMocks(mockRuntime)
 
-			manager := &defaultManager{
+			manager := &DefaultManager{
 				runtime: mockRuntime,
 			}
 
@@ -437,7 +437,7 @@ func TestDefaultManager_StopWorkloads(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			manager := &defaultManager{}
+			manager := &DefaultManager{}
 
 			ctx := context.Background()
 			group, err := manager.StopWorkloads(ctx, tt.workloadNames)
@@ -487,7 +487,7 @@ func TestDefaultManager_DeleteWorkloads(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			manager := &defaultManager{}
+			manager := &DefaultManager{}
 
 			ctx := context.Background()
 			group, err := manager.DeleteWorkloads(ctx, tt.workloadNames)
@@ -534,7 +534,7 @@ func TestDefaultManager_RestartWorkloads(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			manager := &defaultManager{}
+			manager := &DefaultManager{}
 
 			ctx := context.Background()
 			group, err := manager.RestartWorkloads(ctx, tt.workloadNames, tt.foreground)
@@ -635,7 +635,7 @@ func TestDefaultManager_restartRemoteWorkload(t *testing.T) {
 			statusMgr := statusMocks.NewMockStatusManager(ctrl)
 			tt.setupMocks(statusMgr)
 
-			manager := &defaultManager{
+			manager := &DefaultManager{
 				statuses: statusMgr,
 			}
 
@@ -750,7 +750,7 @@ func TestDefaultManager_restartContainerWorkload(t *testing.T) {
 
 			tt.setupMocks(statusMgr, runtimeMgr)
 
-			manager := &defaultManager{
+			manager := &DefaultManager{
 				statuses: statusMgr,
 				runtime:  runtimeMgr,
 			}
@@ -788,7 +788,7 @@ func TestDefaultManager_restartLogicConsistency(t *testing.T) {
 		// Check if supervisor is alive - return valid PID (healthy)
 		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-base").Return(12345, nil)
 
-		manager := &defaultManager{
+		manager := &DefaultManager{
 			statuses: statusMgr,
 		}
 
@@ -826,7 +826,7 @@ func TestDefaultManager_restartLogicConsistency(t *testing.T) {
 		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 		statusMgr.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 
-		manager := &defaultManager{
+		manager := &DefaultManager{
 			statuses: statusMgr,
 		}
 
@@ -866,7 +866,7 @@ func TestDefaultManager_restartLogicConsistency(t *testing.T) {
 		// Check if supervisor is alive - return valid PID (healthy)
 		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(12345, nil)
 
-		manager := &defaultManager{
+		manager := &DefaultManager{
 			statuses: statusMgr,
 			runtime:  runtimeMgr,
 		}
@@ -911,7 +911,7 @@ func TestDefaultManager_restartLogicConsistency(t *testing.T) {
 		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 		statusMgr.EXPECT().SetWorkloadPID(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
 
-		manager := &defaultManager{
+		manager := &DefaultManager{
 			statuses: statusMgr,
 			runtime:  runtimeMgr,
 		}
@@ -968,7 +968,7 @@ func TestDefaultManager_RunWorkload(t *testing.T) {
 			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
 			tt.setupMocks(mockStatusMgr)
 
-			manager := &defaultManager{
+			manager := &DefaultManager{
 				statuses: mockStatusMgr,
 			}
 
@@ -1029,7 +1029,7 @@ func TestDefaultManager_validateSecretParameters(t *testing.T) {
 			mockConfigProvider := configMocks.NewMockProvider(ctrl)
 			tt.setupMocks(mockConfigProvider)
 
-			manager := &defaultManager{
+			manager := &DefaultManager{
 				configProvider: mockConfigProvider,
 			}
 
@@ -1106,7 +1106,7 @@ func TestDefaultManager_getWorkloadContainer(t *testing.T) {
 			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
 			tt.setupMocks(mockRuntime, mockStatusMgr)
 
-			manager := &defaultManager{
+			manager := &DefaultManager{
 				runtime:  mockRuntime,
 				statuses: mockStatusMgr,
 			}
@@ -1170,7 +1170,7 @@ func TestDefaultManager_removeContainer(t *testing.T) {
 			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
 			tt.setupMocks(mockRuntime, mockStatusMgr)
 
-			manager := &defaultManager{
+			manager := &DefaultManager{
 				runtime:  mockRuntime,
 				statuses: mockStatusMgr,
 			}
@@ -1224,7 +1224,7 @@ func TestDefaultManager_needSecretsPassword(t *testing.T) {
 			mockConfigProvider := configMocks.NewMockProvider(ctrl)
 			tt.setupMocks(mockConfigProvider)
 
-			manager := &defaultManager{
+			manager := &DefaultManager{
 				configProvider: mockConfigProvider,
 			}
 
@@ -1272,7 +1272,7 @@ func TestDefaultManager_RunWorkloadDetached(t *testing.T) {
 			mockConfigProvider := configMocks.NewMockProvider(ctrl)
 			tt.setupMocks(mockStatusMgr, mockConfigProvider)
 
-			manager := &defaultManager{
+			manager := &DefaultManager{
 				statuses:       mockStatusMgr,
 				configProvider: mockConfigProvider,
 			}
@@ -1307,7 +1307,7 @@ func TestDefaultManager_RunWorkloadDetached_PIDManagement(t *testing.T) {
 	// we verify the PID management integration exists by checking the method signature
 	// and code structure rather than running the full integration.
 
-	manager := &defaultManager{}
+	manager := &DefaultManager{}
 	assert.NotNil(t, manager, "defaultManager should be instantiable")
 
 	// Verify the method exists with the correct signature
@@ -1386,7 +1386,7 @@ func TestDefaultManager_ListWorkloads(t *testing.T) {
 			mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
 			tt.setupMocks(mockStatusMgr)
 
-			manager := &defaultManager{
+			manager := &DefaultManager{
 				statuses: mockStatusMgr,
 			}
 
@@ -1488,7 +1488,7 @@ func TestDefaultManager_UpdateWorkload(t *testing.T) {
 				tt.setupMocks(mockRuntime, mockStatusManager)
 			}
 
-			manager := &defaultManager{
+			manager := &DefaultManager{
 				runtime:        mockRuntime,
 				statuses:       mockStatusManager,
 				configProvider: mockConfigProvider,
@@ -1639,7 +1639,7 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 				tt.setupMocks(mockRuntime, mockStatusManager)
 			}
 
-			manager := &defaultManager{
+			manager := &DefaultManager{
 				runtime:        mockRuntime,
 				statuses:       mockStatusManager,
 				configProvider: mockConfigProvider,

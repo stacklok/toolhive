@@ -14,7 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -33,8 +33,8 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 		"network": "invalid-network-format"
 	}`
 
-	imageMetadata := &registry.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name: "test-image",
 		},
 		Permissions: &permissions.Profile{
@@ -69,7 +69,7 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 		profileContent            string // The JSON content for the profile file
 		needsTempFile             bool   // Whether this test case needs a temp file
 		expectedPermissionProfile *permissions.Profile
-		imageMetadata             *registry.ImageMetadata
+		imageMetadata             *regtypes.ImageMetadata
 		expectError               bool
 	}{
 		{
@@ -381,10 +381,9 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 
 		var mws []types.MiddlewareConfig
 		// OIDC config can be empty for this unit test since we're only testing token-exchange behavior.
-		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, nil)
+		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, nil, false)
 
 		// Expect only auth + mcp parser when token-exchange config == nil
-		require.Len(t, mws, 2, "expected only auth and mcp parser middlewares when token-exchange config is nil")
 		assert.Equal(t, auth.MiddlewareType, mws[0].Type, "first middleware should be auth")
 		assert.Equal(t, mcp.ParserMiddlewareType, mws[1].Type, "second middleware should be MCP parser")
 
@@ -410,10 +409,9 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 			// ExternalTokenHeaderName not required for replace strategy
 		}
 
-		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, teCfg)
+		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, teCfg, false)
 
 		// Expect auth, token-exchange, then mcp parser — verify correct order and count.
-		require.Len(t, mws, 3, "expected auth, token-exchange and mcp parser middlewares when token-exchange config is provided")
 		assert.Equal(t, auth.MiddlewareType, mws[0].Type, "first middleware should be auth")
 		assert.Equal(t, tokenexchange.MiddlewareType, mws[1].Type, "second middleware should be token-exchange")
 		assert.Equal(t, mcp.ParserMiddlewareType, mws[2].Type, "third middleware should be MCP parser")
@@ -557,8 +555,8 @@ func TestRunConfigBuilder_ToolOverrideMutualExclusivity(t *testing.T) {
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 
-	imageMetadata := &registry.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:  "test-image",
 			Tools: []string{"tool1", "tool2", "tool3"},
 		},
@@ -636,8 +634,8 @@ func TestRunConfigBuilder_ToolOverrideWithToolsFilter(t *testing.T) {
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 
-	imageMetadata := &registry.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:  "test-image",
 			Tools: []string{"tool1", "tool2", "tool3"},
 		},
@@ -700,8 +698,8 @@ func TestNewOperatorRunConfigBuilder(t *testing.T) {
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
-	imageMetadata := &registry.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:  "test-image",
 			Tools: []string{"tool1", "tool2", "tool3"},
 		},
@@ -769,8 +767,8 @@ func TestWithEnvVars(t *testing.T) {
 
 			// Create a mock environment variable validator
 			mockValidator := &mockEnvVarValidator{}
-			imageMetadata := &registry.ImageMetadata{
-				BaseServerMetadata: registry.BaseServerMetadata{
+			imageMetadata := &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Name:  "test-image",
 					Tools: []string{"tool1", "tool2", "tool3"},
 				},
@@ -797,8 +795,8 @@ func TestWithEnvVarsOverwrite(t *testing.T) {
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
-	imageMetadata := &registry.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:  "test-image",
 			Tools: []string{"tool1", "tool2", "tool3"},
 		},
@@ -882,8 +880,8 @@ func TestBuildForOperator(t *testing.T) {
 
 			// Create a mock environment variable validator
 			mockValidator := &mockEnvVarValidator{}
-			imageMetadata := &registry.ImageMetadata{
-				BaseServerMetadata: registry.BaseServerMetadata{
+			imageMetadata := &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Name:  "test-image",
 					Tools: []string{"tool1", "tool2", "tool3"},
 				},

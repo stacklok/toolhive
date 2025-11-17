@@ -593,3 +593,100 @@ func TestDiscoveryPriorityChain(t *testing.T) {
 		assert.Equal(t, "https://server.example.com", issuer)
 	})
 }
+
+func TestTryDiscoverFromResourceMetadata_EmptyScopes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		configScopes   []string
+		metadataScopes []string
+		expectedScopes []string
+		description    string
+	}{
+		{
+			name:           "metadata with no scopes_supported - scopes remain empty",
+			configScopes:   nil,
+			metadataScopes: nil, // RFC 9728: scopes_supported is optional
+			expectedScopes: nil,
+			description:    "RFC 9728 compliant: when metadata has no scopes_supported, don't add defaults",
+		},
+		{
+			name:           "metadata with empty scopes_supported - scopes remain empty",
+			configScopes:   nil,
+			metadataScopes: []string{},
+			expectedScopes: nil,
+			description:    "When metadata explicitly has empty scopes, don't add defaults",
+		},
+		{
+			name:           "metadata with scopes but user configured scopes - user config wins",
+			configScopes:   []string{"custom1", "custom2"},
+			metadataScopes: []string{"metadata1", "metadata2"},
+			expectedScopes: []string{"custom1", "custom2"},
+			description:    "User-configured scopes take precedence over metadata scopes",
+		},
+		{
+			name:           "metadata with scopes and no user config - use metadata scopes",
+			configScopes:   nil,
+			metadataScopes: []string{"incidents_read", "incidents_write"},
+			expectedScopes: []string{"incidents_read", "incidents_write"},
+			description:    "When no user config, use scopes from metadata",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create an auth server first (needed for validation)
+			authServer := createMockAuthServer(t, "")
+			defer authServer.Close()
+
+			// Create a metadata server that references the auth server
+			metadataServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Serve well-known metadata
+				if strings.Contains(r.URL.Path, "oauth-protected-resource") {
+					metadata := map[string]interface{}{
+						"resource":                 "https://example.com",
+						"authorization_servers":    []string{authServer.URL}, // Point to our mock auth server
+						"bearer_methods_supported": []string{"header"},
+					}
+					if len(tt.metadataScopes) > 0 {
+						metadata["scopes_supported"] = tt.metadataScopes
+					}
+					// If metadataScopes is nil, don't include the field (RFC 9728: scopes_supported is optional)
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(metadata)
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+			}))
+			defer metadataServer.Close()
+
+			// Create handler with test config
+			handler := &Handler{
+				config: &Config{
+					Scopes: tt.configScopes,
+				},
+			}
+
+			ctx := context.Background()
+			metadataURL := metadataServer.URL + "/.well-known/oauth-protected-resource"
+
+			// Call tryDiscoverFromResourceMetadata
+			issuer, scopes, authServerInfo, err := handler.tryDiscoverFromResourceMetadata(ctx, metadataURL)
+
+			// Verify results
+			require.NoError(t, err, tt.description)
+			assert.NotEmpty(t, issuer, "Should have discovered issuer")
+			assert.NotNil(t, authServerInfo, "Should have auth server info")
+
+			// CRITICAL TEST: Verify scopes behavior
+			if tt.expectedScopes == nil {
+				assert.Nil(t, scopes, "%s - scopes should be nil, not empty slice or defaults", tt.description)
+			} else {
+				assert.Equal(t, tt.expectedScopes, scopes, tt.description)
+			}
+		})
+	}
+}

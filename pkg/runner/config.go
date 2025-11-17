@@ -11,6 +11,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -99,6 +100,9 @@ type RunConfig struct {
 
 	// OIDCConfig contains OIDC configuration
 	OIDCConfig *auth.TokenValidatorConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
+
+	// TokenExchangeConfig contains token exchange configuration for external authentication
+	TokenExchangeConfig *tokenexchange.Config `json:"token_exchange_config,omitempty" yaml:"token_exchange_config,omitempty"`
 
 	// AuthzConfig contains the authorization configuration
 	AuthzConfig *authz.Config `json:"authz_config,omitempty" yaml:"authz_config,omitempty"`

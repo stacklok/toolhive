@@ -29,6 +29,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // TestAddExternalAuthConfigOptions tests the addExternalAuthConfigOptions function
@@ -87,7 +88,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "test-client-id",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "oauth-secret",
 							Key:  "client-secret",
 						},
@@ -136,7 +137,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "minimal-client",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "minimal-secret",
 							Key:  "secret-key",
 						},
@@ -254,7 +255,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "client",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "non-existent-secret",
 							Key:  "key",
 						},
@@ -289,7 +290,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "client",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "incomplete-secret",
 							Key:  "missing-key",
 						},
@@ -333,7 +334,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "client",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "secret",
 							Key:  "key",
 						},
@@ -349,6 +350,77 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 				},
 				Data: map[string][]byte{
 					"key": []byte("secret"),
+				},
+			},
+			expectError: false,
+			validateConfig: func(t *testing.T, opts []runner.RunConfigBuilderOption) {
+				t.Helper()
+				assert.Len(t, opts, 1)
+			},
+		},
+		{
+			name: "token exchange without client credentials (GCP Workforce Identity)",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "test-image",
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "gcp-workforce-config",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gcp-workforce-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL: "https://sts.googleapis.com/v1/token",
+						Audience: "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider",
+						Scopes:   []string{"https://www.googleapis.com/auth/cloud-platform"},
+						// No ClientID or ClientSecretRef - optional for Workforce Identity
+					},
+				},
+			},
+			expectError: false,
+			validateConfig: func(t *testing.T, opts []runner.RunConfigBuilderOption) {
+				t.Helper()
+				assert.Len(t, opts, 1, "Should have one middleware config option")
+			},
+		},
+		{
+			name: "token exchange with empty client ID but no secret ref",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "test-image",
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "empty-client-config",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "empty-client-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL: "https://sts.googleapis.com/v1/token",
+						ClientID: "", // Empty string
+						Audience: "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider",
+						Scopes:   []string{"scope1"},
+						// ClientSecretRef is nil
+					},
 				},
 			},
 			expectError: false,
@@ -437,7 +509,7 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "my-client-id",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "oauth-creds",
 							Key:  "client-secret",
 						},
@@ -461,14 +533,23 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 				assert.Equal(t, "external-auth-server", config.Name)
 				assert.Equal(t, "test:v1", config.Image)
 
-				// Verify middleware config was added
+				// Verify middleware configs are populated (auth, tokenexchange, mcp-parser, usagemetrics)
 				assert.NotNil(t, config.MiddlewareConfigs)
-				assert.Len(t, config.MiddlewareConfigs, 1)
-				assert.Equal(t, "tokenexchange", config.MiddlewareConfigs[0].Type)
+				assert.GreaterOrEqual(t, len(config.MiddlewareConfigs), 1, "Should have at least tokenexchange middleware")
+
+				// Find the tokenexchange middleware
+				var tokenExchangeMw *types.MiddlewareConfig
+				for i := range config.MiddlewareConfigs {
+					if config.MiddlewareConfigs[i].Type == "tokenexchange" {
+						tokenExchangeMw = &config.MiddlewareConfigs[i]
+						break
+					}
+				}
+				require.NotNil(t, tokenExchangeMw, "tokenexchange middleware should be present")
 
 				// Verify middleware parameters
 				var params map[string]interface{}
-				err := json.Unmarshal(config.MiddlewareConfigs[0].Parameters, &params)
+				err := json.Unmarshal(tokenExchangeMw.Parameters, &params)
 				require.NoError(t, err)
 
 				tokenExchangeConfig, ok := params["token_exchange_config"].(map[string]interface{})
@@ -586,7 +667,7 @@ func TestGenerateTokenExchangeEnvVars(t *testing.T) {
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
 						TokenURL: "https://oauth.example.com/token",
 						ClientID: "client-id",
-						ClientSecretRef: mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 							Name: "oauth-secret",
 							Key:  "client-secret",
 						},
@@ -680,6 +761,77 @@ func TestGenerateTokenExchangeEnvVars(t *testing.T) {
 			},
 			expectError: true,
 			errContains: "failed to get MCPExternalAuthConfig",
+		},
+		{
+			name: "token exchange without client secret ref (GCP Workforce Identity)",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "test-image",
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "gcp-workforce-config",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gcp-workforce-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL: "https://sts.googleapis.com/v1/token",
+						Audience: "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider",
+						Scopes:   []string{"https://www.googleapis.com/auth/cloud-platform"},
+						// No ClientID or ClientSecretRef
+					},
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, envVars []corev1.EnvVar) {
+				t.Helper()
+				// Should not generate any env vars since ClientSecretRef is nil
+				assert.Len(t, envVars, 0)
+			},
+		},
+		{
+			name: "token exchange with nil client secret ref returns no env vars",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-server",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image: "test-image",
+					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+						Name: "nil-secret-config",
+					},
+				},
+			},
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "nil-secret-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+						TokenURL:        "https://oauth.example.com/token",
+						ClientID:        "client-id",
+						ClientSecretRef: nil, // Explicitly nil
+						Audience:        "api",
+					},
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, envVars []corev1.EnvVar) {
+				t.Helper()
+				assert.Len(t, envVars, 0)
+			},
 		},
 	}
 

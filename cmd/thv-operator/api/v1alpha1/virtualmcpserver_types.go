@@ -108,37 +108,14 @@ type OutgoingAuthConfig struct {
 // BackendAuthConfig defines authentication configuration for a backend MCPServer
 type BackendAuthConfig struct {
 	// Type defines the authentication type
-	// +kubebuilder:validation:Enum=discovered;pass_through;service_account;external_auth_config_ref
+	// +kubebuilder:validation:Enum=discovered;pass_through;external_auth_config_ref
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
-
-	// ServiceAccount configures service account authentication
-	// Only used when Type is "service_account"
-	// +optional
-	ServiceAccount *ServiceAccountAuth `json:"serviceAccount,omitempty"`
 
 	// ExternalAuthConfigRef references an MCPExternalAuthConfig resource
 	// Only used when Type is "external_auth_config_ref"
 	// +optional
 	ExternalAuthConfigRef *ExternalAuthConfigRef `json:"externalAuthConfigRef,omitempty"`
-}
-
-// ServiceAccountAuth defines service account authentication
-type ServiceAccountAuth struct {
-	// CredentialsRef references a secret containing the service account credentials
-	// +kubebuilder:validation:Required
-	CredentialsRef SecretKeyRef `json:"credentialsRef"`
-
-	// HeaderName is the HTTP header name for the credentials
-	// +kubebuilder:default=Authorization
-	// +optional
-	HeaderName string `json:"headerName,omitempty"`
-
-	// HeaderFormat is the format string for the header value
-	// Use {token} as placeholder for the credential value
-	// +kubebuilder:default="Bearer {token}"
-	// +optional
-	HeaderFormat string `json:"headerFormat,omitempty"`
 }
 
 // AggregationConfig defines tool aggregation and conflict resolution strategies
@@ -249,14 +226,14 @@ type WorkflowStep struct {
 	// +kubebuilder:validation:Required
 	ID string `json:"id"`
 
-	// Type is the step type (tool_call, elicitation, etc.)
-	// +kubebuilder:validation:Enum=tool_call;elicitation
-	// +kubebuilder:default=tool_call
+	// Type is the step type (tool, elicitation, etc.)
+	// +kubebuilder:validation:Enum=tool;elicitation
+	// +kubebuilder:default=tool
 	// +optional
 	Type string `json:"type,omitempty"`
 
 	// Tool is the tool to call (format: "workload.tool_name")
-	// Only used when Type is "tool_call"
+	// Only used when Type is "tool"
 	// +optional
 	Tool string `json:"tool,omitempty"`
 
@@ -509,9 +486,6 @@ const (
 	// BackendAuthTypePassThrough forwards client token unchanged
 	BackendAuthTypePassThrough = "pass_through"
 
-	// BackendAuthTypeServiceAccount uses service account credentials
-	BackendAuthTypeServiceAccount = "service_account"
-
 	// BackendAuthTypeExternalAuthConfigRef references an MCPExternalAuthConfig resource
 	BackendAuthTypeExternalAuthConfigRef = "external_auth_config_ref"
 )
@@ -531,7 +505,7 @@ const (
 // Workflow step types
 const (
 	// WorkflowStepTypeToolCall calls a backend tool
-	WorkflowStepTypeToolCall = "tool_call"
+	WorkflowStepTypeToolCall = "tool"
 
 	// WorkflowStepTypeElicitation requests user input
 	WorkflowStepTypeElicitation = "elicitation"

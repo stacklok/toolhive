@@ -171,7 +171,7 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			errMsg:  "spec.steps[0].id is required",
 		},
 		{
-			name: "missing tool for tool_call step",
+			name: "missing tool for tool step",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
 					Name:        "deploy_app",
@@ -186,7 +186,7 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.steps[0].tool is required when type is tool_call",
+			errMsg:  "spec.steps[0].tool is required when type is tool",
 		},
 		{
 			name: "invalid tool reference format",

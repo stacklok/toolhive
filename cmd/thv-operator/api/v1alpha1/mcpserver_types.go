@@ -200,6 +200,7 @@ type ProxyDeploymentOverrides struct {
 
 	// Env are environment variables to set in the proxy container (thv run process)
 	// These affect the toolhive proxy itself, not the MCP server it manages
+	// Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy
 	// +optional
 	Env []EnvVar `json:"env,omitempty"`
 }
@@ -763,7 +764,13 @@ func (m *MCPServer) GetMcpPort() int32 {
 
 	// the below is deprecated and will be removed in a future version
 	// we need to keep it here to avoid breaking changes
-	return m.Spec.TargetPort
+	if m.Spec.TargetPort > 0 {
+		return m.Spec.TargetPort
+	}
+
+	// Default to 8080 if no port is specified (matches GetProxyPort behavior)
+	// This is needed for HTTP-based transports (SSE, streamable-http) which require a target port
+	return 8080
 }
 
 func init() {

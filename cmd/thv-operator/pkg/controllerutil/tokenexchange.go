@@ -2,7 +2,6 @@ package controllerutil
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -12,7 +11,6 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/runner"
-	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // GenerateOpenTelemetryEnvVars generates OpenTelemetry environment variables
@@ -74,23 +72,27 @@ func GenerateTokenExchangeEnvVars(
 		return envVars, nil
 	}
 
-	envVars = append(envVars, corev1.EnvVar{
-		Name: "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
-		ValueFrom: &corev1.EnvVarSource{
-			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{
-					Name: tokenExchangeSpec.ClientSecretRef.Name,
+	// Only add client secret env var if ClientSecretRef is provided
+	if tokenExchangeSpec.ClientSecretRef != nil {
+		envVars = append(envVars, corev1.EnvVar{
+			Name: "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: tokenExchangeSpec.ClientSecretRef.Name,
+					},
+					Key: tokenExchangeSpec.ClientSecretRef.Key,
 				},
-				Key: tokenExchangeSpec.ClientSecretRef.Key,
 			},
-		},
-	})
+		})
+	}
 
 	return envVars, nil
 }
 
 // AddExternalAuthConfigOptions adds external authentication configuration options to builder options
-// This creates middleware configuration for token exchange and is shared between MCPServer and MCPRemoteProxy
+// This creates token exchange configuration which will be automatically converted to middleware by
+// PopulateMiddlewareConfigs() when the runner starts. This ensures correct middleware ordering.
 func AddExternalAuthConfigOptions(
 	ctx context.Context,
 	c client.Client,
@@ -118,23 +120,22 @@ func AddExternalAuthConfigOptions(
 		return fmt.Errorf("token exchange configuration is nil for type tokenExchange")
 	}
 
-	// Validate that the referenced Kubernetes secret exists
-	var secret corev1.Secret
-	if err := c.Get(ctx, types.NamespacedName{
-		Namespace: namespace,
-		Name:      tokenExchangeSpec.ClientSecretRef.Name,
-	}, &secret); err != nil {
-		return fmt.Errorf("failed to get client secret %s/%s: %w",
-			namespace, tokenExchangeSpec.ClientSecretRef.Name, err)
-	}
+	// Validate that the referenced Kubernetes secret exists (if ClientSecretRef is provided)
+	if tokenExchangeSpec.ClientSecretRef != nil {
+		var secret corev1.Secret
+		if err := c.Get(ctx, types.NamespacedName{
+			Namespace: namespace,
+			Name:      tokenExchangeSpec.ClientSecretRef.Name,
+		}, &secret); err != nil {
+			return fmt.Errorf("failed to get client secret %s/%s: %w",
+				namespace, tokenExchangeSpec.ClientSecretRef.Name, err)
+		}
 
-	if _, ok := secret.Data[tokenExchangeSpec.ClientSecretRef.Key]; !ok {
-		return fmt.Errorf("client secret %s/%s is missing key %q",
-			namespace, tokenExchangeSpec.ClientSecretRef.Name, tokenExchangeSpec.ClientSecretRef.Key)
+		if _, ok := secret.Data[tokenExchangeSpec.ClientSecretRef.Key]; !ok {
+			return fmt.Errorf("client secret %s/%s is missing key %q",
+				namespace, tokenExchangeSpec.ClientSecretRef.Name, tokenExchangeSpec.ClientSecretRef.Key)
+		}
 	}
-
-	// Use scopes array directly from spec
-	scopes := tokenExchangeSpec.Scopes
 
 	// Determine header strategy based on ExternalTokenHeaderName
 	headerStrategy := "replace" // Default strategy
@@ -142,46 +143,28 @@ func AddExternalAuthConfigOptions(
 		headerStrategy = "custom"
 	}
 
-	// Build token exchange middleware configuration
+	// Normalize SubjectTokenType to full URN (accepts both short forms and full URNs)
+	normalizedTokenType, err := tokenexchange.NormalizeTokenType(tokenExchangeSpec.SubjectTokenType)
+	if err != nil {
+		return fmt.Errorf("invalid subject token type: %w", err)
+	}
+
+	// Build token exchange configuration
 	// Client secret is provided via TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET environment variable
 	// to avoid embedding plaintext secrets in the ConfigMap
-	tokenExchangeConfig := map[string]interface{}{
-		"token_url": tokenExchangeSpec.TokenURL,
-		"client_id": tokenExchangeSpec.ClientID,
-		"audience":  tokenExchangeSpec.Audience,
+	tokenExchangeConfig := &tokenexchange.Config{
+		TokenURL:                tokenExchangeSpec.TokenURL,
+		ClientID:                tokenExchangeSpec.ClientID,
+		Audience:                tokenExchangeSpec.Audience,
+		Scopes:                  tokenExchangeSpec.Scopes,
+		SubjectTokenType:        normalizedTokenType,
+		HeaderStrategy:          headerStrategy,
+		ExternalTokenHeaderName: tokenExchangeSpec.ExternalTokenHeaderName,
 	}
 
-	if len(scopes) > 0 {
-		tokenExchangeConfig["scopes"] = scopes
-	}
-
-	if headerStrategy != "" {
-		tokenExchangeConfig["header_strategy"] = headerStrategy
-	}
-
-	if tokenExchangeSpec.ExternalTokenHeaderName != "" {
-		tokenExchangeConfig["external_token_header_name"] = tokenExchangeSpec.ExternalTokenHeaderName
-	}
-
-	// Create middleware parameters
-	middlewareParams := map[string]interface{}{
-		"token_exchange_config": tokenExchangeConfig,
-	}
-
-	// Marshal parameters to JSON
-	paramsJSON, err := json.Marshal(middlewareParams)
-	if err != nil {
-		return fmt.Errorf("failed to marshal token exchange middleware parameters: %w", err)
-	}
-
-	// Create middleware config
-	middlewareConfig := transporttypes.MiddlewareConfig{
-		Type:       tokenexchange.MiddlewareType,
-		Parameters: json.RawMessage(paramsJSON),
-	}
-
-	// Add to options using the WithMiddlewareConfig builder option
-	*options = append(*options, runner.WithMiddlewareConfig([]transporttypes.MiddlewareConfig{middlewareConfig}))
+	// Use WithTokenExchangeConfig to add configuration
+	// The middleware will be automatically created by PopulateMiddlewareConfigs() in the correct order
+	*options = append(*options, runner.WithTokenExchangeConfig(tokenExchangeConfig))
 
 	return nil
 }

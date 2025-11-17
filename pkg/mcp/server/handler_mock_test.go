@@ -11,8 +11,8 @@ import (
 
 	runtime "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/registry"
 	registrymocks "github.com/stacklok/toolhive/pkg/registry/mocks"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 
@@ -24,7 +24,7 @@ func TestHandler_SearchRegistry_WithMocks(t *testing.T) {
 	tests := []struct {
 		name        string
 		query       string
-		mockServers []registry.ServerMetadata
+		mockServers []regtypes.ServerMetadata
 		setupMocks  func(*registrymocks.MockProvider)
 		wantErr     bool
 		checkResult func(*testing.T, *mcp.CallToolResult)
@@ -32,9 +32,9 @@ func TestHandler_SearchRegistry_WithMocks(t *testing.T) {
 		{
 			name:  "successful search with results",
 			query: "test",
-			mockServers: []registry.ServerMetadata{
-				&registry.ImageMetadata{
-					BaseServerMetadata: registry.BaseServerMetadata{
+			mockServers: []regtypes.ServerMetadata{
+				&regtypes.ImageMetadata{
+					BaseServerMetadata: regtypes.BaseServerMetadata{
 						Name:        "test-server",
 						Description: "Test server description",
 						Transport:   "sse",
@@ -43,8 +43,8 @@ func TestHandler_SearchRegistry_WithMocks(t *testing.T) {
 					},
 					Image: "test/image:latest",
 				},
-				&registry.ImageMetadata{
-					BaseServerMetadata: registry.BaseServerMetadata{
+				&regtypes.ImageMetadata{
+					BaseServerMetadata: regtypes.BaseServerMetadata{
 						Name:        "another-test",
 						Description: "Another test server",
 						Transport:   "stdio",
@@ -55,9 +55,9 @@ func TestHandler_SearchRegistry_WithMocks(t *testing.T) {
 			setupMocks: func(m *registrymocks.MockProvider) {
 				m.EXPECT().
 					SearchServers("test").
-					Return([]registry.ServerMetadata{
-						&registry.ImageMetadata{
-							BaseServerMetadata: registry.BaseServerMetadata{
+					Return([]regtypes.ServerMetadata{
+						&regtypes.ImageMetadata{
+							BaseServerMetadata: regtypes.BaseServerMetadata{
 								Name:        "test-server",
 								Description: "Test server description",
 								Transport:   "sse",
@@ -66,8 +66,8 @@ func TestHandler_SearchRegistry_WithMocks(t *testing.T) {
 							},
 							Image: "test/image:latest",
 						},
-						&registry.ImageMetadata{
-							BaseServerMetadata: registry.BaseServerMetadata{
+						&regtypes.ImageMetadata{
+							BaseServerMetadata: regtypes.BaseServerMetadata{
 								Name:        "another-test",
 								Description: "Another test server",
 								Transport:   "stdio",
@@ -86,11 +86,11 @@ func TestHandler_SearchRegistry_WithMocks(t *testing.T) {
 		{
 			name:        "empty search results",
 			query:       "nonexistent",
-			mockServers: []registry.ServerMetadata{},
+			mockServers: []regtypes.ServerMetadata{},
 			setupMocks: func(m *registrymocks.MockProvider) {
 				m.EXPECT().
 					SearchServers("nonexistent").
-					Return([]registry.ServerMetadata{}, nil)
+					Return([]regtypes.ServerMetadata{}, nil)
 			},
 			wantErr: false,
 			checkResult: func(t *testing.T, result *mcp.CallToolResult) {

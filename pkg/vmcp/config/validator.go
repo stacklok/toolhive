@@ -170,10 +170,11 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *Backend
 	}
 
 	validTypes := []string{
-		strategies.StrategyTypeUnauthenticated, strategies.StrategyTypeHeaderInjection,
+		strategies.StrategyTypeUnauthenticated,
+		strategies.StrategyTypeHeaderInjection,
+		strategies.StrategyTypeTokenExchange,
 		// TODO: Add more as strategies are implemented:
-		// "pass_through", "token_exchange", "client_credentials",
-		// "service_account", "oauth_proxy",
+		// "pass_through", "client_credentials", "oauth_proxy",
 	}
 	if !contains(validTypes, strategy.Type) {
 		return fmt.Errorf("type must be one of: %s", strings.Join(validTypes, ", "))
@@ -181,19 +182,10 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *Backend
 
 	// Validate type-specific requirements
 	switch strategy.Type {
-	case "token_exchange":
-		// Token exchange requires specific metadata
-		required := []string{"token_url", "client_id", "audience"}
-		for _, field := range required {
-			if _, ok := strategy.Metadata[field]; !ok {
-				return fmt.Errorf("token_exchange requires metadata field: %s", field)
-			}
-		}
-
-	case "service_account":
-		// Service account requires credentials
-		if _, ok := strategy.Metadata["credentials_env"]; !ok {
-			return fmt.Errorf("service_account requires metadata field: credentials_env")
+	case strategies.StrategyTypeTokenExchange:
+		// Token exchange requires token_url (other fields are optional)
+		if _, ok := strategy.Metadata["token_url"]; !ok {
+			return fmt.Errorf("token_exchange requires metadata field: token_url")
 		}
 
 	case strategies.StrategyTypeHeaderInjection:
@@ -404,8 +396,9 @@ func (v *DefaultValidator) validateCompositeTools(tools []*CompositeToolConfig) 
 			return fmt.Errorf("composite_tools[%d].description is required", i)
 		}
 
-		if tool.Timeout <= 0 {
-			return fmt.Errorf("composite_tools[%d].timeout must be positive", i)
+		// Timeout can be 0 (uses default) or positive (explicit timeout)
+		if tool.Timeout < 0 {
+			return fmt.Errorf("composite_tools[%d].timeout cannot be negative", i)
 		}
 
 		// Validate steps
@@ -459,8 +452,20 @@ func (*DefaultValidator) validateStepBasics(step *WorkflowStepConfig, index int,
 	return nil
 }
 
-// validateStepType validates step type and type-specific requirements
+// validateStepType validates step type and type-specific requirements.
+// The type should have been inferred during loading if the 'tool' field is present.
+// Elicitation steps must always specify type explicitly for clarity.
 func (*DefaultValidator) validateStepType(step *WorkflowStepConfig, index int) error {
+	// Check for ambiguous configuration: both tool and message fields present
+	if step.Tool != "" && step.Message != "" {
+		return fmt.Errorf("step[%d] cannot have both tool and message fields - use explicit type to clarify intent", index)
+	}
+
+	// Type is required at this point (should have been inferred during loading)
+	if step.Type == "" {
+		return fmt.Errorf("step[%d].type is required (or omit for tool steps with 'tool' field present)", index)
+	}
+
 	validTypes := []string{"tool", "elicitation"}
 	if !contains(validTypes, step.Type) {
 		return fmt.Errorf("step[%d].type must be one of: %s", index, strings.Join(validTypes, ", "))

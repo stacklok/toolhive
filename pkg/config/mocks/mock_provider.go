@@ -116,6 +116,20 @@ func (mr *MockProviderMockRecorder) SetCACert(certPath any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetCACert", reflect.TypeOf((*MockProvider)(nil).SetCACert), certPath)
 }
 
+// SetRegistryAPI mocks base method.
+func (m *MockProvider) SetRegistryAPI(apiURL string, allowPrivateRegistryIp bool) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetRegistryAPI", apiURL, allowPrivateRegistryIp)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetRegistryAPI indicates an expected call of SetRegistryAPI.
+func (mr *MockProviderMockRecorder) SetRegistryAPI(apiURL, allowPrivateRegistryIp any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetRegistryAPI", reflect.TypeOf((*MockProvider)(nil).SetRegistryAPI), apiURL, allowPrivateRegistryIp)
+}
+
 // SetRegistryFile mocks base method.
 func (m *MockProvider) SetRegistryFile(registryPath string) error {
 	m.ctrl.T.Helper()

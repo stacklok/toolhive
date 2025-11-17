@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -343,7 +344,8 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			registry, err := NewOutgoingAuthRegistry(ctx, tt.cfg)
+			envReader := &env.OSReader{}
+			registry, err := NewOutgoingAuthRegistry(ctx, tt.cfg, envReader)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -657,7 +659,8 @@ func TestCreateStrategy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			strategy, err := createStrategy(tt.strategyType)
+			envReader := &env.OSReader{}
+			strategy, err := createStrategy(tt.strategyType, envReader)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -683,7 +686,8 @@ func TestRegisterUnauthenticatedStrategy(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
-		registry, err := NewOutgoingAuthRegistry(ctx, nil)
+		envReader := &env.OSReader{}
+		registry, err := NewOutgoingAuthRegistry(ctx, nil, envReader)
 		require.NoError(t, err)
 		require.NotNil(t, registry)
 
@@ -730,7 +734,8 @@ func TestErrorMessages(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			_, err := NewOutgoingAuthRegistry(ctx, tt.cfg)
+			envReader := &env.OSReader{}
+			_, err := NewOutgoingAuthRegistry(ctx, tt.cfg, envReader)
 			require.Error(t, err)
 
 			errMsg := err.Error()

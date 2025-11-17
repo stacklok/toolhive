@@ -139,6 +139,22 @@ func createMockClientConfigs() []mcpClientConfig {
 			Extension:            JSON,
 		},
 		{
+			ClientType:           OpenCode,
+			Description:          "OpenCode application (Mock)",
+			RelPath:              []string{"mock_opencode"},
+			SettingsFile:         "opencode.json",
+			MCPServersPathPrefix: "/mcp",
+			Extension:            JSON,
+		},
+		{
+			ClientType:           Kiro,
+			Description:          "Kiro application (Mock)",
+			RelPath:              []string{"mock_kiro"},
+			SettingsFile:         "mcp.json",
+			MCPServersPathPrefix: "/mcpServers",
+			Extension:            JSON,
+		},
+		{
 			ClientType:           Goose,
 			Description:          "Goose AI agent (Mock)",
 			RelPath:              []string{"mock_goose"},
@@ -333,6 +349,8 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				string(Goose),
 				string(Trae),
 				string(Continue),
+				string(OpenCode),
+				string(Kiro),
 			},
 		},
 	}
@@ -384,7 +402,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			switch cf.ClientType {
 			case VSCode, VSCodeInsider:
 				assert.Contains(t, string(content), `"mcp":`,
-					"Cconfig should contain mcp key")
+					"Config should contain mcp key")
 				assert.Contains(t, string(content), `"servers":`,
 					"VSCode config should contain servers key")
 			case Cursor:
@@ -420,9 +438,12 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case AmpWindsurf:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"AmpWindsurf config should contain mcpServers key")
-			case LMStudio, Trae:
+			case LMStudio, Trae, Kiro:
 				assert.Contains(t, string(content), `"mcpServers":`,
-					"LMStudio config should contain mcpServers key")
+					"Config should contain mcpServers key")
+			case OpenCode:
+				assert.Contains(t, string(content), `"mcp":`,
+					"OpenCode config should contain mcp key")
 			case Goose:
 				// YAML files are created empty and initialized on first use
 				// Just verify the file exists and is readable
@@ -464,7 +485,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue:
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}

@@ -11,6 +11,11 @@ const (
 	// StrategyTypeHeaderInjection identifies the header injection strategy.
 	// This strategy injects a static header value into request headers.
 	StrategyTypeHeaderInjection = "header_injection"
+
+	// StrategyTypeTokenExchange identifies the token exchange strategy.
+	// This strategy exchanges an incoming token for a new token to use
+	// when authenticating to the backend service.
+	StrategyTypeTokenExchange = "token_exchange"
 )
 
 // Metadata key names used in strategy configurations.

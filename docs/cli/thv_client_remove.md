@@ -28,10 +28,12 @@ Valid clients:
   - continue: Continue.dev extensions for VS Code and JetBrains
   - cursor: Cursor editor
   - goose: Goose AI agent
+  - kiro: Kiro AI IDE
   - lm-studio: LM Studio application
+  - opencode: OpenCode editor
   - roo-code: Roo Code extension for VS Code
   - trae: Trae IDE
-  - vscode: Visual Studio Code
+  - vscode: Visual Studio Code (GitHub Copilot)
   - vscode-insider: Visual Studio Code Insiders edition
   - windsurf: Windsurf IDE
   - windsurf-jetbrains: Windsurf for JetBrains IDEs

@@ -7,6 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 )
@@ -14,12 +15,16 @@ import (
 // YAMLLoader loads configuration from a YAML file.
 // This is the CLI-specific loader that parses the YAML format defined in the proposal.
 type YAMLLoader struct {
-	filePath string
+	filePath  string
+	envReader env.Reader
 }
 
 // NewYAMLLoader creates a new YAML configuration loader.
-func NewYAMLLoader(filePath string) *YAMLLoader {
-	return &YAMLLoader{filePath: filePath}
+func NewYAMLLoader(filePath string, envReader env.Reader) *YAMLLoader {
+	return &YAMLLoader{
+		filePath:  filePath,
+		envReader: envReader,
+	}
 }
 
 // Load reads and parses the YAML configuration file.
@@ -82,12 +87,12 @@ type rawBackendAuthStrategy struct {
 	Type            string                  `yaml:"type"`
 	HeaderInjection *rawHeaderInjectionAuth `yaml:"header_injection"`
 	TokenExchange   *rawTokenExchangeAuth   `yaml:"token_exchange"`
-	ServiceAccount  *rawServiceAccountAuth  `yaml:"service_account"`
 }
 
 type rawHeaderInjectionAuth struct {
-	HeaderName  string `yaml:"header_name"`
-	HeaderValue string `yaml:"header_value"`
+	HeaderName     string `yaml:"header_name"`
+	HeaderValue    string `yaml:"header_value"`
+	HeaderValueEnv string `yaml:"header_value_env"`
 }
 
 type rawTokenExchangeAuth struct {
@@ -97,12 +102,6 @@ type rawTokenExchangeAuth struct {
 	Audience         string   `yaml:"audience"`
 	Scopes           []string `yaml:"scopes"`
 	SubjectTokenType string   `yaml:"subject_token_type"`
-}
-
-type rawServiceAccountAuth struct {
-	CredentialsEnv string `yaml:"credentials_env"`
-	HeaderName     string `yaml:"header_name"`
-	HeaderFormat   string `yaml:"header_format"`
 }
 
 type rawAggregation struct {
@@ -299,7 +298,8 @@ func (l *YAMLLoader) transformOutgoingAuth(raw *rawOutgoingAuth) (*OutgoingAuthC
 	return cfg, nil
 }
 
-func (*YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*BackendAuthStrategy, error) {
+//nolint:gocyclo // We should split this into multiple functions per strategy type.
+func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*BackendAuthStrategy, error) {
 	strategy := &BackendAuthStrategy{
 		Type:     raw.Type,
 		Metadata: make(map[string]any),
@@ -311,9 +311,31 @@ func (*YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*B
 			return nil, fmt.Errorf("header_injection configuration is required")
 		}
 
+		// Validate that exactly one of header_value or header_value_env is set
+		// to make the life of the strategy easier, we read the value here in set preference
+		// order and pass it in metadata in a single value regardless of how it was set.
+		hasValue := raw.HeaderInjection.HeaderValue != ""
+		hasValueEnv := raw.HeaderInjection.HeaderValueEnv != ""
+
+		if hasValue && hasValueEnv {
+			return nil, fmt.Errorf("header_injection: only one of header_value or header_value_env must be set")
+		}
+		if !hasValue && !hasValueEnv {
+			return nil, fmt.Errorf("header_injection: either header_value or header_value_env must be set")
+		}
+
+		// Resolve header value from environment if env var name is provided
+		headerValue := raw.HeaderInjection.HeaderValue
+		if hasValueEnv {
+			headerValue = l.envReader.Getenv(raw.HeaderInjection.HeaderValueEnv)
+			if headerValue == "" {
+				return nil, fmt.Errorf("environment variable %s not set or empty", raw.HeaderInjection.HeaderValueEnv)
+			}
+		}
+
 		strategy.Metadata = map[string]any{
 			strategies.MetadataHeaderName:  raw.HeaderInjection.HeaderName,
-			strategies.MetadataHeaderValue: raw.HeaderInjection.HeaderValue,
+			strategies.MetadataHeaderValue: headerValue,
 		}
 
 	case strategies.StrategyTypeUnauthenticated:
@@ -324,37 +346,20 @@ func (*YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*B
 			return nil, fmt.Errorf("token_exchange configuration is required")
 		}
 
-		// Resolve client secret from environment
-		clientSecret := os.Getenv(raw.TokenExchange.ClientSecretEnv)
-		if clientSecret == "" && raw.TokenExchange.ClientSecretEnv != "" {
-			return nil, fmt.Errorf("environment variable %s not set", raw.TokenExchange.ClientSecretEnv)
+		// Validate that environment variable is set (but don't resolve it yet)
+		if raw.TokenExchange.ClientSecretEnv != "" {
+			if l.envReader.Getenv(raw.TokenExchange.ClientSecretEnv) == "" {
+				return nil, fmt.Errorf("environment variable %s not set", raw.TokenExchange.ClientSecretEnv)
+			}
 		}
 
 		strategy.Metadata = map[string]any{
 			"token_url":          raw.TokenExchange.TokenURL,
 			"client_id":          raw.TokenExchange.ClientID,
-			"client_secret":      clientSecret,
+			"client_secret_env":  raw.TokenExchange.ClientSecretEnv,
 			"audience":           raw.TokenExchange.Audience,
 			"scopes":             raw.TokenExchange.Scopes,
 			"subject_token_type": raw.TokenExchange.SubjectTokenType,
-		}
-
-	case "service_account":
-		if raw.ServiceAccount == nil {
-			return nil, fmt.Errorf("service_account configuration is required")
-		}
-
-		// Resolve credentials from environment
-		credentials := os.Getenv(raw.ServiceAccount.CredentialsEnv)
-		if credentials == "" {
-			return nil, fmt.Errorf("environment variable %s not set", raw.ServiceAccount.CredentialsEnv)
-		}
-
-		strategy.Metadata = map[string]any{
-			"credentials":     credentials,
-			"credentials_env": raw.ServiceAccount.CredentialsEnv,
-			"header_name":     raw.ServiceAccount.HeaderName,
-			"header_format":   raw.ServiceAccount.HeaderFormat,
 		}
 	}
 
@@ -490,9 +495,14 @@ func (l *YAMLLoader) transformCompositeTools(raw []*rawCompositeTool) ([]*Compos
 	var tools []*CompositeToolConfig
 
 	for _, rawTool := range raw {
-		timeout, err := time.ParseDuration(rawTool.Timeout)
-		if err != nil {
-			return nil, fmt.Errorf("tool %s: invalid timeout: %w", rawTool.Name, err)
+		// Parse timeout - empty string means use default (0 duration)
+		var timeout time.Duration
+		if rawTool.Timeout != "" {
+			var err error
+			timeout, err = time.ParseDuration(rawTool.Timeout)
+			if err != nil {
+				return nil, fmt.Errorf("tool %s: invalid timeout: %w", rawTool.Name, err)
+			}
 		}
 
 		tool := &CompositeToolConfig{
@@ -546,6 +556,11 @@ func (*YAMLLoader) transformWorkflowStep(raw *rawWorkflowStep) (*WorkflowStepCon
 		DependsOn: raw.DependsOn,
 		Message:   raw.Message,
 		Schema:    raw.Schema,
+	}
+
+	// Apply type inference: if type is empty and tool field is present, infer as "tool"
+	if step.Type == "" && step.Tool != "" {
+		step.Type = "tool"
 	}
 
 	if raw.Timeout != "" {

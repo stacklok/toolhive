@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -42,11 +43,16 @@ import (
 // Parameters:
 //   - ctx: Context for any initialization that requires it
 //   - cfg: The outgoing authentication configuration (may be nil)
+//   - envReader: Environment variable reader for dependency injection
 //
 // Returns:
 //   - auth.OutgoingAuthRegistry: Configured registry with registered strategies
 //   - error: Any error during strategy initialization or registration
-func NewOutgoingAuthRegistry(_ context.Context, cfg *config.OutgoingAuthConfig) (auth.OutgoingAuthRegistry, error) {
+func NewOutgoingAuthRegistry(
+	_ context.Context,
+	cfg *config.OutgoingAuthConfig,
+	envReader env.Reader,
+) (auth.OutgoingAuthRegistry, error) {
 	registry := auth.NewDefaultOutgoingAuthRegistry()
 
 	// ALWAYS register the unauthenticated strategy as the default fallback.
@@ -66,7 +72,7 @@ func NewOutgoingAuthRegistry(_ context.Context, cfg *config.OutgoingAuthConfig) 
 
 	// Collect and register all unique strategy types from configuration
 	strategyTypes := collectStrategyTypes(cfg)
-	if err := registerStrategies(registry, strategyTypes); err != nil {
+	if err := registerStrategies(registry, strategyTypes, envReader); err != nil {
 		return nil, err
 	}
 
@@ -117,14 +123,14 @@ func collectStrategyTypes(cfg *config.OutgoingAuthConfig) map[string]struct{} {
 }
 
 // registerStrategies instantiates and registers each unique strategy type.
-func registerStrategies(registry auth.OutgoingAuthRegistry, strategyTypes map[string]struct{}) error {
+func registerStrategies(registry auth.OutgoingAuthRegistry, strategyTypes map[string]struct{}, envReader env.Reader) error {
 	for strategyType := range strategyTypes {
 		// Skip "unauthenticated" - already registered
 		if strategyType == strategies.StrategyTypeUnauthenticated {
 			continue
 		}
 
-		strategy, err := createStrategy(strategyType)
+		strategy, err := createStrategy(strategyType, envReader)
 		if err != nil {
 			return fmt.Errorf("failed to create strategy %q: %w", strategyType, err)
 		}
@@ -145,11 +151,12 @@ func registerStrategies(registry auth.OutgoingAuthRegistry, strategyTypes map[st
 //
 // Parameters:
 //   - strategyType: The type identifier of the strategy to create
+//   - envReader: Environment variable reader for dependency injection
 //
 // Returns:
 //   - auth.Strategy: The instantiated strategy
 //   - error: Any error during strategy creation or validation
-func createStrategy(strategyType string) (auth.Strategy, error) {
+func createStrategy(strategyType string, envReader env.Reader) (auth.Strategy, error) {
 	// Validate strategy type is not empty
 	if strings.TrimSpace(strategyType) == "" {
 		return nil, fmt.Errorf("strategy type cannot be empty")
@@ -158,6 +165,8 @@ func createStrategy(strategyType string) (auth.Strategy, error) {
 	switch strategyType {
 	case strategies.StrategyTypeHeaderInjection:
 		return strategies.NewHeaderInjectionStrategy(), nil
+	case strategies.StrategyTypeTokenExchange:
+		return strategies.NewTokenExchangeStrategy(envReader), nil
 	case strategies.StrategyTypeUnauthenticated:
 		return strategies.NewUnauthenticatedStrategy(), nil
 	default:

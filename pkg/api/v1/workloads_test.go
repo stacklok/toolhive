@@ -13,12 +13,13 @@ import (
 	"go.uber.org/mock/gomock"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
@@ -209,7 +210,7 @@ func TestCreateWorkload(t *testing.T) {
 			mockRetriever := makeMockRetriever(t,
 				"test-image",
 				"test-image",
-				&registry.ImageMetadata{Image: "test-image"},
+				&regtypes.ImageMetadata{Image: "test-image"},
 				nil,
 			)
 
@@ -222,6 +223,7 @@ func TestCreateWorkload(t *testing.T) {
 					groupManager:    mockGroupManager,
 					workloadManager: mockWorkloadManager,
 					imageRetriever:  mockRetriever,
+					appConfig:       &config.Config{},
 				},
 			}
 
@@ -401,7 +403,7 @@ func TestUpdateWorkload(t *testing.T) {
 			mockRetriever := makeMockRetriever(t,
 				"test-image",
 				"test-image",
-				&registry.ImageMetadata{Image: "test-image"},
+				&regtypes.ImageMetadata{Image: "test-image"},
 				nil,
 			)
 
@@ -414,6 +416,7 @@ func TestUpdateWorkload(t *testing.T) {
 					groupManager:    mockGroupManager,
 					workloadManager: mockWorkloadManager,
 					imageRetriever:  mockRetriever,
+					appConfig:       &config.Config{},
 				},
 			}
 
@@ -436,12 +439,12 @@ func makeMockRetriever(
 	t *testing.T,
 	expectedServerOrImage string,
 	returnedImage string,
-	returnedServerMetadata registry.ServerMetadata,
+	returnedServerMetadata regtypes.ServerMetadata,
 	returnedError error,
 ) retriever.Retriever {
 	t.Helper()
 
-	return func(_ context.Context, serverOrImage string, _ string, verificationType string, _ string) (string, registry.ServerMetadata, error) {
+	return func(_ context.Context, serverOrImage string, _ string, verificationType string, _ string) (string, regtypes.ServerMetadata, error) {
 		assert.Equal(t, expectedServerOrImage, serverOrImage)
 		assert.Equal(t, retriever.VerifyImageWarn, verificationType)
 		return returnedImage, returnedServerMetadata, returnedError

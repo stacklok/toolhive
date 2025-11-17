@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 )
 
 // CheckAPIReadiness verifies that the deployed registry-API Deployment is ready
@@ -74,18 +74,12 @@ func (*manager) CheckAPIReadiness(ctx context.Context, deployment *appsv1.Deploy
 func (m *manager) ensureDeployment(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	configManager config.ConfigManager,
 ) (*appsv1.Deployment, error) {
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
-	// Get source handler for config hash calculation
-	sourceHandler, err := m.sourceHandlerFactory.CreateHandler(mcpRegistry.Spec.Source.Type)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to create source handler for deployment")
-		return nil, fmt.Errorf("failed to create source handler for deployment: %w", err)
-	}
-
 	// Build the desired deployment configuration
-	deployment, err := m.buildRegistryAPIDeployment(mcpRegistry, sourceHandler)
+	deployment, err := m.buildRegistryAPIDeployment(mcpRegistry, configManager)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to build deployment configuration")
 		return nil, fmt.Errorf("failed to build deployment configuration: %w", err)
@@ -131,7 +125,8 @@ func (m *manager) ensureDeployment(
 // This function handles all deployment configuration including labels, container specs, probes,
 // and storage manager integration. It returns a fully configured deployment ready for Kubernetes API operations.
 func (m *manager) buildRegistryAPIDeployment(
-	mcpRegistry *mcpv1alpha1.MCPRegistry, sourceHandler sources.SourceHandler,
+	mcpRegistry *mcpv1alpha1.MCPRegistry,
+	configManager config.ConfigManager,
 ) (*appsv1.Deployment, error) {
 	// Generate deployment name using the established pattern
 	deploymentName := mcpRegistry.GetAPIResourceName()
@@ -158,7 +153,7 @@ func (m *manager) buildRegistryAPIDeployment(
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
 					Annotations: map[string]string{
-						"toolhive.stacklok.dev/config-hash": m.getSourceDataHash(mcpRegistry, sourceHandler),
+						"toolhive.stacklok.dev/config-hash": "hash-dummy-value",
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -217,25 +212,19 @@ func (m *manager) buildRegistryAPIDeployment(
 	}
 
 	// Configure storage-specific aspects using the new inverted dependency approach
-	if err := m.configureDeploymentStorage(deployment, mcpRegistry, registryAPIContainerName); err != nil {
-		return nil, fmt.Errorf("failed to configure deployment storage: %w", err)
+	if err := m.configureRegistryServerConfigMounts(deployment, registryAPIContainerName, configManager); err != nil {
+		return nil, fmt.Errorf("failed to configure registry server config mounts: %w", err)
+	}
+
+	if err := m.configureRegistrySourceMounts(deployment, mcpRegistry, registryAPIContainerName); err != nil {
+		return nil, fmt.Errorf("failed to configure registry source mounts: %w", err)
+	}
+
+	if err := m.configureRegistryStorageMounts(deployment, registryAPIContainerName); err != nil {
+		return nil, fmt.Errorf("failed to configure registry storage mounts: %w", err)
 	}
 
 	return deployment, nil
-}
-
-// getSourceDataHash calculates the hash of the source ConfigMap data using the provided source handler
-// This hash is used as a deployment annotation to trigger pod restarts when data changes
-func (*manager) getSourceDataHash(
-	mcpRegistry *mcpv1alpha1.MCPRegistry, sourceHandler sources.SourceHandler,
-) string {
-	// Get current hash from source using the existing handler
-	hash, err := sourceHandler.CurrentHash(context.Background(), mcpRegistry)
-	if err != nil {
-		return "hash-unavailable"
-	}
-
-	return hash
 }
 
 // getRegistryAPIImage returns the registry API container image to use
@@ -249,7 +238,7 @@ func getRegistryAPIImageWithEnvGetter(envGetter func(string) string) string {
 	if img := envGetter("TOOLHIVE_REGISTRY_API_IMAGE"); img != "" {
 		return img
 	}
-	return "ghcr.io/stacklok/thv-registry-api:latest"
+	return "ghcr.io/stacklok/thv-registry-api:v0.1.0"
 }
 
 // findContainerByName finds a container by name in a slice of containers

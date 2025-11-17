@@ -345,6 +345,9 @@ func createTokenExchangeMiddleware(
 				return
 			}
 
+			// Token exchange succeeded
+			logger.Debug("Token exchange successful")
+
 			// Inject the exchanged token into the request using the pre-selected strategy
 			if err := injectToken(r, exchangedToken.AccessToken); err != nil {
 				logger.Warnf("Failed to inject token: %v", err)

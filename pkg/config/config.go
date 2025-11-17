@@ -27,11 +27,13 @@ type Config struct {
 	Secrets                Secrets             `yaml:"secrets"`
 	Clients                Clients             `yaml:"clients"`
 	RegistryUrl            string              `yaml:"registry_url"`
+	RegistryApiUrl         string              `yaml:"registry_api_url"`
 	LocalRegistryPath      string              `yaml:"local_registry_path"`
 	AllowPrivateRegistryIp bool                `yaml:"allow_private_registry_ip"`
 	CACertificatePath      string              `yaml:"ca_certificate_path,omitempty"`
 	OTEL                   OpenTelemetryConfig `yaml:"otel,omitempty"`
 	DefaultGroupMigration  bool                `yaml:"default_group_migration,omitempty"`
+	DisableUsageMetrics    bool                `yaml:"disable_usage_metrics,omitempty"`
 }
 
 // Secrets contains the settings for secrets management.
@@ -101,6 +103,7 @@ func createNewConfigWithDefaults() Config {
 			SetupCompleted: false,
 		},
 		RegistryUrl:            "",
+		RegistryApiUrl:         "",
 		AllowPrivateRegistryIp: false,
 		DefaultGroupMigration:  false,
 	}

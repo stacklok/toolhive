@@ -408,10 +408,17 @@ func (h *httpBackendClient) CallTool(
 		return nil, fmt.Errorf("failed to initialize client for backend %s: %w", target.WorkloadID, err)
 	}
 
-	// Call the tool
+	// Call the tool using the original capability name from the backend's perspective.
+	// When conflict resolution renames tools (e.g., "fetch" → "fetch_fetch"),
+	// we must use the original backend name when forwarding requests.
+	backendToolName := target.GetBackendCapabilityName(toolName)
+	if backendToolName != toolName {
+		logger.Debugf("Translating tool name: %s (client-facing) → %s (backend)", toolName, backendToolName)
+	}
+
 	result, err := c.CallTool(ctx, mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
-			Name:      toolName,
+			Name:      backendToolName,
 			Arguments: arguments,
 		},
 	})
@@ -484,10 +491,16 @@ func (h *httpBackendClient) ReadResource(ctx context.Context, target *vmcp.Backe
 		return nil, fmt.Errorf("failed to initialize client for backend %s: %w", target.WorkloadID, err)
 	}
 
-	// Read the resource
+	// Read the resource using the original URI from the backend's perspective.
+	// When conflict resolution renames resources, we must use the original backend URI.
+	backendURI := target.GetBackendCapabilityName(uri)
+	if backendURI != uri {
+		logger.Debugf("Translating resource URI: %s (client-facing) → %s (backend)", uri, backendURI)
+	}
+
 	result, err := c.ReadResource(ctx, mcp.ReadResourceRequest{
 		Params: mcp.ReadResourceParams{
-			URI: uri,
+			URI: backendURI,
 		},
 	})
 	if err != nil {
@@ -539,7 +552,13 @@ func (h *httpBackendClient) GetPrompt(
 		return "", fmt.Errorf("failed to initialize client for backend %s: %w", target.WorkloadID, err)
 	}
 
-	// Get the prompt
+	// Get the prompt using the original prompt name from the backend's perspective.
+	// When conflict resolution renames prompts, we must use the original backend name.
+	backendPromptName := target.GetBackendCapabilityName(name)
+	if backendPromptName != name {
+		logger.Debugf("Translating prompt name: %s (client-facing) → %s (backend)", name, backendPromptName)
+	}
+
 	// Convert map[string]any to map[string]string
 	stringArgs := make(map[string]string)
 	for k, v := range arguments {
@@ -548,7 +567,7 @@ func (h *httpBackendClient) GetPrompt(
 
 	result, err := c.GetPrompt(ctx, mcp.GetPromptRequest{
 		Params: mcp.GetPromptParams{
-			Name:      name,
+			Name:      backendPromptName,
 			Arguments: stringArgs,
 		},
 	})

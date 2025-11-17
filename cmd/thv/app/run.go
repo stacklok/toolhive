@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -200,7 +201,7 @@ func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage stri
 	}
 
 	if runFlags.Name == "" {
-		runFlags.Name = getworkloadDefaultName(serverOrImage)
+		runFlags.Name = getworkloadDefaultName(ctx, serverOrImage)
 		logger.Infof("No workload name specified, using generated name: %s", runFlags.Name)
 	}
 	exists, err := workloadManager.DoesWorkloadExist(ctx, runFlags.Name)
@@ -258,7 +259,7 @@ func deriveRemoteName(remoteURL string) (string, error) {
 
 // getworkloadDefaultName generates a default workload name based on the serverOrImage input
 // This function reuses the existing system's naming logic to ensure consistency
-func getworkloadDefaultName(serverOrImage string) string {
+func getworkloadDefaultName(_ context.Context, serverOrImage string) string {
 	// If it's a protocol scheme (uvx://, npx://, go://)
 	if runner.IsImageProtocolScheme(serverOrImage) {
 		// Extract package name from protocol scheme using the existing parseProtocolScheme logic
@@ -280,11 +281,20 @@ func getworkloadDefaultName(serverOrImage string) string {
 		return name
 	}
 
-	// Check if it's a server name from registry
-	// Registry server names are typically multi-word names with hyphens
-	if !strings.Contains(serverOrImage, "://") && !strings.Contains(serverOrImage, "/") && !strings.Contains(serverOrImage, ":") {
-		// Likely a registry server name (no protocol, no slashes, no colons), return as-is
-		return serverOrImage
+	// Check if it's a server name from registry (including reverse-DNS names with slashes)
+	if !strings.Contains(serverOrImage, "://") && !strings.Contains(serverOrImage, ":") {
+		// Check if this is a registry server name by attempting to look it up
+		provider, err := registry.GetDefaultProvider()
+		if err == nil {
+			_, err := provider.GetServer(serverOrImage)
+			if err == nil {
+				// It's a valid registry server name - sanitize for container/filesystem use
+				// Replace dots and slashes with dashes to create a valid workload name
+				sanitized := strings.ReplaceAll(serverOrImage, ".", "-")
+				sanitized = strings.ReplaceAll(sanitized, "/", "-")
+				return sanitized
+			}
+		}
 	}
 
 	// For container images, use the existing container.GetOrGenerateContainerName logic

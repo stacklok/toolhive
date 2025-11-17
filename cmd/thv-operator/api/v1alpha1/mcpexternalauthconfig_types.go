@@ -35,12 +35,14 @@ type TokenExchangeConfig struct {
 	TokenURL string `json:"tokenUrl"`
 
 	// ClientID is the OAuth 2.0 client identifier
-	// +kubebuilder:validation:Required
-	ClientID string `json:"clientId"`
+	// Optional for some token exchange flows (e.g., Google Cloud Workforce Identity)
+	// +optional
+	ClientID string `json:"clientId,omitempty"`
 
 	// ClientSecretRef is a reference to a secret containing the OAuth 2.0 client secret
-	// +kubebuilder:validation:Required
-	ClientSecretRef SecretKeyRef `json:"clientSecretRef"`
+	// Optional for some token exchange flows (e.g., Google Cloud Workforce Identity)
+	// +optional
+	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
 	// Audience is the target audience for the exchanged token
 	// +kubebuilder:validation:Required
@@ -49,6 +51,16 @@ type TokenExchangeConfig struct {
 	// Scopes is a list of OAuth 2.0 scopes to request for the exchanged token
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
+
+	// SubjectTokenType is the type of the incoming subject token.
+	// Accepts short forms: "access_token" (default), "id_token", "jwt"
+	// Or full URNs: "urn:ietf:params:oauth:token-type:access_token",
+	//               "urn:ietf:params:oauth:token-type:id_token",
+	//               "urn:ietf:params:oauth:token-type:jwt"
+	// For Google Workload Identity Federation with OIDC providers (like Okta), use "id_token"
+	// +kubebuilder:validation:Pattern=`^(access_token|id_token|jwt|urn:ietf:params:oauth:token-type:(access_token|id_token|jwt))?$`
+	// +optional
+	SubjectTokenType string `json:"subjectTokenType,omitempty"`
 
 	// ExternalTokenHeaderName is the name of the custom header to use for the exchanged token.
 	// If set, the exchanged token will be added to this custom header (e.g., "X-Upstream-Token").

@@ -18,10 +18,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
 
 // BuildContext defines the context in which the RunConfigBuilder is being used
@@ -356,6 +357,14 @@ func WithOIDCConfig(
 	}
 }
 
+// WithTokenExchangeConfig sets the token exchange configuration
+func WithTokenExchangeConfig(config *tokenexchange.Config) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.TokenExchangeConfig = config
+		return nil
+	}
+}
+
 // WithTelemetryConfig configures telemetry settings (legacy - custom attributes handled via middleware)
 func WithTelemetryConfig(
 	otelEndpoint string,
@@ -454,6 +463,7 @@ func WithMiddlewareFromFlags(
 	auditConfigPath string,
 	serverName string,
 	transportType string,
+	disableUsageMetrics bool,
 ) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		var middlewareConfigs []types.MiddlewareConfig
@@ -472,7 +482,7 @@ func WithMiddlewareFromFlags(
 		middlewareConfigs = addToolFilterMiddlewares(middlewareConfigs, toolsFilter, toolsOverride)
 
 		// Add core middlewares (always present)
-		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig, tokenExchangeConfig)
+		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig, tokenExchangeConfig, disableUsageMetrics)
 
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
@@ -539,6 +549,7 @@ func addCoreMiddlewares(
 	middlewareConfigs []types.MiddlewareConfig,
 	oidcConfig *auth.TokenValidatorConfig,
 	tokenExchangeConfig *tokenexchange.Config,
+	disableUsageMetrics bool,
 ) []types.MiddlewareConfig {
 	// Authentication middleware (always present)
 	authParams := auth.MiddlewareParams{
@@ -564,6 +575,14 @@ func addCoreMiddlewares(
 	mcpParserParams := mcp.ParserMiddlewareParams{}
 	if mcpParserConfig, err := types.NewMiddlewareConfig(mcp.ParserMiddlewareType, mcpParserParams); err == nil {
 		middlewareConfigs = append(middlewareConfigs, *mcpParserConfig)
+	}
+
+	// Usage metrics middleware (if enabled)
+	if usagemetrics.ShouldEnableMetrics(disableUsageMetrics) {
+		usageMetricsParams := usagemetrics.MiddlewareParams{}
+		if usageMetricsConfig, err := types.NewMiddlewareConfig(usagemetrics.MiddlewareType, usageMetricsParams); err == nil {
+			middlewareConfigs = append(middlewareConfigs, *usageMetricsConfig)
+		}
 	}
 
 	return middlewareConfigs
@@ -650,7 +669,7 @@ func addAuditMiddleware(
 // NewOperatorRunConfigBuilder creates a new RunConfigBuilder configured for operator use
 func NewOperatorRunConfigBuilder(
 	ctx context.Context,
-	imageMetadata *registry.ImageMetadata,
+	imageMetadata *regtypes.ImageMetadata,
 	envVars map[string]string,
 	envVarValidator EnvVarValidator,
 	runConfigOptions ...RunConfigBuilderOption,
@@ -668,7 +687,7 @@ func NewOperatorRunConfigBuilder(
 // NewRunConfigBuilder creates the final RunConfig instance with validation and processing
 func NewRunConfigBuilder(
 	ctx context.Context,
-	imageMetadata *registry.ImageMetadata,
+	imageMetadata *regtypes.ImageMetadata,
 	envVars map[string]string,
 	envVarValidator EnvVarValidator,
 	runConfigOptions ...RunConfigBuilderOption,
@@ -686,7 +705,7 @@ func NewRunConfigBuilder(
 func internalRunConfigBuilder(
 	ctx context.Context,
 	b *runConfigBuilder,
-	imageMetadata *registry.ImageMetadata,
+	imageMetadata *regtypes.ImageMetadata,
 	envVars map[string]string,
 	envVarValidator EnvVarValidator,
 	runConfigOptions ...RunConfigBuilderOption,
@@ -734,7 +753,7 @@ func internalRunConfigBuilder(
 // This function also handles setting missing values based on the image metadata (if present).
 //
 //nolint:gocyclo // This function needs to be refactored to reduce cyclomatic complexity.
-func (b *runConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata) error {
+func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata) error {
 	c := b.config
 	var err error
 
@@ -875,7 +894,7 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	return nil
 }
 
-func (b *runConfigBuilder) loadPermissionProfile(imageMetadata *registry.ImageMetadata) (*permissions.Profile, error) {
+func (b *runConfigBuilder) loadPermissionProfile(imageMetadata *regtypes.ImageMetadata) (*permissions.Profile, error) {
 	// The permission profile object takes precedence over the name or path.
 	if b.config.PermissionProfile != nil {
 		return b.config.PermissionProfile, nil

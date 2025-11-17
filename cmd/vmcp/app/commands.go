@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -16,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -128,7 +130,8 @@ This command checks:
 			logger.Infof("Validating configuration: %s", configPath)
 
 			// Load configuration from YAML
-			loader := config.NewYAMLLoader(configPath)
+			envReader := &env.OSReader{}
+			loader := config.NewYAMLLoader(configPath, envReader)
 			cfg, err := loader.Load()
 			if err != nil {
 				logger.Errorf("Failed to load configuration: %v", err)
@@ -181,7 +184,8 @@ func getVersion() string {
 func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	logger.Infof("Loading configuration from: %s", configPath)
 
-	loader := config.NewYAMLLoader(configPath)
+	envReader := &env.OSReader{}
+	loader := config.NewYAMLLoader(configPath, envReader)
 	cfg, err := loader.Load()
 	if err != nil {
 		logger.Errorf("Failed to load configuration: %v", err)
@@ -198,6 +202,9 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	logger.Infof("  Name: %s", cfg.Name)
 	logger.Infof("  Group: %s", cfg.Group)
 	logger.Infof("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution)
+	if len(cfg.CompositeTools) > 0 {
+		logger.Infof("  Composite Tools: %d defined", len(cfg.CompositeTools))
+	}
 
 	return cfg, nil
 }
@@ -207,7 +214,8 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, vmcp.BackendClient, error) {
 	// Create outgoing authentication registry from configuration
 	logger.Info("Initializing outgoing authentication")
-	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, cfg.OutgoingAuth)
+	envReader := &env.OSReader{}
+	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, cfg.OutgoingAuth, envReader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
 	}
@@ -286,10 +294,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Create aggregator
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation.Tools)
 
-	// Aggregate capabilities
-	capabilities, err := aggregateCapabilities(ctx, agg, backends)
+	// Create discovery manager for lazy per-user capability discovery
+	discoveryMgr, err := discovery.NewManager(agg)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create discovery manager: %w", err)
 	}
 
 	// Create router
@@ -319,13 +327,19 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuthInfoHandler: authInfoHandler,
 	}
 
-	// Create server
-	srv := vmcpserver.New(serverCfg, rtr, backendClient)
+	// Convert composite tool configurations to workflow definitions
+	workflowDefs, err := vmcpserver.ConvertConfigToWorkflowDefinitions(cfg.CompositeTools)
+	if err != nil {
+		return fmt.Errorf("failed to convert composite tool definitions: %w", err)
+	}
+	if len(workflowDefs) > 0 {
+		logger.Infof("Loaded %d composite tool workflow definitions", len(workflowDefs))
+	}
 
-	// Register capabilities
-	logger.Info("Registering capabilities with server")
-	if err := srv.RegisterCapabilities(ctx, capabilities); err != nil {
-		return fmt.Errorf("failed to register capabilities: %w", err)
+	// Create server with discovery manager, backends, and workflow definitions
+	srv, err := vmcpserver.New(serverCfg, rtr, backendClient, discoveryMgr, backends, workflowDefs)
+	if err != nil {
+		return fmt.Errorf("failed to create Virtual MCP Server: %w", err)
 	}
 
 	// Start server (blocks until shutdown signal)
@@ -333,7 +347,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	return srv.Start(ctx)
 }
 
-// aggregateCapabilities aggregates capabilities from backends or creates empty capabilities
+// aggregateCapabilities aggregates capabilities from backends or creates empty capabilities.
+//
+// NOTE: This function is currently unused due to lazy discovery implementation (issue #2501).
+// It may be removed in a future cleanup or used for startup-time capability caching.
+//
+//nolint:unused // Unused until we implement startup aggregation or caching
 func aggregateCapabilities(
 	ctx context.Context,
 	agg aggregator.Aggregator,

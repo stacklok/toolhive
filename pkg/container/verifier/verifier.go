@@ -13,7 +13,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 const (
@@ -39,7 +39,7 @@ type Result struct {
 }
 
 // New creates a new Sigstore verifier
-func New(serverInfo *registry.ImageMetadata) (*Sigstore, error) {
+func New(serverInfo *types.ImageMetadata) (*Sigstore, error) {
 	// Fail the verification early if the server information is not set
 	if serverInfo == nil || serverInfo.Provenance == nil {
 		return nil, ErrProvenanceServerInformationNotSet
@@ -130,7 +130,7 @@ func getVerifiedResults(
 }
 
 // VerifyServer verifies the server information for the given image reference
-func (s *Sigstore) VerifyServer(imageRef string, serverInfo *registry.ImageMetadata) (bool, error) {
+func (s *Sigstore) VerifyServer(imageRef string, serverInfo *types.ImageMetadata) (bool, error) {
 	// Get the verification results for the image reference
 	results, err := s.GetVerificationResults(imageRef)
 	if err != nil {
@@ -153,7 +153,7 @@ func (s *Sigstore) VerifyServer(imageRef string, serverInfo *registry.ImageMetad
 	return true, nil
 }
 
-func isVerificationResultMatchingServerProvenance(r *verify.VerificationResult, p *registry.Provenance) bool {
+func isVerificationResultMatchingServerProvenance(r *verify.VerificationResult, p *types.Provenance) bool {
 	if r == nil || p == nil || r.Signature == nil || r.Signature.Certificate == nil {
 		return false
 	}
@@ -175,7 +175,7 @@ func isVerificationResultMatchingServerProvenance(r *verify.VerificationResult, 
 }
 
 // compareBaseProperties compares the base properties of the verification result and the server provenance
-func compareBaseProperties(r *verify.VerificationResult, p *registry.Provenance) bool {
+func compareBaseProperties(r *verify.VerificationResult, p *types.Provenance) bool {
 	// Extract the signer identity from the certificate
 	siIdentity, err := signerIdentityFromCertificate(r.Signature.Certificate)
 	if err != nil {

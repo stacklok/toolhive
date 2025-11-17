@@ -114,13 +114,7 @@ func TestConvertOutgoingAuth(t *testing.T) {
 				Source: "mixed",
 				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 					"backend-1": {
-						Type: mcpv1alpha1.BackendAuthTypeServiceAccount,
-						ServiceAccount: &mcpv1alpha1.ServiceAccountAuth{
-							CredentialsRef: mcpv1alpha1.SecretKeyRef{
-								Name: "sa-secret",
-								Key:  "token",
-							},
-						},
+						Type: mcpv1alpha1.BackendAuthTypePassThrough,
 					},
 				},
 			},
@@ -177,22 +171,6 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 			},
 			expectedType: mcpv1alpha1.BackendAuthTypePassThrough,
 			hasMetadata:  false,
-		},
-		{
-			name: "service account",
-			authConfig: &mcpv1alpha1.BackendAuthConfig{
-				Type: mcpv1alpha1.BackendAuthTypeServiceAccount,
-				ServiceAccount: &mcpv1alpha1.ServiceAccountAuth{
-					CredentialsRef: mcpv1alpha1.SecretKeyRef{
-						Name: "secret-name",
-						Key:  "token",
-					},
-					HeaderName:   "X-Auth-Token",
-					HeaderFormat: "Bearer {token}",
-				},
-			},
-			expectedType: mcpv1alpha1.BackendAuthTypeServiceAccount,
-			hasMetadata:  true,
 		},
 		{
 			name: "external auth config ref",
@@ -539,25 +517,13 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 				Source: "mixed",
 				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 					"backend-zebra": {
-						Type: mcpv1alpha1.BackendAuthTypeServiceAccount,
-						ServiceAccount: &mcpv1alpha1.ServiceAccountAuth{
-							CredentialsRef: mcpv1alpha1.SecretKeyRef{
-								Name: "zebra-secret",
-								Key:  "token",
-							},
-						},
+						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 					},
 					"backend-alpha": {
 						Type: mcpv1alpha1.BackendAuthTypePassThrough,
 					},
 					"backend-middle": {
-						Type: mcpv1alpha1.BackendAuthTypeServiceAccount,
-						ServiceAccount: &mcpv1alpha1.ServiceAccountAuth{
-							CredentialsRef: mcpv1alpha1.SecretKeyRef{
-								Name: "middle-secret",
-								Key:  "token",
-							},
-						},
+						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 					},
 				},
 			},

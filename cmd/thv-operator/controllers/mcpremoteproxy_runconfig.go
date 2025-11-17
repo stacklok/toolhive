@@ -200,13 +200,24 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	// Use the RunConfigBuilder for operator context
 	// Deployer is nil for remote proxies because they connect to external services
 	// and do not require container deployment (unlike MCPServer which deploys containers)
-	return runner.NewOperatorRunConfigBuilder(
+	runConfig, err := runner.NewOperatorRunConfigBuilder(
 		context.Background(),
 		nil,
 		nil,
 		nil,
 		options...,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Populate middleware configs from the configuration fields
+	// This ensures that middleware_configs is properly set for serialization
+	if err := runner.PopulateMiddlewareConfigs(runConfig); err != nil {
+		return nil, fmt.Errorf("failed to populate middleware configs: %w", err)
+	}
+
+	return runConfig, nil
 }
 
 // validateRunConfigForRemoteProxy validates a RunConfig for remote proxy deployments

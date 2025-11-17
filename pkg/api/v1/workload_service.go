@@ -6,10 +6,11 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -32,6 +33,7 @@ type WorkloadService struct {
 	containerRuntime runtime.Runtime
 	debugMode        bool
 	imageRetriever   retriever.Retriever
+	appConfig        *config.Config
 }
 
 // NewWorkloadService creates a new WorkloadService instance
@@ -41,12 +43,17 @@ func NewWorkloadService(
 	containerRuntime runtime.Runtime,
 	debugMode bool,
 ) *WorkloadService {
+	// Load application config for global settings
+	configProvider := config.NewDefaultProvider()
+	appConfig := configProvider.GetConfig()
+
 	return &WorkloadService{
 		workloadManager:  workloadManager,
 		groupManager:     groupManager,
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
 		imageRetriever:   retriever.GetMCPServer,
+		appConfig:        appConfig,
 	}
 }
 
@@ -126,8 +133,8 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 
 	var remoteAuthConfig *remote.Config
 	var imageURL string
-	var imageMetadata *registry.ImageMetadata
-	var serverMetadata registry.ServerMetadata
+	var imageMetadata *regtypes.ImageMetadata
+	var serverMetadata regtypes.ServerMetadata
 
 	if req.URL != "" {
 		// Configure remote authentication if OAuth config is provided
@@ -157,7 +164,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 			return nil, fmt.Errorf("failed to retrieve MCP server image: %w", err)
 		}
 
-		if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
+		if remoteServerMetadata, ok := serverMetadata.(*regtypes.RemoteServerMetadata); ok {
 			if remoteServerMetadata.OAuthConfig != nil {
 				// Default resource: user-provided > registry metadata > derived from remote URL
 				resource := req.OAuthConfig.Resource
@@ -189,7 +196,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 			}
 		}
 		// Handle server metadata - API only supports container servers
-		imageMetadata, _ = serverMetadata.(*registry.ImageMetadata)
+		imageMetadata, _ = serverMetadata.(*regtypes.ImageMetadata)
 	}
 
 	// Build RunConfig
@@ -253,6 +260,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 			"",
 			req.Name,
 			transportType,
+			s.appConfig.DisableUsageMetrics,
 		),
 	)
 

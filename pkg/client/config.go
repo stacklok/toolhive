@@ -59,6 +59,10 @@ const (
 	Trae MCPClient = "trae"
 	// Continue represents the Continue.dev IDE plugins.
 	Continue MCPClient = "continue"
+	// OpenCode represents the OpenCode editor.
+	OpenCode MCPClient = "opencode"
+	// Kiro represents the Kiro AI IDE.
+	Kiro MCPClient = "kiro"
 )
 
 // Extension is extension of the client config file.
@@ -428,6 +432,35 @@ var supportedClientIntegrations = []mcpClientConfig{
 		// YAML configuration
 		YAMLStorageType:     YAMLStorageTypeArray,
 		YAMLIdentifierField: "name",
+	},
+	{
+		ClientType:           OpenCode,
+		Description:          "OpenCode editor",
+		SettingsFile:         "opencode.json",
+		MCPServersPathPrefix: "/mcp",
+		RelPath:              []string{".config", "opencode"},
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "remote", // OpenCode requires "type": "remote" for URL-based servers
+			types.TransportTypeSSE:            "remote",
+			types.TransportTypeStreamableHTTP: "remote",
+		},
+		IsTransportTypeFieldSupported: true, // OpenCode requires "type": "remote" for URL-based servers
+		MCPServersUrlLabel:            "url",
+	},
+	{
+		ClientType:           Kiro,
+		Description:          "Kiro AI IDE",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".kiro", "settings"},
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          "http",
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: "http",
+		},
+		IsTransportTypeFieldSupported: false,
 	},
 }
 

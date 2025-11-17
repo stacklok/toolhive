@@ -49,22 +49,24 @@ func TestNewConfigMapReaderWithClient(t *testing.T) {
 
 func TestNewConfigMapReader(t *testing.T) {
 	t.Parallel()
-	// This test verifies that NewConfigMapReader fails gracefully
-	// when not running in a Kubernetes cluster.
-	// The success path cannot be unit tested as it requires a real cluster.
+	// This test verifies that NewConfigMapReader handles config creation.
+	// When running outside a cluster with no kubeconfig, it should fail.
+	// When a kubeconfig is available, it may succeed (depends on environment).
+	// The success path cannot be fully unit tested as it requires a real cluster.
 	reader, err := NewConfigMapReader()
 
-	if err == nil {
-		t.Error("expected error when running outside of cluster")
+	// If we get an error, verify it's related to config creation
+	if err != nil {
+		if !strings.Contains(err.Error(), "kubernetes config") &&
+			!strings.Contains(err.Error(), "kubeconfig") {
+			t.Errorf("expected error about kubernetes config but got: %v", err)
+		}
+		if reader != nil {
+			t.Error("expected nil reader when error occurs")
+		}
 	}
-
-	if reader != nil {
-		t.Error("expected nil reader when error occurs")
-	}
-
-	if !strings.Contains(err.Error(), "failed to create in-cluster config") {
-		t.Errorf("expected error about in-cluster config but got: %v", err)
-	}
+	// Note: If no error occurs, it means a valid kubeconfig was found,
+	// which is acceptable in environments where kubectl is configured.
 }
 
 func TestConfigMapReader_GetRunConfigMap(t *testing.T) {

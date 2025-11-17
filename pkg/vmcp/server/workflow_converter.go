@@ -75,12 +75,13 @@ func ConvertConfigToWorkflowDefinitions(
 
 		// Create workflow definition
 		def := &composer.WorkflowDefinition{
-			Name:        ct.Name,
-			Description: ct.Description,
-			Parameters:  params,
-			Steps:       steps,
-			Timeout:     timeout,
-			Metadata:    make(map[string]string),
+			Name:         ct.Name,
+			Description:  ct.Description,
+			Parameters:   params,
+			Steps:        steps,
+			Timeout:      timeout,
+			OutputFormat: ct.OutputFormat,
+			Metadata:     make(map[string]string),
 		}
 
 		workflowDefs[ct.Name] = def

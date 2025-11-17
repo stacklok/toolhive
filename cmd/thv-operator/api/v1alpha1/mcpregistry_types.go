@@ -67,10 +67,10 @@ type MCPRegistrySource struct {
 	// +kubebuilder:default=toolhive
 	Format string `json:"format,omitempty"`
 
-	// ConfigMap defines the ConfigMap source configuration
+	// ConfigMapRef defines the ConfigMap source configuration
 	// Only used when Type is "configmap"
 	// +optional
-	ConfigMap *ConfigMapSource `json:"configmap,omitempty"`
+	ConfigMapRef *corev1.ConfigMapKeySelector `json:"configMapRef,omitempty"`
 
 	// Git defines the Git repository source configuration
 	// Only used when Type is "git"
@@ -81,20 +81,6 @@ type MCPRegistrySource struct {
 	// Only used when Type is "api"
 	// +optional
 	API *APISource `json:"api,omitempty"`
-}
-
-// ConfigMapSource defines ConfigMap source configuration
-type ConfigMapSource struct {
-	// Name is the name of the ConfigMap
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
-
-	// Key is the key in the ConfigMap that contains the registry data
-	// +kubebuilder:default=registry.json
-	// +kubebuilder:validation:MinLength=1
-	// +optional
-	Key string `json:"key,omitempty"`
 }
 
 // GitSource defines Git repository source configuration
@@ -375,7 +361,7 @@ const (
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:scope=Namespaced,categories=toolhive
 //nolint:lll
-//+kubebuilder:validation:XValidation:rule="self.spec.source.type == 'configmap' ? has(self.spec.source.configmap) : (self.spec.source.type == 'git' ? has(self.spec.source.git) : (self.spec.source.type == 'api' ? has(self.spec.source.api) : true))",message="configMap field is required when source type is 'configmap', git field is required when source type is 'git', api field is required when source type is 'api'"
+//+kubebuilder:validation:XValidation:rule="self.spec.source.type == 'configmap' ? has(self.spec.source.configMapRef) : (self.spec.source.type == 'git' ? has(self.spec.source.git) : (self.spec.source.type == 'api' ? has(self.spec.source.api) : true))",message="configMapRef field is required when source type is 'configmap', git field is required when source type is 'git', api field is required when source type is 'api'"
 
 // MCPRegistry is the Schema for the mcpregistries API
 type MCPRegistry struct {
@@ -417,11 +403,11 @@ func (r *MCPRegistry) GetConfigMapSourceName() string {
 		return ""
 	}
 
-	if r.Spec.Source.ConfigMap == nil {
+	if r.Spec.Source.ConfigMapRef == nil {
 		return ""
 	}
 
-	return r.Spec.Source.ConfigMap.Name
+	return r.Spec.Source.ConfigMapRef.Name
 }
 
 // DeriveOverallPhase determines the overall MCPRegistry phase based on sync and API status

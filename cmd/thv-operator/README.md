@@ -272,9 +272,9 @@ spec:
   displayName: "My MCP Registry"
   source:
     type: configmap
-    configmap:
+    configMapRef:
       name: my-registry-data    # References the user-created ConfigMap
-      key: registry.json        # Key in ConfigMap (default: "registry.json")
+      key: registry.json        # Key in ConfigMap (required)
   syncPolicy:
     interval: "1h"
 ```

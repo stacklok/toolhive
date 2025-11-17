@@ -7,6 +7,7 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -57,9 +58,11 @@ func (rb *RegistryBuilder) WithConfigMapSource(configMapName, key string) *Regis
 	rb.registry.Spec.Source = mcpv1alpha1.MCPRegistrySource{
 		Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
 		Format: mcpv1alpha1.RegistryFormatToolHive,
-		ConfigMap: &mcpv1alpha1.ConfigMapSource{
-			Name: configMapName,
-			Key:  key,
+		ConfigMapRef: &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: configMapName,
+			},
+			Key: key,
 		},
 	}
 	return rb

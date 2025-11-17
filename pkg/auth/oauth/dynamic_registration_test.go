@@ -466,14 +466,14 @@ func TestDynamicClientRegistrationResponse_Validation(t *testing.T) {
 
 // TestIsLocalhost is already defined in oidc_test.go
 
-// TestRequestScopeList_MarshalJSON tests that the RequestScopeList marshaling works correctly
+// TestScopeList_MarshalJSON tests that the ScopeList marshaling works correctly
 // and produces RFC 7591 compliant space-delimited strings.
-func TestRequestScopeList_MarshalJSON(t *testing.T) {
+func TestScopeList_MarshalJSON(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
-		scopes   RequestScopeList
+		scopes   ScopeList
 		wantJSON string
 		wantOmit bool // If true, expect omitempty to hide the field
 	}{
@@ -485,28 +485,28 @@ func TestRequestScopeList_MarshalJSON(t *testing.T) {
 		},
 		{
 			name:     "empty slice => empty string (omitempty will hide at struct level)",
-			scopes:   RequestScopeList{},
+			scopes:   ScopeList{},
 			wantJSON: `""`,
 			wantOmit: true,
 		},
 		{
 			name:     "single scope => string",
-			scopes:   RequestScopeList{"openid"},
+			scopes:   ScopeList{"openid"},
 			wantJSON: `"openid"`,
 		},
 		{
 			name:     "two scopes => space-delimited string",
-			scopes:   RequestScopeList{"openid", "profile"},
+			scopes:   ScopeList{"openid", "profile"},
 			wantJSON: `"openid profile"`,
 		},
 		{
 			name:     "three scopes => space-delimited string",
-			scopes:   RequestScopeList{"openid", "profile", "email"},
+			scopes:   ScopeList{"openid", "profile", "email"},
 			wantJSON: `"openid profile email"`,
 		},
 		{
 			name:     "scopes with special characters",
-			scopes:   RequestScopeList{"read:user", "write:repo"},
+			scopes:   ScopeList{"read:user", "write:repo"},
 			wantJSON: `"read:user write:repo"`,
 		},
 	}
@@ -526,7 +526,7 @@ func TestRequestScopeList_MarshalJSON(t *testing.T) {
 			// so empty slices are omitted regardless of what MarshalJSON returns.
 			if tt.wantOmit {
 				type testStruct struct {
-					Scope RequestScopeList `json:"scope,omitempty"`
+					Scope ScopeList `json:"scope,omitempty"`
 				}
 				s := testStruct{Scope: tt.scopes}
 				structJSON, err := json.Marshal(s)

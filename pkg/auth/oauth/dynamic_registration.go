@@ -27,47 +27,17 @@ const ResponseTypeCode = "code"
 // TokenEndpointAuthMethodNone is the token endpoint auth method for none
 const TokenEndpointAuthMethodNone = "none"
 
-// RequestScopeList represents the "scope" field in a dynamic client registration request.
-// Per RFC 7591 Section 2, this must be marshaled as a space-delimited string, not a JSON array.
-//
-// Examples of marshaled output:
-//
-//	[]string{"openid", "profile", "email"}  → "openid profile email"
-//	[]string{"openid"}                      → "openid"
-//	nil or []string{}                       → omitted (via omitempty)
-type RequestScopeList []string
-
-// MarshalJSON implements custom encoding for RequestScopeList. It converts the slice
-// of scopes into a space-delimited string as required by RFC 7591 Section 2.
-//
-// Important: This method does NOT handle empty slices. Go's encoding/json package
-// evaluates omitempty by checking if the Go value is "empty" (len(slice) == 0)
-// BEFORE calling MarshalJSON. Empty slices are omitted at the struct level, so this
-// method is never invoked for empty slices. This means we don't need to return null
-// or handle the empty case - omitempty does it for us automatically.
-//
-// See: https://pkg.go.dev/encoding/json (omitempty checks zero values before marshaling)
-func (r RequestScopeList) MarshalJSON() ([]byte, error) {
-	// Join scopes with spaces and marshal as a string (RFC 7591 Section 2)
-	scopeString := strings.Join(r, " ")
-	result, err := json.Marshal(scopeString)
-	if err == nil {
-		logger.Debugf("RFC 7591: Marshaled RequestScopeList %v -> %q (space-delimited string)", []string(r), scopeString)
-	}
-	return result, err
-}
-
 // DynamicClientRegistrationRequest represents the request for dynamic client registration (RFC 7591)
 type DynamicClientRegistrationRequest struct {
 	// Required field according to RFC 7591
 	RedirectURIs []string `json:"redirect_uris"`
 
 	// Essential fields for OAuth flow
-	ClientName              string           `json:"client_name,omitempty"`
-	TokenEndpointAuthMethod string           `json:"token_endpoint_auth_method,omitempty"`
-	GrantTypes              []string         `json:"grant_types,omitempty"`
-	ResponseTypes           []string         `json:"response_types,omitempty"`
-	Scopes                  RequestScopeList `json:"scope,omitempty"`
+	ClientName              string    `json:"client_name,omitempty"`
+	TokenEndpointAuthMethod string    `json:"token_endpoint_auth_method,omitempty"`
+	GrantTypes              []string  `json:"grant_types,omitempty"`
+	ResponseTypes           []string  `json:"response_types,omitempty"`
+	Scopes                  ScopeList `json:"scope,omitempty"`
 }
 
 // NewDynamicClientRegistrationRequest creates a new dynamic client registration request
@@ -87,17 +57,42 @@ func NewDynamicClientRegistrationRequest(scopes []string, callbackPort int) *Dyn
 	return registrationRequest
 }
 
-// ScopeList represents the "scope" field in a dynamic client registration response.
-// Some servers return this as a space-delimited string per RFC 7591, while others
-// return it as a JSON array of strings. This type normalizes both into a []string.
+// ScopeList represents the "scope" field in both dynamic client registration requests and responses.
 //
-// Examples of supported inputs:
+// Marshaling (requests): Per RFC 7591 Section 2, scopes are serialized as a space-delimited string.
+// Examples:
+//   - []string{"openid", "profile", "email"} → "openid profile email"
+//   - []string{"openid"}                     → "openid"
+//   - nil or []string{}                      → omitted (via omitempty)
 //
-//	"openid profile email"        → []string{"openid", "profile", "email"}
-//	["openid","profile","email"]  → []string{"openid", "profile", "email"}
-//	null                          → nil
-//	"" or ["", "  "]              → nil
+// Unmarshaling (responses): Some servers return scopes as a space-delimited string per RFC 7591,
+// while others return a JSON array. This type normalizes both formats into []string.
+// Examples:
+//   - "openid profile email"       → []string{"openid", "profile", "email"}
+//   - ["openid","profile","email"] → []string{"openid", "profile", "email"}
+//   - null                         → nil
+//   - "" or ["", "  "]             → nil
 type ScopeList []string
+
+// MarshalJSON implements custom encoding for ScopeList. It converts the slice
+// of scopes into a space-delimited string as required by RFC 7591 Section 2.
+//
+// Important: This method does NOT handle empty slices. Go's encoding/json package
+// evaluates omitempty by checking if the Go value is "empty" (len(slice) == 0)
+// BEFORE calling MarshalJSON. Empty slices are omitted at the struct level, so this
+// method is never invoked for empty slices. This means we don't need to return null
+// or handle the empty case - omitempty does it for us automatically.
+//
+// See: https://pkg.go.dev/encoding/json (omitempty checks zero values before marshaling)
+func (s ScopeList) MarshalJSON() ([]byte, error) {
+	// Join scopes with spaces and marshal as a string (RFC 7591 Section 2)
+	scopeString := strings.Join(s, " ")
+	result, err := json.Marshal(scopeString)
+	if err == nil {
+		logger.Debugf("RFC 7591: Marshaled ScopeList %v -> %q (space-delimited string)", []string(s), scopeString)
+	}
+	return result, err
+}
 
 // UnmarshalJSON implements custom decoding for ScopeList. It supports both
 // string and array encodings of the "scope" field, trimming whitespace and

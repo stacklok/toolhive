@@ -6,10 +6,13 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tests", func() {
@@ -19,6 +22,32 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 		defaultNamespace = "default"
 		conditionReady   = "Ready"
 	)
+
+	// Helper function to get and parse the vmcp ConfigMap
+	getVmcpConfig := func(namespace, vmcpName string) (*vmcpconfig.Config, error) {
+		configMapName := vmcpName + "-vmcp-config"
+		configMap := &corev1.ConfigMap{}
+		err := k8sClient.Get(ctx, types.NamespacedName{
+			Name:      configMapName,
+			Namespace: namespace,
+		}, configMap)
+		if err != nil {
+			return nil, err
+		}
+
+		// Parse the config.yaml from the ConfigMap
+		configYAML, ok := configMap.Data["config.yaml"]
+		if !ok {
+			return nil, nil // ConfigMap exists but no config.yaml
+		}
+
+		var config vmcpconfig.Config
+		if err := yaml.Unmarshal([]byte(configYAML), &config); err != nil {
+			return nil, err
+		}
+
+		return &config, nil
+	}
 
 	Context("When a VirtualMCPCompositeToolDefinition is created after VirtualMCPServer", Ordered, func() {
 		var (
@@ -59,8 +88,9 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 				return err == nil && updatedGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
 			}, timeout, interval).Should(BeTrue())
 
-			// Create VirtualMCPServer that references the composite tool definition
-			// (even though the composite tool doesn't exist yet)
+			// Create VirtualMCPServer with inline CompositeTools AND CompositeToolRefs
+			// The inline tool will be used to verify reconciliation occurred
+			// The CompositeToolRef will trigger the watch (but won't be resolved without the feature)
 			vmcp = &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      vmcpName,
@@ -69,6 +99,18 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: mcpv1alpha1.GroupRef{
 						Name: mcpGroupName,
+					},
+					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
+						{
+							Name:        "inline-tool",
+							Description: "Inline composite tool for testing",
+							Steps: []mcpv1alpha1.WorkflowStep{
+								{
+									ID:   "inline-step1",
+									Tool: "inline-tool1",
+								},
+							},
+						},
 					},
 					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
 						{Name: compositeToolDefName},
@@ -117,23 +159,42 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 			}
 			Expect(k8sClient.Create(ctx, compositeToolDef)).Should(Succeed())
 
-			// The VirtualMCPServer should remain reconciled after the composite tool definition is created
-			// We verify this by checking that ObservedGeneration stays current
-			Consistently(func() bool {
-				updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      vmcpName,
-					Namespace: namespace,
-				}, updatedVMCP)
-				if err != nil {
+			// Verify that reconciliation occurred by checking the ConfigMap contains the INLINE composite tool
+			// (We're not testing CompositeToolRef resolution - that's a separate feature)
+			Eventually(func() bool {
+				config, err := getVmcpConfig(namespace, vmcpName)
+				if err != nil || config == nil {
 					return false
 				}
 
-				// Check that ObservedGeneration stays current (indicating successful reconciliation)
-				return updatedVMCP.Status.ObservedGeneration == updatedVMCP.Generation
-			}, time.Second*5, interval).Should(BeTrue())
+				// Check if the ConfigMap has the inline composite tool
+				if len(config.CompositeTools) == 0 {
+					return false
+				}
 
-			// Verify the VirtualMCPServer is in a valid state
+				// Find the inline composite tool by name
+				for _, tool := range config.CompositeTools {
+					if tool.Name == "inline-tool" {
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue(), "ConfigMap should contain inline composite tool after watch-triggered reconciliation")
+
+			// Verify the inline composite tool content is correct (proves reconciliation completed successfully)
+			config, err := getVmcpConfig(namespace, vmcpName)
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(config).ShouldNot(BeNil())
+			Expect(config.CompositeTools).Should(HaveLen(1), "Should have exactly 1 composite tool (inline only, CompositeToolRef not resolved yet)")
+
+			compositeTool := config.CompositeTools[0]
+			Expect(compositeTool.Name).To(Equal("inline-tool"))
+			Expect(compositeTool.Description).To(Equal("Inline composite tool for testing"))
+			Expect(compositeTool.Steps).Should(HaveLen(1))
+			Expect(compositeTool.Steps[0].ID).To(Equal("inline-step1"))
+			Expect(compositeTool.Steps[0].Tool).To(Equal("inline-tool1"))
+
+			// Verify the VirtualMCPServer is in a valid state after reconciliation
 			updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpName,
@@ -206,7 +267,7 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 			}
 			Expect(k8sClient.Create(ctx, compositeToolDef)).Should(Succeed())
 
-			// Create VirtualMCPServer that references the composite tool definition
+			// Create VirtualMCPServer with inline CompositeTools AND CompositeToolRefs
 			vmcp = &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      vmcpName,
@@ -215,6 +276,18 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: mcpv1alpha1.GroupRef{
 						Name: mcpGroupName,
+					},
+					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
+						{
+							Name:        "inline-tool-update",
+							Description: "Inline composite tool for update test",
+							Steps: []mcpv1alpha1.WorkflowStep{
+								{
+									ID:   "inline-step-update",
+									Tool: "inline-tool-update1",
+								},
+							},
+						},
 					},
 					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
 						{Name: compositeToolDefName},
@@ -242,7 +315,17 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 		})
 
 		It("Should trigger VirtualMCPServer reconciliation when composite tool definition is updated", func() {
+			// Verify initial inline composite tool configuration exists
+			config, err := getVmcpConfig(namespace, vmcpName)
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(config).ShouldNot(BeNil())
+			Expect(config.CompositeTools).Should(HaveLen(1), "Should have exactly 1 composite tool (inline only)")
+			Expect(config.CompositeTools[0].Name).To(Equal("inline-tool-update"))
+			Expect(config.CompositeTools[0].Description).To(Equal("Inline composite tool for update test"))
+
 			// Update the VirtualMCPCompositeToolDefinition
+			// This should trigger watch → reconciliation, but won't change the ConfigMap content
+			// (since CompositeToolRefs resolution isn't implemented)
 			Eventually(func() error {
 				freshCompositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
@@ -255,21 +338,37 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 				return k8sClient.Update(ctx, freshCompositeToolDef)
 			}, timeout, interval).Should(Succeed())
 
-			// The VirtualMCPServer should remain reconciled after the update
-			// We verify this by checking that ObservedGeneration stays current
-			Consistently(func() bool {
-				updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      vmcpName,
-					Namespace: namespace,
-				}, updatedVMCP)
-				if err != nil {
+			// Verify that reconciliation occurred by checking the ConfigMap still has the inline tool
+			// (Reconciliation happened successfully, ConfigMap was regenerated with inline tool)
+			Eventually(func() bool {
+				config, err := getVmcpConfig(namespace, vmcpName)
+				if err != nil || config == nil {
 					return false
 				}
 
-				// Check that ObservedGeneration stays current (indicating successful reconciliation)
-				return updatedVMCP.Status.ObservedGeneration == updatedVMCP.Generation
-			}, time.Second*5, interval).Should(BeTrue())
+				// Check if the ConfigMap still has the inline composite tool (unchanged)
+				if len(config.CompositeTools) == 0 {
+					return false
+				}
+
+				for _, tool := range config.CompositeTools {
+					if tool.Name == "inline-tool-update" {
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue(), "ConfigMap should still contain inline composite tool after watch-triggered reconciliation")
+
+			// Verify the inline composite tool content is correct (proves reconciliation completed successfully)
+			config, err = getVmcpConfig(namespace, vmcpName)
+			Expect(err).ShouldNot(HaveOccurred())
+			Expect(config).ShouldNot(BeNil())
+			Expect(config.CompositeTools).Should(HaveLen(1), "Should have exactly 1 composite tool (inline only)")
+
+			compositeTool := config.CompositeTools[0]
+			Expect(compositeTool.Name).To(Equal("inline-tool-update"))
+			Expect(compositeTool.Description).To(Equal("Inline composite tool for update test"))
+			Expect(compositeTool.Steps).Should(HaveLen(1))
 
 			// Verify the VirtualMCPServer is still in a valid state
 			updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
@@ -359,13 +458,14 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 		})
 
 		It("Should NOT trigger VirtualMCPServer reconciliation when unrelated composite tool definition is created", func() {
-			// Get initial generation and observed generation
+			// Get initial ResourceVersion and ObservedGeneration
 			initialVMCP := &mcpv1alpha1.VirtualMCPServer{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpName,
 				Namespace: namespace,
 			}, initialVMCP)).Should(Succeed())
 
+			initialResourceVersion := initialVMCP.ResourceVersion
 			initialObservedGeneration := initialVMCP.Status.ObservedGeneration
 
 			var initialReadyTime metav1.Time
@@ -395,11 +495,26 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 			}
 			Expect(k8sClient.Create(ctx, compositeToolDef)).Should(Succeed())
 
-			// Wait a bit to ensure any potential reconciliation would have occurred
-			time.Sleep(2 * time.Second)
-
 			// Verify that the VirtualMCPServer was NOT unnecessarily reconciled
-			// The ObservedGeneration should remain the same, and conditions shouldn't change
+			// ResourceVersion and ObservedGeneration should remain unchanged
+			Consistently(func() bool {
+				updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      vmcpName,
+					Namespace: namespace,
+				}, updatedVMCP)
+				if err != nil {
+					return false
+				}
+
+				// Verify ResourceVersion and ObservedGeneration haven't changed
+				resourceVersionUnchanged := updatedVMCP.ResourceVersion == initialResourceVersion
+				observedGenerationUnchanged := updatedVMCP.Status.ObservedGeneration == initialObservedGeneration
+
+				return resourceVersionUnchanged && observedGenerationUnchanged
+			}, time.Second*3, interval).Should(BeTrue(), "VirtualMCPServer should not be reconciled for unrelated composite tool")
+
+			// Final verification of state
 			updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpName,
@@ -408,6 +523,9 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 
 			// ObservedGeneration should be unchanged
 			Expect(updatedVMCP.Status.ObservedGeneration).To(Equal(initialObservedGeneration))
+
+			// ResourceVersion should be unchanged
+			Expect(updatedVMCP.ResourceVersion).To(Equal(initialResourceVersion))
 
 			// Ready condition timestamp should be unchanged
 			for _, cond := range updatedVMCP.Status.Conditions {

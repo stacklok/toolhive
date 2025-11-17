@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -139,7 +140,24 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 		Name:      vmcp.Name,
 		Namespace: vmcp.Namespace,
 	}, latest); err != nil {
+		// If the resource is not found, it was deleted - skip status update
+		if errors.IsNotFound(err) {
+			ctxLogger.V(1).Info("Resource not found, skipping status update (resource was deleted)")
+			return nil
+		}
 		return fmt.Errorf("failed to get latest VirtualMCPServer: %w", err)
+	}
+
+	// If the resource is being deleted, skip status update
+	if !latest.DeletionTimestamp.IsZero() {
+		ctxLogger.V(1).Info("Resource is being deleted, skipping status update")
+		return nil
+	}
+
+	// Additional safety check: ensure UID is present
+	if latest.UID == "" {
+		ctxLogger.V(1).Info("Resource has empty UID, skipping status update (resource may be deleted)")
+		return nil
 	}
 
 	// Apply collected changes to the latest status
@@ -152,6 +170,16 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 			if errors.IsConflict(err) {
 				ctxLogger.V(1).Info("Conflict updating status, will requeue")
 				return err
+			}
+			// If resource was deleted between our checks and the update, ignore the error
+			if errors.IsNotFound(err) {
+				ctxLogger.V(1).Info("Resource deleted during status update, ignoring error")
+				return nil
+			}
+			// Check for UID precondition failure (resource being deleted)
+			if strings.Contains(err.Error(), "UID in precondition") && strings.Contains(err.Error(), "UID in object meta: \"\"") {
+				ctxLogger.V(1).Info("Resource being deleted (UID precondition failed), ignoring error")
+				return nil
 			}
 			return fmt.Errorf("failed to update VirtualMCPServer status: %w", err)
 		}

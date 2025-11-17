@@ -31,8 +31,9 @@ func HandleProtocolScheme(
 	imageManager images.ImageManager,
 	serverOrImage string,
 	caCertPath string,
+	cmdArgs []string,
 ) (string, error) {
-	return BuildFromProtocolSchemeWithName(ctx, imageManager, serverOrImage, caCertPath, "", false)
+	return BuildFromProtocolSchemeWithName(ctx, imageManager, serverOrImage, caCertPath, "", false, cmdArgs)
 }
 
 // BuildFromProtocolSchemeWithName checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)
@@ -47,13 +48,14 @@ func BuildFromProtocolSchemeWithName(
 	caCertPath string,
 	imageName string,
 	dryRun bool,
+	cmdArgs []string,
 ) (string, error) {
 	transportType, packageName, err := ParseProtocolScheme(serverOrImage)
 	if err != nil {
 		return "", err
 	}
 
-	templateData, err := createTemplateData(transportType, packageName, caCertPath)
+	templateData, err := createTemplateData(transportType, packageName, caCertPath, cmdArgs)
 	if err != nil {
 		return "", err
 	}
@@ -85,13 +87,17 @@ func ParseProtocolScheme(serverOrImage string) (templates.TransportType, string,
 }
 
 // createTemplateData creates the template data with optional CA certificate.
-func createTemplateData(transportType templates.TransportType, packageName, caCertPath string) (templates.TemplateData, error) {
+func createTemplateData(
+	transportType templates.TransportType,
+	packageName, caCertPath string,
+	cmdArgs []string,
+) (templates.TemplateData, error) {
 	// Check if this is a local path (for Go packages only)
 	isLocalPath := transportType == templates.TransportTypeGO && isLocalGoPath(packageName)
 
 	templateData := templates.TemplateData{
 		MCPPackage:  packageName,
-		MCPArgs:     []string{}, // No additional arguments for now
+		MCPArgs:     cmdArgs,
 		IsLocalPath: isLocalPath,
 	}
 

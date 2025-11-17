@@ -278,7 +278,7 @@ func BuildRunnerConfig(
 	}
 
 	// Handle image retrieval
-	imageURL, serverMetadata, err := handleImageRetrieval(ctx, serverOrImage, runFlags, groupName)
+	imageURL, serverMetadata, err := handleImageRetrieval(ctx, serverOrImage, runFlags, groupName, cmdArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -356,6 +356,7 @@ func handleImageRetrieval(
 	serverOrImage string,
 	runFlags *RunFlags,
 	groupName string,
+	cmdArgs []string,
 ) (
 	string,
 	regtypes.ServerMetadata,
@@ -364,7 +365,7 @@ func handleImageRetrieval(
 
 	// Try to get server from registry (container or remote) or direct URL
 	imageURL, serverMetadata, err := retriever.GetMCPServer(
-		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage, groupName)
+		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage, groupName, cmdArgs)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
 	}

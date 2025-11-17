@@ -95,6 +95,7 @@ func TestGetMCPServer_WithGroup(t *testing.T) {
 				"",
 				VerifyImageDisabled,
 				tt.groupName,
+				[]string{}, // cmdArgs
 			)
 
 			if tt.expectError {
@@ -128,6 +129,7 @@ func TestGetMCPServer_WithoutGroup(t *testing.T) {
 		"",                  // rawCACertPath
 		VerifyImageDisabled, // verificationType
 		"",                  // empty groupName should use normal registry lookup
+		[]string{},          // cmdArgs
 	)
 
 	// This should work as it's the normal flow

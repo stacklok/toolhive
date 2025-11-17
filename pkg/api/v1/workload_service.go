@@ -153,7 +153,8 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 			req.Image,
 			"", // We do not let the user specify a CA cert path here.
 			retriever.VerifyImageWarn,
-			"", // TODO Add support for registry groups lookups for APi
+			"",               // TODO Add support for registry groups lookups for APi
+			req.CmdArguments, // Pass command arguments for protocol builds
 		)
 		if err != nil {
 			// Check if the error is due to context timeout

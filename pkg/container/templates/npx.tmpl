@@ -97,8 +97,9 @@ USER appuser
 
 # `MCPPackage` may include a version suffix (e.g., `package@1.2.3`), which we cannot use here.
 # Create a small wrapper script to handle this.
+# If no MCPArgs are baked in, we add "$@" to allow runtime CMD arguments to be passed through
 RUN echo "#!/bin/sh" >> entrypoint.sh && \
-    echo "exec npx $(echo {{.MCPPackage}} | sed 's/@[^@/]*$//'){{range .MCPArgs}}, "{{.}}"{{end}}" >> entrypoint.sh && \
+    echo "exec npx $(echo {{.MCPPackage}} | sed 's/@[^@/]*$//') {{range .MCPArgs}}\"{{.}}\" {{end}}" >> entrypoint.sh && \
     chmod +x entrypoint.sh
 
 # Run the preinstalled MCP package directly using npx.

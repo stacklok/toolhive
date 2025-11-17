@@ -36,7 +36,7 @@ var (
 )
 
 // Retriever is a function that retrieves the MCP server definition from the registry.
-type Retriever func(context.Context, string, string, string, string) (string, types.ServerMetadata, error)
+type Retriever func(context.Context, string, string, string, string, []string) (string, types.ServerMetadata, error)
 
 // GetMCPServer retrieves the MCP server definition from the registry.
 func GetMCPServer(
@@ -45,6 +45,7 @@ func GetMCPServer(
 	rawCACertPath string,
 	verificationType string,
 	groupName string,
+	cmdArgs []string,
 ) (string, types.ServerMetadata, error) {
 	var imageMetadata *types.ImageMetadata
 	var imageToUse string
@@ -53,7 +54,7 @@ func GetMCPServer(
 	// Check if the serverOrImage is a protocol scheme, e.g., uvx://, npx://, or go://
 	if runner.IsImageProtocolScheme(serverOrImage) {
 		var err error
-		imageToUse, imageMetadata, err = handleProtocolScheme(ctx, serverOrImage, rawCACertPath, imageManager)
+		imageToUse, imageMetadata, err = handleProtocolScheme(ctx, serverOrImage, rawCACertPath, imageManager, cmdArgs)
 		if err != nil {
 			return "", nil, err
 		}
@@ -112,6 +113,7 @@ func handleProtocolScheme(
 	serverOrImage string,
 	rawCACertPath string,
 	imageManager images.ImageManager,
+	cmdArgs []string,
 ) (string, *types.ImageMetadata, error) {
 	var imageMetadata *types.ImageMetadata
 	var imageToUse string
@@ -119,7 +121,7 @@ func handleProtocolScheme(
 	logger.Debugf("Detected protocol scheme: %s", serverOrImage)
 	// Process the protocol scheme and build the image
 	caCertPath := resolveCACertPath(rawCACertPath)
-	generatedImage, err := runner.HandleProtocolScheme(ctx, imageManager, serverOrImage, caCertPath)
+	generatedImage, err := runner.HandleProtocolScheme(ctx, imageManager, serverOrImage, caCertPath, cmdArgs)
 	if err != nil {
 		return "", nil, errors.Join(ErrBadProtocolScheme, err)
 	}

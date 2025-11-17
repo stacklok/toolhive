@@ -233,3 +233,210 @@ func TestTemplateDataWithLocalPath(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateTemplateDataWithCmdArgs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name            string
+		transportType   templates.TransportType
+		packageName     string
+		caCertPath      string
+		cmdArgs         []string
+		expectedPackage string
+		expectedArgs    []string
+		expectedLocal   bool
+	}{
+		{
+			name:            "NPX package without args",
+			transportType:   templates.TransportTypeNPX,
+			packageName:     "@modelcontextprotocol/server-sequential-thinking",
+			caCertPath:      "",
+			cmdArgs:         []string{},
+			expectedPackage: "@modelcontextprotocol/server-sequential-thinking",
+			expectedArgs:    []string{},
+			expectedLocal:   false,
+		},
+		{
+			name:            "NPX package with single arg",
+			transportType:   templates.TransportTypeNPX,
+			packageName:     "@launchdarkly/mcp-server",
+			caCertPath:      "",
+			cmdArgs:         []string{"start"},
+			expectedPackage: "@launchdarkly/mcp-server",
+			expectedArgs:    []string{"start"},
+			expectedLocal:   false,
+		},
+		{
+			name:            "NPX package with multiple args",
+			transportType:   templates.TransportTypeNPX,
+			packageName:     "@upstash/context7-mcp@latest",
+			caCertPath:      "",
+			cmdArgs:         []string{"--transport", "faketransport"},
+			expectedPackage: "@upstash/context7-mcp@latest",
+			expectedArgs:    []string{"--transport", "faketransport"},
+			expectedLocal:   false,
+		},
+		{
+			name:            "UVX package with args",
+			transportType:   templates.TransportTypeUVX,
+			packageName:     "arxiv-mcp-server",
+			caCertPath:      "",
+			cmdArgs:         []string{"--verbose", "--debug"},
+			expectedPackage: "arxiv-mcp-server",
+			expectedArgs:    []string{"--verbose", "--debug"},
+			expectedLocal:   false,
+		},
+		{
+			name:            "Go package with args",
+			transportType:   templates.TransportTypeGO,
+			packageName:     "github.com/StacklokLabs/osv-mcp/cmd/server@latest",
+			caCertPath:      "",
+			cmdArgs:         []string{"--config", "/etc/config.yaml"},
+			expectedPackage: "github.com/StacklokLabs/osv-mcp/cmd/server@latest",
+			expectedArgs:    []string{"--config", "/etc/config.yaml"},
+			expectedLocal:   false,
+		},
+		{
+			name:            "Local Go path with args",
+			transportType:   templates.TransportTypeGO,
+			packageName:     "./cmd/server",
+			caCertPath:      "",
+			cmdArgs:         []string{"--port", "8080"},
+			expectedPackage: "./cmd/server",
+			expectedArgs:    []string{"--port", "8080"},
+			expectedLocal:   true,
+		},
+		{
+			name:            "Package with complex args including flags and values",
+			transportType:   templates.TransportTypeNPX,
+			packageName:     "@example/server",
+			caCertPath:      "",
+			cmdArgs:         []string{"--host", "0.0.0.0", "--port", "3000", "-v"},
+			expectedPackage: "@example/server",
+			expectedArgs:    []string{"--host", "0.0.0.0", "--port", "3000", "-v"},
+			expectedLocal:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result, err := createTemplateData(tt.transportType, tt.packageName, tt.caCertPath, tt.cmdArgs)
+			if err != nil {
+				t.Fatalf("createTemplateData() error = %v", err)
+			}
+
+			if result.MCPPackage != tt.expectedPackage {
+				t.Errorf("MCPPackage = %q, want %q", result.MCPPackage, tt.expectedPackage)
+			}
+
+			if len(result.MCPArgs) != len(tt.expectedArgs) {
+				t.Errorf("len(MCPArgs) = %d, want %d", len(result.MCPArgs), len(tt.expectedArgs))
+			}
+
+			for i, arg := range result.MCPArgs {
+				if i >= len(tt.expectedArgs) {
+					t.Errorf("unexpected arg at index %d: %q", i, arg)
+					continue
+				}
+				if arg != tt.expectedArgs[i] {
+					t.Errorf("MCPArgs[%d] = %q, want %q", i, arg, tt.expectedArgs[i])
+				}
+			}
+
+			if result.IsLocalPath != tt.expectedLocal {
+				t.Errorf("IsLocalPath = %v, want %v", result.IsLocalPath, tt.expectedLocal)
+			}
+		})
+	}
+}
+
+func TestParseProtocolScheme(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name              string
+		serverOrImage     string
+		expectedTransport templates.TransportType
+		expectedPackage   string
+		expectError       bool
+	}{
+		{
+			name:              "NPX scheme basic",
+			serverOrImage:     "npx://package-name",
+			expectedTransport: templates.TransportTypeNPX,
+			expectedPackage:   "package-name",
+			expectError:       false,
+		},
+		{
+			name:              "NPX scheme with scoped package",
+			serverOrImage:     "npx://@scope/package-name",
+			expectedTransport: templates.TransportTypeNPX,
+			expectedPackage:   "@scope/package-name",
+			expectError:       false,
+		},
+		{
+			name:              "NPX scheme with version",
+			serverOrImage:     "npx://@scope/package-name@1.2.3",
+			expectedTransport: templates.TransportTypeNPX,
+			expectedPackage:   "@scope/package-name@1.2.3",
+			expectError:       false,
+		},
+		{
+			name:              "UVX scheme",
+			serverOrImage:     "uvx://arxiv-mcp-server",
+			expectedTransport: templates.TransportTypeUVX,
+			expectedPackage:   "arxiv-mcp-server",
+			expectError:       false,
+		},
+		{
+			name:              "Go scheme",
+			serverOrImage:     "go://github.com/example/package@latest",
+			expectedTransport: templates.TransportTypeGO,
+			expectedPackage:   "github.com/example/package@latest",
+			expectError:       false,
+		},
+		{
+			name:              "Go scheme with local path",
+			serverOrImage:     "go://./cmd/server",
+			expectedTransport: templates.TransportTypeGO,
+			expectedPackage:   "./cmd/server",
+			expectError:       false,
+		},
+		{
+			name:          "Invalid scheme",
+			serverOrImage: "invalid://package",
+			expectError:   true,
+		},
+		{
+			name:          "No scheme",
+			serverOrImage: "docker.io/library/alpine:latest",
+			expectError:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			transport, pkg, err := ParseProtocolScheme(tt.serverOrImage)
+
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("ParseProtocolScheme() expected error but got none")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("ParseProtocolScheme() unexpected error = %v", err)
+			}
+
+			if transport != tt.expectedTransport {
+				t.Errorf("transport = %q, want %q", transport, tt.expectedTransport)
+			}
+
+			if pkg != tt.expectedPackage {
+				t.Errorf("package = %q, want %q", pkg, tt.expectedPackage)
+			}
+		})
+	}
+}

@@ -82,7 +82,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"FROM node:",
 				"npm install --save example-package",
 				"COPY --from=builder --chown=appuser:appgroup /build/node_modules /app/node_modules",
-				"echo \"exec npx $(echo example-package | sed 's/@[^@/]*$//'), \"--arg1\", \"--arg2\", \"value\"\" >> entrypoint.sh",
+				"echo \"exec npx $(echo example-package | sed 's/@[^@/]*$//') \\\"--arg1\\\" \\\"--arg2\\\" \\\"value\\\" \" >> entrypoint.sh",
 				"ENTRYPOINT [\"./entrypoint.sh\"]",
 			},
 			wantMatches: []string{
@@ -106,7 +106,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			wantContains: []string{
 				"FROM node:",
 				"npm install --save example-package",
-				"echo \"exec npx $(echo example-package | sed 's/@[^@/]*$//'), \"--arg1\", \"--arg2\", \"value\"\" >> entrypoint.sh",
+				"echo \"exec npx $(echo example-package | sed 's/@[^@/]*$//') \\\"--arg1\\\" \\\"--arg2\\\" \\\"value\\\" \" >> entrypoint.sh",
 				"ENTRYPOINT [\"./entrypoint.sh\"]",
 				"Add custom CA certificate BEFORE any network operations",
 				"COPY ca-cert.crt /tmp/custom-ca.crt",
@@ -119,6 +119,30 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			},
 			wantNotContains: []string{},
 			wantErr:         false,
+		},
+		{
+			name:          "NPX transport with no args (registry image case)",
+			transportType: TransportTypeNPX,
+			data: TemplateData{
+				MCPPackage: "@launchdarkly/mcp-server",
+				MCPArgs:    []string{}, // Empty - arguments can be passed at runtime via CMD
+			},
+			wantContains: []string{
+				"FROM node:",
+				"npm install --save @launchdarkly/mcp-server",
+				"COPY --from=builder --chown=appuser:appgroup /build/node_modules /app/node_modules",
+				"echo \"exec npx $(echo @launchdarkly/mcp-server | sed 's/@[^@/]*$//') \" >> entrypoint.sh",
+				"ENTRYPOINT [\"./entrypoint.sh\"]",
+			},
+			wantMatches: []string{
+				`FROM node:\d+-alpine AS builder`, // Match builder stage
+				`FROM node:\d+-alpine`,            // Match runtime stage
+			},
+			wantNotContains: []string{
+				"Add custom CA certificate",
+				"update-ca-certificates",
+			},
+			wantErr: false,
 		},
 		{
 			name:          "GO transport",

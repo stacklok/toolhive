@@ -354,3 +354,74 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 	assert.Equal(t, false, finalInsecure, "Insecure setting should use runFlags value when not set via CLI")
 	assert.Equal(t, false, finalEnablePrometheusMetricsPath, "Enable Prometheus metrics path should use runFlags value when not set via CLI")
 }
+
+func TestParseCommandArguments(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		args     []string
+		expected []string
+	}{
+		{
+			name:     "no separator - returns empty",
+			args:     []string{"thv", "run", "npx://package"},
+			expected: []string{},
+		},
+		{
+			name:     "separator at end - returns empty",
+			args:     []string{"thv", "run", "npx://package", "--"},
+			expected: []string{},
+		},
+		{
+			name:     "separator with single arg",
+			args:     []string{"thv", "run", "npx://@launchdarkly/mcp-server", "--", "start"},
+			expected: []string{"start"},
+		},
+		{
+			name:     "separator with multiple args",
+			args:     []string{"thv", "run", "npx://@upstash/context7-mcp@latest", "--", "--transport", "faketransport"},
+			expected: []string{"--transport", "faketransport"},
+		},
+		{
+			name:     "separator with complex args",
+			args:     []string{"thv", "run", "--name", "test", "npx://package", "--", "--host", "0.0.0.0", "--port", "3000", "-v"},
+			expected: []string{"--host", "0.0.0.0", "--port", "3000", "-v"},
+		},
+		{
+			name:     "args with spaces in values",
+			args:     []string{"thv", "run", "uvx://package", "--", "--message", "hello world", "--file", "/path/to/file"},
+			expected: []string{"--message", "hello world", "--file", "/path/to/file"},
+		},
+		{
+			name:     "multiple dashes before separator",
+			args:     []string{"thv", "run", "--transport", "stdio", "go://package", "--", "--config", "/etc/app.yaml"},
+			expected: []string{"--config", "/etc/app.yaml"},
+		},
+		{
+			name:     "empty args",
+			args:     []string{},
+			expected: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := parseCommandArguments(tt.args)
+
+			if len(result) != len(tt.expected) {
+				t.Errorf("parseCommandArguments() returned %d args, want %d", len(result), len(tt.expected))
+				t.Errorf("Got: %v", result)
+				t.Errorf("Want: %v", tt.expected)
+				return
+			}
+
+			for i, arg := range result {
+				if arg != tt.expected[i] {
+					t.Errorf("parseCommandArguments()[%d] = %q, want %q", i, arg, tt.expected[i])
+				}
+			}
+		})
+	}
+}

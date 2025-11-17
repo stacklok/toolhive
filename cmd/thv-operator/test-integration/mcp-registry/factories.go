@@ -85,9 +85,11 @@ func (f *TestDataFactory) CreateMCPRegistryFromTemplate(template MCPRegistryTemp
 			Source: mcpv1alpha1.MCPRegistrySource{
 				Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
 				Format: template.Format,
-				ConfigMap: &mcpv1alpha1.ConfigMapSource{
-					Name: configMapName,
-					Key:  "registry.json",
+				ConfigMapRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: configMapName,
+					},
+					Key: "registry.json",
 				},
 			},
 		},

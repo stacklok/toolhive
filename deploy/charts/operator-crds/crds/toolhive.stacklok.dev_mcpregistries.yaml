@@ -129,24 +129,31 @@ spec:
                     required:
                     - endpoint
                     type: object
-                  configmap:
+                  configMapRef:
                     description: |-
-                      ConfigMap defines the ConfigMap source configuration
+                      ConfigMapRef defines the ConfigMap source configuration
                       Only used when Type is "configmap"
                     properties:
                       key:
-                        default: registry.json
-                        description: Key is the key in the ConfigMap that contains
-                          the registry data
-                        minLength: 1
+                        description: The key to select.
                         type: string
                       name:
-                        description: Name is the name of the ConfigMap
-                        minLength: 1
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                         type: string
+                      optional:
+                        description: Specify whether the ConfigMap or its key must
+                          be defined
+                        type: boolean
                     required:
-                    - name
+                    - key
                     type: object
+                    x-kubernetes-map-type: atomic
                   format:
                     default: toolhive
                     description: Format is the data format (toolhive, upstream)
@@ -416,10 +423,10 @@ spec:
             type: object
         type: object
         x-kubernetes-validations:
-        - message: configMap field is required when source type is 'configmap', git
-            field is required when source type is 'git', api field is required when
-            source type is 'api'
-          rule: 'self.spec.source.type == ''configmap'' ? has(self.spec.source.configmap)
+        - message: configMapRef field is required when source type is 'configmap',
+            git field is required when source type is 'git', api field is required
+            when source type is 'api'
+          rule: 'self.spec.source.type == ''configmap'' ? has(self.spec.source.configMapRef)
             : (self.spec.source.type == ''git'' ? has(self.spec.source.git) : (self.spec.source.type
             == ''api'' ? has(self.spec.source.api) : true))'
     served: true

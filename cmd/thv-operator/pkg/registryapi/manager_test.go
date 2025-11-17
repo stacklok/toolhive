@@ -81,8 +81,11 @@ func TestReconcileAPIService(t *testing.T) {
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
 					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMap: &mcpv1alpha1.ConfigMapSource{
-						Name: "test-configmap",
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
+						},
+						Key: "registry.json",
 					},
 				},
 				SyncPolicy: &mcpv1alpha1.SyncPolicy{
@@ -207,8 +210,11 @@ func TestReconcileAPIService(t *testing.T) {
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
 					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMap: &mcpv1alpha1.ConfigMapSource{
-						Name: "test-configmap",
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
+						},
+						Key: "registry.json",
 					},
 				},
 				SyncPolicy: &mcpv1alpha1.SyncPolicy{

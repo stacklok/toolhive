@@ -224,7 +224,7 @@ spec:
   source:
     type: configmap
     format: toolhive
-    configmap:
+    configMapRef:
       name: tag-filtering-registry-data
       key: registry.json
   syncPolicy:
@@ -248,7 +248,7 @@ spec:
   source:
     type: configmap
     format: toolhive
-    configmap:
+    configMapRef:
       name: tag-filtering-registry-data
       key: registry.json
   filter:
@@ -272,7 +272,7 @@ spec:
   source:
     type: configmap
     format: toolhive
-    configmap:
+    configMapRef:
       name: tag-filtering-registry-data
       key: registry.json
   filter:

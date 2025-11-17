@@ -502,7 +502,7 @@ source:
 ```yaml
 source:
   type: configmap
-  configmap:
+  configMapRef:
     name: mcp-registry-data
     key: registry.json
 ```

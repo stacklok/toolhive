@@ -144,9 +144,11 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 					Source: mcpv1alpha1.MCPRegistrySource{
 						Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
 						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMap: &mcpv1alpha1.ConfigMapSource{
-							Name: "source-configmap",
-							Key:  "registry.json",
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "source-configmap",
+							},
+							Key: "registry.json",
 						},
 					},
 				},
@@ -183,9 +185,11 @@ func TestDefaultSyncManager_PerformSync(t *testing.T) {
 					Source: mcpv1alpha1.MCPRegistrySource{
 						Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
 						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMap: &mcpv1alpha1.ConfigMapSource{
-							Name: "source-configmap",
-							Key:  "registry.json",
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "source-configmap",
+							},
+							Key: "registry.json",
 						},
 					},
 				},

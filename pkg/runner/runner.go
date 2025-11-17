@@ -277,6 +277,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Wait for the MCP server to accept initialize requests before updating client configurations.
 	// This prevents timing issues where clients try to connect before the server is fully ready.
 	// We repeatedly call initialize until it succeeds (up to 5 minutes).
+	// Note: We skip this check for pure STDIO transport because STDIO servers may reject
+	// multiple initialize calls (see #1982).
 	transportType := labels.GetTransportType(r.Config.ContainerLabels)
 	serverURL := transport.GenerateMCPServerURL(
 		transportType,
@@ -285,11 +287,18 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.Config.ContainerName,
 		r.Config.RemoteURL)
 
-	// Repeatedly try calling initialize until it succeeds (up to 5 minutes)
-	// Some servers (like mcp-optimizer) can take significant time to start up
-	if err := waitForInitializeSuccess(ctx, serverURL, transportType, 5*time.Minute); err != nil {
-		logger.Warnf("Warning: Initialize not successful, but continuing: %v", err)
-		// Continue anyway to maintain backward compatibility, but log a warning
+	// Only wait for initialization on non-STDIO transports
+	// STDIO servers communicate directly via stdin/stdout and calling initialize multiple times
+	// can cause issues as the behavior is not specified by the MCP spec
+	if transportType != "stdio" {
+		// Repeatedly try calling initialize until it succeeds (up to 5 minutes)
+		// Some servers (like mcp-optimizer) can take significant time to start up
+		if err := waitForInitializeSuccess(ctx, serverURL, transportType, 5*time.Minute); err != nil {
+			logger.Warnf("Warning: Initialize not successful, but continuing: %v", err)
+			// Continue anyway to maintain backward compatibility, but log a warning
+		}
+	} else {
+		logger.Debugf("Skipping initialize check for STDIO transport")
 	}
 
 	// Update client configurations with the MCP server URL.
@@ -464,6 +473,7 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 // waitForInitializeSuccess repeatedly checks if the MCP server is ready to accept requests.
 // This prevents timing issues where clients try to connect before the server is fully ready.
 // It makes repeated attempts with exponential backoff up to a maximum timeout.
+// Note: This function should not be called for STDIO transport.
 func waitForInitializeSuccess(ctx context.Context, serverURL, transportType string, maxWaitTime time.Duration) error {
 	// Determine the endpoint and method to use based on transport type
 	var endpoint string
@@ -479,8 +489,8 @@ func waitForInitializeSuccess(ctx context.Context, serverURL, transportType stri
 		payload = `{"jsonrpc":"2.0","method":"initialize","id":"toolhive-init-check",` +
 			`"params":{"protocolVersion":"2024-11-05","capabilities":{},` +
 			`"clientInfo":{"name":"toolhive","version":"1.0"}}}`
-	case "sse", "stdio":
-		// For SSE/stdio, just check if the SSE endpoint is available
+	case "sse":
+		// For SSE, just check if the SSE endpoint is available
 		// We can't easily call initialize without establishing a full SSE connection,
 		// so we just verify the endpoint responds.
 		// Format: http://localhost:port/sse#container-name -> http://localhost:port/sse

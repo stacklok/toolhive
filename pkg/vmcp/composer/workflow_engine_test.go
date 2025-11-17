@@ -421,3 +421,164 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 			"fetch_metrics should complete before create_report starts")
 	}
 }
+
+func TestWorkflowEngine_ExecuteWorkflow_WithOutputFormat(t *testing.T) {
+	t.Parallel()
+	te := newTestEngine(t)
+
+	// Workflow with output_format for aggregation
+	def := &WorkflowDefinition{
+		Name: "aggregate-workflow",
+		Steps: []WorkflowStep{
+			toolStep("fetch_logs", "logs.fetch", nil),
+			toolStep("fetch_metrics", "metrics.fetch", nil),
+		},
+		OutputFormat: `{
+			"logs": {{json .steps.fetch_logs.output}},
+			"metrics": {{json .steps.fetch_metrics.output}},
+			"workflow_id": "{{.workflow.id}}"
+		}`,
+	}
+
+	// Set up expectations
+	te.expectToolCall("logs.fetch", nil, map[string]any{"count": 100})
+	te.expectToolCall("metrics.fetch", nil, map[string]any{"cpu": "50%"})
+
+	result, err := execute(t, te.Engine, def, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+
+	// Verify aggregated output
+	require.NotNil(t, result.Output)
+
+	// Check aggregated fields
+	logs, exists := result.Output["logs"]
+	require.True(t, exists, "logs field should exist")
+	assert.Equal(t, map[string]any{"count": float64(100)}, logs)
+
+	metrics, exists := result.Output["metrics"]
+	require.True(t, exists, "metrics field should exist")
+	assert.Equal(t, map[string]any{"cpu": "50%"}, metrics)
+
+	workflowID, exists := result.Output["workflow_id"]
+	require.True(t, exists, "workflow_id field should exist")
+	assert.NotEmpty(t, workflowID)
+}
+
+func TestWorkflowEngine_ExecuteWorkflow_WithoutOutputFormat(t *testing.T) {
+	t.Parallel()
+	te := newTestEngine(t)
+
+	// Workflow WITHOUT output_format (backward compatibility)
+	// Using sequential steps (step2 depends on step1) to ensure order
+	def := &WorkflowDefinition{
+		Name: "backward-compat",
+		Steps: []WorkflowStep{
+			toolStep("step1", "tool.one", nil),
+			toolStepWithDeps("step2", "tool.two", nil, []string{"step1"}),
+		},
+	}
+
+	te.expectToolCall("tool.one", nil, map[string]any{"result": "first"})
+	te.expectToolCall("tool.two", nil, map[string]any{"result": "last"})
+
+	result, err := execute(t, te.Engine, def, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+
+	// Should return last step output (backward compatible)
+	// Since step2 depends on step1, step2 will always complete last
+	assert.Equal(t, map[string]any{"result": "last"}, result.Output)
+}
+
+func TestWorkflowEngine_ExecuteWorkflow_OutputFormatWithMetadata(t *testing.T) {
+	t.Parallel()
+	te := newTestEngine(t)
+
+	def := &WorkflowDefinition{
+		Name: "metadata-workflow",
+		Steps: []WorkflowStep{
+			toolStep("fetch_data", "data.fetch", nil),
+		},
+		OutputFormat: `{
+			"data": {{json .steps.fetch_data.output}},
+			"metadata": {
+				"workflow_id": "{{.workflow.id}}",
+				"step_count": {{.workflow.step_count}},
+				"duration_ms": {{.workflow.duration_ms}}
+			}
+		}`,
+	}
+
+	te.expectToolCall("data.fetch", nil, map[string]any{"value": "test"})
+
+	result, err := execute(t, te.Engine, def, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+
+	// Check data field
+	data := result.Output["data"]
+	assert.Equal(t, map[string]any{"value": "test"}, data)
+
+	// Check metadata
+	metadata, exists := result.Output["metadata"]
+	require.True(t, exists)
+	metadataMap, ok := metadata.(map[string]any)
+	require.True(t, ok)
+
+	assert.NotEmpty(t, metadataMap["workflow_id"])
+	assert.Equal(t, float64(1), metadataMap["step_count"])
+	assert.GreaterOrEqual(t, metadataMap["duration_ms"], float64(0))
+}
+
+func TestWorkflowEngine_ExecuteWorkflow_OutputFormatInvalid(t *testing.T) {
+	t.Parallel()
+	te := newTestEngine(t)
+
+	// Workflow with invalid output_format template
+	def := &WorkflowDefinition{
+		Name: "invalid-format",
+		Steps: []WorkflowStep{
+			toolStep("step1", "tool.one", nil),
+		},
+		OutputFormat: `{"invalid json syntax`,
+	}
+
+	te.expectToolCall("tool.one", nil, map[string]any{"result": "ok"})
+
+	result, err := execute(t, te.Engine, def, nil)
+
+	// Should fail due to invalid output format
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "output format")
+	assert.Equal(t, WorkflowStatusFailed, result.Status)
+}
+
+func TestWorkflowEngine_ExecuteWorkflow_OutputFormatWithParameters(t *testing.T) {
+	t.Parallel()
+	te := newTestEngine(t)
+
+	def := &WorkflowDefinition{
+		Name: "params-workflow",
+		Steps: []WorkflowStep{
+			toolStep("fetch", "data.fetch", nil),
+		},
+		OutputFormat: `{
+			"incident_id": "{{.params.incident_id}}",
+			"data": {{json .steps.fetch.output}}
+		}`,
+	}
+
+	te.expectToolCall("data.fetch", nil, map[string]any{"status": "resolved"})
+
+	result, err := execute(t, te.Engine, def, map[string]any{"incident_id": "INC-123"})
+
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+
+	assert.Equal(t, "INC-123", result.Output["incident_id"])
+	assert.Equal(t, map[string]any{"status": "resolved"}, result.Output["data"])
+}

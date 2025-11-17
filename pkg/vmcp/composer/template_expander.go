@@ -215,6 +215,81 @@ func (e *defaultTemplateExpander) EvaluateCondition(
 	}
 }
 
+// ExpandOutputFormat evaluates the output_format template with workflow context.
+// Returns a map representing the expanded JSON output structure.
+func (e *defaultTemplateExpander) ExpandOutputFormat(
+	ctx context.Context,
+	outputFormatTemplate string,
+	workflowCtx *WorkflowContext,
+	startTime, endTime int64,
+) (map[string]any, error) {
+	// Check context cancellation before expensive operations
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context cancelled before output format expansion: %w", err)
+	}
+
+	// Build template context with params, steps, and workflow metadata
+	tmplCtx := map[string]any{
+		"params":   workflowCtx.Params,
+		"steps":    e.buildStepsContext(workflowCtx),
+		"workflow": e.buildWorkflowMetadata(workflowCtx, startTime, endTime),
+	}
+
+	// Parse template
+	tmpl, err := template.New("output").Funcs(e.funcMap).Parse(outputFormatTemplate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid output format template: %w", err)
+	}
+
+	// Execute template to string
+	var buf bytes.Buffer
+	buf.Grow(4096) // Pre-allocate reasonable buffer size
+
+	if err := tmpl.Execute(&buf, tmplCtx); err != nil {
+		return nil, fmt.Errorf("output format expansion failed: %w", err)
+	}
+
+	// Enforce output size limit
+	if buf.Len() > maxTemplateOutputSize {
+		return nil, fmt.Errorf("output format result too large: %d bytes (max %d)",
+			buf.Len(), maxTemplateOutputSize)
+	}
+
+	// Parse JSON result
+	var output map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &output); err != nil {
+		return nil, fmt.Errorf("output format must produce valid JSON: %w (template output: %s)",
+			err, buf.String())
+	}
+
+	return output, nil
+}
+
+// buildWorkflowMetadata creates workflow metadata for template expansion.
+func (*defaultTemplateExpander) buildWorkflowMetadata(
+	workflowCtx *WorkflowContext,
+	startTime, endTime int64,
+) map[string]any {
+	// Acquire read lock to safely access Steps map
+	workflowCtx.mu.RLock()
+	stepCount := len(workflowCtx.Steps)
+	workflowCtx.mu.RUnlock()
+
+	// Calculate duration in milliseconds
+	durationMs := int64(0)
+	if endTime > 0 && startTime > 0 {
+		durationMs = endTime - startTime
+	}
+
+	return map[string]any{
+		"id":          workflowCtx.WorkflowID,
+		"step_count":  stepCount,
+		"duration_ms": durationMs,
+		"start_time":  startTime,
+		"end_time":    endTime,
+	}
+}
+
 // jsonEncode is a template function that encodes a value as JSON.
 func jsonEncode(v any) (string, error) {
 	b, err := json.Marshal(v)

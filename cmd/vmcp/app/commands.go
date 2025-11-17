@@ -226,7 +226,7 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 	}
 
 	// Initialize managers for backend discovery
-	logger.Info("Initializing workload and group managers")
+	logger.Info("Initializing group manager")
 	groupsManager, err := groups.NewManager()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create groups manager: %w", err)

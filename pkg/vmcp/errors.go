@@ -54,4 +54,10 @@ var (
 	// These errors may be retried, circuit-broken, or handled differently from domain errors.
 	// Wrapping errors should include the backend ID and underlying cause.
 	ErrBackendUnavailable = errors.New("backend unavailable")
+
+	// ErrToolNameConflict indicates a composite tool name conflicts with a backend tool name.
+	// This prevents ambiguity in routing/execution where the same name could refer to
+	// either a backend tool or a composite workflow tool.
+	// Wrapping errors should list the conflicting tool names.
+	ErrToolNameConflict = errors.New("tool name conflict")
 )

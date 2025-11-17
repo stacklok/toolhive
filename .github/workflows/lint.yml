@@ -17,10 +17,27 @@ jobs:
         uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
         with:
           go-version-file: 'go.mod'
-          cache: true
+          cache: true  # Caches go modules
+          cache-dependency-path: go.sum
+
+      # Download all dependencies upfront (will be cached)
+      - name: Download Go dependencies
+        run: |
+          go mod download
+          go mod verify
+
+      # Cache Go build cache for faster compilation during linting
+      - name: Cache Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-go-build-lint-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-lint-
+            ${{ runner.os }}-go-build-
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@0a35821d5c230e903fcfe077583637dea1b27b47 # v9.0.0
         with:
-          skip-cache: true
+          # Enable golangci-lint's built-in caching (removes skip-cache: true)
           args: --timeout=5m

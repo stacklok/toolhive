@@ -3,7 +3,9 @@ package composer
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/cenkalti/backoff/v5"
@@ -42,22 +44,50 @@ type workflowEngine struct {
 
 	// contextManager manages workflow execution contexts.
 	contextManager *workflowContextManager
+
+	// elicitationHandler handles MCP elicitation protocol for user interaction.
+	elicitationHandler ElicitationProtocolHandler
+
+	// dagExecutor handles DAG-based parallel execution.
+	dagExecutor *dagExecutor
+
+	// stateStore manages workflow state persistence.
+	stateStore WorkflowStateStore
 }
 
 // NewWorkflowEngine creates a new workflow execution engine.
+//
+// The elicitationHandler parameter is optional. If nil, elicitation steps will fail.
+// This allows the engine to be used without elicitation support for simple workflows.
+//
+// The stateStore parameter is optional. If nil, workflow status tracking and cancellation
+// will not be available. Use NewInMemoryStateStore() for basic state tracking.
 func NewWorkflowEngine(
 	rtr router.Router,
 	backendClient vmcp.BackendClient,
+	elicitationHandler ElicitationProtocolHandler,
+	stateStore WorkflowStateStore,
 ) Composer {
 	return &workflowEngine{
-		router:           rtr,
-		backendClient:    backendClient,
-		templateExpander: NewTemplateExpander(),
-		contextManager:   newWorkflowContextManager(),
+		router:             rtr,
+		backendClient:      backendClient,
+		templateExpander:   NewTemplateExpander(),
+		contextManager:     newWorkflowContextManager(),
+		elicitationHandler: elicitationHandler,
+		dagExecutor:        newDAGExecutor(defaultMaxParallelSteps),
+		stateStore:         stateStore,
 	}
 }
 
 // ExecuteWorkflow executes a composite tool workflow.
+//
+// TODO(rate-limiting): Add rate limiting per user/session to prevent workflow execution DoS.
+// Consider implementing:
+//   - Max concurrent workflows per user (e.g., 10)
+//   - Max workflow executions per time window (e.g., 100/minute)
+//   - Exponential backoff for repeated failures
+//
+// See security review: VMCP_COMPOSITE_WORKFLOW_SECURITY_REVIEW.md (M-4)
 func (e *workflowEngine) ExecuteWorkflow(
 	ctx context.Context,
 	def *WorkflowDefinition,
@@ -65,8 +95,11 @@ func (e *workflowEngine) ExecuteWorkflow(
 ) (*WorkflowResult, error) {
 	logger.Infof("Starting workflow execution: %s", def.Name)
 
+	// Apply parameter defaults from JSON Schema before execution
+	paramsWithDefaults := applyParameterDefaults(def.Parameters, params)
+
 	// Create workflow context
-	workflowCtx := e.contextManager.CreateContext(params)
+	workflowCtx := e.contextManager.CreateContext(paramsWithDefaults)
 	defer e.contextManager.DeleteContext(workflowCtx.WorkflowID)
 
 	// Apply workflow timeout
@@ -86,45 +119,88 @@ func (e *workflowEngine) ExecuteWorkflow(
 		Metadata:   make(map[string]string),
 	}
 
-	// Execute workflow steps sequentially
-	for _, step := range def.Steps {
+	// Save initial workflow state
+	if e.stateStore != nil {
+		initialState := &WorkflowStatus{
+			WorkflowID:          workflowCtx.WorkflowID,
+			Status:              WorkflowStatusRunning,
+			CurrentStep:         "",
+			CompletedSteps:      []string{},
+			PendingElicitations: []*PendingElicitation{},
+			StartTime:           result.StartTime,
+			LastUpdateTime:      result.StartTime,
+		}
+		if err := e.stateStore.SaveState(execCtx, workflowCtx.WorkflowID, initialState); err != nil {
+			logger.Warnf("Failed to save initial workflow state: %v", err)
+		}
+	}
+
+	// Execute workflow steps using DAG-based parallel execution
+	// The DAG executor will:
+	//  1. Build execution levels based on dependencies
+	//  2. Execute independent steps in parallel
+	//  3. Wait for dependencies before executing dependent steps
+	stepExecutor := func(ctx context.Context, step *WorkflowStep) error {
 		// Check if context was cancelled or timed out
 		select {
-		case <-execCtx.Done():
-			result.Status = WorkflowStatusTimedOut
-			result.Error = ErrWorkflowTimeout
-			result.EndTime = time.Now()
-			result.Duration = result.EndTime.Sub(result.StartTime)
-			logger.Warnf("Workflow %s timed out after %v", def.Name, result.Duration)
-			return result, ErrWorkflowTimeout
+		case <-ctx.Done():
+			return ctx.Err()
 		default:
 		}
 
 		// Execute step
-		stepErr := e.executeStep(execCtx, &step, workflowCtx, def.FailureMode)
+		return e.executeStep(ctx, step, workflowCtx, def.FailureMode)
+	}
 
-		// Copy step result to workflow result
-		if stepResult, exists := workflowCtx.GetStepResult(step.ID); exists {
-			result.Steps[step.ID] = stepResult
-		}
+	// Execute DAG
+	dagErr := e.dagExecutor.executeDAG(execCtx, def.Steps, stepExecutor, def.FailureMode)
 
-		// Handle step failure
-		if stepErr != nil {
-			logger.Errorf("Step %s failed in workflow %s: %v", step.ID, def.Name, stepErr)
+	// Copy step results to workflow result
+	// Acquire read lock to safely copy Steps map
+	workflowCtx.mu.RLock()
+	maps.Copy(result.Steps, workflowCtx.Steps)
+	workflowCtx.mu.RUnlock()
 
-			// Check failure mode
-			if def.FailureMode == "" || def.FailureMode == "abort" {
-				result.Status = WorkflowStatusFailed
-				result.Error = NewWorkflowError(workflowCtx.WorkflowID, step.ID, "step failed", stepErr)
-				result.EndTime = time.Now()
-				result.Duration = result.EndTime.Sub(result.StartTime)
-				return result, result.Error
+	// Handle execution failure
+	if dagErr != nil {
+		logger.Errorf("Workflow %s failed: %v", def.Name, dagErr)
+
+		// Check if it was a timeout
+		if execCtx.Err() == context.DeadlineExceeded {
+			result.Status = WorkflowStatusTimedOut
+			result.Error = ErrWorkflowTimeout
+			result.EndTime = time.Now()
+			result.Duration = result.EndTime.Sub(result.StartTime)
+
+			// Save timeout state
+			if e.stateStore != nil {
+				finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusTimedOut)
+				finalState.StartTime = result.StartTime
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState)
 			}
 
-			// For "continue" or "best_effort" modes, log and continue
-			logger.Warnf("Continuing workflow %s despite step %s failure (mode: %s)",
-				def.Name, step.ID, def.FailureMode)
+			logger.Warnf("Workflow %s timed out after %v", def.Name, result.Duration)
+			return result, ErrWorkflowTimeout
 		}
+
+		// Otherwise it's a failure
+		result.Status = WorkflowStatusFailed
+		result.Error = dagErr
+		result.EndTime = time.Now()
+		result.Duration = result.EndTime.Sub(result.StartTime)
+
+		// Save failure state
+		if e.stateStore != nil {
+			finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusFailed)
+			finalState.StartTime = result.StartTime
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState)
+		}
+
+		return result, result.Error
 	}
 
 	// Workflow completed successfully
@@ -132,6 +208,17 @@ func (e *workflowEngine) ExecuteWorkflow(
 	result.Output = workflowCtx.GetLastStepOutput()
 	result.EndTime = time.Now()
 	result.Duration = result.EndTime.Sub(result.StartTime)
+
+	// Save final workflow state
+	if e.stateStore != nil {
+		finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusCompleted)
+		finalState.StartTime = result.StartTime
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState); err != nil {
+			logger.Warnf("Failed to save final workflow state: %v", err)
+		}
+	}
 
 	logger.Infof("Workflow %s completed successfully in %v", def.Name, result.Duration)
 	return result, nil
@@ -157,15 +244,8 @@ func (e *workflowEngine) executeStep(
 	stepCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Check dependencies
-	for _, depID := range step.DependsOn {
-		if !workflowCtx.HasStepCompleted(depID) {
-			err := fmt.Errorf("%w: step %s depends on %s which hasn't completed",
-				ErrDependencyNotMet, step.ID, depID)
-			workflowCtx.RecordStepFailure(step.ID, err)
-			return err
-		}
-	}
+	// Note: Dependency checking is handled by the DAG executor.
+	// By the time we reach here, all dependencies are guaranteed to have completed.
 
 	// Evaluate condition
 	if step.Condition != "" {
@@ -188,10 +268,7 @@ func (e *workflowEngine) executeStep(
 	case StepTypeTool:
 		return e.executeToolStep(stepCtx, step, workflowCtx)
 	case StepTypeElicitation:
-		// Elicitation is not implemented in Phase 2 (basic workflow engine)
-		err := fmt.Errorf("elicitation steps are not yet supported")
-		workflowCtx.RecordStepFailure(step.ID, err)
-		return err
+		return e.executeElicitationStep(stepCtx, step, workflowCtx)
 	case StepTypeConditional:
 		// Conditional steps are not implemented in Phase 2
 		err := fmt.Errorf("conditional steps are not yet supported")
@@ -331,7 +408,7 @@ func (*workflowEngine) handleToolStepFailure(
 }
 
 // handleToolStepSuccess handles a successful tool step.
-func (*workflowEngine) handleToolStepSuccess(
+func (e *workflowEngine) handleToolStepSuccess(
 	step *WorkflowStep,
 	workflowCtx *WorkflowContext,
 	output map[string]any,
@@ -344,8 +421,230 @@ func (*workflowEngine) handleToolStepSuccess(
 		result.RetryCount = retryCount
 	}
 
+	// Checkpoint workflow state
+	e.checkpointWorkflowState(workflowCtx)
+
 	logger.Debugf("Step %s completed successfully", step.ID)
 	return nil
+}
+
+// executeElicitationStep executes an elicitation step.
+// Per MCP 2025-06-18: SDK handles JSON-RPC ID correlation, we provide validation and error handling.
+func (e *workflowEngine) executeElicitationStep(
+	ctx context.Context,
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+) error {
+	logger.Debugf("Executing elicitation step: %s", step.ID)
+
+	// Check if elicitation handler is configured
+	if e.elicitationHandler == nil {
+		err := fmt.Errorf("elicitation handler not configured for step %s", step.ID)
+		workflowCtx.RecordStepFailure(step.ID, err)
+		return err
+	}
+
+	// Validate elicitation config
+	if step.Elicitation == nil {
+		err := fmt.Errorf("elicitation config is missing for step %s", step.ID)
+		workflowCtx.RecordStepFailure(step.ID, err)
+		return err
+	}
+
+	// Request elicitation (synchronous - blocks until response or timeout)
+	// Per MCP 2025-06-18: SDK handles JSON-RPC ID correlation internally
+	response, err := e.elicitationHandler.RequestElicitation(ctx, workflowCtx.WorkflowID, step.ID, step.Elicitation)
+	if err != nil {
+		// Handle timeout
+		if errors.Is(err, ErrElicitationTimeout) {
+			return e.handleElicitationTimeout(step, workflowCtx)
+		}
+
+		// Handle other errors
+		requestErr := fmt.Errorf("elicitation request failed for step %s: %w", step.ID, err)
+		workflowCtx.RecordStepFailure(step.ID, requestErr)
+		return requestErr
+	}
+
+	// Handle response based on action
+	switch response.Action {
+	case elicitationActionAccept:
+		return e.handleElicitationAccept(step, workflowCtx, response)
+	case elicitationActionDecline:
+		return e.handleElicitationDecline(step, workflowCtx)
+	case elicitationActionCancel:
+		return e.handleElicitationCancel(step, workflowCtx)
+	default:
+		err := fmt.Errorf("invalid elicitation response action %q for step %s", response.Action, step.ID)
+		workflowCtx.RecordStepFailure(step.ID, err)
+		return err
+	}
+}
+
+// handleElicitationAccept handles when the user accepts and provides data.
+func (*workflowEngine) handleElicitationAccept(
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+	response *ElicitationResponse,
+) error {
+	logger.Debugf("User accepted elicitation for step %s", step.ID)
+
+	// Store both the content and action in step output
+	// This allows templates to access:
+	//   - {{.steps.stepid.output.content}} for the data
+	//   - {{.steps.stepid.output.action}} for the action
+	output := map[string]any{
+		"action":  response.Action,
+		"content": response.Content,
+	}
+
+	workflowCtx.RecordStepSuccess(step.ID, output)
+	logger.Debugf("Step %s completed with user-provided data", step.ID)
+	return nil
+}
+
+// handleElicitationDecline handles when the user explicitly declines.
+func (e *workflowEngine) handleElicitationDecline(
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+) error {
+	logger.Debugf("User declined elicitation for step %s", step.ID)
+
+	// Check if we have an OnDecline handler
+	if step.Elicitation != nil && step.Elicitation.OnDecline != nil {
+		return e.handleElicitationAction(step, workflowCtx, step.Elicitation.OnDecline.Action, "decline")
+	}
+
+	// Default: treat as error
+	err := fmt.Errorf("%w: step %s", ErrElicitationDeclined, step.ID)
+	workflowCtx.RecordStepFailure(step.ID, err)
+	return err
+}
+
+// handleElicitationCancel handles when the user cancels/dismisses.
+func (e *workflowEngine) handleElicitationCancel(
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+) error {
+	logger.Debugf("User cancelled elicitation for step %s", step.ID)
+
+	// Check if we have an OnCancel handler
+	if step.Elicitation != nil && step.Elicitation.OnCancel != nil {
+		return e.handleElicitationAction(step, workflowCtx, step.Elicitation.OnCancel.Action, "cancel")
+	}
+
+	// Default: treat as error
+	err := fmt.Errorf("%w: step %s", ErrElicitationCancelled, step.ID)
+	workflowCtx.RecordStepFailure(step.ID, err)
+	return err
+}
+
+// handleElicitationTimeout handles when the elicitation times out.
+func (e *workflowEngine) handleElicitationTimeout(
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+) error {
+	logger.Warnf("Elicitation timed out for step %s", step.ID)
+
+	// Timeout is treated as cancel by default
+	if step.Elicitation != nil && step.Elicitation.OnCancel != nil {
+		return e.handleElicitationAction(step, workflowCtx, step.Elicitation.OnCancel.Action, "timeout")
+	}
+
+	// Default: treat as error
+	err := fmt.Errorf("%w: step %s", ErrElicitationTimeout, step.ID)
+	workflowCtx.RecordStepFailure(step.ID, err)
+	return err
+}
+
+// handleElicitationAction handles elicitation response actions (decline/cancel).
+func (*workflowEngine) handleElicitationAction(
+	step *WorkflowStep,
+	workflowCtx *WorkflowContext,
+	action string,
+	reason string,
+) error {
+	switch action {
+	case "skip_remaining":
+		// Mark this step as skipped and signal to skip remaining steps
+		logger.Debugf("Skipping remaining steps after %s for step %s", reason, step.ID)
+		output := map[string]any{
+			"action":  reason,
+			"skipped": true,
+		}
+		workflowCtx.RecordStepSuccess(step.ID, output)
+		// Return a special error that the workflow engine can detect
+		// For now, we'll just complete the step successfully
+		return nil
+
+	case "abort":
+		// Abort the workflow
+		logger.Debugf("Aborting workflow after %s for step %s", reason, step.ID)
+		if reason == "decline" {
+			err := fmt.Errorf("%w: step %s", ErrElicitationDeclined, step.ID)
+			workflowCtx.RecordStepFailure(step.ID, err)
+			return err
+		}
+		err := fmt.Errorf("%w: step %s", ErrElicitationCancelled, step.ID)
+		workflowCtx.RecordStepFailure(step.ID, err)
+		return err
+
+	case "continue":
+		// Continue to next step
+		logger.Debugf("Continuing workflow after %s for step %s", reason, step.ID)
+		output := map[string]any{
+			"action": reason,
+		}
+		workflowCtx.RecordStepSuccess(step.ID, output)
+		return nil
+
+	default:
+		err := fmt.Errorf("invalid elicitation action: %s", action)
+		workflowCtx.RecordStepFailure(step.ID, err)
+		return err
+	}
+}
+
+// buildWorkflowStatus creates a WorkflowStatus from the current workflow context.
+func (*workflowEngine) buildWorkflowStatus(workflowCtx *WorkflowContext, status WorkflowStatusType) *WorkflowStatus {
+	workflowCtx.mu.RLock()
+	defer workflowCtx.mu.RUnlock()
+
+	// Build list of completed steps
+	completedSteps := make([]string, 0, len(workflowCtx.Steps))
+	for stepID, result := range workflowCtx.Steps {
+		if result.Status == StepStatusCompleted {
+			completedSteps = append(completedSteps, stepID)
+		}
+	}
+
+	return &WorkflowStatus{
+		WorkflowID:          workflowCtx.WorkflowID,
+		Status:              status,
+		CurrentStep:         "",
+		CompletedSteps:      completedSteps,
+		PendingElicitations: []*PendingElicitation{},
+		StartTime:           time.Now(),
+		LastUpdateTime:      time.Now(),
+	}
+}
+
+// checkpointWorkflowState saves the current workflow state to the state store.
+func (e *workflowEngine) checkpointWorkflowState(workflowCtx *WorkflowContext) {
+	if e.stateStore == nil {
+		return
+	}
+
+	// Build workflow status
+	state := e.buildWorkflowStatus(workflowCtx, WorkflowStatusRunning)
+
+	// Save state (use background context to avoid cancellation issues)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, state); err != nil {
+		logger.Warnf("Failed to checkpoint workflow state for %s: %v", workflowCtx.WorkflowID, err)
+	}
 }
 
 // ValidateWorkflow checks if a workflow definition is valid.
@@ -501,17 +800,111 @@ func (*workflowEngine) validateStep(step *WorkflowStep, validStepIDs map[string]
 }
 
 // GetWorkflowStatus returns the current status of a running workflow.
-// For Phase 2 (basic workflow engine), this is a placeholder.
-func (*workflowEngine) GetWorkflowStatus(_ context.Context, _ string) (*WorkflowStatus, error) {
-	// In Phase 2, we don't track long-running workflows
-	// This will be implemented in Phase 3 with persistent state
-	return nil, fmt.Errorf("workflow status tracking not yet implemented")
+func (e *workflowEngine) GetWorkflowStatus(ctx context.Context, workflowID string) (*WorkflowStatus, error) {
+	if e.stateStore == nil {
+		return nil, fmt.Errorf("workflow status tracking not available: state store not configured")
+	}
+
+	if workflowID == "" {
+		return nil, fmt.Errorf("workflow ID is required")
+	}
+
+	status, err := e.stateStore.LoadState(ctx, workflowID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load workflow status: %w", err)
+	}
+
+	return status, nil
 }
 
 // CancelWorkflow cancels a running workflow.
-// For Phase 2 (basic workflow engine), this is a placeholder.
-func (*workflowEngine) CancelWorkflow(_ context.Context, _ string) error {
-	// In Phase 2, workflows run synchronously and blocking
-	// Cancellation will be implemented in Phase 3
-	return fmt.Errorf("workflow cancellation not yet implemented")
+// Note: This method marks the workflow as cancelled in the state store.
+// For synchronous ExecuteWorkflow calls, cancellation must be done via context cancellation.
+// This method is primarily for future async workflow support.
+func (e *workflowEngine) CancelWorkflow(ctx context.Context, workflowID string) error {
+	if e.stateStore == nil {
+		return fmt.Errorf("workflow cancellation not available: state store not configured")
+	}
+
+	if workflowID == "" {
+		return fmt.Errorf("workflow ID is required")
+	}
+
+	// Load current state
+	status, err := e.stateStore.LoadState(ctx, workflowID)
+	if err != nil {
+		return fmt.Errorf("failed to load workflow status: %w", err)
+	}
+
+	// Check if workflow is in a cancellable state
+	if status.Status == WorkflowStatusCompleted ||
+		status.Status == WorkflowStatusFailed ||
+		status.Status == WorkflowStatusCancelled ||
+		status.Status == WorkflowStatusTimedOut {
+		return fmt.Errorf("workflow %s is already in terminal state: %s", workflowID, status.Status)
+	}
+
+	// Mark as cancelled
+	status.Status = WorkflowStatusCancelled
+	status.LastUpdateTime = time.Now()
+
+	if err := e.stateStore.SaveState(ctx, workflowID, status); err != nil {
+		return fmt.Errorf("failed to save cancelled state: %w", err)
+	}
+
+	logger.Infof("Workflow %s marked as cancelled", workflowID)
+	return nil
+}
+
+// applyParameterDefaults applies default values from JSON Schema to workflow parameters.
+// This ensures that parameters with defaults are set even if not provided by the client.
+//
+// JSON Schema format:
+//
+//	{
+//	  "type": "object",
+//	  "properties": {
+//	    "param_name": {"type": "string", "default": "default_value"}
+//	  }
+//	}
+//
+// If a parameter is missing from params but has a default in the schema, the default is applied.
+// Parameters explicitly provided by the client are never overwritten.
+func applyParameterDefaults(schema map[string]any, params map[string]any) map[string]any {
+	if params == nil {
+		params = make(map[string]any)
+	}
+	if schema == nil {
+		return params
+	}
+
+	// Extract properties from JSON Schema
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok || properties == nil {
+		return params
+	}
+
+	// Create result map with provided params
+	result := make(map[string]any, len(params))
+	for k, v := range params {
+		result[k] = v
+	}
+
+	// Apply defaults for missing parameters
+	for paramName, propSchema := range properties {
+		// Skip if parameter was explicitly provided
+		if _, exists := result[paramName]; exists {
+			continue
+		}
+
+		// Extract default value from property schema
+		if propMap, ok := propSchema.(map[string]any); ok {
+			if defaultValue, hasDefault := propMap["default"]; hasDefault {
+				result[paramName] = defaultValue
+				logger.Debugf("Applied default value for parameter %s: %v", paramName, defaultValue)
+			}
+		}
+	}
+
+	return result
 }

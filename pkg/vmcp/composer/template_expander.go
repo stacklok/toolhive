@@ -164,6 +164,10 @@ func (e *defaultTemplateExpander) expandString(
 // buildStepsContext converts StepResult map to a template-friendly structure.
 // This provides access to step outputs via {{.steps.stepid.output.field}}.
 func (*defaultTemplateExpander) buildStepsContext(workflowCtx *WorkflowContext) map[string]any {
+	// Acquire read lock to safely access Steps map during concurrent execution
+	workflowCtx.mu.RLock()
+	defer workflowCtx.mu.RUnlock()
+
 	stepsCtx := make(map[string]any, len(workflowCtx.Steps))
 
 	for stepID, result := range workflowCtx.Steps {

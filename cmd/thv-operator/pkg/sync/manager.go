@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -15,7 +14,6 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 )
 
 // Result contains the result of a successful sync operation
@@ -91,15 +89,10 @@ type Manager interface {
 
 	// UpdateManualSyncTriggerOnly updates manual sync trigger tracking without performing actual sync
 	UpdateManualSyncTriggerOnly(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (ctrl.Result, error)
-
-	// Delete cleans up storage resources for the MCPRegistry
-	Delete(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) error
 }
 
 // DataChangeDetector detects changes in source data
 type DataChangeDetector interface {
-	// IsDataChanged checks if source data has changed by comparing hashes
-	IsDataChanged(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) (bool, error)
 }
 
 // ManualSyncChecker handles manual sync detection logic
@@ -119,22 +112,17 @@ type AutomaticSyncChecker interface {
 type DefaultSyncManager struct {
 	client               client.Client
 	scheme               *runtime.Scheme
-	sourceHandlerFactory sources.SourceHandlerFactory
-	storageManager       sources.StorageManager
 	dataChangeDetector   DataChangeDetector
 	manualSyncChecker    ManualSyncChecker
 	automaticSyncChecker AutomaticSyncChecker
 }
 
 // NewDefaultSyncManager creates a new DefaultSyncManager
-func NewDefaultSyncManager(k8sClient client.Client, scheme *runtime.Scheme,
-	sourceHandlerFactory sources.SourceHandlerFactory, storageManager sources.StorageManager) *DefaultSyncManager {
+func NewDefaultSyncManager(k8sClient client.Client, scheme *runtime.Scheme) *DefaultSyncManager {
 	return &DefaultSyncManager{
 		client:               k8sClient,
 		scheme:               scheme,
-		sourceHandlerFactory: sourceHandlerFactory,
-		storageManager:       storageManager,
-		dataChangeDetector:   &DefaultDataChangeDetector{sourceHandlerFactory: sourceHandlerFactory},
+		dataChangeDetector:   &DefaultDataChangeDetector{},
 		manualSyncChecker:    &DefaultManualSyncChecker{},
 		automaticSyncChecker: &DefaultAutomaticSyncChecker{},
 	}
@@ -187,29 +175,24 @@ func (s *DefaultSyncManager) ShouldSync(
 		reason = ReasonFilterChanged
 	} else if shouldSync || requeueElapsed {
 		// Check if source data has changed by comparing hash
-		dataChanged, err := s.dataChangeDetector.IsDataChanged(ctx, mcpRegistry)
-		if err != nil {
-			ctxLogger.Error(err, "Failed to determine if data has changed")
+		// force to true for now, will remove in later PR when removing sync
+		dataChanged := true
+		ctxLogger.Info("Checked data changes", "dataChanged", dataChanged)
+		if dataChanged {
 			shouldSync = true
-			reason = ReasonErrorCheckingChanges
-		} else {
-			ctxLogger.Info("Checked data changes", "dataChanged", dataChanged)
-			if dataChanged {
-				shouldSync = true
-				if syncNeededForState {
-					reason = ReasonRegistryNotReady
-				} else if manualSyncRequested {
-					reason = ReasonManualWithChanges
-				} else {
-					reason = ReasonSourceDataChanged
-				}
+			if syncNeededForState {
+				reason = ReasonRegistryNotReady
+			} else if manualSyncRequested {
+				reason = ReasonManualWithChanges
 			} else {
-				shouldSync = false
-				if syncNeededForState {
-					reason = ReasonUpToDateWithPolicy
-				} else {
-					reason = ReasonManualNoChanges
-				}
+				reason = ReasonSourceDataChanged
+			}
+		} else {
+			shouldSync = false
+			if syncNeededForState {
+				reason = ReasonUpToDateWithPolicy
+			} else {
+				reason = ReasonManualNoChanges
 			}
 		}
 	}
@@ -302,24 +285,14 @@ func (s *DefaultSyncManager) calculateNextSyncTime(ctx context.Context, mcpRegis
 
 // PerformSync performs the complete sync operation for the MCPRegistry
 // The controller is responsible for setting sync status via the status collector
-func (s *DefaultSyncManager) PerformSync(
-	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
+func (*DefaultSyncManager) PerformSync(
+	_ context.Context, _ *mcpv1alpha1.MCPRegistry,
 ) (ctrl.Result, *Result, *mcpregistrystatus.Error) {
-	// Fetch and process registry data
-	fetchResult, err := s.fetchAndProcessRegistryData(ctx, mcpRegistry)
-	if err != nil {
-		return ctrl.Result{RequeueAfter: DefaultSyncRequeueAfter}, nil, err
-	}
-
-	// Store the processed registry data
-	if err := s.storeRegistryData(ctx, mcpRegistry, fetchResult); err != nil {
-		return ctrl.Result{RequeueAfter: DefaultSyncRequeueAfter}, nil, err
-	}
 
 	// Return sync result with data for status collector
 	syncResult := &Result{
-		Hash:        fetchResult.Hash,
-		ServerCount: fetchResult.ServerCount,
+		Hash:        "hash-dummy-value",
+		ServerCount: 1,
 	}
 
 	return ctrl.Result{}, syncResult, nil
@@ -352,83 +325,4 @@ func (s *DefaultSyncManager) UpdateManualSyncTriggerOnly(
 
 	ctxLogger.Info("Manual sync completed (no data changes required)")
 	return ctrl.Result{}, nil
-}
-
-// Delete cleans up storage resources for the MCPRegistry
-func (s *DefaultSyncManager) Delete(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) error {
-	return s.storageManager.Delete(ctx, mcpRegistry)
-}
-
-// fetchAndProcessRegistryData handles source handler creation, validation, fetch, and filtering
-func (s *DefaultSyncManager) fetchAndProcessRegistryData(
-	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry) (*sources.FetchResult, *mcpregistrystatus.Error) {
-	ctxLogger := log.FromContext(ctx)
-
-	// Get source handler
-	sourceHandler, err := s.sourceHandlerFactory.CreateHandler(mcpRegistry.Spec.Source.Type)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to create source handler")
-		return nil, &mcpregistrystatus.Error{
-			Err:             err,
-			Message:         fmt.Sprintf("Failed to create source handler: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionSourceAvailable,
-			ConditionReason: conditionReasonHandlerCreationFailed,
-		}
-	}
-
-	// Validate source configuration
-	if err := sourceHandler.Validate(&mcpRegistry.Spec.Source); err != nil {
-		ctxLogger.Error(err, "Source validation failed")
-		return nil, &mcpregistrystatus.Error{
-			Err:             err,
-			Message:         fmt.Sprintf("Source validation failed: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionSourceAvailable,
-			ConditionReason: conditionReasonValidationFailed,
-		}
-	}
-
-	// Execute fetch operation
-	fetchResult, err := sourceHandler.FetchRegistry(ctx, mcpRegistry)
-	if err != nil {
-		ctxLogger.Error(err, "Fetch operation failed")
-		// Sync attempt counting is now handled by the controller via status collector
-		return nil, &mcpregistrystatus.Error{
-			Err:             err,
-			Message:         fmt.Sprintf("Fetch failed: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionSyncSuccessful,
-			ConditionReason: conditionReasonFetchFailed,
-		}
-	}
-
-	ctxLogger.Info("Registry data fetched successfully from source",
-		"serverCount", fetchResult.ServerCount,
-		"format", fetchResult.Format,
-		"hash", fetchResult.Hash)
-
-	return fetchResult, nil
-}
-
-// storeRegistryData stores the registry data using the storage manager
-func (s *DefaultSyncManager) storeRegistryData(
-	ctx context.Context,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
-	fetchResult *sources.FetchResult) *mcpregistrystatus.Error {
-	ctxLogger := log.FromContext(ctx)
-
-	if err := s.storageManager.Store(ctx, mcpRegistry, fetchResult.Registry); err != nil {
-		ctxLogger.Error(err, "Failed to store registry data")
-		return &mcpregistrystatus.Error{
-			Err:             err,
-			Message:         fmt.Sprintf("Storage failed: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionSyncSuccessful,
-			ConditionReason: conditionReasonStorageFailed,
-		}
-	}
-
-	ctxLogger.Info("Registry data stored successfully",
-		"namespace", mcpRegistry.Namespace,
-		"registryName", mcpRegistry.Name)
-
-	return nil
 }

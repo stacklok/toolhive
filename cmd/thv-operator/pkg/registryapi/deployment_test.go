@@ -1,7 +1,6 @@
 package registryapi
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,8 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
-	sourcesmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources/mocks"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 )
 
 func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
@@ -24,7 +22,7 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 	tests := []struct {
 		name           string
 		mcpRegistry    *mcpv1alpha1.MCPRegistry
-		setupMocks     func(*sourcesmocks.MockSourceHandler, *sourcesmocks.MockStorageManager)
+		setupMocks     func()
 		expectedError  string
 		validateResult func(*testing.T, *appsv1.Deployment)
 	}{
@@ -41,9 +39,7 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 					},
 				},
 			},
-			setupMocks: func(handler *sourcesmocks.MockSourceHandler, storage *sourcesmocks.MockStorageManager) {
-				handler.EXPECT().CurrentHash(gomock.Any(), gomock.Any()).Return("abc123hash", nil)
-				storage.EXPECT().GetType().Return(sources.StorageTypeConfigMap).AnyTimes()
+			setupMocks: func() {
 			},
 			validateResult: func(t *testing.T, deployment *appsv1.Deployment) {
 				t.Helper()
@@ -76,7 +72,7 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 				assert.Equal(t, expectedLabels, deployment.Spec.Template.Labels)
 
 				// Verify pod template annotations
-				assert.Equal(t, "abc123hash", deployment.Spec.Template.Annotations["toolhive.stacklok.dev/config-hash"])
+				assert.Equal(t, "hash-dummy-value", deployment.Spec.Template.Annotations["toolhive.stacklok.dev/config-hash"])
 
 				// Verify service account
 				assert.Equal(t, DefaultServiceAccountName, deployment.Spec.Template.Spec.ServiceAccountName)
@@ -114,55 +110,7 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 				assert.Equal(t, int32(ReadinessInitialDelay), container.ReadinessProbe.InitialDelaySeconds)
 				assert.Equal(t, int32(ReadinessPeriod), container.ReadinessProbe.PeriodSeconds)
 
-				// Verify storage configuration was applied (ConfigMap volume and mount)
-				foundVolume := false
-				for _, volume := range deployment.Spec.Template.Spec.Volumes {
-					if volume.Name == RegistryDataVolumeName {
-						foundVolume = true
-						assert.NotNil(t, volume.ConfigMap)
-						break
-					}
-				}
-				assert.True(t, foundVolume, "ConfigMap volume should be configured")
-
-				foundMount := false
-				for _, mount := range container.VolumeMounts {
-					if mount.Name == RegistryDataVolumeName {
-						foundMount = true
-						assert.Equal(t, RegistryDataMountPath, mount.MountPath)
-						assert.True(t, mount.ReadOnly)
-						break
-					}
-				}
-				assert.True(t, foundMount, "Volume mount should be configured")
-
-				// Verify container args include ConfigMap-specific arguments
-				expectedArgs := []string{
-					ServeCommand,
-					"--from-file=/data/registry/registry.json",
-					"--registry-name=test-registry",
-				}
-				assert.Equal(t, expectedArgs, container.Args)
 			},
-		},
-		{
-			name: "storage configuration failure",
-			mcpRegistry: &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Source: mcpv1alpha1.MCPRegistrySource{
-						Type: "github",
-					},
-				},
-			},
-			setupMocks: func(handler *sourcesmocks.MockSourceHandler, storage *sourcesmocks.MockStorageManager) {
-				handler.EXPECT().CurrentHash(gomock.Any(), gomock.Any()).Return("abc123hash", nil)
-				storage.EXPECT().GetType().Return("unsupported-type").AnyTimes()
-			},
-			expectedError: "failed to configure deployment storage: unsupported storage manager type: unsupported-type",
 		},
 	}
 
@@ -172,25 +120,14 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
-			mockStorageManager := sourcesmocks.NewMockStorageManager(ctrl)
-			mockSourceHandler := sourcesmocks.NewMockSourceHandler(ctrl)
-			tt.setupMocks(mockSourceHandler, mockStorageManager)
+			tt.setupMocks()
 
-			manager := &manager{
-				storageManager: mockStorageManager,
-			}
+			manager := &manager{}
 
-			deployment, err := manager.buildRegistryAPIDeployment(tt.mcpRegistry, mockSourceHandler)
-
-			if tt.expectedError != "" {
-				assert.EqualError(t, err, tt.expectedError)
-				assert.Nil(t, deployment)
-			} else {
-				assert.NoError(t, err)
-				if tt.validateResult != nil {
-					tt.validateResult(t, deployment)
-				}
-			}
+			configManager := config.NewConfigManagerForTesting(tt.mcpRegistry)
+			deployment, err := manager.buildRegistryAPIDeployment(tt.mcpRegistry, configManager)
+			require.NoError(t, err)
+			tt.validateResult(t, deployment)
 		})
 	}
 }
@@ -432,65 +369,6 @@ func TestHasVolumeMount(t *testing.T) {
 			t.Parallel()
 
 			result := hasVolumeMount(tt.volumeMounts, tt.searchName)
-
-			assert.Equal(t, tt.expected, result, tt.description)
-		})
-	}
-}
-
-func TestManagerGetSourceDataHash(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		setupMocks  func(*sourcesmocks.MockSourceHandler)
-		expected    string
-		description string
-	}{
-		{
-			name: "successful hash retrieval",
-			setupMocks: func(m *sourcesmocks.MockSourceHandler) {
-				m.EXPECT().CurrentHash(gomock.Any(), gomock.Any()).Return("abc123hash", nil)
-			},
-			expected:    "abc123hash",
-			description: "Should return hash from source handler",
-		},
-		{
-			name: "hash retrieval error",
-			setupMocks: func(m *sourcesmocks.MockSourceHandler) {
-				m.EXPECT().CurrentHash(gomock.Any(), gomock.Any()).Return("", errors.New("failed to get hash"))
-			},
-			expected:    "hash-unavailable",
-			description: "Should return fallback when hash retrieval fails",
-		},
-		{
-			name: "empty hash returned",
-			setupMocks: func(m *sourcesmocks.MockSourceHandler) {
-				m.EXPECT().CurrentHash(gomock.Any(), gomock.Any()).Return("", nil)
-			},
-			expected:    "",
-			description: "Should return empty string when handler returns empty hash",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-
-			mockSourceHandler := sourcesmocks.NewMockSourceHandler(ctrl)
-			tt.setupMocks(mockSourceHandler)
-
-			manager := &manager{}
-			mcpRegistry := &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-				},
-			}
-
-			result := manager.getSourceDataHash(mcpRegistry, mockSourceHandler)
 
 			assert.Equal(t, tt.expected, result, tt.description)
 		})

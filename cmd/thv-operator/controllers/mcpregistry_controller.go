@@ -21,7 +21,6 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sync"
 )
 
@@ -44,9 +43,7 @@ type MCPRegistryReconciler struct {
 	Scheme *runtime.Scheme
 
 	// Sync manager handles all sync operations
-	syncManager          sync.Manager
-	storageManager       sources.StorageManager
-	sourceHandlerFactory sources.SourceHandlerFactory
+	syncManager sync.Manager
 	// Registry API manager handles API deployment operations
 	registryAPIManager registryapi.Manager
 }
@@ -61,18 +58,13 @@ func getCurrentAttemptCount(mcpRegistry *mcpv1alpha1.MCPRegistry) int {
 
 // NewMCPRegistryReconciler creates a new MCPRegistryReconciler with required dependencies
 func NewMCPRegistryReconciler(k8sClient client.Client, scheme *runtime.Scheme) *MCPRegistryReconciler {
-	sourceHandlerFactory := sources.NewSourceHandlerFactory(k8sClient)
-	storageManager := sources.NewConfigMapStorageManager(k8sClient, scheme)
-	syncManager := sync.NewDefaultSyncManager(k8sClient, scheme, sourceHandlerFactory, storageManager)
-	registryAPIManager := registryapi.NewManager(k8sClient, scheme, storageManager, sourceHandlerFactory)
-
+	syncManager := sync.NewDefaultSyncManager(k8sClient, scheme)
+	registryAPIManager := registryapi.NewManager(k8sClient, scheme)
 	return &MCPRegistryReconciler{
-		Client:               k8sClient,
-		Scheme:               scheme,
-		syncManager:          syncManager,
-		storageManager:       storageManager,
-		sourceHandlerFactory: sourceHandlerFactory,
-		registryAPIManager:   registryAPIManager,
+		Client:             k8sClient,
+		Scheme:             scheme,
+		syncManager:        syncManager,
+		registryAPIManager: registryAPIManager,
 	}
 }
 
@@ -369,12 +361,6 @@ func (r *MCPRegistryReconciler) finalizeMCPRegistry(ctx context.Context, registr
 		return err
 	}
 
-	// Clean up internal storage ConfigMaps
-	if err := r.syncManager.Delete(ctx, registry); err != nil {
-		ctxLogger.Error(err, "Failed to delete storage during finalization")
-		// Continue with finalization even if storage cleanup fails
-	}
-
 	// TODO: Add additional cleanup logic when other features are implemented:
 	// - Clean up Registry API deployment and service (will be handled by owner references)
 	// - Cancel any running sync operations
@@ -420,7 +406,7 @@ func (r *MCPRegistryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // Apply applies all collected status changes in a single batch update.
 // Only actual changes are applied to the status to avoid unnecessary reconciliations
-func (r *MCPRegistryReconciler) applyStatusUpdates(
+func (*MCPRegistryReconciler) applyStatusUpdates(
 	ctx context.Context, k8sClient client.Client,
 	mcpRegistry *mcpv1alpha1.MCPRegistry, statusManager mcpregistrystatus.StatusManager) error {
 
@@ -458,16 +444,6 @@ func (r *MCPRegistryReconciler) applyStatusUpdates(
 		latestRegistryStatus.LastAppliedFilterHash = currentFilterHashStr
 		hasUpdates = true
 		ctxLogger.Info("Updated LastAppliedFilterHash", "hash", currentFilterHashStr)
-	}
-
-	// Update storage reference if necessary
-	storageRef := r.storageManager.GetStorageReference(latestRegistry)
-	if storageRef != nil {
-		if latestRegistryStatus.StorageRef == nil || latestRegistryStatus.StorageRef.ConfigMapRef.Name != storageRef.ConfigMapRef.Name {
-			latestRegistryStatus.StorageRef = storageRef
-			hasUpdates = true
-			ctxLogger.Info("Updated StorageRef", "storageRef", storageRef)
-		}
 	}
 
 	// Apply status changes from status manager

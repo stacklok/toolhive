@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -203,21 +202,21 @@ func (u *UniqueNames) GenerateTriggerValue(operation string) string {
 
 // verifyServerContent is a helper function to verify that stored registry server content
 // matches the expected servers array. It performs comprehensive field-by-field comparison.
-func verifyServerContent(storedRegistry ToolHiveRegistryData, expectedServers []RegistryServer) {
-	gomega.Expect(storedRegistry.Servers).To(gomega.HaveLen(len(expectedServers)))
+// func verifyServerContent(storedRegistry ToolHiveRegistryData, expectedServers []RegistryServer) {
+// 	gomega.Expect(storedRegistry.Servers).To(gomega.HaveLen(len(expectedServers)))
 
-	for _, expectedServer := range expectedServers {
-		serverName := expectedServer.Name
-		gomega.Expect(storedRegistry.Servers).To(gomega.HaveKey(serverName))
+// 	for _, expectedServer := range expectedServers {
+// 		serverName := expectedServer.Name
+// 		gomega.Expect(storedRegistry.Servers).To(gomega.HaveKey(serverName))
 
-		actualServer := storedRegistry.Servers[serverName]
-		gomega.Expect(actualServer.Name).To(gomega.Equal(expectedServer.Name))
-		gomega.Expect(actualServer.Description).To(gomega.Equal(expectedServer.Description))
-		gomega.Expect(actualServer.Tier).To(gomega.Equal(expectedServer.Tier))
-		gomega.Expect(actualServer.Status).To(gomega.Equal(expectedServer.Status))
-		gomega.Expect(actualServer.Transport).To(gomega.Equal(expectedServer.Transport))
-		gomega.Expect(actualServer.Image).To(gomega.Equal(expectedServer.Image))
-		gomega.Expect(actualServer.Tools).To(gomega.Equal(expectedServer.Tools))
-		gomega.Expect(actualServer.Tags).To(gomega.Equal(expectedServer.Tags))
-	}
-}
+// 		actualServer := storedRegistry.Servers[serverName]
+// 		gomega.Expect(actualServer.Name).To(gomega.Equal(expectedServer.Name))
+// 		gomega.Expect(actualServer.Description).To(gomega.Equal(expectedServer.Description))
+// 		gomega.Expect(actualServer.Tier).To(gomega.Equal(expectedServer.Tier))
+// 		gomega.Expect(actualServer.Status).To(gomega.Equal(expectedServer.Status))
+// 		gomega.Expect(actualServer.Transport).To(gomega.Equal(expectedServer.Transport))
+// 		gomega.Expect(actualServer.Image).To(gomega.Equal(expectedServer.Image))
+// 		gomega.Expect(actualServer.Tools).To(gomega.Equal(expectedServer.Tools))
+// 		gomega.Expect(actualServer.Tags).To(gomega.Equal(expectedServer.Tags))
+// 	}
+// }

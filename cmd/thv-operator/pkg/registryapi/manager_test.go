@@ -2,6 +2,8 @@ package registryapi
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,10 +13,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources"
-	sourcesmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/sources/mocks"
 )
 
 func TestNewManager(t *testing.T) {
@@ -36,14 +39,10 @@ func TestNewManager(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
-			// Create mock dependencies
-			mockStorageManager := sourcesmocks.NewMockStorageManager(ctrl)
-			mockSourceHandlerFactory := sourcesmocks.NewMockSourceHandlerFactory(ctrl)
-
 			scheme := runtime.NewScheme()
 
 			// Create manager
-			manager := NewManager(nil, scheme, mockStorageManager, mockSourceHandlerFactory)
+			manager := NewManager(nil, scheme)
 
 			// Verify manager is created
 			assert.NotNil(t, manager)
@@ -54,241 +53,184 @@ func TestNewManager(t *testing.T) {
 	}
 }
 
-func TestManagerConfigureDeploymentStorage(t *testing.T) {
+func TestReconcileAPIService(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name           string
-		setupMocks     func(*sourcesmocks.MockStorageManager)
-		expectedError  string
-		validateResult func(*testing.T, *appsv1.Deployment, error)
-	}{
-		{
-			name: "configmap storage manager success",
-			setupMocks: func(m *sourcesmocks.MockStorageManager) {
-				m.EXPECT().GetType().Return(sources.StorageTypeConfigMap).AnyTimes()
+	t.Run("successful reconciliation creates configmap and returns no error", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		// Create scheme and fake client
+		scheme := runtime.NewScheme()
+		_ = mcpv1alpha1.AddToScheme(scheme)
+		_ = appsv1.AddToScheme(scheme)
+		_ = corev1.AddToScheme(scheme)
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			Build()
+
+		// Create test MCPRegistry
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-registry",
+				Namespace: "test-namespace",
 			},
-			validateResult: func(t *testing.T, deployment *appsv1.Deployment, err error) {
-				t.Helper()
-				assert.NoError(t, err)
-
-				// Verify ConfigMap volume was added
-				foundVolume := false
-				for _, volume := range deployment.Spec.Template.Spec.Volumes {
-					if volume.Name == RegistryDataVolumeName {
-						foundVolume = true
-						assert.NotNil(t, volume.ConfigMap)
-						assert.Equal(t, "test-registry-registry-storage", volume.ConfigMap.Name)
-						break
-					}
-				}
-				assert.True(t, foundVolume, "ConfigMap volume should be added")
-
-				// Verify volume mount was added to container
-				container := findContainerByName(deployment.Spec.Template.Spec.Containers, registryAPIContainerName)
-				require.NotNil(t, container)
-
-				foundMount := false
-				for _, mount := range container.VolumeMounts {
-					if mount.Name == RegistryDataVolumeName {
-						foundMount = true
-						assert.Equal(t, RegistryDataMountPath, mount.MountPath)
-						assert.True(t, mount.ReadOnly)
-						break
-					}
-				}
-				assert.True(t, foundMount, "Volume mount should be added to container")
-
-				// Verify container args are set correctly
-				expectedArgs := []string{
-					ServeCommand,
-					"--from-file=/data/registry/registry.json",
-					"--registry-name=test-registry",
-				}
-				assert.Equal(t, expectedArgs, container.Args)
-			},
-		},
-		{
-			name: "unsupported storage manager type",
-			setupMocks: func(m *sourcesmocks.MockStorageManager) {
-				m.EXPECT().GetType().Return("unsupported-type").AnyTimes()
-			},
-			expectedError: "unsupported storage manager type: unsupported-type",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-
-			mockStorageManager := sourcesmocks.NewMockStorageManager(ctrl)
-			mockSourceHandlerFactory := sourcesmocks.NewMockSourceHandlerFactory(ctrl)
-			tt.setupMocks(mockStorageManager)
-
-			scheme := runtime.NewScheme()
-			manager := NewManager(nil, scheme, mockStorageManager, mockSourceHandlerFactory).(*manager)
-
-			// Create a test deployment with the registry-api container
-			mcpRegistry := &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-				},
-			}
-
-			deployment := &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Template: corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									Name:  registryAPIContainerName,
-									Image: "test-image",
-									Args:  []string{"old-args"},
-								},
-							},
-						},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Source: mcpv1alpha1.MCPRegistrySource{
+					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMap: &mcpv1alpha1.ConfigMapSource{
+						Name: "test-configmap",
 					},
 				},
-			}
-
-			err := manager.configureDeploymentStorage(deployment, mcpRegistry, registryAPIContainerName)
-
-			if tt.expectedError != "" {
-				assert.EqualError(t, err, tt.expectedError)
-			} else if tt.validateResult != nil {
-				tt.validateResult(t, deployment, err)
-			}
-		})
-	}
-}
-
-func TestManagerConfigureConfigMapStorage(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name            string
-		containerName   string
-		existingVolumes []corev1.Volume
-		existingMounts  []corev1.VolumeMount
-		expectedError   string
-		validateResult  func(*testing.T, *appsv1.Deployment)
-	}{
-		{
-			name:          "successful configuration",
-			containerName: registryAPIContainerName,
-			validateResult: func(t *testing.T, deployment *appsv1.Deployment) {
-				t.Helper()
-
-				// Check volume was added
-				assert.Len(t, deployment.Spec.Template.Spec.Volumes, 1)
-				volume := deployment.Spec.Template.Spec.Volumes[0]
-				assert.Equal(t, RegistryDataVolumeName, volume.Name)
-				assert.NotNil(t, volume.ConfigMap)
-				assert.Equal(t, "test-registry-registry-storage", volume.ConfigMap.Name)
-
-				// Check volume mount was added
-				container := findContainerByName(deployment.Spec.Template.Spec.Containers, registryAPIContainerName)
-				require.NotNil(t, container)
-				assert.Len(t, container.VolumeMounts, 1)
-				mount := container.VolumeMounts[0]
-				assert.Equal(t, RegistryDataVolumeName, mount.Name)
-				assert.Equal(t, RegistryDataMountPath, mount.MountPath)
-				assert.True(t, mount.ReadOnly)
+				SyncPolicy: &mcpv1alpha1.SyncPolicy{
+					Interval: "10m",
+				},
 			},
-		},
-		{
-			name:          "container not found",
-			containerName: "nonexistent-container",
-			expectedError: "container 'nonexistent-container' not found in deployment",
-		},
-		{
-			name:          "idempotent - volume already exists",
-			containerName: registryAPIContainerName,
-			existingVolumes: []corev1.Volume{
-				{
-					Name: RegistryDataVolumeName,
-					VolumeSource: corev1.VolumeSource{
-						ConfigMap: &corev1.ConfigMapVolumeSource{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "existing-configmap",
-							},
-						},
+		}
+
+		// Create manager
+		manager := NewManager(fakeClient, scheme)
+		// Execute
+		result := manager.ReconcileAPIService(context.Background(), mcpRegistry)
+
+		// Verify - should succeed with no error
+		assert.Nil(t, result, "Expected no error result from ReconcileAPIService")
+
+		// Verify that the config ConfigMap was created
+		configMapList := &corev1.ConfigMapList{}
+		err := fakeClient.List(context.Background(), configMapList, client.InNamespace("test-namespace"))
+		require.NoError(t, err, "Should be able to list ConfigMaps")
+
+		// Find the registry server config ConfigMap
+		var foundConfigMap *corev1.ConfigMap
+		for _, cm := range configMapList.Items {
+			if strings.Contains(cm.Name, "test-registry") && strings.Contains(cm.Name, "registry-server-config") {
+				foundConfigMap = &cm
+				break
+			}
+		}
+
+		require.NotNil(t, foundConfigMap, "Registry server config ConfigMap should have been created")
+		assert.Equal(t, "test-namespace", foundConfigMap.Namespace)
+		assert.Contains(t, foundConfigMap.Name, "test-registry")
+
+		// Verify ConfigMap has the expected data
+		assert.Contains(t, foundConfigMap.Data, "config.yaml", "ConfigMap should have config.yaml key")
+		configYAML := foundConfigMap.Data["config.yaml"]
+		assert.NotEmpty(t, configYAML, "config.yaml should not be empty")
+
+		// Verify the content includes expected configuration
+		assert.Contains(t, configYAML, "registryName: test-registry")
+		assert.Contains(t, configYAML, "format: toolhive")
+		assert.Contains(t, configYAML, "interval: 10m")
+	})
+
+	t.Run("config manager creation failure returns proper error", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		// Create scheme and fake client
+		scheme := runtime.NewScheme()
+		_ = mcpv1alpha1.AddToScheme(scheme)
+		_ = appsv1.AddToScheme(scheme)
+		_ = corev1.AddToScheme(scheme)
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			Build()
+
+		// Create test MCPRegistry
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-registry",
+				Namespace: "test-namespace",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Source: mcpv1alpha1.MCPRegistrySource{
+					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+				},
+				SyncPolicy: &mcpv1alpha1.SyncPolicy{
+					Interval: "10m",
+				},
+			},
+		}
+
+		// Create manager with nil scheme to cause config manager creation to fail
+		// This simulates the config.NewConfigManager returning an error
+		manager := NewManager(fakeClient, nil)
+		// Execute
+		result := manager.ReconcileAPIService(context.Background(), mcpRegistry)
+
+		// Verify that an error is returned
+		assert.NotNil(t, result, "Expected an error when config manager creation fails")
+		assert.Contains(t, result.Error(), "failed to create config manager",
+			"Error should indicate config manager creation failure")
+		assert.Contains(t, result.Error(), "scheme is required and cannot be nil",
+			"Error should include the underlying validation error")
+	})
+
+	t.Run("configmap upsert failure returns proper error", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		// Create scheme and a client that will fail on ConfigMap operations
+		scheme := runtime.NewScheme()
+		_ = mcpv1alpha1.AddToScheme(scheme)
+		_ = appsv1.AddToScheme(scheme)
+		_ = corev1.AddToScheme(scheme)
+
+		// Create a fake client that will return an error when trying to create ConfigMaps
+		err := errors.New("simulated ConfigMap operation failure")
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Create: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
+					// Simulate Update failure
+					return err
+				},
+			}).
+			Build()
+
+		// Create test MCPRegistry
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-registry",
+				Namespace: "test-namespace",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Source: mcpv1alpha1.MCPRegistrySource{
+					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMap: &mcpv1alpha1.ConfigMapSource{
+						Name: "test-configmap",
 					},
 				},
-			},
-			validateResult: func(t *testing.T, deployment *appsv1.Deployment) {
-				t.Helper()
-				// Should still have only one volume
-				assert.Len(t, deployment.Spec.Template.Spec.Volumes, 1)
-			},
-		},
-		{
-			name:          "idempotent - volume mount already exists",
-			containerName: registryAPIContainerName,
-			existingMounts: []corev1.VolumeMount{
-				{
-					Name:      RegistryDataVolumeName,
-					MountPath: "/existing/path",
-					ReadOnly:  false,
+				SyncPolicy: &mcpv1alpha1.SyncPolicy{
+					Interval: "10m",
 				},
 			},
-			validateResult: func(t *testing.T, deployment *appsv1.Deployment) {
-				t.Helper()
-				container := findContainerByName(deployment.Spec.Template.Spec.Containers, registryAPIContainerName)
-				require.NotNil(t, container)
-				// Should still have only one volume mount
-				assert.Len(t, container.VolumeMounts, 1)
-			},
-		},
-	}
+		}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+		// Create manager
+		manager := NewManager(fakeClient, scheme)
+		// Execute
+		result := manager.ReconcileAPIService(context.Background(), mcpRegistry)
 
-			scheme := runtime.NewScheme()
-			manager := &manager{scheme: scheme}
-
-			// Create test deployment
-			mcpRegistry := &mcpv1alpha1.MCPRegistry{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-registry",
-					Namespace: "test-namespace",
-				},
-			}
-
-			deployment := &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Template: corev1.PodTemplateSpec{
-						Spec: corev1.PodSpec{
-							Volumes: tt.existingVolumes,
-							Containers: []corev1.Container{
-								{
-									Name:         registryAPIContainerName,
-									Image:        "test-image",
-									VolumeMounts: tt.existingMounts,
-								},
-							},
-						},
-					},
-				},
-			}
-
-			err := manager.configureConfigMapStorage(deployment, mcpRegistry, tt.containerName)
-
-			if tt.expectedError != "" {
-				assert.EqualError(t, err, tt.expectedError)
-			} else {
-				assert.NoError(t, err)
-				if tt.validateResult != nil {
-					tt.validateResult(t, deployment)
-				}
-			}
-		})
-	}
+		// Verify that an error is returned
+		assert.NotNil(t, result, "Expected an error when ConfigMap upsert fails")
+		assert.Contains(t, result.Error(), "Failed to ensure registry server config config map",
+			"Error should indicate registry server config ConfigMap failure")
+		assert.Contains(t, result.Error(), "failed to upsert registry server config config map",
+			"Error should indicate upsert operation failure")
+		assert.Contains(t, result.Error(), "simulated ConfigMap operation failure",
+			"Error should include the underlying client error")
+	})
 }
 
 func TestManagerCheckAPIReadiness(t *testing.T) {

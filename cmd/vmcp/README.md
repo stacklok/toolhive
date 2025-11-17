@@ -58,7 +58,7 @@ thv group create my-team
 thv run github --name github-mcp --group my-team
 thv run fetch --name fetch-mcp --group my-team
 
-# 3. Create a vmcp configuration file (see example-config.yaml)
+# 3. Create a vmcp configuration file (see examples/vmcp-config.yaml)
 cat > vmcp-config.yaml <<EOF
 name: "my-vmcp"
 group: "my-team"

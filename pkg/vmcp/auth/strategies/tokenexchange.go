@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/env"
 )
 
 const (
@@ -49,12 +49,14 @@ type TokenExchangeStrategy struct {
 	// Each template is shared across all users connecting to that server.
 	exchangeConfigs map[string]*tokenexchange.ExchangeConfig
 	mu              sync.RWMutex
+	envReader       env.Reader
 }
 
 // NewTokenExchangeStrategy creates a new TokenExchangeStrategy instance.
-func NewTokenExchangeStrategy() *TokenExchangeStrategy {
+func NewTokenExchangeStrategy(envReader env.Reader) *TokenExchangeStrategy {
 	return &TokenExchangeStrategy{
 		exchangeConfigs: make(map[string]*tokenexchange.ExchangeConfig),
+		envReader:       envReader,
 	}
 }
 
@@ -96,7 +98,7 @@ func (s *TokenExchangeStrategy) Authenticate(ctx context.Context, req *http.Requ
 		return fmt.Errorf("identity has no token")
 	}
 
-	config, err := parseTokenExchangeMetadata(metadata)
+	config, err := parseTokenExchangeMetadata(metadata, s.envReader)
 	if err != nil {
 		return fmt.Errorf("invalid metadata: %w", err)
 	}
@@ -125,8 +127,8 @@ func (s *TokenExchangeStrategy) Authenticate(ctx context.Context, req *http.Requ
 //
 // This validation is typically called during configuration parsing to fail fast
 // if the strategy is misconfigured.
-func (*TokenExchangeStrategy) Validate(metadata map[string]any) error {
-	_, err := parseTokenExchangeMetadata(metadata)
+func (s *TokenExchangeStrategy) Validate(metadata map[string]any) error {
+	_, err := parseTokenExchangeMetadata(metadata, s.envReader)
 	return err
 }
 
@@ -142,7 +144,7 @@ type tokenExchangeConfig struct {
 
 // parseClientSecret parses and validates client_secret or client_secret_env from metadata.
 // Returns the resolved client secret, or an error if validation fails.
-func parseClientSecret(metadata map[string]any, clientID string) (string, error) {
+func parseClientSecret(metadata map[string]any, clientID string, envReader env.Reader) (string, error) {
 	// Check for client_secret first (takes precedence)
 	if clientSecret, ok := metadata["client_secret"].(string); ok {
 		if clientID == "" {
@@ -157,7 +159,7 @@ func parseClientSecret(metadata map[string]any, clientID string) (string, error)
 			return "", fmt.Errorf("client_secret_env cannot be provided without client_id")
 		}
 		// Resolve the environment variable
-		secret := os.Getenv(clientSecretEnv)
+		secret := envReader.Getenv(clientSecretEnv)
 		if secret == "" {
 			return "", fmt.Errorf("environment variable %s not set or empty", clientSecretEnv)
 		}
@@ -169,7 +171,7 @@ func parseClientSecret(metadata map[string]any, clientID string) (string, error)
 }
 
 // parseTokenExchangeMetadata parses and validates token exchange metadata.
-func parseTokenExchangeMetadata(metadata map[string]any) (*tokenExchangeConfig, error) {
+func parseTokenExchangeMetadata(metadata map[string]any, envReader env.Reader) (*tokenExchangeConfig, error) {
 	config := &tokenExchangeConfig{}
 
 	// Required: token_url
@@ -185,7 +187,7 @@ func parseTokenExchangeMetadata(metadata map[string]any) (*tokenExchangeConfig, 
 	}
 
 	// Optional: client_secret or client_secret_env
-	clientSecret, err := parseClientSecret(metadata, config.ClientID)
+	clientSecret, err := parseClientSecret(metadata, config.ClientID, envReader)
 	if err != nil {
 		return nil, err
 	}

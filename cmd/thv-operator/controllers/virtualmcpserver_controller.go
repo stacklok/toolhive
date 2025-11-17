@@ -873,6 +873,10 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mcpv1alpha1.MCPServer{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapExternalAuthConfigToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPToolConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapToolConfigToVirtualMCPServer)).
+		Watches(
+			&mcpv1alpha1.VirtualMCPCompositeToolDefinition{},
+			handler.EnqueueRequestsFromMapFunc(r.mapCompositeToolDefinitionToVirtualMCPServer),
+		).
 		Complete(r)
 }
 
@@ -1079,6 +1083,56 @@ func (*VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
 	for _, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
 		if backendAuth.ExternalAuthConfigRef != nil &&
 			backendAuth.ExternalAuthConfigRef.Name == authConfigName {
+			return true
+		}
+	}
+
+	return false
+}
+
+// mapCompositeToolDefinitionToVirtualMCPServer maps VirtualMCPCompositeToolDefinition changes to
+// VirtualMCPServer reconciliation requests
+func (r *VirtualMCPServerReconciler) mapCompositeToolDefinitionToVirtualMCPServer(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
+	compositeToolDef, ok := obj.(*mcpv1alpha1.VirtualMCPCompositeToolDefinition)
+	if !ok {
+		return nil
+	}
+
+	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(compositeToolDef.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for VirtualMCPCompositeToolDefinition watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, vmcp := range vmcpList.Items {
+		if r.vmcpReferencesCompositeToolDefinition(&vmcp, compositeToolDef.Name) {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      vmcp.Name,
+					Namespace: vmcp.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
+}
+
+// vmcpReferencesCompositeToolDefinition checks if a VirtualMCPServer references the given VirtualMCPCompositeToolDefinition
+func (*VirtualMCPServerReconciler) vmcpReferencesCompositeToolDefinition(
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	compositeToolDefName string,
+) bool {
+	if len(vmcp.Spec.CompositeToolRefs) == 0 {
+		return false
+	}
+
+	for _, ref := range vmcp.Spec.CompositeToolRefs {
+		if ref.Name == compositeToolDefName {
 			return true
 		}
 	}

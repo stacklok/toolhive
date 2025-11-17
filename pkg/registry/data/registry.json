@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-16T00:19:54Z",
+  "last_updated": "2025-11-17T00:18:47Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -576,9 +576,9 @@
         "list_icons"
       ],
       "metadata": {
-        "stars": 6812,
+        "stars": 7384,
         "pulls": 0,
-        "last_updated": "2025-10-23T02:30:41Z"
+        "last_updated": "2025-11-16T02:34:27Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -627,9 +627,9 @@
         "recommend"
       ],
       "metadata": {
-        "stars": 6812,
+        "stars": 7384,
         "pulls": 0,
-        "last_updated": "2025-10-23T02:30:42Z"
+        "last_updated": "2025-11-16T02:34:28Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -1168,9 +1168,9 @@
         "chroma_delete_documents"
       ],
       "metadata": {
-        "stars": 397,
+        "stars": 421,
         "pulls": 0,
-        "last_updated": "2025-10-23T02:30:41Z"
+        "last_updated": "2025-11-16T02:34:28Z"
       },
       "repository_url": "https://github.com/chroma-core/chroma-mcp",
       "tags": [
@@ -1603,7 +1603,7 @@
       "metadata": {
         "stars": 5,
         "pulls": 0,
-        "last_updated": "2025-10-23T02:30:42Z"
+        "last_updated": "2025-11-16T02:34:28Z"
       },
       "repository_url": "https://github.com/dolthub/dolt-mcp",
       "tags": [
@@ -3855,9 +3855,9 @@
         "find_underused_resource_classes"
       ],
       "metadata": {
-        "stars": 67,
+        "stars": 69,
         "pulls": 0,
-        "last_updated": "2025-10-23T02:30:42Z"
+        "last_updated": "2025-11-16T02:34:28Z"
       },
       "repository_url": "https://github.com/CircleCI-Public/mcp-server-circleci",
       "tags": [
@@ -5900,7 +5900,7 @@
       "url": "https://modelcontextprotocol.io/mcp"
     },
     "mermaid": {
-      "description": "The Mermaid MCP Server enables AI assistants to create, validate, and render Mermaid diagrams seamlessly",
+      "description": "Enables AI assistants to create, validate, and render Mermaid diagrams seamlessly",
       "tier": "Official",
       "status": "Active",
       "transport": "streamable-http",

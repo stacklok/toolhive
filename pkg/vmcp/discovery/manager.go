@@ -113,7 +113,7 @@ func (m *DefaultManager) Discover(ctx context.Context, backends []vmcp.Backend) 
 		return nil, fmt.Errorf("%w: %v", ErrDiscoveryFailed, err)
 	}
 
-	// Cache the result (evicts soonest-expiring entry if at capacity)
+	// Cache the result (skips caching if at capacity and key doesn't exist)
 	m.cacheCapabilities(cacheKey, caps)
 
 	return caps, nil

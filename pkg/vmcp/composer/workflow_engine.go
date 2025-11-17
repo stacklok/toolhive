@@ -269,11 +269,6 @@ func (e *workflowEngine) executeStep(
 		return e.executeToolStep(stepCtx, step, workflowCtx)
 	case StepTypeElicitation:
 		return e.executeElicitationStep(stepCtx, step, workflowCtx)
-	case StepTypeConditional:
-		// Conditional steps are not implemented in Phase 2
-		err := fmt.Errorf("conditional steps are not yet supported")
-		workflowCtx.RecordStepFailure(step.ID, err)
-		return err
 	default:
 		err := fmt.Errorf("unsupported step type: %s", step.Type)
 		workflowCtx.RecordStepFailure(step.ID, err)
@@ -776,11 +771,6 @@ func (*workflowEngine) validateStep(step *WorkflowStep, validStepIDs map[string]
 				fmt.Sprintf("elicitation message is required for step %s", step.ID),
 				nil)
 		}
-	case StepTypeConditional:
-		// Future: validate conditional step
-		return NewValidationError("step.type",
-			fmt.Sprintf("conditional steps are not yet supported (step %s)", step.ID),
-			nil)
 	default:
 		return NewValidationError("step.type",
 			fmt.Sprintf("invalid step type %q for step %s", step.Type, step.ID),

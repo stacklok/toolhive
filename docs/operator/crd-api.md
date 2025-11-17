@@ -1978,8 +1978,8 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `id` _string_ | ID is the unique identifier for this step |  | Required: \{\} <br /> |
-| `type` _string_ | Type is the step type (tool_call, elicitation, etc.) | tool_call | Enum: [tool_call elicitation] <br /> |
-| `tool` _string_ | Tool is the tool to call (format: "workload.tool_name")<br />Only used when Type is "tool_call" |  |  |
+| `type` _string_ | Type is the step type (tool, elicitation, etc.) | tool | Enum: [tool elicitation] <br /> |
+| `tool` _string_ | Tool is the tool to call (format: "workload.tool_name")<br />Only used when Type is "tool" |  |  |
 | `arguments` _object (keys:string, values:string)_ | Arguments is a map of argument templates<br />Supports Go template syntax with .params and .steps |  |  |
 | `message` _string_ | Message is the elicitation message<br />Only used when Type is "elicitation" |  |  |
 | `schema` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Schema defines the expected response schema for elicitation |  | Type: object <br /> |

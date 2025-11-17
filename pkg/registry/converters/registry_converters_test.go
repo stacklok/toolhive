@@ -12,14 +12,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
-func TestNewServerRegistryFromToolhive(t *testing.T) {
+func TestNewUpstreamRegistryFromToolhiveRegistry(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name        string
 		toolhiveReg *types.Registry
 		expectError bool
-		validate    func(*testing.T, *types.ServerRegistry)
+		validate    func(*testing.T, *types.UpstreamRegistry)
 	}{
 		{
 			name: "successful conversion with container servers",
@@ -42,7 +42,7 @@ func TestNewServerRegistryFromToolhive(t *testing.T) {
 				RemoteServers: make(map[string]*types.RemoteServerMetadata),
 			},
 			expectError: false,
-			validate: func(t *testing.T, sr *types.ServerRegistry) {
+			validate: func(t *testing.T, sr *types.UpstreamRegistry) {
 				t.Helper()
 				assert.Equal(t, "1.0.0", sr.Version)
 				assert.Equal(t, "2024-01-01T00:00:00Z", sr.LastUpdated)
@@ -72,7 +72,7 @@ func TestNewServerRegistryFromToolhive(t *testing.T) {
 				},
 			},
 			expectError: false,
-			validate: func(t *testing.T, sr *types.ServerRegistry) {
+			validate: func(t *testing.T, sr *types.UpstreamRegistry) {
 				t.Helper()
 				assert.Len(t, sr.Servers, 1)
 				assert.Contains(t, sr.Servers[0].Name, "remote-server")
@@ -87,7 +87,7 @@ func TestNewServerRegistryFromToolhive(t *testing.T) {
 				RemoteServers: make(map[string]*types.RemoteServerMetadata),
 			},
 			expectError: false,
-			validate: func(t *testing.T, sr *types.ServerRegistry) {
+			validate: func(t *testing.T, sr *types.UpstreamRegistry) {
 				t.Helper()
 				assert.Empty(t, sr.Servers)
 			},
@@ -98,7 +98,7 @@ func TestNewServerRegistryFromToolhive(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := NewServerRegistryFromToolhive(tt.toolhiveReg)
+			result, err := NewUpstreamRegistryFromToolhiveRegistry(tt.toolhiveReg)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -114,13 +114,13 @@ func TestNewServerRegistryFromToolhive(t *testing.T) {
 	}
 }
 
-func TestNewServerRegistryFromUpstream(t *testing.T) {
+func TestNewUpstreamRegistryFromUpstreamServers(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
 		servers  []upstreamv0.ServerJSON
-		validate func(*testing.T, *types.ServerRegistry)
+		validate func(*testing.T, *types.UpstreamRegistry)
 	}{
 		{
 			name: "create from upstream servers",
@@ -139,7 +139,7 @@ func TestNewServerRegistryFromUpstream(t *testing.T) {
 					},
 				},
 			},
-			validate: func(t *testing.T, sr *types.ServerRegistry) {
+			validate: func(t *testing.T, sr *types.UpstreamRegistry) {
 				t.Helper()
 				assert.Equal(t, "1.0.0", sr.Version)
 				assert.NotEmpty(t, sr.LastUpdated)
@@ -150,7 +150,7 @@ func TestNewServerRegistryFromUpstream(t *testing.T) {
 		{
 			name:    "create from empty slice",
 			servers: []upstreamv0.ServerJSON{},
-			validate: func(t *testing.T, sr *types.ServerRegistry) {
+			validate: func(t *testing.T, sr *types.UpstreamRegistry) {
 				t.Helper()
 				assert.Empty(t, sr.Servers)
 			},
@@ -161,7 +161,7 @@ func TestNewServerRegistryFromUpstream(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := NewServerRegistryFromUpstream(tt.servers)
+			result := NewUpstreamRegistryFromUpstreamServers(tt.servers)
 
 			assert.NotNil(t, result)
 			if tt.validate != nil {
@@ -183,7 +183,7 @@ func TestNewServerRegistryFromUpstream_DefaultValues(t *testing.T) {
 		},
 	}
 
-	result := NewServerRegistryFromUpstream(servers)
+	result := NewUpstreamRegistryFromUpstreamServers(servers)
 
 	// Verify defaults
 	assert.Equal(t, "1.0.0", result.Version)

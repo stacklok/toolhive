@@ -204,14 +204,13 @@ spec:
                     tool:
                       description: |-
                         Tool is the tool to call (format: "workload.tool_name")
-                        Only used when Type is "tool_call"
+                        Only used when Type is "tool"
                       type: string
                     type:
-                      default: tool_call
-                      description: Type is the step type (tool_call, elicitation,
-                        etc.)
+                      default: tool
+                      description: Type is the step type (tool, elicitation, etc.)
                       enum:
-                      - tool_call
+                      - tool
                       - elicitation
                       type: string
                   required:

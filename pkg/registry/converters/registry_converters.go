@@ -9,20 +9,20 @@ import (
 	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
-// NewServerRegistryFromUpstream creates a ServerRegistry from upstream ServerJSON array.
+// NewUpstreamRegistryFromUpstreamServers creates a UpstreamRegistry from upstream ServerJSON array.
 // This is used when ingesting data from upstream MCP Registry API endpoints.
-func NewServerRegistryFromUpstream(servers []upstreamv0.ServerJSON) *types.ServerRegistry {
-	return &types.ServerRegistry{
+func NewUpstreamRegistryFromUpstreamServers(servers []upstreamv0.ServerJSON) *types.UpstreamRegistry {
+	return &types.UpstreamRegistry{
 		Version:     "1.0.0",
 		LastUpdated: time.Now().Format(time.RFC3339),
 		Servers:     servers,
 	}
 }
 
-// NewServerRegistryFromToolhive creates a ServerRegistry from ToolHive Registry.
+// NewUpstreamRegistryFromToolhiveRegistry creates a UpstreamRegistry from ToolHive Registry.
 // This converts ToolHive format to upstream ServerJSON using the converters package.
 // Used when ingesting data from ToolHive-format sources (Git, File, API).
-func NewServerRegistryFromToolhive(toolhiveReg *types.Registry) (*types.ServerRegistry, error) {
+func NewUpstreamRegistryFromToolhiveRegistry(toolhiveReg *types.Registry) (*types.UpstreamRegistry, error) {
 	if toolhiveReg == nil {
 		return nil, fmt.Errorf("toolhive registry cannot be nil")
 	}
@@ -47,7 +47,7 @@ func NewServerRegistryFromToolhive(toolhiveReg *types.Registry) (*types.ServerRe
 		servers = append(servers, *serverJSON)
 	}
 
-	return &types.ServerRegistry{
+	return &types.UpstreamRegistry{
 		Version:     toolhiveReg.Version,
 		LastUpdated: toolhiveReg.LastUpdated,
 		Servers:     servers,

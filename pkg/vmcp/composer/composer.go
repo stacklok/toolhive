@@ -64,6 +64,7 @@ type WorkflowDefinition struct {
 	//   - .params.*          - Input parameters
 	//   - .steps.*.output    - Step outputs
 	//   - .steps.*.status    - Step status
+	//   - .vars.*            - Workflow variables
 	//   - .workflow.*        - Workflow metadata (id, duration, timestamps)
 	//
 	// The template must produce valid JSON. If omitted, defaults to returning
@@ -324,6 +325,21 @@ type TemplateExpander interface {
 
 	// EvaluateCondition evaluates a condition template to a boolean.
 	EvaluateCondition(ctx context.Context, condition string, workflowCtx *WorkflowContext) (bool, error)
+
+	// ExpandOutputFormat evaluates the output_format template with workflow context.
+	// Returns a map representing the expanded JSON output structure.
+	// The template has access to:
+	//   - .params.*          - Input parameters
+	//   - .steps.*.output    - Step outputs
+	//   - .steps.*.status    - Step status
+	//   - .vars.*            - Workflow variables
+	//   - .workflow.*        - Workflow metadata (id, duration, timestamps, step_count)
+	ExpandOutputFormat(
+		ctx context.Context,
+		outputFormatTemplate string,
+		workflowCtx *WorkflowContext,
+		startTime, endTime int64,
+	) (map[string]any, error)
 }
 
 // WorkflowContext contains the execution context for a workflow.

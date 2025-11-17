@@ -176,9 +176,9 @@ func (e *workflowEngine) ExecuteWorkflow(
 			if e.stateStore != nil {
 				finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusTimedOut)
 				finalState.StartTime = result.StartTime
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				_ = e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState)
+				_ = e.stateStore.SaveState(saveCtx, workflowCtx.WorkflowID, finalState)
 			}
 
 			logger.Warnf("Workflow %s timed out after %v", def.Name, result.Duration)
@@ -195,9 +195,10 @@ func (e *workflowEngine) ExecuteWorkflow(
 		if e.stateStore != nil {
 			finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusFailed)
 			finalState.StartTime = result.StartTime
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			finalState.LastUpdateTime = result.EndTime
+			saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState)
+			_ = e.stateStore.SaveState(saveCtx, workflowCtx.WorkflowID, finalState)
 		}
 
 		return result, result.Error
@@ -205,17 +206,50 @@ func (e *workflowEngine) ExecuteWorkflow(
 
 	// Workflow completed successfully
 	result.Status = WorkflowStatusCompleted
-	result.Output = workflowCtx.GetLastStepOutput()
 	result.EndTime = time.Now()
 	result.Duration = result.EndTime.Sub(result.StartTime)
+
+	// Determine workflow output based on OutputFormat configuration
+	if def.OutputFormat != "" {
+		// Use custom output format template
+		expandedOutput, err := e.templateExpander.ExpandOutputFormat(
+			ctx, // Use original context, not execCtx which may be cancelled
+			def.OutputFormat,
+			workflowCtx,
+			result.StartTime.UnixMilli(),
+			result.EndTime.UnixMilli(),
+		)
+		if err != nil {
+			// Output format expansion failed - treat as workflow failure
+			result.Status = WorkflowStatusFailed
+			result.Error = fmt.Errorf("output format expansion failed: %w", err)
+			logger.Errorf("Workflow %s output format expansion failed: %v", def.Name, err)
+
+			// Save failure state
+			if e.stateStore != nil {
+				finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusFailed)
+				finalState.StartTime = result.StartTime
+				finalState.LastUpdateTime = result.EndTime
+				saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = e.stateStore.SaveState(saveCtx, workflowCtx.WorkflowID, finalState)
+			}
+
+			return result, result.Error
+		}
+		result.Output = expandedOutput
+	} else {
+		// Default behavior: return last step output (backward compatible)
+		result.Output = workflowCtx.GetLastStepOutput()
+	}
 
 	// Save final workflow state
 	if e.stateStore != nil {
 		finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusCompleted)
 		finalState.StartTime = result.StartTime
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState); err != nil {
+		if err := e.stateStore.SaveState(saveCtx, workflowCtx.WorkflowID, finalState); err != nil {
 			logger.Warnf("Failed to save final workflow state: %v", err)
 		}
 	}

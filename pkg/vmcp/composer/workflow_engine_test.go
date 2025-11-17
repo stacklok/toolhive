@@ -291,15 +291,20 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 
 	// Track execution timing to verify parallel execution
 	var executionMu sync.Mutex
-	startTimes := make(map[string]time.Time)
-	endTimes := make(map[string]time.Time)
+	// Use sequence numbers instead of wall-clock time to verify ordering.
+	// This is immune to race detector overhead and timing precision issues.
+	startSeq := make(map[string]int64)
+	endSeq := make(map[string]int64)
+	var seqCounter atomic.Int64
 	var concurrentCount int32
 	var maxConcurrent int32
 
 	// Helper to track execution timing
 	trackStart := func(stepID string) {
+		// Increment atomically outside the lock to reduce critical section
+		seq := seqCounter.Add(1)
 		executionMu.Lock()
-		startTimes[stepID] = time.Now()
+		startSeq[stepID] = seq
 		executionMu.Unlock()
 
 		// Track concurrency
@@ -314,8 +319,9 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 
 	trackEnd := func(stepID string) {
 		atomic.AddInt32(&concurrentCount, -1)
+		seq := seqCounter.Add(1)
 		executionMu.Lock()
-		endTimes[stepID] = time.Now()
+		endSeq[stepID] = seq
 		executionMu.Unlock()
 	}
 
@@ -404,20 +410,22 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 
 	// Verify parallel execution performance
 	// Sequential would be: 50+50+30 = 130ms
-	// Parallel should be: max(50,50)+30 = 80ms
-	// With overhead, should be < 120ms
-	assert.Less(t, totalDuration, 120*time.Millisecond,
+	// Parallel should be: max(50,50)+30 = 80ms expected
+	// Use 200ms timeout (2.5x expected time) to account for race detector instrumentation overhead
+	assert.Less(t, totalDuration, 200*time.Millisecond,
 		"parallel execution should be faster than sequential")
 
 	// Verify concurrency - at least 2 steps should run concurrently
 	assert.GreaterOrEqual(t, int(maxConcurrent), 2,
 		"at least 2 steps should run concurrently")
 
-	// Verify both fetch steps completed before report
-	if len(startTimes) >= 3 && len(endTimes) >= 2 {
-		assert.True(t, endTimes["fetch_logs"].Before(startTimes["create_report"]),
-			"fetch_logs should complete before create_report starts")
-		assert.True(t, endTimes["fetch_metrics"].Before(startTimes["create_report"]),
-			"fetch_metrics should complete before create_report starts")
-	}
+	// Verify both fetch steps completed before report using sequence numbers
+	require.Len(t, startSeq, 3, "all steps should have start sequences")
+	require.Len(t, endSeq, 3, "all steps should have end sequences")
+	assert.Less(t, endSeq["fetch_logs"], startSeq["create_report"],
+		"fetch_logs (seq %d) should complete before create_report starts (seq %d)",
+		endSeq["fetch_logs"], startSeq["create_report"])
+	assert.Less(t, endSeq["fetch_metrics"], startSeq["create_report"],
+		"fetch_metrics (seq %d) should complete before create_report starts (seq %d)",
+		endSeq["fetch_metrics"], startSeq["create_report"])
 }

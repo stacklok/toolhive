@@ -226,14 +226,14 @@ type WorkflowStep struct {
 	// +kubebuilder:validation:Required
 	ID string `json:"id"`
 
-	// Type is the step type (tool_call, elicitation, etc.)
-	// +kubebuilder:validation:Enum=tool_call;elicitation
-	// +kubebuilder:default=tool_call
+	// Type is the step type (tool, elicitation, etc.)
+	// +kubebuilder:validation:Enum=tool;elicitation
+	// +kubebuilder:default=tool
 	// +optional
 	Type string `json:"type,omitempty"`
 
 	// Tool is the tool to call (format: "workload.tool_name")
-	// Only used when Type is "tool_call"
+	// Only used when Type is "tool"
 	// +optional
 	Tool string `json:"tool,omitempty"`
 
@@ -505,7 +505,7 @@ const (
 // Workflow step types
 const (
 	// WorkflowStepTypeToolCall calls a backend tool
-	WorkflowStepTypeToolCall = "tool_call"
+	WorkflowStepTypeToolCall = "tool"
 
 	// WorkflowStepTypeElicitation requests user input
 	WorkflowStepTypeElicitation = "elicitation"

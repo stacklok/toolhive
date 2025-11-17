@@ -306,7 +306,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			errMsg:  "spec.compositeTools[0].steps[0].id is required",
 		},
 		{
-			name: "invalid composite tool - tool_call step without tool",
+			name: "invalid composite tool - tool step without tool",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
 					GroupRef: GroupRef{Name: "test-group"},
@@ -325,7 +325,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.compositeTools[0].steps[0].tool is required when type is tool_call",
+			errMsg:  "spec.compositeTools[0].steps[0].tool is required when type is tool",
 		},
 		{
 			name: "invalid composite tool - elicitation step without message",

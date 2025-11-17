@@ -4,10 +4,10 @@ import (
 	upstreamv0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 )
 
-// ServerRegistry is the unified internal registry format.
+// UpstreamRegistry is the unified internal registry format.
 // It stores servers in upstream ServerJSON format while maintaining
 // ToolHive-compatible metadata fields for backward compatibility.
-type ServerRegistry struct {
+type UpstreamRegistry struct {
 	// Version is the schema version (ToolHive compatibility)
 	Version string `json:"version"`
 

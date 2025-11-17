@@ -233,12 +233,12 @@ func (*VirtualMCPCompositeToolDefinition) validateStepType(index int, step Workf
 		WorkflowStepTypeElicitation: true,
 	}
 	if !validTypes[stepType] {
-		return fmt.Errorf("spec.steps[%d].type must be one of: tool_call, elicitation", index)
+		return fmt.Errorf("spec.steps[%d].type must be one of: tool, elicitation", index)
 	}
 
 	if stepType == WorkflowStepTypeToolCall {
 		if step.Tool == "" {
-			return fmt.Errorf("spec.steps[%d].tool is required when type is tool_call", index)
+			return fmt.Errorf("spec.steps[%d].tool is required when type is tool", index)
 		}
 		if !isValidToolReference(step.Tool) {
 			return fmt.Errorf("spec.steps[%d].tool must be in format 'workload.tool_name'", index)

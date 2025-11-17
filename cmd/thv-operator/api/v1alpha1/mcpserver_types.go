@@ -200,6 +200,7 @@ type ProxyDeploymentOverrides struct {
 
 	// Env are environment variables to set in the proxy container (thv run process)
 	// These affect the toolhive proxy itself, not the MCP server it manages
+	// Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy
 	// +optional
 	Env []EnvVar `json:"env,omitempty"`
 }

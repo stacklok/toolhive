@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,8 +27,8 @@ func TestBuildConfig_EmptyRegistryName(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManagerForTesting()
-	config, err := manager.BuildConfig(mcpRegistry)
+	manager := NewConfigManagerForTesting(mcpRegistry)
+	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
 	assert.Equal(t, "registry name is required", err.Error())
@@ -48,8 +49,8 @@ func TestBuildConfig_MissingSource(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManagerForTesting()
-	config, err := manager.BuildConfig(mcpRegistry)
+	manager := NewConfigManagerForTesting(mcpRegistry)
+	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "source type is required")
@@ -71,8 +72,8 @@ func TestBuildConfig_EmptyFormat(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManagerForTesting()
-	config, err := manager.BuildConfig(mcpRegistry)
+	manager := NewConfigManagerForTesting(mcpRegistry)
+	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "source format is required")
@@ -94,8 +95,8 @@ func TestBuildConfig_UnsupportedSourceType(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManagerForTesting()
-	config, err := manager.BuildConfig(mcpRegistry)
+	manager := NewConfigManagerForTesting(mcpRegistry)
+	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported source type: unsupported-type")
@@ -108,18 +109,17 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 
 	t.Run("nil configmap source object", func(t *testing.T) {
 		t.Parallel()
-		// Note: Currently, nil ConfigMap doesn't cause an error since the code
-		// directly creates a FileConfig without checking if ConfigMap is nil.
-		// This test documents the current behavior.
 		mcpRegistry := &mcpv1alpha1.MCPRegistry{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-registry",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Source: mcpv1alpha1.MCPRegistrySource{
-					Type:      mcpv1alpha1.RegistrySourceTypeConfigMap,
-					Format:    mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMap: nil, // Currently doesn't cause an error
+					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					ConfigMap: &mcpv1alpha1.ConfigMapSource{
+						Name: "registry-configmap",
+					},
 				},
 				SyncPolicy: &mcpv1alpha1.SyncPolicy{
 					Interval: "1h",
@@ -127,8 +127,8 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		// Currently this succeeds even with nil ConfigMap
 		require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Source.Format)
 		require.NotNil(t, config.Source.File)
 		assert.Equal(t, SourceTypeFile, config.Source.Type)
-		assert.Equal(t, RegistryJSONFilePath, config.Source.File.Path)
+		assert.Equal(t, filepath.Join(RegistryJSONFilePath, RegistryJSONFileName), config.Source.File.Path)
 	})
 
 	t.Run("valid configmap source", func(t *testing.T) {
@@ -160,15 +160,15 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
 		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Source.Format)
 		assert.Equal(t, SourceTypeFile, config.Source.Type)
-		assert.Equal(t, RegistryJSONFilePath, config.Source.File.Path)
+		assert.Equal(t, filepath.Join(RegistryJSONFilePath, RegistryJSONFileName), config.Source.File.Path)
 	})
 }
 
@@ -191,8 +191,8 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "git source configuration is required")
@@ -216,8 +216,8 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "git repository is required")
@@ -242,8 +242,8 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "git branch, tag, and commit are mutually exclusive")
@@ -259,7 +259,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeGit,
-					Format: mcpv1alpha1.RegistryFormatUpstream,
+					Format: mcpv1alpha1.RegistryFormatToolHive,
 					Git: &mcpv1alpha1.GitSource{
 						Repository: "https://github.com/example/repo.git",
 						Branch:     "main",
@@ -271,13 +271,13 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatUpstream, config.Source.Format)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Source.Format)
 		assert.Equal(t, SourceTypeGit, config.Source.Type)
 		require.NotNil(t, config.Source.Git)
 		assert.Equal(t, "https://github.com/example/repo.git", config.Source.Git.Repository)
@@ -307,8 +307,8 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -331,7 +331,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeGit,
-					Format: mcpv1alpha1.RegistryFormatUpstream,
+					Format: mcpv1alpha1.RegistryFormatToolHive,
 					Git: &mcpv1alpha1.GitSource{
 						Repository: "https://github.com/example/repo.git",
 						Commit:     "abc123def456",
@@ -343,13 +343,13 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatUpstream, config.Source.Format)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Source.Format)
 		assert.Equal(t, SourceTypeGit, config.Source.Type)
 		require.NotNil(t, config.Source.Git)
 		assert.Equal(t, "https://github.com/example/repo.git", config.Source.Git.Repository)
@@ -378,8 +378,8 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "api source configuration is required")
@@ -403,8 +403,8 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "api endpoint is required")
@@ -420,7 +420,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeAPI,
-					Format: mcpv1alpha1.RegistryFormatUpstream,
+					Format: mcpv1alpha1.RegistryFormatToolHive,
 					API: &mcpv1alpha1.APISource{
 						Endpoint: "https://api.example.com/registry",
 					},
@@ -431,13 +431,13 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatUpstream, config.Source.Format)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Source.Format)
 		assert.Equal(t, SourceTypeAPI, config.Source.Type)
 		require.NotNil(t, config.Source.API)
 		assert.Equal(t, "https://api.example.com/registry", config.Source.API.Endpoint)
@@ -469,8 +469,8 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "sync policy configuration is required")
@@ -497,8 +497,8 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "sync policy interval is required")
@@ -525,8 +525,8 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -562,8 +562,8 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -598,8 +598,8 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -620,7 +620,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeGit,
-					Format: mcpv1alpha1.RegistryFormatUpstream,
+					Format: mcpv1alpha1.RegistryFormatToolHive,
 					Git: &mcpv1alpha1.GitSource{
 						Repository: "https://github.com/example/repo.git",
 						Branch:     "main",
@@ -638,8 +638,8 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -681,8 +681,8 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -726,8 +726,8 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting()
-		config, err := manager.BuildConfig(mcpRegistry)
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
@@ -783,7 +783,7 @@ func TestToConfigMapWithContentChecksum(t *testing.T) {
 	require.NotNil(t, configMap)
 
 	// Verify basic ConfigMap properties
-	assert.Equal(t, "checksum-test-registry-configmap", configMap.Name)
+	assert.Equal(t, "checksum-test-registry-registry-server-config", configMap.Name)
 	assert.Equal(t, "test-namespace", configMap.Namespace)
 
 	// Verify the checksum annotation exists

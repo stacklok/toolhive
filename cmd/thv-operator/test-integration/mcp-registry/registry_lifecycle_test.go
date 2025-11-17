@@ -172,10 +172,8 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 			// Create minimal registry (no sync policy)
 			registry := registryHelper.NewRegistryBuilder("minimal-registry").
 				WithConfigMapSource(configMap.Name, "registry.json").
+				WithSyncPolicy("1h").
 				Create(registryHelper)
-
-			// Verify creation
-			Expect(registry.Spec.SyncPolicy).To(BeNil())
 
 			// Wait for registry initialization (finalizer + initial status)
 			registryHelper.WaitForRegistryInitialization(registry.Name, timingHelper, statusHelper)
@@ -197,6 +195,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 				WithLabel("app", "test").
 				WithLabel("version", "1.0").
 				WithAnnotation("description", "Test registry").
+				WithSyncPolicy("1h").
 				Create(registryHelper)
 
 			registryHelper.WaitForRegistryInitialization(registry.Name, timingHelper, statusHelper)
@@ -466,6 +465,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 			// Create first registry
 			registry1 := registryHelper.NewRegistryBuilder("conflict-registry").
 				WithConfigMapSource(configMap.Name, "registry.json").
+				WithSyncPolicy("1h").
 				Create(registryHelper)
 
 			// Try to create second registry with same name - should fail

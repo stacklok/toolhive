@@ -265,14 +265,14 @@ spec:
                           tool:
                             description: |-
                               Tool is the tool to call (format: "workload.tool_name")
-                              Only used when Type is "tool_call"
+                              Only used when Type is "tool"
                             type: string
                           type:
-                            default: tool_call
-                            description: Type is the step type (tool_call, elicitation,
+                            default: tool
+                            description: Type is the step type (tool, elicitation,
                               etc.)
                             enum:
-                            - tool_call
+                            - tool
                             - elicitation
                             type: string
                         required:
@@ -595,45 +595,11 @@ spec:
                           required:
                           - name
                           type: object
-                        serviceAccount:
-                          description: |-
-                            ServiceAccount configures service account authentication
-                            Only used when Type is "service_account"
-                          properties:
-                            credentialsRef:
-                              description: CredentialsRef references a secret containing
-                                the service account credentials
-                              properties:
-                                key:
-                                  description: Key is the key within the secret
-                                  type: string
-                                name:
-                                  description: Name is the name of the secret
-                                  type: string
-                              required:
-                              - key
-                              - name
-                              type: object
-                            headerFormat:
-                              default: Bearer {token}
-                              description: |-
-                                HeaderFormat is the format string for the header value
-                                Use {token} as placeholder for the credential value
-                              type: string
-                            headerName:
-                              default: Authorization
-                              description: HeaderName is the HTTP header name for
-                                the credentials
-                              type: string
-                          required:
-                          - credentialsRef
-                          type: object
                         type:
                           description: Type defines the authentication type
                           enum:
                           - discovered
                           - pass_through
-                          - service_account
                           - external_auth_config_ref
                           type: string
                       required:
@@ -659,45 +625,11 @@ spec:
                         required:
                         - name
                         type: object
-                      serviceAccount:
-                        description: |-
-                          ServiceAccount configures service account authentication
-                          Only used when Type is "service_account"
-                        properties:
-                          credentialsRef:
-                            description: CredentialsRef references a secret containing
-                              the service account credentials
-                            properties:
-                              key:
-                                description: Key is the key within the secret
-                                type: string
-                              name:
-                                description: Name is the name of the secret
-                                type: string
-                            required:
-                            - key
-                            - name
-                            type: object
-                          headerFormat:
-                            default: Bearer {token}
-                            description: |-
-                              HeaderFormat is the format string for the header value
-                              Use {token} as placeholder for the credential value
-                            type: string
-                          headerName:
-                            default: Authorization
-                            description: HeaderName is the HTTP header name for the
-                              credentials
-                            type: string
-                        required:
-                        - credentialsRef
-                        type: object
                       type:
                         description: Type defines the authentication type
                         enum:
                         - discovered
                         - pass_through
-                        - service_account
                         - external_auth_config_ref
                         type: string
                     required:

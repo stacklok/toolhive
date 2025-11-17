@@ -432,3 +432,78 @@ func TestCapabilityAdapter_ToSDKPrompts(t *testing.T) {
 		})
 	}
 }
+
+func TestCapabilityAdapter_ToCompositeToolSDKTools(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		tools     []vmcp.Tool
+		executors map[string]adapter.WorkflowExecutor
+		wantErr   string
+	}{
+		{
+			name:      "empty tools",
+			tools:     []vmcp.Tool{},
+			executors: map[string]adapter.WorkflowExecutor{},
+		},
+		{
+			name:      "single tool",
+			tools:     []vmcp.Tool{{Name: "deploy", InputSchema: map[string]any{"type": "object"}}},
+			executors: map[string]adapter.WorkflowExecutor{"deploy": &mockWorkflowExecutor{}},
+		},
+		{
+			name: "multiple tools",
+			tools: []vmcp.Tool{
+				{Name: "deploy", InputSchema: map[string]any{"type": "object"}},
+				{Name: "rollback", InputSchema: map[string]any{"type": "object"}},
+			},
+			executors: map[string]adapter.WorkflowExecutor{"deploy": &mockWorkflowExecutor{}, "rollback": &mockWorkflowExecutor{}},
+		},
+		{
+			name:      "missing executor",
+			tools:     []vmcp.Tool{{Name: "deploy", InputSchema: map[string]any{"type": "object"}}},
+			executors: map[string]adapter.WorkflowExecutor{},
+			wantErr:   "workflow executor not found",
+		},
+		{
+			name:      "invalid schema",
+			tools:     []vmcp.Tool{{Name: "bad", InputSchema: map[string]any{"ch": make(chan int)}}},
+			executors: map[string]adapter.WorkflowExecutor{"bad": &mockWorkflowExecutor{}},
+			wantErr:   "failed to marshal",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockFactory := mocks.NewMockHandlerFactory(ctrl)
+
+			if tt.wantErr == "" {
+				for _, tool := range tt.tools {
+					mockFactory.EXPECT().CreateCompositeToolHandler(tool.Name, gomock.Any()).
+						Return(func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+							return mcp.NewToolResultStructuredOnly(map[string]any{}), nil
+						})
+				}
+			}
+
+			adapter := adapter.NewCapabilityAdapter(mockFactory)
+			result, err := adapter.ToCompositeToolSDKTools(tt.tools, tt.executors)
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				require.NoError(t, err)
+				if len(tt.tools) == 0 {
+					assert.Nil(t, result)
+				} else {
+					assert.Len(t, result, len(tt.tools))
+				}
+			}
+		})
+	}
+}

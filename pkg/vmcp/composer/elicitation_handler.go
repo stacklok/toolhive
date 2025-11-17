@@ -184,10 +184,13 @@ func (h *DefaultElicitationHandler) RequestElicitation(
 		return nil, fmt.Errorf("elicitation request failed for step %s: %w", stepID, err)
 	}
 
-	// Validate response content size (security: prevent memory exhaustion)
+	// Validate response content size and depth (security: prevent memory exhaustion and template DoS)
 	if result.Action == elicitationActionAccept {
 		if err := validateContentSize(result.Content); err != nil {
 			return nil, fmt.Errorf("invalid response content for step %s: %w", stepID, err)
+		}
+		if err := validateContentDepth(result.Content); err != nil {
+			return nil, fmt.Errorf("invalid response content depth for step %s: %w", stepID, err)
 		}
 	}
 
@@ -286,4 +289,15 @@ func validateContentSize(content any) error {
 	}
 
 	return nil
+}
+
+// validateContentDepth validates that response content doesn't exceed nesting depth limits.
+// Per security review: Prevents deeply nested structures in elicitation responses that could
+// cause template expansion DoS attacks when referenced in workflow templates.
+// Uses the same depth limit as schemas (maxSchemaDepth = 10 levels).
+func validateContentDepth(content any) error {
+	if content == nil {
+		return nil
+	}
+	return validateSchemaDepth(content, 0, maxSchemaDepth)
 }

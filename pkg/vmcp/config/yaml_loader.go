@@ -87,7 +87,6 @@ type rawBackendAuthStrategy struct {
 	Type            string                  `yaml:"type"`
 	HeaderInjection *rawHeaderInjectionAuth `yaml:"header_injection"`
 	TokenExchange   *rawTokenExchangeAuth   `yaml:"token_exchange"`
-	ServiceAccount  *rawServiceAccountAuth  `yaml:"service_account"`
 }
 
 type rawHeaderInjectionAuth struct {
@@ -103,12 +102,6 @@ type rawTokenExchangeAuth struct {
 	Audience         string   `yaml:"audience"`
 	Scopes           []string `yaml:"scopes"`
 	SubjectTokenType string   `yaml:"subject_token_type"`
-}
-
-type rawServiceAccountAuth struct {
-	CredentialsEnv string `yaml:"credentials_env"`
-	HeaderName     string `yaml:"header_name"`
-	HeaderFormat   string `yaml:"header_format"`
 }
 
 type rawAggregation struct {
@@ -368,24 +361,6 @@ func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (
 			"scopes":             raw.TokenExchange.Scopes,
 			"subject_token_type": raw.TokenExchange.SubjectTokenType,
 		}
-
-	case "service_account":
-		if raw.ServiceAccount == nil {
-			return nil, fmt.Errorf("service_account configuration is required")
-		}
-
-		// Resolve credentials from environment
-		credentials := l.envReader.Getenv(raw.ServiceAccount.CredentialsEnv)
-		if credentials == "" {
-			return nil, fmt.Errorf("environment variable %s not set", raw.ServiceAccount.CredentialsEnv)
-		}
-
-		strategy.Metadata = map[string]any{
-			"credentials":     credentials,
-			"credentials_env": raw.ServiceAccount.CredentialsEnv,
-			"header_name":     raw.ServiceAccount.HeaderName,
-			"header_format":   raw.ServiceAccount.HeaderFormat,
-		}
 	}
 
 	return strategy, nil
@@ -520,9 +495,14 @@ func (l *YAMLLoader) transformCompositeTools(raw []*rawCompositeTool) ([]*Compos
 	var tools []*CompositeToolConfig
 
 	for _, rawTool := range raw {
-		timeout, err := time.ParseDuration(rawTool.Timeout)
-		if err != nil {
-			return nil, fmt.Errorf("tool %s: invalid timeout: %w", rawTool.Name, err)
+		// Parse timeout - empty string means use default (0 duration)
+		var timeout time.Duration
+		if rawTool.Timeout != "" {
+			var err error
+			timeout, err = time.ParseDuration(rawTool.Timeout)
+			if err != nil {
+				return nil, fmt.Errorf("tool %s: invalid timeout: %w", rawTool.Name, err)
+			}
 		}
 
 		tool := &CompositeToolConfig{
@@ -576,6 +556,11 @@ func (*YAMLLoader) transformWorkflowStep(raw *rawWorkflowStep) (*WorkflowStepCon
 		DependsOn: raw.DependsOn,
 		Message:   raw.Message,
 		Schema:    raw.Schema,
+	}
+
+	// Apply type inference: if type is empty and tool field is present, infer as "tool"
+	if step.Type == "" && step.Tool != "" {
+		step.Type = "tool"
 	}
 
 	if raw.Timeout != "" {

@@ -3,7 +3,6 @@ package controllers
 
 import (
 	"encoding/json"
-	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -483,11 +482,3 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 		})
 	})
 })
-
-func getExpectedRunnerImage() string {
-	image := os.Getenv("TOOLHIVE_RUNNER_IMAGE")
-	if image == "" {
-		image = "ghcr.io/stacklok/toolhive/proxyrunner:latest"
-	}
-	return image
-}

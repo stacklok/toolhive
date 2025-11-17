@@ -30,7 +30,8 @@ func TestWorkflowEngine_ExecuteElicitationStep_Accept(t *testing.T) {
 	}, nil)
 
 	handler := NewDefaultElicitationHandler(mockSDK)
-	engine := NewWorkflowEngine(te.Router, te.Backend, handler)
+	stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
+	engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore)
 
 	workflow := &WorkflowDefinition{
 		Name: "deployment-workflow",
@@ -53,9 +54,10 @@ func TestWorkflowEngine_ExecuteElicitationStep_Accept(t *testing.T) {
 				},
 			},
 			{
-				ID:   "deploy",
-				Type: StepTypeTool,
-				Tool: "deploy_tool",
+				ID:        "deploy",
+				Type:      StepTypeTool,
+				Tool:      "deploy_tool",
+				DependsOn: []string{"confirm"}, // Deploy only after user confirms to ensure user approval before deployment
 				Arguments: map[string]any{
 					"env": "{{.steps.confirm.output.content.environment}}",
 				},
@@ -138,7 +140,8 @@ func TestWorkflowEngine_ExecuteElicitationStep_Decline(t *testing.T) {
 			}, nil)
 
 			handler := NewDefaultElicitationHandler(mockSDK)
-			engine := NewWorkflowEngine(te.Router, te.Backend, handler)
+			stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
+			engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore)
 
 			workflow := &WorkflowDefinition{
 				Name: "test-workflow",
@@ -214,7 +217,8 @@ func TestWorkflowEngine_ExecuteElicitationStep_Cancel(t *testing.T) {
 			}, nil)
 
 			handler := NewDefaultElicitationHandler(mockSDK)
-			engine := NewWorkflowEngine(te.Router, te.Backend, handler)
+			stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
+			engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore)
 
 			workflow := &WorkflowDefinition{
 				Name: "test-workflow",
@@ -260,7 +264,8 @@ func TestWorkflowEngine_ExecuteElicitationStep_Timeout(t *testing.T) {
 	mockSDK.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(nil, context.DeadlineExceeded)
 
 	handler := NewDefaultElicitationHandler(mockSDK)
-	engine := NewWorkflowEngine(te.Router, te.Backend, handler)
+	stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
+	engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore)
 
 	workflow := &WorkflowDefinition{
 		Name: "test-workflow",
@@ -294,7 +299,7 @@ func TestWorkflowEngine_ExecuteElicitationStep_NoHandler(t *testing.T) {
 
 	te := newTestEngine(t)
 	// Create engine WITHOUT elicitation handler
-	engine := NewWorkflowEngine(te.Router, te.Backend, nil)
+	engine := NewWorkflowEngine(te.Router, te.Backend, nil, nil)
 
 	workflow := &WorkflowDefinition{
 		Name: "test-workflow",
@@ -332,7 +337,8 @@ func TestWorkflowEngine_MultiStepWithElicitation(t *testing.T) {
 	}, nil)
 
 	handler := NewDefaultElicitationHandler(mockSDK)
-	engine := NewWorkflowEngine(te.Router, te.Backend, handler)
+	stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
+	engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore)
 
 	workflow := &WorkflowDefinition{
 		Name: "multi-step-workflow",
@@ -358,9 +364,10 @@ func TestWorkflowEngine_MultiStepWithElicitation(t *testing.T) {
 				},
 			},
 			{
-				ID:   "process_data",
-				Type: StepTypeTool,
-				Tool: "process_tool",
+				ID:        "process_data",
+				Type:      StepTypeTool,
+				Tool:      "process_tool",
+				DependsOn: []string{"fetch_data", "confirm_process"}, // Process only after data is fetched and user confirms to ensure data availability and approval
 				Arguments: map[string]any{
 					"data": "{{.steps.fetch_data.output.text}}",
 				},

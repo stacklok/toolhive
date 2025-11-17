@@ -20,7 +20,7 @@ import (
 )
 
 // ImageMetadataToServerJSON converts toolhive ImageMetadata to an upstream ServerJSON
-// The name parameter should be the simple server name (e.g., "fetch")
+// The name parameter is deprecated and should match imageMetadata.Name. It's kept for backward compatibility.
 func ImageMetadataToServerJSON(name string, imageMetadata *types.ImageMetadata) (*upstream.ServerJSON, error) {
 	if imageMetadata == nil {
 		return nil, fmt.Errorf("imageMetadata cannot be nil")
@@ -29,10 +29,16 @@ func ImageMetadataToServerJSON(name string, imageMetadata *types.ImageMetadata) 
 		return nil, fmt.Errorf("name cannot be empty")
 	}
 
+	// Use imageMetadata.Name if available (contains canonical identifier), otherwise fall back to parameter
+	canonicalName := imageMetadata.Name
+	if canonicalName == "" {
+		canonicalName = BuildReverseDNSName(name)
+	}
+
 	// Create ServerJSON with basic fields
 	serverJSON := &upstream.ServerJSON{
 		Schema:      model.CurrentSchemaURL,
-		Name:        BuildReverseDNSName(name),
+		Name:        canonicalName,
 		Title:       imageMetadata.Name,
 		Description: imageMetadata.Description,
 		Version:     "1.0.0", // TODO: Extract from image tag or metadata
@@ -58,7 +64,7 @@ func ImageMetadataToServerJSON(name string, imageMetadata *types.ImageMetadata) 
 }
 
 // RemoteServerMetadataToServerJSON converts toolhive RemoteServerMetadata to an upstream ServerJSON
-// The name parameter should be the simple server name (e.g., "github-remote")
+// The name parameter is deprecated and should match remoteMetadata.Name. It's kept for backward compatibility.
 func RemoteServerMetadataToServerJSON(name string, remoteMetadata *types.RemoteServerMetadata) (*upstream.ServerJSON, error) {
 	if remoteMetadata == nil {
 		return nil, fmt.Errorf("remoteMetadata cannot be nil")
@@ -67,10 +73,16 @@ func RemoteServerMetadataToServerJSON(name string, remoteMetadata *types.RemoteS
 		return nil, fmt.Errorf("name cannot be empty")
 	}
 
+	// Use remoteMetadata.Name if available (contains canonical identifier), otherwise fall back to parameter
+	canonicalName := remoteMetadata.Name
+	if canonicalName == "" {
+		canonicalName = BuildReverseDNSName(name)
+	}
+
 	// Create ServerJSON with basic fields
 	serverJSON := &upstream.ServerJSON{
 		Schema:      model.CurrentSchemaURL,
-		Name:        BuildReverseDNSName(name),
+		Name:        canonicalName,
 		Title:       remoteMetadata.Name,
 		Description: remoteMetadata.Description,
 		Version:     "1.0.0", // TODO: Version management

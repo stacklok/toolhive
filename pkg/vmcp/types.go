@@ -32,6 +32,17 @@ type BackendTarget struct {
 	// - Manual strategy: "fetch" → "custom_name" (OriginalCapabilityName="fetch")
 	//
 	// If empty, the resolved name is used when forwarding to the backend.
+	//
+	// IMPORTANT: Do NOT access this field directly when forwarding requests to backends.
+	// Use GetBackendCapabilityName() method instead, which handles both renamed and
+	// non-renamed capabilities correctly. Direct access can lead to incorrect behavior
+	// when capabilities are not renamed (OriginalCapabilityName will be empty).
+	//
+	// Example (WRONG):
+	//   client.CallTool(ctx, target, target.OriginalCapabilityName, args) // BUG: fails when empty
+	//
+	// Example (CORRECT):
+	//   client.CallTool(ctx, target, target.GetBackendCapabilityName(toolName), args)
 	OriginalCapabilityName string
 
 	// AuthStrategy identifies the authentication strategy for this backend.
@@ -59,6 +70,20 @@ type BackendTarget struct {
 // Otherwise, it returns the resolved name as-is.
 //
 // This method encapsulates the name translation logic for all capability types (tools, resources, prompts).
+//
+// ALWAYS use this method when forwarding capability calls to backends. Do NOT access
+// OriginalCapabilityName directly, as it may be empty when no renaming occurred.
+//
+// Usage example:
+//
+//	target, _ := router.RouteTool(ctx, "fetch_fetch")  // Prefixed name from client
+//	backendName := target.GetBackendCapabilityName("fetch_fetch")  // Returns "fetch"
+//	client.CallTool(ctx, target, backendName, args)  // Backend receives original name
+//
+// This ensures correct behavior regardless of conflict resolution strategy:
+//   - Prefix strategy: "fetch_fetch" → "fetch" (renamed, uses OriginalCapabilityName)
+//   - Priority strategy: "list_issues" → "list_issues" (not renamed, returns resolvedName)
+//   - Manual strategy: "custom_fetch" → "fetch" (renamed, uses OriginalCapabilityName)
 func (t *BackendTarget) GetBackendCapabilityName(resolvedName string) string {
 	if t.OriginalCapabilityName != "" {
 		return t.OriginalCapabilityName

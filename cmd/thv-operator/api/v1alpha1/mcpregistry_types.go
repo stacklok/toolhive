@@ -22,9 +22,6 @@ const (
 const (
 	// RegistryFormatToolHive is the native ToolHive registry format
 	RegistryFormatToolHive = "toolhive"
-
-	// RegistryFormatUpstream is the upstream MCP registry format
-	RegistryFormatUpstream = "upstream"
 )
 
 // MCPRegistrySpec defines the desired state of MCPRegistry
@@ -406,6 +403,25 @@ func (r *MCPRegistry) GetStorageName() string {
 // GetAPIResourceName returns the base name for registry API resources (deployment, service)
 func (r *MCPRegistry) GetAPIResourceName() string {
 	return fmt.Sprintf("%s-api", r.Name)
+}
+
+// IsConfigMapRegistrySource returns true if the registry source is a configmap
+func (r *MCPRegistry) IsConfigMapRegistrySource() bool {
+	return r.Spec.Source.Type == RegistrySourceTypeConfigMap
+}
+
+// GetConfigMapSourceName returns the name of the configmap source
+// if its present, otherwise returns an empty string
+func (r *MCPRegistry) GetConfigMapSourceName() string {
+	if !r.IsConfigMapRegistrySource() {
+		return ""
+	}
+
+	if r.Spec.Source.ConfigMap == nil {
+		return ""
+	}
+
+	return r.Spec.Source.ConfigMap.Name
 }
 
 // DeriveOverallPhase determines the overall MCPRegistry phase based on sync and API status

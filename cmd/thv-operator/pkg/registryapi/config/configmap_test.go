@@ -93,7 +93,7 @@ func TestUpsertConfigMap_Create(t *testing.T) {
 
 		// Use mock checksum that reports no change
 		checksumManager := &mockChecksum{hasChanged: false}
-		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager)
+		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager, mcpRegistry)
 		require.NoError(t, err)
 
 		// Execute
@@ -126,7 +126,7 @@ func TestUpsertConfigMap_Create(t *testing.T) {
 			Build()
 
 		checksumManager := checksum.NewRunConfigConfigMapChecksum()
-		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager)
+		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager, mcpRegistry)
 		require.NoError(t, err)
 
 		// Execute
@@ -167,7 +167,7 @@ func TestUpsertConfigMap_Create(t *testing.T) {
 			Build()
 
 		checksumManager := checksum.NewRunConfigConfigMapChecksum()
-		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, brokenScheme, checksumManager)
+		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, brokenScheme, checksumManager, mcpRegistry)
 		require.NoError(t, err)
 
 		// Execute
@@ -205,7 +205,7 @@ func TestUpsertConfigMap_Create(t *testing.T) {
 			Build()
 
 		checksumManager := checksum.NewRunConfigConfigMapChecksum()
-		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager)
+		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager, mcpRegistry)
 		require.NoError(t, err)
 
 		// Execute
@@ -237,7 +237,7 @@ func TestUpsertConfigMap_Create(t *testing.T) {
 			Build()
 
 		checksumManager := checksum.NewRunConfigConfigMapChecksum()
-		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager)
+		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager, mcpRegistry)
 		require.NoError(t, err)
 
 		// Execute
@@ -260,7 +260,7 @@ func TestUpsertConfigMap_Create(t *testing.T) {
 			Build()
 
 		checksumManager := checksum.NewRunConfigConfigMapChecksum()
-		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager)
+		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager, nil)
 		require.NoError(t, err)
 
 		// Execute
@@ -282,7 +282,7 @@ func TestUpsertConfigMap_Create(t *testing.T) {
 			Build()
 
 		checksumManager := checksum.NewRunConfigConfigMapChecksum()
-		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager)
+		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager, mcpRegistry)
 		require.NoError(t, err)
 
 		// Execute
@@ -346,7 +346,7 @@ func TestUpsertConfigMap_Update(t *testing.T) {
 
 		// Mock checksum that reports no change
 		checksumManager := &mockChecksum{hasChanged: false}
-		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager)
+		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager, mcpRegistry)
 		require.NoError(t, err)
 
 		// Execute
@@ -387,7 +387,7 @@ func TestUpsertConfigMap_Update(t *testing.T) {
 
 		// Mock checksum that reports change
 		checksumManager := &mockChecksum{hasChanged: true}
-		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, brokenScheme, checksumManager)
+		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, brokenScheme, checksumManager, mcpRegistry)
 		require.NoError(t, err)
 
 		// Execute
@@ -423,7 +423,7 @@ func TestUpsertConfigMap_Update(t *testing.T) {
 
 		// Mock checksum that reports change
 		checksumManager := &mockChecksum{hasChanged: true}
-		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager)
+		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager, mcpRegistry)
 		require.NoError(t, err)
 
 		// Execute
@@ -457,7 +457,7 @@ func TestUpsertConfigMap_Update(t *testing.T) {
 
 		// Mock checksum that reports change
 		checksumManager := &mockChecksum{hasChanged: true}
-		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager)
+		registryServerConfigConfigMap, err := NewConfigManager(fakeClient, scheme, checksumManager, mcpRegistry)
 		require.NoError(t, err)
 
 		// Execute

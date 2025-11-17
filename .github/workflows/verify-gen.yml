@@ -16,20 +16,37 @@ jobs:
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
         with:
           go-version-file: go.mod
+          cache: true  # Cache go modules
+      # Cache Go tools (mockgen)
+      - name: Cache Go tools
+        id: cache-go-tools
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin
+          key: ${{ runner.os }}-go-codegen-tools-${{ hashFiles('go.mod') }}-mockgen
+          restore-keys: |
+            ${{ runner.os }}-go-codegen-tools-
+
       - name: Install Task
         uses: arduino/setup-task@v2
         with:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Install mockgen
+
+      # Only install mockgen if not cached
+      - name: Install mockgen (if not cached)
+        if: steps.cache-go-tools.outputs.cache-hit != 'true'
         run: task mock-install
+
       - name: Generate code files
         run: task gen
       - name: Check for changes
         run: |
-          if ! git diff --exit-code docs/server/; then
+          if ! git diff --exit-code; then
             echo "❌ Generated code files are not up to date!"
             echo "Please run 'task gen' and commit the changes."
+            echo "Files changed:"
+            git diff --name-only
             exit 1
           else
             echo "✅ Generated code files are up to date!"

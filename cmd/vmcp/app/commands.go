@@ -201,6 +201,9 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	logger.Infof("  Name: %s", cfg.Name)
 	logger.Infof("  Group: %s", cfg.Group)
 	logger.Infof("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution)
+	if len(cfg.CompositeTools) > 0 {
+		logger.Infof("  Composite Tools: %d defined", len(cfg.CompositeTools))
+	}
 
 	return cfg, nil
 }
@@ -313,8 +316,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuthInfoHandler: authInfoHandler,
 	}
 
-	// Create server with discovery manager and backends
-	srv := vmcpserver.New(serverCfg, rtr, backendClient, discoveryMgr, backends)
+	// Convert composite tool configurations to workflow definitions
+	workflowDefs, err := vmcpserver.ConvertConfigToWorkflowDefinitions(cfg.CompositeTools)
+	if err != nil {
+		return fmt.Errorf("failed to convert composite tool definitions: %w", err)
+	}
+	if len(workflowDefs) > 0 {
+		logger.Infof("Loaded %d composite tool workflow definitions", len(workflowDefs))
+	}
+
+	// Create server with discovery manager, backends, and workflow definitions
+	srv, err := vmcpserver.New(serverCfg, rtr, backendClient, discoveryMgr, backends, workflowDefs)
+	if err != nil {
+		return fmt.Errorf("failed to create Virtual MCP Server: %w", err)
+	}
 
 	// Start server (blocks until shutdown signal)
 	logger.Infof("Starting Virtual MCP Server at %s", srv.Address())

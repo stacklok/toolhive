@@ -60,7 +60,6 @@ func getCurrentAttemptCount(mcpRegistry *mcpv1alpha1.MCPRegistry) int {
 func NewMCPRegistryReconciler(k8sClient client.Client, scheme *runtime.Scheme) *MCPRegistryReconciler {
 	syncManager := sync.NewDefaultSyncManager(k8sClient, scheme)
 	registryAPIManager := registryapi.NewManager(k8sClient, scheme)
-
 	return &MCPRegistryReconciler{
 		Client:             k8sClient,
 		Scheme:             scheme,

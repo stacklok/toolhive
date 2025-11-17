@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const testModifiedWorkflowID = "modified"
+
 func TestInMemoryWorkflowStateStore_SaveState(t *testing.T) {
 	t.Parallel()
 
@@ -397,9 +399,9 @@ func TestCloneWorkflowStatus(t *testing.T) {
 	assert.Equal(t, len(original.PendingElicitations), len(clone.PendingElicitations))
 
 	// Verify independence (modifications don't affect original)
-	clone.WorkflowID = "modified"
+	clone.WorkflowID = testModifiedWorkflowID
 	clone.CompletedSteps = append(clone.CompletedSteps, "step-2")
-	clone.PendingElicitations[0].Message = "Modified"
+	clone.PendingElicitations[0].Message = testModifiedWorkflowID
 	clone.PendingElicitations[0].Schema["new"] = "value"
 
 	assert.NotEqual(t, original.WorkflowID, clone.WorkflowID)

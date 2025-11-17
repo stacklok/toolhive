@@ -68,7 +68,7 @@ type WorkflowStep struct {
 	// ID uniquely identifies this step within the workflow.
 	ID string
 
-	// Type is the step type: "tool", "elicitation", "conditional"
+	// Type is the step type: "tool", "elicitation"
 	Type StepType
 
 	// Tool is the tool to call (for tool steps).
@@ -114,9 +114,6 @@ const (
 
 	// StepTypeElicitation requests user input via MCP elicitation protocol.
 	StepTypeElicitation StepType = "elicitation"
-
-	// StepTypeConditional executes based on a condition (future).
-	StepTypeConditional StepType = "conditional"
 )
 
 // ErrorHandler defines how to handle step failures.

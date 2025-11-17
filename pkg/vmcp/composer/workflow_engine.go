@@ -205,9 +205,41 @@ func (e *workflowEngine) ExecuteWorkflow(
 
 	// Workflow completed successfully
 	result.Status = WorkflowStatusCompleted
-	result.Output = workflowCtx.GetLastStepOutput()
 	result.EndTime = time.Now()
 	result.Duration = result.EndTime.Sub(result.StartTime)
+
+	// Determine workflow output based on OutputFormat configuration
+	if def.OutputFormat != "" {
+		// Use custom output format template
+		expandedOutput, err := e.templateExpander.ExpandOutputFormat(
+			ctx, // Use original context, not execCtx which may be cancelled
+			def.OutputFormat,
+			workflowCtx,
+			result.StartTime.UnixMilli(),
+			result.EndTime.UnixMilli(),
+		)
+		if err != nil {
+			// Output format expansion failed - treat as workflow failure
+			result.Status = WorkflowStatusFailed
+			result.Error = fmt.Errorf("output format expansion failed: %w", err)
+			logger.Errorf("Workflow %s output format expansion failed: %v", def.Name, err)
+
+			// Save failure state
+			if e.stateStore != nil {
+				finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusFailed)
+				finalState.StartTime = result.StartTime
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState)
+			}
+
+			return result, result.Error
+		}
+		result.Output = expandedOutput
+	} else {
+		// Default behavior: return last step output (backward compatible)
+		result.Output = workflowCtx.GetLastStepOutput()
+	}
 
 	// Save final workflow state
 	if e.stateStore != nil {

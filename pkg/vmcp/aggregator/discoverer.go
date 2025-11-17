@@ -12,14 +12,13 @@ import (
 	"context"
 	"fmt"
 
-	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
-	"github.com/stacklok/toolhive/pkg/workloads/statuses"
+	workloadsmgr "github.com/stacklok/toolhive/pkg/workloads"
 )
 
 // backendDiscoverer discovers backend MCP servers using a WorkloadDiscoverer.
@@ -73,20 +72,12 @@ func NewBackendDiscoverer(
 		}
 		workloadDiscoverer = k8sDiscoverer
 	} else {
-		// Create runtime and status manager for CLI workloads
-		runtime, err := ct.NewFactory().Create(ctx)
+		manager, err := workloadsmgr.NewManager(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create runtime: %w", err)
+			return nil, fmt.Errorf("failed to create workload manager: %w", err)
 		}
-
-		statusManager, err := statuses.NewStatusManager(runtime)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create status manager: %w", err)
-		}
-
-		workloadDiscoverer = workloads.NewCLIDiscoverer(statusManager)
+		workloadDiscoverer = manager
 	}
-
 	return NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig), nil
 }
 
@@ -131,7 +122,7 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vm
 	// Query each workload and convert to backend
 	var backends []vmcp.Backend
 	for _, name := range workloadNames {
-		backend, err := d.workloadsManager.GetWorkload(ctx, name)
+		backend, err := d.workloadsManager.GetWorkloadAsVMCPBackend(ctx, name)
 		if err != nil {
 			logger.Warnf("Failed to get workload %s: %v, skipping", name, err)
 			continue
@@ -143,14 +134,21 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vm
 		}
 
 		// Apply authentication configuration if provided
-		authStrategy, authMetadata := d.authConfig.ResolveForBackend(name)
-		backend.AuthStrategy = authStrategy
-		backend.AuthMetadata = authMetadata
-		if authStrategy != "" {
-			logger.Debugf("Backend %s configured with auth strategy: %s", name, authStrategy)
+		var authStrategy string
+		var authMetadata map[string]any
+		if d.authConfig != nil {
+			authStrategy, authMetadata = d.authConfig.ResolveForBackend(name)
+			backend.AuthStrategy = authStrategy
+			backend.AuthMetadata = authMetadata
+			if authStrategy != "" {
+				logger.Debugf("Backend %s configured with auth strategy: %s", name, authStrategy)
+			}
 		}
 
 		// Set group metadata (override user labels to prevent conflicts)
+		if backend.Metadata == nil {
+			backend.Metadata = make(map[string]string)
+		}
 		backend.Metadata["group"] = groupRef
 
 		logger.Debugf("Discovered backend %s: %s (%s) with health status %s",

@@ -41,19 +41,19 @@ func (m *MockDiscoverer) EXPECT() *MockDiscovererMockRecorder {
 	return m.recorder
 }
 
-// GetWorkload mocks base method.
-func (m *MockDiscoverer) GetWorkload(ctx context.Context, workloadName string) (*vmcp.Backend, error) {
+// GetWorkloadAsVMCPBackend mocks base method.
+func (m *MockDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workloadName string) (*vmcp.Backend, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetWorkload", ctx, workloadName)
+	ret := m.ctrl.Call(m, "GetWorkloadAsVMCPBackend", ctx, workloadName)
 	ret0, _ := ret[0].(*vmcp.Backend)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// GetWorkload indicates an expected call of GetWorkload.
-func (mr *MockDiscovererMockRecorder) GetWorkload(ctx, workloadName any) *gomock.Call {
+// GetWorkloadAsVMCPBackend indicates an expected call of GetWorkloadAsVMCPBackend.
+func (mr *MockDiscovererMockRecorder) GetWorkloadAsVMCPBackend(ctx, workloadName any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkload", reflect.TypeOf((*MockDiscoverer)(nil).GetWorkload), ctx, workloadName)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkloadAsVMCPBackend", reflect.TypeOf((*MockDiscoverer)(nil).GetWorkloadAsVMCPBackend), ctx, workloadName)
 }
 
 // ListWorkloadsInGroup mocks base method.

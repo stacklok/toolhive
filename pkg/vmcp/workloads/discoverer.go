@@ -17,9 +17,9 @@ type Discoverer interface {
 	// ListWorkloadsInGroup returns all workload names that belong to the specified group
 	ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error)
 
-	// GetWorkload retrieves workload details by name and converts it to a vmcp.Backend.
+	// GetWorkloadAsVMCPBackend retrieves workload details by name and converts it to a vmcp.Backend.
 	// The returned Backend should have all fields populated except AuthStrategy and AuthMetadata,
 	// which will be set by the discoverer based on the auth configuration.
 	// Returns nil if the workload exists but is not accessible (e.g., no URL).
-	GetWorkload(ctx context.Context, workloadName string) (*vmcp.Backend, error)
+	GetWorkloadAsVMCPBackend(ctx context.Context, workloadName string) (*vmcp.Backend, error)
 }

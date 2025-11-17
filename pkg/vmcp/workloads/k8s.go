@@ -71,8 +71,8 @@ func (d *k8sDiscoverer) ListWorkloadsInGroup(ctx context.Context, groupName stri
 	return groupWorkloads, nil
 }
 
-// GetWorkload retrieves workload details by name and converts it to a vmcp.Backend.
-func (d *k8sDiscoverer) GetWorkload(ctx context.Context, workloadName string) (*vmcp.Backend, error) {
+// GetWorkloadAsVMCPBackend retrieves workload details by name and converts it to a vmcp.Backend.
+func (d *k8sDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workloadName string) (*vmcp.Backend, error) {
 	mcpServer := &mcpv1alpha1.MCPServer{}
 	key := client.ObjectKey{Name: workloadName, Namespace: d.namespace}
 	if err := d.k8sClient.Get(ctx, key, mcpServer); err != nil {

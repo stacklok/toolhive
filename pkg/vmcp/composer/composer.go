@@ -64,6 +64,7 @@ type WorkflowDefinition struct {
 	//   - .params.*          - Input parameters
 	//   - .steps.*.output    - Step outputs
 	//   - .steps.*.status    - Step status
+	//   - .vars.*            - Workflow variables
 	//   - .workflow.*        - Workflow metadata (id, duration, timestamps)
 	//
 	// The template must produce valid JSON. If omitted, defaults to returning
@@ -331,6 +332,7 @@ type TemplateExpander interface {
 	//   - .params.*          - Input parameters
 	//   - .steps.*.output    - Step outputs
 	//   - .steps.*.status    - Step status
+	//   - .vars.*            - Workflow variables
 	//   - .workflow.*        - Workflow metadata (id, duration, timestamps, step_count)
 	ExpandOutputFormat(
 		ctx context.Context,

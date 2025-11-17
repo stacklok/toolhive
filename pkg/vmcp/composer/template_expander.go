@@ -228,10 +228,11 @@ func (e *defaultTemplateExpander) ExpandOutputFormat(
 		return nil, fmt.Errorf("context cancelled before output format expansion: %w", err)
 	}
 
-	// Build template context with params, steps, and workflow metadata
+	// Build template context with params, steps, vars, and workflow metadata
 	tmplCtx := map[string]any{
 		"params":   workflowCtx.Params,
 		"steps":    e.buildStepsContext(workflowCtx),
+		"vars":     workflowCtx.Variables,
 		"workflow": e.buildWorkflowMetadata(workflowCtx, startTime, endTime),
 	}
 
@@ -258,8 +259,7 @@ func (e *defaultTemplateExpander) ExpandOutputFormat(
 	// Parse JSON result
 	var output map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &output); err != nil {
-		return nil, fmt.Errorf("output format must produce valid JSON: %w (template output: %s)",
-			err, buf.String())
+		return nil, fmt.Errorf("output format must produce valid JSON: %w", err)
 	}
 
 	return output, nil
@@ -277,7 +277,7 @@ func (*defaultTemplateExpander) buildWorkflowMetadata(
 
 	// Calculate duration in milliseconds
 	durationMs := int64(0)
-	if endTime > 0 && startTime > 0 {
+	if endTime > 0 && startTime > 0 && endTime >= startTime {
 		durationMs = endTime - startTime
 	}
 

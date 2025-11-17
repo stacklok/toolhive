@@ -23,8 +23,10 @@ import (
 
 var _ = Describe("MCPServer Controller Integration Tests", func() {
 	const (
-		timeout  = time.Second * 30
-		interval = time.Millisecond * 250
+		timeout                        = time.Second * 30
+		interval                       = time.Millisecond * 250
+		defaultNamespace               = "default"
+		conditionTypeGroupRefValidated = "GroupRefValidated"
 	)
 
 	Context("When creating an Stdio MCPServer", Ordered, func() {
@@ -36,7 +38,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		)
 
 		BeforeAll(func() {
-			namespace = "default"
+			namespace = defaultNamespace
 			mcpServerName = "test-mcpserver"
 
 			// Create namespace if it doesn't exist
@@ -363,7 +365,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		)
 
 		BeforeAll(func() {
-			namespace = "default"
+			namespace = defaultNamespace
 			mcpServerName = "test-invalid-podtemplate"
 
 			// Create namespace if it doesn't exist
@@ -468,6 +470,237 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			Expect(updatedMCPServer.Status.Message).To(ContainSubstring("Invalid PodTemplateSpec"))
+		})
+	})
+
+	Context("When creating an MCPServer with invalid GroupRef", Ordered, func() {
+		var (
+			namespace     string
+			mcpServerName string
+			mcpServer     *mcpv1alpha1.MCPServer
+		)
+
+		BeforeAll(func() {
+			namespace = defaultNamespace
+			mcpServerName = "test-invalid-groupref"
+
+			// Create namespace if it doesn't exist
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			// Define the MCPServer resource with invalid GroupRef
+			mcpServer = &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
+					Transport: "stdio",
+					Port:      8080,
+					GroupRef:  "non-existent-group", // This group doesn't exist
+				},
+			}
+
+			// Create the MCPServer
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+		})
+
+		AfterAll(func() {
+			// Clean up the MCPServer
+			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
+		})
+
+		It("Should set GroupRefValidated condition to False with reason GroupRefNotFound", func() {
+			// Wait for the status to be updated with the invalid condition
+			Eventually(func() bool {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+
+				// Check for GroupRefValidated condition
+				for _, cond := range updatedMCPServer.Status.Conditions {
+					if cond.Type == conditionTypeGroupRefValidated {
+						return cond.Status == metav1.ConditionFalse &&
+							cond.Reason == "GroupRefNotFound"
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+
+			// Verify the condition message contains expected text
+			updatedMCPServer := &mcpv1alpha1.MCPServer{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      mcpServerName,
+				Namespace: namespace,
+			}, updatedMCPServer)).Should(Succeed())
+
+			var foundCondition *metav1.Condition
+			for i, cond := range updatedMCPServer.Status.Conditions {
+				if cond.Type == conditionTypeGroupRefValidated {
+					foundCondition = &updatedMCPServer.Status.Conditions[i]
+					break
+				}
+			}
+
+			Expect(foundCondition).NotTo(BeNil())
+			Expect(foundCondition.Message).To(Equal(fmt.Sprintf("MCPGroup 'non-existent-group' not found in namespace '%s'", defaultNamespace)))
+		})
+
+		It("Should not block creation of other resources despite invalid GroupRef", func() {
+			// Verify that deployment still gets created (GroupRef doesn't block deployment)
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, deployment)
+			}, timeout, interval).Should(Succeed())
+
+			// Verify the deployment was created successfully
+			Expect(deployment.Name).To(Equal(mcpServerName))
+		})
+	})
+
+	Context("When creating an MCPServer with valid GroupRef", Ordered, func() {
+		var (
+			namespace     string
+			mcpServerName string
+			mcpGroupName  string
+			mcpServer     *mcpv1alpha1.MCPServer
+			mcpGroup      *mcpv1alpha1.MCPGroup
+		)
+
+		BeforeAll(func() {
+			namespace = defaultNamespace
+			mcpServerName = "test-valid-groupref"
+			mcpGroupName = "test-group"
+
+			// Create namespace if it doesn't exist
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			// Create MCPGroup first
+			mcpGroup = &mcpv1alpha1.MCPGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpGroupName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPGroupSpec{
+					Description: "A test group for integration testing",
+				},
+			}
+			Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
+
+			// Wait for the group to be created and ready
+			Eventually(func() bool {
+				updatedGroup := &mcpv1alpha1.MCPGroup{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpGroupName,
+					Namespace: namespace,
+				}, updatedGroup)
+				return err == nil && updatedGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
+			}, timeout, interval).Should(BeTrue())
+
+			// Define the MCPServer resource with valid GroupRef
+			mcpServer = &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
+					Transport: "stdio",
+					Port:      8080,
+					GroupRef:  mcpGroupName, // This group exists
+				},
+			}
+
+			// Create the MCPServer
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+		})
+
+		AfterAll(func() {
+			// Clean up the MCPServer first
+			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
+			// Then clean up the MCPGroup
+			Expect(k8sClient.Delete(ctx, mcpGroup)).Should(Succeed())
+		})
+
+		It("Should set GroupRefValidated condition to True with reason GroupRefIsValid", func() {
+			// Wait for the status to be updated with the valid condition
+			Eventually(func() bool {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+
+				// Check for GroupRefValidated condition
+				for _, cond := range updatedMCPServer.Status.Conditions {
+					if cond.Type == conditionTypeGroupRefValidated {
+						return cond.Status == metav1.ConditionTrue &&
+							cond.Reason == "GroupRefIsValid"
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+
+			// Verify the condition message contains expected text
+			updatedMCPServer := &mcpv1alpha1.MCPServer{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      mcpServerName,
+				Namespace: namespace,
+			}, updatedMCPServer)).Should(Succeed())
+
+			var foundCondition *metav1.Condition
+			for i, cond := range updatedMCPServer.Status.Conditions {
+				if cond.Type == conditionTypeGroupRefValidated {
+					foundCondition = &updatedMCPServer.Status.Conditions[i]
+					break
+				}
+			}
+
+			Expect(foundCondition).NotTo(BeNil())
+			Expect(foundCondition.Message).To(Equal("MCPGroup 'test-group' is valid and ready"))
+		})
+
+		It("Should update MCPGroup with server reference", func() {
+			// Wait for the MCPGroup to be updated with the server reference
+			Eventually(func() bool {
+				updatedGroup := &mcpv1alpha1.MCPGroup{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpGroupName,
+					Namespace: namespace,
+				}, updatedGroup)
+				if err != nil {
+					return false
+				}
+
+				// Check if the server is in the group's servers list
+				for _, server := range updatedGroup.Status.Servers {
+					if server == mcpServerName {
+						return true
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
 		})
 	})
 })

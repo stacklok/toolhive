@@ -1,9 +1,0 @@
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPServer
-metadata:
-  name: test-server
-  namespace: toolhive-system
-spec:
-  image: ghcr.io/modelcontextprotocol/servers/filesystem:0.6.2
-  transport: stdio
-  groupRef: test-group

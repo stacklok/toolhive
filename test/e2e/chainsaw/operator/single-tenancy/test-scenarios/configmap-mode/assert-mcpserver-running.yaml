@@ -1,7 +1,8 @@
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
-  name: external-auth-test
+  name: yardstick
   namespace: toolhive-system
 status:
-  phase: Running
+  message: "MCP server is running"
+  phase: "Running"

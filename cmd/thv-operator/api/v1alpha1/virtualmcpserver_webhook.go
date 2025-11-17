@@ -283,7 +283,7 @@ func validateCompositeToolStep(
 // validateStepType validates the step type and type-specific requirements
 func validateStepType(toolIndex, stepIndex int, step WorkflowStep) error {
 	if step.Type != "" && step.Type != WorkflowStepTypeToolCall && step.Type != WorkflowStepTypeElicitation {
-		return fmt.Errorf("spec.compositeTools[%d].steps[%d].type must be tool_call or elicitation", toolIndex, stepIndex)
+		return fmt.Errorf("spec.compositeTools[%d].steps[%d].type must be tool or elicitation", toolIndex, stepIndex)
 	}
 
 	stepType := step.Type
@@ -292,7 +292,7 @@ func validateStepType(toolIndex, stepIndex int, step WorkflowStep) error {
 	}
 
 	if stepType == WorkflowStepTypeToolCall && step.Tool == "" {
-		return fmt.Errorf("spec.compositeTools[%d].steps[%d].tool is required when type is tool_call", toolIndex, stepIndex)
+		return fmt.Errorf("spec.compositeTools[%d].steps[%d].tool is required when type is tool", toolIndex, stepIndex)
 	}
 
 	if stepType == WorkflowStepTypeElicitation && step.Message == "" {

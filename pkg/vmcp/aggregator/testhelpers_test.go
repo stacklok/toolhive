@@ -1,12 +1,10 @@
 package aggregator
 
 import (
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/workloads/k8s"
 )
 
 // Test fixture builders to reduce verbosity in tests
@@ -52,62 +50,6 @@ func withToolType(toolType string) func(*core.Workload) {
 func withLabels(labels map[string]string) func(*core.Workload) {
 	return func(w *core.Workload) {
 		w.Labels = labels
-	}
-}
-
-// K8s workload test helpers
-
-func newTestK8SWorkload(name string, opts ...func(*k8s.Workload)) k8s.Workload {
-	w := k8s.Workload{
-		Name:          name,
-		Namespace:     "default",
-		Phase:         mcpv1alpha1.MCPServerPhaseRunning,
-		URL:           "http://localhost:8080/mcp",
-		TransportType: types.TransportTypeStreamableHTTP,
-		ToolType:      "mcp",
-		Group:         testGroupName,
-		GroupRef:      testGroupName,
-		Labels:        make(map[string]string),
-	}
-	for _, opt := range opts {
-		opt(&w)
-	}
-	return w
-}
-
-func withK8SPhase(phase mcpv1alpha1.MCPServerPhase) func(*k8s.Workload) {
-	return func(w *k8s.Workload) {
-		w.Phase = phase
-	}
-}
-
-func withK8SURL(url string) func(*k8s.Workload) {
-	return func(w *k8s.Workload) {
-		w.URL = url
-	}
-}
-
-func withK8STransport(transport types.TransportType) func(*k8s.Workload) {
-	return func(w *k8s.Workload) {
-		w.TransportType = transport
-	}
-}
-
-func withK8SToolType(toolType string) func(*k8s.Workload) {
-	return func(w *k8s.Workload) {
-		w.ToolType = toolType
-	}
-}
-
-func withK8SLabels(labels map[string]string) func(*k8s.Workload) {
-	return func(w *k8s.Workload) {
-		w.Labels = labels
-	}
-}
-
-func withK8SNamespace(namespace string) func(*k8s.Workload) {
-	return func(w *k8s.Workload) {
-		w.Namespace = namespace
 	}
 }
 

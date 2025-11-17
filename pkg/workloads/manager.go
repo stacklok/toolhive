@@ -59,19 +59,19 @@ var ErrWorkloadNotRunning = fmt.Errorf("workload not running")
 
 // NewManager creates a new CLI workload manager.
 // Returns Manager interface (existing behavior, unchanged).
-// IMPORTANT: This function only works in CLI mode. For Kubernetes, use k8s.NewManagerFromContext() directly.
+// IMPORTANT: This function only works in CLI mode.
 func NewManager(ctx context.Context) (Manager, error) {
 	if rt.IsKubernetesRuntime() {
-		return nil, fmt.Errorf("use k8s.NewManagerFromContext() for Kubernetes environments")
+		return nil, fmt.Errorf("workload manager is not available in Kubernetes environments")
 	}
 	return NewCLIManager(ctx)
 }
 
 // NewManagerWithProvider creates a new CLI workload manager with a custom config provider.
-// IMPORTANT: This function only works in CLI mode. For Kubernetes, use k8s.NewManagerFromContext() directly.
+// IMPORTANT: This function only works in CLI mode.
 func NewManagerWithProvider(ctx context.Context, configProvider config.Provider) (Manager, error) {
 	if rt.IsKubernetesRuntime() {
-		return nil, fmt.Errorf("use k8s.NewManagerFromContext() for Kubernetes environments")
+		return nil, fmt.Errorf("workload manager is not available in Kubernetes environments")
 	}
 	return NewCLIManagerWithProvider(ctx, configProvider)
 }

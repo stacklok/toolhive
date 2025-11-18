@@ -27,6 +27,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		interval                       = time.Millisecond * 250
 		defaultNamespace               = "default"
 		conditionTypeGroupRefValidated = "GroupRefValidated"
+		runconfigVolumeName            = "runconfig"
 	)
 
 	Context("When creating an Stdio MCPServer", Ordered, func() {
@@ -148,7 +149,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 			foundRunconfigVolume := false
 			for _, v := range templateSpec.Volumes {
-				if v.Name == "runconfig" && v.ConfigMap != nil && v.ConfigMap.Name == (mcpServerName+"-runconfig") {
+				if v.Name == runconfigVolumeName && v.ConfigMap != nil && v.ConfigMap.Name == (mcpServerName+"-runconfig") {
 					foundRunconfigVolume = true
 					break
 				}
@@ -160,7 +161,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			// Verify that the runconfig ConfigMap is mounted as a volume
 			foundRunconfigMount := false
 			for _, vm := range container.VolumeMounts {
-				if vm.Name == "runconfig" && vm.MountPath == "/etc/runconfig" {
+				if vm.Name == runconfigVolumeName && vm.MountPath == "/etc/runconfig" {
 					foundRunconfigMount = true
 					break
 				}

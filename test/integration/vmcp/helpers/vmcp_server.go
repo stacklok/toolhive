@@ -188,9 +188,13 @@ func NewVMCPServer(
 	// Start server automatically
 	// Use the passed-in context to ensure proper cancellation propagation
 	go func() {
-		if err := vmcpServer.Start(ctx); err != nil && ctx.Err() == nil {
-			// Only report error if context wasn't cancelled
-			tb.Errorf("vMCP server error: %v", err)
+		if err := vmcpServer.Start(ctx); err != nil {
+			select {
+			case <-ctx.Done():
+				// Context cancelled, ignore error
+			default:
+				tb.Errorf("vMCP server error: %v", err)
+			}
 		}
 	}()
 

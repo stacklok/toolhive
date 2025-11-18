@@ -3,6 +3,7 @@ package vmcpconfig
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -242,7 +243,6 @@ func (*Converter) convertCompositeTools(
 		tool := &vmcpconfig.CompositeToolConfig{
 			Name:        crdTool.Name,
 			Description: crdTool.Description,
-			Parameters:  make(map[string]vmcpconfig.ParameterSchema),
 			Steps:       make([]*vmcpconfig.WorkflowStepConfig, 0, len(crdTool.Steps)),
 		}
 
@@ -253,12 +253,13 @@ func (*Converter) convertCompositeTools(
 			}
 		}
 
-		// Convert parameters
-		for paramName, paramSpec := range crdTool.Parameters {
-			tool.Parameters[paramName] = vmcpconfig.ParameterSchema{
-				Type:    paramSpec.Type,
-				Default: paramSpec.Default,
+		// Convert parameters from runtime.RawExtension to map[string]any
+		if crdTool.Parameters != nil && len(crdTool.Parameters.Raw) > 0 {
+			var params map[string]any
+			if err := json.Unmarshal(crdTool.Parameters.Raw, &params); err == nil {
+				tool.Parameters = params
 			}
+			// If unmarshal fails, leave Parameters as nil
 		}
 
 		// Convert steps

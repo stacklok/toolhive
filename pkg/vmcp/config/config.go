@@ -331,23 +331,24 @@ type CompositeToolConfig struct {
 	// Description describes what the workflow does.
 	Description string `json:"description,omitempty"`
 
-	// Parameters defines input parameter schema.
-	Parameters map[string]ParameterSchema `json:"parameters,omitempty"`
+	// Parameters defines input parameter schema in JSON Schema format.
+	// Should be a JSON Schema object with "type": "object" and "properties".
+	// Example:
+	//   {
+	//     "type": "object",
+	//     "properties": {
+	//       "param1": {"type": "string", "default": "value"},
+	//       "param2": {"type": "integer"}
+	//     },
+	//     "required": ["param2"]
+	//   }
+	Parameters map[string]any `json:"parameters,omitempty"`
 
 	// Timeout is the maximum workflow execution time.
 	Timeout Duration `json:"timeout,omitempty"`
 
 	// Steps are the workflow steps to execute.
 	Steps []*WorkflowStepConfig `json:"steps"`
-}
-
-// ParameterSchema defines a workflow parameter.
-type ParameterSchema struct {
-	// Type is the parameter type (e.g., "string", "integer").
-	Type string `json:"type"`
-
-	// Default is the default value (optional).
-	Default any `json:"default,omitempty"`
 }
 
 // WorkflowStepConfig defines a single workflow step.

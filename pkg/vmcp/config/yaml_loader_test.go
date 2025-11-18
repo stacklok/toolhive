@@ -195,8 +195,10 @@ composite_tools:
   - name: deploy_workflow
     description: Deploy and notify
     parameters:
-      pr_number:
-        type: integer
+      type: object
+      properties:
+        pr_number:
+          type: integer
     timeout: 30m
     steps:
       - id: merge
@@ -329,15 +331,17 @@ composite_tools:
     description: Test tool
     timeout: 5m
     parameters:
-      param1:
-        default: "value"
+      properties:
+        param1:
+          type: string
+          default: "value"
     steps:
       - id: step1
         type: tool
         tool: some.tool
 `,
 			wantErr: true,
-			errMsg:  "missing 'type' field",
+			errMsg:  "parameters must have 'type' field",
 		},
 		{
 			name: "header_injection with header_value_env resolves environment variable",

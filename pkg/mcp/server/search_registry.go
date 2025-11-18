@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 

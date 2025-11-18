@@ -56,20 +56,20 @@ func (r *Config) UnmarshalJSON(data []byte) error {
 	if _, isOld := raw["ClientID"]; isOld {
 		// Unmarshal using old PascalCase format
 		var oldFormat struct {
-			ClientID         string            `json:"ClientID,omitempty"`
-			ClientSecret     string            `json:"ClientSecret,omitempty"`
-			ClientSecretFile string            `json:"ClientSecretFile,omitempty"`
-			Scopes           []string          `json:"Scopes,omitempty"`
-			SkipBrowser      bool              `json:"SkipBrowser,omitempty"`
-			Timeout          time.Duration     `json:"Timeout,omitempty"`
-			CallbackPort     int               `json:"CallbackPort,omitempty"`
-			UsePKCE          bool              `json:"UsePKCE,omitempty"`
-			Issuer           string            `json:"Issuer,omitempty"`
-			AuthorizeURL     string            `json:"AuthorizeURL,omitempty"`
-			TokenURL         string            `json:"TokenURL,omitempty"`
-			Headers          []*registry.Header   `json:"Headers,omitempty"`
-			EnvVars          []*registry.EnvVar   `json:"EnvVars,omitempty"`
-			OAuthParams      map[string]string `json:"OAuthParams,omitempty"`
+			ClientID         string             `json:"ClientID,omitempty"`
+			ClientSecret     string             `json:"ClientSecret,omitempty"`
+			ClientSecretFile string             `json:"ClientSecretFile,omitempty"`
+			Scopes           []string           `json:"Scopes,omitempty"`
+			SkipBrowser      bool               `json:"SkipBrowser,omitempty"`
+			Timeout          time.Duration      `json:"Timeout,omitempty"`
+			CallbackPort     int                `json:"CallbackPort,omitempty"`
+			UsePKCE          bool               `json:"UsePKCE,omitempty"`
+			Issuer           string             `json:"Issuer,omitempty"`
+			AuthorizeURL     string             `json:"AuthorizeURL,omitempty"`
+			TokenURL         string             `json:"TokenURL,omitempty"`
+			Headers          []*registry.Header `json:"Headers,omitempty"`
+			EnvVars          []*registry.EnvVar `json:"EnvVars,omitempty"`
+			OAuthParams      map[string]string  `json:"OAuthParams,omitempty"`
 		}
 
 		if err := json.Unmarshal(data, &oldFormat); err != nil {

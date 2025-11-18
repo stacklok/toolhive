@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // TestEmbeddedRegistrySchemaValidation validates that the embedded registry.json

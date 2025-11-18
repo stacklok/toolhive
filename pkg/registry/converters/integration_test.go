@@ -9,8 +9,9 @@ import (
 	"testing"
 
 	upstream "github.com/modelcontextprotocol/registry/pkg/api/v0"
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stretchr/testify/require"
+
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // ToolHiveRegistry represents the structure of registry.json

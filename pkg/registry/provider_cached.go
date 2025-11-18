@@ -12,6 +12,7 @@ import (
 
 	"github.com/adrg/xdg"
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
+
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 

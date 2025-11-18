@@ -1,4 +1,4 @@
-// Package types contains the core type definitions for the MCP registry system.
+// Package registry contains the core type definitions for the MCP registry system.
 package registry
 
 import (

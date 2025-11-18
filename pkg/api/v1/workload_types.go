@@ -69,9 +69,9 @@ type updateRequest struct {
 	Group string `json:"group,omitempty"`
 
 	// Remote server specific fields
-	URL         string            `json:"url,omitempty"`
-	OAuthConfig remoteOAuthConfig `json:"oauth_config,omitempty"`
-	Headers     []*registry.Header   `json:"headers,omitempty"`
+	URL         string             `json:"url,omitempty"`
+	OAuthConfig remoteOAuthConfig  `json:"oauth_config,omitempty"`
+	Headers     []*registry.Header `json:"headers,omitempty"`
 }
 
 // toolOverride represents a tool override

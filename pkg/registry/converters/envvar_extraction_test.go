@@ -4,9 +4,10 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/registry/pkg/model"
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // Test extracting environment variables from runtime arguments (-e flags)

@@ -12,7 +12,7 @@ package mocks
 import (
 	reflect "reflect"
 
-	types "github.com/stacklok/toolhive/pkg/registry/registry"
+	registry "github.com/stacklok/toolhive/pkg/registry/registry"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -41,10 +41,10 @@ func (m *MockProvider) EXPECT() *MockProviderMockRecorder {
 }
 
 // GetImageServer mocks base method.
-func (m *MockProvider) GetImageServer(name string) (*types.ImageMetadata, error) {
+func (m *MockProvider) GetImageServer(name string) (*registry.ImageMetadata, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetImageServer", name)
-	ret0, _ := ret[0].(*types.ImageMetadata)
+	ret0, _ := ret[0].(*registry.ImageMetadata)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -56,10 +56,10 @@ func (mr *MockProviderMockRecorder) GetImageServer(name any) *gomock.Call {
 }
 
 // GetRegistry mocks base method.
-func (m *MockProvider) GetRegistry() (*types.Registry, error) {
+func (m *MockProvider) GetRegistry() (*registry.Registry, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetRegistry")
-	ret0, _ := ret[0].(*types.Registry)
+	ret0, _ := ret[0].(*registry.Registry)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -71,10 +71,10 @@ func (mr *MockProviderMockRecorder) GetRegistry() *gomock.Call {
 }
 
 // GetServer mocks base method.
-func (m *MockProvider) GetServer(name string) (types.ServerMetadata, error) {
+func (m *MockProvider) GetServer(name string) (registry.ServerMetadata, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetServer", name)
-	ret0, _ := ret[0].(types.ServerMetadata)
+	ret0, _ := ret[0].(registry.ServerMetadata)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -86,10 +86,10 @@ func (mr *MockProviderMockRecorder) GetServer(name any) *gomock.Call {
 }
 
 // ListImageServers mocks base method.
-func (m *MockProvider) ListImageServers() ([]*types.ImageMetadata, error) {
+func (m *MockProvider) ListImageServers() ([]*registry.ImageMetadata, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ListImageServers")
-	ret0, _ := ret[0].([]*types.ImageMetadata)
+	ret0, _ := ret[0].([]*registry.ImageMetadata)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -101,10 +101,10 @@ func (mr *MockProviderMockRecorder) ListImageServers() *gomock.Call {
 }
 
 // ListServers mocks base method.
-func (m *MockProvider) ListServers() ([]types.ServerMetadata, error) {
+func (m *MockProvider) ListServers() ([]registry.ServerMetadata, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ListServers")
-	ret0, _ := ret[0].([]types.ServerMetadata)
+	ret0, _ := ret[0].([]registry.ServerMetadata)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -116,10 +116,10 @@ func (mr *MockProviderMockRecorder) ListServers() *gomock.Call {
 }
 
 // SearchImageServers mocks base method.
-func (m *MockProvider) SearchImageServers(query string) ([]*types.ImageMetadata, error) {
+func (m *MockProvider) SearchImageServers(query string) ([]*registry.ImageMetadata, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SearchImageServers", query)
-	ret0, _ := ret[0].([]*types.ImageMetadata)
+	ret0, _ := ret[0].([]*registry.ImageMetadata)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -131,10 +131,10 @@ func (mr *MockProviderMockRecorder) SearchImageServers(query any) *gomock.Call {
 }
 
 // SearchServers mocks base method.
-func (m *MockProvider) SearchServers(query string) ([]types.ServerMetadata, error) {
+func (m *MockProvider) SearchServers(query string) ([]registry.ServerMetadata, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SearchServers", query)
-	ret0, _ := ret[0].([]types.ServerMetadata)
+	ret0, _ := ret[0].([]registry.ServerMetadata)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }

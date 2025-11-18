@@ -51,6 +51,9 @@ type TransparentProxy struct {
 	// Mutex for protecting shared state
 	mutex sync.Mutex
 
+	// Track if Stop() has been called
+	stopped bool
+
 	// Shutdown channel
 	shutdownCh chan struct{}
 
@@ -434,6 +437,15 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 func (p *TransparentProxy) Stop(ctx context.Context) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
+
+	// Check if already stopped
+	if p.stopped {
+		logger.Debugf("Proxy for %s is already stopped, skipping", p.targetURI)
+		return nil
+	}
+
+	// Mark as stopped before closing channel
+	p.stopped = true
 
 	// Signal shutdown
 	close(p.shutdownCh)

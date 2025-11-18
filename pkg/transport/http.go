@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 
 	"golang.org/x/oauth2"
@@ -58,6 +59,10 @@ type HTTPTransport struct {
 	// Container monitor
 	monitor rt.Monitor
 	errorCh <-chan error
+
+	// Container exit error (for determining if restart is needed)
+	containerExitErr error
+	exitErrMutex     sync.Mutex
 }
 
 // NewHTTPTransport creates a new HTTP transport.
@@ -273,12 +278,40 @@ func (t *HTTPTransport) handleContainerExit(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	case err := <-t.errorCh:
-		logger.Infof("Container %s exited: %v", t.containerName, err)
-		// Stop the transport when the container exits
+		// Store the exit error so runner can check if restart is needed
+		t.exitErrMutex.Lock()
+		t.containerExitErr = err
+		t.exitErrMutex.Unlock()
+
+		logger.Warnf("Container %s exited: %v", t.containerName, err)
+		
+		// Check if container was removed (not just exited)
+		isRemoved := err != nil && strings.Contains(err.Error(), "may have been removed")
+		if isRemoved {
+			logger.Infof("Container %s was removed. Stopping proxy and cleaning up.", t.containerName)
+		} else {
+			logger.Infof("Container %s exited. Will attempt automatic restart.", t.containerName)
+		}
+		
+		// Stop the transport when the container exits/removed
 		if stopErr := t.Stop(ctx); stopErr != nil {
 			logger.Errorf("Error stopping transport after container exit: %v", stopErr)
 		}
 	}
+}
+
+// ShouldRestart returns true if the container exited and should be restarted.
+// Returns false if the container was removed (intentionally deleted).
+func (t *HTTPTransport) ShouldRestart() bool {
+	t.exitErrMutex.Lock()
+	defer t.exitErrMutex.Unlock()
+
+	if t.containerExitErr == nil {
+		return false // No exit error, normal shutdown
+	}
+
+	// Don't restart if container was removed
+	return !strings.Contains(t.containerExitErr.Error(), "may have been removed")
 }
 
 // IsRunning checks if the transport is currently running.
@@ -294,3 +327,4 @@ func (t *HTTPTransport) IsRunning(_ context.Context) (bool, error) {
 		return true, nil
 	}
 }
+

@@ -241,6 +241,7 @@ func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 	tests := []struct {
 		name          string
 		serverOrImage string
+		caCertPath    string
 		buildArgs     []string
 		wantContains  []string
 		wantErr       bool
@@ -276,6 +277,13 @@ func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name:          "NPX with buildArgs and invalid CA cert path",
+			serverOrImage: "npx://@launchdarkly/mcp-server",
+			caCertPath:    "/nonexistent/ca-cert.crt",
+			buildArgs:     []string{"start"},
+			wantErr:       true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -285,7 +293,7 @@ func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 
 			// Call BuildFromProtocolSchemeWithName with dry-run=true
 			dockerfileContent, err := BuildFromProtocolSchemeWithName(
-				ctx, nil, tt.serverOrImage, "", "", tt.buildArgs, true)
+				ctx, nil, tt.serverOrImage, tt.caCertPath, "", tt.buildArgs, true)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("BuildFromProtocolSchemeWithName() error = %v, wantErr %v", err, tt.wantErr)

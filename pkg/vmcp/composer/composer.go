@@ -59,6 +59,17 @@ type WorkflowDefinition struct {
 	// Options: "abort" (default), "continue", "best_effort"
 	FailureMode string
 
+	// OutputFormat is an optional Go template for constructing the workflow output.
+	// If specified, the template is evaluated with access to:
+	//   - .params.*          - Input parameters
+	//   - .steps.*.output    - Step outputs
+	//   - .steps.*.status    - Step status
+	//   - .workflow.*        - Workflow metadata (id, duration, timestamps)
+	//
+	// The template must produce valid JSON. If omitted, defaults to returning
+	// the last step's output (backward compatible behavior).
+	OutputFormat string
+
 	// Metadata stores additional workflow information.
 	Metadata map[string]string
 }

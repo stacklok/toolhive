@@ -264,3 +264,89 @@ func TestConvertSteps_ComplexWorkflow(t *testing.T) {
 	assert.NotEmpty(t, result[2].Condition)
 	assert.Equal(t, []string{"confirm"}, result[2].DependsOn)
 }
+
+func TestConvertConfigToWorkflowDefinitions_WithOutputFormat(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		input            []*config.CompositeToolConfig
+		wantOutputFormat string
+	}{
+		{
+			name: "workflow without output_format",
+			input: []*config.CompositeToolConfig{{
+				Name: "simple",
+				Steps: []*config.WorkflowStepConfig{
+					{ID: "s1", Type: "tool", Tool: "backend.tool"},
+				},
+			}},
+			wantOutputFormat: "",
+		},
+		{
+			name: "workflow with output_format",
+			input: []*config.CompositeToolConfig{{
+				Name: "aggregated",
+				Steps: []*config.WorkflowStepConfig{
+					{ID: "fetch_logs", Type: "tool", Tool: "splunk.fetch"},
+					{ID: "fetch_metrics", Type: "tool", Tool: "datadog.fetch"},
+				},
+				OutputFormat: `{
+					"logs": {{.steps.fetch_logs.output}},
+					"metrics": {{.steps.fetch_metrics.output}}
+				}`,
+			}},
+			wantOutputFormat: `{
+					"logs": {{.steps.fetch_logs.output}},
+					"metrics": {{.steps.fetch_metrics.output}}
+				}`,
+		},
+		{
+			name: "workflow with complex output_format",
+			input: []*config.CompositeToolConfig{{
+				Name: "investigation",
+				Steps: []*config.WorkflowStepConfig{
+					{ID: "fetch_data", Type: "tool", Tool: "backend.fetch"},
+					{ID: "analyze", Type: "tool", Tool: "backend.analyze"},
+				},
+				OutputFormat: `{
+					"data": {{.steps.fetch_data.output}},
+					"analysis": {{.steps.analyze.output}},
+					"metadata": {
+						"workflow_id": "{{.workflow.id}}",
+						"duration_ms": {{.workflow.duration_ms}}
+					}
+				}`,
+			}},
+			wantOutputFormat: `{
+					"data": {{.steps.fetch_data.output}},
+					"analysis": {{.steps.analyze.output}},
+					"metadata": {
+						"workflow_id": "{{.workflow.id}}",
+						"duration_ms": {{.workflow.duration_ms}}
+					}
+				}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := ConvertConfigToWorkflowDefinitions(tt.input)
+
+			require.NoError(t, err)
+			require.Len(t, result, 1)
+
+			// Get the first (and only) workflow definition
+			var workflowDef *composer.WorkflowDefinition
+			for _, def := range result {
+				workflowDef = def
+				break
+			}
+
+			require.NotNil(t, workflowDef)
+			assert.Equal(t, tt.wantOutputFormat, workflowDef.OutputFormat)
+		})
+	}
+}

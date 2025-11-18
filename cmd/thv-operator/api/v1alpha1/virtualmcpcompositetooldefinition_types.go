@@ -46,6 +46,32 @@ type VirtualMCPCompositeToolDefinitionSpec struct {
 	// +kubebuilder:default=abort
 	// +optional
 	FailureMode string `json:"failureMode,omitempty"`
+
+	// OutputFormat is an optional Go template for constructing the workflow output.
+	// If specified, the template is evaluated with access to:
+	//   - .params.*          - Input parameters
+	//   - .steps.*.output    - Step outputs
+	//   - .steps.*.status    - Step status
+	//   - .workflow.*        - Workflow metadata (id, duration, timestamps)
+	//
+	// The template must produce valid JSON. If omitted, defaults to returning
+	// the last step's output (backward compatible behavior).
+	//
+	// Example:
+	//   outputFormat: |
+	//     {
+	//       "data": {
+	//         "logs": {{.steps.fetch_logs.output}},
+	//         "metrics": {{.steps.fetch_metrics.output}}
+	//       },
+	//       "metadata": {
+	//         "workflow_id": "{{.workflow.id}}",
+	//         "duration_ms": {{.workflow.duration_ms}}
+	//       }
+	//     }
+	//
+	// +optional
+	OutputFormat string `json:"outputFormat,omitempty"`
 }
 
 // VirtualMCPCompositeToolDefinitionStatus defines the observed state of VirtualMCPCompositeToolDefinition

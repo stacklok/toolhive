@@ -339,6 +339,30 @@ type CompositeToolConfig struct {
 
 	// Steps are the workflow steps to execute.
 	Steps []*WorkflowStepConfig `json:"steps"`
+
+	// OutputFormat is an optional template for constructing the workflow output.
+	// If specified, the template is evaluated with access to:
+	//   - .params.*          - Input parameters
+	//   - .steps.*.output    - Step outputs
+	//   - .steps.*.status    - Step status
+	//   - .workflow.*        - Workflow metadata (id, duration, timestamps)
+	//
+	// The template must produce valid JSON. If omitted, defaults to returning
+	// the last step's output (backward compatible behavior).
+	//
+	// Example:
+	//   output_format: |
+	//     {
+	//       "data": {
+	//         "logs": {{.steps.fetch_logs.output}},
+	//         "metrics": {{.steps.fetch_metrics.output}}
+	//       },
+	//       "metadata": {
+	//         "workflow_id": "{{.workflow.id}}",
+	//         "duration_ms": {{.workflow.duration_ms}}
+	//       }
+	//     }
+	OutputFormat string `json:"output_format,omitempty" yaml:"output_format,omitempty"`
 }
 
 // ParameterSchema defines a workflow parameter.

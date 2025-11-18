@@ -907,7 +907,7 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 	// Pass nil for authConfig since we'll extract auth config from MCPServer directly
 	backendDiscoverer := aggregator.NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, nil)
 
-	// Discover backends using the aggregator (reuses existing discovery logic)
+	// Discover backends using the aggregator
 	backends, err := backendDiscoverer.Discover(ctx, vmcp.Spec.GroupRef.Name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover backends: %w", err)

@@ -28,7 +28,8 @@ type k8sDiscoverer struct {
 
 // NewK8SDiscoverer creates a new Kubernetes workload discoverer that directly uses
 // the Kubernetes client to discover MCPServer CRDs.
-func NewK8SDiscoverer() (Discoverer, error) {
+// If namespace is empty, it will detect the namespace using k8s.GetCurrentNamespace().
+func NewK8SDiscoverer(namespace ...string) (Discoverer, error) {
 	// Create a scheme for controller-runtime client
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -40,13 +41,24 @@ func NewK8SDiscoverer() (Discoverer, error) {
 		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 
-	// Detect namespace
-	namespace := k8s.GetCurrentNamespace()
+	// Use provided namespace or detect it
+	var ns string
+	if len(namespace) > 0 && namespace[0] != "" {
+		ns = namespace[0]
+	} else {
+		ns = k8s.GetCurrentNamespace()
+	}
 
+	return NewK8SDiscovererWithClient(k8sClient, ns), nil
+}
+
+// NewK8SDiscovererWithClient creates a new Kubernetes workload discoverer with a provided client.
+// This is useful for testing with fake clients.
+func NewK8SDiscovererWithClient(k8sClient client.Client, namespace string) Discoverer {
 	return &k8sDiscoverer{
 		k8sClient: k8sClient,
 		namespace: namespace,
-	}, nil
+	}
 }
 
 // ListWorkloadsInGroup returns all workload names that belong to the specified group.

@@ -217,6 +217,66 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:          "NPX transport with BuildArgs",
+			transportType: TransportTypeNPX,
+			data: TemplateData{
+				MCPPackage: "@launchdarkly/mcp-server",
+				BuildArgs:  []string{"start"},
+			},
+			wantContains: []string{
+				"FROM node:",
+				"npm install --save @launchdarkly/mcp-server",
+				"COPY --from=builder --chown=appuser:appgroup /build/node_modules /app/node_modules",
+				"echo \"exec npx @launchdarkly/mcp-server start \\\"\\$@\\\"\" >> entrypoint.sh",
+				"ENTRYPOINT [\"./entrypoint.sh\"]",
+			},
+			wantMatches: []string{
+				`FROM node:\d+-alpine AS builder`,
+				`FROM node:\d+-alpine`,
+			},
+			wantNotContains: nil,
+			wantErr:         false,
+		},
+		{
+			name:          "UVX transport with BuildArgs",
+			transportType: TransportTypeUVX,
+			data: TemplateData{
+				MCPPackage: "example-package",
+				BuildArgs:  []string{"--transport", "stdio"},
+			},
+			wantContains: []string{
+				"FROM python:",
+				"uv tool install \"$package_spec\"",
+				"ENTRYPOINT [\"sh\", \"-c\", \"package='example-package'; exec \\\"${package%%@*}\\\" \\\"--transport\\\" \\\"stdio\\\"\", \"--\"]",
+			},
+			wantMatches: []string{
+				`FROM python:\d+\.\d+-slim AS builder`,
+				`FROM python:\d+\.\d+-slim`,
+			},
+			wantNotContains: nil,
+			wantErr:         false,
+		},
+		{
+			name:          "GO transport with BuildArgs",
+			transportType: TransportTypeGO,
+			data: TemplateData{
+				MCPPackage: "example-package",
+				BuildArgs:  []string{"serve", "--verbose"},
+			},
+			wantContains: []string{
+				"FROM golang:",
+				"go install \"$package\"",
+				"FROM alpine:",
+				"ENTRYPOINT [\"/app/mcp-server\", \"serve\", \"--verbose\"]",
+			},
+			wantMatches: []string{
+				`FROM golang:\d+\.\d+-alpine AS builder`,
+				`FROM alpine:\d+\.\d+`,
+			},
+			wantNotContains: nil,
+			wantErr:         false,
+		},
+		{
 			name:          "Unsupported transport",
 			transportType: "unsupported",
 			data: TemplateData{

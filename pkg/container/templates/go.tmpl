@@ -99,4 +99,4 @@ COPY --from=builder --chown=appuser:appgroup /build/ /app/
 USER appuser
 
 # Run the pre-built MCP server binary
-ENTRYPOINT ["/app/mcp-server"{{range .MCPArgs}}, "{{.}}"{{end}}]
+ENTRYPOINT ["/app/mcp-server"]

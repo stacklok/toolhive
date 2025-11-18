@@ -91,7 +91,6 @@ func createTemplateData(transportType templates.TransportType, packageName, caCe
 
 	templateData := templates.TemplateData{
 		MCPPackage:  packageName,
-		MCPArgs:     []string{}, // No additional arguments for now
 		IsLocalPath: isLocalPath,
 	}
 

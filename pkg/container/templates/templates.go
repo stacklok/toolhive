@@ -16,8 +16,6 @@ var templateFS embed.FS
 type TemplateData struct {
 	// MCPPackage is the name of the MCP package to run.
 	MCPPackage string
-	// MCPArgs are the arguments to pass to the MCP package.
-	MCPArgs []string
 	// CACertContent is the content of the custom CA certificate to include in the image.
 	CACertContent string
 	// IsLocalPath indicates if the MCPPackage is a local path that should be copied into the container.

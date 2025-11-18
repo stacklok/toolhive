@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-17T00:18:47Z",
+  "last_updated": "2025-11-18T00:18:46Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -130,9 +130,9 @@
         "example_GetAstronautsCurrentlyInSpace"
       ],
       "metadata": {
-        "stars": 222,
+        "stars": 231,
         "pulls": 0,
-        "last_updated": "2025-10-25T02:30:07Z"
+        "last_updated": "2025-11-17T02:33:29Z"
       },
       "repository_url": "https://github.com/apollographql/apollo-mcp-server",
       "tags": [
@@ -2276,9 +2276,9 @@
         "download_attachment"
       ],
       "metadata": {
-        "stars": 674,
-        "pulls": 28226,
-        "last_updated": "2025-10-25T02:30:07Z"
+        "stars": 743,
+        "pulls": 34542,
+        "last_updated": "2025-11-17T02:33:29Z"
       },
       "repository_url": "https://github.com/zereight/gitlab-mcp",
       "tags": [
@@ -4242,9 +4242,9 @@
         "API-create-a-comment"
       ],
       "metadata": {
-        "stars": 3363,
+        "stars": 3478,
         "pulls": 40073,
-        "last_updated": "2025-10-25T02:30:08Z"
+        "last_updated": "2025-11-17T02:33:29Z"
       },
       "repository_url": "https://github.com/makenotion/notion-mcp-server",
       "tags": [
@@ -4364,9 +4364,9 @@
         "get_block_info"
       ],
       "metadata": {
-        "stars": 68,
+        "stars": 70,
         "pulls": 0,
-        "last_updated": "2025-10-25T02:30:05Z"
+        "last_updated": "2025-11-17T02:33:28Z"
       },
       "repository_url": "https://github.com/Bankless/onchain-mcp",
       "tags": [
@@ -4526,9 +4526,9 @@
         "upsert-prompt"
       ],
       "metadata": {
-        "stars": 7432,
+        "stars": 7692,
         "pulls": 0,
-        "last_updated": "2025-10-25T02:30:06Z"
+        "last_updated": "2025-11-17T02:33:28Z"
       },
       "repository_url": "https://github.com/Arize-ai/phoenix",
       "tags": [

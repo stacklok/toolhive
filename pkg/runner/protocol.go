@@ -87,7 +87,9 @@ func ParseProtocolScheme(serverOrImage string) (templates.TransportType, string,
 }
 
 // createTemplateData creates the template data with optional CA certificate and build arguments.
-func createTemplateData(transportType templates.TransportType, packageName, caCertPath string, buildArgs []string) (templates.TemplateData, error) {
+func createTemplateData(
+	transportType templates.TransportType, packageName, caCertPath string, buildArgs []string,
+) (templates.TemplateData, error) {
 	// Check if this is a local path (for Go packages only)
 	isLocalPath := transportType == templates.TransportTypeGO && isLocalGoPath(packageName)
 

@@ -81,8 +81,9 @@ var _ = Describe("VirtualMCPServer Backend Discovery Integration Tests", func() 
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "example/backend1:latest",
 					Transport: "streamable-http",
-					ProxyMode: "mcp",
+					ProxyMode: "streamable-http",
 					Port:      8080,
+					GroupRef:  mcpGroupName,
 				},
 			}
 			Expect(k8sClient.Create(ctx, mcpServer1)).Should(Succeed())
@@ -95,12 +96,13 @@ var _ = Describe("VirtualMCPServer Backend Discovery Integration Tests", func() 
 				},
 				Spec: mcpv1alpha1.MCPServerSpec{
 					Image:     "example/backend2:latest",
-					Transport: "http",
-					ProxyMode: "mcp",
+					Transport: "streamable-http",
+					ProxyMode: "streamable-http",
 					Port:      8080,
 					ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 						Name: authConfigName,
 					},
+					GroupRef: mcpGroupName,
 				},
 			}
 			Expect(k8sClient.Create(ctx, mcpServer2)).Should(Succeed())
@@ -116,6 +118,7 @@ var _ = Describe("VirtualMCPServer Backend Discovery Integration Tests", func() 
 					Transport: "stdio",
 					ProxyMode: "sse",
 					Port:      8080,
+					GroupRef:  mcpGroupName,
 				},
 			}
 			Expect(k8sClient.Create(ctx, mcpServer3)).Should(Succeed())
@@ -255,9 +258,9 @@ var _ = Describe("VirtualMCPServer Backend Discovery Integration Tests", func() 
 				// Find backend-server-2 in discovered backends
 				for _, backend := range vmcp.Status.DiscoveredBackends {
 					if backend.Name == mcpServer2Name {
-						return backend.AuthType == "external_auth_config" &&
+						return backend.AuthType == "external_auth_config_ref" &&
 							backend.ExternalAuthConfigRef == authConfigName &&
-							backend.TransportType == "http" &&
+							backend.TransportType == "streamable-http" &&
 							backend.URL != ""
 					}
 				}

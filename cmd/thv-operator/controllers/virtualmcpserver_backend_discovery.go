@@ -71,7 +71,7 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 		// Extract authentication configuration
 		// Check for externalAuthConfigRef in the MCPServer spec
 		if mcpServer.Spec.ExternalAuthConfigRef != nil {
-			backend.AuthType = "external_auth_config"
+			backend.AuthType = "external_auth_config_ref"
 			backend.ExternalAuthConfigRef = mcpServer.Spec.ExternalAuthConfigRef.Name
 		} else {
 			// If no external auth config, check if it's using other auth types

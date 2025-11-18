@@ -448,7 +448,7 @@ type DiscoveredBackend struct {
 	Name string `json:"name"`
 
 	// AuthType is the authentication strategy type for this backend
-	// Examples: "discovered", "pass_through", "token_exchange", "header_injection"
+	// Examples: "discovered", "external_auth_config_ref", "pass_through"
 	// +optional
 	AuthType string `json:"authType,omitempty"`
 

@@ -807,7 +807,7 @@ spec:
                     authType:
                       description: |-
                         AuthType is the authentication strategy type for this backend
-                        Examples: "discovered", "pass_through", "token_exchange", "header_injection"
+                        Examples: "discovered", "external_auth_config_ref", "pass_through"
                       type: string
                     externalAuthConfigRef:
                       description: |-

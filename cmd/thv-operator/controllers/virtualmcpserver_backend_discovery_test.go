@@ -70,7 +70,7 @@ func TestDiscoverBackends(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1alpha1.MCPServerSpec{
-						Transport: "http",
+						Transport: "streamable-http",
 						ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 							Name: "auth-config-1",
 						},
@@ -91,8 +91,8 @@ func TestDiscoverBackends(t *testing.T) {
 					assert.Equal(t, "http://server1.default.svc.cluster.local:8080", backend.URL)
 					assert.Empty(t, backend.ExternalAuthConfigRef)
 				case "server2":
-					assert.Equal(t, "http", backend.TransportType)
-					assert.Equal(t, "external_auth_config", backend.AuthType)
+					assert.Equal(t, "streamable-http", backend.TransportType)
+					assert.Equal(t, "external_auth_config_ref", backend.AuthType)
 					assert.Equal(t, "auth-config-1", backend.ExternalAuthConfigRef)
 					assert.Equal(t, "http://server2.default.svc.cluster.local:8080", backend.URL)
 				}

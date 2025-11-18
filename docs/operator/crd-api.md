@@ -280,7 +280,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the backend MCPServer workload |  | Required: \{\} <br /> |
-| `authType` _string_ | AuthType is the authentication strategy type for this backend<br />Examples: "discovered", "pass_through", "token_exchange", "header_injection" |  |  |
+| `authType` _string_ | AuthType is the authentication strategy type for this backend<br />Examples: "discovered", "external_auth_config_ref", "pass_through" |  |  |
 | `externalAuthConfigRef` _string_ | ExternalAuthConfigRef is the name of the MCPExternalAuthConfig resource<br />used for authentication, if applicable |  |  |
 | `url` _string_ | URL is the backend server URL |  |  |
 | `transportType` _string_ | TransportType is the MCP transport protocol (stdio, http, sse, streamable-http) |  |  |

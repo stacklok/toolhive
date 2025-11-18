@@ -189,6 +189,7 @@ func TestTemplateDataWithLocalPath(t *testing.T) {
 			expected: templates.TemplateData{
 				MCPPackage:  "github.com/example/package",
 				IsLocalPath: false,
+				BuildArgs:   nil,
 			},
 		},
 		{
@@ -197,6 +198,7 @@ func TestTemplateDataWithLocalPath(t *testing.T) {
 			expected: templates.TemplateData{
 				MCPPackage:  "./cmd/server",
 				IsLocalPath: true,
+				BuildArgs:   nil,
 			},
 		},
 		{
@@ -205,6 +207,7 @@ func TestTemplateDataWithLocalPath(t *testing.T) {
 			expected: templates.TemplateData{
 				MCPPackage:  ".",
 				IsLocalPath: true,
+				BuildArgs:   nil,
 			},
 		},
 	}
@@ -218,6 +221,7 @@ func TestTemplateDataWithLocalPath(t *testing.T) {
 			templateData := templates.TemplateData{
 				MCPPackage:  tt.packageName,
 				IsLocalPath: isLocalPath,
+				BuildArgs:   nil,
 			}
 
 			if templateData.MCPPackage != tt.expected.MCPPackage {
@@ -225,6 +229,113 @@ func TestTemplateDataWithLocalPath(t *testing.T) {
 			}
 			if templateData.IsLocalPath != tt.expected.IsLocalPath {
 				t.Errorf("IsLocalPath = %v, want %v", templateData.IsLocalPath, tt.expected.IsLocalPath)
+			}
+		})
+	}
+}
+
+func TestCreateTemplateData(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		transportType templates.TransportType
+		packageName   string
+		caCertPath    string
+		buildArgs     []string
+		expected      templates.TemplateData
+		wantErr       bool
+	}{
+		{
+			name:          "NPX with buildArgs",
+			transportType: templates.TransportTypeNPX,
+			packageName:   "@launchdarkly/mcp-server",
+			caCertPath:    "",
+			buildArgs:     []string{"start"},
+			expected: templates.TemplateData{
+				MCPPackage:  "@launchdarkly/mcp-server",
+				IsLocalPath: false,
+				BuildArgs:   []string{"start"},
+			},
+			wantErr: false,
+		},
+		{
+			name:          "UVX with multiple buildArgs",
+			transportType: templates.TransportTypeUVX,
+			packageName:   "example-package",
+			caCertPath:    "",
+			buildArgs:     []string{"--transport", "stdio"},
+			expected: templates.TemplateData{
+				MCPPackage:  "example-package",
+				IsLocalPath: false,
+				BuildArgs:   []string{"--transport", "stdio"},
+			},
+			wantErr: false,
+		},
+		{
+			name:          "GO with buildArgs",
+			transportType: templates.TransportTypeGO,
+			packageName:   "github.com/example/package",
+			caCertPath:    "",
+			buildArgs:     []string{"serve", "--verbose"},
+			expected: templates.TemplateData{
+				MCPPackage:  "github.com/example/package",
+				IsLocalPath: false,
+				BuildArgs:   []string{"serve", "--verbose"},
+			},
+			wantErr: false,
+		},
+		{
+			name:          "GO local path with buildArgs",
+			transportType: templates.TransportTypeGO,
+			packageName:   "./cmd/server",
+			caCertPath:    "",
+			buildArgs:     []string{"--config", "config.yaml"},
+			expected: templates.TemplateData{
+				MCPPackage:  "./cmd/server",
+				IsLocalPath: true,
+				BuildArgs:   []string{"--config", "config.yaml"},
+			},
+			wantErr: false,
+		},
+		{
+			name:          "NPX without buildArgs",
+			transportType: templates.TransportTypeNPX,
+			packageName:   "package-name",
+			caCertPath:    "",
+			buildArgs:     nil,
+			expected: templates.TemplateData{
+				MCPPackage:  "package-name",
+				IsLocalPath: false,
+				BuildArgs:   nil,
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result, err := createTemplateData(tt.transportType, tt.packageName, tt.caCertPath, tt.buildArgs)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("createTemplateData() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if result.MCPPackage != tt.expected.MCPPackage {
+				t.Errorf("MCPPackage = %q, want %q", result.MCPPackage, tt.expected.MCPPackage)
+			}
+			if result.IsLocalPath != tt.expected.IsLocalPath {
+				t.Errorf("IsLocalPath = %v, want %v", result.IsLocalPath, tt.expected.IsLocalPath)
+			}
+			if len(result.BuildArgs) != len(tt.expected.BuildArgs) {
+				t.Errorf("BuildArgs length = %d, want %d", len(result.BuildArgs), len(tt.expected.BuildArgs))
+			} else {
+				for i, arg := range result.BuildArgs {
+					if arg != tt.expected.BuildArgs[i] {
+						t.Errorf("BuildArgs[%d] = %q, want %q", i, arg, tt.expected.BuildArgs[i])
+					}
+				}
 			}
 		})
 	}

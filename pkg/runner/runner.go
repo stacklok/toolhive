@@ -419,26 +419,35 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Check if workload still exists (using workload manager to check `thv ls`)
 		// If it doesn't exist, it was removed - clean up client config
 		// If it exists, it exited unexpectedly - signal restart needed
-		workloadManager, err := r.getWorkloadManager(ctx)
-		if err == nil {
-			exists, checkErr := workloadManager.DoesWorkloadExist(ctx, r.Config.BaseName)
-			if checkErr != nil {
-				logger.Warnf("Warning: Failed to check if workload exists: %v", checkErr)
-				// Assume restart needed if we can't check
-			} else if !exists {
-				// Workload doesn't exist in `thv ls` - it was removed
-				logger.Infof("Workload %s no longer exists. Removing from client configurations.", r.Config.BaseName)
-				clientManager, clientErr := client.NewManager(ctx)
-				if clientErr == nil {
-					if removeErr := clientManager.RemoveServerFromClients(ctx, r.Config.ContainerName, r.Config.Group); removeErr != nil {
-						logger.Warnf("Warning: Failed to remove from client config: %v", removeErr)
-					} else {
-						logger.Infof("Successfully removed %s from client configurations", r.Config.ContainerName)
-					}
+		workloadManager := r.getWorkloadManager()
+		exists, checkErr := workloadManager.DoesWorkloadExist(ctx, r.Config.BaseName)
+		if checkErr != nil {
+			logger.Warnf("Warning: Failed to check if workload exists: %v", checkErr)
+			// Assume restart needed if we can't check
+		} else if !exists {
+			// Workload doesn't exist in `thv ls` - it was removed
+			logger.Infof(
+				"Workload %s no longer exists. Removing from client configurations.",
+				r.Config.BaseName,
+			)
+			clientManager, clientErr := client.NewManager(ctx)
+			if clientErr == nil {
+				removeErr := clientManager.RemoveServerFromClients(
+					ctx,
+					r.Config.ContainerName,
+					r.Config.Group,
+				)
+				if removeErr != nil {
+					logger.Warnf("Warning: Failed to remove from client config: %v", removeErr)
+				} else {
+					logger.Infof(
+						"Successfully removed %s from client configurations",
+						r.Config.ContainerName,
+					)
 				}
-				logger.Infof("MCP server %s stopped and cleaned up", r.Config.ContainerName)
-				return nil // Exit gracefully, no restart
 			}
+			logger.Infof("MCP server %s stopped and cleaned up", r.Config.ContainerName)
+			return nil // Exit gracefully, no restart
 		}
 
 		// Workload still exists - signal restart needed
@@ -450,12 +459,11 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 // getWorkloadManager creates a workload manager instance for checking workload existence
-func (r *Runner) getWorkloadManager(ctx context.Context) (interface {
+func (r *Runner) getWorkloadManager() interface {
 	DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error)
-}, error) {
+} {
 	// Create a minimal implementation that checks via status manager
-	impl := &workloadExistenceChecker{statusManager: r.statusManager}
-	return impl, nil
+	return &workloadExistenceChecker{statusManager: r.statusManager}
 }
 
 // workloadExistenceChecker is a minimal implementation to check if a workload exists

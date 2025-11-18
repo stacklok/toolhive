@@ -433,7 +433,13 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 				}
 
 				// Set status to starting (since we're restarting)
-				if statusErr := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusStarting, "Container exited, restarting"); statusErr != nil {
+				statusErr := d.statuses.SetWorkloadStatus(
+					ctx,
+					runConfig.BaseName,
+					rt.WorkloadStatusStarting,
+					"Container exited, restarting",
+				)
+				if statusErr != nil {
 					logger.Warnf("Failed to set workload %s status to starting: %v", runConfig.BaseName, statusErr)
 				}
 
@@ -444,7 +450,13 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 
 				// Exhausted all retries
 				logger.Errorf("Failed to restart %s after %d attempts. Giving up.", runConfig.BaseName, maxRetries)
-				if statusErr := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusError, "Failed to restart after container exit"); statusErr != nil {
+				statusErr = d.statuses.SetWorkloadStatus(
+					ctx,
+					runConfig.BaseName,
+					rt.WorkloadStatusError,
+					"Failed to restart after container exit",
+				)
+				if statusErr != nil {
 					logger.Warnf("Failed to set workload %s status to error: %v", runConfig.BaseName, statusErr)
 				}
 				return fmt.Errorf("container restart failed after %d attempts", maxRetries)

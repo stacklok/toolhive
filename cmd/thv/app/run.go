@@ -485,11 +485,19 @@ func validateRunFlags(cmd *cobra.Command, args []string) error {
 	// Validate --from-config flag usage
 	fromConfigFlag := cmd.Flags().Lookup("from-config")
 	if fromConfigFlag != nil && fromConfigFlag.Value.String() != "" {
-		// When --from-config is used, no other flags should be changed
+		// When --from-config is used, only execution-related flags are allowed
+		// Execution-related flags control HOW to run (foreground vs detached)
+		// Configuration flags control WHAT to run and should not be mixed with --from-config
+		allowedFlags := map[string]bool{
+			"from-config": true,
+			"foreground":  true,
+			"debug":       true, // Debug is also an execution flag
+		}
+
 		var conflictingFlags []string
 		cmd.Flags().VisitAll(func(flag *pflag.Flag) {
-			// Skip the from-config flag itself and only check flags that were changed
-			if flag.Name != "from-config" && flag.Changed {
+			// Skip allowed flags and only check flags that were changed
+			if !allowedFlags[flag.Name] && flag.Changed {
 				conflictingFlags = append(conflictingFlags, "--"+flag.Name)
 			}
 		})

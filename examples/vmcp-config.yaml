@@ -155,8 +155,14 @@ operational:
 # composite_tools:
 #   - name: "deploy_and_notify"
 #     description: "Deploy PR with user confirmation and notification"
+#     # Parameters use standard JSON Schema format per MCP specification
 #     parameters:
-#       pr_number: {type: "integer"}
+#       type: object
+#       properties:
+#         pr_number:
+#           type: integer
+#           description: "Pull request number to deploy"
+#       required: ["pr_number"]
 #     timeout: "30m"
 #
 #     steps:

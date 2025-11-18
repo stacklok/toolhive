@@ -101,59 +101,36 @@ func (r *VirtualMCPCompositeToolDefinition) Validate() error {
 
 // validateParameters validates the parameter schema using JSON Schema validation
 func (r *VirtualMCPCompositeToolDefinition) validateParameters() error {
-	if len(r.Spec.Parameters) == 0 {
+	if r.Spec.Parameters == nil || len(r.Spec.Parameters.Raw) == 0 {
 		return nil // No parameters to validate
 	}
 
-	// Build a JSON Schema object from the parameters
-	// Parameters map to a JSON Schema "properties" object
-	properties := make(map[string]interface{})
-	var required []string
-
-	for paramName, param := range r.Spec.Parameters {
-		if param.Type == "" {
-			return fmt.Errorf("spec.parameters[%s].type is required", paramName)
-		}
-
-		// Build a JSON Schema property definition
-		property := map[string]interface{}{
-			"type": param.Type,
-		}
-
-		if param.Description != "" {
-			property["description"] = param.Description
-		}
-
-		if param.Default != "" {
-			// Parse default value based on type
-			property["default"] = param.Default
-		}
-
-		if param.Required {
-			required = append(required, paramName)
-		}
-
-		properties[paramName] = property
+	// Parameters should be a JSON Schema object in RawExtension format
+	// Unmarshal to validate structure
+	var params map[string]interface{}
+	if err := json.Unmarshal(r.Spec.Parameters.Raw, &params); err != nil {
+		return fmt.Errorf("spec.parameters: invalid JSON: %v", err)
 	}
 
-	// Construct a full JSON Schema document
-	schemaDoc := map[string]interface{}{
-		"type":       "object",
-		"properties": properties,
+	// Validate that it has "type" field
+	typeVal, hasType := params["type"]
+	if !hasType {
+		return fmt.Errorf("spec.parameters: must have 'type' field (should be 'object' for JSON Schema)")
 	}
 
-	if len(required) > 0 {
-		schemaDoc["required"] = required
+	// Type must be a string
+	typeStr, ok := typeVal.(string)
+	if !ok {
+		return fmt.Errorf("spec.parameters: 'type' field must be a string")
 	}
 
-	// Marshal to JSON
-	schemaJSON, err := json.Marshal(schemaDoc)
-	if err != nil {
-		return fmt.Errorf("spec.parameters: failed to marshal schema: %v", err)
+	// Type should be "object" for parameter schemas
+	if typeStr != "object" {
+		return fmt.Errorf("spec.parameters: 'type' must be 'object' (got '%s')", typeStr)
 	}
 
 	// Validate using JSON Schema validator
-	if err := validateJSONSchema(schemaJSON); err != nil {
+	if err := validateJSONSchema(r.Spec.Parameters.Raw); err != nil {
 		return fmt.Errorf("spec.parameters: invalid JSON Schema: %v", err)
 	}
 

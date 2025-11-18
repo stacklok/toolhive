@@ -38,14 +38,17 @@ spec:
   name: investigate_incident
   description: Investigate incident by gathering logs, metrics, and traces in parallel
   parameters:
-    incident_id:
-      type: string
-      description: The incident identifier
-      required: true
-    time_range:
-      type: string
-      description: Time range for data collection
-      required: true
+    type: object
+    properties:
+      incident_id:
+        type: string
+        description: The incident identifier
+      time_range:
+        type: string
+        description: Time range for data collection
+    required:
+      - incident_id
+      - time_range
   steps:
     # Level 1: These three steps run in parallel (no dependencies)
     - id: fetch_logs

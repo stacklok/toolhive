@@ -551,25 +551,31 @@ func TestYAMLLoader_transformCompositeTools(t *testing.T) {
 			raw: []*rawCompositeTool{
 				{
 					Name: "bad",
-					Parameters: map[string]map[string]any{
-						"param1": {
-							"default": "value",
+					Parameters: map[string]any{
+						"properties": map[string]any{
+							"param1": map[string]any{
+								"type": "string",
+							},
 						},
+						// Missing "type" at root level
 					},
 					Steps: []*rawWorkflowStep{{ID: "s1"}},
 				},
 			},
 			wantErr: true,
-			errMsg:  "missing 'type' field",
+			errMsg:  "parameters must have 'type' field",
 		},
 		{
 			name: "parameter type not string returns error",
 			raw: []*rawCompositeTool{
 				{
 					Name: "bad",
-					Parameters: map[string]map[string]any{
-						"param1": {
-							"type": 123,
+					Parameters: map[string]any{
+						"type": 123, // type must be string
+						"properties": map[string]any{
+							"param1": map[string]any{
+								"type": "string",
+							},
 						},
 					},
 					Steps: []*rawWorkflowStep{{ID: "s1"}},
@@ -579,14 +585,31 @@ func TestYAMLLoader_transformCompositeTools(t *testing.T) {
 			errMsg:  "'type' field must be a string",
 		},
 		{
+			name: "parameter type must be object returns error",
+			raw: []*rawCompositeTool{
+				{
+					Name: "bad",
+					Parameters: map[string]any{
+						"type": "string", // must be "object" for parameter schemas
+					},
+					Steps: []*rawWorkflowStep{{ID: "s1"}},
+				},
+			},
+			wantErr: true,
+			errMsg:  "'type' must be 'object'",
+		},
+		{
 			name: "parameter with default value works",
 			raw: []*rawCompositeTool{
 				{
 					Name: "test",
-					Parameters: map[string]map[string]any{
-						"version": {
-							"type":    "string",
-							"default": "latest",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"version": map[string]any{
+								"type":    "string",
+								"default": "latest",
+							},
 						},
 					},
 					Steps: []*rawWorkflowStep{{ID: "s1"}},
@@ -594,8 +617,15 @@ func TestYAMLLoader_transformCompositeTools(t *testing.T) {
 			},
 			verify: func(t *testing.T, tools []*CompositeToolConfig) {
 				t.Helper()
-				assert.Equal(t, "string", tools[0].Parameters["version"].Type)
-				assert.Equal(t, "latest", tools[0].Parameters["version"].Default)
+				// Parameters is now map[string]any with JSON Schema format
+				params := tools[0].Parameters
+				assert.Equal(t, "object", params["type"])
+				properties, ok := params["properties"].(map[string]any)
+				require.True(t, ok, "properties should be a map")
+				version, ok := properties["version"].(map[string]any)
+				require.True(t, ok, "version property should be a map")
+				assert.Equal(t, "string", version["type"])
+				assert.Equal(t, "latest", version["default"])
 			},
 		},
 	}
@@ -936,8 +966,11 @@ func TestYAMLLoader_transformCompositeTools_WithOutputConfig(t *testing.T) {
 				{
 					Name:        "data_processor",
 					Description: "Process data with typed output",
-					Parameters: map[string]map[string]any{
-						"source": {"type": "string"},
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"source": map[string]any{"type": "string"},
+						},
 					},
 					Steps: []*rawWorkflowStep{
 						{ID: "fetch", Tool: "data.fetch"},

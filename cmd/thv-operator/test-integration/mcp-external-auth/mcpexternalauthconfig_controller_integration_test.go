@@ -295,8 +295,8 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 			var tokenExchangeConfig map[string]interface{}
 			for _, middleware := range middlewareConfigs {
 				m := middleware.(map[string]interface{})
-				if m["name"] == "tokenexchange" {
-					params := m["params"].(map[string]interface{})
+				if m["type"] == "tokenexchange" {
+					params := m["parameters"].(map[string]interface{})
 					tokenExchangeConfig = params["token_exchange_config"].(map[string]interface{})
 					break
 				}
@@ -313,8 +313,10 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 			scopes := tokenExchangeConfig["scopes"].([]interface{})
 			Expect(scopes).To(ConsistOf("admin", "user"))
 
-			// Client secret should NOT be in the ConfigMap
-			Expect(tokenExchangeConfig).NotTo(HaveKey("client_secret"))
+			// Client secret should be empty or not present in the ConfigMap (for security)
+			if secret, ok := tokenExchangeConfig["client_secret"]; ok {
+				Expect(secret).To(BeEmpty(), "client_secret should be empty in ConfigMap for security")
+			}
 		})
 	})
 

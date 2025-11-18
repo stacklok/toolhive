@@ -10,6 +10,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"go.uber.org/zap/zapcore"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -34,11 +35,20 @@ var (
 
 func TestOperatorE2E(t *testing.T) { //nolint:paralleltest // E2E tests should not run in parallel
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "Operator E2E Suite")
+
+	suiteConfig, reporterConfig := GinkgoConfiguration()
+	// Only show verbose output for failures
+	reporterConfig.Verbose = false
+	reporterConfig.VeryVerbose = false
+	reporterConfig.FullTrace = false
+
+	RunSpecs(t, "Operator E2E Suite", suiteConfig, reporterConfig)
 }
 
 var _ = BeforeSuite(func() {
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
+	// Only log errors unless a test fails
+	logLevel := zapcore.ErrorLevel
+	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true), zap.Level(logLevel)))
 
 	ctx, cancel = context.WithCancel(context.TODO())
 

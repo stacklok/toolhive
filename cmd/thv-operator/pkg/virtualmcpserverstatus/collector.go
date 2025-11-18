@@ -22,6 +22,7 @@ type StatusCollector struct {
 	url                *string
 	observedGeneration *int64
 	conditions         map[string]metav1.Condition
+	discoveredBackends []mcpv1alpha1.DiscoveredBackend
 }
 
 // NewStatusManager creates a new StatusManager for the given VirtualMCPServer resource.
@@ -82,6 +83,12 @@ func (s *StatusCollector) SetReadyCondition(reason, message string, status metav
 	s.SetCondition(mcpv1alpha1.ConditionTypeVirtualMCPServerReady, reason, message, status)
 }
 
+// SetDiscoveredBackends sets the discovered backends list to be updated.
+func (s *StatusCollector) SetDiscoveredBackends(backends []mcpv1alpha1.DiscoveredBackend) {
+	s.discoveredBackends = backends
+	s.hasChanges = true
+}
+
 // UpdateStatus applies all collected status changes in a single batch update.
 // Expects vmcpStatus to be freshly fetched from the cluster to ensure the update operates on the latest resource version.
 func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alpha1.VirtualMCPServerStatus) bool {
@@ -113,10 +120,17 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 			meta.SetStatusCondition(&vmcpStatus.Conditions, condition)
 		}
 
+		// Apply discovered backends change
+		if s.discoveredBackends != nil {
+			vmcpStatus.DiscoveredBackends = s.discoveredBackends
+			vmcpStatus.BackendCount = len(s.discoveredBackends)
+		}
+
 		ctxLogger.V(1).Info("Batched status update applied",
 			"phase", s.phase,
 			"message", s.message,
-			"conditionsCount", len(s.conditions))
+			"conditionsCount", len(s.conditions),
+			"discoveredBackendsCount", len(s.discoveredBackends))
 		return true
 	}
 	ctxLogger.V(1).Info("No batched status update needed")

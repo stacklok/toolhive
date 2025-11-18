@@ -26,6 +26,10 @@ spec:
       jsonPath: .status.url
       name: URL
       type: string
+    - description: Number of discovered backends
+      jsonPath: .status.backendCount
+      name: Backends
+      type: integer
     - description: Age
       jsonPath: .metadata.creationTimestamp
       name: Age
@@ -814,6 +818,36 @@ spec:
               url:
                 description: URL is the URL where the Virtual MCP server can be accessed
                 type: string
+              backendCount:
+                description: BackendCount is the number of discovered backends
+                type: integer
+              discoveredBackends:
+                description: DiscoveredBackends lists discovered backend configurations from the MCPGroup
+                items:
+                  properties:
+                    authConfigRef:
+                      description: AuthConfigRef is the name of the discovered MCPExternalAuthConfig (if any)
+                      type: string
+                    authType:
+                      description: AuthType is the type of authentication configured
+                      type: string
+                    lastHealthCheck:
+                      description: LastHealthCheck is the timestamp of the last health check
+                      format: date-time
+                      type: string
+                    name:
+                      description: Name is the name of the backend MCPServer
+                      type: string
+                    status:
+                      description: Status is the current status of the backend (ready, degraded, unavailable)
+                      type: string
+                    url:
+                      description: URL is the URL of the backend MCPServer
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
             type: object
         type: object
     served: true

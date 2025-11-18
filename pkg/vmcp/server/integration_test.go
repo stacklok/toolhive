@@ -189,6 +189,9 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 		Return(aggregatedCaps, nil).
 		AnyTimes()
 
+	// Mock Stop to be called during server shutdown
+	mockDiscoveryMgr.EXPECT().Stop().Times(1)
+
 	srv, err := server.New(&server.Config{
 		Name:    "test-vmcp",
 		Version: "1.0.0",

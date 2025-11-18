@@ -22,7 +22,6 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			transportType: TransportTypeUVX,
 			data: TemplateData{
 				MCPPackage: "example-package",
-				MCPArgs:    []string{"--arg1", "--arg2", "value"},
 			},
 			wantContains: []string{
 				"FROM python:",
@@ -31,7 +30,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"package_spec=$(echo \"$package\" | sed 's/@/==/')",
 				"uv tool install \"$package_spec\"",
 				"COPY --from=builder --chown=appuser:appgroup /opt/uv-tools /opt/uv-tools",
-				"ENTRYPOINT [\"sh\", \"-c\", \"package='example-package'; exec \\\"${package%%@*}\\\" \\\"--arg1\\\" \\\"--arg2\\\" \\\"value\\\" \\\"$@\\\"\", \"--\"]",
+				"ENTRYPOINT [\"sh\", \"-c\", \"package='example-package'; exec \\\"${package%%@*}\\\"\", \"--\"]",
 			},
 			wantMatches: []string{
 				`FROM python:\d+\.\d+-slim AS builder`, // Match builder stage
@@ -48,7 +47,6 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			transportType: TransportTypeUVX,
 			data: TemplateData{
 				MCPPackage:    "example-package",
-				MCPArgs:       []string{"--arg1", "--arg2", "value"},
 				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
 			},
 			wantContains: []string{
@@ -58,7 +56,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"package_spec=$(echo \"$package\" | sed 's/@/==/')",
 				"uv tool install \"$package_spec\"",
 				"COPY --from=builder --chown=appuser:appgroup /opt/uv-tools /opt/uv-tools",
-				"ENTRYPOINT [\"sh\", \"-c\", \"package='example-package'; exec \\\"${package%%@*}\\\" \\\"--arg1\\\" \\\"--arg2\\\" \\\"value\\\" \\\"$@\\\"\", \"--\"]",
+				"ENTRYPOINT [\"sh\", \"-c\", \"package='example-package'; exec \\\"${package%%@*}\\\"\", \"--\"]",
 				"Add custom CA certificate BEFORE any network operations",
 				"COPY ca-cert.crt /tmp/custom-ca.crt",
 				"cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt",
@@ -76,13 +74,12 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			transportType: TransportTypeNPX,
 			data: TemplateData{
 				MCPPackage: "example-package",
-				MCPArgs:    []string{"--arg1", "--arg2", "value"},
 			},
 			wantContains: []string{
 				"FROM node:",
 				"npm install --save example-package",
 				"COPY --from=builder --chown=appuser:appgroup /build/node_modules /app/node_modules",
-				"echo \"exec npx $(echo example-package | sed 's/@[^@/]*$//'), \"--arg1\", \"--arg2\", \"value\"\" >> entrypoint.sh",
+				"echo \"exec npx example-package \\\"\\$@\\\"\" >> entrypoint.sh",
 				"ENTRYPOINT [\"./entrypoint.sh\"]",
 			},
 			wantMatches: []string{
@@ -100,13 +97,12 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			transportType: TransportTypeNPX,
 			data: TemplateData{
 				MCPPackage:    "example-package",
-				MCPArgs:       []string{"--arg1", "--arg2", "value"},
 				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
 			},
 			wantContains: []string{
 				"FROM node:",
 				"npm install --save example-package",
-				"echo \"exec npx $(echo example-package | sed 's/@[^@/]*$//'), \"--arg1\", \"--arg2\", \"value\"\" >> entrypoint.sh",
+				"echo \"exec npx example-package \\\"\\$@\\\"\" >> entrypoint.sh",
 				"ENTRYPOINT [\"./entrypoint.sh\"]",
 				"Add custom CA certificate BEFORE any network operations",
 				"COPY ca-cert.crt /tmp/custom-ca.crt",
@@ -125,7 +121,6 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			transportType: TransportTypeGO,
 			data: TemplateData{
 				MCPPackage: "example-package",
-				MCPArgs:    []string{"--arg1", "--arg2", "value"},
 			},
 			wantContains: []string{
 				"FROM golang:",
@@ -134,7 +129,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"go install \"$package\"",
 				"FROM alpine:",
 				"COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server",
-				"ENTRYPOINT [\"/app/mcp-server\", \"--arg1\", \"--arg2\", \"value\"]",
+				"ENTRYPOINT [\"/app/mcp-server\"]",
 			},
 			wantMatches: []string{
 				`FROM golang:\d+\.\d+-alpine AS builder`, // Match builder stage
@@ -151,7 +146,6 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			transportType: TransportTypeGO,
 			data: TemplateData{
 				MCPPackage:    "example-package",
-				MCPArgs:       []string{"--arg1", "--arg2", "value"},
 				CACertContent: "-----BEGIN CERTIFICATE-----\nMIICertificateContent\n-----END CERTIFICATE-----",
 			},
 			wantContains: []string{
@@ -160,7 +154,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"package=\"${package}@latest\"",
 				"go install \"$package\"",
 				"FROM alpine:",
-				"ENTRYPOINT [\"/app/mcp-server\", \"--arg1\", \"--arg2\", \"value\"]",
+				"ENTRYPOINT [\"/app/mcp-server\"]",
 				"Add custom CA certificate BEFORE any network operations",
 				"COPY ca-cert.crt /tmp/custom-ca.crt",
 				"cat /tmp/custom-ca.crt >> /etc/ssl/certs/ca-certificates.crt",
@@ -178,7 +172,6 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			transportType: TransportTypeGO,
 			data: TemplateData{
 				MCPPackage:  "./cmd/server",
-				MCPArgs:     []string{"--arg1", "value"},
 				IsLocalPath: true,
 			},
 			wantContains: []string{
@@ -188,7 +181,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"FROM alpine:",
 				"COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server",
 				"COPY --from=builder --chown=appuser:appgroup /build/ /app/",
-				"ENTRYPOINT [\"/app/mcp-server\", \"--arg1\", \"value\"]",
+				"ENTRYPOINT [\"/app/mcp-server\"]",
 			},
 			wantMatches: []string{
 				`FROM golang:\d+\.\d+-alpine AS builder`, // Match builder stage
@@ -204,7 +197,6 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			transportType: TransportTypeGO,
 			data: TemplateData{
 				MCPPackage:  ".",
-				MCPArgs:     []string{},
 				IsLocalPath: true,
 			},
 			wantContains: []string{
@@ -229,7 +221,6 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			transportType: "unsupported",
 			data: TemplateData{
 				MCPPackage: "example-package",
-				MCPArgs:    []string{"--arg1", "--arg2", "value"},
 			},
 			wantContains:    nil,
 			wantNotContains: nil,

@@ -74,7 +74,7 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// If dry-run or output is specified, just generate the Dockerfile
 	if buildFlags.DryRun || buildFlags.Output != "" {
-		dockerfileContent, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag, true)
+		dockerfileContent, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag, nil, true)
 		if err != nil {
 			return fmt.Errorf("failed to generate Dockerfile for %s: %v", protocolScheme, err)
 		}
@@ -96,7 +96,7 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 	logger.Infof("Building container for protocol scheme: %s", protocolScheme)
 
 	// Build the image using the new protocol handler with custom name
-	imageName, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag, false)
+	imageName, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag, nil, false)
 	if err != nil {
 		return fmt.Errorf("failed to build container for %s: %v", protocolScheme, err)
 	}

@@ -637,7 +637,7 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 		t.exitErrMutex.Unlock()
 
 		logger.Warnf("Container %s exited: %v", t.containerName, err)
-		
+
 		// Check if container was removed (not just exited)
 		isRemoved := err != nil && strings.Contains(err.Error(), "may have been removed")
 		if isRemoved {

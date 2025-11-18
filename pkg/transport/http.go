@@ -284,7 +284,7 @@ func (t *HTTPTransport) handleContainerExit(ctx context.Context) {
 		t.exitErrMutex.Unlock()
 
 		logger.Warnf("Container %s exited: %v", t.containerName, err)
-		
+
 		// Check if container was removed (not just exited)
 		isRemoved := err != nil && strings.Contains(err.Error(), "may have been removed")
 		if isRemoved {
@@ -292,7 +292,7 @@ func (t *HTTPTransport) handleContainerExit(ctx context.Context) {
 		} else {
 			logger.Infof("Container %s exited. Will attempt automatic restart.", t.containerName)
 		}
-		
+
 		// Stop the transport when the container exits/removed
 		if stopErr := t.Stop(ctx); stopErr != nil {
 			logger.Errorf("Error stopping transport after container exit: %v", stopErr)
@@ -327,4 +327,3 @@ func (t *HTTPTransport) IsRunning(_ context.Context) (bool, error) {
 		return true, nil
 	}
 }
-

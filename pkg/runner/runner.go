@@ -407,7 +407,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		stopMCPServer(fmt.Sprintf("Received signal %s", sig))
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container exit)
-		// Clean up the PID file and state  
+		// Clean up the PID file and state
 		// TODO: Stop writing to PID file once we migrate over to statuses.
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to remove PID file: %v", err)
@@ -472,13 +472,13 @@ func (w *workloadExistenceChecker) DoesWorkloadExist(ctx context.Context, worklo
 		}
 		return false, fmt.Errorf("failed to check if workload exists: %w", err)
 	}
-	
+
 	// If remote workload, check if it should exist
 	if workload.Remote {
 		// For remote workloads, trust the status manager
 		return workload.Status != rt.WorkloadStatusError, nil
 	}
-	
+
 	// For container workloads, verify the container actually exists in the runtime
 	// Create a runtime instance to check if container exists
 	backend, err := ct.NewFactory().Create(ctx)
@@ -487,7 +487,7 @@ func (w *workloadExistenceChecker) DoesWorkloadExist(ctx context.Context, worklo
 		// Fall back to status manager only
 		return workload.Status != rt.WorkloadStatusError, nil
 	}
-	
+
 	// Check if container is actually running in the runtime
 	running, err := backend.IsWorkloadRunning(ctx, workloadName)
 	if err != nil {
@@ -495,7 +495,7 @@ func (w *workloadExistenceChecker) DoesWorkloadExist(ctx context.Context, worklo
 		logger.Debugf("Container %s not found in runtime: %v", workloadName, err)
 		return false, nil
 	}
-	
+
 	return running, nil
 }
 

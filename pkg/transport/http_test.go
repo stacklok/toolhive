@@ -47,4 +47,3 @@ func TestHTTPTransport_ShouldRestart(t *testing.T) {
 		})
 	}
 }
-

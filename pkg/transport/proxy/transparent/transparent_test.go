@@ -358,23 +358,23 @@ func TestTransparentProxy_IdempotentStop(t *testing.T) {
 
 	// Create a proxy
 	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse")
-	
+
 	ctx := context.Background()
-	
+
 	// Start the proxy (this creates the shutdown channel)
 	err := proxy.Start(ctx)
 	if err != nil {
 		t.Fatalf("Failed to start proxy: %v", err)
 	}
-	
+
 	// First stop should succeed
 	err = proxy.Stop(ctx)
 	assert.NoError(t, err, "First Stop() should succeed")
-	
+
 	// Second stop should also succeed (idempotent)
 	err = proxy.Stop(ctx)
 	assert.NoError(t, err, "Second Stop() should succeed (idempotent)")
-	
+
 	// Third stop should also succeed
 	err = proxy.Stop(ctx)
 	assert.NoError(t, err, "Third Stop() should succeed (idempotent)")
@@ -386,9 +386,9 @@ func TestTransparentProxy_StopWithoutStart(t *testing.T) {
 
 	// Create a proxy but don't start it
 	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse")
-	
+
 	ctx := context.Background()
-	
+
 	// Stop should handle being called without Start
 	err := proxy.Stop(ctx)
 	// This may return an error or succeed depending on implementation

@@ -42,7 +42,7 @@ func TestOperatorE2E(t *testing.T) { //nolint:paralleltest // E2E tests should n
 	reporterConfig.VeryVerbose = false
 	reporterConfig.FullTrace = false
 
-	RunSpecs(t, "Operator E2E Suite", suiteConfig, reporterConfig)
+	RunSpecs(t, "MCPRegistry Controller Integration Test Suite", suiteConfig, reporterConfig)
 }
 
 var _ = BeforeSuite(func() {

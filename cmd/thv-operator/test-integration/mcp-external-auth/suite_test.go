@@ -45,7 +45,7 @@ func TestControllers(t *testing.T) {
 	reporterConfig.VeryVerbose = false
 	reporterConfig.FullTrace = false
 
-	RunSpecs(t, "MCPExternalAuthConfig Controller Suite", suiteConfig, reporterConfig)
+	RunSpecs(t, "MCPExternalAuthConfig Controller Integration Test Suite", suiteConfig, reporterConfig)
 }
 
 var _ = BeforeSuite(func() {

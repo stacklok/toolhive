@@ -46,7 +46,7 @@ func TestControllers(t *testing.T) {
 	reporterConfig.VeryVerbose = false
 	reporterConfig.FullTrace = false
 
-	RunSpecs(t, "MCPGroup Controller Integration Suite", suiteConfig, reporterConfig)
+	RunSpecs(t, "MCPGroup Controller Integration Test Suite", suiteConfig, reporterConfig)
 }
 
 var _ = BeforeSuite(func() {

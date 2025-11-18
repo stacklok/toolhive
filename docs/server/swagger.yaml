@@ -134,6 +134,7 @@ components:
       - Continue
       - OpenCode
       - Kiro
+      - Antigravity
     client.MCPClientStatus:
       properties:
         client_type:
@@ -159,6 +160,7 @@ components:
           - Continue
           - OpenCode
           - Kiro
+          - Antigravity
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -1123,6 +1125,7 @@ components:
             - Continue
             - OpenCode
             - Kiro
+            - Antigravity
           type: array
           uniqueItems: false
       type: object
@@ -1177,6 +1180,7 @@ components:
           - Continue
           - OpenCode
           - Kiro
+          - Antigravity
       type: object
     v1.createClientResponse:
       properties:
@@ -1209,6 +1213,7 @@ components:
           - Continue
           - OpenCode
           - Kiro
+          - Antigravity
       type: object
     v1.createGroupRequest:
       properties:

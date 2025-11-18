@@ -23,6 +23,7 @@ Valid clients:
   - amp-vscode: Sourcegraph Amp extension for VS Code
   - amp-vscode-insider: Sourcegraph Amp extension for VS Code Insiders
   - amp-windsurf: Sourcegraph Amp extension for Windsurf
+  - antigravity: Google Antigravity IDE
   - claude-code: Claude Code CLI
   - cline: Cline extension for VS Code
   - continue: Continue.dev extensions for VS Code and JetBrains

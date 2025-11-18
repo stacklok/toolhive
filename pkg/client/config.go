@@ -63,6 +63,8 @@ const (
 	OpenCode MCPClient = "opencode"
 	// Kiro represents the Kiro AI IDE.
 	Kiro MCPClient = "kiro"
+	// Antigravity represents the Google Antigravity IDE.
+	Antigravity MCPClient = "antigravity"
 )
 
 // Extension is extension of the client config file.
@@ -406,12 +408,7 @@ var supportedClientIntegrations = []mcpClientConfig{
 			"darwin":  {"Library", "Application Support"},
 			"windows": {"AppData", "Roaming"},
 		},
-		Extension: JSON,
-		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "http",
-			types.TransportTypeSSE:            "sse",
-			types.TransportTypeStreamableHTTP: "http",
-		},
+		Extension:                     JSON,
 		IsTransportTypeFieldSupported: false,
 		MCPServersUrlLabel:            "url",
 	},
@@ -449,18 +446,23 @@ var supportedClientIntegrations = []mcpClientConfig{
 		MCPServersUrlLabel:            "url",
 	},
 	{
-		ClientType:           Kiro,
-		Description:          "Kiro AI IDE",
-		SettingsFile:         "mcp.json",
-		MCPServersPathPrefix: "/mcpServers",
-		RelPath:              []string{".kiro", "settings"},
-		Extension:            JSON,
-		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          "http",
-			types.TransportTypeSSE:            "sse",
-			types.TransportTypeStreamableHTTP: "http",
-		},
+		ClientType:                    Kiro,
+		Description:                   "Kiro AI IDE",
+		SettingsFile:                  "mcp.json",
+		MCPServersPathPrefix:          "/mcpServers",
+		RelPath:                       []string{".kiro", "settings"},
+		Extension:                     JSON,
 		IsTransportTypeFieldSupported: false,
+	},
+	{
+		ClientType:                    Antigravity,
+		Description:                   "Google Antigravity IDE",
+		SettingsFile:                  "mcp_config.json",
+		MCPServersPathPrefix:          "/mcpServers",
+		RelPath:                       []string{".gemini", "antigravity"},
+		Extension:                     JSON,
+		IsTransportTypeFieldSupported: false,
+		MCPServersUrlLabel:            "serverUrl",
 	},
 }
 

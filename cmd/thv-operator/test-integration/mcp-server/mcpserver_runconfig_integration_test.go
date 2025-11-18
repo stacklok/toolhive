@@ -8,6 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -180,6 +181,56 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 
 			// Verify schema version
 			Expect(runConfig.SchemaVersion).To(Equal(runner.CurrentSchemaVersion))
+		})
+
+		It("Should create deployment with RunConfig volume mounts", func() {
+			// Wait for the deployment to be created
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, deployment)
+			}, timeout, interval).Should(Succeed())
+
+			// Verify the deployment has the correct volume
+			var runconfigVolume *corev1.Volume
+			for i := range deployment.Spec.Template.Spec.Volumes {
+				vol := &deployment.Spec.Template.Spec.Volumes[i]
+				if vol.Name == "runconfig" {
+					runconfigVolume = vol
+					break
+				}
+			}
+			Expect(runconfigVolume).NotTo(BeNil(), "RunConfig volume should exist in deployment")
+
+			// Verify the volume references the correct ConfigMap
+			Expect(runconfigVolume.ConfigMap).NotTo(BeNil())
+			Expect(runconfigVolume.ConfigMap.LocalObjectReference.Name).To(Equal(configMapName))
+
+			// Find the toolhive container
+			var toolhiveContainer *corev1.Container
+			for i := range deployment.Spec.Template.Spec.Containers {
+				container := &deployment.Spec.Template.Spec.Containers[i]
+				if container.Name == "toolhive" {
+					toolhiveContainer = container
+					break
+				}
+			}
+			Expect(toolhiveContainer).NotTo(BeNil(), "Toolhive container should exist")
+
+			// Verify the volume mount exists in the toolhive container
+			var runconfigMount *corev1.VolumeMount
+			for i := range toolhiveContainer.VolumeMounts {
+				mount := &toolhiveContainer.VolumeMounts[i]
+				if mount.Name == "runconfig" {
+					runconfigMount = mount
+					break
+				}
+			}
+			Expect(runconfigMount).NotTo(BeNil(), "RunConfig volume mount should exist in toolhive container")
+			Expect(runconfigMount.MountPath).To(Equal("/etc/runconfig"))
+			Expect(runconfigMount.ReadOnly).To(BeTrue())
 		})
 
 		It("Should not update ConfigMap when MCPServer spec is unchanged", func() {
@@ -656,6 +707,133 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 				}
 			}
 			Expect(authMiddlewareFound).To(BeTrue(), "Auth middleware should be present in middleware_configs")
+		})
+
+		It("Should handle MCPServer with authorization ConfigMap reference", func() {
+			namespace := "authz-configmap-ns"
+			mcpServerName := "authz-configmap-server"
+			configMapName := mcpServerName + "-runconfig"
+			externalAuthzConfigMapName := "external-authz-config"
+
+			// Create namespace
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			// Create external authorization ConfigMap
+			authzConfigMap := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      externalAuthzConfigMapName,
+					Namespace: namespace,
+				},
+				Data: map[string]string{
+					"authz.json": `{
+						"version": "v1",
+						"type": "cedarv1",
+						"cedar": {
+							"policies": [
+								"permit(principal, action == Action::\"call_tool\", resource == Tool::\"weather\");",
+								"permit(principal, action == Action::\"get_prompt\", resource == Prompt::\"greeting\");",
+								"forbid(principal, action == Action::\"call_tool\", resource == Tool::\"sensitive_data\");"
+							],
+							"entities_json": "[{\"uid\": {\"type\": \"User\", \"id\": \"user1\"}, \"attrs\": {\"name\": \"Alice\", \"role\": \"developer\"}},{\"uid\": {\"type\": \"User\", \"id\": \"admin\"}, \"attrs\": {\"name\": \"Bob\", \"role\": \"admin\"}}]"
+						}
+					}`,
+				},
+			}
+			Expect(k8sClient.Create(ctx, authzConfigMap)).Should(Succeed())
+			defer k8sClient.Delete(ctx, authzConfigMap)
+
+			// Create MCPServer with ConfigMap authorization reference
+			mcpServer := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "authz/mcp-server:latest",
+					Transport: "stdio",
+					ProxyPort: 8080,
+					AuthzConfig: &mcpv1alpha1.AuthzConfigRef{
+						Type: mcpv1alpha1.AuthzConfigTypeConfigMap,
+						ConfigMap: &mcpv1alpha1.ConfigMapAuthzRef{
+							Name: externalAuthzConfigMapName,
+							Key:  "authz.json",
+						},
+					},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+			defer k8sClient.Delete(ctx, mcpServer)
+
+			// Wait for RunConfig ConfigMap to be created
+			configMap := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: namespace,
+				}, configMap)
+			}, timeout, interval).Should(Succeed())
+
+			// Verify ConfigMap has the expected label
+			Expect(configMap.Labels).To(HaveKeyWithValue("toolhive.stacklok.io/mcp-server", mcpServerName))
+
+			// Verify ConfigMap data contains runconfig.json
+			Expect(configMap.Data).To(HaveKey("runconfig.json"))
+			runConfigJSON := configMap.Data["runconfig.json"]
+			Expect(runConfigJSON).NotTo(BeEmpty())
+
+			// Parse and verify RunConfig content
+			var runConfig runner.RunConfig
+			err := json.Unmarshal([]byte(runConfigJSON), &runConfig)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify authorization configuration was embedded from external ConfigMap
+			Expect(runConfig.AuthzConfig).NotTo(BeNil())
+			Expect(runConfig.AuthzConfig.Version).To(Equal("v1"))
+			Expect(runConfig.AuthzConfig.Type).To(Equal(authz.ConfigTypeCedarV1))
+
+			// Verify Cedar configuration
+			Expect(runConfig.AuthzConfig.Cedar).NotTo(BeNil())
+
+			// Check policies are present
+			Expect(runConfig.AuthzConfig.Cedar.Policies).To(HaveLen(3))
+			Expect(runConfig.AuthzConfig.Cedar.Policies[0]).To(ContainSubstring("call_tool"))
+			Expect(runConfig.AuthzConfig.Cedar.Policies[0]).To(ContainSubstring("weather"))
+			Expect(runConfig.AuthzConfig.Cedar.Policies[1]).To(ContainSubstring("get_prompt"))
+			Expect(runConfig.AuthzConfig.Cedar.Policies[1]).To(ContainSubstring("greeting"))
+			Expect(runConfig.AuthzConfig.Cedar.Policies[2]).To(ContainSubstring("forbid"))
+			Expect(runConfig.AuthzConfig.Cedar.Policies[2]).To(ContainSubstring("sensitive_data"))
+
+			// Verify entities are embedded
+			Expect(runConfig.AuthzConfig.Cedar.EntitiesJSON).NotTo(BeEmpty())
+
+			// Parse entities to verify they're correctly embedded
+			var entities []interface{}
+			err = json.Unmarshal([]byte(runConfig.AuthzConfig.Cedar.EntitiesJSON), &entities)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entities).To(HaveLen(2))
+
+			// Verify entity details
+			entity1 := entities[0].(map[string]interface{})
+			uid1 := entity1["uid"].(map[string]interface{})
+			Expect(uid1["type"]).To(Equal("User"))
+			Expect(uid1["id"]).To(Equal("user1"))
+			attrs1 := entity1["attrs"].(map[string]interface{})
+			Expect(attrs1["name"]).To(Equal("Alice"))
+			Expect(attrs1["role"]).To(Equal("developer"))
+
+			entity2 := entities[1].(map[string]interface{})
+			uid2 := entity2["uid"].(map[string]interface{})
+			Expect(uid2["type"]).To(Equal("User"))
+			Expect(uid2["id"]).To(Equal("admin"))
+			attrs2 := entity2["attrs"].(map[string]interface{})
+			Expect(attrs2["name"]).To(Equal("Bob"))
+			Expect(attrs2["role"]).To(Equal("admin"))
 		})
 	})
 })

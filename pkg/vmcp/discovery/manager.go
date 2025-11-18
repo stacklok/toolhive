@@ -61,6 +61,7 @@ type DefaultManager struct {
 	cache      map[string]*cacheEntry
 	cacheMu    sync.RWMutex
 	stopCh     chan struct{}
+	stopOnce   sync.Once
 	wg         sync.WaitGroup
 }
 
@@ -120,8 +121,11 @@ func (m *DefaultManager) Discover(ctx context.Context, backends []vmcp.Backend) 
 }
 
 // Stop gracefully stops the manager and cleans up resources.
+// This method is safe to call multiple times.
 func (m *DefaultManager) Stop() {
-	close(m.stopCh)
+	m.stopOnce.Do(func() {
+		close(m.stopCh)
+	})
 	m.wg.Wait()
 }
 

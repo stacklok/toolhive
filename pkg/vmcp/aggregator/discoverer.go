@@ -66,7 +66,7 @@ func NewBackendDiscoverer(
 	var workloadDiscoverer workloads.Discoverer
 
 	if rt.IsKubernetesRuntime() {
-		k8sDiscoverer, err := workloads.NewK8SDiscoverer()
+		k8sDiscoverer, err := workloads.NewK8SDiscoverer() // Uses detected namespace for CLI usage
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Kubernetes workload discoverer: %w", err)
 		}

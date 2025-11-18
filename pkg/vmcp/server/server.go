@@ -436,6 +436,11 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
+	// Stop discovery manager to clean up background goroutines
+	if s.discoveryMgr != nil {
+		s.discoveryMgr.Stop()
+	}
+
 	if len(errs) > 0 {
 		logger.Errorf("Errors during shutdown: %v", errs)
 		return errors.Join(errs...)

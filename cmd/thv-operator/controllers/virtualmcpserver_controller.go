@@ -27,6 +27,10 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
+	"github.com/stacklok/toolhive/pkg/groups"
+	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
 // VirtualMCPServerReconciler reconciles a VirtualMCPServer object
@@ -101,6 +105,28 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			ctxLogger.Error(err, "Failed to apply status updates after resource reconciliation error")
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Discover backends from the MCPGroup
+	discoveredBackends, err := r.discoverBackends(ctx, vmcp)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to discover backends")
+		// Don't fail reconciliation if backend discovery fails, but log the error
+		statusManager.SetCondition(
+			"BackendsDiscovered",
+			"BackendDiscoveryFailed",
+			fmt.Sprintf("Failed to discover backends: %v", err),
+			metav1.ConditionFalse,
+		)
+	} else {
+		statusManager.SetDiscoveredBackends(discoveredBackends)
+		statusManager.SetCondition(
+			"BackendsDiscovered",
+			"BackendsDiscoveredSuccessfully",
+			fmt.Sprintf("Discovered %d backends", len(discoveredBackends)),
+			metav1.ConditionTrue,
+		)
+		ctxLogger.Info("Discovered backends", "count", len(discoveredBackends))
 	}
 
 	// Update status based on pod health
@@ -860,6 +886,107 @@ func vmcpConfigMapName(vmcpName string) string {
 func createVmcpServiceURL(vmcpName, namespace string, port int32) string {
 	serviceName := vmcpServiceName(vmcpName)
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
+}
+
+// discoverBackends discovers all MCPServers in the referenced MCPGroup and returns
+// a list of DiscoveredBackend objects with their current status.
+// This reuses the existing workload discovery code from pkg/vmcp/workloads.
+func (r *VirtualMCPServerReconciler) discoverBackends(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) ([]mcpv1alpha1.DiscoveredBackend, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	// Create groups manager using the controller's client and VirtualMCPServer's namespace
+	groupsManager := groups.NewCRDManager(r.Client, vmcp.Namespace)
+
+	// Create K8S workload discoverer for the VirtualMCPServer's namespace
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(r.Client, vmcp.Namespace)
+
+	// Use the aggregator's unified backend discoverer to reuse discovery logic
+	// Pass nil for authConfig since we'll extract auth config from MCPServer directly
+	backendDiscoverer := aggregator.NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, nil)
+
+	// Discover backends using the aggregator
+	backends, err := backendDiscoverer.Discover(ctx, vmcp.Spec.GroupRef.Name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover backends: %w", err)
+	}
+
+	// Get all workload names to track backends that weren't accessible
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.Spec.GroupRef.Name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list workloads in group: %w", err)
+	}
+
+	// Create a map of discovered backend names for quick lookup
+	discoveredBackendMap := make(map[string]*vmcptypes.Backend, len(backends))
+	for i := range backends {
+		discoveredBackendMap[backends[i].Name] = &backends[i]
+	}
+
+	discoveredBackends := make([]mcpv1alpha1.DiscoveredBackend, 0, len(workloadNames))
+	now := metav1.Now()
+
+	// Convert vmcp.Backend to DiscoveredBackend for all workloads in the group
+	for _, workloadName := range workloadNames {
+		backend, found := discoveredBackendMap[workloadName]
+		if !found {
+			// Workload exists but is not accessible (no URL or error)
+			discoveredBackends = append(discoveredBackends, mcpv1alpha1.DiscoveredBackend{
+				Name:            workloadName,
+				Status:          "unavailable",
+				LastHealthCheck: now,
+			})
+			continue
+		}
+
+		// Convert vmcp.Backend to DiscoveredBackend
+		// Map health status from BackendHealthStatus to string
+		var backendStatus string
+		switch backend.HealthStatus {
+		case vmcptypes.BackendHealthy:
+			backendStatus = "ready"
+		case vmcptypes.BackendUnhealthy, vmcptypes.BackendUnauthenticated:
+			backendStatus = "unavailable"
+		case vmcptypes.BackendDegraded:
+			backendStatus = "degraded"
+		case vmcptypes.BackendUnknown:
+			backendStatus = "unknown"
+		default:
+			backendStatus = "unknown"
+		}
+
+		// Extract auth config reference directly from MCPServer
+		// (Backend.AuthMetadata is populated later by aggregator, so we query MCPServer directly)
+		authConfigRef := ""
+		authType := ""
+		mcpServer := &mcpv1alpha1.MCPServer{}
+		if err := r.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: vmcp.Namespace}, mcpServer); err == nil {
+			if mcpServer.Spec.ExternalAuthConfigRef != nil {
+				authConfigRef = mcpServer.Spec.ExternalAuthConfigRef.Name
+				authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef
+			}
+		}
+
+		discoveredBackend := mcpv1alpha1.DiscoveredBackend{
+			Name:            backend.Name,
+			AuthConfigRef:   authConfigRef,
+			AuthType:        authType,
+			Status:          backendStatus,
+			LastHealthCheck: now,
+			URL:             backend.BaseURL,
+		}
+
+		discoveredBackends = append(discoveredBackends, discoveredBackend)
+		ctxLogger.V(1).Info("Discovered backend",
+			"name", backend.Name,
+			"status", backendStatus,
+			"url", backend.BaseURL,
+			"authConfigRef", authConfigRef)
+	}
+
+	return discoveredBackends, nil
 }
 
 // SetupWithManager sets up the controller with the Manager

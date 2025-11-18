@@ -239,11 +239,11 @@ func TestTemplateDataWithLocalPath(t *testing.T) {
 func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name             string
-		serverOrImage    string
-		buildArgs        []string
-		wantContains     []string
-		wantErr          bool
+		name          string
+		serverOrImage string
+		buildArgs     []string
+		wantContains  []string
+		wantErr       bool
 	}{
 		{
 			name:          "NPX with buildArgs in dry-run",

@@ -22,19 +22,19 @@ var _ = Describe("VirtualMCPServer Backend Discovery Integration Tests", func() 
 
 	Context("When creating a VirtualMCPServer with multiple backends", Ordered, func() {
 		var (
-			namespace            string
-			mcpGroupName         string
-			vmcpName             string
-			mcpServer1Name       string
-			mcpServer2Name       string
-			mcpServer3Name       string
-			authConfigName       string
-			mcpGroup             *mcpv1alpha1.MCPGroup
-			vmcp                 *mcpv1alpha1.VirtualMCPServer
-			mcpServer1           *mcpv1alpha1.MCPServer
-			mcpServer2           *mcpv1alpha1.MCPServer
-			mcpServer3           *mcpv1alpha1.MCPServer
-			externalAuthConfig   *mcpv1alpha1.MCPExternalAuthConfig
+			namespace          string
+			mcpGroupName       string
+			vmcpName           string
+			mcpServer1Name     string
+			mcpServer2Name     string
+			mcpServer3Name     string
+			authConfigName     string
+			mcpGroup           *mcpv1alpha1.MCPGroup
+			vmcp               *mcpv1alpha1.VirtualMCPServer
+			mcpServer1         *mcpv1alpha1.MCPServer
+			mcpServer2         *mcpv1alpha1.MCPServer
+			mcpServer3         *mcpv1alpha1.MCPServer
+			externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig
 		)
 
 		BeforeAll(func() {
@@ -63,8 +63,8 @@ var _ = Describe("VirtualMCPServer Backend Discovery Integration Tests", func() 
 				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
 					Type: "tokenExchange",
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
-						TokenURL: "https://auth.example.com/token",
-						Audience: "https://backend-service.example.com",
+						TokenURL:         "https://auth.example.com/token",
+						Audience:         "https://backend-service.example.com",
 						SubjectTokenType: "access_token",
 					},
 				},

@@ -84,12 +84,13 @@ func TestDiscoverBackends(t *testing.T) {
 			expectedCount: 2,
 			validateBackend: func(t *testing.T, backend mcpv1alpha1.DiscoveredBackend) {
 				t.Helper()
-				if backend.Name == "server1" {
+				switch backend.Name {
+				case "server1":
 					assert.Equal(t, "streamable-http", backend.TransportType)
 					assert.Equal(t, "discovered", backend.AuthType)
 					assert.Equal(t, "http://server1.default.svc.cluster.local:8080", backend.URL)
 					assert.Empty(t, backend.ExternalAuthConfigRef)
-				} else if backend.Name == "server2" {
+				case "server2":
 					assert.Equal(t, "http", backend.TransportType)
 					assert.Equal(t, "external_auth_config", backend.AuthType)
 					assert.Equal(t, "auth-config-1", backend.ExternalAuthConfigRef)

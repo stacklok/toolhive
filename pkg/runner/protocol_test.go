@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/stacklok/toolhive/pkg/container/templates"
@@ -229,6 +231,73 @@ func TestTemplateDataWithLocalPath(t *testing.T) {
 			}
 			if templateData.IsLocalPath != tt.expected.IsLocalPath {
 				t.Errorf("IsLocalPath = %v, want %v", templateData.IsLocalPath, tt.expected.IsLocalPath)
+			}
+		})
+	}
+}
+
+func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name             string
+		serverOrImage    string
+		buildArgs        []string
+		wantContains     []string
+		wantErr          bool
+	}{
+		{
+			name:          "NPX with buildArgs in dry-run",
+			serverOrImage: "npx://@launchdarkly/mcp-server",
+			buildArgs:     []string{"start"},
+			wantContains: []string{
+				"exec npx @launchdarkly/mcp-server start",
+				"FROM node:22-alpine",
+			},
+			wantErr: false,
+		},
+		{
+			name:          "UVX with multiple buildArgs in dry-run",
+			serverOrImage: "uvx://example-package",
+			buildArgs:     []string{"--transport", "stdio"},
+			wantContains: []string{
+				"example-package",
+				"--transport",
+				"stdio",
+				"FROM python:3.13-slim",
+			},
+			wantErr: false,
+		},
+		{
+			name:          "GO with buildArgs in dry-run",
+			serverOrImage: "go://github.com/example/package",
+			buildArgs:     []string{"serve"},
+			wantContains: []string{
+				`ENTRYPOINT ["/app/mcp-server", "serve"]`,
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+
+			// Call BuildFromProtocolSchemeWithName with dry-run=true
+			dockerfileContent, err := BuildFromProtocolSchemeWithName(
+				ctx, nil, tt.serverOrImage, "", "", tt.buildArgs, true)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("BuildFromProtocolSchemeWithName() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if err == nil {
+				for _, want := range tt.wantContains {
+					if !strings.Contains(dockerfileContent, want) {
+						t.Errorf("Dockerfile does not contain expected string %q", want)
+					}
+				}
 			}
 		})
 	}

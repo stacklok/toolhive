@@ -188,7 +188,6 @@ func TestTemplateDataWithLocalPath(t *testing.T) {
 			packageName: "github.com/example/package",
 			expected: templates.TemplateData{
 				MCPPackage:  "github.com/example/package",
-				MCPArgs:     []string{},
 				IsLocalPath: false,
 			},
 		},
@@ -197,7 +196,6 @@ func TestTemplateDataWithLocalPath(t *testing.T) {
 			packageName: "./cmd/server",
 			expected: templates.TemplateData{
 				MCPPackage:  "./cmd/server",
-				MCPArgs:     []string{},
 				IsLocalPath: true,
 			},
 		},
@@ -206,7 +204,6 @@ func TestTemplateDataWithLocalPath(t *testing.T) {
 			packageName: ".",
 			expected: templates.TemplateData{
 				MCPPackage:  ".",
-				MCPArgs:     []string{},
 				IsLocalPath: true,
 			},
 		},
@@ -220,7 +217,6 @@ func TestTemplateDataWithLocalPath(t *testing.T) {
 
 			templateData := templates.TemplateData{
 				MCPPackage:  tt.packageName,
-				MCPArgs:     []string{},
 				IsLocalPath: isLocalPath,
 			}
 

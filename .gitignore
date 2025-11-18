@@ -37,6 +37,7 @@ kconfig.yaml
 .DS_Store
 
 cmd/thv-operator/.task/checksum/crdref-gen
+.task/checksum/crdref-gen
 
 # Test coverage
 coverage*

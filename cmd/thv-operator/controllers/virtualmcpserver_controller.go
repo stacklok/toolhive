@@ -94,6 +94,16 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
+	// Discover backends from MCPGroup and update status
+	if err := r.discoverBackends(ctx, vmcp, statusManager); err != nil {
+		ctxLogger.Error(err, "Failed to discover backends from MCPGroup")
+		// Apply status changes even if discovery fails (partial updates are valuable)
+		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+			ctxLogger.Error(err, "Failed to apply status updates after backend discovery error")
+		}
+		return ctrl.Result{}, err
+	}
+
 	// Ensure all resources
 	if err := r.ensureAllResources(ctx, vmcp, statusManager); err != nil {
 		// Apply status changes before returning error

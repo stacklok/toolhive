@@ -266,6 +266,26 @@ _Appears in:_
 | `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy |  |  |
 
 
+#### DiscoveredBackend
+
+
+
+DiscoveredBackend represents a backend MCP server discovered from the MCPGroup
+
+
+
+_Appears in:_
+- [VirtualMCPServerStatus](#virtualmcpserverstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the backend MCPServer workload |  | Required: \{\} <br /> |
+| `authType` _string_ | AuthType is the authentication strategy type for this backend<br />Examples: "discovered", "pass_through", "token_exchange", "header_injection" |  |  |
+| `externalAuthConfigRef` _string_ | ExternalAuthConfigRef is the name of the MCPExternalAuthConfig resource<br />used for authentication, if applicable |  |  |
+| `url` _string_ | URL is the backend server URL |  |  |
+| `transportType` _string_ | TransportType is the MCP transport protocol (stdio, http, sse, streamable-http) |  |  |
+
+
 
 
 #### EnvVar
@@ -1924,6 +1944,8 @@ _Appears in:_
 | `phase` _[VirtualMCPServerPhase](#virtualmcpserverphase)_ | Phase is the current phase of the VirtualMCPServer | Pending | Enum: [Pending Ready Degraded Failed] <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  |  |
 | `url` _string_ | URL is the URL where the Virtual MCP server can be accessed |  |  |
+| `discoveredBackends` _[DiscoveredBackend](#discoveredbackend) array_ | DiscoveredBackends lists backend workloads discovered from the referenced MCPGroup<br />This includes information about each backend's auth configuration and health status |  |  |
+| `backendCount` _integer_ | BackendCount is the total number of discovered backends |  |  |
 
 
 #### Volume

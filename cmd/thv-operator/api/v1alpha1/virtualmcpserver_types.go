@@ -430,6 +430,40 @@ type VirtualMCPServerStatus struct {
 	// URL is the URL where the Virtual MCP server can be accessed
 	// +optional
 	URL string `json:"url,omitempty"`
+
+	// DiscoveredBackends lists backend workloads discovered from the referenced MCPGroup
+	// This includes information about each backend's auth configuration and health status
+	// +optional
+	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
+
+	// BackendCount is the total number of discovered backends
+	// +optional
+	BackendCount int `json:"backendCount,omitempty"`
+}
+
+// DiscoveredBackend represents a backend MCP server discovered from the MCPGroup
+type DiscoveredBackend struct {
+	// Name is the name of the backend MCPServer workload
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// AuthType is the authentication strategy type for this backend
+	// Examples: "discovered", "pass_through", "token_exchange", "header_injection"
+	// +optional
+	AuthType string `json:"authType,omitempty"`
+
+	// ExternalAuthConfigRef is the name of the MCPExternalAuthConfig resource
+	// used for authentication, if applicable
+	// +optional
+	ExternalAuthConfigRef string `json:"externalAuthConfigRef,omitempty"`
+
+	// URL is the backend server URL
+	// +optional
+	URL string `json:"url,omitempty"`
+
+	// TransportType is the MCP transport protocol (stdio, http, sse, streamable-http)
+	// +optional
+	TransportType string `json:"transportType,omitempty"`
 }
 
 // VirtualMCPServerPhase represents the lifecycle phase of a VirtualMCPServer

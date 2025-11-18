@@ -29,6 +29,9 @@ type StatusManager interface {
 	// SetObservedGeneration sets the observed generation
 	SetObservedGeneration(generation int64)
 
+	// SetDiscoveredBackends sets the list of discovered backends from the MCPGroup
+	SetDiscoveredBackends(backends []mcpv1alpha1.DiscoveredBackend)
+
 	// SetGroupRefValidatedCondition sets the GroupRef validation condition
 	SetGroupRefValidatedCondition(reason, message string, status metav1.ConditionStatus)
 

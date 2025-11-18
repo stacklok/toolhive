@@ -21,6 +21,7 @@ type StatusCollector struct {
 	message            *string
 	url                *string
 	observedGeneration *int64
+	discoveredBackends *[]mcpv1alpha1.DiscoveredBackend
 	conditions         map[string]metav1.Condition
 }
 
@@ -67,6 +68,12 @@ func (s *StatusCollector) SetObservedGeneration(generation int64) {
 	s.hasChanges = true
 }
 
+// SetDiscoveredBackends sets the list of discovered backends to be updated.
+func (s *StatusCollector) SetDiscoveredBackends(backends []mcpv1alpha1.DiscoveredBackend) {
+	s.discoveredBackends = &backends
+	s.hasChanges = true
+}
+
 // SetGroupRefValidatedCondition sets the GroupRef validation condition.
 func (s *StatusCollector) SetGroupRefValidatedCondition(reason, message string, status metav1.ConditionStatus) {
 	s.SetCondition(mcpv1alpha1.ConditionTypeVirtualMCPServerGroupRefValidated, reason, message, status)
@@ -108,6 +115,12 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 			vmcpStatus.ObservedGeneration = *s.observedGeneration
 		}
 
+		// Apply discovered backends change
+		if s.discoveredBackends != nil {
+			vmcpStatus.DiscoveredBackends = *s.discoveredBackends
+			vmcpStatus.BackendCount = len(*s.discoveredBackends)
+		}
+
 		// Apply condition changes
 		for _, condition := range s.conditions {
 			meta.SetStatusCondition(&vmcpStatus.Conditions, condition)
@@ -116,6 +129,7 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 		ctxLogger.V(1).Info("Batched status update applied",
 			"phase", s.phase,
 			"message", s.message,
+			"backendCount", vmcpStatus.BackendCount,
 			"conditionsCount", len(s.conditions))
 		return true
 	}

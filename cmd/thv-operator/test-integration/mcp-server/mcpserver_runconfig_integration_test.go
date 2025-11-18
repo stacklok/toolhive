@@ -547,5 +547,115 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			Expect(runConfig.CmdArgs).To(Equal([]string{"--arg1", "--arg2", "--arg3"}))
 			Expect(runConfig.ToolsFilter).To(Equal([]string{"tool3", "tool1", "tool2"}))
 		})
+
+		It("Should handle MCPServer with OIDC authentication configuration", func() {
+			namespace := "oidc-test-ns"
+			mcpServerName := "oidc-server"
+			configMapName := mcpServerName + "-runconfig"
+
+			// Create namespace
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			// Create MCPServer with OIDC configuration
+			mcpServer := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "auth/mcp-server:latest",
+					Transport: "stdio",
+					ProxyPort: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: "inline",
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:             "https://auth.example.com",
+							Audience:           "toolhive-api",
+							JWKSURL:            "https://auth.example.com/.well-known/jwks.json",
+							IntrospectionURL:   "https://auth.example.com/oauth/introspect",
+							ClientID:           "toolhive-client",
+							ClientSecret:       "secret123",
+							JWKSAllowPrivateIP: true,
+						},
+					},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+			defer k8sClient.Delete(ctx, mcpServer)
+
+			// Wait for ConfigMap to be created
+			configMap := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: namespace,
+				}, configMap)
+			}, timeout, interval).Should(Succeed())
+
+			// Verify ConfigMap has the expected label
+			Expect(configMap.Labels).To(HaveKeyWithValue("toolhive.stacklok.io/mcp-server", mcpServerName))
+
+			// Verify ConfigMap data contains runconfig.json
+			Expect(configMap.Data).To(HaveKey("runconfig.json"))
+			runConfigJSON := configMap.Data["runconfig.json"]
+			Expect(runConfigJSON).NotTo(BeEmpty())
+
+			// Parse and verify RunConfig content
+			var runConfig runner.RunConfig
+			err := json.Unmarshal([]byte(runConfigJSON), &runConfig)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify OIDC configuration
+			Expect(runConfig.OIDCConfig).NotTo(BeNil())
+			Expect(runConfig.OIDCConfig.Issuer).To(Equal("https://auth.example.com"))
+			Expect(runConfig.OIDCConfig.Audience).To(Equal("toolhive-api"))
+			Expect(runConfig.OIDCConfig.JWKSURL).To(Equal("https://auth.example.com/.well-known/jwks.json"))
+			Expect(runConfig.OIDCConfig.IntrospectionURL).To(Equal("https://auth.example.com/oauth/introspect"))
+			Expect(runConfig.OIDCConfig.ClientID).To(Equal("toolhive-client"))
+			Expect(runConfig.OIDCConfig.ClientSecret).To(Equal("secret123"))
+			Expect(runConfig.OIDCConfig.AllowPrivateIP).To(BeTrue())
+
+			// Verify fields that should be empty/nil
+			Expect(runConfig.OIDCConfig.CACertPath).To(BeEmpty())
+			Expect(runConfig.OIDCConfig.AuthTokenFile).To(BeEmpty())
+
+			// Verify middleware_configs includes auth middleware
+			Expect(runConfig.MiddlewareConfigs).NotTo(BeEmpty())
+
+			// Find the auth middleware
+			authMiddlewareFound := false
+			for _, middleware := range runConfig.MiddlewareConfigs {
+				if middleware.Type == "auth" {
+					authMiddlewareFound = true
+
+					// Verify auth middleware has the OIDC config
+					var params map[string]interface{}
+					err := json.Unmarshal(middleware.Parameters, &params)
+					Expect(err).NotTo(HaveOccurred(), "Failed to unmarshal auth middleware parameters")
+
+					if oidcConfigMap, exists := params["oidc_config"]; exists && oidcConfigMap != nil {
+						oidcConfig, ok := oidcConfigMap.(map[string]interface{})
+						Expect(ok).To(BeTrue(), "oidc_config should be a map")
+						Expect(oidcConfig["Issuer"]).To(Equal("https://auth.example.com"))
+						Expect(oidcConfig["Audience"]).To(Equal("toolhive-api"))
+						Expect(oidcConfig["JWKSURL"]).To(Equal("https://auth.example.com/.well-known/jwks.json"))
+						Expect(oidcConfig["IntrospectionURL"]).To(Equal("https://auth.example.com/oauth/introspect"))
+						Expect(oidcConfig["ClientID"]).To(Equal("toolhive-client"))
+						Expect(oidcConfig["ClientSecret"]).To(Equal("secret123"))
+						Expect(oidcConfig["AllowPrivateIP"]).To(BeTrue())
+					} else {
+						Fail("OIDC config not found in auth middleware parameters")
+					}
+					break
+				}
+			}
+			Expect(authMiddlewareFound).To(BeTrue(), "Auth middleware should be present in middleware_configs")
+		})
 	})
 })

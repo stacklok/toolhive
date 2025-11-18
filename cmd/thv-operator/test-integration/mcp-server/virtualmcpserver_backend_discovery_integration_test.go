@@ -38,7 +38,8 @@ var _ = Describe("VirtualMCPServer Backend Discovery Integration Tests", func() 
 		)
 
 		BeforeAll(func() {
-			namespace = defaultNamespace
+			// Use unique namespace to avoid conflicts with other tests
+			namespace = "vmcp-discovery-test"
 			mcpGroupName = "test-discovery-group"
 			vmcpName = "test-discovery-vmcp"
 			mcpServer1Name = "backend-server-1"
@@ -46,13 +47,13 @@ var _ = Describe("VirtualMCPServer Backend Discovery Integration Tests", func() 
 			mcpServer3Name = "backend-server-3"
 			authConfigName = "test-auth-config"
 
-			// Create namespace if it doesn't exist
+			// Create unique namespace for this test
 			ns := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: namespace,
 				},
 			}
-			_ = k8sClient.Create(ctx, ns)
+			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
 
 			// Create MCPExternalAuthConfig for testing auth discovery
 			externalAuthConfig = &mcpv1alpha1.MCPExternalAuthConfig{
@@ -193,13 +194,13 @@ var _ = Describe("VirtualMCPServer Backend Discovery Integration Tests", func() 
 		})
 
 		AfterAll(func() {
-			// Clean up resources in reverse order
-			_ = k8sClient.Delete(ctx, vmcp)
-			_ = k8sClient.Delete(ctx, mcpGroup)
-			_ = k8sClient.Delete(ctx, mcpServer3)
-			_ = k8sClient.Delete(ctx, mcpServer2)
-			_ = k8sClient.Delete(ctx, mcpServer1)
-			_ = k8sClient.Delete(ctx, externalAuthConfig)
+			// Clean up the entire namespace
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Delete(ctx, ns)
 		})
 
 		It("Should discover all backends from the MCPGroup", func() {
@@ -345,17 +346,18 @@ var _ = Describe("VirtualMCPServer Backend Discovery Integration Tests", func() 
 		)
 
 		BeforeAll(func() {
-			namespace = defaultNamespace
+			// Use unique namespace to avoid conflicts with other tests
+			namespace = "vmcp-notready-test"
 			mcpGroupName = "test-notready-group"
 			vmcpName = "test-notready-vmcp"
 
-			// Create namespace if it doesn't exist
+			// Create unique namespace for this test
 			ns := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: namespace,
 				},
 			}
-			_ = k8sClient.Create(ctx, ns)
+			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
 
 			// Create MCPGroup but don't add any servers (will be Pending)
 			mcpGroup = &mcpv1alpha1.MCPGroup{
@@ -385,8 +387,13 @@ var _ = Describe("VirtualMCPServer Backend Discovery Integration Tests", func() 
 		})
 
 		AfterAll(func() {
-			_ = k8sClient.Delete(ctx, vmcp)
-			_ = k8sClient.Delete(ctx, mcpGroup)
+			// Clean up the entire namespace
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Delete(ctx, ns)
 		})
 
 		It("Should set GroupRefValidated condition to False when MCPGroup is not ready", func() {

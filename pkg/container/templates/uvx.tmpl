@@ -118,4 +118,4 @@ USER appuser
 # We use sh -c to allow the package name to be resolved from PATH
 # Strip version specifier (if present) from package name for execution
 # Handles format like package@version
-ENTRYPOINT ["sh", "-c", "package='{{.MCPPackage}}'; exec \"${package%%@*}\"", "--"]
+ENTRYPOINT ["sh", "-c", "package='{{.MCPPackage}}'; exec \"${package%%@*}\"{{range .BuildArgs}} \"{{.}}\"{{end}}", "--"]

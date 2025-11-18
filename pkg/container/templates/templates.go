@@ -20,6 +20,10 @@ type TemplateData struct {
 	CACertContent string
 	// IsLocalPath indicates if the MCPPackage is a local path that should be copied into the container.
 	IsLocalPath bool
+	// BuildArgs are the arguments to bake into the container's ENTRYPOINT at build time.
+	// These are typically required subcommands (e.g., "start") that must always be present.
+	// Runtime arguments passed via "-- <args>" will be appended after these build args.
+	BuildArgs []string
 }
 
 // TransportType represents the type of transport to use.

@@ -5,8 +5,7 @@ import (
 	"fmt"
 
 	"github.com/mark3labs/mcp-go/mcp"
-
-	"github.com/stacklok/toolhive/pkg/registry/types"
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // searchRegistryArgs holds the arguments for searching the registry

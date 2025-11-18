@@ -1,4 +1,4 @@
-package types
+package registry
 
 import (
 	upstreamv0 "github.com/modelcontextprotocol/registry/pkg/api/v0"

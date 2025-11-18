@@ -6,10 +6,9 @@ import (
 
 	upstreamv0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 	"github.com/modelcontextprotocol/registry/pkg/model"
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/registry/types"
 )
 
 func TestNewUpstreamRegistryFromToolhiveRegistry(t *testing.T) {

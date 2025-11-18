@@ -6,7 +6,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry/types"
+	"github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -71,7 +71,7 @@ type updateRequest struct {
 	// Remote server specific fields
 	URL         string            `json:"url,omitempty"`
 	OAuthConfig remoteOAuthConfig `json:"oauth_config,omitempty"`
-	Headers     []*types.Header   `json:"headers,omitempty"`
+	Headers     []*registry.Header   `json:"headers,omitempty"`
 }
 
 // toolOverride represents a tool override
@@ -201,7 +201,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 
 	// Get remote OAuth config from RunConfig
 	var oAuthConfig remoteOAuthConfig
-	var headers []*types.Header
+	var headers []*registry.Header
 	if runConfig.RemoteAuthConfig != nil {
 		// Parse ClientSecret from CLI format to SecretParameter (for details API)
 		var clientSecretParam *secrets.SecretParameter

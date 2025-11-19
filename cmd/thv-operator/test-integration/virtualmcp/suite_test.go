@@ -1,4 +1,4 @@
-// Package controllers contains integration tests for the thv-operator controllers
+// Package controllers contains integration tests for the VirtualMCPServer controller
 package controllers
 
 import (
@@ -48,7 +48,7 @@ func TestControllers(t *testing.T) {
 	reporterConfig.VeryVerbose = false
 	reporterConfig.FullTrace = false
 
-	RunSpecs(t, "MCPServer Controller Integration Test Suite", suiteConfig, reporterConfig)
+	RunSpecs(t, "VirtualMCPServer Controller Integration Test Suite", suiteConfig, reporterConfig)
 }
 
 var _ = BeforeSuite(func() {
@@ -111,24 +111,17 @@ var _ = BeforeSuite(func() {
 		Expect(err).ToNot(HaveOccurred())
 	}
 
-	// Register the MCPGroup controller
+	// Register the MCPGroup controller (required by VirtualMCPServer)
 	err = (&controllers.MCPGroupReconciler{
 		Client: k8sManager.GetClient(),
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
-	// Register the MCPServer controller
-	err = (&controllers.MCPServerReconciler{
+	// Register the VirtualMCPServer controller
+	err = (&controllers.VirtualMCPServerReconciler{
 		Client:           k8sManager.GetClient(),
 		Scheme:           k8sManager.GetScheme(),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-	}).SetupWithManager(k8sManager)
-	Expect(err).ToNot(HaveOccurred())
-
-	// Register the ToolConfig controller
-	err = (&controllers.ToolConfigReconciler{
-		Client: k8sManager.GetClient(),
-		Scheme: k8sManager.GetScheme(),
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 

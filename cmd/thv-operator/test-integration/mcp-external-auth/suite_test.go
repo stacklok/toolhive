@@ -1,4 +1,5 @@
-package operator_test
+// Package controllers contains integration tests for the MCPExternalAuthConfig controller
+package controllers
 
 import (
 	"context"
@@ -23,10 +24,8 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
-
-// These tests use Ginkgo (BDD-style Go testing framework). Refer to
-// http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
 var (
 	cfg       *rest.Config
@@ -46,7 +45,7 @@ func TestControllers(t *testing.T) {
 	reporterConfig.VeryVerbose = false
 	reporterConfig.FullTrace = false
 
-	RunSpecs(t, "MCPGroup Controller Integration Test Suite", suiteConfig, reporterConfig)
+	RunSpecs(t, "MCPExternalAuthConfig Controller Integration Test Suite", suiteConfig, reporterConfig)
 }
 
 var _ = BeforeSuite(func() {
@@ -97,31 +96,18 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
-	// Set up field indexing for MCPServer.Spec.GroupRef
-	err = k8sManager.GetFieldIndexer().IndexField(
-		context.Background(),
-		&mcpv1alpha1.MCPServer{},
-		"spec.groupRef",
-		func(obj client.Object) []string {
-			mcpServer := obj.(*mcpv1alpha1.MCPServer)
-			if mcpServer.Spec.GroupRef == "" {
-				return nil
-			}
-			return []string{mcpServer.Spec.GroupRef}
-		},
-	)
-	Expect(err).ToNot(HaveOccurred())
-
-	// Register the MCPGroup controller
-	err = (&controllers.MCPGroupReconciler{
+	// Register the MCPExternalAuthConfig controller
+	err = (&controllers.MCPExternalAuthConfigReconciler{
 		Client: k8sManager.GetClient(),
+		Scheme: k8sManager.GetScheme(),
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
-	// Register the MCPServer controller (needed for watch tests)
+	// Register the MCPServer controller (needed for testing integration)
 	err = (&controllers.MCPServerReconciler{
-		Client: k8sManager.GetClient(),
-		Scheme: k8sManager.GetScheme(),
+		Client:           k8sManager.GetClient(),
+		Scheme:           k8sManager.GetScheme(),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 

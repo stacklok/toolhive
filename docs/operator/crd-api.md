@@ -266,6 +266,27 @@ _Appears in:_
 | `priorityOrder` _string array_ | PriorityOrder defines the workload priority order for the "priority" strategy |  |  |
 
 
+#### DiscoveredBackend
+
+
+
+DiscoveredBackend represents a discovered backend MCPServer in the MCPGroup
+
+
+
+_Appears in:_
+- [VirtualMCPServerStatus](#virtualmcpserverstatus)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the backend MCPServer |  |  |
+| `authConfigRef` _string_ | AuthConfigRef is the name of the discovered MCPExternalAuthConfig (if any) |  |  |
+| `authType` _string_ | AuthType is the type of authentication configured |  |  |
+| `status` _string_ | Status is the current status of the backend (ready, degraded, unavailable) |  |  |
+| `lastHealthCheck` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastHealthCheck is the timestamp of the last health check |  |  |
+| `url` _string_ | URL is the URL of the backend MCPServer |  |  |
+
+
 
 
 #### EnvVar
@@ -1924,6 +1945,8 @@ _Appears in:_
 | `phase` _[VirtualMCPServerPhase](#virtualmcpserverphase)_ | Phase is the current phase of the VirtualMCPServer | Pending | Enum: [Pending Ready Degraded Failed] <br /> |
 | `message` _string_ | Message provides additional information about the current phase |  |  |
 | `url` _string_ | URL is the URL where the Virtual MCP server can be accessed |  |  |
+| `discoveredBackends` _[DiscoveredBackend](#discoveredbackend) array_ | DiscoveredBackends lists discovered backend configurations from the MCPGroup |  |  |
+| `backendCount` _integer_ | BackendCount is the number of discovered backends |  |  |
 
 
 #### Volume

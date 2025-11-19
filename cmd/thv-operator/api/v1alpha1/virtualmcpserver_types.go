@@ -408,6 +408,32 @@ type CircuitBreakerConfig struct {
 	Timeout string `json:"timeout,omitempty"`
 }
 
+// DiscoveredBackend represents a discovered backend MCPServer in the MCPGroup
+type DiscoveredBackend struct {
+	// Name is the name of the backend MCPServer
+	Name string `json:"name"`
+
+	// AuthConfigRef is the name of the discovered MCPExternalAuthConfig (if any)
+	// +optional
+	AuthConfigRef string `json:"authConfigRef,omitempty"`
+
+	// AuthType is the type of authentication configured
+	// +optional
+	AuthType string `json:"authType,omitempty"`
+
+	// Status is the current status of the backend (ready, degraded, unavailable)
+	// +optional
+	Status string `json:"status,omitempty"`
+
+	// LastHealthCheck is the timestamp of the last health check
+	// +optional
+	LastHealthCheck metav1.Time `json:"lastHealthCheck,omitempty"`
+
+	// URL is the URL of the backend MCPServer
+	// +optional
+	URL string `json:"url,omitempty"`
+}
+
 // VirtualMCPServerStatus defines the observed state of VirtualMCPServer
 type VirtualMCPServerStatus struct {
 	// Conditions represent the latest available observations of the VirtualMCPServer's state
@@ -430,6 +456,14 @@ type VirtualMCPServerStatus struct {
 	// URL is the URL where the Virtual MCP server can be accessed
 	// +optional
 	URL string `json:"url,omitempty"`
+
+	// DiscoveredBackends lists discovered backend configurations from the MCPGroup
+	// +optional
+	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
+
+	// BackendCount is the number of discovered backends
+	// +optional
+	BackendCount int `json:"backendCount,omitempty"`
 }
 
 // VirtualMCPServerPhase represents the lifecycle phase of a VirtualMCPServer
@@ -516,6 +550,7 @@ const (
 //+kubebuilder:resource:shortName=vmcp;virtualmcp
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="The phase of the VirtualMCPServer"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url",description="Virtual MCP server URL"
+//+kubebuilder:printcolumn:name="Backends",type="integer",JSONPath=".status.backendCount",description="Discovered backends count"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Age"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 

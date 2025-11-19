@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -117,8 +118,11 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
 					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMap: &mcpv1alpha1.ConfigMapSource{
-						Name: "registry-configmap",
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "registry-configmap",
+						},
+						Key: "registry.json",
 					},
 				},
 				SyncPolicy: &mcpv1alpha1.SyncPolicy{
@@ -150,8 +154,11 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
 					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMap: &mcpv1alpha1.ConfigMapSource{
-						Name: "registry-configmap",
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "registry-configmap",
+						},
+						Key: "registry.json",
 					},
 				},
 				SyncPolicy: &mcpv1alpha1.SyncPolicy{
@@ -461,8 +468,11 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
 					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMap: &mcpv1alpha1.ConfigMapSource{
-						Name: "test-configmap",
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
+						},
+						Key: "registry.json",
 					},
 				},
 				SyncPolicy: nil, // Nil SyncPolicy should cause an error
@@ -487,8 +497,11 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
 					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMap: &mcpv1alpha1.ConfigMapSource{
-						Name: "test-configmap",
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
+						},
+						Key: "registry.json",
 					},
 				},
 				SyncPolicy: &mcpv1alpha1.SyncPolicy{
@@ -515,8 +528,11 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
 					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMap: &mcpv1alpha1.ConfigMapSource{
-						Name: "test-configmap",
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
+						},
+						Key: "registry.json",
 					},
 				},
 				SyncPolicy: &mcpv1alpha1.SyncPolicy{
@@ -551,8 +567,11 @@ func TestBuildConfig_Filter(t *testing.T) {
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
 					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMap: &mcpv1alpha1.ConfigMapSource{
-						Name: "test-configmap",
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
+						},
+						Key: "registry.json",
 					},
 				},
 				SyncPolicy: &mcpv1alpha1.SyncPolicy{
@@ -582,8 +601,11 @@ func TestBuildConfig_Filter(t *testing.T) {
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
 					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMap: &mcpv1alpha1.ConfigMapSource{
-						Name: "test-configmap",
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
+						},
+						Key: "registry.json",
 					},
 				},
 				SyncPolicy: &mcpv1alpha1.SyncPolicy{
@@ -706,8 +728,11 @@ func TestBuildConfig_Filter(t *testing.T) {
 				Source: mcpv1alpha1.MCPRegistrySource{
 					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
 					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMap: &mcpv1alpha1.ConfigMapSource{
-						Name: "test-configmap",
+					ConfigMapRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: "test-configmap",
+						},
+						Key: "registry.json",
 					},
 				},
 				SyncPolicy: &mcpv1alpha1.SyncPolicy{

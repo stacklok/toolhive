@@ -1,5 +1,5 @@
-// Package types contains the core type definitions for the MCP registry system.
-package types
+// Package registry contains the core type definitions for the MCP registry system.
+package registry
 
 import (
 	"sort"

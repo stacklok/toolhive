@@ -198,7 +198,7 @@ tasks:
       - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.22
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
       # Run tests in parallel using ginkgo -p flag (uses number of CPU cores by default)
-      - KUBEBUILDER_ASSETS="$($(go env GOPATH)/bin/setup-envtest use 1.31.0 -p path)" $(go env GOPATH)/bin/ginkgo -v -p ./cmd/thv-operator/test-integration/...
+      - KUBEBUILDER_ASSETS="$($(go env GOPATH)/bin/setup-envtest use 1.31.0 -p path)" $(go env GOPATH)/bin/ginkgo --succinct -v -p ./cmd/thv-operator/test-integration/...
 
   # Backwards compatibility
   operator-e2e-test:
@@ -364,9 +364,11 @@ tasks:
       SHA:  
         sh: git rev-parse HEAD || echo "unknown"
       REPO: '{{.REPO | default "ghcr.io/stacklok/toolhive"}}'
+      PLATFORM:
+        sh: echo "${PLATFORM:-linux/$(go env GOARCH)}" 
     cmds:
       - >
-        eval "{{.CONTAINER_RUNTIME}} build --load
+        eval "{{.CONTAINER_RUNTIME}} build --platform={{.PLATFORM}} --load
         -t {{.REPO}}/thv-operator:{{.SHA}}-ubi
         --build-arg CODEDIR=cmd/thv-operator
         --build-arg VERSION={{.SHA}}-ubi
@@ -386,9 +388,11 @@ tasks:
       SHA:  
         sh: git rev-parse HEAD || echo "unknown"
       REPO: '{{.REPO | default "ghcr.io/stacklok/toolhive"}}'
+      PLATFORM:
+        sh: echo "${PLATFORM:-linux/$(go env GOARCH)}"
     cmds:
       - >
-        eval "{{.CONTAINER_RUNTIME}} build --load
+        eval "{{.CONTAINER_RUNTIME}} build --platform={{.PLATFORM}} --load
         -t {{.REPO}}/thv-proxyrunner:{{.SHA}}-ubi
         --build-arg CODEDIR=cmd/thv-proxyrunner
         --build-arg VERSION={{.SHA}}-ubi

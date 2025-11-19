@@ -42,7 +42,7 @@ spec:
   displayName: "My MCP Registry"
   source:
     type: configmap
-    configmap:
+    configMapRef:
       name: my-registry-data
       key: registry.json
 ```
@@ -107,9 +107,9 @@ spec:
   source:
     type: configmap
     format: toolhive  # or "upstream"
-    configmap:
+    configMapRef:
       name: registry-data
-      key: registry.json  # optional, defaults to "registry.json"
+      key: registry.json  # required
 ```
 
 ### Git Source
@@ -449,7 +449,7 @@ spec:
   displayName: "Production MCP Servers"
   source:
     type: configmap
-    configmap:
+    configMapRef:
       name: prod-registry-data
   syncPolicy:
     interval: "1h"

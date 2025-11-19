@@ -170,8 +170,6 @@ func parseStepType(cs *config.WorkflowStepConfig) (composer.StepType, error) {
 		}
 	case "elicitation":
 		stepType = composer.StepTypeElicitation
-	case "conditional":
-		stepType = composer.StepTypeConditional
 	default:
 		return "", fmt.Errorf("step %s: invalid step type %s", cs.ID, cs.Type)
 	}

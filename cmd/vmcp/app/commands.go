@@ -20,7 +20,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
-	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var rootCmd = &cobra.Command{
@@ -227,32 +226,22 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 	}
 
 	// Initialize managers for backend discovery
-	logger.Info("Initializing workload and group managers")
-	workloadsManager, err := workloads.NewManager(ctx)
-	if err != nil {
-		logger.Warnf("Failed to create workloads manager (expected in Kubernetes): %v", err)
-		logger.Warnf("Backend discovery will be skipped - continuing with empty backend list")
-		return []vmcp.Backend{}, backendClient, nil
-	}
-
+	logger.Info("Initializing group manager")
 	groupsManager, err := groups.NewManager()
 	if err != nil {
-		logger.Warnf("Failed to create groups manager (expected in Kubernetes): %v", err)
-		logger.Warnf("Backend discovery will be skipped - continuing with empty backend list")
-		return []vmcp.Backend{}, backendClient, nil
+		return nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
 	}
 
-	// Create backend discoverer and discover backends
-	discoverer := aggregator.NewCLIBackendDiscoverer(workloadsManager, groupsManager, cfg.OutgoingAuth)
+	// Create backend discoverer based on runtime environment
+	discoverer, err := aggregator.NewBackendDiscoverer(ctx, groupsManager, cfg.OutgoingAuth)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create backend discoverer: %w", err)
+	}
 
 	logger.Infof("Discovering backends in group: %s", cfg.Group)
 	backends, err := discoverer.Discover(ctx, cfg.Group)
 	if err != nil {
-		// Handle discovery errors gracefully - this is expected in Kubernetes
-		logger.Warnf("CLI backend discovery failed (likely running in Kubernetes): %v", err)
-		logger.Warnf("Kubernetes backend discovery is not yet implemented - continuing with empty backend list")
-		logger.Warnf("The vmcp server will start but won't proxy any backends until this feature is implemented")
-		return []vmcp.Backend{}, backendClient, nil
+		return nil, nil, fmt.Errorf("failed to discover backends: %w", err)
 	}
 
 	if len(backends) == 0 {

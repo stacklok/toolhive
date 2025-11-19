@@ -6,6 +6,6 @@ metadata:
 spec:
   template:
     spec:
-      serviceAccountName: yardstick-sa
+      serviceAccountName: (join('-', [$testPrefix, 'sa']))
 status:
   availableReplicas: 1

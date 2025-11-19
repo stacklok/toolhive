@@ -6,6 +6,6 @@ metadata:
 spec:
   template:
     spec:
-      serviceAccountName: test-mcp-sa
+      serviceAccountName: (join('-', [$testPrefix, 'sa']))
 status:
   availableReplicas: 1

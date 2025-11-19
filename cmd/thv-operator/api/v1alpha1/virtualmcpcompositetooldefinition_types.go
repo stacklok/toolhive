@@ -19,10 +19,22 @@ type VirtualMCPCompositeToolDefinitionSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Description string `json:"description"`
 
-	// Parameters defines the input parameter schema for the workflow
-	// Each key is a parameter name, each value is the parameter specification
+	// Parameters defines the input parameter schema for the workflow in JSON Schema format.
+	// Should be a JSON Schema object with "type": "object" and "properties".
+	// Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
+	// Example:
+	//   {
+	//     "type": "object",
+	//     "properties": {
+	//       "param1": {"type": "string", "default": "value"},
+	//       "param2": {"type": "integer"}
+	//     },
+	//     "required": ["param2"]
+	//   }
 	// +optional
-	Parameters map[string]ParameterSpec `json:"parameters,omitempty"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	Parameters *runtime.RawExtension `json:"parameters,omitempty"`
 
 	// Steps defines the workflow step definitions
 	// Steps are executed sequentially in Phase 1

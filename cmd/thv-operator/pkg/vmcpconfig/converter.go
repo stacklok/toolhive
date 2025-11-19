@@ -259,7 +259,9 @@ func (*Converter) convertCompositeTools(
 			if err := json.Unmarshal(crdTool.Parameters.Raw, &params); err == nil {
 				tool.Parameters = params
 			}
-			// If unmarshal fails, leave Parameters as nil
+			// If unmarshal fails, leave Parameters as nil. This should never happen in practice
+			// because the webhook validation ensures Parameters contains valid JSON before reaching
+			// this conversion point. See virtualmcpcompositetooldefinition_webhook.go for validation.
 		}
 
 		// Convert steps

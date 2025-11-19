@@ -233,9 +233,11 @@ spec:
     - name: deploy_and_notify
       description: Deploy PR with user confirmation and notification
       parameters:
-        pr_number:
-          type: integer
-          required: true
+        type: object
+        properties:
+          pr_number:
+            type: integer
+        required: [pr_number]
       steps:
         - id: merge
           tool: github.merge_pr
@@ -466,9 +468,11 @@ spec:
     - name: investigate_incident
       description: Gather logs and metrics for incident analysis
       parameters:
-        incident_id:
-          type: string
-          required: true
+        type: object
+        properties:
+          incident_id:
+            type: string
+        required: [incident_id]
       steps:
         - id: fetch_logs
           tool: fetch.fetch

@@ -17,10 +17,12 @@ spec:
   failureMode: abort             # Optional: abort|continue|best_effort (default: abort)
 
   parameters:                    # Optional: input parameters
-    param_name:
-      type: string
-      description: Description of the parameter
-      required: false
+    type: object
+    properties:
+      param_name:
+        type: string
+        description: Description of the parameter
+    required: []
 
   steps:                         # Required: workflow steps
     - id: step1

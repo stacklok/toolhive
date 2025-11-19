@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/stacklok/toolhive/pkg/container/docker"
 )
 
 // TestHTTPTransport_ShouldRestart tests the ShouldRestart logic
@@ -23,7 +25,7 @@ func TestHTTPTransport_ShouldRestart(t *testing.T) {
 		},
 		{
 			name:           "container removed - should not restart",
-			exitError:      fmt.Errorf("Container test (test) not found, it may have been removed"),
+			exitError:      docker.NewContainerError(docker.ErrContainerRemoved, "test", "Container removed"),
 			expectedResult: false,
 		},
 		{

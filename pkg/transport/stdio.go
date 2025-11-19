@@ -20,6 +20,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/container/docker"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 	transporterrors "github.com/stacklok/toolhive/pkg/transport/errors"
@@ -638,9 +639,8 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 
 		logger.Warnf("Container %s exited: %v", t.containerName, err)
 
-		// Check if container was removed (not just exited)
-		isRemoved := err != nil && strings.Contains(err.Error(), "may have been removed")
-		if isRemoved {
+		// Check if container was removed (not just exited) using typed error
+		if errors.Is(err, docker.ErrContainerRemoved) {
 			logger.Infof("Container %s was removed. Stopping proxy and cleaning up.", t.containerName)
 		} else {
 			logger.Infof("Container %s exited. Will attempt automatic restart.", t.containerName)
@@ -675,6 +675,6 @@ func (t *StdioTransport) ShouldRestart() bool {
 		return false // No exit error, normal shutdown
 	}
 
-	// Don't restart if container was removed
-	return !strings.Contains(t.containerExitErr.Error(), "may have been removed")
+	// Don't restart if container was removed (use typed error check)
+	return !errors.Is(t.containerExitErr, docker.ErrContainerRemoved)
 }

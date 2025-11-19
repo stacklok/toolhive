@@ -97,14 +97,14 @@ func (m *ContainerMonitor) monitor(ctx context.Context) {
 			running, err := m.runtime.IsWorkloadRunning(checkCtx, m.containerName)
 			cancel() // Always cancel the context to avoid leaks
 			if err != nil {
-				// If the container is not found, it may have been removed
+				// If the container is not found, it has been removed
 				if IsContainerNotFound(err) {
-					exitErr := NewContainerError(
-						ErrContainerExited,
+					removeErr := NewContainerError(
+						ErrContainerRemoved,
 						m.containerName,
-						fmt.Sprintf("Container %s (%s) not found, it may have been removed", m.containerName, m.containerName),
+						fmt.Sprintf("Container %s not found, it has been removed", m.containerName),
 					)
-					m.errorCh <- exitErr
+					m.errorCh <- removeErr
 					return
 				}
 

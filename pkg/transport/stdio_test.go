@@ -16,6 +16,7 @@ import (
 	"go.uber.org/mock/gomock"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/container/docker"
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
@@ -1030,7 +1031,7 @@ func TestStdioTransport_ShouldRestart(t *testing.T) {
 		},
 		{
 			name:           "container removed - should not restart",
-			exitError:      fmt.Errorf("Container test (test) not found, it may have been removed"),
+			exitError:      docker.NewContainerError(docker.ErrContainerRemoved, "test", "Container removed"),
 			expectedResult: false,
 		},
 		{

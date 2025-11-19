@@ -416,11 +416,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.BaseName, err)
 		}
 
-		// Check if workload still exists (using workload manager to check `thv ls`)
+		// Check if workload still exists (using status manager and runtime)
 		// If it doesn't exist, it was removed - clean up client config
 		// If it exists, it exited unexpectedly - signal restart needed
-		workloadManager := r.getWorkloadManager()
-		exists, checkErr := workloadManager.DoesWorkloadExist(ctx, r.Config.BaseName)
+		exists, checkErr := r.DoesWorkloadExist(ctx, r.Config.BaseName)
 		if checkErr != nil {
 			logger.Warnf("Warning: Failed to check if workload exists: %v", checkErr)
 			// Assume restart needed if we can't check
@@ -458,22 +457,12 @@ func (r *Runner) Run(ctx context.Context) error {
 	return nil
 }
 
-// getWorkloadManager creates a workload manager instance for checking workload existence
-func (r *Runner) getWorkloadManager() interface {
-	DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error)
-} {
-	// Create a minimal implementation that checks via status manager
-	return &workloadExistenceChecker{statusManager: r.statusManager}
-}
-
-// workloadExistenceChecker is a minimal implementation to check if a workload exists
-type workloadExistenceChecker struct {
-	statusManager statuses.StatusManager
-}
-
-func (w *workloadExistenceChecker) DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error) {
+// DoesWorkloadExist checks if a workload exists in the status manager and runtime.
+// For remote workloads, it trusts the status manager.
+// For container workloads, it verifies the container exists in the runtime.
+func (r *Runner) DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error) {
 	// Check if workload exists by trying to get it from status manager
-	workload, err := w.statusManager.GetWorkload(ctx, workloadName)
+	workload, err := r.statusManager.GetWorkload(ctx, workloadName)
 	if err != nil {
 		if errors.Is(err, rt.ErrWorkloadNotFound) {
 			return false, nil

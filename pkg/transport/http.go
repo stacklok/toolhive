@@ -2,18 +2,19 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/container/docker"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/transport/errors"
+	transporterrors "github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -170,7 +171,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 			t.proxyPort, targetURI)
 	} else {
 		if t.containerName == "" {
-			return errors.ErrContainerNameNotSet
+			return transporterrors.ErrContainerNameNotSet
 		}
 
 		// For local containers, use the configured target URI
@@ -285,9 +286,8 @@ func (t *HTTPTransport) handleContainerExit(ctx context.Context) {
 
 		logger.Warnf("Container %s exited: %v", t.containerName, err)
 
-		// Check if container was removed (not just exited)
-		isRemoved := err != nil && strings.Contains(err.Error(), "may have been removed")
-		if isRemoved {
+		// Check if container was removed (not just exited) using typed error
+		if errors.Is(err, docker.ErrContainerRemoved) {
 			logger.Infof("Container %s was removed. Stopping proxy and cleaning up.", t.containerName)
 		} else {
 			logger.Infof("Container %s exited. Will attempt automatic restart.", t.containerName)
@@ -310,8 +310,8 @@ func (t *HTTPTransport) ShouldRestart() bool {
 		return false // No exit error, normal shutdown
 	}
 
-	// Don't restart if container was removed
-	return !strings.Contains(t.containerExitErr.Error(), "may have been removed")
+	// Don't restart if container was removed (use typed error check)
+	return !errors.Is(t.containerExitErr, docker.ErrContainerRemoved)
 }
 
 // IsRunning checks if the transport is currently running.

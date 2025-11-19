@@ -228,7 +228,7 @@ tasks:
     desc: |
       Full E2E test workflow: setup cluster, deploy operator, run tests, and cleanup.
       For manual testing:
-        1. task kind-setup
+        1. task kind-setup-e2e
         2. task operator-install-crds
         3. task operator-deploy-local
         4. task thv-operator-e2e-test-run (can run multiple times)
@@ -236,7 +236,7 @@ tasks:
     platforms: [linux, darwin]
     cmds:
       - defer: task kind-destroy
-      - task: kind-setup
+      - task: kind-setup-e2e
       - task: operator-install-crds
       - task: operator-deploy-local
       - task: thv-operator-e2e-test-run

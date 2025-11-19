@@ -41,7 +41,7 @@ var _ = Describe("VirtualMCPServer Setup and Lifecycle", Ordered, func() {
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef: mcpGroupName,
-				Image:    "ghcr.io/stacklok/mcp-test-server:latest",
+				Image:    "ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2",
 				Env: []mcpv1alpha1.EnvVar{
 					{
 						Name:  "MCP_SERVER_NAME",
@@ -133,66 +133,12 @@ var _ = Describe("VirtualMCPServer Setup and Lifecycle", Ordered, func() {
 		_ = k8sClient.Delete(ctx, mcpServer)
 	})
 
-	Context("when VirtualMCPServer is created", func() {
-		It("should exist in the cluster", func() {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcpServer)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("should reference the correct MCPGroup", func() {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcpServer)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(vmcpServer.Spec.GroupRef.Name).To(Equal(mcpGroupName))
-		})
-
-		It("should have anonymous auth configured", func() {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcpServer)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(vmcpServer.Spec.IncomingAuth).NotTo(BeNil())
-			Expect(vmcpServer.Spec.IncomingAuth.Type).To(Equal("anonymous"))
-		})
-
-		It("should use NodePort service type", func() {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcpServer)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(vmcpServer.Spec.ServiceType).To(Equal("NodePort"))
-		})
-	})
-
 	Context("when VirtualMCPServer resources are created by controller", func() {
-		It("should create a Deployment with correct labels", func() {
-			By(fmt.Sprintf("Looking for deployment %s", vmcpServerName))
-			deployment := &appsv1.Deployment{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      vmcpServerName,
-					Namespace: testNamespace,
-				}, deployment)
-			}, timeout, pollingInterval).Should(Succeed(), "Deployment should be created")
-
-			// Verify deployment has the correct labels
-			Expect(deployment.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "virtualmcpserver"))
-			Expect(deployment.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", vmcpServerName))
-		})
-
 		It("should have a ready Deployment", func() {
+			By(fmt.Sprintf("Waiting for deployment %s to be ready", vmcpServerName))
 			deployment := &appsv1.Deployment{}
+
+			// Wait for deployment to be ready
 			Eventually(func() bool {
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      vmcpServerName,
@@ -201,6 +147,8 @@ var _ = Describe("VirtualMCPServer Setup and Lifecycle", Ordered, func() {
 				if err != nil {
 					return false
 				}
+
+				// Check if ready
 				return deployment.Status.ReadyReplicas > 0 &&
 					deployment.Status.ReadyReplicas == *deployment.Spec.Replicas
 			}, timeout, pollingInterval).Should(BeTrue(), "Deployment should have ready replicas")

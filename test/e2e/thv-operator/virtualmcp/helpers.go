@@ -89,15 +89,22 @@ func GetMCPGroupBackends(ctx context.Context, c client.Client, groupName, namesp
 		return nil, err
 	}
 
-	// Get MCPServers that reference this group
+	// Get all MCPServers in the namespace
 	mcpServerList := &mcpv1alpha1.MCPServerList{}
 	if err := c.List(ctx, mcpServerList,
-		client.InNamespace(namespace),
-		client.MatchingFields{"spec.groupRef": groupName}); err != nil {
+		client.InNamespace(namespace)); err != nil {
 		return nil, err
 	}
 
-	return mcpServerList.Items, nil
+	// Filter MCPServers that reference this group
+	var backends []mcpv1alpha1.MCPServer
+	for _, mcpServer := range mcpServerList.Items {
+		if mcpServer.Spec.GroupRef == groupName {
+			backends = append(backends, mcpServer)
+		}
+	}
+
+	return backends, nil
 }
 
 // GetVirtualMCPServerStatus returns the current status of a VirtualMCPServer

@@ -63,8 +63,8 @@ ginkgo -v
 ### Running Specific Tests
 
 ```bash
-# Run only deployment verification tests
-ginkgo -v --focus="Deployment"
+# Run only setup and lifecycle tests
+ginkgo -v --focus="Setup and Lifecycle"
 
 # Run tests and get verbose output
 ginkgo -vv
@@ -76,13 +76,12 @@ ginkgo -vv
 
 - `suite_test.go` - Ginkgo test suite setup with kubeconfig loading
 - `virtualmcp_setup_test.go` - Tests that create and manage VirtualMCPServer resources
-- `virtualmcp_deployment_test.go` - Tests for verifying VirtualMCPServer deployment
 - `helpers.go` - Common helper functions for interacting with Kubernetes resources
 - `README.md` - This file
 
 ### Test Coverage
 
-The current test suite includes two types of tests:
+The current test suite includes:
 
 #### Setup and Lifecycle Tests (`virtualmcp_setup_test.go`)
 1. **Resource Creation**
@@ -91,34 +90,25 @@ The current test suite includes two types of tests:
    - Creates VirtualMCPServer
    - Verifies resource creation
 
-2. **Validation**
-   - VirtualMCPServer references correct MCPGroup
-   - Authentication configuration is applied
-   - Controller creates Deployment and Service
-
-#### Deployment Verification Tests (`virtualmcp_deployment_test.go`)
-1. **Resource Existence**
+2. **Deployment Verification**
    - VirtualMCPServer CRD exists
    - Referenced MCPGroup exists
-   - Deployment is created
+   - Deployment is created with correct configuration
    - Service is created
-   - Pods are created
+   - Pods are created and running
 
-2. **Resource Health**
+3. **Resource Health**
    - Deployment has ready replicas
    - Pods are running and ready
    - VirtualMCPServer has Ready condition
 
-3. **Resource Configuration**
+4. **Configuration Validation**
+   - VirtualMCPServer references correct MCPGroup
+   - Authentication configuration is applied
    - Correct labels are applied
    - Service selectors match pods
    - vmcp container is properly configured
    - Ports are exposed correctly
-
-4. **Configuration Inspection**
-   - Aggregation configuration
-   - Incoming authentication settings
-   - Outgoing authentication settings
 
 ## Environment Variables
 

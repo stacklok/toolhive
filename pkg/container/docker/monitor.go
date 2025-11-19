@@ -12,13 +12,14 @@ import (
 
 // ContainerMonitor watches a container's state and reports when it exits
 type ContainerMonitor struct {
-	runtime       runtime.Runtime
-	containerName string
-	stopCh        chan struct{}
-	errorCh       chan error
-	wg            sync.WaitGroup
-	running       bool
-	mutex         sync.Mutex
+	runtime          runtime.Runtime
+	containerName    string
+	stopCh           chan struct{}
+	errorCh          chan error
+	wg               sync.WaitGroup
+	running          bool
+	mutex            sync.Mutex
+	initialStartTime time.Time // Track container start time to detect restarts
 }
 
 // NewMonitor creates a new container monitor
@@ -48,6 +49,13 @@ func (m *ContainerMonitor) StartMonitoring(ctx context.Context) (<-chan error, e
 	if !running {
 		return nil, NewContainerError(ErrContainerNotRunning, m.containerName, "container is not running")
 	}
+
+	// Get initial container info to track start time
+	info, err := m.runtime.GetWorkloadInfo(ctx, m.containerName)
+	if err != nil {
+		return nil, NewContainerError(err, m.containerName, fmt.Sprintf("failed to get container info: %v", err))
+	}
+	m.initialStartTime = info.StartedAt
 
 	m.running = true
 	m.wg.Add(1)
@@ -127,6 +135,22 @@ func (m *ContainerMonitor) monitor(ctx context.Context) {
 						m.containerName, m.containerName, info.Status, logs),
 				)
 				m.errorCh <- exitErr
+				return
+			}
+
+			// Container is running - check if it was restarted (different start time)
+			infoCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			info, err := m.runtime.GetWorkloadInfo(infoCtx, m.containerName)
+			cancel()
+			if err == nil && !info.StartedAt.IsZero() && !info.StartedAt.Equal(m.initialStartTime) {
+				// Container was restarted (has a different start time)
+				restartErr := NewContainerError(
+					ErrContainerExited,
+					m.containerName,
+					fmt.Sprintf("Container %s was restarted (start time changed from %s to %s)",
+						m.containerName, m.initialStartTime.Format(time.RFC3339), info.StartedAt.Format(time.RFC3339)),
+				)
+				m.errorCh <- restartErr
 				return
 			}
 		}

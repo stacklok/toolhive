@@ -203,5 +203,5 @@ jobs:
         chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/test-scenarios --config .chainsaw.yaml
         chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/cleanup --config .chainsaw.yaml
         chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/setup --config .chainsaw.yaml
-        chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios --config .chainsaw.yaml
+        chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios --parallel 10 --config .chainsaw.yaml
         chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup --config .chainsaw.yaml

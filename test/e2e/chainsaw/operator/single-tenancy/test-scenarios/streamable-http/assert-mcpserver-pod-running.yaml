@@ -1,11 +1,11 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: yardstick
+  name: st-streamable-http
   namespace: toolhive-system
 spec:
   template:
     spec:
-      serviceAccountName: yardstick-sa
+      serviceAccountName: (join('-', [$testPrefix, 'sa']))
 status:
   availableReplicas: 1

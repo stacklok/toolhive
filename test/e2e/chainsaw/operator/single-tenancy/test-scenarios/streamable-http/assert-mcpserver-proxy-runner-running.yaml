@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: yardstick
+  name: st-streamable-http
   namespace: toolhive-system
 spec:
   replicas: 1

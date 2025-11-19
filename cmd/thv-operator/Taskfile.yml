@@ -33,6 +33,12 @@ tasks:
       - kind create cluster --name toolhive
       - kind get kubeconfig --name toolhive > kconfig.yaml
 
+  kind-setup-e2e:
+    desc: Setup a local Kind cluster with port mappings for e2e testing (allows accessing NodePort services on localhost)
+    cmds:
+      - kind create cluster --name toolhive --config {{.ROOT_DIR}}/test/e2e/thv-operator/kind-config.yaml
+      - kind get kubeconfig --name toolhive > kconfig.yaml
+
   kind-destroy:
     desc: Destroy a local Kind cluster
     cmds:
@@ -217,7 +223,41 @@ tasks:
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/setup
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup
-      
+
+  thv-operator-e2e-test:
+    desc: |
+      Full E2E test workflow: setup cluster, deploy operator, run tests, and cleanup.
+      For manual testing:
+        1. task kind-setup
+        2. task operator-install-crds
+        3. task operator-deploy-local
+        4. task thv-operator-e2e-test-run (can run multiple times)
+        5. task kind-destroy
+    platforms: [linux, darwin]
+    cmds:
+      - defer: task kind-destroy
+      - task: kind-setup
+      - task: operator-install-crds
+      - task: operator-deploy-local
+      - task: thv-operator-e2e-test-run
+
+  thv-operator-e2e-test-run:
+    desc: |
+      Run only the Ginkgo E2E tests against an existing cluster.
+      This task assumes:
+      - A Kind cluster named 'toolhive' exists
+      - CRDs are installed
+      - Operator is deployed
+      - kconfig.yaml exists in project root
+      Use this to re-run tests without recreating the cluster.
+    platforms: [linux, darwin]
+    cmds:
+      - echo "Running Ginkgo E2E tests..."
+      - go install github.com/onsi/ginkgo/v2/ginkgo@latest
+      - |
+        KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v \
+          {{.ROOT_DIR}}/test/e2e/thv-operator/...
+
   operator-run:
     desc: Run the operator controller locally
     cmds:

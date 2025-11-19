@@ -24,6 +24,10 @@ jobs:
       - name: Clear Go module cache
         run: go clean -modcache
 
+      # Explicitly download problematic dependency first
+      - name: Pre-download go-winio dependency
+        run: go get github.com/Microsoft/go-winio@v0.6.2
+
       # Download all dependencies upfront (will be cached)
       - name: Download Go dependencies
         run: |

@@ -337,6 +337,9 @@ type CompositeToolConfig struct {
 	// Timeout is the maximum workflow execution time.
 	Timeout Duration `json:"timeout,omitempty"`
 
+	// OutputFormat is an optional Go template for constructing the workflow output.
+	OutputFormat string `json:"output_format,omitempty"`
+
 	// Steps are the workflow steps to execute.
 	Steps []*WorkflowStepConfig `json:"steps"`
 }

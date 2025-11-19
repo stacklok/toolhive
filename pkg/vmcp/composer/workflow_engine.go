@@ -327,6 +327,9 @@ func (e *workflowEngine) executeToolStep(
 		return expandErr
 	}
 
+	// Debug log the expanded arguments
+	logger.Debugf("Step %s expanded arguments: %+v", step.ID, expandedArgs)
+
 	// Route tool to backend
 	target, err := e.router.RouteTool(ctx, step.Tool)
 	if err != nil {

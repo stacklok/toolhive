@@ -156,11 +156,12 @@ type rawOperational struct {
 }
 
 type rawCompositeTool struct {
-	Name        string                    `yaml:"name"`
-	Description string                    `yaml:"description"`
-	Parameters  map[string]map[string]any `yaml:"parameters"`
-	Timeout     string                    `yaml:"timeout"`
-	Steps       []*rawWorkflowStep        `yaml:"steps"`
+	Name         string                    `yaml:"name"`
+	Description  string                    `yaml:"description"`
+	Parameters   map[string]map[string]any `yaml:"parameters"`
+	Timeout      string                    `yaml:"timeout"`
+	OutputFormat string                    `yaml:"output_format"`
+	Steps        []*rawWorkflowStep        `yaml:"steps"`
 }
 
 type rawWorkflowStep struct {
@@ -506,10 +507,11 @@ func (l *YAMLLoader) transformCompositeTools(raw []*rawCompositeTool) ([]*Compos
 		}
 
 		tool := &CompositeToolConfig{
-			Name:        rawTool.Name,
-			Description: rawTool.Description,
-			Parameters:  make(map[string]ParameterSchema),
-			Timeout:     Duration(timeout),
+			Name:         rawTool.Name,
+			Description:  rawTool.Description,
+			Parameters:   make(map[string]ParameterSchema),
+			Timeout:      Duration(timeout),
+			OutputFormat: rawTool.OutputFormat,
 		}
 
 		// Transform parameters

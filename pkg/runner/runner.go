@@ -485,15 +485,17 @@ func (r *Runner) DoesWorkloadExist(ctx context.Context, workloadName string) (bo
 		return workload.Status != rt.WorkloadStatusError, nil
 	}
 
-	// Check if container is actually running in the runtime
-	running, err := backend.IsWorkloadRunning(ctx, workloadName)
+	// Check if container exists in the runtime (not just running)
+	// GetWorkloadInfo will return an error if the container doesn't exist
+	_, err = backend.GetWorkloadInfo(ctx, workloadName)
 	if err != nil {
-		// Container doesn't exist or error checking
+		// Container doesn't exist
 		logger.Debugf("Container %s not found in runtime: %v", workloadName, err)
 		return false, nil
 	}
 
-	return running, nil
+	// Container exists (may be running or stopped)
+	return true, nil
 }
 
 // handleRemoteAuthentication handles authentication for remote MCP servers

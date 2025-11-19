@@ -79,6 +79,15 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 							Memory: "128Mi",
 						},
 					},
+					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
+						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
+							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+								Labels: map[string]string{
+									"podspec-testlabel": "true",
+								},
+							},
+						},
+					},
 				},
 			}
 
@@ -116,14 +125,14 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			verifyOwnerReference(deployment.OwnerReferences, createdMCPServer, "Deployment")
 
 			// Verify Deployment labels
-			expectedLabels := map[string]string{
+			baseExpectedLabels := map[string]string{
 				"app":                        "mcpserver",
 				"app.kubernetes.io/name":     "mcpserver",
 				"app.kubernetes.io/instance": mcpServerName,
 				"toolhive":                   "true",
 				"toolhive-name":              mcpServerName,
 			}
-			for key, value := range expectedLabels {
+			for key, value := range baseExpectedLabels {
 				Expect(deployment.Labels).To(HaveKeyWithValue(key, value))
 			}
 
@@ -131,10 +140,12 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			Expect(deployment.Spec.Replicas).To(Equal(ptr.To(int32(1))))
 
 			// Verify selector
-			Expect(deployment.Spec.Selector.MatchLabels).To(Equal(expectedLabels))
+			Expect(deployment.Spec.Selector.MatchLabels).To(Equal(baseExpectedLabels))
 
 			// Verify pod template labels
-			for key, value := range expectedLabels {
+			podTemplateExepectedLabels := baseExpectedLabels
+			podTemplateExepectedLabels["podspec-testlabel"] = "true"
+			for key, value := range podTemplateExepectedLabels {
 				Expect(deployment.Spec.Template.Labels).To(HaveKeyWithValue(key, value))
 			}
 

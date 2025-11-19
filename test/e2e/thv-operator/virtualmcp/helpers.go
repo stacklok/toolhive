@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -17,7 +17,7 @@ import (
 func WaitForVirtualMCPServerReady(ctx context.Context, c client.Client, name, namespace string, timeout time.Duration) {
 	vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 
-	Eventually(func() error {
+	gomega.Eventually(func() error {
 		if err := c.Get(ctx, types.NamespacedName{
 			Name:      name,
 			Namespace: namespace,
@@ -30,11 +30,11 @@ func WaitForVirtualMCPServerReady(ctx context.Context, c client.Client, name, na
 				if condition.Status == "True" {
 					return nil
 				}
-				return fmt.Errorf("Ready condition is %s: %s", condition.Status, condition.Message)
+				return fmt.Errorf("ready condition is %s: %s", condition.Status, condition.Message)
 			}
 		}
-		return fmt.Errorf("Ready condition not found")
-	}, timeout, 5*time.Second).Should(Succeed())
+		return fmt.Errorf("ready condition not found")
+	}, timeout, 5*time.Second).Should(gomega.Succeed())
 }
 
 // GetVirtualMCPServerPods returns all pods for a VirtualMCPServer
@@ -51,7 +51,7 @@ func GetVirtualMCPServerPods(ctx context.Context, c client.Client, vmcpServerNam
 
 // WaitForPodsReady waits for all pods matching labels to be ready
 func WaitForPodsReady(ctx context.Context, c client.Client, namespace string, labels map[string]string, timeout time.Duration) {
-	Eventually(func() error {
+	gomega.Eventually(func() error {
 		podList := &corev1.PodList{}
 		if err := c.List(ctx, podList,
 			client.InNamespace(namespace),
@@ -75,7 +75,7 @@ func WaitForPodsReady(ctx context.Context, c client.Client, namespace string, la
 			}
 		}
 		return nil
-	}, timeout, 5*time.Second).Should(Succeed())
+	}, timeout, 5*time.Second).Should(gomega.Succeed())
 }
 
 // GetMCPGroupBackends returns the list of backend MCPServers in an MCPGroup
@@ -101,7 +101,11 @@ func GetMCPGroupBackends(ctx context.Context, c client.Client, groupName, namesp
 }
 
 // GetVirtualMCPServerStatus returns the current status of a VirtualMCPServer
-func GetVirtualMCPServerStatus(ctx context.Context, c client.Client, name, namespace string) (*mcpv1alpha1.VirtualMCPServerStatus, error) {
+func GetVirtualMCPServerStatus(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+) (*mcpv1alpha1.VirtualMCPServerStatus, error) {
 	vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 	if err := c.Get(ctx, types.NamespacedName{
 		Name:      name,
@@ -123,7 +127,7 @@ func HasCondition(vmcpServer *mcpv1alpha1.VirtualMCPServer, conditionType string
 }
 
 // GetPodLogs retrieves logs from a pod's container
-func GetPodLogs(ctx context.Context, c client.Client, podName, namespace, containerName string, tailLines *int64) (string, error) {
+func GetPodLogs(_ context.Context, _ client.Client, _, _, _ string, _ *int64) (string, error) {
 	// Note: This is a placeholder. In a real implementation, you would need to use
 	// the kubernetes clientset to get pod logs, as controller-runtime client doesn't
 	// support log retrieval directly.
@@ -131,8 +135,15 @@ func GetPodLogs(ctx context.Context, c client.Client, podName, namespace, contai
 }
 
 // WaitForCondition waits for a VirtualMCPServer to have a specific condition
-func WaitForCondition(ctx context.Context, c client.Client, name, namespace string, conditionType string, expectedStatus string, timeout time.Duration) {
-	Eventually(func() error {
+func WaitForCondition(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	conditionType string,
+	expectedStatus string,
+	timeout time.Duration,
+) {
+	gomega.Eventually(func() error {
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 		if err := c.Get(ctx, types.NamespacedName{
 			Name:      name,
@@ -146,5 +157,5 @@ func WaitForCondition(ctx context.Context, c client.Client, name, namespace stri
 		}
 
 		return fmt.Errorf("condition %s not found with status %s", conditionType, expectedStatus)
-	}, timeout, 5*time.Second).Should(Succeed())
+	}, timeout, 5*time.Second).Should(gomega.Succeed())
 }

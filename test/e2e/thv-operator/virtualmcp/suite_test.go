@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	"github.com/onsi/ginkgo/v2"
+	"github.com/onsi/gomega"
 	"go.uber.org/zap/zapcore"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -35,18 +35,19 @@ var (
 )
 
 func TestE2E(t *testing.T) {
-	RegisterFailHandler(Fail)
+	t.Parallel()
+	gomega.RegisterFailHandler(ginkgo.Fail)
 
-	suiteConfig, reporterConfig := GinkgoConfiguration()
+	suiteConfig, reporterConfig := ginkgo.GinkgoConfiguration()
 	// Show verbose output for e2e tests
 	reporterConfig.Verbose = true
 
-	RunSpecs(t, "VirtualMCPServer E2E Test Suite", suiteConfig, reporterConfig)
+	ginkgo.RunSpecs(t, "VirtualMCPServer E2E Test Suite", suiteConfig, reporterConfig)
 }
 
-var _ = BeforeSuite(func() {
+var _ = ginkgo.BeforeSuite(func() {
 	logLevel := zapcore.InfoLevel
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true), zap.Level(logLevel)))
+	logf.SetLogger(zap.New(zap.WriteTo(ginkgo.GinkgoWriter), zap.UseDevMode(true), zap.Level(logLevel)))
 
 	ctx, cancel = context.WithCancel(context.Background())
 
@@ -54,44 +55,44 @@ var _ = BeforeSuite(func() {
 	kubeconfig = os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
 		homeDir, err := os.UserHomeDir()
-		Expect(err).NotTo(HaveOccurred())
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		kubeconfig = homeDir + "/.kube/config"
 	}
 
-	By("loading kubeconfig from: " + kubeconfig)
+	ginkgo.By("loading kubeconfig from: " + kubeconfig)
 
 	// Check if kubeconfig file exists
 	_, err := os.Stat(kubeconfig)
-	Expect(err).NotTo(HaveOccurred(), "kubeconfig file should exist at "+kubeconfig)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "kubeconfig file should exist at "+kubeconfig)
 
 	// Build config from kubeconfig
 	cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(cfg).NotTo(BeNil())
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	gomega.Expect(cfg).NotTo(gomega.BeNil())
 
 	// Register schemes
 	err = mcpv1alpha1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 	err = appsv1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 	err = corev1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 	err = rbacv1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 	// Create Kubernetes client
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(k8sClient).NotTo(BeNil())
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+	gomega.Expect(k8sClient).NotTo(gomega.BeNil())
 
-	By("connected to Kubernetes cluster successfully")
+	ginkgo.By("connected to Kubernetes cluster successfully")
 })
 
-var _ = AfterSuite(func() {
-	By("tearing down the test environment")
+var _ = ginkgo.AfterSuite(func() {
+	ginkgo.By("tearing down the test environment")
 	cancel()
 	time.Sleep(100 * time.Millisecond)
 })

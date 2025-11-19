@@ -17,25 +17,24 @@ jobs:
         uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
         with:
           go-version-file: 'go.mod'
-          cache: true  # This caches go modules based on go.sum
-          cache-dependency-path: go.sum
+          cache: false  # Disable built-in cache, we'll handle it manually
 
-      # Clear Go module cache to avoid corruption issues
-      - name: Clear Go module cache
-        run: go clean -modcache
+      # Cache Go modules manually for better control
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-mod-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-mod-
 
-      # Explicitly download problematic dependency first
-      - name: Pre-download go-winio dependency
-        run: go get github.com/Microsoft/go-winio@v0.6.2
-
-      # Download all dependencies upfront (will be cached)
+      # Download all dependencies upfront
       - name: Download Go dependencies
         run: |
           go mod download
           go mod verify
 
       # Cache Go build cache for faster compilation
-      # Note: ~/go/pkg/mod is already cached by actions/setup-go with cache: true
       - name: Cache Go build cache
         uses: actions/cache@v4
         with:

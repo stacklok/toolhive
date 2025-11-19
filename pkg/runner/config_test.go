@@ -582,7 +582,7 @@ func TestRunConfigBuilder(t *testing.T) {
 	targetHost := localhostStr
 	mcpTransport := "sse"
 	proxyPort := 60000
-	targetPort := 9000
+	targetPort := 60001
 	envVars := map[string]string{"TEST_ENV": "test_value"}
 
 	oidcIssuer := "https://issuer.example.com"
@@ -669,7 +669,7 @@ func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
 		BaseName:      "test-base",
 		Transport:     types.TransportTypeSSE,
 		Port:          60000,
-		TargetPort:    9000,
+		TargetPort:    60001,
 		Debug:         true,
 		ContainerLabels: map[string]string{
 			"label1": "value1",

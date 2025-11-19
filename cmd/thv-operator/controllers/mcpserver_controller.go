@@ -1097,7 +1097,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 		if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides != nil {
 			if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels != nil {
-				deploymentLabels = ctrlutil.MergeLabels(ls, m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels)
+				deploymentTemplateLabels = ctrlutil.MergeLabels(ls,
+					m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels)
 			}
 			if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Annotations != nil {
 				deploymentTemplateAnnotations = ctrlutil.MergeAnnotations(deploymentAnnotations,

@@ -20,6 +20,10 @@ jobs:
           cache: true  # This caches go modules based on go.sum
           cache-dependency-path: go.sum
 
+      # Clear Go module cache to avoid corruption issues
+      - name: Clear Go module cache
+        run: go clean -modcache
+
       # Download all dependencies upfront (will be cached)
       - name: Download Go dependencies
         run: |

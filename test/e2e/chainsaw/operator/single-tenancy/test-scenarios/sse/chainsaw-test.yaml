@@ -1,7 +1,7 @@
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: sse-mcp-server
+  name: st-sse
 spec:
   description: Deploys SSE MCP server and verifies it's running
   timeouts:
@@ -9,6 +9,10 @@ spec:
     assert: 60s
     cleanup: 30s
     exec: 300s
+  template: true
+  bindings:
+    - name: testPrefix
+      value: "st-sse"
   steps:
   - name: verify-operator
     description: Ensure operator is ready before testing

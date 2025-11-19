@@ -1,7 +1,7 @@
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: stdio-streamable-http-mcp-server
+  name: st-stdio-streamable-http
 spec:
   description: Deploys STDIO MCP server with streamable-http proxy mode and verifies it's running
   timeouts:
@@ -9,13 +9,16 @@ spec:
     assert: 60s
     cleanup: 30s
     exec: 300s
+  template: true
+  bindings:
+    - name: testPrefix
+      value: "st-stdio-streamable-http"
   steps:
   - name: verify-operator
     description: Ensure operator is ready before testing
     try:
     - assert:
         file: ../../setup/assert-operator-ready.yaml
-      
   - name: deploy-mcpserver
     description: Deploy a basic MCPServer instance and verify it's ready
     try:

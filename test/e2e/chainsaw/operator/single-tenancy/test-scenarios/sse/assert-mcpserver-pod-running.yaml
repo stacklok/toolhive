@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: yardstick
+  name: st-sse
   namespace: toolhive-system
 spec:
   template:

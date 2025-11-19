@@ -364,9 +364,11 @@ tasks:
       SHA:  
         sh: git rev-parse HEAD || echo "unknown"
       REPO: '{{.REPO | default "ghcr.io/stacklok/toolhive"}}'
+      PLATFORM:
+        sh: echo "${PLATFORM:-linux/$(go env GOARCH)}" 
     cmds:
       - >
-        eval "{{.CONTAINER_RUNTIME}} build --load
+        eval "{{.CONTAINER_RUNTIME}} build --platform={{.PLATFORM}} --load
         -t {{.REPO}}/thv-operator:{{.SHA}}-ubi
         --build-arg CODEDIR=cmd/thv-operator
         --build-arg VERSION={{.SHA}}-ubi
@@ -386,9 +388,11 @@ tasks:
       SHA:  
         sh: git rev-parse HEAD || echo "unknown"
       REPO: '{{.REPO | default "ghcr.io/stacklok/toolhive"}}'
+      PLATFORM:
+        sh: echo "${PLATFORM:-linux/$(go env GOARCH)}"
     cmds:
       - >
-        eval "{{.CONTAINER_RUNTIME}} build --load
+        eval "{{.CONTAINER_RUNTIME}} build --platform={{.PLATFORM}} --load
         -t {{.REPO}}/thv-proxyrunner:{{.SHA}}-ubi
         --build-arg CODEDIR=cmd/thv-proxyrunner
         --build-arg VERSION={{.SHA}}-ubi

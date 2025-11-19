@@ -1,7 +1,7 @@
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
-  name: yardstick
+  name: ($testPrefix)
   namespace: toolhive-system
 spec:
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2

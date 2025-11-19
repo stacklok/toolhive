@@ -11,7 +11,7 @@ import (
 	upstream "github.com/modelcontextprotocol/registry/pkg/api/v0"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/registry/types"
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // ToolHiveRegistry represents the structure of registry.json

@@ -376,8 +376,10 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
 
+	// Capture server in local variable to avoid race with Stop()
+	server := p.server
 	go func() {
-		err := p.server.Serve(ln)
+		err := server.Serve(ln)
 		if err != nil && err != http.ErrServerClosed {
 			var opErr *net.OpError
 			if errors.As(err, &opErr) && opErr.Op == "accept" {

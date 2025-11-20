@@ -356,10 +356,10 @@ func TestCompositeToolWithOutputConfig_RequiredFields(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		outputCfg   *config.OutputConfig
-		stepOutput  map[string]any
-		shouldFail  bool
+		name         string
+		outputCfg    *config.OutputConfig
+		stepOutput   map[string]any
+		shouldFail   bool
 		missingField string
 	}{
 		{

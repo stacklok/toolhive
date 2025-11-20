@@ -419,7 +419,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Check if workload still exists (using status manager and runtime)
 		// If it doesn't exist, it was removed - clean up client config
 		// If it exists, it exited unexpectedly - signal restart needed
-		exists, checkErr := r.DoesWorkloadExist(ctx, r.Config.BaseName)
+		exists, checkErr := r.doesWorkloadExist(ctx, r.Config.BaseName)
 		if checkErr != nil {
 			logger.Warnf("Warning: Failed to check if workload exists: %v", checkErr)
 			// Assume restart needed if we can't check
@@ -457,10 +457,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	return nil
 }
 
-// DoesWorkloadExist checks if a workload exists in the status manager and runtime.
+// doesWorkloadExist checks if a workload exists in the status manager and runtime.
 // For remote workloads, it trusts the status manager.
 // For container workloads, it verifies the container exists in the runtime.
-func (r *Runner) DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error) {
+func (r *Runner) doesWorkloadExist(ctx context.Context, workloadName string) (bool, error) {
 	// Check if workload exists by trying to get it from status manager
 	workload, err := r.statusManager.GetWorkload(ctx, workloadName)
 	if err != nil {

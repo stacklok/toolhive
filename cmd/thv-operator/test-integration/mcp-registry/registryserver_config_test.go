@@ -68,7 +68,7 @@ var _ = Describe("MCPRegistry Server Config", Label("k8s", "registry", "config")
 	Context("Registry Server Config ConfigMap Creation - ConfigMap Source", func() {
 		It("should create a registry server config ConfigMap when MCPRegistry is created", func() {
 			By("creating a test ConfigMap with sample registry data")
-			configMap, _ := configMapHelper.CreateSampleToolHiveRegistry("test-config")
+			configMap := configMapHelper.CreateSampleToolHiveRegistry("test-config")
 
 			By("creating an MCPRegistry resource")
 			registry := registryHelper.NewRegistryBuilder("test-registry").

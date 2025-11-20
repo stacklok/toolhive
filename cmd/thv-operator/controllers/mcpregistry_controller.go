@@ -139,7 +139,7 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// 3. Create status manager for batched updates with separation of concerns
 	statusManager := mcpregistrystatus.NewStatusManager(mcpRegistry)
 
-	// Initialize result and reset err for this phase of reconciliation
+	// Initialize result
 	result := ctrl.Result{}
 	err = nil
 
@@ -166,9 +166,14 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				"Registry API deployment is not ready yet", "")
 			statusManager.API().SetAPIReadyCondition("APINotReady",
 				"Registry API deployment is not ready yet", metav1.ConditionFalse)
-			if result.RequeueAfter == 0 || result.RequeueAfter > time.Second*30 {
-				result.RequeueAfter = time.Second * 30
-			}
+		}
+	}
+
+	// 5. Check if we need to requeue for API readiness
+	if err == nil && !r.registryAPIManager.IsAPIReady(ctx, mcpRegistry) {
+		ctxLogger.Info("API not ready yet, scheduling requeue to check readiness")
+		if result.RequeueAfter == 0 || result.RequeueAfter > time.Second*30 {
+			result.RequeueAfter = time.Second * 30
 		}
 	}
 
@@ -234,7 +239,7 @@ func (*MCPRegistryReconciler) deriveOverallStatus(
 		apiStatus = mcpRegistry.Status.APIStatus
 	}
 	// Use the StatusDeriver to determine the overall phase and message
-	// based on current API statuses
+	// based on current API status
 	derivedPhase, derivedMessage := statusDeriver.DeriveOverallStatus(apiStatus)
 
 	// Only update phase and message if they've changed
@@ -256,7 +261,7 @@ func (r *MCPRegistryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // Apply applies all collected status changes in a single batch update.
 // Only actual changes are applied to the status to avoid unnecessary reconciliations
-func (*MCPRegistryReconciler) applyStatusUpdates(
+func (r *MCPRegistryReconciler) applyStatusUpdates(
 	ctx context.Context, k8sClient client.Client,
 	mcpRegistry *mcpv1alpha1.MCPRegistry, statusManager mcpregistrystatus.StatusManager) error {
 

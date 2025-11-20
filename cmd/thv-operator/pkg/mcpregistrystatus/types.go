@@ -25,20 +25,7 @@ func (e *Error) Unwrap() error {
 	return e.Err
 }
 
-//go:generate mockgen -destination=mocks/mock_collector.go -package=mocks -source=types.go SyncStatusCollector,APIStatusCollector,StatusDeriver,StatusManager
-
-// SyncStatusCollector handles sync-related status updates
-type SyncStatusCollector interface {
-	// Status returns the sync status
-	Status() *mcpv1alpha1.SyncStatus
-
-	// SetSyncStatus sets the detailed sync status
-	SetSyncStatus(phase mcpv1alpha1.SyncPhase, message string, attemptCount int,
-		lastSyncTime *metav1.Time, lastSyncHash string, serverCount int)
-
-	// SetSyncCondition sets a sync-related condition
-	SetSyncCondition(condition metav1.Condition)
-}
+//go:generate mockgen -destination=mocks/mock_collector.go -package=mocks -source=types.go APIStatusCollector,StatusDeriver,StatusManager
 
 // APIStatusCollector handles API-related status updates
 type APIStatusCollector interface {
@@ -55,14 +42,11 @@ type APIStatusCollector interface {
 // StatusDeriver handles overall status derivation logic
 type StatusDeriver interface {
 	// DeriveOverallStatus derives the overall MCPRegistry phase and message from component statuses
-	DeriveOverallStatus(syncStatus *mcpv1alpha1.SyncStatus, apiStatus *mcpv1alpha1.APIStatus) (mcpv1alpha1.MCPRegistryPhase, string)
+	DeriveOverallStatus(apiStatus *mcpv1alpha1.APIStatus) (mcpv1alpha1.MCPRegistryPhase, string)
 }
 
 // StatusManager orchestrates all status updates and provides access to domain-specific collectors
 type StatusManager interface {
-	// Sync returns the sync status collector
-	Sync() SyncStatusCollector
-
 	// API returns the API status collector
 	API() APIStatusCollector
 

@@ -391,7 +391,6 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Update the MCPServer status with the service URL including transport-specific path
 	if mcpServer.Status.URL == "" {
-		serviceName := ctrlutil.CreateProxyServiceName(mcpServer.Name)
 		host := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, mcpServer.Namespace)
 		mcpServer.Status.URL = transport.GenerateMCPServerURL(
 			mcpServer.Spec.Transport,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -327,7 +328,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			var fetchToolName string
 			for _, tool := range tools.Tools {
 				// Look for the fetch tool (may have a prefix like "backend-fetch__fetch")
-				if tool.Name == "fetch" || (len(tool.Name) > 5 && tool.Name[len(tool.Name)-5:] == "fetch") {
+				if tool.Name == "fetch" || strings.HasSuffix(tool.Name, "fetch") {
 					fetchToolName = tool.Name
 					break
 				}
@@ -338,7 +339,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 
 				callRequest := mcp.CallToolRequest{}
 				callRequest.Params.Name = fetchToolName
-				callRequest.Params.Arguments = map[string]interface{}{
+				callRequest.Params.Arguments = map[string]any{
 					"url": "https://example.com",
 				}
 

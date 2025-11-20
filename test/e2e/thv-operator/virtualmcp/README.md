@@ -71,11 +71,11 @@ ginkgo -vv
 
 #### Discovered Mode Tests (`virtualmcp_discovered_mode_test.go`)
 Comprehensive E2E tests for VirtualMCPServer in discovered mode, which automatically discovers and aggregates tools from backend MCP servers in a group:
-- Creates two backend MCPServers with different transports (SSE and streamable-http)
-- Verifies individual backend connectivity and tool listing via MCP protocol
-- Verifies VirtualMCPServer aggregates tools from all backends
+- Creates two backend MCPServers (fetch and osv) both using streamable-http transport
+- Verifies VirtualMCPServer aggregates tools from all backends in the group
 - Tests tool calls through the VirtualMCPServer proxy
 - Validates discovered mode configuration and backend discovery
+- Uses prefix conflict resolution strategy to namespace tools from different backends
 
 ## Environment Variables
 

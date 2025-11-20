@@ -251,11 +251,7 @@ func TestBuildFromProtocolSchemeWithNameDryRun(t *testing.T) {
 			serverOrImage: "npx://@launchdarkly/mcp-server",
 			buildArgs:     []string{"start"},
 			wantContains: []string{
-				`echo '#!/bin/sh' > entrypoint.sh`,
-				`echo 'package=$(echo "@launchdarkly/mcp-server" | sed '"'"'s/@[^@/]*$//'"'"')'`,
-				`echo -n 'exec npx "$package"' >> entrypoint.sh`,
-				`printf ' %s' 'start' >> entrypoint.sh`,
-				`echo ' "$@"' >> entrypoint.sh`,
+				`ENTRYPOINT ["npx", "@launchdarkly/mcp-server", "start"]`,
 				"FROM node:22-alpine",
 			},
 			wantErr: false,

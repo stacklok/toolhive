@@ -351,3 +351,47 @@ func TestWellKnownPathWithoutAuthHandler(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, recorder.Code,
 		"Without auth handler, well-known path should return 404")
 }
+
+// TestTransparentProxy_IdempotentStop tests that Stop() can be called multiple times safely
+func TestTransparentProxy_IdempotentStop(t *testing.T) {
+	t.Parallel()
+
+	// Create a proxy
+	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse")
+
+	ctx := context.Background()
+
+	// Start the proxy (this creates the shutdown channel)
+	err := proxy.Start(ctx)
+	if err != nil {
+		t.Fatalf("Failed to start proxy: %v", err)
+	}
+
+	// First stop should succeed
+	err = proxy.Stop(ctx)
+	assert.NoError(t, err, "First Stop() should succeed")
+
+	// Second stop should also succeed (idempotent)
+	err = proxy.Stop(ctx)
+	assert.NoError(t, err, "Second Stop() should succeed (idempotent)")
+
+	// Third stop should also succeed
+	err = proxy.Stop(ctx)
+	assert.NoError(t, err, "Third Stop() should succeed (idempotent)")
+}
+
+// TestTransparentProxy_StopWithoutStart tests that Stop() works even if never started
+func TestTransparentProxy_StopWithoutStart(t *testing.T) {
+	t.Parallel()
+
+	// Create a proxy but don't start it
+	proxy := NewTransparentProxy("127.0.0.1", 0, "http://localhost:8080", nil, nil, false, false, "sse")
+
+	ctx := context.Background()
+
+	// Stop should handle being called without Start
+	err := proxy.Stop(ctx)
+	// This may return an error or succeed depending on implementation
+	// The key is it shouldn't panic
+	_ = err
+}

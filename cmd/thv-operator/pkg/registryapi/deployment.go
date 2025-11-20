@@ -238,7 +238,7 @@ func getRegistryAPIImageWithEnvGetter(envGetter func(string) string) string {
 	if img := envGetter("TOOLHIVE_REGISTRY_API_IMAGE"); img != "" {
 		return img
 	}
-	return "ghcr.io/stacklok/thv-registry-api:v0.1.0"
+	return "ghcr.io/stacklok/thv-registry-api:latest"
 }
 
 // findContainerByName finds a container by name in a slice of containers

@@ -97,11 +97,12 @@ The CLI automatically detects container runtimes in this order:
    - `$TOOLHIVE_COLIMA_SOCKET` (if set)
    - `~/.colima/default/docker.sock`
 
-3. **Docker** (including Docker Desktop and Rancher Desktop) - Checks for Docker socket at:
+3. **Docker** (including Docker Desktop, Rancher Desktop, and OrbStack) - Checks for Docker socket at:
    - `$TOOLHIVE_DOCKER_SOCKET` (if set)
    - `/var/run/docker.sock`
    - `~/.docker/run/docker.sock` (Docker Desktop on macOS)
    - `~/.rd/docker.sock` (Rancher Desktop on macOS)
+   - `~/.orbstack/run/docker.sock` (OrbStack on macOS)
 
 ### Detached Process Model
 

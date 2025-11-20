@@ -13,7 +13,7 @@ import (
 	"github.com/adrg/xdg"
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 
-	"github.com/stacklok/toolhive/pkg/registry/types"
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 const (

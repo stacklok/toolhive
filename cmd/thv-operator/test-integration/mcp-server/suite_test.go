@@ -41,11 +41,21 @@ var (
 func TestControllers(t *testing.T) {
 	t.Parallel()
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "Controller Suite")
+
+	suiteConfig, reporterConfig := GinkgoConfiguration()
+	// Only show verbose output for failures
+	reporterConfig.Verbose = false
+	reporterConfig.VeryVerbose = false
+	reporterConfig.FullTrace = false
+
+	RunSpecs(t, "MCPServer Controller Integration Test Suite", suiteConfig, reporterConfig)
 }
 
 var _ = BeforeSuite(func() {
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true), zap.Level(zapcore.DebugLevel)))
+	// Only log errors unless a test fails
+	logLevel := zapcore.ErrorLevel
+
+	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true), zap.Level(logLevel)))
 
 	ctx, cancel = context.WithCancel(context.TODO())
 
@@ -119,14 +129,6 @@ var _ = BeforeSuite(func() {
 	err = (&controllers.ToolConfigReconciler{
 		Client: k8sManager.GetClient(),
 		Scheme: k8sManager.GetScheme(),
-	}).SetupWithManager(k8sManager)
-	Expect(err).ToNot(HaveOccurred())
-
-	// Register the VirtualMCPServer controller
-	err = (&controllers.VirtualMCPServerReconciler{
-		Client:           k8sManager.GetClient(),
-		Scheme:           k8sManager.GetScheme(),
-		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 

@@ -141,9 +141,6 @@ tasks:
       - kind load docker-image --name toolhive {{.OPERATOR_IMAGE}}
       - echo "Loading toolhive image {{.TOOLHIVE_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.TOOLHIVE_IMAGE}}
-      - echo "Pulling and loading registry API image {{.REGISTRY_API_IMAGE}} into kind..."
-      - docker pull {{.REGISTRY_API_IMAGE}}
-      - kind load docker-image --name toolhive {{.REGISTRY_API_IMAGE}}
       - |
         helm upgrade --install toolhive-operator deploy/charts/operator \
         --set operator.image={{.OPERATOR_IMAGE}} \

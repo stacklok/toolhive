@@ -115,7 +115,6 @@ USER appuser
 
 # Run the pre-installed MCP package
 # uv tool install puts the correct executable in the bin directory
-# We use sh -c to allow the package name to be resolved from PATH
-# Strip version specifier (if present) from package name for execution
-# Handles format like package@version
-ENTRYPOINT ["sh", "-c", "package='{{.MCPPackage}}'; exec \"${package%%@*}\"", "--"]
+# MCPPackageClean has version suffix already stripped (e.g., package@1.2.3 -> package)
+# BuildArgs use single quotes for safety - prevents shell injection
+ENTRYPOINT ["sh", "-c", "exec '{{.MCPPackageClean}}'{{range .BuildArgs}} '{{.}}'{{end}} \"$@\"", "--"]

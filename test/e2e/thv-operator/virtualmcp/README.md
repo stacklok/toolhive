@@ -7,7 +7,8 @@ This directory contains end-to-end tests for the VirtualMCPServer controller tha
 - A Kubernetes cluster with the ToolHive operator installed
 - `kubectl` configured to access the cluster
 - The VirtualMCPServer CRDs installed
-- Ginkgo CLI installed: `go install github.com/onsi/ginkgo/v2/ginkgo@latest`
+
+Note: The Ginkgo CLI is automatically installed by the task commands when running tests.
 
 ## Running the Tests
 
@@ -49,14 +50,10 @@ ginkgo -v
 
 ### Customizing Test Parameters
 
-You can customize the test parameters using environment variables:
+You can customize the kubeconfig path using the `KUBECONFIG` environment variable:
 
 ```bash
-# Test against a specific VirtualMCPServer
-export TEST_NAMESPACE="my-namespace"
-export VMCP_SERVER_NAME="my-vmcp-server"
 export KUBECONFIG="/path/to/kubeconfig"
-
 ginkgo -v
 ```
 
@@ -79,45 +76,11 @@ ginkgo -vv
 - `helpers.go` - Common helper functions for interacting with Kubernetes resources
 - `README.md` - This file
 
-### Test Coverage
-
-The current test suite includes:
-
-#### Setup and Lifecycle Tests (`virtualmcp_setup_test.go`)
-1. **Resource Creation**
-   - Creates MCPServer backend
-   - Creates MCPGroup
-   - Creates VirtualMCPServer
-   - Verifies resource creation
-
-2. **Deployment Verification**
-   - VirtualMCPServer CRD exists
-   - Referenced MCPGroup exists
-   - Deployment is created with correct configuration
-   - Service is created
-   - Pods are created and running
-
-3. **Resource Health**
-   - Deployment has ready replicas
-   - Pods are running and ready
-   - VirtualMCPServer has Ready condition
-
-4. **Configuration Validation**
-   - VirtualMCPServer references correct MCPGroup
-   - Authentication configuration is applied
-   - Correct labels are applied
-   - Service selectors match pods
-   - vmcp container is properly configured
-   - Ports are exposed correctly
-
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `KUBECONFIG` | Path to kubeconfig file | `~/.kube/config` |
-| `TEST_NAMESPACE` | Kubernetes namespace for tests | `default` |
-| `VMCP_SERVER_NAME` | Name of the VirtualMCPServer to test | `test-vmcp-server` |
-| `SKIP_IF_NOT_FOUND` | Skip deployment verification tests if VirtualMCPServer doesn't exist | `false` |
 
 ## Adding New Tests
 
@@ -151,8 +114,7 @@ Ensure your `KUBECONFIG` environment variable points to a valid kubeconfig file,
 Make sure:
 1. The ToolHive operator is running in your cluster
 2. The VirtualMCPServer CRDs are installed
-3. A VirtualMCPServer resource exists with the name specified in `VMCP_SERVER_NAME`
-4. The resource is in the namespace specified in `TEST_NAMESPACE`
+3. The tests create their own VirtualMCPServer resources for testing
 
 ### Tests timeout waiting for resources
 
@@ -160,16 +122,3 @@ Check:
 1. The operator is running: `kubectl get pods -n toolhive-system`
 2. The operator logs for errors: `kubectl logs -n toolhive-system -l app.kubernetes.io/name=thv-operator`
 3. The VirtualMCPServer status: `kubectl get virtualmcpserver -n <namespace> <name> -o yaml`
-
-## Future Enhancements
-
-Potential areas for expansion:
-
-- [ ] Add tests for composite tool functionality
-- [ ] Test authentication and authorization flows
-- [ ] Test token caching behavior
-- [ ] Test aggregation and conflict resolution
-- [ ] Test integration with backend MCPServers
-- [ ] Add performance/load tests
-- [ ] Test failure scenarios and recovery
-- [ ] Test updating VirtualMCPServer configurations

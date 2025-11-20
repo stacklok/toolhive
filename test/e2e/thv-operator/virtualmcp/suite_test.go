@@ -5,7 +5,6 @@ import (
 	"context"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -94,5 +93,4 @@ var _ = ginkgo.BeforeSuite(func() {
 var _ = ginkgo.AfterSuite(func() {
 	ginkgo.By("tearing down the test environment")
 	cancel()
-	time.Sleep(100 * time.Millisecond)
 })

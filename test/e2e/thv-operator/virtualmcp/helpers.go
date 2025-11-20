@@ -133,14 +133,6 @@ func HasCondition(vmcpServer *mcpv1alpha1.VirtualMCPServer, conditionType string
 	return false
 }
 
-// GetPodLogs retrieves logs from a pod's container
-func GetPodLogs(_ context.Context, _ client.Client, _, _, _ string, _ *int64) (string, error) {
-	// Note: This is a placeholder. In a real implementation, you would need to use
-	// the kubernetes clientset to get pod logs, as controller-runtime client doesn't
-	// support log retrieval directly.
-	return "", fmt.Errorf("GetPodLogs not yet implemented - use kubectl logs manually")
-}
-
 // WaitForCondition waits for a VirtualMCPServer to have a specific condition
 func WaitForCondition(
 	ctx context.Context,

@@ -6,6 +6,7 @@ on:
     paths:
       - 'cmd/vmcp/**'
       - 'cmd/thv-operator/**'
+      - 'pkg/**'
       - 'test/e2e/thv-operator/**'
       - '.github/workflows/test-e2e-lifecycle.yml'
 
@@ -17,6 +18,8 @@ jobs:
     name: E2E Test Lifecycle
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      YARDSTICK_IMAGE: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
     defaults:
       run:
         shell: bash
@@ -76,8 +79,8 @@ jobs:
 
         # Pull and load test server image
         echo "Pulling and loading yardstick test server image..."
-        docker pull ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
-        kind load docker-image --name toolhive ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+        docker pull ${{ env.YARDSTICK_IMAGE }}
+        kind load docker-image --name toolhive ${{ env.YARDSTICK_IMAGE }}
 
     - name: Run VirtualMCP Lifecycle E2E tests
       run: |

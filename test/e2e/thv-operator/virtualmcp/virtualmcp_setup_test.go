@@ -11,7 +11,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
@@ -112,7 +111,9 @@ var _ = Describe("VirtualMCPServer Setup and Lifecycle", Ordered, func() {
 				Namespace: testNamespace,
 			},
 		}
-		_ = k8sClient.Delete(ctx, vmcpServer)
+		if err := k8sClient.Delete(ctx, vmcpServer); err != nil {
+			GinkgoWriter.Printf("Warning: failed to delete VirtualMCPServer: %v\n", err)
+		}
 
 		By("Cleaning up MCPGroup")
 		mcpGroup := &mcpv1alpha1.MCPGroup{
@@ -121,7 +122,9 @@ var _ = Describe("VirtualMCPServer Setup and Lifecycle", Ordered, func() {
 				Namespace: testNamespace,
 			},
 		}
-		_ = k8sClient.Delete(ctx, mcpGroup)
+		if err := k8sClient.Delete(ctx, mcpGroup); err != nil {
+			GinkgoWriter.Printf("Warning: failed to delete MCPGroup: %v\n", err)
+		}
 
 		By("Cleaning up MCPServer")
 		mcpServer := &mcpv1alpha1.MCPServer{
@@ -130,7 +133,9 @@ var _ = Describe("VirtualMCPServer Setup and Lifecycle", Ordered, func() {
 				Namespace: testNamespace,
 			},
 		}
-		_ = k8sClient.Delete(ctx, mcpServer)
+		if err := k8sClient.Delete(ctx, mcpServer); err != nil {
+			GinkgoWriter.Printf("Warning: failed to delete MCPServer: %v\n", err)
+		}
 	})
 
 	Context("when VirtualMCPServer resources are created by controller", func() {
@@ -150,6 +155,7 @@ var _ = Describe("VirtualMCPServer Setup and Lifecycle", Ordered, func() {
 
 				// Check if ready
 				return deployment.Status.ReadyReplicas > 0 &&
+					deployment.Spec.Replicas != nil &&
 					deployment.Status.ReadyReplicas == *deployment.Spec.Replicas
 			}, timeout, pollingInterval).Should(BeTrue(), "Deployment should have ready replicas")
 		})
@@ -198,71 +204,14 @@ var _ = Describe("VirtualMCPServer Setup and Lifecycle", Ordered, func() {
 		})
 
 		It("should have running and ready Pods", func() {
-			podList := &corev1.PodList{}
-			Eventually(func() int {
-				err := k8sClient.List(ctx, podList,
-					client.InNamespace(testNamespace),
-					client.MatchingLabels{
-						"app.kubernetes.io/name":     "virtualmcpserver",
-						"app.kubernetes.io/instance": vmcpServerName,
-					})
-				if err != nil {
-					return 0
-				}
-				return len(podList.Items)
-			}, timeout, pollingInterval).Should(BeNumerically(">", 0), "Should have at least one pod")
-
-			// Verify pods are running and all containers are ready
-			Eventually(func() bool {
-				err := k8sClient.List(ctx, podList,
-					client.InNamespace(testNamespace),
-					client.MatchingLabels{
-						"app.kubernetes.io/name":     "virtualmcpserver",
-						"app.kubernetes.io/instance": vmcpServerName,
-					})
-				if err != nil || len(podList.Items) == 0 {
-					return false
-				}
-
-				for _, pod := range podList.Items {
-					if pod.Status.Phase != corev1.PodRunning {
-						return false
-					}
-					// Check that all containers are ready
-					for _, condition := range pod.Status.Conditions {
-						if condition.Type == corev1.ContainersReady && condition.Status != corev1.ConditionTrue {
-							return false
-						}
-					}
-				}
-				return true
-			}, timeout, pollingInterval).Should(BeTrue(), "All pods should be running and ready")
+			WaitForPodsReady(ctx, k8sClient, testNamespace, map[string]string{
+				"app.kubernetes.io/name":     "virtualmcpserver",
+				"app.kubernetes.io/instance": vmcpServerName,
+			}, timeout)
 		})
 
 		It("should have a Ready status condition", func() {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
-			Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      vmcpServerName,
-					Namespace: testNamespace,
-				}, vmcpServer)
-				if err != nil {
-					return false
-				}
-
-				// Check if status has conditions
-				if len(vmcpServer.Status.Conditions) == 0 {
-					return false
-				}
-
-				// Look for Ready condition
-				for _, condition := range vmcpServer.Status.Conditions {
-					if condition.Type == "Ready" && condition.Status == "True" {
-						return true
-					}
-				}
-				return false
-			}, timeout, pollingInterval).Should(BeTrue(), "VirtualMCPServer should have Ready condition")
+			WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
 		})
 
 		It("should expose the vmcp container with correct ports", func() {
@@ -310,37 +259,20 @@ var _ = Describe("VirtualMCPServer Setup and Lifecycle", Ordered, func() {
 			}, timeout, pollingInterval).Should(Succeed())
 
 			By("Waiting for vmcp pod to be ready")
-			Eventually(func() bool {
-				podList := &corev1.PodList{}
-				err := k8sClient.List(ctx, podList,
-					client.InNamespace(testNamespace),
-					client.MatchingLabels{
-						"app.kubernetes.io/name":     "virtualmcpserver",
-						"app.kubernetes.io/instance": vmcpServerName,
-					})
-				if err != nil || len(podList.Items) == 0 {
-					return false
-				}
-
-				pod := podList.Items[0]
-				if pod.Status.Phase != corev1.PodRunning {
-					return false
-				}
-
-				for _, condition := range pod.Status.Conditions {
-					if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
-						return true
-					}
-				}
-				return false
-			}, timeout, pollingInterval).Should(BeTrue(), "Pod should be ready")
+			WaitForPodsReady(ctx, k8sClient, testNamespace, map[string]string{
+				"app.kubernetes.io/name":     "virtualmcpserver",
+				"app.kubernetes.io/instance": vmcpServerName,
+			}, timeout)
 
 			By(fmt.Sprintf("Testing connectivity to http://localhost:%d", nodePort))
 
 			// Try to connect to the service
+			httpClient := &http.Client{
+				Timeout: 10 * time.Second,
+			}
 			Eventually(func() error {
 				url := fmt.Sprintf("http://localhost:%d/health", nodePort)
-				resp, err := http.Get(url)
+				resp, err := httpClient.Get(url)
 				if err != nil {
 					return fmt.Errorf("failed to connect to %s: %w", url, err)
 				}

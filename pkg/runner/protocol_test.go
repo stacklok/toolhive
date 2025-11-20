@@ -387,6 +387,28 @@ func TestCreateTemplateData(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name:          "buildArgs with single quote should fail",
+			transportType: templates.TransportTypeUVX,
+			packageName:   "example-package",
+			caCertPath:    "",
+			buildArgs:     []string{"--name", "test'arg"},
+			expected:      templates.TemplateData{},
+			wantErr:       true,
+		},
+		{
+			name:          "buildArgs with other special characters should succeed",
+			transportType: templates.TransportTypeNPX,
+			packageName:   "example-package",
+			caCertPath:    "",
+			buildArgs:     []string{"--config", "file$with`special\"chars"},
+			expected: templates.TemplateData{
+				MCPPackage:  "example-package",
+				IsLocalPath: false,
+				BuildArgs:   []string{"--config", "file$with`special\"chars"},
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

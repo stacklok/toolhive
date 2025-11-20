@@ -86,10 +86,28 @@ func ParseProtocolScheme(serverOrImage string) (templates.TransportType, string,
 	return "", "", fmt.Errorf("unsupported protocol scheme: %s", serverOrImage)
 }
 
+// validateBuildArgs ensures buildArgs don't contain single quotes which would break
+// shell quoting in the UVX template. Single quotes cannot be escaped within single-quoted
+// strings in shell, making them the only character that can enable command injection.
+// NPX and GO use JSON array ENTRYPOINTs without shell interpretation, so they're safe.
+func validateBuildArgs(buildArgs []string) error {
+	for _, arg := range buildArgs {
+		if strings.Contains(arg, "'") {
+			return fmt.Errorf("buildArg cannot contain single quotes: %s", arg)
+		}
+	}
+	return nil
+}
+
 // createTemplateData creates the template data with optional CA certificate and build arguments.
 func createTemplateData(
 	transportType templates.TransportType, packageName, caCertPath string, buildArgs []string,
 ) (templates.TemplateData, error) {
+	// Validate buildArgs to prevent shell injection in templates that use sh -c
+	if err := validateBuildArgs(buildArgs); err != nil {
+		return templates.TemplateData{}, err
+	}
+
 	// Check if this is a local path (for Go packages only)
 	isLocalPath := transportType == templates.TransportTypeGO && isLocalGoPath(packageName)
 

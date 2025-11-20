@@ -41,14 +41,27 @@ func (c *Converter) Convert(
 		config.IncomingAuth = c.convertIncomingAuth(ctx, vmcp)
 	}
 
-	// Convert OutgoingAuth
+	// Convert OutgoingAuth - always set with defaults if not specified
 	if vmcp.Spec.OutgoingAuth != nil {
 		config.OutgoingAuth = c.convertOutgoingAuth(ctx, vmcp)
+	} else {
+		// Provide default outgoing auth config
+		config.OutgoingAuth = &vmcpconfig.OutgoingAuthConfig{
+			Source: "discovered", // Default to discovered mode
+		}
 	}
 
-	// Convert Aggregation
+	// Convert Aggregation - always set with defaults if not specified
 	if vmcp.Spec.Aggregation != nil {
 		config.Aggregation = c.convertAggregation(ctx, vmcp)
+	} else {
+		// Provide default aggregation config with prefix conflict resolution
+		config.Aggregation = &vmcpconfig.AggregationConfig{
+			ConflictResolution: conflictResolutionPrefix, // Default to prefix strategy
+			ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
+				PrefixFormat: "{workload}_", // Default prefix format
+			},
+		}
 	}
 
 	// Convert CompositeTools

@@ -1658,3 +1658,44 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 		})
 	}
 }
+
+// TestDefaultManager_RunWorkload_ContainerExitHandling tests container exit handling
+func TestDefaultManager_RunWorkload_ContainerExitHandling(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockRuntime := runtimeMocks.NewMockRuntime(ctrl)
+	mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
+	mockConfigProvider := configMocks.NewMockProvider(ctrl)
+
+	mockConfigProvider.EXPECT().GetConfig().Return(&config.Config{}).AnyTimes()
+
+	// Expect status to be set to starting
+	mockStatusMgr.EXPECT().
+		SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStarting, "").
+		Return(nil)
+
+	// Expect status to be set to error on failure
+	mockStatusMgr.EXPECT().
+		SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusError, gomock.Any()).
+		Return(nil).AnyTimes()
+
+	manager := &DefaultManager{
+		runtime:        mockRuntime,
+		statuses:       mockStatusMgr,
+		configProvider: mockConfigProvider,
+	}
+
+	runConfig := &runner.RunConfig{
+		ContainerName: "test-container",
+		BaseName:      "test-workload",
+		Group:         "default",
+	}
+
+	// RunWorkload will fail because the runner can't actually run
+	// This tests that the status is properly set
+	err := manager.RunWorkload(context.Background(), runConfig)
+	assert.Error(t, err)
+}

@@ -241,9 +241,9 @@ func TestConvertWorkflowDefsToToolsWithOutputSchema(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		defs map[string]*composer.WorkflowDefinition
-		want int // number of tools expected
+		name         string
+		defs         map[string]*composer.WorkflowDefinition
+		want         int // number of tools expected
 		validateTool func(*testing.T, map[string]*composer.WorkflowDefinition, []any)
 	}{
 		{
@@ -269,7 +269,7 @@ func TestConvertWorkflowDefsToToolsWithOutputSchema(t *testing.T) {
 				},
 			},
 			want: 1,
-			validateTool: func(t *testing.T, defs map[string]*composer.WorkflowDefinition, tools []any) {
+			validateTool: func(t *testing.T, _ map[string]*composer.WorkflowDefinition, tools []any) {
 				t.Helper()
 				if len(tools) != 1 {
 					t.Fatalf("expected 1 tool, got %d", len(tools))
@@ -298,7 +298,7 @@ func TestConvertWorkflowDefsToToolsWithOutputSchema(t *testing.T) {
 				},
 			},
 			want: 1,
-			validateTool: func(t *testing.T, defs map[string]*composer.WorkflowDefinition, tools []any) {
+			validateTool: func(t *testing.T, _ map[string]*composer.WorkflowDefinition, tools []any) {
 				t.Helper()
 				if len(tools) != 1 {
 					t.Fatalf("expected 1 tool, got %d", len(tools))

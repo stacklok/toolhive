@@ -152,8 +152,8 @@ func ValidateCallbackPort(callbackPort int, clientID string) error {
 	}
 
 	// Validate port range
-	if callbackPort < 1 || callbackPort > 65535 {
-		return fmt.Errorf("OAuth callback port must be between 1 and 65535, got: %d", callbackPort)
+	if callbackPort < 1024 || callbackPort > 65535 {
+		return fmt.Errorf("OAuth callback port must be between 1024 and 65535, got: %d", callbackPort)
 	}
 
 	// Check if this is a pre-registered client (has client credentials)

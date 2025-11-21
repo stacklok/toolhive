@@ -39,14 +39,21 @@ func TestValidateCallbackPort(t *testing.T) {
 			port:      -1,
 			clientID:  "",
 			wantError: true,
-			errorMsg:  "OAuth callback port must be between 1 and 65535, got: -1",
+			errorMsg:  "OAuth callback port must be between 1024 and 65535, got: -1",
+		},
+		{
+			name:      "port less than 1024",
+			port:      1000,
+			clientID:  "",
+			wantError: true,
+			errorMsg:  "OAuth callback port must be between 1024 and 65535, got: 1000",
 		},
 		{
 			name:      "port too large",
 			port:      123456778,
 			clientID:  "",
 			wantError: true,
-			errorMsg:  "OAuth callback port must be between 1 and 65535, got: 123456778",
+			errorMsg:  "OAuth callback port must be between 1024 and 65535, got: 123456778",
 		},
 	}
 

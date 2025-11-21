@@ -325,30 +325,30 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			By("Calling a tool through VirtualMCPServer")
 			// Find a tool we can call with simple arguments
 			// The fetch tool (with prefix) should be available and can be called with a URL
-			var fetchToolName string
+			var targetToolName string
 			for _, tool := range tools.Tools {
 				// Look for the fetch tool (may have a prefix like "backend-fetch__fetch")
-				if tool.Name == "fetch" || strings.HasSuffix(tool.Name, "fetch") {
-					fetchToolName = tool.Name
+				if tool.Name == fetchToolName || strings.HasSuffix(tool.Name, fetchToolName) {
+					targetToolName = tool.Name
 					break
 				}
 			}
 
-			if fetchToolName != "" {
-				GinkgoWriter.Printf("Testing tool call for: %s\n", fetchToolName)
+			if targetToolName != "" {
+				GinkgoWriter.Printf("Testing tool call for: %s\n", targetToolName)
 
 				callRequest := mcp.CallToolRequest{}
-				callRequest.Params.Name = fetchToolName
+				callRequest.Params.Name = targetToolName
 				callRequest.Params.Arguments = map[string]any{
 					"url": "https://example.com",
 				}
 
 				result, err := mcpClient.CallTool(ctx, callRequest)
 				Expect(err).ToNot(HaveOccurred(),
-					fmt.Sprintf("Should be able to call tool '%s' through VirtualMCPServer", fetchToolName))
+					fmt.Sprintf("Should be able to call tool '%s' through VirtualMCPServer", targetToolName))
 				Expect(result).ToNot(BeNil())
 
-				GinkgoWriter.Printf("Tool call successful: %s\n", fetchToolName)
+				GinkgoWriter.Printf("Tool call successful: %s\n", targetToolName)
 			} else {
 				GinkgoWriter.Printf("Warning: fetch tool not found in aggregated tools\n")
 			}

@@ -261,7 +261,7 @@ func (r *MCPRegistryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // Apply applies all collected status changes in a single batch update.
 // Only actual changes are applied to the status to avoid unnecessary reconciliations
-func (r *MCPRegistryReconciler) applyStatusUpdates(
+func (*MCPRegistryReconciler) applyStatusUpdates(
 	ctx context.Context, k8sClient client.Client,
 	mcpRegistry *mcpv1alpha1.MCPRegistry, statusManager mcpregistrystatus.StatusManager) error {
 

@@ -20,6 +20,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/container/docker"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 	transporterrors "github.com/stacklok/toolhive/pkg/transport/errors"
@@ -75,6 +76,10 @@ type StdioTransport struct {
 
 	// Container monitor
 	monitor rt.Monitor
+
+	// Container exit error (for determining if restart is needed)
+	containerExitErr error
+	exitErrMutex     sync.Mutex
 
 	// Retry configuration (for testing)
 	retryConfig *retryConfig
@@ -627,7 +632,19 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 			return
 		}
 
-		logger.Infof("Container %s exited: %v", t.containerName, err)
+		// Store the exit error so runner can check if restart is needed
+		t.exitErrMutex.Lock()
+		t.containerExitErr = err
+		t.exitErrMutex.Unlock()
+
+		logger.Warnf("Container %s exited: %v", t.containerName, err)
+
+		// Check if container was removed (not just exited) using typed error
+		if errors.Is(err, docker.ErrContainerRemoved) {
+			logger.Infof("Container %s was removed. Stopping proxy and cleaning up.", t.containerName)
+		} else {
+			logger.Infof("Container %s exited. Will attempt automatic restart.", t.containerName)
+		}
 
 		// Check if the transport is already stopped before trying to stop it
 		select {
@@ -646,4 +663,18 @@ func (t *StdioTransport) handleContainerExit(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// ShouldRestart returns true if the container exited and should be restarted.
+// Returns false if the container was removed (intentionally deleted).
+func (t *StdioTransport) ShouldRestart() bool {
+	t.exitErrMutex.Lock()
+	defer t.exitErrMutex.Unlock()
+
+	if t.containerExitErr == nil {
+		return false // No exit error, normal shutdown
+	}
+
+	// Don't restart if container was removed (use typed error check)
+	return !errors.Is(t.containerExitErr, docker.ErrContainerRemoved)
 }

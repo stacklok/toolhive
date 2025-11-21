@@ -668,12 +668,20 @@ func (*VirtualMCPServerReconciler) deploymentMetadataNeedsUpdate(
 
 	// TODO: Add support for ResourceOverrides if needed in the future
 
-	if !maps.Equal(deployment.Labels, expectedLabels) {
-		return true
+	// Check that all expected labels are present with correct values
+	// (Allows Kubernetes-managed labels to exist without triggering updates)
+	for key, expectedValue := range expectedLabels {
+		if actualValue, exists := deployment.Labels[key]; !exists || actualValue != expectedValue {
+			return true
+		}
 	}
 
-	if !maps.Equal(deployment.Annotations, expectedAnnotations) {
-		return true
+	// Check that all expected annotations are present with correct values
+	// (Allows Kubernetes-managed annotations like deployment.kubernetes.io/revision to exist)
+	for key, expectedValue := range expectedAnnotations {
+		if actualValue, exists := deployment.Annotations[key]; !exists || actualValue != expectedValue {
+			return true
+		}
 	}
 
 	return false

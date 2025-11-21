@@ -1565,7 +1565,7 @@ func TestVirtualMCPServerDeploymentMetadataNeedsUpdate(t *testing.T) {
 			expectedUpdate: true,
 		},
 		{
-			name: "annotation change needs update",
+			name: "extra annotations allowed - no update needed",
 			deployment: &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labelsForVirtualMCPServer(vmcp.Name),
@@ -1575,7 +1575,7 @@ func TestVirtualMCPServerDeploymentMetadataNeedsUpdate(t *testing.T) {
 				},
 			},
 			vmcp:           vmcp,
-			expectedUpdate: true,
+			expectedUpdate: false,
 		},
 		{
 			name: "no changes - no update needed",

@@ -4,6 +4,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
+	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -383,7 +385,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 			if !running {
 				// Transport is no longer running (container exited or was stopped)
-				logger.Info("Transport is no longer running, exiting...")
+				logger.Warn("Transport is no longer running, attempting automatic restart...")
 				close(doneCh)
 				return
 			}
@@ -404,7 +406,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	case sig := <-sigCh:
 		stopMCPServer(fmt.Sprintf("Received signal %s", sig))
 	case <-doneCh:
-		// The transport has already been stopped (likely by the container monitor)
+		// The transport has already been stopped (likely by the container exit)
 		// Clean up the PID file and state
 		// TODO: Stop writing to PID file once we migrate over to statuses.
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
@@ -414,10 +416,86 @@ func (r *Runner) Run(ctx context.Context) error {
 			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.BaseName, err)
 		}
 
-		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
+		// Check if workload still exists (using status manager and runtime)
+		// If it doesn't exist, it was removed - clean up client config
+		// If it exists, it exited unexpectedly - signal restart needed
+		exists, checkErr := r.doesWorkloadExist(ctx, r.Config.BaseName)
+		if checkErr != nil {
+			logger.Warnf("Warning: Failed to check if workload exists: %v", checkErr)
+			// Assume restart needed if we can't check
+		} else if !exists {
+			// Workload doesn't exist in `thv ls` - it was removed
+			logger.Infof(
+				"Workload %s no longer exists. Removing from client configurations.",
+				r.Config.BaseName,
+			)
+			clientManager, clientErr := client.NewManager(ctx)
+			if clientErr == nil {
+				removeErr := clientManager.RemoveServerFromClients(
+					ctx,
+					r.Config.ContainerName,
+					r.Config.Group,
+				)
+				if removeErr != nil {
+					logger.Warnf("Warning: Failed to remove from client config: %v", removeErr)
+				} else {
+					logger.Infof(
+						"Successfully removed %s from client configurations",
+						r.Config.ContainerName,
+					)
+				}
+			}
+			logger.Infof("MCP server %s stopped and cleaned up", r.Config.ContainerName)
+			return nil // Exit gracefully, no restart
+		}
+
+		// Workload still exists - signal restart needed
+		logger.Infof("MCP server %s stopped, restart needed", r.Config.ContainerName)
+		return fmt.Errorf("container exited, restart needed")
 	}
 
 	return nil
+}
+
+// doesWorkloadExist checks if a workload exists in the status manager and runtime.
+// For remote workloads, it trusts the status manager.
+// For container workloads, it verifies the container exists in the runtime.
+func (r *Runner) doesWorkloadExist(ctx context.Context, workloadName string) (bool, error) {
+	// Check if workload exists by trying to get it from status manager
+	workload, err := r.statusManager.GetWorkload(ctx, workloadName)
+	if err != nil {
+		if errors.Is(err, rt.ErrWorkloadNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check if workload exists: %w", err)
+	}
+
+	// If remote workload, check if it should exist
+	if workload.Remote {
+		// For remote workloads, trust the status manager
+		return workload.Status != rt.WorkloadStatusError, nil
+	}
+
+	// For container workloads, verify the container actually exists in the runtime
+	// Create a runtime instance to check if container exists
+	backend, err := ct.NewFactory().Create(ctx)
+	if err != nil {
+		logger.Warnf("Failed to create runtime to check container existence: %v", err)
+		// Fall back to status manager only
+		return workload.Status != rt.WorkloadStatusError, nil
+	}
+
+	// Check if container exists in the runtime (not just running)
+	// GetWorkloadInfo will return an error if the container doesn't exist
+	_, err = backend.GetWorkloadInfo(ctx, workloadName)
+	if err != nil {
+		// Container doesn't exist
+		logger.Debugf("Container %s not found in runtime: %v", workloadName, err)
+		return false, nil
+	}
+
+	// Container exists (may be running or stopped)
+	return true, nil
 }
 
 // handleRemoteAuthentication handles authentication for remote MCP servers

@@ -135,6 +135,14 @@ type OIDCConfig struct {
 
 	// Scopes are the required OAuth scopes.
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+
+	// ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
+	// Use with caution - only enable for trusted internal IDPs or testing
+	ProtectedResourceAllowPrivateIP bool `json:"protected_resource_allow_private_ip,omitempty" yaml:"protected_resource_allow_private_ip,omitempty"`
+
+	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+	// WARNING: This is insecure and should NEVER be used in production
+	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 }
 
 // AuthzConfig configures authorization.

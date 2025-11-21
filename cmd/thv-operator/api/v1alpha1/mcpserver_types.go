@@ -499,7 +499,7 @@ type InlineOIDCConfig struct {
 	// +optional
 	JWKSAuthTokenPath string `json:"jwksAuthTokenPath,omitempty"`
 
-	// JWKSAllowPrivateIP allows JWKS endpoints on private IP addresses
+	// JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses
 	// Use with caution - only enable for trusted internal IDPs
 	// +kubebuilder:default=false
 	// +optional

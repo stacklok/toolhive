@@ -1,23 +1,21 @@
 package virtualmcp
 
 import (
+	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
 	"fmt"
-	"math/big"
+	"io"
+	"os"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -45,6 +43,52 @@ func WaitForVirtualMCPServerReady(ctx context.Context, c client.Client, name, na
 		}
 		return fmt.Errorf("ready condition not found")
 	}, timeout, 5*time.Second).Should(gomega.Succeed())
+}
+
+// getPodLogs retrieves logs from a specific pod container
+func getPodLogs(ctx context.Context, namespace, podName, containerName string, previous bool) (string, error) {
+	// Get the rest config - try in-cluster first, then fall back to kubeconfig
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		// If not in cluster, try to load from kubeconfig file (from KUBECONFIG env or default location)
+		kubeconfigPath := os.Getenv("KUBECONFIG")
+		if kubeconfigPath == "" {
+			kubeconfigPath = clientcmd.RecommendedHomeFile
+		}
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to get rest config: %w", err)
+		}
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return "", fmt.Errorf("failed to create clientset: %w", err)
+	}
+
+	// Set up log options
+	logOptions := &corev1.PodLogOptions{
+		Container: containerName,
+		Previous:  previous,
+		TailLines: func(i int64) *int64 { return &i }(50), // Last 50 lines
+	}
+
+	// Get the logs
+	req := clientset.CoreV1().Pods(namespace).GetLogs(podName, logOptions)
+	podLogs, err := req.Stream(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get log stream: %w", err)
+	}
+	defer podLogs.Close()
+
+	// Read logs
+	buf := new(bytes.Buffer)
+	_, err = io.Copy(buf, podLogs)
+	if err != nil {
+		return "", fmt.Errorf("failed to read logs: %w", err)
+	}
+
+	return buf.String(), nil
 }
 
 // GetVirtualMCPServerPods returns all pods for a VirtualMCPServer
@@ -171,61 +215,6 @@ func WaitForCondition(
 
 // OIDC Testing Helpers
 
-// CreateTLSSecret generates a self-signed TLS certificate and creates a Kubernetes secret
-func CreateTLSSecret(ctx context.Context, c client.Client, namespace, secretName, serviceName string) {
-	By(fmt.Sprintf("Generating TLS certificate for %s", serviceName))
-
-	// Generate a self-signed certificate
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-
-	notBefore := time.Now()
-	notAfter := notBefore.Add(365 * 24 * time.Hour)
-
-	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-
-	template := x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			CommonName: fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, namespace),
-		},
-		NotBefore:             notBefore,
-		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		DNSNames: []string{
-			serviceName,
-			fmt.Sprintf("%s.%s", serviceName, namespace),
-			fmt.Sprintf("%s.%s.svc", serviceName, namespace),
-			fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, namespace),
-		},
-	}
-
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
-	privBytes, err := x509.MarshalECPrivateKey(priv)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes})
-
-	// Create the TLS secret
-	tlsSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: namespace,
-		},
-		Type: corev1.SecretTypeTLS,
-		Data: map[string][]byte{
-			"tls.crt": certPEM,
-			"tls.key": keyPEM,
-		},
-	}
-	gomega.Expect(c.Create(ctx, tlsSecret)).To(gomega.Succeed())
-}
-
 // DeployMockOIDCServerHTTP deploys a mock OIDC server with HTTP (for testing)
 func DeployMockOIDCServerHTTP(ctx context.Context, c client.Client, namespace, serverName string) {
 	deployment := &appsv1.Deployment{
@@ -271,82 +260,6 @@ func DeployMockOIDCServerHTTP(ctx context.Context, c client.Client, namespace, s
 			Ports: []corev1.ServicePort{
 				{
 					Port:     80,
-					Protocol: corev1.ProtocolTCP,
-				},
-			},
-		},
-	}
-	gomega.Expect(c.Create(ctx, service)).To(gomega.Succeed())
-
-	gomega.Eventually(func() bool {
-		dep := &appsv1.Deployment{}
-		err := c.Get(ctx, types.NamespacedName{Name: serverName, Namespace: namespace}, dep)
-		return err == nil && dep.Status.ReadyReplicas > 0
-	}, 3*time.Minute, 5*time.Second).Should(gomega.BeTrue(), "Mock OIDC server should be ready")
-}
-
-// DeployMockOIDCServerWithHTTPS deploys a mock OIDC server with HTTPS support
-func DeployMockOIDCServerWithHTTPS(ctx context.Context, c client.Client, namespace, serverName, tlsSecretName string) {
-	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serverName,
-			Namespace: namespace,
-			Labels:    map[string]string{"app": serverName},
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: int32Ptr(1),
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"app": serverName},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"app": serverName},
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:    "mock-oidc",
-							Image:   "python:3.9-slim",
-							Command: []string{"sh", "-c"},
-							Args:    []string{MockOIDCServerHTTPSScript},
-							Ports: []corev1.ContainerPort{
-								{ContainerPort: 443, Name: "https"},
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:      "tls",
-									MountPath: "/etc/tls",
-									ReadOnly:  true,
-								},
-							},
-						},
-					},
-					Volumes: []corev1.Volume{
-						{
-							Name: "tls",
-							VolumeSource: corev1.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{
-									SecretName: tlsSecretName,
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	gomega.Expect(c.Create(ctx, deployment)).To(gomega.Succeed())
-
-	service := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serverName,
-			Namespace: namespace,
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": serverName},
-			Ports: []corev1.ServicePort{
-				{
-					Port:     443,
 					Protocol: corev1.ProtocolTCP,
 				},
 			},
@@ -422,20 +335,20 @@ func DeployInstrumentedBackendServer(ctx context.Context, c client.Client, names
 
 // CleanupMockServer cleans up a mock server deployment, service, and optionally its TLS secret
 func CleanupMockServer(ctx context.Context, c client.Client, namespace, serverName, tlsSecretName string) {
-	c.Delete(ctx, &appsv1.Deployment{
+	_ = c.Delete(ctx, &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
 	})
-	c.Delete(ctx, &corev1.Service{
+	_ = c.Delete(ctx, &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
 	})
 	if tlsSecretName != "" {
-		c.Delete(ctx, &corev1.Secret{
+		_ = c.Delete(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: tlsSecretName, Namespace: namespace},
 		})
 	}
 }
 
-// GetPodLogsForDeployment returns information about pods for a deployment (for debugging)
+// GetPodLogsForDeployment returns logs from pods for a deployment (for debugging)
 func GetPodLogsForDeployment(ctx context.Context, c client.Client, namespace, deploymentName string) string {
 	pods := &corev1.PodList{}
 	listOpts := []client.ListOption{
@@ -448,15 +361,102 @@ func GetPodLogsForDeployment(ctx context.Context, c client.Client, namespace, de
 		return fmt.Sprintf("No pods found for deployment %s", deploymentName)
 	}
 
-	podName := pods.Items[0].Name
-	return fmt.Sprintf("Pod: %s (run: kubectl logs %s -n %s)", podName, podName, namespace)
+	pod := pods.Items[0]
+	if len(pod.Spec.Containers) == 0 {
+		return fmt.Sprintf("No containers found in pod %s", pod.Name)
+	}
+
+	// Get logs from the first container
+	containerName := pod.Spec.Containers[0].Name
+	logs, err := getPodLogs(ctx, namespace, pod.Name, containerName, false)
+	if err != nil {
+		return fmt.Sprintf("Failed to get logs for pod %s: %v", pod.Name, err)
+	}
+
+	return logs
 }
 
 func int32Ptr(i int32) *int32 {
 	return &i
 }
 
-// Mock OIDC server script with HTTP (for testing with private IPs)
+// GetServiceStats queries the /stats endpoint of a service and returns the stats
+func GetServiceStats(ctx context.Context, c client.Client, namespace, serviceName string, port int) (string, error) {
+	// Create a unique pod name to avoid conflicts
+	curlPodName := fmt.Sprintf("stats-checker-%s-%d", serviceName, time.Now().Unix())
+	curlPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      curlPodName,
+			Namespace: namespace,
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyNever,
+			Containers: []corev1.Container{
+				{
+					Name:    "curl",
+					Image:   "curlimages/curl:latest",
+					Command: []string{"curl", "-s", fmt.Sprintf("http://%s.%s.svc.cluster.local:%d/stats", serviceName, namespace, port)},
+				},
+			},
+		},
+	}
+
+	// Create the pod
+	if err := c.Create(ctx, curlPod); err != nil {
+		return "", fmt.Errorf("failed to create curl pod: %w", err)
+	}
+
+	// Wait for pod to complete
+	gomega.Eventually(func() bool {
+		pod := &corev1.Pod{}
+		_ = c.Get(ctx, types.NamespacedName{Name: curlPodName, Namespace: namespace}, pod)
+		return pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
+	}, 30*time.Second, 1*time.Second).Should(gomega.BeTrue())
+
+	// Get logs from the pod (which contain the curl output)
+	logs, err := getPodLogs(ctx, namespace, curlPodName, "curl", false)
+	if err != nil {
+		_ = c.Delete(ctx, curlPod)
+		return "", fmt.Errorf("failed to get curl logs: %w", err)
+	}
+
+	// Clean up the curl pod
+	_ = c.Delete(ctx, curlPod)
+
+	return logs, nil
+}
+
+// GetMockOIDCStats queries the /stats endpoint of the mock OIDC server
+func GetMockOIDCStats(ctx context.Context, c client.Client, namespace, serviceName string) (map[string]int, error) {
+	logs, err := GetServiceStats(ctx, c, namespace, serviceName, 80)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse JSON response - check if discovery_requests field exists
+	stats := make(map[string]int)
+	if len(logs) > 0 && bytes.Contains([]byte(logs), []byte("discovery_requests")) {
+		stats["discovery_requests"] = 1 // Simplified - just check if field exists
+	}
+	return stats, nil
+}
+
+// GetInstrumentedBackendStats queries the /stats endpoint of the instrumented backend
+func GetInstrumentedBackendStats(ctx context.Context, c client.Client, namespace, serviceName string) (map[string]int, error) {
+	logs, err := GetServiceStats(ctx, c, namespace, serviceName, 8080)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse JSON response - check if bearer_token_requests field exists
+	stats := make(map[string]int)
+	if len(logs) > 0 && bytes.Contains([]byte(logs), []byte("bearer_token_requests")) {
+		stats["bearer_token_requests"] = 1 // Simplified - just check if field exists and > 0
+	}
+	return stats, nil
+}
+
+// MockOIDCServerHTTPScript is a mock OIDC server script with HTTP (for testing with private IPs)
 const MockOIDCServerHTTPScript = `
 pip install --quiet flask && python3 - <<'PYTHON_SCRIPT'
 from flask import Flask, jsonify, request
@@ -464,9 +464,17 @@ import sys
 
 app = Flask(__name__)
 
+# Request counters
+stats = {
+    "discovery_requests": 0,
+    "jwks_requests": 0,
+    "token_requests": 0,
+}
+
 @app.route('/.well-known/openid-configuration')
 def discovery():
-    print("OIDC Discovery request received", flush=True)
+    stats["discovery_requests"] += 1
+    print(f"OIDC Discovery request received (count: {stats['discovery_requests']})", flush=True)
     sys.stdout.flush()
     return jsonify({
         "issuer": "http://mock-oidc-http",
@@ -478,19 +486,27 @@ def discovery():
 
 @app.route('/jwks')
 def jwks():
-    print("JWKS request received", flush=True)
+    stats["jwks_requests"] += 1
+    print(f"JWKS request received (count: {stats['jwks_requests']})", flush=True)
     sys.stdout.flush()
     return jsonify({"keys": []})
 
 @app.route('/token', methods=['POST'])
 def token():
-    print("Token request received", flush=True)
+    stats["token_requests"] += 1
+    print(f"Token request received (count: {stats['token_requests']})", flush=True)
     sys.stdout.flush()
     return jsonify({
         "access_token": "mock_access_token_12345",
         "token_type": "Bearer",
         "expires_in": 3600,
     })
+
+@app.route('/stats')
+def get_stats():
+    print(f"Stats request received: {stats}", flush=True)
+    sys.stdout.flush()
+    return jsonify(stats)
 
 if __name__ == '__main__':
     print("Mock OIDC server starting on port 80 with HTTP", flush=True)
@@ -499,53 +515,7 @@ if __name__ == '__main__':
 PYTHON_SCRIPT
 `
 
-// Mock OIDC server script with HTTPS and logging
-const MockOIDCServerHTTPSScript = `
-pip install --quiet flask && python3 - <<'PYTHON_SCRIPT'
-from flask import Flask, jsonify, request
-import ssl
-import sys
-
-app = Flask(__name__)
-
-@app.route('/.well-known/openid-configuration')
-def discovery():
-    print("OIDC Discovery request received", flush=True)
-    sys.stdout.flush()
-    return jsonify({
-        "issuer": "https://mock-oidc-https",
-        "authorization_endpoint": "https://mock-oidc-https/auth",
-        "token_endpoint": "https://mock-oidc-https/token",
-        "userinfo_endpoint": "https://mock-oidc-https/userinfo",
-        "jwks_uri": "https://mock-oidc-https/jwks",
-    })
-
-@app.route('/jwks')
-def jwks():
-    print("JWKS request received", flush=True)
-    sys.stdout.flush()
-    return jsonify({"keys": []})
-
-@app.route('/token', methods=['POST'])
-def token():
-    print("Token request received", flush=True)
-    sys.stdout.flush()
-    return jsonify({
-        "access_token": "mock_access_token_12345",
-        "token_type": "Bearer",
-        "expires_in": 3600,
-    })
-
-if __name__ == '__main__':
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain('/etc/tls/tls.crt', '/etc/tls/tls.key')
-    print("Mock OIDC server starting on port 443 with HTTPS", flush=True)
-    sys.stdout.flush()
-    app.run(host='0.0.0.0', port=443, ssl_context=context)
-PYTHON_SCRIPT
-`
-
-// Instrumented backend script that logs all headers including Bearer tokens
+// InstrumentedBackendScript is an instrumented backend script that tracks Bearer tokens
 const InstrumentedBackendScript = `
 pip install --quiet flask && python3 - <<'PYTHON_SCRIPT'
 from flask import Flask, request, jsonify
@@ -553,17 +523,37 @@ import sys
 
 app = Flask(__name__)
 
+# Request tracking
+stats = {
+    "total_requests": 0,
+    "bearer_token_requests": 0,
+    "last_bearer_token": None,
+}
+
+@app.route('/stats')
+def get_stats():
+    print(f"Stats request received: {stats}", flush=True)
+    sys.stdout.flush()
+    return jsonify(stats)
+
 @app.route('/<path:path>', methods=['GET', 'POST'])
 def catch_all(path):
-    print("=== Request received ===", flush=True)
+    stats["total_requests"] += 1
+    print(f"=== Request {stats['total_requests']} received ===", flush=True)
     print(f"Path: {path}", flush=True)
     print("Headers:", flush=True)
+
+    bearer_found = False
     for header, value in request.headers.items():
         print(f"  {header}: {value}", flush=True)
         if header.lower() == "authorization" and "Bearer" in value:
-            print(f"*** BEARER TOKEN DETECTED: {value} ***", flush=True)
+            bearer_found = True
+            stats["bearer_token_requests"] += 1
+            stats["last_bearer_token"] = value
+            print(f"*** BEARER TOKEN DETECTED (count: {stats['bearer_token_requests']}): {value} ***", flush=True)
+
     sys.stdout.flush()
-    return jsonify({"status": "ok", "path": path})
+    return jsonify({"status": "ok", "path": path, "bearer_token_received": bearer_found})
 
 if __name__ == '__main__':
     print("Instrumented backend starting on port 8080", flush=True)

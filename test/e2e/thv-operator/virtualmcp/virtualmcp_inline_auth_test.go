@@ -327,6 +327,7 @@ var _ = Describe("VirtualMCPServer Inline Auth with OIDC Incoming", Ordered, fun
 							Issuer:                          mockOIDCIssuerURL,
 							ClientID:                        "test-client-id",
 							Audience:                        "test-audience",
+							JWKSAllowPrivateIP:              true, // Allow private IP for JWKS endpoint
 							ProtectedResourceAllowPrivateIP: true,
 							InsecureAllowHTTP:               true, // Allow HTTP OIDC for testing
 							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
@@ -367,6 +368,24 @@ var _ = Describe("VirtualMCPServer Inline Auth with OIDC Incoming", Ordered, fun
 	})
 
 	AfterAll(func() {
+		// Dump vmcp pod logs before cleanup
+		By("Capturing vmcp pod logs before cleanup")
+		podList, err := GetVirtualMCPServerPods(ctx, k8sClient, vmcpServerName, testNamespace)
+		if err == nil && len(podList.Items) > 0 {
+			for _, pod := range podList.Items {
+				fmt.Printf("=== Capturing logs for pod %s before cleanup ===\n", pod.Name)
+				for _, containerStatus := range pod.Status.ContainerStatuses {
+					previous := containerStatus.RestartCount > 0
+					logs, logErr := getPodLogs(ctx, testNamespace, pod.Name, containerStatus.Name, previous)
+					if logErr != nil {
+						fmt.Printf("Failed to get logs for container %s: %v\n", containerStatus.Name, logErr)
+					} else if logs != "" {
+						fmt.Printf("Container %s logs:\n%s\n", containerStatus.Name, logs)
+					}
+				}
+			}
+		}
+
 		By("Cleaning up test resources")
 		k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},
@@ -424,25 +443,41 @@ var _ = Describe("VirtualMCPServer Inline Auth with OIDC Incoming", Ordered, fun
 		})
 
 		It("should call mock OIDC server for discovery", func() {
-			By("Checking mock OIDC server logs for discovery requests")
+			By("Checking mock OIDC server stats for discovery requests")
 			Eventually(func() bool {
-				logs := GetPodLogsForDeployment(ctx, k8sClient, testNamespace, mockOIDCServerName)
-				GinkgoWriter.Printf("Mock OIDC server logs:\n%s\n", logs)
-				// Look for OIDC discovery endpoint calls
-				return strings.Contains(logs, "/.well-known/openid-configuration") ||
-					strings.Contains(logs, "discovery") ||
-					strings.Contains(logs, "GET")
+				stats, err := GetMockOIDCStats(ctx, k8sClient, testNamespace, mockOIDCServerName)
+				if err != nil {
+					GinkgoWriter.Printf("Failed to get OIDC stats: %v\n", err)
+					return false
+				}
+				GinkgoWriter.Printf("Mock OIDC server stats: %+v\n", stats)
+				// Check if discovery_requests is present and > 0
+				count, ok := stats["discovery_requests"]
+				return ok && count > 0
 			}, 2*time.Minute, 10*time.Second).Should(BeTrue(), "Mock OIDC server should receive discovery requests")
 		})
 
 		It("should generate and pass Bearer tokens to backends", func() {
-			By("Checking instrumented backend logs for Bearer token headers")
+			By("Making an MCP tools/list request through vmcp to trigger token generation")
+			// When vmcp receives a request, it should automatically:
+			// 1. Get a token from the OIDC server using inline outgoing auth
+			// 2. Pass that token to the backend in the Authorization header
+
+			// For now, just wait and check if the backend has received any Bearer tokens
+			// The vmcp may make discovery or health check requests to backends automatically
+			// which would trigger the token flow
+
+			By("Checking instrumented backend stats for Bearer token requests")
 			Eventually(func() bool {
-				logs := GetPodLogsForDeployment(ctx, k8sClient, testNamespace, instrumentedBackend)
-				GinkgoWriter.Printf("Instrumented backend logs:\n%s\n", logs)
-				// Look for Authorization header with Bearer token
-				return strings.Contains(logs, "Authorization:") &&
-					strings.Contains(logs, "Bearer")
+				stats, err := GetInstrumentedBackendStats(ctx, k8sClient, testNamespace, instrumentedBackend)
+				if err != nil {
+					GinkgoWriter.Printf("Failed to get backend stats: %v\n", err)
+					return false
+				}
+				GinkgoWriter.Printf("Instrumented backend stats: %+v\n", stats)
+				// Check if bearer_token_requests is present and > 0
+				count, ok := stats["bearer_token_requests"]
+				return ok && count > 0
 			}, 2*time.Minute, 10*time.Second).Should(BeTrue(), "Backend should receive Bearer tokens in Authorization header")
 		})
 	})

@@ -28,20 +28,11 @@ task thv-operator-e2e-test
 
 ### Manual Testing
 
-#### With Resource Creation (Full E2E)
-
-Run the setup test that creates VirtualMCPServer resources:
-
-```bash
-cd test/e2e/thv-operator/virtualmcp
-ginkgo -v --focus="Setup and Lifecycle"
-```
-
-#### Against Existing Resources
-
-By default, the tests will:
+The tests will:
 - Use the kubeconfig from `$KUBECONFIG` or `~/.kube/config`
-- Look for a VirtualMCPServer named `test-vmcp-server` in the `default` namespace
+- Create all necessary resources (MCPGroup, MCPServers, VirtualMCPServer)
+- Run comprehensive MCP protocol tests
+- Clean up resources after completion
 
 ```bash
 cd test/e2e/thv-operator/virtualmcp
@@ -60,8 +51,8 @@ ginkgo -v
 ### Running Specific Tests
 
 ```bash
-# Run only setup and lifecycle tests
-ginkgo -v --focus="Setup and Lifecycle"
+# Run only discovered mode tests
+ginkgo -v --focus="Discovered Mode"
 
 # Run tests and get verbose output
 ginkgo -vv
@@ -72,9 +63,19 @@ ginkgo -vv
 ### Files
 
 - `suite_test.go` - Ginkgo test suite setup with kubeconfig loading
-- `virtualmcp_setup_test.go` - Tests that create and manage VirtualMCPServer resources
+- `virtualmcp_discovered_mode_test.go` - Tests VirtualMCPServer with discovered mode aggregation
 - `helpers.go` - Common helper functions for interacting with Kubernetes resources
 - `README.md` - This file
+
+### Test Descriptions
+
+#### Discovered Mode Tests (`virtualmcp_discovered_mode_test.go`)
+Comprehensive E2E tests for VirtualMCPServer in discovered mode, which automatically discovers and aggregates tools from backend MCP servers in a group:
+- Creates two backend MCPServers (fetch and osv) both using streamable-http transport
+- Verifies VirtualMCPServer aggregates tools from all backends in the group
+- Tests tool calls through the VirtualMCPServer proxy
+- Validates discovered mode configuration and backend discovery
+- Uses prefix conflict resolution strategy to namespace tools from different backends
 
 ## Environment Variables
 

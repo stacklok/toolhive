@@ -142,13 +142,18 @@ func FindOrUsePort(port int) (int, error) {
 	return alt, nil
 }
 
-// ValidateCallbackPort validates that the specified callback port is available
-// for pre-registered clients (with clientID), it returns an error if
-// it's not available.
+// ValidateCallbackPort validates that the specified callback port is valid and available.
+// It checks that the port is within the valid range (1-65535) and, for pre-registered
+// clients (with clientID), it returns an error if the port is not available.
 func ValidateCallbackPort(callbackPort int, clientID string) error {
 	// If port is 0, we'll find an available port later, so no need to validate
 	if callbackPort == 0 {
 		return nil
+	}
+
+	// Validate port range
+	if callbackPort < 1 || callbackPort > 65535 {
+		return fmt.Errorf("OAuth callback port must be between 1 and 65535, got: %d", callbackPort)
 	}
 
 	// Check if this is a pre-registered client (has client credentials)

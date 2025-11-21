@@ -10,6 +10,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/networking"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
@@ -113,6 +114,13 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 	if req.OAuthConfig.Resource != "" {
 		if err := validation.ValidateResourceURI(req.OAuthConfig.Resource); err != nil {
 			return nil, fmt.Errorf("%w: invalid resource parameter: %v", retriever.ErrInvalidRunConfig, err)
+		}
+	}
+
+	// Validate user-provided OAuth callback port
+	if req.OAuthConfig.CallbackPort != 0 {
+		if err := networking.ValidateCallbackPort(req.OAuthConfig.CallbackPort, req.OAuthConfig.ClientID); err != nil {
+			return nil, fmt.Errorf("%w: invalid OAuth callback port configuration", retriever.ErrInvalidRunConfig)
 		}
 	}
 

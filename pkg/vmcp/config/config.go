@@ -138,7 +138,7 @@ type OIDCConfig struct {
 
 	// ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
 	// Use with caution - only enable for trusted internal IDPs or testing
-	ProtectedResourceAllowPrivateIP bool `json:"protected_resource_allow_private_ip,omitempty" yaml:"protected_resource_allow_private_ip,omitempty"`
+	ProtectedResourceAllowPrivateIP bool `json:"protected_resource_allow_private_ip,omitempty" yaml:"protected_resource_allow_private_ip,omitempty"` //nolint:lll
 
 	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
 	// WARNING: This is insecure and should NEVER be used in production

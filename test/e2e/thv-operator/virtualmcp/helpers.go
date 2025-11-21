@@ -2,17 +2,9 @@ package virtualmcp
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
 	"fmt"
-	"math/big"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -171,61 +163,6 @@ func WaitForCondition(
 
 // OIDC Testing Helpers
 
-// CreateTLSSecret generates a self-signed TLS certificate and creates a Kubernetes secret
-func CreateTLSSecret(ctx context.Context, c client.Client, namespace, secretName, serviceName string) {
-	By(fmt.Sprintf("Generating TLS certificate for %s", serviceName))
-
-	// Generate a self-signed certificate
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-
-	notBefore := time.Now()
-	notAfter := notBefore.Add(365 * 24 * time.Hour)
-
-	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-
-	template := x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			CommonName: fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, namespace),
-		},
-		NotBefore:             notBefore,
-		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		DNSNames: []string{
-			serviceName,
-			fmt.Sprintf("%s.%s", serviceName, namespace),
-			fmt.Sprintf("%s.%s.svc", serviceName, namespace),
-			fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, namespace),
-		},
-	}
-
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
-	privBytes, err := x509.MarshalECPrivateKey(priv)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred())
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes})
-
-	// Create the TLS secret
-	tlsSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: namespace,
-		},
-		Type: corev1.SecretTypeTLS,
-		Data: map[string][]byte{
-			"tls.crt": certPEM,
-			"tls.key": keyPEM,
-		},
-	}
-	gomega.Expect(c.Create(ctx, tlsSecret)).To(gomega.Succeed())
-}
-
 // DeployMockOIDCServerHTTP deploys a mock OIDC server with HTTP (for testing)
 func DeployMockOIDCServerHTTP(ctx context.Context, c client.Client, namespace, serverName string) {
 	deployment := &appsv1.Deployment{
@@ -271,82 +208,6 @@ func DeployMockOIDCServerHTTP(ctx context.Context, c client.Client, namespace, s
 			Ports: []corev1.ServicePort{
 				{
 					Port:     80,
-					Protocol: corev1.ProtocolTCP,
-				},
-			},
-		},
-	}
-	gomega.Expect(c.Create(ctx, service)).To(gomega.Succeed())
-
-	gomega.Eventually(func() bool {
-		dep := &appsv1.Deployment{}
-		err := c.Get(ctx, types.NamespacedName{Name: serverName, Namespace: namespace}, dep)
-		return err == nil && dep.Status.ReadyReplicas > 0
-	}, 3*time.Minute, 5*time.Second).Should(gomega.BeTrue(), "Mock OIDC server should be ready")
-}
-
-// DeployMockOIDCServerWithHTTPS deploys a mock OIDC server with HTTPS support
-func DeployMockOIDCServerWithHTTPS(ctx context.Context, c client.Client, namespace, serverName, tlsSecretName string) {
-	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serverName,
-			Namespace: namespace,
-			Labels:    map[string]string{"app": serverName},
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: int32Ptr(1),
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"app": serverName},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"app": serverName},
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:    "mock-oidc",
-							Image:   "python:3.9-slim",
-							Command: []string{"sh", "-c"},
-							Args:    []string{MockOIDCServerHTTPSScript},
-							Ports: []corev1.ContainerPort{
-								{ContainerPort: 443, Name: "https"},
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:      "tls",
-									MountPath: "/etc/tls",
-									ReadOnly:  true,
-								},
-							},
-						},
-					},
-					Volumes: []corev1.Volume{
-						{
-							Name: "tls",
-							VolumeSource: corev1.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{
-									SecretName: tlsSecretName,
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	gomega.Expect(c.Create(ctx, deployment)).To(gomega.Succeed())
-
-	service := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serverName,
-			Namespace: namespace,
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": serverName},
-			Ports: []corev1.ServicePort{
-				{
-					Port:     443,
 					Protocol: corev1.ProtocolTCP,
 				},
 			},
@@ -422,14 +283,14 @@ func DeployInstrumentedBackendServer(ctx context.Context, c client.Client, names
 
 // CleanupMockServer cleans up a mock server deployment, service, and optionally its TLS secret
 func CleanupMockServer(ctx context.Context, c client.Client, namespace, serverName, tlsSecretName string) {
-	c.Delete(ctx, &appsv1.Deployment{
+	_ = c.Delete(ctx, &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
 	})
-	c.Delete(ctx, &corev1.Service{
+	_ = c.Delete(ctx, &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
 	})
 	if tlsSecretName != "" {
-		c.Delete(ctx, &corev1.Secret{
+		_ = c.Delete(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: tlsSecretName, Namespace: namespace},
 		})
 	}
@@ -456,7 +317,7 @@ func int32Ptr(i int32) *int32 {
 	return &i
 }
 
-// Mock OIDC server script with HTTP (for testing with private IPs)
+// MockOIDCServerHTTPScript is a mock OIDC server script with HTTP (for testing with private IPs)
 const MockOIDCServerHTTPScript = `
 pip install --quiet flask && python3 - <<'PYTHON_SCRIPT'
 from flask import Flask, jsonify, request
@@ -499,53 +360,7 @@ if __name__ == '__main__':
 PYTHON_SCRIPT
 `
 
-// Mock OIDC server script with HTTPS and logging
-const MockOIDCServerHTTPSScript = `
-pip install --quiet flask && python3 - <<'PYTHON_SCRIPT'
-from flask import Flask, jsonify, request
-import ssl
-import sys
-
-app = Flask(__name__)
-
-@app.route('/.well-known/openid-configuration')
-def discovery():
-    print("OIDC Discovery request received", flush=True)
-    sys.stdout.flush()
-    return jsonify({
-        "issuer": "https://mock-oidc-https",
-        "authorization_endpoint": "https://mock-oidc-https/auth",
-        "token_endpoint": "https://mock-oidc-https/token",
-        "userinfo_endpoint": "https://mock-oidc-https/userinfo",
-        "jwks_uri": "https://mock-oidc-https/jwks",
-    })
-
-@app.route('/jwks')
-def jwks():
-    print("JWKS request received", flush=True)
-    sys.stdout.flush()
-    return jsonify({"keys": []})
-
-@app.route('/token', methods=['POST'])
-def token():
-    print("Token request received", flush=True)
-    sys.stdout.flush()
-    return jsonify({
-        "access_token": "mock_access_token_12345",
-        "token_type": "Bearer",
-        "expires_in": 3600,
-    })
-
-if __name__ == '__main__':
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain('/etc/tls/tls.crt', '/etc/tls/tls.key')
-    print("Mock OIDC server starting on port 443 with HTTPS", flush=True)
-    sys.stdout.flush()
-    app.run(host='0.0.0.0', port=443, ssl_context=context)
-PYTHON_SCRIPT
-`
-
-// Instrumented backend script that logs all headers including Bearer tokens
+// InstrumentedBackendScript is an instrumented backend script that logs all headers including Bearer tokens
 const InstrumentedBackendScript = `
 pip install --quiet flask && python3 - <<'PYTHON_SCRIPT'
 from flask import Flask, request, jsonify

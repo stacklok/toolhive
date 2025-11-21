@@ -327,6 +327,7 @@ var _ = Describe("VirtualMCPServer Inline Auth with OIDC Incoming", Ordered, fun
 							Issuer:                          mockOIDCIssuerURL,
 							ClientID:                        "test-client-id",
 							Audience:                        "test-audience",
+							JWKSAllowPrivateIP:              true, // Allow private IP for JWKS endpoint
 							ProtectedResourceAllowPrivateIP: true,
 							InsecureAllowHTTP:               true, // Allow HTTP OIDC for testing
 							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{

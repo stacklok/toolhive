@@ -36,6 +36,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/transport"
 )
 
 // MCPServerReconciler reconciles a MCPServer object
@@ -388,9 +389,16 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	// Update the MCPServer status with the service URL
+	// Update the MCPServer status with the service URL including transport-specific path
 	if mcpServer.Status.URL == "" {
-		mcpServer.Status.URL = ctrlutil.CreateProxyServiceURL(mcpServer.Name, mcpServer.Namespace, mcpServer.GetProxyPort())
+		host := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, mcpServer.Namespace)
+		mcpServer.Status.URL = transport.GenerateMCPServerURL(
+			mcpServer.Spec.Transport,
+			host,
+			int(mcpServer.GetProxyPort()),
+			mcpServer.Name,
+			"", // empty remoteURL for MCPServer (not remote proxy)
+		)
 		err = r.Status().Update(ctx, mcpServer)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update MCPServer status")

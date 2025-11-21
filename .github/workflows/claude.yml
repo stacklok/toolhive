@@ -32,7 +32,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
         with:
           go-version-file: 'go.mod'
 
@@ -41,6 +41,6 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@8a1c4371755898f67cd97006ba7c97702d5fc4bf # v1
+        uses: anthropics/claude-code-action@6902c227aaa9536481b99d56f3014bbbad6c6da8 # v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

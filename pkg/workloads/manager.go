@@ -390,7 +390,7 @@ func (d *DefaultManager) stopContainerWorkload(ctx context.Context, name string)
 	return d.stopSingleContainerWorkload(ctx, &container)
 }
 
-// RunWorkload runs a workload in the foreground.
+// RunWorkload runs a workload in the foreground with automatic restart on container exit.
 func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
 	// Ensure that the workload has a status entry before starting the process.
 	if err := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusStarting, ""); err != nil {
@@ -398,15 +398,84 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 		return fmt.Errorf("failed to create workload status: %v", err)
 	}
 
-	mcpRunner := runner.NewRunner(runConfig, d.statuses)
-	err := mcpRunner.Run(ctx)
-	if err != nil {
-		// If the run failed, we should set the status to error.
-		if statusErr := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusError, err.Error()); statusErr != nil {
-			logger.Warnf("Failed to set workload %s status to error: %v", runConfig.BaseName, statusErr)
+	// Retry loop with exponential backoff for container restarts
+	maxRetries := 10 // Allow many retries for transient issues
+	retryDelay := 5 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if attempt > 1 {
+			logger.Infof("Restart attempt %d/%d for %s after %v delay", attempt, maxRetries, runConfig.BaseName, retryDelay)
+			time.Sleep(retryDelay)
+
+			// Exponential backoff: 5s, 10s, 20s, 40s, 60s (capped)
+			retryDelay *= 2
+			if retryDelay > 60*time.Second {
+				retryDelay = 60 * time.Second
+			}
 		}
+
+		mcpRunner := runner.NewRunner(runConfig, d.statuses)
+		err := mcpRunner.Run(ctx)
+
+		if err != nil {
+			// Check if this is a "container exited, restart needed" error
+			if err.Error() == "container exited, restart needed" {
+				logger.Warnf("Container %s exited unexpectedly (attempt %d/%d). Restarting...",
+					runConfig.BaseName, attempt, maxRetries)
+
+				// Remove from client config so clients notice the restart
+				clientManager, clientErr := client.NewManager(ctx)
+				if clientErr == nil {
+					logger.Infof("Removing %s from client configurations before restart", runConfig.BaseName)
+					if removeErr := clientManager.RemoveServerFromClients(ctx, runConfig.BaseName, runConfig.Group); removeErr != nil {
+						logger.Warnf("Warning: Failed to remove from client config: %v", removeErr)
+					}
+				}
+
+				// Set status to starting (since we're restarting)
+				statusErr := d.statuses.SetWorkloadStatus(
+					ctx,
+					runConfig.BaseName,
+					rt.WorkloadStatusStarting,
+					"Container exited, restarting",
+				)
+				if statusErr != nil {
+					logger.Warnf("Failed to set workload %s status to starting: %v", runConfig.BaseName, statusErr)
+				}
+
+				// If we haven't exhausted retries, continue the loop
+				if attempt < maxRetries {
+					continue
+				}
+
+				// Exhausted all retries
+				logger.Errorf("Failed to restart %s after %d attempts. Giving up.", runConfig.BaseName, maxRetries)
+				statusErr = d.statuses.SetWorkloadStatus(
+					ctx,
+					runConfig.BaseName,
+					rt.WorkloadStatusError,
+					"Failed to restart after container exit",
+				)
+				if statusErr != nil {
+					logger.Warnf("Failed to set workload %s status to error: %v", runConfig.BaseName, statusErr)
+				}
+				return fmt.Errorf("container restart failed after %d attempts", maxRetries)
+			}
+
+			// Some other error - don't retry
+			logger.Errorf("Workload %s failed with error: %v", runConfig.BaseName, err)
+			if statusErr := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusError, err.Error()); statusErr != nil {
+				logger.Warnf("Failed to set workload %s status to error: %v", runConfig.BaseName, statusErr)
+			}
+			return err
+		}
+
+		// Success - workload completed normally
+		return nil
 	}
-	return err
+
+	// Should not reach here, but just in case
+	return fmt.Errorf("unexpected end of retry loop for %s", runConfig.BaseName)
 }
 
 // validateSecretParameters validates the secret parameters for a workload.

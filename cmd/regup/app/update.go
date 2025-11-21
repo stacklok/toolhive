@@ -16,7 +16,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/logger"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 var (

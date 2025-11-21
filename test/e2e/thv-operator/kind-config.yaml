@@ -1,0 +1,55 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            service-node-port-range: "30000-30020"
+    extraPortMappings:
+      # Port range for MCP servers - NodePort services will be accessible on localhost
+      # Mapping ports 30000-30020 to enable NodePort connectivity from host
+      - containerPort: 30000
+        hostPort: 30000
+      - containerPort: 30001
+        hostPort: 30001
+      - containerPort: 30002
+        hostPort: 30002
+      - containerPort: 30003
+        hostPort: 30003
+      - containerPort: 30004
+        hostPort: 30004
+      - containerPort: 30005
+        hostPort: 30005
+      - containerPort: 30006
+        hostPort: 30006
+      - containerPort: 30007
+        hostPort: 30007
+      - containerPort: 30008
+        hostPort: 30008
+      - containerPort: 30009
+        hostPort: 30009
+      - containerPort: 30010
+        hostPort: 30010
+      - containerPort: 30011
+        hostPort: 30011
+      - containerPort: 30012
+        hostPort: 30012
+      - containerPort: 30013
+        hostPort: 30013
+      - containerPort: 30014
+        hostPort: 30014
+      - containerPort: 30015
+        hostPort: 30015
+      - containerPort: 30016
+        hostPort: 30016
+      - containerPort: 30017
+        hostPort: 30017
+      - containerPort: 30018
+        hostPort: 30018
+      - containerPort: 30019
+        hostPort: 30019
+      - containerPort: 30020
+        hostPort: 30020

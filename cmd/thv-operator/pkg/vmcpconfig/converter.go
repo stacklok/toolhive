@@ -97,11 +97,13 @@ func (*Converter) convertIncomingAuth(
 		if vmcp.Spec.IncomingAuth.OIDCConfig.Type == authzLabelValueInline && vmcp.Spec.IncomingAuth.OIDCConfig.Inline != nil {
 			inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
 			oidcConfig := &vmcpconfig.OIDCConfig{
-				Issuer:   inline.Issuer,
-				ClientID: inline.ClientID, // Note: API uses clientId (camelCase) but config uses ClientID
-				Audience: inline.Audience,
-				Resource: vmcp.Spec.IncomingAuth.OIDCConfig.ResourceURL,
-				Scopes:   nil, // TODO: Add scopes if needed
+				Issuer:                          inline.Issuer,
+				ClientID:                        inline.ClientID, // Note: API uses clientId (camelCase) but config uses ClientID
+				Audience:                        inline.Audience,
+				Resource:                        vmcp.Spec.IncomingAuth.OIDCConfig.ResourceURL,
+				Scopes:                          nil, // TODO: Add scopes if needed
+				ProtectedResourceAllowPrivateIP: inline.ProtectedResourceAllowPrivateIP,
+				InsecureAllowHTTP:               inline.InsecureAllowHTTP,
 			}
 
 			// Handle client secret - always use environment variable reference for security

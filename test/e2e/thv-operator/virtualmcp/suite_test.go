@@ -25,6 +25,13 @@ import (
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
+const (
+	// fetchToolName is the name of the fetch tool used in tests
+	fetchToolName = "fetch"
+	// mcpProtocolVersion is the MCP protocol version used in tests
+	mcpProtocolVersion = "2024-11-05"
+)
+
 var (
 	cfg        *rest.Config
 	k8sClient  client.Client

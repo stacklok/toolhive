@@ -1,0 +1,261 @@
+# Example MCPRegistry with Multiple Source Types
+#
+# This example demonstrates:
+# 1. A single MCPRegistry resource managing multiple registry sources
+# 2. One ConfigMap-based registry (immutable, part of deployment)
+# 3. Two PVC-based registries from a SINGLE shared PVC
+# 4. Independent sync policies and filters per registry
+#
+# This shows the flexibility of mixing source types:
+# - ConfigMap: For static, version-controlled registry data
+# - PVC: For dynamic registry data that can be updated independently
+#
+# Shared PVC structure:
+#   /monitoring/registry.json  - Monitoring and observability tools
+#   /ai-ml/registry.json       - AI/ML tools
+---
+# ConfigMap for production tools (static, immutable)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: production-registry-data
+  namespace: toolhive-system
+data:
+  registry.json: |
+    {
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+      "version": "1.0.0",
+      "last_updated": "2025-11-26T12:00:00Z",
+      "servers": {
+        "prod-database": {
+          "description": "Production database MCP server",
+          "tier": "Official",
+          "status": "Active",
+          "transport": "stdio",
+          "tools": ["query", "migrate", "backup"],
+          "metadata": {
+            "stars": 2000,
+            "pulls": 1000,
+            "last_updated": "2025-11-26T12:00:00Z"
+          },
+          "repository_url": "https://github.com/example/db-mcp-server",
+          "tags": ["database", "production", "data"],
+          "image": "ghcr.io/example/db-server:latest",
+          "permissions": {
+            "network": {
+              "outbound": {}
+            }
+          }
+        }
+      }
+    }
+---
+# Single PVC containing multiple registry subdirectories
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-dynamic-registries
+  namespace: toolhive-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Mi
+---
+# MCPRegistry with three different sources: 1 ConfigMap + 2 registries from 1 PVC
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: multi-source-registry
+  namespace: toolhive-system
+spec:
+  displayName: "Multi-Source Registry (ConfigMap + Shared PVC)"
+  registries:
+    # Registry 1: ConfigMap source (static production tools)
+    - name: production-tools
+      format: toolhive
+      configMapRef:
+        name: production-registry-data
+        key: registry.json
+      syncPolicy:
+        interval: "2h"
+      filter:
+        tags:
+          include:
+            - "production"
+            - "database"
+
+    # Registry 2: PVC source (monitoring tools) - from shared PVC
+    - name: monitoring
+      format: toolhive
+      pvcRef:
+        claimName: shared-dynamic-registries
+        path: monitoring/registry.json
+      syncPolicy:
+        interval: "1h"
+      filter:
+        tags:
+          include:
+            - "monitoring"
+            - "observability"
+
+    # Registry 3: PVC source (AI/ML tools) - from SAME shared PVC
+    - name: ai-ml
+      format: toolhive
+      pvcRef:
+        claimName: shared-dynamic-registries
+        path: ai-ml/registry.json
+      syncPolicy:
+        interval: "30m"
+      filter:
+        names:
+          include:
+            - "*ai*"
+            - "*ml*"
+        tags:
+          include:
+            - "ai"
+            - "machine-learning"
+---
+# Job to populate the shared PVC with multiple registry directories
+# This creates /monitoring and /ai-ml subdirectories with their respective data
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: populate-shared-pvc
+  namespace: toolhive-system
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: populate
+        image: busybox:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Create subdirectories matching registry names
+          mkdir -p /data/monitoring
+          mkdir -p /data/ai-ml
+
+          # Populate monitoring registry
+          cat > /data/monitoring/registry.json <<'EOF'
+          {
+            "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+            "version": "1.0.0",
+            "last_updated": "2025-11-26T12:00:00Z",
+            "servers": {
+              "prometheus-exporter": {
+                "description": "Prometheus metrics exporter",
+                "tier": "Official",
+                "status": "Active",
+                "transport": "stdio",
+                "tools": ["export_metrics", "query_metrics"],
+                "metadata": {
+                  "stars": 1800,
+                  "pulls": 900,
+                  "last_updated": "2025-11-26T12:00:00Z"
+                },
+                "repository_url": "https://github.com/example/prom-mcp",
+                "tags": ["monitoring", "observability", "metrics"],
+                "image": "ghcr.io/example/prom-mcp:latest",
+                "permissions": {
+                  "network": {
+                    "outbound": {}
+                  }
+                }
+              },
+              "log-analyzer": {
+                "description": "Log analysis and aggregation",
+                "tier": "Community",
+                "status": "Active",
+                "transport": "stdio",
+                "tools": ["analyze_logs", "search_logs", "aggregate"],
+                "metadata": {
+                  "stars": 650,
+                  "pulls": 200,
+                  "last_updated": "2025-11-26T12:00:00Z"
+                },
+                "repository_url": "https://github.com/example/log-mcp",
+                "tags": ["monitoring", "observability", "logs"],
+                "image": "ghcr.io/example/log-mcp:latest",
+                "permissions": {
+                  "network": {
+                    "outbound": {}
+                  }
+                }
+              }
+            }
+          }
+          EOF
+
+          # Populate AI/ML registry
+          cat > /data/ai-ml/registry.json <<'EOF'
+          {
+            "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+            "version": "1.0.0",
+            "last_updated": "2025-11-26T12:00:00Z",
+            "servers": {
+              "ml-inference": {
+                "description": "Machine learning inference server",
+                "tier": "Community",
+                "status": "Active",
+                "transport": "stdio",
+                "tools": ["predict", "train", "evaluate"],
+                "metadata": {
+                  "stars": 1200,
+                  "pulls": 400,
+                  "last_updated": "2025-11-26T12:00:00Z"
+                },
+                "repository_url": "https://github.com/example/ml-mcp",
+                "tags": ["ai", "machine-learning", "inference"],
+                "image": "ghcr.io/example/ml-mcp:latest",
+                "permissions": {
+                  "network": {
+                    "outbound": {}
+                  }
+                }
+              },
+              "ai-embeddings": {
+                "description": "Generate and manage AI embeddings",
+                "tier": "Community",
+                "status": "Active",
+                "transport": "stdio",
+                "tools": ["generate_embedding", "search_similar"],
+                "metadata": {
+                  "stars": 890,
+                  "pulls": 250,
+                  "last_updated": "2025-11-26T12:00:00Z"
+                },
+                "repository_url": "https://github.com/example/embeddings-mcp",
+                "tags": ["ai", "machine-learning", "embeddings"],
+                "image": "ghcr.io/example/embeddings-mcp:latest",
+                "permissions": {
+                  "network": {
+                    "outbound": {
+                      "allow_host": [
+                        ".openai.com"
+                      ],
+                      "allow_port": [
+                        443
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+          EOF
+
+          echo "Shared PVC populated successfully"
+          echo "Directory structure:"
+          ls -lR /data
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: shared-dynamic-registries

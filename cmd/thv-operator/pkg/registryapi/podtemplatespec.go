@@ -155,13 +155,17 @@ func WithRegistryStorageMount(containerName string) PodTemplateSpecOption {
 	}
 }
 
-// WithRegistrySourceMounts creates volumes and mounts for all registry source ConfigMaps.
-// This iterates through the registry sources and creates a volume and mount for each ConfigMapRef.
+// WithRegistrySourceMounts creates volumes and mounts for all registry sources (ConfigMap and PVC).
+// ConfigMaps: Each gets its own volume mounted at /config/registry/{registryName}/
+// PVCs: De-duplicated - each unique PVC mounted once at /config/registry/
 func WithRegistrySourceMounts(containerName string, registries []mcpv1alpha1.MCPRegistryConfig) PodTemplateSpecOption {
 	return func(pts *corev1.PodTemplateSpec) {
+		// Track PVCs we've already mounted to avoid duplicates
+		mountedPVCs := make(map[string]bool)
+
 		for _, registry := range registries {
 			if registry.ConfigMapRef != nil {
-				// Create unique volume name for each ConfigMap source
+				// ConfigMap: Create unique volume per source
 				volumeName := fmt.Sprintf("registry-data-source-%s", registry.Name)
 
 				// Add the ConfigMap volume
@@ -183,14 +187,44 @@ func WithRegistrySourceMounts(containerName string, registries []mcpv1alpha1.MCP
 					},
 				})(pts)
 
-				// Add the volume mount
-				// Mount path follows the pattern /config/registry/{registryName}/
+				// Add the volume mount at registry-specific subdirectory
 				mountPath := filepath.Join(config.RegistryJSONFilePath, registry.Name)
 				WithVolumeMount(containerName, corev1.VolumeMount{
 					Name:      volumeName,
 					MountPath: mountPath,
 					ReadOnly:  true,
 				})(pts)
+			}
+
+			if registry.PVCRef != nil {
+				// PVC: Mount once per unique PVC (de-duplication)
+				// Multiple registries can share the same PVC with different paths
+				claimName := registry.PVCRef.ClaimName
+
+				if !mountedPVCs[claimName] {
+					volumeName := fmt.Sprintf("registry-data-pvc-%s", claimName)
+
+					// Add the PVC volume
+					WithVolume(corev1.Volume{
+						Name: volumeName,
+						VolumeSource: corev1.VolumeSource{
+							PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: claimName,
+								ReadOnly:  true,
+							},
+						},
+					})(pts)
+
+					// Mount at parent directory - PVC contains subdirectories
+					WithVolumeMount(containerName, corev1.VolumeMount{
+						Name:      volumeName,
+						MountPath: config.RegistryJSONFilePath,
+						ReadOnly:  true,
+					})(pts)
+
+					mountedPVCs[claimName] = true
+				}
+				// else: PVC already mounted, registry will access its path within the shared mount
 			}
 		}
 	}

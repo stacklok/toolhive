@@ -252,6 +252,7 @@ func buildFilePath(registryName string) *FileConfig {
 	}
 }
 
+//nolint:gocyclo // Complexity is acceptable for handling multiple source types
 func buildRegistryConfig(registrySpec *mcpv1alpha1.MCPRegistryConfig) (*RegistryConfig, error) {
 	if registrySpec.Name == "" {
 		return nil, fmt.Errorf("registry name is required")
@@ -292,12 +293,22 @@ func buildRegistryConfig(registrySpec *mcpv1alpha1.MCPRegistryConfig) (*Registry
 		}
 		registryConfig.API = apiConfig
 	}
+	if registrySpec.PVCRef != nil {
+		sourceCount++
+		pvcPath := RegistryJSONFileName
+		if registrySpec.PVCRef.Path != "" {
+			pvcPath = registrySpec.PVCRef.Path
+		}
+		registryConfig.File = &FileConfig{
+			Path: filepath.Join(RegistryJSONFilePath, pvcPath),
+		}
+	}
 
 	if sourceCount == 0 {
-		return nil, fmt.Errorf("exactly one source type (ConfigMapRef, Git, or API) must be specified")
+		return nil, fmt.Errorf("exactly one source type (ConfigMapRef, Git, API, or PVCRef) must be specified")
 	}
 	if sourceCount > 1 {
-		return nil, fmt.Errorf("only one source type (ConfigMapRef, Git, or API) can be specified")
+		return nil, fmt.Errorf("only one source type (ConfigMapRef, Git, API, or PVCRef) can be specified")
 	}
 
 	// Build sync policy

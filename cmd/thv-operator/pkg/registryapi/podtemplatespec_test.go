@@ -296,7 +296,7 @@ func TestWithRegistrySourceMounts(t *testing.T) {
 		assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 2)
 	})
 
-	t.Run("skips registries without ConfigMapRef", func(t *testing.T) {
+	t.Run("skips registries without ConfigMapRef or PVCRef", func(t *testing.T) {
 		t.Parallel()
 
 		container := corev1.Container{Name: "registry-api"}
@@ -304,6 +304,7 @@ func TestWithRegistrySourceMounts(t *testing.T) {
 			{
 				Name:         "reg1",
 				ConfigMapRef: nil, // No ConfigMapRef
+				PVCRef:       nil, // No PVCRef
 			},
 		}
 
@@ -315,6 +316,82 @@ func TestWithRegistrySourceMounts(t *testing.T) {
 
 		assert.Empty(t, pts.Spec.Volumes)
 		assert.Empty(t, pts.Spec.Containers[0].VolumeMounts)
+	})
+
+	t.Run("adds PVC volume and mount", func(t *testing.T) {
+		t.Parallel()
+
+		container := corev1.Container{Name: "registry-api"}
+		registries := []mcpv1alpha1.MCPRegistryConfig{
+			{
+				Name:   "pvc-source",
+				Format: mcpv1alpha1.RegistryFormatToolHive,
+				PVCRef: &mcpv1alpha1.PVCSource{
+					ClaimName: "registry-data-pvc",
+					Path:      "production/registry.json",
+				},
+			},
+		}
+
+		builder := NewPodTemplateSpecBuilder()
+		pts := builder.Apply(
+			WithContainer(container),
+			WithRegistrySourceMounts("registry-api", registries),
+		).Build()
+
+		// Verify PVC volume was added
+		require.Len(t, pts.Spec.Volumes, 1)
+		volume := pts.Spec.Volumes[0]
+		assert.Equal(t, "registry-data-pvc-registry-data-pvc", volume.Name)
+		require.NotNil(t, volume.PersistentVolumeClaim)
+		assert.Equal(t, "registry-data-pvc", volume.PersistentVolumeClaim.ClaimName)
+		assert.True(t, volume.PersistentVolumeClaim.ReadOnly)
+
+		// Verify volume mount at parent directory (PVC contains subdirectories)
+		require.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
+		volumeMount := pts.Spec.Containers[0].VolumeMounts[0]
+		assert.Equal(t, "registry-data-pvc-registry-data-pvc", volumeMount.Name)
+		assert.Equal(t, "/config/registry", volumeMount.MountPath)
+		assert.True(t, volumeMount.ReadOnly)
+	})
+
+	t.Run("de-duplicates PVC volume when multiple registries share same PVC", func(t *testing.T) {
+		t.Parallel()
+
+		container := corev1.Container{Name: "registry-api"}
+		registries := []mcpv1alpha1.MCPRegistryConfig{
+			{
+				Name:   "production",
+				Format: mcpv1alpha1.RegistryFormatToolHive,
+				PVCRef: &mcpv1alpha1.PVCSource{
+					ClaimName: "shared-pvc",
+					Path:      "production/registry.json",
+				},
+			},
+			{
+				Name:   "development",
+				Format: mcpv1alpha1.RegistryFormatToolHive,
+				PVCRef: &mcpv1alpha1.PVCSource{
+					ClaimName: "shared-pvc",
+					Path:      "development/registry.json",
+				},
+			},
+		}
+
+		builder := NewPodTemplateSpecBuilder()
+		pts := builder.Apply(
+			WithContainer(container),
+			WithRegistrySourceMounts("registry-api", registries),
+		).Build()
+
+		// Verify only one PVC volume (de-duplicated)
+		assert.Len(t, pts.Spec.Volumes, 1)
+		assert.Equal(t, "registry-data-pvc-shared-pvc", pts.Spec.Volumes[0].Name)
+		assert.Equal(t, "shared-pvc", pts.Spec.Volumes[0].PersistentVolumeClaim.ClaimName)
+
+		// Verify only one volume mount (both registries share it)
+		assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
+		assert.Equal(t, "/config/registry", pts.Spec.Containers[0].VolumeMounts[0].MountPath)
 	})
 }
 

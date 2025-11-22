@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
@@ -1272,4 +1273,43 @@ func TestTryWellKnownDiscovery_ErrorPaths(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, result)
 	})
+}
+
+// TestRegisterDynamicClient_MissingRegistrationEndpoint tests that registerDynamicClient
+// returns a clear error message when the OIDC discovery document doesn't include
+// a registration_endpoint (provider doesn't support DCR).
+func TestRegisterDynamicClient_MissingRegistrationEndpoint(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	// Create a discovery document without registration_endpoint
+	discoveredDoc := &oauth.OIDCDiscoveryDocument{
+		Issuer:                "https://auth.example.com",
+		AuthorizationEndpoint: "https://auth.example.com/oauth/authorize",
+		TokenEndpoint:         "https://auth.example.com/oauth/token",
+		JWKSURI:               "https://auth.example.com/oauth/jwks",
+		// Note: RegistrationEndpoint is intentionally omitted (empty string)
+		RegistrationEndpoint: "",
+	}
+
+	config := &OAuthFlowConfig{
+		Scopes:       []string{"openid", "profile"},
+		CallbackPort: 8765,
+	}
+
+	// Call registerDynamicClient with a discovery document missing registration_endpoint
+	result, err := registerDynamicClient(ctx, config, discoveredDoc)
+
+	// Should return an error
+	require.Error(t, err)
+	assert.Nil(t, result)
+
+	// Error message should clearly indicate DCR is not supported
+	assert.Contains(t, err.Error(), "does not support Dynamic Client Registration")
+	assert.Contains(t, err.Error(), "DCR")
+
+	// Error message should provide actionable guidance
+	assert.Contains(t, err.Error(), "--remote-auth-client-id")
+	assert.Contains(t, err.Error(), "--remote-auth-client-secret")
 }

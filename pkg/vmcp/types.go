@@ -149,6 +149,10 @@ type Tool struct {
 	// InputSchema is the JSON Schema for tool parameters.
 	InputSchema map[string]any
 
+	// OutputSchema is the JSON Schema for tool output (optional).
+	// Per MCP specification, this describes the structure of the tool's response.
+	OutputSchema map[string]any
+
 	// BackendID identifies the backend that provides this tool.
 	BackendID string
 }

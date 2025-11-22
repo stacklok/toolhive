@@ -339,6 +339,11 @@ type CompositeToolConfig struct {
 
 	// Steps are the workflow steps to execute.
 	Steps []*WorkflowStepConfig `json:"steps"`
+
+	// Output defines the structured output schema for this workflow.
+	// If not specified, the workflow returns the last step's output (backward compatible).
+	// +optional
+	Output *OutputConfig `json:"output,omitempty" yaml:"output,omitempty"`
 }
 
 // ParameterSchema defines a workflow parameter.
@@ -400,6 +405,46 @@ type StepErrorHandling struct {
 type ElicitationResponseConfig struct {
 	// Action: "skip_remaining", "abort", "continue"
 	Action string `json:"action"`
+}
+
+// OutputConfig defines the structured output schema for a composite tool workflow.
+// This follows the same pattern as the Parameters field, defining both the
+// MCP output schema (type, description) and runtime value construction (value, default).
+type OutputConfig struct {
+	// Properties defines the output properties.
+	// Map key is the property name, value is the property definition.
+	Properties map[string]OutputProperty `json:"properties" yaml:"properties"`
+
+	// Required lists property names that must be present in the output.
+	// +optional
+	Required []string `json:"required,omitempty" yaml:"required,omitempty"`
+}
+
+// OutputProperty defines a single output property.
+// For non-object types, Value is required.
+// For object types, either Value or Properties must be specified (but not both).
+type OutputProperty struct {
+	// Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array".
+	Type string `json:"type" yaml:"type"`
+
+	// Description is a human-readable description exposed to clients and models.
+	Description string `json:"description" yaml:"description"`
+
+	// Value is a template string for constructing the runtime value.
+	// For object types, this can be a JSON string that will be deserialized.
+	// Supports template syntax: {{.steps.step_id.output.field}}, {{.params.param_name}}
+	// +optional
+	Value string `json:"value,omitempty" yaml:"value,omitempty"`
+
+	// Properties defines nested properties for object types.
+	// Each nested property has full metadata (type, description, value/properties).
+	// +optional
+	Properties map[string]OutputProperty `json:"properties,omitempty" yaml:"properties,omitempty"`
+
+	// Default is the fallback value if template expansion fails.
+	// Type coercion is applied to match the declared Type.
+	// +optional
+	Default any `json:"default,omitempty" yaml:"default,omitempty"`
 }
 
 // Validator validates configuration.

@@ -285,11 +285,16 @@ func validateRegistryNames(registries []mcpv1alpha1.MCPRegistryConfig) error {
 }
 
 func buildFilePath(registryName string) *FileConfig {
+	return buildFilePathWithCustomName(registryName, RegistryJSONFileName)
+}
+
+func buildFilePathWithCustomName(registryName string, filename string) *FileConfig {
 	return &FileConfig{
-		Path: filepath.Join(RegistryJSONFilePath, registryName, RegistryJSONFileName),
+		Path: filepath.Join(RegistryJSONFilePath, registryName, filename),
 	}
 }
 
+//nolint:gocyclo // Complexity is acceptable for handling multiple source types
 func buildRegistryConfig(registrySpec *mcpv1alpha1.MCPRegistryConfig) (*RegistryConfig, error) {
 	if registrySpec.Name == "" {
 		return nil, fmt.Errorf("registry name is required")
@@ -330,12 +335,23 @@ func buildRegistryConfig(registrySpec *mcpv1alpha1.MCPRegistryConfig) (*Registry
 		}
 		registryConfig.API = apiConfig
 	}
+	if registrySpec.PVCRef != nil {
+		sourceCount++
+		// PVC sources are mounted at /config/registry/{registryName}/
+		// File path: /config/registry/{registryName}/{pvcRef.path}
+		// Multiple registries can share the same PVC by mounting it at different paths
+		pvcPath := RegistryJSONFileName
+		if registrySpec.PVCRef.Path != "" {
+			pvcPath = registrySpec.PVCRef.Path
+		}
+		registryConfig.File = buildFilePathWithCustomName(registrySpec.Name, pvcPath)
+	}
 
 	if sourceCount == 0 {
-		return nil, fmt.Errorf("exactly one source type (ConfigMapRef, Git, or API) must be specified")
+		return nil, fmt.Errorf("exactly one source type (ConfigMapRef, Git, API, or PVCRef) must be specified")
 	}
 	if sourceCount > 1 {
-		return nil, fmt.Errorf("only one source type (ConfigMapRef, Git, or API) can be specified")
+		return nil, fmt.Errorf("only one source type (ConfigMapRef, Git, API, or PVCRef) can be specified")
 	}
 
 	// Build sync policy

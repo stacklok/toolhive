@@ -165,7 +165,7 @@ spec:
                     api:
                       description: |-
                         API defines the API source configuration
-                        Mutually exclusive with ConfigMapRef and Git
+                        Mutually exclusive with ConfigMapRef, Git, and PVCRef
                       properties:
                         endpoint:
                           description: |-
@@ -185,7 +185,7 @@ spec:
                     configMapRef:
                       description: |-
                         ConfigMapRef defines the ConfigMap source configuration
-                        Mutually exclusive with Git and API
+                        Mutually exclusive with Git, API, and PVCRef
                       properties:
                         key:
                           description: The key to select.
@@ -250,7 +250,7 @@ spec:
                     git:
                       description: |-
                         Git defines the Git repository source configuration
-                        Mutually exclusive with ConfigMapRef and API
+                        Mutually exclusive with ConfigMapRef, API, and PVCRef
                       properties:
                         branch:
                           description: Branch is the Git branch to use (mutually exclusive
@@ -286,6 +286,47 @@ spec:
                         within the MCPRegistry
                       minLength: 1
                       type: string
+                    pvcRef:
+                      description: |-
+                        PVCRef defines the PersistentVolumeClaim source configuration
+                        Mutually exclusive with ConfigMapRef, Git, and API
+                      properties:
+                        claimName:
+                          description: ClaimName is the name of the PersistentVolumeClaim
+                          minLength: 1
+                          type: string
+                        path:
+                          default: registry.json
+                          description: |-
+                            Path is the relative path to the registry file within the PVC.
+                            The PVC is mounted at /config/registry/{registryName}/.
+                            The full file path becomes: /config/registry/{registryName}/{path}
+
+                            This design:
+                            - Each registry gets its own mount point (consistent with ConfigMap sources)
+                            - Multiple registries can share the same PVC by mounting it at different paths
+                            - Users control PVC organization freely via the path field
+
+                            Examples:
+                              Registry "production" using PVC "shared-data" with path "prod/registry.json":
+                                PVC contains /prod/registry.json → accessed at /config/registry/production/prod/registry.json
+
+                              Registry "development" using SAME PVC "shared-data" with path "dev/registry.json":
+                                PVC contains /dev/registry.json → accessed at /config/registry/development/dev/registry.json
+                                (Same PVC, different mount path)
+
+                              Registry "staging" using DIFFERENT PVC "other-pvc" with path "registry.json":
+                                PVC contains /registry.json → accessed at /config/registry/staging/registry.json
+                                (Different PVC, independent mount)
+
+                              Registry "team-a" with path "v1/servers.json":
+                                PVC contains /v1/servers.json → accessed at /config/registry/team-a/v1/servers.json
+                                (Subdirectories allowed in path)
+                          pattern: ^.*\.json$
+                          type: string
+                      required:
+                      - claimName
+                      type: object
                     syncPolicy:
                       description: |-
                         SyncPolicy defines the automatic synchronization behavior for this registry.

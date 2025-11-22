@@ -1001,6 +1001,127 @@ func TestBuildConfig_MultipleRegistries(t *testing.T) {
 	assert.Equal(t, []string{"server-*"}, config.Registries[1].Filter.Names.Include)
 }
 
+func TestBuildConfig_PVCSource(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid pvc source with default path", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "pvc-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						PVCRef: &mcpv1alpha1.PVCSource{
+							ClaimName: "registry-data-pvc",
+						},
+						SyncPolicy: &mcpv1alpha1.SyncPolicy{
+							Interval: "1h",
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		assert.Equal(t, "test-registry", config.RegistryName)
+		require.Len(t, config.Registries, 1)
+		assert.Equal(t, "pvc-registry", config.Registries[0].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[0].Format)
+		require.NotNil(t, config.Registries[0].File)
+		// Path: /config/registry/{registryName}/{pvcRef.path}
+		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "pvc-registry", RegistryJSONFileName), config.Registries[0].File.Path)
+	})
+
+	t.Run("valid pvc source with subdirectory path", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "production-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						PVCRef: &mcpv1alpha1.PVCSource{
+							ClaimName: "registry-data-pvc",
+							Path:      "production/v1/servers.json",
+						},
+						SyncPolicy: &mcpv1alpha1.SyncPolicy{
+							Interval: "30m",
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.Len(t, config.Registries, 1)
+		assert.Equal(t, "production-registry", config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].File)
+		// Path: /config/registry/{registryName}/{pvcRef.path}
+		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "production-registry", "production/v1/servers.json"), config.Registries[0].File.Path)
+	})
+
+	t.Run("valid pvc source with filter", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "filtered-pvc",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						PVCRef: &mcpv1alpha1.PVCSource{
+							ClaimName: "registry-data-pvc",
+							Path:      "registry.json",
+						},
+						SyncPolicy: &mcpv1alpha1.SyncPolicy{
+							Interval: "15m",
+						},
+						Filter: &mcpv1alpha1.RegistryFilter{
+							NameFilters: &mcpv1alpha1.NameFilter{
+								Include: []string{"prod-*"},
+							},
+							Tags: &mcpv1alpha1.TagFilter{
+								Include: []string{"production"},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.Len(t, config.Registries, 1)
+		assert.Equal(t, "filtered-pvc", config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].File)
+		// Verify filter is preserved
+		require.NotNil(t, config.Registries[0].Filter)
+		require.NotNil(t, config.Registries[0].Filter.Names)
+		assert.Equal(t, []string{"prod-*"}, config.Registries[0].Filter.Names.Include)
+		require.NotNil(t, config.Registries[0].Filter.Tags)
+		assert.Equal(t, []string{"production"}, config.Registries[0].Filter.Tags.Include)
+	})
+}
 func TestBuildConfig_DatabaseConfig(t *testing.T) {
 	t.Parallel()
 

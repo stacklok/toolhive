@@ -16,7 +16,7 @@ jobs:
     steps:
       - name: Check for justification
         id: check
-        uses: actions/github-script@v7
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const prBody = context.payload.pull_request.body || '';
@@ -31,7 +31,7 @@ jobs:
 
       - name: Request changes if no justification
         if: steps.check.outputs.result == 'false'
-        uses: actions/github-script@v7
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const prNumber = context.payload.pull_request.number;
@@ -91,7 +91,7 @@ See our [Contributing Guidelines](https://github.com/${context.repo.owner}/${con
 
       - name: Dismiss review if justification added
         if: steps.check.outputs.result == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const prNumber = context.payload.pull_request.number;

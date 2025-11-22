@@ -17,37 +17,22 @@ func NewDefaultStatusDeriver() StatusDeriver {
 
 // DeriveOverallStatus derives the overall MCPRegistry phase and message from component statuses
 func (*DefaultStatusDeriver) DeriveOverallStatus(
-	syncStatus *mcpv1alpha1.SyncStatus, apiStatus *mcpv1alpha1.APIStatus) (mcpv1alpha1.MCPRegistryPhase, string) {
-	// Handle sync failures first (highest priority)
-	if syncStatus != nil && syncStatus.Phase == mcpv1alpha1.SyncPhaseFailed {
-		return mcpv1alpha1.MCPRegistryPhaseFailed, fmt.Sprintf("Sync failed: %s", syncStatus.Message)
-	}
-
+	apiStatus *mcpv1alpha1.APIStatus) (mcpv1alpha1.MCPRegistryPhase, string) {
 	// Handle API failures
 	if apiStatus != nil && apiStatus.Phase == mcpv1alpha1.APIPhaseError {
 		return mcpv1alpha1.MCPRegistryPhaseFailed, fmt.Sprintf("API deployment failed: %s", apiStatus.Message)
 	}
 
-	// Handle sync in progress
-	if syncStatus != nil && syncStatus.Phase == mcpv1alpha1.SyncPhaseSyncing {
-		return mcpv1alpha1.MCPRegistryPhaseSyncing, "Registry data synchronization in progress"
+	// If API is not ready, return pending
+	if apiStatus != nil && apiStatus.Phase != mcpv1alpha1.APIPhaseReady {
+		return mcpv1alpha1.MCPRegistryPhasePending, "API is not ready"
 	}
 
-	// Check if both sync and API are ready
-	syncReady := syncStatus != nil &&
-		(syncStatus.Phase == mcpv1alpha1.SyncPhaseComplete)
+	// Check if API is ready
 	apiReady := apiStatus != nil && apiStatus.Phase == mcpv1alpha1.APIPhaseReady
 
-	if syncReady && apiReady {
+	if apiReady {
 		return mcpv1alpha1.MCPRegistryPhaseReady, "Registry is ready and API is serving requests"
-	}
-
-	// If sync is complete but API is not ready yet
-	if syncReady {
-		if apiStatus != nil && apiStatus.Phase == mcpv1alpha1.APIPhaseDeploying {
-			return mcpv1alpha1.MCPRegistryPhasePending, "Registry data synced, API deployment in progress"
-		}
-		return mcpv1alpha1.MCPRegistryPhasePending, "Registry data synced, API deployment pending"
 	}
 
 	// Default to pending for initial state or unknown combinations

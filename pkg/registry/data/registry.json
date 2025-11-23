@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-21T00:18:04Z",
+  "last_updated": "2025-11-22T00:17:45Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1536,7 +1536,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.20.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.21.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -2016,7 +2016,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.20.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.21.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -2135,7 +2135,7 @@
         "update",
         "issues"
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.20.2",
+      "image": "ghcr.io/github/github-mcp-server:v0.21.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -5740,7 +5740,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-10-27T02:34:44Z"
+        "last_updated": "2025-11-21T02:32:11Z"
       },
       "tags": [
         "remote",
@@ -5775,7 +5775,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-10-27T02:34:44Z"
+        "last_updated": "2025-11-21T02:32:11Z"
       },
       "tags": [
         "remote",
@@ -5856,7 +5856,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-10-27T02:34:44Z"
+        "last_updated": "2025-11-21T02:32:11Z"
       },
       "tags": [
         "issue-tracking",
@@ -5886,7 +5886,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-10-27T02:34:45Z"
+        "last_updated": "2025-11-21T02:32:11Z"
       },
       "tags": [
         "remote",
@@ -5953,9 +5953,9 @@
         "all_widgets_schema"
       ],
       "metadata": {
-        "stars": 323,
+        "stars": 336,
         "pulls": 0,
-        "last_updated": "2025-10-27T02:34:45Z"
+        "last_updated": "2025-11-21T02:32:11Z"
       },
       "repository_url": "https://github.com/mondaycom/mcp",
       "tags": [

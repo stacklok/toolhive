@@ -10,15 +10,18 @@ import (
 const (
 	// RegistrySourceTypeConfigMap is the type for registry data stored in ConfigMaps
 	RegistrySourceTypeConfigMap = "configmap"
+
+	// RegistrySourceTypeGit is the type for registry data stored in Git repositories
+	RegistrySourceTypeGit = "git"
+
+	// RegistrySourceTypeAPI is the type for registry data fetched from API endpoints
+	RegistrySourceTypeAPI = "api"
 )
 
 // Registry formats
 const (
 	// RegistryFormatToolHive is the native ToolHive registry format
 	RegistryFormatToolHive = "toolhive"
-
-	// RegistryFormatUpstream is the upstream MCP registry format
-	RegistryFormatUpstream = "upstream"
 )
 
 // MCPRegistrySpec defines the desired state of MCPRegistry
@@ -41,12 +44,21 @@ type MCPRegistrySpec struct {
 	// Filter defines include/exclude patterns for registry content
 	// +optional
 	Filter *RegistryFilter `json:"filter,omitempty"`
+
+	// EnforceServers indicates whether MCPServers in this namespace must have their images
+	// present in at least one registry in the namespace. When any registry in the namespace
+	// has this field set to true, enforcement is enabled for the entire namespace.
+	// MCPServers with images not found in any registry will be rejected.
+	// When false (default), MCPServers can be deployed regardless of registry presence.
+	// +kubebuilder:default=false
+	// +optional
+	EnforceServers bool `json:"enforceServers,omitempty"`
 }
 
 // MCPRegistrySource defines the source configuration for registry data
 type MCPRegistrySource struct {
-	// Type is the type of source (configmap)
-	// +kubebuilder:validation:Enum=configmap
+	// Type is the type of source (configmap, git, api)
+	// +kubebuilder:validation:Enum=configmap;git;api
 	// +kubebuilder:default=configmap
 	Type string `json:"type"`
 
@@ -55,24 +67,67 @@ type MCPRegistrySource struct {
 	// +kubebuilder:default=toolhive
 	Format string `json:"format,omitempty"`
 
-	// ConfigMap defines the ConfigMap source configuration
+	// ConfigMapRef defines the ConfigMap source configuration
 	// Only used when Type is "configmap"
 	// +optional
-	ConfigMap *ConfigMapSource `json:"configmap,omitempty"`
+	ConfigMapRef *corev1.ConfigMapKeySelector `json:"configMapRef,omitempty"`
+
+	// Git defines the Git repository source configuration
+	// Only used when Type is "git"
+	// +optional
+	Git *GitSource `json:"git,omitempty"`
+
+	// API defines the API source configuration
+	// Only used when Type is "api"
+	// +optional
+	API *APISource `json:"api,omitempty"`
 }
 
-// ConfigMapSource defines ConfigMap source configuration
-type ConfigMapSource struct {
-	// Name is the name of the ConfigMap
+// GitSource defines Git repository source configuration
+type GitSource struct {
+	// Repository is the Git repository URL (HTTP/HTTPS/SSH)
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
-	Name string `json:"name"`
+	// +kubebuilder:validation:Pattern="^(file:///|https?://|git@|ssh://|git://).*"
+	Repository string `json:"repository"`
 
-	// Key is the key in the ConfigMap that contains the registry data
-	// +kubebuilder:default=registry.json
+	// Branch is the Git branch to use (mutually exclusive with Tag and Commit)
 	// +kubebuilder:validation:MinLength=1
 	// +optional
-	Key string `json:"key,omitempty"`
+	Branch string `json:"branch,omitempty"`
+
+	// Tag is the Git tag to use (mutually exclusive with Branch and Commit)
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Tag string `json:"tag,omitempty"`
+
+	// Commit is the Git commit SHA to use (mutually exclusive with Branch and Tag)
+	// +kubebuilder:validation:MinLength=1
+	// +optional
+	Commit string `json:"commit,omitempty"`
+
+	// Path is the path to the registry file within the repository
+	// +kubebuilder:validation:Pattern=^.*\.json$
+	// +kubebuilder:default=registry.json
+	// +optional
+	Path string `json:"path,omitempty"`
+}
+
+// APISource defines API source configuration for ToolHive Registry APIs
+// Phase 1: Supports ToolHive API endpoints (no pagination)
+// Phase 2: Will add support for upstream MCP Registry API with pagination
+type APISource struct {
+	// Endpoint is the base API URL (without path)
+	// The controller will append the appropriate paths:
+	// Phase 1 (ToolHive API):
+	//   - /v0/servers - List all servers (single response, no pagination)
+	//   - /v0/servers/{name} - Get specific server (future)
+	//   - /v0/info - Get registry metadata (future)
+	// Example: "http://my-registry-api.default.svc.cluster.local/api"
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern="^https?://.*"
+	Endpoint string `json:"endpoint"`
 }
 
 // SyncPolicy defines automatic synchronization behavior.
@@ -122,7 +177,8 @@ type TagFilter struct {
 
 // MCPRegistryStatus defines the observed state of MCPRegistry
 type MCPRegistryStatus struct {
-	// Phase represents the current phase of the MCPRegistry
+	// Phase represents the current overall phase of the MCPRegistry
+	// Derived from sync and API status
 	// +optional
 	Phase MCPRegistryPhase `json:"phase,omitempty"`
 
@@ -130,33 +186,17 @@ type MCPRegistryStatus struct {
 	// +optional
 	Message string `json:"message,omitempty"`
 
-	// LastSyncTime is the timestamp of the last successful sync
+	// SyncStatus provides detailed information about data synchronization
 	// +optional
-	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
+	SyncStatus *SyncStatus `json:"syncStatus,omitempty"`
 
-	// LastSyncHash is the hash of the last successfully synced data
-	// Used to detect changes in source data
+	// APIStatus provides detailed information about the API service
 	// +optional
-	LastSyncHash string `json:"lastSyncHash,omitempty"`
+	APIStatus *APIStatus `json:"apiStatus,omitempty"`
 
-	// ServerCount is the total number of servers in the registry
+	// LastAppliedFilterHash is the hash of the last applied filter
 	// +optional
-	// +kubebuilder:validation:Minimum=0
-	ServerCount int `json:"serverCount,omitempty"`
-
-	// DeployedServerCount is the number of deployed servers with matching labels
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	DeployedServerCount int `json:"deployedServerCount,omitempty"`
-
-	// SyncAttempts is the number of sync attempts since last success
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	SyncAttempts int `json:"syncAttempts,omitempty"`
-
-	// APIEndpoint is the URL of the registry API service
-	// +optional
-	APIEndpoint string `json:"apiEndpoint,omitempty"`
+	LastAppliedFilterHash string `json:"lastAppliedFilterHash,omitempty"`
 
 	// StorageRef is a reference to the internal storage location
 	// +optional
@@ -173,6 +213,95 @@ type MCPRegistryStatus struct {
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
+
+// SyncStatus provides detailed information about data synchronization
+type SyncStatus struct {
+	// Phase represents the current synchronization phase
+	// +kubebuilder:validation:Enum=Syncing;Complete;Failed
+	Phase SyncPhase `json:"phase"`
+
+	// Message provides additional information about the sync status
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// LastAttempt is the timestamp of the last sync attempt
+	// +optional
+	LastAttempt *metav1.Time `json:"lastAttempt,omitempty"`
+
+	// AttemptCount is the number of sync attempts since last success
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	AttemptCount int `json:"attemptCount,omitempty"`
+
+	// LastSyncTime is the timestamp of the last successful sync
+	// +optional
+	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
+
+	// LastSyncHash is the hash of the last successfully synced data
+	// Used to detect changes in source data
+	// +optional
+	LastSyncHash string `json:"lastSyncHash,omitempty"`
+
+	// ServerCount is the total number of servers in the registry
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	ServerCount int `json:"serverCount,omitempty"`
+}
+
+// APIStatus provides detailed information about the API service
+type APIStatus struct {
+	// Phase represents the current API service phase
+	// +kubebuilder:validation:Enum=NotStarted;Deploying;Ready;Unhealthy;Error
+	Phase APIPhase `json:"phase"`
+
+	// Message provides additional information about the API status
+	// +optional
+	Message string `json:"message,omitempty"`
+
+	// Endpoint is the URL where the API is accessible
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// ReadySince is the timestamp when the API became ready
+	// +optional
+	ReadySince *metav1.Time `json:"readySince,omitempty"`
+}
+
+// SyncPhase represents the data synchronization state
+// +kubebuilder:validation:Enum=Syncing;Complete;Failed
+type SyncPhase string
+
+const (
+	// SyncPhaseSyncing means sync is currently in progress
+	SyncPhaseSyncing SyncPhase = "Syncing"
+
+	// SyncPhaseComplete means sync completed successfully
+	SyncPhaseComplete SyncPhase = "Complete"
+
+	// SyncPhaseFailed means sync failed
+	SyncPhaseFailed SyncPhase = "Failed"
+)
+
+// APIPhase represents the API service state
+// +kubebuilder:validation:Enum=NotStarted;Deploying;Ready;Unhealthy;Error
+type APIPhase string
+
+const (
+	// APIPhaseNotStarted means API deployment has not been created
+	APIPhaseNotStarted APIPhase = "NotStarted"
+
+	// APIPhaseDeploying means API is being deployed
+	APIPhaseDeploying APIPhase = "Deploying"
+
+	// APIPhaseReady means API is ready to serve requests
+	APIPhaseReady APIPhase = "Ready"
+
+	// APIPhaseUnhealthy means API is deployed but not healthy
+	APIPhaseUnhealthy APIPhase = "Unhealthy"
+
+	// APIPhaseError means API deployment failed
+	APIPhaseError APIPhase = "Error"
+)
 
 // StorageReference defines a reference to internal storage
 type StorageReference struct {
@@ -225,16 +354,16 @@ const (
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.serverCount"
-//+kubebuilder:printcolumn:name="Deployed",type="integer",JSONPath=".status.deployedServerCount"
-//+kubebuilder:printcolumn:name="Last Sync",type="date",JSONPath=".status.lastSyncTime"
+//+kubebuilder:printcolumn:name="Sync",type="string",JSONPath=".status.syncStatus.phase"
+//+kubebuilder:printcolumn:name="API",type="string",JSONPath=".status.apiStatus.phase"
+//+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.syncStatus.serverCount"
+//+kubebuilder:printcolumn:name="Last Sync",type="date",JSONPath=".status.syncStatus.lastSyncTime"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:scope=Namespaced,categories=toolhive
 //nolint:lll
-//+kubebuilder:validation:XValidation:rule="self.spec.source.type == 'configmap' ? has(self.spec.source.configmap) : true",message="configMap field is required when source type is 'configmap'"
+//+kubebuilder:validation:XValidation:rule="self.spec.source.type == 'configmap' ? has(self.spec.source.configMapRef) : (self.spec.source.type == 'git' ? has(self.spec.source.git) : (self.spec.source.type == 'api' ? has(self.spec.source.api) : true))",message="configMapRef field is required when source type is 'configmap', git field is required when source type is 'git', api field is required when source type is 'api'"
 
 // MCPRegistry is the Schema for the mcpregistries API
-// ⚠️ Experimental API (v1alpha1) — subject to change.
 type MCPRegistry struct {
 	metav1.TypeMeta   `json:",inline"` // nolint:revive
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -260,6 +389,67 @@ func (r *MCPRegistry) GetStorageName() string {
 // GetAPIResourceName returns the base name for registry API resources (deployment, service)
 func (r *MCPRegistry) GetAPIResourceName() string {
 	return fmt.Sprintf("%s-api", r.Name)
+}
+
+// IsConfigMapRegistrySource returns true if the registry source is a configmap
+func (r *MCPRegistry) IsConfigMapRegistrySource() bool {
+	return r.Spec.Source.Type == RegistrySourceTypeConfigMap
+}
+
+// GetConfigMapSourceName returns the name of the configmap source
+// if its present, otherwise returns an empty string
+func (r *MCPRegistry) GetConfigMapSourceName() string {
+	if !r.IsConfigMapRegistrySource() {
+		return ""
+	}
+
+	if r.Spec.Source.ConfigMapRef == nil {
+		return ""
+	}
+
+	return r.Spec.Source.ConfigMapRef.Name
+}
+
+// DeriveOverallPhase determines the overall MCPRegistry phase based on sync and API status
+func (r *MCPRegistry) DeriveOverallPhase() MCPRegistryPhase {
+	syncStatus := r.Status.SyncStatus
+	apiStatus := r.Status.APIStatus
+
+	// Default phases if status not set
+	var syncPhase SyncPhase
+	if syncStatus != nil {
+		syncPhase = syncStatus.Phase
+	}
+
+	apiPhase := APIPhaseNotStarted
+	if apiStatus != nil {
+		apiPhase = apiStatus.Phase
+	}
+
+	// If sync failed, overall is Failed
+	if syncPhase == SyncPhaseFailed {
+		return MCPRegistryPhaseFailed
+	}
+
+	// If sync in progress, overall is Syncing
+	if syncPhase == SyncPhaseSyncing {
+		return MCPRegistryPhaseSyncing
+	}
+
+	// If sync is complete (no sync needed), check API status
+	if syncPhase == SyncPhaseComplete {
+		switch apiPhase {
+		case APIPhaseReady:
+			return MCPRegistryPhaseReady
+		case APIPhaseError:
+			return MCPRegistryPhaseFailed
+		case APIPhaseNotStarted, APIPhaseDeploying, APIPhaseUnhealthy:
+			return MCPRegistryPhasePending // API still starting/not healthy
+		}
+	}
+
+	// Default to pending for initial states
+	return MCPRegistryPhasePending
 }
 
 func init() {

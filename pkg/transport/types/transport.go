@@ -2,7 +2,7 @@
 // used in communication between the client and MCP server.
 package types
 
-//go:generate go run go.uber.org/mock/mockgen -package mocks -destination=mocks/transport.go -source=transport.go MiddlewareRunner,RunnerConfig
+//go:generate go run go.uber.org/mock/mockgen -package mocks -destination=mocks/mock_transport.go -source=transport.go MiddlewareRunner,RunnerConfig
 
 import (
 	"context"
@@ -12,13 +12,17 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/ignore"
-	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/transport/errors"
 )
 
 // MiddlewareFunction is a function that wraps an http.Handler with additional functionality.
 type MiddlewareFunction func(http.Handler) http.Handler
+
+// NamedMiddleware pairs a middleware function with its name for logging purposes.
+type NamedMiddleware struct {
+	Name     string
+	Function MiddlewareFunction
+}
 
 // Middleware defines a middleware interceptor and a close method.
 type Middleware interface {
@@ -56,8 +60,8 @@ func NewMiddlewareConfig(middlewareType string, parameters any) (*MiddlewareConf
 // MiddlewareRunner defines the interface that middleware can use to interact with the runner.
 // This unified interface replaces the ad-hoc interfaces defined in each middleware package.
 type MiddlewareRunner interface {
-	// AddMiddleware adds a middleware instance to the runner's middleware chain
-	AddMiddleware(middleware Middleware)
+	// AddMiddleware adds a middleware instance to the runner's middleware chain with a name for logging
+	AddMiddleware(name string, middleware Middleware)
 
 	// SetAuthInfoHandler sets the authentication info handler (used by auth middleware)
 	SetAuthInfoHandler(handler http.Handler)
@@ -86,14 +90,6 @@ type Transport interface {
 
 	// ProxyPort returns the port used by the transport.
 	ProxyPort() int
-
-	// Setup prepares the transport for use.
-	// The runtime parameter provides access to container operations.
-	// The permissionProfile is used to configure container permissions.
-	// The k8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template.
-	Setup(ctx context.Context, runtime rt.Deployer, containerName string, image string, cmdArgs []string,
-		envVars, labels map[string]string, permissionProfile *permissions.Profile, k8sPodTemplatePatch string,
-		isolateNetwork bool, ignoreConfig *ignore.Config) error
 
 	// Start initializes the transport and begins processing messages.
 	// The transport is responsible for container operations like attaching to stdin/stdout if needed.
@@ -191,9 +187,9 @@ type Config struct {
 	// If debug mode is enabled, containers will not be removed when stopped.
 	Debug bool
 
-	// Middlewares is a list of middleware functions to apply to the transport.
+	// Middlewares is a list of named middleware to apply to the transport.
 	// These are applied in order, with the first middleware being the outermost wrapper.
-	Middlewares []MiddlewareFunction
+	Middlewares []NamedMiddleware
 
 	// PrometheusHandler is an optional HTTP handler for Prometheus metrics endpoint.
 	// If provided, it will be exposed at /metrics on the transport's HTTP server.
@@ -202,6 +198,9 @@ type Config struct {
 	// AuthInfoHandler is an optional HTTP handler for authentication information endpoint.
 	// If provided, it will be exposed at /.well-known/oauth-protected-resource on the transport's HTTP server.
 	AuthInfoHandler http.Handler
+
+	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
+	TrustProxyHeaders bool
 
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	ProxyMode ProxyMode

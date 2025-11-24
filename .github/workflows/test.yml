@@ -11,19 +11,45 @@ jobs:
     name: Test Go Code
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Set up Go
-        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
         with:
           go-version-file: 'go.mod'
-          cache: true
+          cache: true  # This caches go modules based on go.sum
+          cache-dependency-path: go.sum
 
-      - name: Set up gotestfmt
-        uses: gotesttools/gotestfmt-action@v2
+      # Download all dependencies upfront (will be cached)
+      - name: Download Go dependencies
+        run: |
+          go mod download
+          go mod verify
+
+      # Cache Go build cache for faster compilation
+      # Note: ~/go/pkg/mod is already cached by actions/setup-go with cache: true
+      - name: Cache Go build cache
+        uses: actions/cache@v4
         with:
-          # avoid rate limiting
-          token: ${{ secrets.GITHUB_TOKEN }}
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-go-build-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-
+
+      # Cache Go tools (gotestfmt only for tests)
+      - name: Cache Go tools
+        id: cache-go-tools
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin
+          key: ${{ runner.os }}-go-tools-${{ hashFiles('go.mod') }}-gotestfmt-v2
+          restore-keys: |
+            ${{ runner.os }}-go-tools-
+
+      # Only install gotestfmt if not cached
+      - name: Install gotestfmt (if not cached)
+        if: steps.cache-go-tools.outputs.cache-hit != 'true'
+        run: go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
 
       - name: Install Task
         uses: arduino/setup-task@v2
@@ -31,6 +57,7 @@ jobs:
           version: 3.44.1
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Run tests with all dependencies already cached
       - name: Run tests with coverage
         run: task test-coverage
 

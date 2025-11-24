@@ -15,11 +15,15 @@ Set the MCP server registry
 
 ### Synopsis
 
-Set the MCP server registry to either a remote URL or local file path.
-The command automatically detects whether the input is a URL or file path.
+Set the MCP server registry to a remote URL, local file path, or API endpoint.
+The command automatically detects the registry type:
+  - URLs ending with .json are treated as static registry files
+  - Other URLs are treated as MCP Registry API endpoints (v0.1 spec)
+  - Local paths are treated as local registry files
 
 Examples:
-  thv config set-registry https://example.com/registry.json           # Remote URL
+  thv config set-registry https://example.com/registry.json           # Static remote file
+  thv config set-registry https://registry.example.com                # API endpoint
   thv config set-registry /path/to/local-registry.json               # Local file path
   thv config set-registry file:///path/to/local-registry.json        # Explicit file URL
 
@@ -30,7 +34,7 @@ thv config set-registry <url-or-path> [flags]
 ### Options
 
 ```
-  -p, --allow-private-ip   Allow setting the registry URL, even if it references a private IP address
+  -p, --allow-private-ip   Allow setting the registry URL or API endpoint, even if it references a private IP address
   -h, --help               help for set-registry
 ```
 

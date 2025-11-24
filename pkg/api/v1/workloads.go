@@ -68,6 +68,7 @@ func WorkloadRouter(
 	r.Post("/{name}/restart", routes.restartWorkload)
 	r.Get("/{name}/status", routes.getWorkloadStatus)
 	r.Get("/{name}/logs", routes.getLogsForWorkload)
+	r.Get("/{name}/proxy-logs", routes.getProxyLogsForWorkload)
 	r.Get("/{name}/export", routes.exportWorkload)
 	r.Delete("/{name}", routes.deleteWorkload)
 
@@ -520,11 +521,18 @@ func (s *WorkloadRoutes) deleteWorkloadsBulk(w http.ResponseWriter, r *http.Requ
 // @Produce      text/plain
 // @Param        name  path      string  true  "Workload name"
 // @Success      200   {string}  string  "Logs for the specified workload"
+// @Failure      400   {string}  string  "Invalid workload name"
 // @Failure      404   {string}  string  "Not Found"
 // @Router       /api/v1beta/workloads/{name}/logs [get]
 func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := chi.URLParam(r, "name")
+
+	// Validate workload name to prevent path traversal
+	if err := wt.ValidateWorkloadName(name); err != nil {
+		http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	logs, err := s.workloadManager.GetLogs(ctx, name, false)
 	if err != nil {
@@ -541,6 +549,43 @@ func (s *WorkloadRoutes) getLogsForWorkload(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		logger.Errorf("Failed to write logs response: %v", err)
 		http.Error(w, "Failed to write logs response", http.StatusInternalServerError)
+		return
+	}
+}
+
+// getProxyLogsForWorkload
+//
+// @Summary      Get proxy logs for a specific workload
+// @Description  Retrieve proxy logs for a specific workload by name from the file system.
+// @Tags         logs
+// @Produce      text/plain
+// @Param        name  path      string  true  "Workload name"
+// @Success      200   {string}  string  "Proxy logs for the specified workload"
+// @Failure      400   {string}  string  "Invalid workload name"
+// @Failure      404   {string}  string  "Proxy logs not found for workload"
+// @Router       /api/v1beta/workloads/{name}/proxy-logs [get]
+func (s *WorkloadRoutes) getProxyLogsForWorkload(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	name := chi.URLParam(r, "name")
+
+	// Validate workload name to prevent path traversal
+	if err := wt.ValidateWorkloadName(name); err != nil {
+		http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	logs, err := s.workloadManager.GetProxyLogs(ctx, name)
+	if err != nil {
+		logger.Errorf("Failed to get proxy logs: %v", err)
+		http.Error(w, "Proxy logs not found for workload", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	_, err = w.Write([]byte(logs))
+	if err != nil {
+		logger.Errorf("Failed to write proxy logs response: %v", err)
+		http.Error(w, "Failed to write proxy logs response", http.StatusInternalServerError)
 		return
 	}
 }

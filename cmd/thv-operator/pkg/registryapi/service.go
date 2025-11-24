@@ -3,6 +3,7 @@ package registryapi
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -57,8 +58,19 @@ func (m *manager) ensureService(
 		return nil, fmt.Errorf("failed to get service %s: %w", serviceName, err)
 	}
 
-	// Service exists, update it if necessary
+	// Service exists, check if update is needed
 	ctxLogger.V(1).Info("Service already exists, checking for updates", "service", serviceName)
+
+	// Check if service needs updating by comparing desired vs current state
+	needsUpdate := existing.Spec.Type != service.Spec.Type ||
+		!reflect.DeepEqual(existing.Spec.Selector, service.Spec.Selector) ||
+		!reflect.DeepEqual(existing.Spec.Ports, service.Spec.Ports) ||
+		!reflect.DeepEqual(existing.Labels, service.Labels)
+
+	if !needsUpdate {
+		ctxLogger.V(1).Info("Service already up-to-date, skipping update", "service", serviceName)
+		return existing, nil
+	}
 
 	// Update the existing service with our desired state
 	existing.Spec.Type = service.Spec.Type

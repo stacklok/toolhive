@@ -7,7 +7,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -31,6 +31,16 @@ func TestParseRunServerArgs(t *testing.T) {
 							"KEY1": "value1",
 							"KEY2": "value2",
 						},
+						"secrets": []interface{}{
+							map[string]interface{}{
+								"name":   "github-token",
+								"target": "GITHUB_TOKEN",
+							},
+							map[string]interface{}{
+								"name":   "api-key",
+								"target": "API_KEY",
+							},
+						},
 					},
 				},
 			},
@@ -41,6 +51,10 @@ func TestParseRunServerArgs(t *testing.T) {
 				Env: map[string]string{
 					"KEY1": "value1",
 					"KEY2": "value2",
+				},
+				Secrets: []SecretMapping{
+					{Name: "github-token", Target: "GITHUB_TOKEN"},
+					{Name: "api-key", Target: "API_KEY"},
 				},
 			},
 			wantErr: false,
@@ -55,10 +69,11 @@ func TestParseRunServerArgs(t *testing.T) {
 				},
 			},
 			expected: &runServerArgs{
-				Server: "test-server",
-				Name:   "test-server", // Should default to server name
-				Host:   "127.0.0.1",   // Should default to 127.0.0.1
-				Env:    nil,
+				Server:  "test-server",
+				Name:    "test-server", // Should default to server name
+				Host:    "127.0.0.1",   // Should default to 127.0.0.1
+				Env:     nil,
+				Secrets: nil,
 			},
 			wantErr: false,
 		},
@@ -73,10 +88,11 @@ func TestParseRunServerArgs(t *testing.T) {
 				},
 			},
 			expected: &runServerArgs{
-				Server: "my-server",
-				Name:   "my-server",
-				Host:   "127.0.0.1",
-				Env:    nil,
+				Server:  "my-server",
+				Name:    "my-server",
+				Host:    "127.0.0.1",
+				Env:     nil,
+				Secrets: nil,
 			},
 			wantErr: false,
 		},
@@ -91,10 +107,11 @@ func TestParseRunServerArgs(t *testing.T) {
 				},
 			},
 			expected: &runServerArgs{
-				Server: "test-server",
-				Name:   "test-server",
-				Host:   "127.0.0.1",
-				Env:    nil,
+				Server:  "test-server",
+				Name:    "test-server",
+				Host:    "127.0.0.1",
+				Env:     nil,
+				Secrets: nil,
 			},
 			wantErr: false,
 		},
@@ -120,7 +137,7 @@ func TestConfigureTransport(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name              string
-		imageMetadata     *registry.ImageMetadata
+		imageMetadata     *regtypes.ImageMetadata
 		expectedTransport string
 	}{
 		{
@@ -130,8 +147,8 @@ func TestConfigureTransport(t *testing.T) {
 		},
 		{
 			name: "metadata with empty transport returns SSE",
-			imageMetadata: &registry.ImageMetadata{
-				BaseServerMetadata: registry.BaseServerMetadata{
+			imageMetadata: &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Transport: "",
 				},
 			},
@@ -139,8 +156,8 @@ func TestConfigureTransport(t *testing.T) {
 		},
 		{
 			name: "metadata with stdio transport",
-			imageMetadata: &registry.ImageMetadata{
-				BaseServerMetadata: registry.BaseServerMetadata{
+			imageMetadata: &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Transport: "stdio",
 				},
 			},
@@ -148,8 +165,8 @@ func TestConfigureTransport(t *testing.T) {
 		},
 		{
 			name: "metadata with streamable-http transport",
-			imageMetadata: &registry.ImageMetadata{
-				BaseServerMetadata: registry.BaseServerMetadata{
+			imageMetadata: &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Transport: "streamable-http",
 				},
 			},
@@ -172,7 +189,7 @@ func TestPrepareEnvironmentVariables(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name          string
-		imageMetadata *registry.ImageMetadata
+		imageMetadata *regtypes.ImageMetadata
 		userEnv       map[string]string
 		expected      map[string]string
 	}{
@@ -184,8 +201,8 @@ func TestPrepareEnvironmentVariables(t *testing.T) {
 		},
 		{
 			name: "metadata with defaults, no user env",
-			imageMetadata: &registry.ImageMetadata{
-				EnvVars: []*registry.EnvVar{
+			imageMetadata: &regtypes.ImageMetadata{
+				EnvVars: []*regtypes.EnvVar{
 					{Name: "VAR1", Default: "default1"},
 					{Name: "VAR2", Default: "default2"},
 				},
@@ -198,8 +215,8 @@ func TestPrepareEnvironmentVariables(t *testing.T) {
 		},
 		{
 			name: "metadata with defaults, user overrides",
-			imageMetadata: &registry.ImageMetadata{
-				EnvVars: []*registry.EnvVar{
+			imageMetadata: &regtypes.ImageMetadata{
+				EnvVars: []*regtypes.EnvVar{
 					{Name: "VAR1", Default: "default1"},
 					{Name: "VAR2", Default: "default2"},
 				},
@@ -226,8 +243,8 @@ func TestPrepareEnvironmentVariables(t *testing.T) {
 		},
 		{
 			name: "metadata with empty defaults ignored",
-			imageMetadata: &registry.ImageMetadata{
-				EnvVars: []*registry.EnvVar{
+			imageMetadata: &regtypes.ImageMetadata{
+				EnvVars: []*regtypes.EnvVar{
 					{Name: "VAR1", Default: ""},
 					{Name: "VAR2", Default: "value2"},
 				},
@@ -264,7 +281,7 @@ func TestBuildServerConfig(t *testing.T) {
 	tests := []struct {
 		name          string
 		imageURL      string
-		imageMetadata *registry.ImageMetadata
+		imageMetadata *regtypes.ImageMetadata
 		expectError   bool
 	}{
 		{
@@ -276,13 +293,13 @@ func TestBuildServerConfig(t *testing.T) {
 		{
 			name:     "valid config with metadata",
 			imageURL: "test/image:latest",
-			imageMetadata: &registry.ImageMetadata{
-				BaseServerMetadata: registry.BaseServerMetadata{
+			imageMetadata: &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Transport: "stdio",
 				},
 				Image: "test/image:latest",
 				Args:  []string{"--test"},
-				EnvVars: []*registry.EnvVar{
+				EnvVars: []*regtypes.EnvVar{
 					{Name: "DEFAULT_VAR", Default: "default_value"},
 				},
 			},
@@ -303,6 +320,54 @@ func TestBuildServerConfig(t *testing.T) {
 				assert.NoError(t, err)
 				assert.NotNil(t, runConfig)
 			}
+		})
+	}
+}
+
+func TestPrepareSecrets(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		secrets  []SecretMapping
+		expected []string
+	}{
+		{
+			name:     "nil secrets",
+			secrets:  nil,
+			expected: nil,
+		},
+		{
+			name:     "empty secrets",
+			secrets:  []SecretMapping{},
+			expected: nil,
+		},
+		{
+			name: "single secret",
+			secrets: []SecretMapping{
+				{Name: "github-token", Target: "GITHUB_TOKEN"},
+			},
+			expected: []string{"github-token,target=GITHUB_TOKEN"},
+		},
+		{
+			name: "multiple secrets",
+			secrets: []SecretMapping{
+				{Name: "github-token", Target: "GITHUB_TOKEN"},
+				{Name: "api-key", Target: "API_KEY"},
+				{Name: "db-password", Target: "DATABASE_PASSWORD"},
+			},
+			expected: []string{
+				"github-token,target=GITHUB_TOKEN",
+				"api-key,target=API_KEY",
+				"db-password,target=DATABASE_PASSWORD",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := prepareSecrets(tt.secrets)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }

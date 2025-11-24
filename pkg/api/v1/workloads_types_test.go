@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -152,12 +153,15 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 
 		runConfig := &runner.RunConfig{
 			Name: "test-workload",
-			RemoteAuthConfig: &runner.RemoteAuthConfig{
+			RemoteAuthConfig: &remote.Config{
 				Issuer:       "https://oauth.example.com",
 				AuthorizeURL: "https://oauth.example.com/auth",
 				TokenURL:     "https://oauth.example.com/token",
 				ClientID:     "test-client",
+				ClientSecret: "oauth-client-secret,target=oauth_secret",
 				Scopes:       []string{"read", "write"},
+				UsePKCE:      true,
+				Resource:     "https://mcp.example.com",
 				OAuthParams:  map[string]string{"custom": "param"},
 				CallbackPort: 8081,
 			},
@@ -172,8 +176,44 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.Equal(t, "https://oauth.example.com/token", result.OAuthConfig.TokenURL)
 		assert.Equal(t, "test-client", result.OAuthConfig.ClientID)
 		assert.Equal(t, []string{"read", "write"}, result.OAuthConfig.Scopes)
+		assert.True(t, result.OAuthConfig.UsePKCE)
+		assert.Equal(t, "https://mcp.example.com", result.OAuthConfig.Resource)
 		assert.Equal(t, map[string]string{"custom": "param"}, result.OAuthConfig.OAuthParams)
 		assert.Equal(t, 8081, result.OAuthConfig.CallbackPort)
+
+		// Verify that secret is parsed correctly from CLI format
+		require.NotNil(t, result.OAuthConfig.ClientSecret)
+		assert.Equal(t, "oauth-client-secret", result.OAuthConfig.ClientSecret.Name)
+		assert.Equal(t, "oauth_secret", result.OAuthConfig.ClientSecret.Target)
+	})
+
+	t.Run("with remote OAuth config without secret key (CLI case)", func(t *testing.T) {
+		t.Parallel()
+
+		runConfig := &runner.RunConfig{
+			Name: "test-workload",
+			RemoteAuthConfig: &remote.Config{
+				Issuer:       "https://oauth.example.com",
+				AuthorizeURL: "https://oauth.example.com/auth",
+				TokenURL:     "https://oauth.example.com/token",
+				ClientID:     "test-client",
+				ClientSecret: "actual-secret-value", // Plain text secret (CLI case)
+				Scopes:       []string{"read", "write"},
+				UsePKCE:      true,
+				OAuthParams:  map[string]string{"custom": "param"},
+				CallbackPort: 8081,
+			},
+		}
+
+		result := runConfigToCreateRequest(runConfig)
+
+		require.NotNil(t, result)
+		require.NotNil(t, result.OAuthConfig)
+		assert.Equal(t, "test-client", result.OAuthConfig.ClientID)
+		assert.True(t, result.OAuthConfig.UsePKCE)
+
+		// When no secret key is stored (CLI case), ClientSecret should be nil
+		assert.Nil(t, result.OAuthConfig.ClientSecret)
 	})
 
 	t.Run("with permission profile", func(t *testing.T) {
@@ -207,6 +247,33 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		require.NotNil(t, result)
 		// Invalid secrets should be ignored, resulting in empty secrets array
 		assert.Empty(t, result.Secrets)
+	})
+
+	t.Run("with tools override", func(t *testing.T) {
+		t.Parallel()
+
+		runConfig := &runner.RunConfig{
+			Name: "test-workload",
+			ToolsOverride: map[string]runner.ToolOverride{
+				"fetch": {
+					Name:        "fetch_custom",
+					Description: "Custom fetch description",
+				},
+				"read": {
+					Name: "read_file",
+				},
+			},
+		}
+
+		result := runConfigToCreateRequest(runConfig)
+
+		require.NotNil(t, result)
+		require.NotNil(t, result.ToolsOverride)
+		assert.Len(t, result.ToolsOverride, 2)
+		assert.Equal(t, "fetch_custom", result.ToolsOverride["fetch"].Name)
+		assert.Equal(t, "Custom fetch description", result.ToolsOverride["fetch"].Description)
+		assert.Equal(t, "read_file", result.ToolsOverride["read"].Name)
+		assert.Empty(t, result.ToolsOverride["read"].Description)
 	})
 
 	t.Run("nil runConfig", func(t *testing.T) {

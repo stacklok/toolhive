@@ -1,0 +1,24 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: toolhive-git-registry
+  namespace: toolhive-system
+spec:
+  displayName: "ToolHive Official Registry (Git)"
+  source:
+    type: git
+    format: toolhive
+    git:
+      repository: "https://github.com/stacklok/toolhive"
+      branch: "main"
+      path: "pkg/registry/data/registry.json"
+  syncPolicy:
+    interval: "1h"
+  filter:
+    tags:
+      include:
+        - "database"
+        - "filesystem"
+        - "api"
+      exclude:
+        - "experimental"

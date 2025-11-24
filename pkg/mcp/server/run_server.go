@@ -8,18 +8,28 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
+// SecretMapping represents a secret name and its target environment variable.
+// Note: Description is not included because it's only relevant for listing/discovery
+// (see SecretInfo). When mapping secrets to a running server, only the name and target
+// environment variable are needed.
+type SecretMapping struct {
+	Name   string `json:"name"`
+	Target string `json:"target"`
+}
+
 // runServerArgs holds the arguments for running a server
 type runServerArgs struct {
-	Server string            `json:"server"`
-	Name   string            `json:"name,omitempty"`
-	Host   string            `json:"host,omitempty"`
-	Env    map[string]string `json:"env,omitempty"`
+	Server  string            `json:"server"`
+	Name    string            `json:"name,omitempty"`
+	Host    string            `json:"host,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	Secrets []SecretMapping   `json:"secrets,omitempty"`
 }
 
 // RunServer runs an MCP server
@@ -38,7 +48,7 @@ func (h *Handler) RunServer(ctx context.Context, request mcp.CallToolRequest) (*
 	}
 
 	// Build run configuration
-	imageMetadata, _ := serverMetadata.(*registry.ImageMetadata)
+	imageMetadata, _ := serverMetadata.(*types.ImageMetadata)
 
 	runConfig, err := buildServerConfig(ctx, args, imageURL, imageMetadata)
 	if err != nil {
@@ -97,7 +107,7 @@ func buildServerConfig(
 	ctx context.Context,
 	args *runServerArgs,
 	imageURL string,
-	imageMetadata *registry.ImageMetadata,
+	imageMetadata *types.ImageMetadata,
 ) (*runner.RunConfig, error) {
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
@@ -119,13 +129,19 @@ func buildServerConfig(
 	// Prepare environment variables
 	envVars := prepareEnvironmentVariables(imageMetadata, args.Env)
 
+	// Prepare secrets
+	secrets := prepareSecrets(args.Secrets)
+	if len(secrets) > 0 {
+		opts = append(opts, runner.WithSecrets(secrets))
+	}
+
 	// Build the configuration
 	envVarValidator := &runner.DetachedEnvVarValidator{}
 	return runner.NewRunConfigBuilder(ctx, imageMetadata, envVars, envVarValidator, opts...)
 }
 
 // configureTransport sets up transport configuration from metadata
-func configureTransport(opts *[]runner.RunConfigBuilderOption, imageMetadata *registry.ImageMetadata) string {
+func configureTransport(opts *[]runner.RunConfigBuilderOption, imageMetadata *types.ImageMetadata) string {
 	transport := transporttypes.TransportTypeSSE.String()
 
 	if imageMetadata != nil {
@@ -139,7 +155,7 @@ func configureTransport(opts *[]runner.RunConfigBuilderOption, imageMetadata *re
 }
 
 // prepareEnvironmentVariables merges default and user environment variables
-func prepareEnvironmentVariables(imageMetadata *registry.ImageMetadata, userEnv map[string]string) map[string]string {
+func prepareEnvironmentVariables(imageMetadata *types.ImageMetadata, userEnv map[string]string) map[string]string {
 	envVarsMap := make(map[string]string)
 
 	// Add default environment variables from metadata
@@ -157,6 +173,21 @@ func prepareEnvironmentVariables(imageMetadata *registry.ImageMetadata, userEnv 
 	}
 
 	return envVarsMap
+}
+
+// prepareSecrets converts SecretMapping array to the string format expected by the runner
+func prepareSecrets(secretMappings []SecretMapping) []string {
+	if len(secretMappings) == 0 {
+		return nil
+	}
+
+	secrets := make([]string, len(secretMappings))
+	for i, mapping := range secretMappings {
+		// Convert to the format expected by runner: "secret_name,target=ENV_VAR_NAME"
+		secrets[i] = fmt.Sprintf("%s,target=%s", mapping.Name, mapping.Target)
+	}
+
+	return secrets
 }
 
 // saveAndRunServer saves the configuration and runs the server

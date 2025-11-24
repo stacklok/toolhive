@@ -1,3 +1,6 @@
+// Package registry provides MCP server registry management functionality.
+// It supports multiple registry sources including embedded data, local files,
+// remote URLs, and API endpoints, with optional caching and conversion capabilities.
 package registry
 
 import (
@@ -19,6 +22,23 @@ var (
 
 // NewRegistryProvider creates a new registry provider based on the configuration
 func NewRegistryProvider(cfg *config.Config) Provider {
+	// Priority order:
+	// 1. API URL (if configured) - for live MCP Registry API queries
+	// 2. Remote URL (if configured) - for static JSON over HTTP
+	// 3. Local file path (if configured) - for local JSON file
+	// 4. Default - embedded registry data
+
+	if cfg != nil && len(cfg.RegistryApiUrl) > 0 {
+		// Use cached provider with persistent cache enabled by default
+		// This provides 1-hour TTL and works for both CLI and API server
+		provider, err := NewCachedAPIRegistryProvider(cfg.RegistryApiUrl, cfg.AllowPrivateRegistryIp, true)
+		if err != nil {
+			// Log error but fall back to default provider
+			// This prevents application from failing if API is temporarily unavailable
+			return NewLocalRegistryProvider()
+		}
+		return provider
+	}
 	if cfg != nil && len(cfg.RegistryUrl) > 0 {
 		return NewRemoteRegistryProvider(cfg.RegistryUrl, cfg.AllowPrivateRegistryIp)
 	}

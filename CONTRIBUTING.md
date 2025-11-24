@@ -15,6 +15,7 @@ get started. You can find some hints for starting development in ToolHive's
   - [Not sure how to start contributing?](#not-sure-how-to-start-contributing)
   - [Pull request process](#pull-request-process)
   - [Contributing to docs](#contributing-to-docs)
+  - [Contributing to design proposals](#contributing-to-design-proposals)
   - [Commit message guidelines](#commit-message-guidelines)
 
 ## Code of conduct
@@ -68,6 +69,25 @@ are a great place to start!
 - Once approved, all of your commits will be squashed into a single commit with
   your PR title.
 
+### Testing requirements
+
+- Add end-to-end tests for new features covering both API and CLI flows.
+- Write unit tests for new code alongside the source files.
+
+### Code quality expectations
+
+Pull request authors are responsible for:
+
+- Keeping PRs small and focused. PRs exceeding 1000 lines may be blocked and
+  require splitting into multiple PRs or logical commits before review. If a
+  large PR is unavoidable, include an explanation in the PR description
+  justifying the size and describing how the changes are organized for review.
+- Reviewing all submitted code, regardless of whether it's AI-generated or
+  hand-written.
+- Manually testing changes to verify new or existing features work correctly.
+- Ensuring coding style guidelines are followed.
+- Respecting architecture boundaries and design patterns.
+
 ### Contributing to docs
 
 The ToolHive user documentation website is maintained in the
@@ -78,6 +98,38 @@ Please review the README and
 [STYLE-GUIDE](https://github.com/stacklok/docs-website/blob/main/STYLE-GUIDE.md)
 in the docs-website repository for more information on how to contribute to the
 documentation.
+
+### Contributing to design proposals
+
+Design proposals for ToolHive should be placed in the `docs/proposals/` directory
+and follow a specific naming convention to ensure proper organization and tracking.
+
+#### Proposal file naming format
+
+All proposal files must follow this naming pattern:
+```
+THV-{PR_NUMBER}-{descriptive-name}.md
+```
+
+Where:
+- `THV-` is the required prefix
+- `{PR_NUMBER}` is the pull request number (4 digits)
+- `{descriptive-name}` is a descriptive name in kebab-case
+
+#### Examples of valid proposal names:
+- `THV-1234-new-feature-proposal.md`
+- `THV-5678-api-improvements.md`
+- `THV-9012-authentication-enhancement.md`
+
+#### Proposal content guidelines:
+- Use clear, descriptive titles
+- Include a problem statement at the beginning
+- Add examples where applicable
+- Consider backward compatibility
+- Include migration strategies if needed
+
+The CI system will automatically validate that proposal files follow the correct
+naming convention when they are added or modified in pull requests.
 
 ### Commit message guidelines
 

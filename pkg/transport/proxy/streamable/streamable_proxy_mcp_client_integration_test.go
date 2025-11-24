@@ -34,7 +34,7 @@ func TestMCPGoClientInitializeAndPing(t *testing.T) {
 
 	// Use a dedicated port to avoid clashes with other tests
 	const port = 8096
-	proxy := NewHTTPProxy("127.0.0.1", port, "test-container", http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+	proxy := NewHTTPProxy("127.0.0.1", port, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		// no-op prometheus handler, safe for tests
 	}))
 
@@ -160,7 +160,7 @@ func TestMCPGoConcurrentClientsAndPings(t *testing.T) {
 	t.Parallel()
 
 	const port = 8097
-	proxy := NewHTTPProxy("127.0.0.1", port, "test-container", nil)
+	proxy := NewHTTPProxy("127.0.0.1", port, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -310,7 +310,7 @@ func TestMCPGoManySequentialPingsSingleClient(t *testing.T) {
 	t.Parallel()
 
 	const port = 8098
-	proxy := NewHTTPProxy("127.0.0.1", port, "test-container", nil)
+	proxy := NewHTTPProxy("127.0.0.1", port, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

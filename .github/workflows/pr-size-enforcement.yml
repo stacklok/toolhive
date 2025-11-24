@@ -1,0 +1,131 @@
+name: PR Size Enforcement
+
+on:
+  pull_request:
+    types: [labeled, unlabeled, opened, edited, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  enforce-xl-justification:
+    name: Enforce XL PR Justification
+    runs-on: ubuntu-latest
+    if: contains(github.event.pull_request.labels.*.name, 'size/XL')
+    steps:
+      - name: Check for justification
+        id: check
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const prBody = context.payload.pull_request.body || '';
+
+            // Look for the justification section header
+            const hasJustification = /##\s*Large PR Justification/i.test(prBody);
+
+            console.log('PR Body length:', prBody.length);
+            console.log('Has justification section:', hasJustification);
+
+            return hasJustification;
+
+      - name: Request changes if no justification
+        if: steps.check.outputs.result == 'false'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+
+            // Check if we already have a review requesting changes
+            const reviews = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const botReview = reviews.data.find(review =>
+              review.user.login === 'github-actions[bot]' &&
+              review.state === 'CHANGES_REQUESTED'
+            );
+
+            if (botReview) {
+              console.log('Already requested changes in review:', botReview.id);
+              return;
+            }
+
+            // Request changes with explanation
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              event: 'REQUEST_CHANGES',
+              body: `## Large PR Detected
+
+This PR exceeds 1000 lines of changes and requires justification before it can be reviewed.
+
+### How to unblock this PR:
+
+Add a section to your PR description with the following format:
+
+\`\`\`markdown
+## Large PR Justification
+
+[Explain why this PR must be large, such as:]
+- Generated code that cannot be split
+- Large refactoring that must be atomic
+- Multiple related changes that would break if separated
+- Migration or data transformation
+\`\`\`
+
+### Alternative:
+
+Consider splitting this PR into smaller, focused changes (< 1000 lines each) for easier review and reduced risk.
+
+See our [Contributing Guidelines](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/CONTRIBUTING.md#code-quality-expectations) for more details.
+
+---
+*This review will be automatically dismissed once you add the justification section.*`
+            });
+
+            console.log('Created review requesting changes');
+
+      - name: Dismiss review if justification added
+        if: steps.check.outputs.result == 'true'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+
+            // Find our previous review requesting changes
+            const reviews = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const botReview = reviews.data.find(review =>
+              review.user.login === 'github-actions[bot]' &&
+              review.state === 'CHANGES_REQUESTED'
+            );
+
+            if (botReview) {
+              await github.rest.pulls.dismissReview({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                review_id: botReview.id,
+                message: 'Large PR justification has been provided. Thank you!'
+              });
+
+              console.log('Dismissed previous review:', botReview.id);
+
+              // Add a comment confirming unblock
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: '✅ Large PR justification has been provided. The size review has been dismissed and this PR can now proceed with normal review.'
+              });
+            } else {
+              console.log('No previous blocking review found');
+            }

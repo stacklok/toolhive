@@ -529,8 +529,8 @@ func TestFileStatusManager_ValidateRunningWorkload_Remote(t *testing.T) {
 	// Mock runtime should NOT be called for remote workloads
 	// (no expectations set, so any call would fail the test)
 
-	// Validate the remote workload
-	result, err := manager.validateRunningWorkload(ctx, "remote-test", remoteWorkload)
+	// Validate the remote workload (PID is irrelevant for remote workloads)
+	result, err := manager.validateRunningWorkload(ctx, "remote-test", remoteWorkload, 0)
 	require.NoError(t, err)
 
 	// Should return the workload unchanged without calling runtime

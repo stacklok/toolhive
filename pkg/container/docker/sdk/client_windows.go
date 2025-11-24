@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package sdk
 
@@ -13,6 +12,7 @@ import (
 
 	"github.com/Microsoft/go-winio"
 	"github.com/docker/docker/client"
+
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
 )

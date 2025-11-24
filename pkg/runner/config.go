@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/auth/remote"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -19,7 +21,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -46,7 +47,7 @@ type RunConfig struct {
 	RemoteURL string `json:"remote_url,omitempty" yaml:"remote_url,omitempty"`
 
 	// RemoteAuthConfig contains OAuth configuration for remote MCP servers
-	RemoteAuthConfig *RemoteAuthConfig `json:"remote_auth_config,omitempty" yaml:"remote_auth_config,omitempty"`
+	RemoteAuthConfig *remote.Config `json:"remote_auth_config,omitempty" yaml:"remote_auth_config,omitempty"`
 
 	// CmdArgs are the arguments to pass to the container
 	CmdArgs []string `json:"cmd_args,omitempty" yaml:"cmd_args,omitempty"`
@@ -100,6 +101,9 @@ type RunConfig struct {
 	// OIDCConfig contains OIDC configuration
 	OIDCConfig *auth.TokenValidatorConfig `json:"oidc_config,omitempty" yaml:"oidc_config,omitempty"`
 
+	// TokenExchangeConfig contains token exchange configuration for external authentication
+	TokenExchangeConfig *tokenexchange.Config `json:"token_exchange_config,omitempty" yaml:"token_exchange_config,omitempty"`
+
 	// AuthzConfig contains the authorization configuration
 	AuthzConfig *authz.Config `json:"authz_config,omitempty" yaml:"authz_config,omitempty"`
 
@@ -131,6 +135,9 @@ type RunConfig struct {
 
 	// IsolateNetwork indicates whether to isolate the network for the container
 	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`
+
+	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
+	TrustProxyHeaders bool `json:"trust_proxy_headers,omitempty" yaml:"trust_proxy_headers,omitempty"`
 
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	ProxyMode types.ProxyMode `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
@@ -200,7 +207,43 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 		config.SchemaVersion = CurrentSchemaVersion
 	}
 
+	// Migrate plain text OAuth client secrets to CLI format
+	if err := migrateOAuthClientSecret(&config); err != nil {
+		return nil, fmt.Errorf("failed to migrate OAuth client secret: %w", err)
+	}
+
 	return &config, nil
+}
+
+// migrateOAuthClientSecret migrates plain text OAuth client secrets to CLI format
+// This handles the transition from storing plain text secrets to CLI format references
+func migrateOAuthClientSecret(config *RunConfig) error {
+	if config.RemoteAuthConfig == nil || config.RemoteAuthConfig.ClientSecret == "" {
+		return nil // No OAuth config or no client secret to migrate
+	}
+
+	// Check if the client secret is already in CLI format
+	if _, err := secrets.ParseSecretParameter(config.RemoteAuthConfig.ClientSecret); err == nil {
+		return nil // Already in CLI format, no migration needed
+	}
+
+	// The client secret is in plain text format - migrate it
+	cliFormatSecret, err := authoauth.ProcessOAuthClientSecret(config.Name, config.RemoteAuthConfig.ClientSecret)
+	if err != nil {
+		return fmt.Errorf("failed to process OAuth client secret: %w", err)
+	}
+
+	// Update the RunConfig to use the CLI format reference
+	config.RemoteAuthConfig.ClientSecret = cliFormatSecret
+
+	// Save the migrated RunConfig back to disk so migration only happens once
+	if err := config.SaveState(context.Background()); err != nil {
+		// Log error without potentially sensitive details - only log error type and message
+		logger.Warnf("Failed to save migrated RunConfig for workload %s: %s", config.Name, err.Error())
+		// Don't fail the migration - the secret is already stored and the config is updated in memory
+	}
+
+	return nil
 }
 
 // NewRunConfig creates a new RunConfig with default values
@@ -302,13 +345,17 @@ func (c *RunConfig) WithEnvironmentVariables(envVars map[string]string) (*RunCon
 
 // ValidateSecrets checks if the secrets can be parsed and are valid
 func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.Provider) error {
-	if len(c.Secrets) == 0 {
-		return nil // No secrets to validate
+	if len(c.Secrets) > 0 {
+		_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+		if err != nil {
+			return fmt.Errorf("failed to get secrets: %w", err)
+		}
 	}
-
-	_, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
-	if err != nil {
-		return fmt.Errorf("failed to get secrets: %w", err)
+	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.ClientSecret != "" {
+		_, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.ClientSecret)
+		if err != nil {
+			return fmt.Errorf("failed to get secrets: %w", err)
+		}
 	}
 
 	return nil
@@ -316,23 +363,37 @@ func (c *RunConfig) ValidateSecrets(ctx context.Context, secretManager secrets.P
 
 // WithSecrets processes secrets and adds them to environment variables
 func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provider) (*RunConfig, error) {
-	if len(c.Secrets) == 0 {
-		return c, nil // No secrets to process
+	// Process regular secrets if provided
+	if len(c.Secrets) > 0 {
+		secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
+		if err != nil {
+			return c, fmt.Errorf("failed to get secrets: %v", err)
+		}
+
+		// Initialize EnvVars if it's nil
+		if c.EnvVars == nil {
+			c.EnvVars = make(map[string]string)
+		}
+
+		// Add secret variables to environment variables
+		for key, value := range secretVariables {
+			c.EnvVars[key] = value
+		}
 	}
 
-	secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
-	if err != nil {
-		return c, fmt.Errorf("failed to get secrets: %v", err)
-	}
-
-	// Initialize EnvVars if it's nil
-	if c.EnvVars == nil {
-		c.EnvVars = make(map[string]string)
-	}
-
-	// Add secret variables to environment variables
-	for key, value := range secretVariables {
-		c.EnvVars[key] = value
+	// Process RemoteAuthConfig.ClientSecret if it's in CLI format
+	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.ClientSecret != "" {
+		// Check if it's in CLI format (contains ",target=")
+		if secretParam, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.ClientSecret); err == nil {
+			// It's in CLI format, resolve the actual secret value
+			actualSecret, err := secretManager.GetSecret(ctx, secretParam.Name)
+			if err != nil {
+				return c, fmt.Errorf("failed to resolve OAuth client secret '%s': %w", secretParam.Name, err)
+			}
+			// Replace the CLI format string with the actual secret value
+			c.RemoteAuthConfig.ClientSecret = actualSecret
+		}
+		// If it's not in CLI format (plain text), leave it as is
 	}
 
 	return c, nil
@@ -412,6 +473,8 @@ func (c *RunConfig) WithStandardLabels() *RunConfig {
 	transportLabel := c.Transport.String()
 	if c.Transport == types.TransportTypeStdio && c.ProxyMode == types.ProxyModeStreamableHTTP {
 		transportLabel = types.TransportTypeStreamableHTTP.String()
+	} else if c.Transport == types.TransportTypeStdio && c.ProxyMode == types.ProxyModeSSE {
+		transportLabel = types.TransportTypeSSE.String()
 	}
 	// Use the Group field from the RunConfig
 	labels.AddStandardLabels(c.ContainerLabels, containerName, c.BaseName, transportLabel, c.Port)
@@ -431,31 +494,6 @@ func (c *RunConfig) SaveState(ctx context.Context) error {
 // LoadState loads a run configuration from the state store
 func LoadState(ctx context.Context, name string) (*RunConfig, error) {
 	return state.LoadRunConfig(ctx, name, ReadJSON)
-}
-
-// RemoteAuthConfig holds configuration for remote authentication
-type RemoteAuthConfig struct {
-	ClientID         string
-	ClientSecret     string
-	ClientSecretFile string
-	Scopes           []string
-	SkipBrowser      bool
-	Timeout          time.Duration `swaggertype:"string" example:"5m"`
-	CallbackPort     int
-
-	// OAuth endpoint configuration (from registry)
-	Issuer       string
-	AuthorizeURL string
-	TokenURL     string
-
-	// Headers for HTTP requests
-	Headers []*registry.Header
-
-	// Environment variables for the client
-	EnvVars []*registry.EnvVar
-
-	// OAuth parameters for server-specific customization
-	OAuthParams map[string]string
 }
 
 // ToolOverride represents a tool override.

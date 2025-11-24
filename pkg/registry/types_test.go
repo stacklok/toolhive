@@ -7,16 +7,18 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 func TestRegistryWithRemoteServers(t *testing.T) {
 	t.Parallel()
-	registry := &Registry{
+	registry := &types.Registry{
 		Version:     "1.0.0",
 		LastUpdated: time.Now().Format(time.RFC3339),
-		Servers: map[string]*ImageMetadata{
+		Servers: map[string]*types.ImageMetadata{
 			"container-server": {
-				BaseServerMetadata: BaseServerMetadata{
+				BaseServerMetadata: types.BaseServerMetadata{
 					Name:        "container-server",
 					Description: "A containerized MCP server",
 					Tier:        "Official",
@@ -28,9 +30,9 @@ func TestRegistryWithRemoteServers(t *testing.T) {
 				TargetPort: 8080,
 			},
 		},
-		RemoteServers: map[string]*RemoteServerMetadata{
+		RemoteServers: map[string]*types.RemoteServerMetadata{
 			"remote-server": {
-				BaseServerMetadata: BaseServerMetadata{
+				BaseServerMetadata: types.BaseServerMetadata{
 					Name:        "remote-server",
 					Description: "A remote MCP server",
 					Tier:        "Community",
@@ -48,7 +50,7 @@ func TestRegistryWithRemoteServers(t *testing.T) {
 	require.NoError(t, err)
 
 	// Test JSON unmarshaling
-	var decoded Registry
+	var decoded types.Registry
 	err = json.Unmarshal(data, &decoded)
 	require.NoError(t, err)
 
@@ -61,8 +63,8 @@ func TestRegistryWithRemoteServers(t *testing.T) {
 
 func TestRemoteServerMetadataWithHeaders(t *testing.T) {
 	t.Parallel()
-	remote := &RemoteServerMetadata{
-		BaseServerMetadata: BaseServerMetadata{
+	remote := &types.RemoteServerMetadata{
+		BaseServerMetadata: types.BaseServerMetadata{
 			Name:        "auth-server",
 			Description: "Remote server with authentication headers",
 			Tier:        "Official",
@@ -71,7 +73,7 @@ func TestRemoteServerMetadataWithHeaders(t *testing.T) {
 			Tools:       []string{"secure_tool"},
 		},
 		URL: "https://secure.example.com/mcp",
-		Headers: []*Header{
+		Headers: []*types.Header{
 			{
 				Name:        "X-API-Key",
 				Description: "API key for authentication",
@@ -93,7 +95,7 @@ func TestRemoteServerMetadataWithHeaders(t *testing.T) {
 	require.NoError(t, err)
 
 	// Test JSON unmarshaling
-	var decoded RemoteServerMetadata
+	var decoded types.RemoteServerMetadata
 	err = json.Unmarshal(data, &decoded)
 	require.NoError(t, err)
 
@@ -110,12 +112,12 @@ func TestRemoteServerMetadataWithOAuth(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string
-		remote *RemoteServerMetadata
+		remote *types.RemoteServerMetadata
 	}{
 		{
 			name: "OIDC configuration",
-			remote: &RemoteServerMetadata{
-				BaseServerMetadata: BaseServerMetadata{
+			remote: &types.RemoteServerMetadata{
+				BaseServerMetadata: types.BaseServerMetadata{
 					Name:        "oidc-server",
 					Description: "Remote server with OIDC authentication",
 					Tier:        "Official",
@@ -124,7 +126,7 @@ func TestRemoteServerMetadataWithOAuth(t *testing.T) {
 					Tools:       []string{"oidc_tool"},
 				},
 				URL: "https://oidc.example.com/mcp",
-				OAuthConfig: &OAuthConfig{
+				OAuthConfig: &types.OAuthConfig{
 					Issuer:   "https://auth.example.com",
 					ClientID: "mcp-client-id",
 					Scopes:   []string{"openid", "profile", "email"},
@@ -134,8 +136,8 @@ func TestRemoteServerMetadataWithOAuth(t *testing.T) {
 		},
 		{
 			name: "Manual OAuth configuration",
-			remote: &RemoteServerMetadata{
-				BaseServerMetadata: BaseServerMetadata{
+			remote: &types.RemoteServerMetadata{
+				BaseServerMetadata: types.BaseServerMetadata{
 					Name:        "oauth-server",
 					Description: "Remote server with manual OAuth endpoints",
 					Tier:        "Community",
@@ -144,7 +146,7 @@ func TestRemoteServerMetadataWithOAuth(t *testing.T) {
 					Tools:       []string{"oauth_tool"},
 				},
 				URL: "https://oauth.example.com/mcp",
-				OAuthConfig: &OAuthConfig{
+				OAuthConfig: &types.OAuthConfig{
 					AuthorizeURL: "https://custom.example.com/oauth/authorize",
 					TokenURL:     "https://custom.example.com/oauth/token",
 					ClientID:     "custom-client-id",
@@ -164,7 +166,7 @@ func TestRemoteServerMetadataWithOAuth(t *testing.T) {
 			require.NoError(t, err)
 
 			// Test JSON unmarshaling
-			var decoded RemoteServerMetadata
+			var decoded types.RemoteServerMetadata
 			err = json.Unmarshal(data, &decoded)
 			require.NoError(t, err)
 
@@ -188,14 +190,14 @@ func TestRemoteServerMetadataWithOAuth(t *testing.T) {
 func TestBaseServerMetadataInheritance(t *testing.T) {
 	t.Parallel()
 	// Test that both ImageMetadata and RemoteServerMetadata properly inherit BaseServerMetadata
-	baseFields := BaseServerMetadata{
+	baseFields := types.BaseServerMetadata{
 		Name:        "test-server",
 		Description: "Test server description",
 		Tier:        "Official",
 		Status:      "Active",
 		Transport:   "sse",
 		Tools:       []string{"tool1", "tool2"},
-		Metadata: &Metadata{
+		Metadata: &types.Metadata{
 			Stars:       100,
 			Pulls:       5000,
 			LastUpdated: time.Now().Format(time.RFC3339),
@@ -208,7 +210,7 @@ func TestBaseServerMetadataInheritance(t *testing.T) {
 	}
 
 	// Test with ImageMetadata
-	image := &ImageMetadata{
+	image := &types.ImageMetadata{
 		BaseServerMetadata: baseFields,
 		Image:              "mcp/test:latest",
 	}
@@ -216,7 +218,7 @@ func TestBaseServerMetadataInheritance(t *testing.T) {
 	imageData, err := json.Marshal(image)
 	require.NoError(t, err)
 
-	var decodedImage ImageMetadata
+	var decodedImage types.ImageMetadata
 	err = json.Unmarshal(imageData, &decodedImage)
 	require.NoError(t, err)
 
@@ -229,7 +231,7 @@ func TestBaseServerMetadataInheritance(t *testing.T) {
 	assert.Equal(t, "mcp/test:latest", decodedImage.Image)
 
 	// Test with RemoteServerMetadata
-	remote := &RemoteServerMetadata{
+	remote := &types.RemoteServerMetadata{
 		BaseServerMetadata: baseFields,
 		URL:                "https://api.example.com/mcp",
 	}
@@ -237,7 +239,7 @@ func TestBaseServerMetadataInheritance(t *testing.T) {
 	remoteData, err := json.Marshal(remote)
 	require.NoError(t, err)
 
-	var decodedRemote RemoteServerMetadata
+	var decodedRemote types.RemoteServerMetadata
 	err = json.Unmarshal(remoteData, &decodedRemote)
 	require.NoError(t, err)
 
@@ -256,8 +258,8 @@ func TestRemoteServerTransportValidation(t *testing.T) {
 	validTransports := []string{"sse", "streamable-http"}
 
 	for _, transport := range validTransports {
-		remote := &RemoteServerMetadata{
-			BaseServerMetadata: BaseServerMetadata{
+		remote := &types.RemoteServerMetadata{
+			BaseServerMetadata: types.BaseServerMetadata{
 				Name:        "test-server",
 				Description: "Test server",
 				Tier:        "Official",
@@ -271,7 +273,7 @@ func TestRemoteServerTransportValidation(t *testing.T) {
 		data, err := json.Marshal(remote)
 		require.NoError(t, err)
 
-		var decoded RemoteServerMetadata
+		var decoded types.RemoteServerMetadata
 		err = json.Unmarshal(data, &decoded)
 		require.NoError(t, err)
 		assert.Equal(t, transport, decoded.Transport)
@@ -283,7 +285,7 @@ func TestRemoteServerTransportValidation(t *testing.T) {
 
 func TestHeaderSecretField(t *testing.T) {
 	t.Parallel()
-	header := &Header{
+	header := &types.Header{
 		Name:        "Authorization",
 		Description: "Bearer token for authentication",
 		Required:    true,
@@ -293,7 +295,7 @@ func TestHeaderSecretField(t *testing.T) {
 	data, err := json.Marshal(header)
 	require.NoError(t, err)
 
-	var decoded Header
+	var decoded types.Header
 	err = json.Unmarshal(data, &decoded)
 	require.NoError(t, err)
 
@@ -304,7 +306,7 @@ func TestHeaderSecretField(t *testing.T) {
 func TestMetadataParsedTime(t *testing.T) {
 	t.Parallel()
 	now := time.Now().Truncate(time.Second)
-	metadata := &Metadata{
+	metadata := &types.Metadata{
 		Stars:       100,
 		Pulls:       5000,
 		LastUpdated: now.Format(time.RFC3339),

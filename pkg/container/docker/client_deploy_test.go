@@ -112,7 +112,7 @@ func (f *fakeDeployOps) createMcpContainer(
 	return f.errMcp
 }
 
-func (f *fakeDeployOps) createIngressContainer(_ context.Context, _ string, _ int, _ bool, _ map[string]*network.EndpointSettings) (int, error) {
+func (f *fakeDeployOps) createIngressContainer(_ context.Context, _ string, _ int, _ bool, _ map[string]*network.EndpointSettings, _ *permissions.NetworkPermissions) (int, error) {
 	f.ingressCalled = true
 	if f.errIngress != nil {
 		return 0, f.errIngress
@@ -186,6 +186,11 @@ func TestDeployWorkload_Stdio_IsolatedNetwork_SkipsIngressAndSetsEgressEnv(t *te
 
 	// Network isolation label should be set on labels map
 	assert.True(t, lb.HasNetworkIsolation(labels), "expected network isolation label to be set")
+
+	// SELinux labeling should be disabled
+	assert.Contains(t, fops.mcpPermissionCfg.SecurityOpt, "label:disable", "expected SELinux labeling to be disabled")
+
+	// TODO: Test for disabled SELinux labeling in the rest of workload containers
 }
 
 func TestDeployWorkload_SSE_IsolatedNetwork_ReturnsIngressPortAndPassesDNS(t *testing.T) {

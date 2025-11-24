@@ -3,11 +3,9 @@ package mcpregistrystatus
 
 import (
 	"context"
-	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -15,22 +13,35 @@ import (
 
 // StatusCollector collects status changes during reconciliation
 // and applies them in a single batch update at the end.
-// It implements the Collector interface.
+// It implements the StatusManager interface.
 type StatusCollector struct {
-	mcpRegistry *mcpv1alpha1.MCPRegistry
-	hasChanges  bool
-	phase       *mcpv1alpha1.MCPRegistryPhase
-	message     *string
-	apiEndpoint *string
-	conditions  map[string]metav1.Condition
+	mcpRegistry  *mcpv1alpha1.MCPRegistry
+	hasChanges   bool
+	phase        *mcpv1alpha1.MCPRegistryPhase
+	message      *string
+	apiStatus    *mcpv1alpha1.APIStatus
+	conditions   map[string]metav1.Condition
+	apiCollector *apiStatusCollector
 }
 
-// NewCollector creates a new status update collector for the given MCPRegistry resource.
-func NewCollector(mcpRegistry *mcpv1alpha1.MCPRegistry) Collector {
-	return &StatusCollector{
+// apiStatusCollector implements APIStatusCollector
+type apiStatusCollector struct {
+	parent *StatusCollector
+}
+
+// NewStatusManager creates a new StatusManager for the given MCPRegistry resource.
+func NewStatusManager(mcpRegistry *mcpv1alpha1.MCPRegistry) StatusManager {
+	return newStatusCollector(mcpRegistry)
+}
+
+// newStatusCollector creates the internal StatusCollector implementation
+func newStatusCollector(mcpRegistry *mcpv1alpha1.MCPRegistry) *StatusCollector {
+	collector := &StatusCollector{
 		mcpRegistry: mcpRegistry,
 		conditions:  make(map[string]metav1.Condition),
 	}
+	collector.apiCollector = &apiStatusCollector{parent: collector}
+	return collector
 }
 
 // SetPhase sets the phase to be updated.
@@ -45,16 +56,10 @@ func (s *StatusCollector) SetMessage(message string) {
 	s.hasChanges = true
 }
 
-// SetAPIEndpoint sets the API endpoint to be updated.
-func (s *StatusCollector) SetAPIEndpoint(endpoint string) {
-	s.apiEndpoint = &endpoint
-	s.hasChanges = true
-}
-
-// SetAPIReadyCondition adds or updates the API ready condition.
-func (s *StatusCollector) SetAPIReadyCondition(reason, message string, status metav1.ConditionStatus) {
-	s.conditions[mcpv1alpha1.ConditionAPIReady] = metav1.Condition{
-		Type:    mcpv1alpha1.ConditionAPIReady,
+// SetCondition sets a general condition with the specified type, reason, message, and status
+func (s *StatusCollector) SetCondition(conditionType, reason, message string, status metav1.ConditionStatus) {
+	s.conditions[conditionType] = metav1.Condition{
+		Type:    conditionType,
 		Status:  status,
 		Reason:  reason,
 		Message: message,
@@ -62,44 +67,95 @@ func (s *StatusCollector) SetAPIReadyCondition(reason, message string, status me
 	s.hasChanges = true
 }
 
-// Apply applies all collected status changes in a single batch update.
-func (s *StatusCollector) Apply(ctx context.Context, statusWriter client.StatusWriter) error {
-	if !s.hasChanges {
-		return nil
+// SetAPIReadyCondition adds or updates the API ready condition.
+func (s *StatusCollector) SetAPIReadyCondition(reason, message string, status metav1.ConditionStatus) {
+	s.SetCondition(mcpv1alpha1.ConditionAPIReady, reason, message, status)
+}
+
+// SetAPIStatus sets the detailed API status.
+func (s *StatusCollector) SetAPIStatus(phase mcpv1alpha1.APIPhase, message string, endpoint string) {
+	s.apiStatus = &mcpv1alpha1.APIStatus{
+		Phase:    phase,
+		Message:  message,
+		Endpoint: endpoint,
 	}
+
+	// Set ReadySince timestamp when API becomes ready
+	if phase == mcpv1alpha1.APIPhaseReady &&
+		(s.mcpRegistry.Status.APIStatus == nil || s.mcpRegistry.Status.APIStatus.Phase != mcpv1alpha1.APIPhaseReady) {
+		now := metav1.Now()
+		s.apiStatus.ReadySince = &now
+	} else if s.mcpRegistry.Status.APIStatus != nil && s.mcpRegistry.Status.APIStatus.ReadySince != nil {
+		// Preserve existing ReadySince if already set and still ready
+		s.apiStatus.ReadySince = s.mcpRegistry.Status.APIStatus.ReadySince
+	}
+
+	s.hasChanges = true
+}
+
+// UpdateStatus applies all collected status changes in a single batch update.
+// Requires the MCPRegistryStatus being the updated version from the cluster
+func (s *StatusCollector) UpdateStatus(ctx context.Context, mcpRegistryStatus *mcpv1alpha1.MCPRegistryStatus) bool {
 
 	ctxLogger := log.FromContext(ctx)
 
-	// Apply phase change
-	if s.phase != nil {
-		s.mcpRegistry.Status.Phase = *s.phase
+	if s.hasChanges {
+		// Apply phase change
+		if s.phase != nil {
+			mcpRegistryStatus.Phase = *s.phase
+		}
+
+		// Apply message change
+		if s.message != nil {
+			mcpRegistryStatus.Message = *s.message
+		}
+
+		// Apply API status change
+		if s.apiStatus != nil {
+			mcpRegistryStatus.APIStatus = s.apiStatus
+		}
+
+		// Apply condition changes
+		for _, condition := range s.conditions {
+			meta.SetStatusCondition(&mcpRegistryStatus.Conditions, condition)
+		}
+
+		ctxLogger.V(1).Info("Batched status update applied",
+			"phase", s.phase,
+			"message", s.message,
+			"conditionsCount", len(s.conditions))
+		return true
 	}
+	ctxLogger.V(1).Info("No batched status update needed")
+	return false
+}
 
-	// Apply message change
-	if s.message != nil {
-		s.mcpRegistry.Status.Message = *s.message
-	}
+// StatusManager interface methods
 
-	// Apply API endpoint change
-	if s.apiEndpoint != nil {
-		s.mcpRegistry.Status.APIEndpoint = *s.apiEndpoint
-	}
+// API returns the API status collector
+func (s *StatusCollector) API() APIStatusCollector {
+	return s.apiCollector
+}
 
-	// Apply condition changes
-	for _, condition := range s.conditions {
-		meta.SetStatusCondition(&s.mcpRegistry.Status.Conditions, condition)
-	}
+// SetOverallStatus sets the overall phase and message explicitly (for special cases)
+func (s *StatusCollector) SetOverallStatus(phase mcpv1alpha1.MCPRegistryPhase, message string) {
+	s.SetPhase(phase)
+	s.SetMessage(message)
+}
 
-	// Single status update
-	if err := statusWriter.Update(ctx, s.mcpRegistry); err != nil {
-		ctxLogger.Error(err, "Failed to apply batched status update")
-		return fmt.Errorf("failed to apply batched status update: %w", err)
-	}
+// APIStatusCollector implementation
 
-	ctxLogger.V(1).Info("Applied batched status update",
-		"phase", s.phase,
-		"message", s.message,
-		"conditionsCount", len(s.conditions))
+// Status returns the API status
+func (ac *apiStatusCollector) Status() *mcpv1alpha1.APIStatus {
+	return ac.parent.apiStatus
+}
 
-	return nil
+// SetAPIStatus delegates to the parent's SetAPIStatus method
+func (ac *apiStatusCollector) SetAPIStatus(phase mcpv1alpha1.APIPhase, message string, endpoint string) {
+	ac.parent.SetAPIStatus(phase, message, endpoint)
+}
+
+// SetAPIReadyCondition delegates to the parent's SetAPIReadyCondition method
+func (ac *apiStatusCollector) SetAPIReadyCondition(reason, message string, status metav1.ConditionStatus) {
+	ac.parent.SetAPIReadyCondition(reason, message, status)
 }

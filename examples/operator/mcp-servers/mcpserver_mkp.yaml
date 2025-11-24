@@ -6,14 +6,11 @@ metadata:
 spec:
   image: ghcr.io/stackloklabs/mkp/server
   transport: streamable-http
-  targetPort: 8080
-  port: 8080
+  proxyPort: 8080
+  mcpPort: 8080
   args:
     # Change to true for read-write access.
     - --read-write=false
-  permissionProfile:
-    type: builtin
-    name: network
   # We create this service account below with the desired permissions.
   serviceAccount: mkp-sa
   resources:

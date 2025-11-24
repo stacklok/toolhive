@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // TestEmbeddedRegistrySchemaValidation validates that the embedded registry.json
@@ -250,7 +252,7 @@ func TestRegistrySchemaValidation(t *testing.T) {
 				}
 			}`,
 			expectError:   true,
-			errorContains: "additionalProperties",
+			errorContains: "additional properties",
 		},
 		{
 			name: "valid remote server",
@@ -341,7 +343,7 @@ func TestValidateEmbeddedRegistryCanLoadData(t *testing.T) {
 	require.NoError(t, err, "Should be able to load embedded registry data")
 
 	// Verify it's valid JSON
-	var registry Registry
+	var registry types.Registry
 	err = json.Unmarshal(registryData, &registry)
 	require.NoError(t, err, "Embedded registry should be valid JSON")
 

@@ -36,6 +36,9 @@ const (
 	WorkloadStatusRemoving WorkloadStatus = "removing"
 	// WorkloadStatusUnknown indicates that the workload status is unknown.
 	WorkloadStatusUnknown WorkloadStatus = "unknown"
+	// WorkloadStatusUnauthenticated indicates that the workload is running but
+	// cannot authenticate with the remote MCP server (e.g., expired refresh token).
+	WorkloadStatusUnauthenticated WorkloadStatus = "unauthenticated"
 )
 
 // ContainerInfo represents information about a container
@@ -52,6 +55,8 @@ type ContainerInfo struct {
 	State WorkloadStatus
 	// Created is the container creation timestamp
 	Created time.Time
+	// StartedAt is when the container was last started (changes on restart)
+	StartedAt time.Time
 	// Labels is the container labels
 	Labels map[string]string
 	// Ports is the container port mappings

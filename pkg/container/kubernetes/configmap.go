@@ -7,8 +7,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 
+	"github.com/stacklok/toolhive/pkg/k8s"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
@@ -41,12 +41,12 @@ func NewConfigMapReaderWithClient(clientset kubernetes.Interface) *ConfigMapRead
 // Note: This function is not unit tested as it requires a real Kubernetes cluster.
 // The business logic is tested via NewConfigMapReaderWithClient with mock clients.
 func NewConfigMapReader() (*ConfigMapReader, error) {
-	config, err := rest.InClusterConfig()
+	config, err := k8s.GetConfig()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create in-cluster config: %w", err)
+		return nil, fmt.Errorf("failed to get kubernetes config: %w", err)
 	}
 
-	clientset, err := kubernetes.NewForConfig(config)
+	clientset, err := k8s.NewClientWithConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}

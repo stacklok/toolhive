@@ -21,7 +21,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
@@ -81,7 +83,17 @@ with the authorization server using RFC 7591 dynamic client registration:
 - Supports PKCE flow for enhanced security
 
 The container will be started with the specified transport mode and
-permission profile. Additional configuration can be provided via flags.`,
+permission profile. Additional configuration can be provided via flags.
+
+#### Network Configuration
+
+You can specify the network mode for the container using the --network flag:
+
+- Host networking: $ thv run --network host <image>
+- Custom network: $ thv run --network my-network <image>
+- Default (bridge): $ thv run <image>
+
+The --network flag accepts any Docker-compatible network mode.`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		// If --from-config is provided, no args are required
 		if runFlags.FromConfig != "" {
@@ -189,7 +201,7 @@ func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage stri
 	}
 
 	if runFlags.Name == "" {
-		runFlags.Name = getworkloadDefaultName(serverOrImage)
+		runFlags.Name = getworkloadDefaultName(ctx, serverOrImage)
 		logger.Infof("No workload name specified, using generated name: %s", runFlags.Name)
 	}
 	exists, err := workloadManager.DoesWorkloadExist(ctx, runFlags.Name)
@@ -247,7 +259,7 @@ func deriveRemoteName(remoteURL string) (string, error) {
 
 // getworkloadDefaultName generates a default workload name based on the serverOrImage input
 // This function reuses the existing system's naming logic to ensure consistency
-func getworkloadDefaultName(serverOrImage string) string {
+func getworkloadDefaultName(_ context.Context, serverOrImage string) string {
 	// If it's a protocol scheme (uvx://, npx://, go://)
 	if runner.IsImageProtocolScheme(serverOrImage) {
 		// Extract package name from protocol scheme using the existing parseProtocolScheme logic
@@ -269,11 +281,20 @@ func getworkloadDefaultName(serverOrImage string) string {
 		return name
 	}
 
-	// Check if it's a server name from registry
-	// Registry server names are typically multi-word names with hyphens
-	if !strings.Contains(serverOrImage, "://") && !strings.Contains(serverOrImage, "/") && !strings.Contains(serverOrImage, ":") {
-		// Likely a registry server name (no protocol, no slashes, no colons), return as-is
-		return serverOrImage
+	// Check if it's a server name from registry (including reverse-DNS names with slashes)
+	if !strings.Contains(serverOrImage, "://") && !strings.Contains(serverOrImage, ":") {
+		// Check if this is a registry server name by attempting to look it up
+		provider, err := registry.GetDefaultProvider()
+		if err == nil {
+			_, err := provider.GetServer(serverOrImage)
+			if err == nil {
+				// It's a valid registry server name - sanitize for container/filesystem use
+				// Replace dots and slashes with dashes to create a valid workload name
+				sanitized := strings.ReplaceAll(serverOrImage, ".", "-")
+				sanitized = strings.ReplaceAll(sanitized, "/", "-")
+				return sanitized
+			}
+		}
 	}
 
 	// For container images, use the existing container.GetOrGenerateContainerName logic
@@ -451,14 +472,32 @@ func validateRunFlags(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Validate --remote-auth-resource flag (RFC 8707)
+	if resourceFlag := cmd.Flags().Lookup("remote-auth-resource"); resourceFlag != nil && resourceFlag.Changed {
+		resource := resourceFlag.Value.String()
+		if resource != "" {
+			if err := validation.ValidateResourceURI(resource); err != nil {
+				return fmt.Errorf("invalid --remote-auth-resource: %w", err)
+			}
+		}
+	}
+
 	// Validate --from-config flag usage
 	fromConfigFlag := cmd.Flags().Lookup("from-config")
 	if fromConfigFlag != nil && fromConfigFlag.Value.String() != "" {
-		// When --from-config is used, no other flags should be changed
+		// When --from-config is used, only execution-related flags are allowed
+		// Execution-related flags control HOW to run (foreground vs detached)
+		// Configuration flags control WHAT to run and should not be mixed with --from-config
+		allowedFlags := map[string]bool{
+			"from-config": true,
+			"foreground":  true,
+			"debug":       true, // Debug is also an execution flag
+		}
+
 		var conflictingFlags []string
 		cmd.Flags().VisitAll(func(flag *pflag.Flag) {
-			// Skip the from-config flag itself and only check flags that were changed
-			if flag.Name != "from-config" && flag.Changed {
+			// Skip allowed flags and only check flags that were changed
+			if !allowedFlags[flag.Name] && flag.Changed {
 				conflictingFlags = append(conflictingFlags, "--"+flag.Name)
 			}
 		})

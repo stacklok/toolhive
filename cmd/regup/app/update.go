@@ -16,7 +16,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 var (
@@ -29,7 +29,7 @@ var (
 
 type serverWithName struct {
 	name   string
-	server *registry.ImageMetadata
+	server *regtypes.ImageMetadata
 }
 
 // ProvenanceVerificationError represents an error during provenance verification
@@ -96,7 +96,7 @@ func updateCmdFunc(_ *cobra.Command, _ []string) error {
 	return saveResults(reg, updatedServers, failedServers)
 }
 
-func loadRegistry() (*registry.Registry, error) {
+func loadRegistry() (*regtypes.Registry, error) {
 	registryPath := filepath.Join("pkg", "registry", "data", "registry.json")
 	// #nosec G304 -- This is a known file path
 	data, err := os.ReadFile(registryPath)
@@ -104,7 +104,7 @@ func loadRegistry() (*registry.Registry, error) {
 		return nil, fmt.Errorf("failed to read registry file: %w", err)
 	}
 
-	var reg registry.Registry
+	var reg regtypes.Registry
 	if err := json.Unmarshal(data, &reg); err != nil {
 		return nil, fmt.Errorf("failed to parse registry: %w", err)
 	}
@@ -112,7 +112,7 @@ func loadRegistry() (*registry.Registry, error) {
 	return &reg, nil
 }
 
-func selectServersToUpdate(reg *registry.Registry) ([]serverWithName, error) {
+func selectServersToUpdate(reg *regtypes.Registry) ([]serverWithName, error) {
 	if serverName != "" {
 		return selectSpecificServer(reg, serverName)
 	}
@@ -120,7 +120,7 @@ func selectServersToUpdate(reg *registry.Registry) ([]serverWithName, error) {
 	return selectOldestServers(reg)
 }
 
-func selectSpecificServer(reg *registry.Registry, name string) ([]serverWithName, error) {
+func selectSpecificServer(reg *regtypes.Registry, name string) ([]serverWithName, error) {
 	server, exists := reg.Servers[name]
 	if !exists {
 		return nil, fmt.Errorf("server '%s' not found in registry", name)
@@ -129,7 +129,7 @@ func selectSpecificServer(reg *registry.Registry, name string) ([]serverWithName
 	return []serverWithName{{name: name, server: server}}, nil
 }
 
-func selectOldestServers(reg *registry.Registry) ([]serverWithName, error) {
+func selectOldestServers(reg *regtypes.Registry) ([]serverWithName, error) {
 	servers := make([]serverWithName, 0, len(reg.Servers))
 	for name, server := range reg.Servers {
 		server.Name = name
@@ -151,7 +151,7 @@ func selectOldestServers(reg *registry.Registry) ([]serverWithName, error) {
 	return servers[:limit], nil
 }
 
-func isOlder(serverI, serverJ *registry.ImageMetadata) bool {
+func isOlder(serverI, serverJ *regtypes.ImageMetadata) bool {
 	var lastUpdatedI, lastUpdatedJ string
 
 	if serverI.Metadata != nil {
@@ -180,7 +180,7 @@ func isOlder(serverI, serverJ *registry.ImageMetadata) bool {
 	return timeI.Before(timeJ)
 }
 
-func updateServers(servers []serverWithName, reg *registry.Registry) ([]string, []string) {
+func updateServers(servers []serverWithName, reg *regtypes.Registry) ([]string, []string) {
 	updatedServers := make([]string, 0, len(servers))
 	failedServers := make([]string, 0)
 
@@ -209,7 +209,7 @@ func updateServers(servers []serverWithName, reg *registry.Registry) ([]string, 
 	return updatedServers, failedServers
 }
 
-func saveResults(reg *registry.Registry, updatedServers []string, failedServers []string) error {
+func saveResults(reg *regtypes.Registry, updatedServers []string, failedServers []string) error {
 	// If we're in dry run mode, don't save changes
 	if dryRun {
 		logger.Info("Dry run completed, no changes made")
@@ -235,7 +235,7 @@ func saveResults(reg *registry.Registry, updatedServers []string, failedServers 
 }
 
 // updateServerInfo updates the GitHub stars and pulls for a server
-func updateServerInfo(name string, server *registry.ImageMetadata) error {
+func updateServerInfo(name string, server *regtypes.ImageMetadata) error {
 	// Verify provenance if requested
 	if verifyProvenance {
 		if err := verifyServerProvenance(name, server); err != nil {
@@ -254,7 +254,7 @@ func updateServerInfo(name string, server *registry.ImageMetadata) error {
 
 	// Initialize metadata if it's nil
 	if server.Metadata == nil {
-		server.Metadata = &registry.Metadata{}
+		server.Metadata = &regtypes.Metadata{}
 	}
 
 	// Extract owner and repo from repository URL
@@ -289,7 +289,7 @@ func updateServerInfo(name string, server *registry.ImageMetadata) error {
 }
 
 // verifyServerProvenance verifies the provenance information for a server
-func verifyServerProvenance(name string, server *registry.ImageMetadata) error {
+func verifyServerProvenance(name string, server *regtypes.ImageMetadata) error {
 	// Skip if no provenance information
 	if server.Provenance == nil {
 		logger.Warnf("Server %s has no provenance information, skipping verification", name)
@@ -325,7 +325,7 @@ func verifyServerProvenance(name string, server *registry.ImageMetadata) error {
 }
 
 // removeFailedServers removes servers that failed provenance verification from the registry
-func removeFailedServers(reg *registry.Registry, failedServers []string) {
+func removeFailedServers(reg *regtypes.Registry, failedServers []string) {
 	for _, serverName := range failedServers {
 		logger.Warnf("Removing server %s from registry due to provenance verification failure", serverName)
 		delete(reg.Servers, serverName)
@@ -420,7 +420,7 @@ func getGitHubRepoInfo(owner, repo, serverName string, currentPulls int) (stars 
 }
 
 // saveRegistry saves the registry to the filesystem while preserving the order of entries
-func saveRegistry(reg *registry.Registry, updatedServers []string, failedServers []string) error {
+func saveRegistry(reg *regtypes.Registry, updatedServers []string, failedServers []string) error {
 	// Find the registry file path
 	registryPath := filepath.Join("pkg", "registry", "data", "registry.json")
 

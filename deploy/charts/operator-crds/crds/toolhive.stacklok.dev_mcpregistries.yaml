@@ -20,13 +20,16 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.serverCount
+    - jsonPath: .status.syncStatus.phase
+      name: Sync
+      type: string
+    - jsonPath: .status.apiStatus.phase
+      name: API
+      type: string
+    - jsonPath: .status.syncStatus.serverCount
       name: Servers
       type: integer
-    - jsonPath: .status.deployedServerCount
-      name: Deployed
-      type: integer
-    - jsonPath: .status.lastSyncTime
+    - jsonPath: .status.syncStatus.lastSyncTime
       name: Last Sync
       type: date
     - jsonPath: .metadata.creationTimestamp
@@ -35,9 +38,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: |-
-          MCPRegistry is the Schema for the mcpregistries API
-          ⚠️ Experimental API (v1alpha1) — subject to change.
+        description: MCPRegistry is the Schema for the mcpregistries API
         properties:
           apiVersion:
             description: |-
@@ -62,6 +63,15 @@ spec:
               displayName:
                 description: DisplayName is a human-readable name for the registry
                 type: string
+              enforceServers:
+                default: false
+                description: |-
+                  EnforceServers indicates whether MCPServers in this namespace must have their images
+                  present in at least one registry in the namespace. When any registry in the namespace
+                  has this field set to true, enforcement is enabled for the entire namespace.
+                  MCPServers with images not found in any registry will be rejected.
+                  When false (default), MCPServers can be deployed regardless of registry presence.
+                type: boolean
               filter:
                 description: Filter defines include/exclude patterns for registry
                   content
@@ -99,24 +109,51 @@ spec:
                 description: Source defines the configuration for the registry data
                   source
                 properties:
-                  configmap:
+                  api:
                     description: |-
-                      ConfigMap defines the ConfigMap source configuration
+                      API defines the API source configuration
+                      Only used when Type is "api"
+                    properties:
+                      endpoint:
+                        description: |-
+                          Endpoint is the base API URL (without path)
+                          The controller will append the appropriate paths:
+                          Phase 1 (ToolHive API):
+                            - /v0/servers - List all servers (single response, no pagination)
+                            - /v0/servers/{name} - Get specific server (future)
+                            - /v0/info - Get registry metadata (future)
+                          Example: "http://my-registry-api.default.svc.cluster.local/api"
+                        minLength: 1
+                        pattern: ^https?://.*
+                        type: string
+                    required:
+                    - endpoint
+                    type: object
+                  configMapRef:
+                    description: |-
+                      ConfigMapRef defines the ConfigMap source configuration
                       Only used when Type is "configmap"
                     properties:
                       key:
-                        default: registry.json
-                        description: Key is the key in the ConfigMap that contains
-                          the registry data
-                        minLength: 1
+                        description: The key to select.
                         type: string
                       name:
-                        description: Name is the name of the ConfigMap
-                        minLength: 1
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                         type: string
+                      optional:
+                        description: Specify whether the ConfigMap or its key must
+                          be defined
+                        type: boolean
                     required:
-                    - name
+                    - key
                     type: object
+                    x-kubernetes-map-type: atomic
                   format:
                     default: toolhive
                     description: Format is the data format (toolhive, upstream)
@@ -124,11 +161,47 @@ spec:
                     - toolhive
                     - upstream
                     type: string
+                  git:
+                    description: |-
+                      Git defines the Git repository source configuration
+                      Only used when Type is "git"
+                    properties:
+                      branch:
+                        description: Branch is the Git branch to use (mutually exclusive
+                          with Tag and Commit)
+                        minLength: 1
+                        type: string
+                      commit:
+                        description: Commit is the Git commit SHA to use (mutually
+                          exclusive with Branch and Tag)
+                        minLength: 1
+                        type: string
+                      path:
+                        default: registry.json
+                        description: Path is the path to the registry file within
+                          the repository
+                        pattern: ^.*\.json$
+                        type: string
+                      repository:
+                        description: Repository is the Git repository URL (HTTP/HTTPS/SSH)
+                        minLength: 1
+                        pattern: ^(file:///|https?://|git@|ssh://|git://).*
+                        type: string
+                      tag:
+                        description: Tag is the Git tag to use (mutually exclusive
+                          with Branch and Commit)
+                        minLength: 1
+                        type: string
+                    required:
+                    - repository
+                    type: object
                   type:
                     default: configmap
-                    description: Type is the type of source (configmap)
+                    description: Type is the type of source (configmap, git, api)
                     enum:
                     - configmap
+                    - git
+                    - api
                     type: string
                 required:
                 - type
@@ -155,9 +228,40 @@ spec:
           status:
             description: MCPRegistryStatus defines the observed state of MCPRegistry
             properties:
-              apiEndpoint:
-                description: APIEndpoint is the URL of the registry API service
-                type: string
+              apiStatus:
+                description: APIStatus provides detailed information about the API
+                  service
+                properties:
+                  endpoint:
+                    description: Endpoint is the URL where the API is accessible
+                    type: string
+                  message:
+                    description: Message provides additional information about the
+                      API status
+                    type: string
+                  phase:
+                    allOf:
+                    - enum:
+                      - NotStarted
+                      - Deploying
+                      - Ready
+                      - Unhealthy
+                      - Error
+                    - enum:
+                      - NotStarted
+                      - Deploying
+                      - Ready
+                      - Unhealthy
+                      - Error
+                    description: Phase represents the current API service phase
+                    type: string
+                  readySince:
+                    description: ReadySince is the timestamp when the API became ready
+                    format: date-time
+                    type: string
+                required:
+                - phase
+                type: object
               conditions:
                 description: Conditions represent the latest available observations
                   of the MCPRegistry's state
@@ -219,32 +323,23 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              deployedServerCount:
-                description: DeployedServerCount is the number of deployed servers
-                  with matching labels
-                minimum: 0
-                type: integer
+              lastAppliedFilterHash:
+                description: LastAppliedFilterHash is the hash of the last applied
+                  filter
+                type: string
               lastManualSyncTrigger:
                 description: |-
                   LastManualSyncTrigger tracks the last processed manual sync annotation value
                   Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation
-                type: string
-              lastSyncHash:
-                description: |-
-                  LastSyncHash is the hash of the last successfully synced data
-                  Used to detect changes in source data
-                type: string
-              lastSyncTime:
-                description: LastSyncTime is the timestamp of the last successful
-                  sync
-                format: date-time
                 type: string
               message:
                 description: Message provides additional information about the current
                   phase
                 type: string
               phase:
-                description: Phase represents the current phase of the MCPRegistry
+                description: |-
+                  Phase represents the current overall phase of the MCPRegistry
+                  Derived from sync and API status
                 enum:
                 - Pending
                 - Ready
@@ -252,10 +347,6 @@ spec:
                 - Syncing
                 - Terminating
                 type: string
-              serverCount:
-                description: ServerCount is the total number of servers in the registry
-                minimum: 0
-                type: integer
               storageRef:
                 description: StorageRef is a reference to the internal storage location
                 properties:
@@ -283,17 +374,61 @@ spec:
                 required:
                 - type
                 type: object
-              syncAttempts:
-                description: SyncAttempts is the number of sync attempts since last
-                  success
-                minimum: 0
-                type: integer
+              syncStatus:
+                description: SyncStatus provides detailed information about data synchronization
+                properties:
+                  attemptCount:
+                    description: AttemptCount is the number of sync attempts since
+                      last success
+                    minimum: 0
+                    type: integer
+                  lastAttempt:
+                    description: LastAttempt is the timestamp of the last sync attempt
+                    format: date-time
+                    type: string
+                  lastSyncHash:
+                    description: |-
+                      LastSyncHash is the hash of the last successfully synced data
+                      Used to detect changes in source data
+                    type: string
+                  lastSyncTime:
+                    description: LastSyncTime is the timestamp of the last successful
+                      sync
+                    format: date-time
+                    type: string
+                  message:
+                    description: Message provides additional information about the
+                      sync status
+                    type: string
+                  phase:
+                    allOf:
+                    - enum:
+                      - Syncing
+                      - Complete
+                      - Failed
+                    - enum:
+                      - Syncing
+                      - Complete
+                      - Failed
+                    description: Phase represents the current synchronization phase
+                    type: string
+                  serverCount:
+                    description: ServerCount is the total number of servers in the
+                      registry
+                    minimum: 0
+                    type: integer
+                required:
+                - phase
+                type: object
             type: object
         type: object
         x-kubernetes-validations:
-        - message: configMap field is required when source type is 'configmap'
-          rule: 'self.spec.source.type == ''configmap'' ? has(self.spec.source.configmap)
-            : true'
+        - message: configMapRef field is required when source type is 'configmap',
+            git field is required when source type is 'git', api field is required
+            when source type is 'api'
+          rule: 'self.spec.source.type == ''configmap'' ? has(self.spec.source.configMapRef)
+            : (self.spec.source.type == ''git'' ? has(self.spec.source.git) : (self.spec.source.type
+            == ''api'' ? has(self.spec.source.api) : true))'
     served: true
     storage: true
     subresources:

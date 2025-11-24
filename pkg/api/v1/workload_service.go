@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/networking"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -32,6 +34,7 @@ type WorkloadService struct {
 	containerRuntime runtime.Runtime
 	debugMode        bool
 	imageRetriever   retriever.Retriever
+	appConfig        *config.Config
 }
 
 // NewWorkloadService creates a new WorkloadService instance
@@ -41,12 +44,17 @@ func NewWorkloadService(
 	containerRuntime runtime.Runtime,
 	debugMode bool,
 ) *WorkloadService {
+	// Load application config for global settings
+	configProvider := config.NewDefaultProvider()
+	appConfig := configProvider.GetConfig()
+
 	return &WorkloadService{
 		workloadManager:  workloadManager,
 		groupManager:     groupManager,
 		containerRuntime: containerRuntime,
 		debugMode:        debugMode,
 		imageRetriever:   retriever.GetMCPServer,
+		appConfig:        appConfig,
 	}
 }
 
@@ -93,12 +101,26 @@ func (s *WorkloadService) UpdateWorkloadFromRequest(ctx context.Context, name st
 //
 //nolint:gocyclo // TODO: refactor this into shorter functions
 func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createRequest) (*runner.RunConfig, error) {
-	// Default proxy mode to SSE if not specified
+	// Default proxy mode to streamable-http if not specified (SSE is deprecated)
 	if !types.IsValidProxyMode(req.ProxyMode) {
 		if req.ProxyMode == "" {
-			req.ProxyMode = types.ProxyModeSSE.String()
+			req.ProxyMode = types.ProxyModeStreamableHTTP.String()
 		} else {
 			return nil, fmt.Errorf("%w: %s", retriever.ErrInvalidRunConfig, fmt.Sprintf("Invalid proxy_mode: %s", req.ProxyMode))
+		}
+	}
+
+	// Validate user-provided resource indicator (RFC 8707)
+	if req.OAuthConfig.Resource != "" {
+		if err := validation.ValidateResourceURI(req.OAuthConfig.Resource); err != nil {
+			return nil, fmt.Errorf("%w: invalid resource parameter: %v", retriever.ErrInvalidRunConfig, err)
+		}
+	}
+
+	// Validate user-provided OAuth callback port
+	if req.OAuthConfig.CallbackPort != 0 {
+		if err := networking.ValidateCallbackPort(req.OAuthConfig.CallbackPort, req.OAuthConfig.ClientID); err != nil {
+			return nil, fmt.Errorf("%w: invalid OAuth callback port configuration", retriever.ErrInvalidRunConfig)
 		}
 	}
 
@@ -117,21 +139,18 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		return nil, fmt.Errorf("group '%s' does not exist", groupName)
 	}
 
-	var remoteAuthConfig *runner.RemoteAuthConfig
+	var remoteAuthConfig *remote.Config
 	var imageURL string
-	var imageMetadata *registry.ImageMetadata
+	var imageMetadata *regtypes.ImageMetadata
+	var serverMetadata regtypes.ServerMetadata
 
 	if req.URL != "" {
 		// Configure remote authentication if OAuth config is provided
 		if req.Transport == "" {
 			req.Transport = types.TransportTypeStreamableHTTP.String()
 		}
-		remoteAuthConfig, err = createRequestToRemoteAuthConfig(ctx, req)
-		if err != nil {
-			return nil, err
-		}
+		remoteAuthConfig = createRequestToRemoteAuthConfig(ctx, req)
 	} else {
-		var serverMetadata registry.ServerMetadata
 		// Create a dedicated context with longer timeout for image retrieval
 		imageCtx, cancel := context.WithTimeout(ctx, imageRetrievalTimeout)
 		defer cancel()
@@ -153,28 +172,39 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 			return nil, fmt.Errorf("failed to retrieve MCP server image: %w", err)
 		}
 
-		if remoteServerMetadata, ok := serverMetadata.(*registry.RemoteServerMetadata); ok {
+		if remoteServerMetadata, ok := serverMetadata.(*regtypes.RemoteServerMetadata); ok {
 			if remoteServerMetadata.OAuthConfig != nil {
-				clientSecret, err := resolveClientSecret(ctx, req.OAuthConfig.ClientSecret)
-				if err != nil {
-					return nil, err
+				// Default resource: user-provided > registry metadata > derived from remote URL
+				resource := req.OAuthConfig.Resource
+				if resource == "" {
+					resource = remoteServerMetadata.OAuthConfig.Resource
 				}
-				remoteAuthConfig = &runner.RemoteAuthConfig{
+				if resource == "" && remoteServerMetadata.URL != "" {
+					resource = remote.DefaultResourceIndicator(remoteServerMetadata.URL)
+				}
+
+				remoteAuthConfig = &remote.Config{
 					ClientID:     req.OAuthConfig.ClientID,
-					ClientSecret: clientSecret,
 					Scopes:       remoteServerMetadata.OAuthConfig.Scopes,
 					CallbackPort: remoteServerMetadata.OAuthConfig.CallbackPort,
 					Issuer:       remoteServerMetadata.OAuthConfig.Issuer,
 					AuthorizeURL: remoteServerMetadata.OAuthConfig.AuthorizeURL,
 					TokenURL:     remoteServerMetadata.OAuthConfig.TokenURL,
+					UsePKCE:      remoteServerMetadata.OAuthConfig.UsePKCE,
+					Resource:     resource,
 					OAuthParams:  remoteServerMetadata.OAuthConfig.OAuthParams,
 					Headers:      remoteServerMetadata.Headers,
 					EnvVars:      remoteServerMetadata.EnvVars,
 				}
+
+				// Store the client secret in CLI format if provided
+				if req.OAuthConfig.ClientSecret != nil {
+					remoteAuthConfig.ClientSecret = req.OAuthConfig.ClientSecret.ToCLIString()
+				}
 			}
 		}
 		// Handle server metadata - API only supports container servers
-		imageMetadata, _ = serverMetadata.(*registry.ImageMetadata)
+		imageMetadata, _ = serverMetadata.(*regtypes.ImageMetadata)
 	}
 
 	// Build RunConfig
@@ -205,21 +235,31 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		runner.WithAuditConfigPath(""),
 		runner.WithPermissionProfile(req.PermissionProfile),
 		runner.WithNetworkIsolation(req.NetworkIsolation),
+		runner.WithTrustProxyHeaders(req.TrustProxyHeaders),
 		runner.WithK8sPodPatch(""),
 		runner.WithProxyMode(types.ProxyMode(req.ProxyMode)),
 		runner.WithTransportAndPorts(req.Transport, req.ProxyPort, req.TargetPort),
 		runner.WithAuditEnabled(false, ""),
 		runner.WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID,
-			"", "", "", "", "", false),
+			"", "", "", "", "", false, false),
 		runner.WithToolsFilter(req.ToolsFilter),
 		runner.WithToolsOverride(toolsOverride),
 		runner.WithTelemetryConfig("", false, false, false, "", 0.0, nil, false, nil),
+	}
+
+	// Determine transport type
+	transportType := "streamable-http"
+	if req.Transport != "" {
+		transportType = req.Transport
+	} else if serverMetadata != nil {
+		transportType = serverMetadata.GetTransport()
 	}
 
 	// Configure middleware from flags
 	options = append(options,
 		runner.WithMiddlewareFromFlags(
 			nil,
+			nil, // tokenExchangeConfig - not supported via API yet
 			req.ToolsFilter,
 			toolsOverride,
 			nil,
@@ -227,7 +267,8 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 			false,
 			"",
 			req.Name,
-			req.Transport,
+			transportType,
+			s.appConfig.DisableUsageMetrics,
 		),
 	)
 
@@ -242,48 +283,37 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 
 // createRequestToRemoteAuthConfig converts API request to runner RemoteAuthConfig
 func createRequestToRemoteAuthConfig(
-	ctx context.Context,
+	_ context.Context,
 	req *createRequest,
-) (*runner.RemoteAuthConfig, error) {
+) *remote.Config {
 
-	// Resolve client secret from secret management if provided
-	clientSecret, err := resolveClientSecret(ctx, req.OAuthConfig.ClientSecret)
-	if err != nil {
-		return nil, err
+	// Default resource: user-provided > derived from remote URL
+	resource := req.OAuthConfig.Resource
+	if resource == "" && req.URL != "" {
+		resource = remote.DefaultResourceIndicator(req.URL)
 	}
 
 	// Create RemoteAuthConfig
-	return &runner.RemoteAuthConfig{
+	remoteAuthConfig := &remote.Config{
 		ClientID:     req.OAuthConfig.ClientID,
-		ClientSecret: clientSecret,
 		Scopes:       req.OAuthConfig.Scopes,
 		Issuer:       req.OAuthConfig.Issuer,
 		AuthorizeURL: req.OAuthConfig.AuthorizeURL,
 		TokenURL:     req.OAuthConfig.TokenURL,
+		UsePKCE:      req.OAuthConfig.UsePKCE,
+		Resource:     resource,
 		OAuthParams:  req.OAuthConfig.OAuthParams,
 		CallbackPort: req.OAuthConfig.CallbackPort,
 		SkipBrowser:  req.OAuthConfig.SkipBrowser,
 		Headers:      req.Headers,
-	}, nil
-}
-
-// resolveClientSecret resolves client secret from secret management
-func resolveClientSecret(ctx context.Context, secretParam *secrets.SecretParameter) (string, error) {
-	var clientSecret string
-	if secretParam != nil {
-
-		secretsProvider, err := getSecretsManager()
-		if err != nil {
-			return "", fmt.Errorf("failed to get secrets manager: %w", err)
-		}
-		// Get the secret from the secrets manager
-		secretValue, err := secretsProvider.GetSecret(ctx, secretParam.Name)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve OAuth client secret: %w", err)
-		}
-		clientSecret = secretValue
 	}
-	return clientSecret, nil
+
+	// Store the client secret in CLI format if provided
+	if req.OAuthConfig.ClientSecret != nil {
+		remoteAuthConfig.ClientSecret = req.OAuthConfig.ClientSecret.ToCLIString()
+	}
+
+	return remoteAuthConfig
 }
 
 // GetWorkloadNamesFromRequest gets workload names from either the names field or group
@@ -312,21 +342,4 @@ func (s *WorkloadService) GetWorkloadNamesFromRequest(ctx context.Context, req b
 	}
 
 	return workloadNames, nil
-}
-
-// getSecretsManager is a helper function to get the secrets manager
-func getSecretsManager() (secrets.Provider, error) {
-	cfg := config.NewDefaultProvider().GetConfig()
-
-	// Check if secrets setup has been completed
-	if !cfg.Secrets.SetupCompleted {
-		return nil, secrets.ErrSecretsNotSetup
-	}
-
-	providerType, err := cfg.Secrets.GetProviderType()
-	if err != nil {
-		return nil, err
-	}
-
-	return secrets.CreateSecretProvider(providerType)
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	pkgpath "path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -46,8 +47,15 @@ type Profile struct {
 
 // NetworkPermissions defines network permissions for a container
 type NetworkPermissions struct {
+	// Mode specifies the network mode for the container (e.g., "host", "bridge", "none")
+	// When empty, the default container runtime network mode is used
+	Mode string `json:"mode,omitempty" yaml:"mode,omitempty"`
+
 	// Outbound defines outbound network permissions
 	Outbound *OutboundNetworkPermissions `json:"outbound,omitempty" yaml:"outbound,omitempty"`
+
+	// Inbound defines inbound network permissions
+	Inbound *InboundNetworkPermissions `json:"inbound,omitempty" yaml:"inbound,omitempty"`
 }
 
 // OutboundNetworkPermissions defines outbound network permissions
@@ -62,6 +70,12 @@ type OutboundNetworkPermissions struct {
 	AllowPort []int `json:"allow_port,omitempty" yaml:"allow_port,omitempty"`
 }
 
+// InboundNetworkPermissions defines inbound network permissions
+type InboundNetworkPermissions struct {
+	// AllowHost is a list of allowed hosts for inbound connections
+	AllowHost []string `json:"allow_host,omitempty" yaml:"allow_host,omitempty"`
+}
+
 // NewProfile creates a new permission profile
 func NewProfile() *Profile {
 	return &Profile{
@@ -73,6 +87,9 @@ func NewProfile() *Profile {
 				InsecureAllowAll: false,
 				AllowHost:        []string{},
 				AllowPort:        []int{},
+			},
+			Inbound: &InboundNetworkPermissions{
+				AllowHost: []string{},
 			},
 		},
 		Privileged: false,
@@ -109,6 +126,9 @@ func BuiltinNoneProfile() *Profile {
 				AllowHost:        []string{},
 				AllowPort:        []int{},
 			},
+			Inbound: &InboundNetworkPermissions{
+				AllowHost: []string{},
+			},
 		},
 		Privileged: false,
 	}
@@ -125,6 +145,9 @@ func BuiltinNetworkProfile() *Profile {
 				InsecureAllowAll: true,
 				AllowHost:        []string{},
 				AllowPort:        []int{},
+			},
+			Inbound: &InboundNetworkPermissions{
+				AllowHost: []string{},
 			},
 		},
 		Privileged: false,
@@ -174,11 +197,6 @@ func isWindowsPath(path string) bool {
 		return true
 	}
 	return false
-}
-
-// cleanPath cleans a path using filepath.Clean
-func cleanPath(path string) string {
-	return filepath.Clean(path)
 }
 
 // validateResourceScheme checks if a resource URI scheme is valid
@@ -277,8 +295,10 @@ func parseResourceURI(declaration string) (source, target string, err error) {
 	}
 
 	// Clean paths
-	cleanedResource := cleanPath(resourceName)
-	cleanedTarget := cleanPath(containerPath)
+	cleanedResource := filepath.Clean(resourceName)
+	// For the target, we explicitly use path.Clean so that we do not convert
+	// Unix style paths into Windows style paths on Windows hosts
+	cleanedTarget := pkgpath.Clean(containerPath)
 
 	return scheme + "://" + cleanedResource, cleanedTarget, nil
 }
@@ -302,7 +322,7 @@ func parseWindowsPath(declaration string, colonPositions []int) (source, target 
 		if err := validatePath(declaration); err != nil {
 			return "", "", err
 		}
-		cleanedPath := cleanPath(declaration)
+		cleanedPath := filepath.Clean(declaration)
 		return cleanedPath, cleanedPath, nil
 	}
 
@@ -324,8 +344,9 @@ func parseWindowsPath(declaration string, colonPositions []int) (source, target 
 			return "", "", err
 		}
 
-		cleanedSource := cleanPath(hostPath)
-		cleanedTarget := cleanPath(containerPath)
+		cleanedSource := filepath.Clean(hostPath)
+		// See comment above about using path.Clean instead of filepath.Clean.
+		cleanedTarget := pkgpath.Clean(containerPath)
 		return cleanedSource, cleanedTarget, nil
 	}
 
@@ -359,8 +380,9 @@ func parseHostContainerPath(declaration string, colonPositions []int) (source, t
 			return "", "", err
 		}
 
-		cleanedSource := cleanPath(hostPath)
-		cleanedTarget := cleanPath(containerPath)
+		cleanedSource := filepath.Clean(hostPath)
+		// See comment above about using path.Clean instead of filepath.Clean.
+		cleanedTarget := pkgpath.Clean(containerPath)
 		return cleanedSource, cleanedTarget, nil
 	}
 
@@ -379,7 +401,8 @@ func parseSinglePath(declaration string) (source, target string, err error) {
 		return "", "", err
 	}
 
-	cleanedPath := cleanPath(declaration)
+	// Single path should always be converted to OS-specific cleaned path.
+	cleanedPath := filepath.Clean(declaration)
 	return cleanedPath, cleanedPath, nil
 }
 

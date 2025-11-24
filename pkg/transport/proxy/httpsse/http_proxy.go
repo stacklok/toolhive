@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"path"
 	"strconv"
 	"sync"
 	"time"
@@ -52,10 +54,10 @@ type Proxy interface {
 //nolint:revive // Intentionally named HTTPSSEProxy despite package name
 type HTTPSSEProxy struct {
 	// Basic configuration
-	host          string
-	port          int
-	containerName string
-	middlewares   []types.MiddlewareFunction
+	host              string
+	port              int
+	middlewares       []types.NamedMiddleware
+	trustProxyHeaders bool
 
 	// HTTP server
 	server     *http.Server
@@ -84,7 +86,11 @@ type HTTPSSEProxy struct {
 
 // NewHTTPSSEProxy creates a new HTTP SSE proxy for transports.
 func NewHTTPSSEProxy(
-	host string, port int, containerName string, prometheusHandler http.Handler, middlewares ...types.MiddlewareFunction,
+	host string,
+	port int,
+	trustProxyHeaders bool,
+	prometheusHandler http.Handler,
+	middlewares ...types.NamedMiddleware,
 ) *HTTPSSEProxy {
 	// Create a factory for SSE sessions
 	sseFactory := func(id string) session.Session {
@@ -95,7 +101,7 @@ func NewHTTPSSEProxy(
 		middlewares:       middlewares,
 		host:              host,
 		port:              port,
-		containerName:     containerName,
+		trustProxyHeaders: trustProxyHeaders,
 		shutdownCh:        make(chan struct{}),
 		messageCh:         make(chan jsonrpc2.Message, 100),
 		sessionManager:    session.NewManager(session.DefaultSessionTTL, sseFactory),
@@ -112,10 +118,10 @@ func NewHTTPSSEProxy(
 }
 
 // applyMiddlewares applies a chain of middlewares to a handler
-func applyMiddlewares(handler http.Handler, middlewares ...types.MiddlewareFunction) http.Handler {
+func applyMiddlewares(handler http.Handler, middlewares ...types.NamedMiddleware) http.Handler {
 	// Apply middleware chain in reverse order (last middleware is applied first)
 	for i := len(middlewares) - 1; i >= 0; i-- {
-		handler = middlewares[i](handler)
+		handler = middlewares[i].Function(handler)
 	}
 	return handler
 }
@@ -175,7 +181,7 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 		_, portStr, _ := net.SplitHostPort(actualAddr)
 		actualPort, _ := strconv.Atoi(portStr)
 
-		logger.Infof("HTTP proxy started for container %s on port %d", p.containerName, actualPort)
+		logger.Infof("HTTP proxy started on port %d", actualPort)
 		logger.Infof("SSE endpoint: http://%s%s", actualAddr, ssecommon.HTTPSSEEndpoint)
 		logger.Infof("JSON-RPC endpoint: http://%s%s", actualAddr, ssecommon.HTTPMessagesEndpoint)
 
@@ -197,7 +203,9 @@ func (p *HTTPSSEProxy) Stop(ctx context.Context) error {
 
 	// Stop the session manager cleanup routine
 	if p.sessionManager != nil {
-		p.sessionManager.Stop()
+		if err := p.sessionManager.Stop(); err != nil {
+			logger.Errorf("Failed to stop session manager: %v", err)
+		}
 	}
 
 	// Disconnect all active sessions
@@ -302,20 +310,8 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Get the base URL for the POST endpoint
-	host := r.Host
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if forwardedProto := r.Header.Get("X-Forwarded-Proto"); forwardedProto != "" {
-		scheme = forwardedProto
-	}
-
-	baseURL := fmt.Sprintf("%s://%s", scheme, host)
-
-	// Create and send the endpoint event
-	endpointURL := fmt.Sprintf("%s%s?session_id=%s", baseURL, ssecommon.HTTPMessagesEndpoint, clientID)
+	// Build and send the endpoint event
+	endpointURL := p.buildEndpointURL(r, clientID)
 	endpointMsg := ssecommon.NewSSEMessage("endpoint", endpointURL)
 
 	// Send the initial event
@@ -469,7 +465,9 @@ func (p *HTTPSSEProxy) removeClient(clientID string) {
 	}
 
 	// Remove the session from the manager
-	p.sessionManager.Delete(clientID)
+	if err := p.sessionManager.Delete(clientID); err != nil {
+		logger.Debugf("Failed to delete session %s: %v", clientID, err)
+	}
 
 	// Clean up closed clients map periodically (prevent memory leak)
 	p.closedClientsMutex.Lock()
@@ -490,7 +488,7 @@ func (p *HTTPSSEProxy) processPendingMessages(clientID string, messageCh chan<- 
 	}
 
 	// Find messages for this client (all messages for now)
-	for _, pendingMsg := range p.pendingMessages {
+	for i, pendingMsg := range p.pendingMessages {
 		// Convert to SSE string
 		sseString := pendingMsg.Message.ToSSEString()
 
@@ -500,11 +498,74 @@ func (p *HTTPSSEProxy) processPendingMessages(clientID string, messageCh chan<- 
 			// Message sent successfully
 		default:
 			// Channel is full, stop sending
-			logger.Errorf("Failed to send pending message to client %s (channel full)", clientID)
+			logger.Errorf("Client %s channel full after sending %d/%d pending messages",
+				clientID, i, len(p.pendingMessages))
+			// Remove successfully sent messages and keep the rest
+			p.pendingMessages = p.pendingMessages[i:]
 			return
 		}
 	}
 
 	// Clear the pending messages
 	p.pendingMessages = nil
+}
+
+// buildEndpointURL constructs the endpoint URL from request headers and proxy configuration.
+func (p *HTTPSSEProxy) buildEndpointURL(r *http.Request, clientID string) string {
+	host := r.Host
+	prefix := ""
+
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwardedProto := r.Header.Get("X-Forwarded-Proto"); forwardedProto != "" {
+		scheme = forwardedProto
+	}
+
+	// Handle X-Forwarded headers from reverse proxies only if trusted
+	if p.trustProxyHeaders {
+		if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
+			host = forwardedHost
+			if forwardedPort := r.Header.Get("X-Forwarded-Port"); forwardedPort != "" {
+				// Strip any existing port from host before adding the forwarded port
+				if hostOnly, _, err := net.SplitHostPort(host); err == nil {
+					host = hostOnly
+				}
+				host = net.JoinHostPort(host, forwardedPort)
+			}
+		}
+
+		prefix = r.Header.Get("X-Forwarded-Prefix")
+	}
+
+	// Strip the SSE endpoint suffix from prefix if present, since we'll add the full messages path
+	prefix = stripSSEEndpointSuffix(prefix)
+
+	u := &url.URL{
+		Scheme: scheme,
+		Host:   host,
+		Path:   path.Join(prefix, ssecommon.HTTPMessagesEndpoint),
+	}
+	q := u.Query()
+	q.Set("session_id", clientID)
+	u.RawQuery = q.Encode()
+
+	return u.String()
+}
+
+// stripSSEEndpointSuffix removes the SSE endpoint suffix from a path prefix if present.
+func stripSSEEndpointSuffix(prefix string) string {
+	sseEndpointLen := len(ssecommon.HTTPSSEEndpoint)
+	if len(prefix) < sseEndpointLen {
+		return prefix
+	}
+
+	// Check if the prefix ends with the SSE endpoint
+	suffixStart := len(prefix) - sseEndpointLen
+	if prefix[suffixStart:] == ssecommon.HTTPSSEEndpoint {
+		return prefix[:suffixStart]
+	}
+
+	return prefix
 }

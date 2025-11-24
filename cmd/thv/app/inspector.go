@@ -18,7 +18,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -112,10 +111,11 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	imageManager := images.NewImageManager(ctx)
-	processedImage, err := runner.HandleProtocolScheme(ctx, imageManager, inspector.Image, "")
+	err = imageManager.PullImage(ctx, inspector.Image)
 	if err != nil {
-		return fmt.Errorf("failed to handle protocol scheme: %v", err)
+		return fmt.Errorf("failed to pull inspector image: %v", err)
 	}
+	processedImage := inspector.Image
 
 	// Setup workload options with the required port configuration
 	uiPortStr := strconv.Itoa(inspectorUIPort)

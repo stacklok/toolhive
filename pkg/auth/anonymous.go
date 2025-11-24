@@ -2,18 +2,17 @@
 package auth
 
 import (
-	"context"
 	"net/http"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// AnonymousMiddleware creates an HTTP middleware that sets up anonymous claims.
+// AnonymousMiddleware creates an HTTP middleware that sets up anonymous identity.
 // This is useful for testing and local environments where authorization policies
 // need to work without requiring actual authentication.
 //
-// The middleware sets up basic anonymous claims that can be used by authorization
+// The middleware sets up basic anonymous identity that can be used by authorization
 // policies, allowing them to function even when authentication is disabled.
 // This is heavily discouraged in production settings but is handy for testing
 // and local development environments.
@@ -31,9 +30,18 @@ func AnonymousMiddleware(next http.Handler) http.Handler {
 			"name":  "Anonymous User",
 		}
 
-		// Add the anonymous claims to the request context using the same key
-		// as the JWT middleware for consistency
-		ctx := context.WithValue(r.Context(), ClaimsContextKey{}, claims)
+		// Create Identity from claims
+		identity := &Identity{
+			Subject:   "anonymous",
+			Name:      "Anonymous User",
+			Email:     "anonymous@localhost",
+			Claims:    claims,
+			Token:     "", // No token for anonymous auth
+			TokenType: "Bearer",
+		}
+
+		// Add the Identity to the request context
+		ctx := WithIdentity(r.Context(), identity)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

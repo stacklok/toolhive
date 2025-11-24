@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/registry"
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	transtypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -36,7 +37,8 @@ var registryInfoCmd = &cobra.Command{
 }
 
 var (
-	registryFormat string
+	registryFormat  string
+	refreshRegistry bool
 )
 
 func init() {
@@ -49,7 +51,9 @@ func init() {
 
 	// Add flags for list and info commands
 	registryListCmd.Flags().StringVar(&registryFormat, "format", FormatText, "Output format (json or text)")
+	registryListCmd.Flags().BoolVar(&refreshRegistry, "refresh", false, "Force refresh registry cache")
 	registryInfoCmd.Flags().StringVar(&registryFormat, "format", FormatText, "Output format (json or text)")
+	registryInfoCmd.Flags().BoolVar(&refreshRegistry, "refresh", false, "Force refresh registry cache")
 }
 
 func registryListCmdFunc(_ *cobra.Command, _ []string) error {
@@ -58,13 +62,23 @@ func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get registry provider: %v", err)
 	}
+
+	// Force refresh if requested
+	if refreshRegistry {
+		if cached, ok := provider.(*registry.CachedAPIRegistryProvider); ok {
+			if err := cached.ForceRefresh(); err != nil {
+				return fmt.Errorf("failed to refresh registry: %v", err)
+			}
+		}
+	}
+
 	servers, err := provider.ListServers()
 	if err != nil {
 		return fmt.Errorf("failed to list servers: %v", err)
 	}
 
 	// Sort servers by name using the utility function
-	registry.SortServersByName(servers)
+	types.SortServersByName(servers)
 
 	// Output based on format
 	switch registryFormat {
@@ -83,6 +97,16 @@ func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get registry provider: %v", err)
 	}
+
+	// Force refresh if requested
+	if refreshRegistry {
+		if cached, ok := provider.(*registry.CachedAPIRegistryProvider); ok {
+			if err := cached.ForceRefresh(); err != nil {
+				return fmt.Errorf("failed to refresh registry: %v", err)
+			}
+		}
+	}
+
 	server, err := provider.GetServer(serverName)
 	if err != nil {
 		return fmt.Errorf("failed to get server information: %v", err)
@@ -99,7 +123,7 @@ func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 }
 
 // printJSONServers prints servers in JSON format
-func printJSONServers(servers []registry.ServerMetadata) error {
+func printJSONServers(servers []types.ServerMetadata) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(servers, "", "  ")
 	if err != nil {
@@ -112,7 +136,7 @@ func printJSONServers(servers []registry.ServerMetadata) error {
 }
 
 // printJSONServer prints a single server in JSON format
-func printJSONServer(server registry.ServerMetadata) error {
+func printJSONServer(server types.ServerMetadata) error {
 	jsonData, err := json.MarshalIndent(server, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
@@ -124,7 +148,7 @@ func printJSONServer(server registry.ServerMetadata) error {
 }
 
 // printTextServers prints servers in text format
-func printTextServers(servers []registry.ServerMetadata) {
+func printTextServers(servers []types.ServerMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTIER\tSTARS\tPULLS")
@@ -166,7 +190,7 @@ const (
 )
 
 // getServerType returns the type of server (container or remote)
-func getServerType(server registry.ServerMetadata) string {
+func getServerType(server types.ServerMetadata) string {
 	if server.IsRemote() {
 		return ServerTypeRemote
 	}
@@ -175,7 +199,7 @@ func getServerType(server registry.ServerMetadata) string {
 
 // printTextServerInfo prints detailed information about a server in text format
 // nolint:gocyclo
-func printTextServerInfo(name string, server registry.ServerMetadata) {
+func printTextServerInfo(name string, server types.ServerMetadata) {
 	fmt.Printf("Name: %s\n", server.GetName())
 	fmt.Printf("Type: %s\n", getServerType(server))
 	fmt.Printf("Description: %s\n", server.GetDescription())
@@ -186,7 +210,7 @@ func printTextServerInfo(name string, server registry.ServerMetadata) {
 	// Type-specific information
 	if !server.IsRemote() {
 		// Container server
-		if img, ok := server.(*registry.ImageMetadata); ok {
+		if img, ok := server.(*types.ImageMetadata); ok {
 			fmt.Printf("Image: %s\n", img.Image)
 			isHTTPTransport := img.Transport == transtypes.TransportTypeSSE.String() ||
 				img.Transport == transtypes.TransportTypeStreamableHTTP.String()
@@ -240,7 +264,7 @@ func printTextServerInfo(name string, server registry.ServerMetadata) {
 		}
 	} else {
 		// Remote server
-		if remote, ok := server.(*registry.RemoteServerMetadata); ok {
+		if remote, ok := server.(*types.RemoteServerMetadata); ok {
 			fmt.Printf("URL: %s\n", remote.URL)
 
 			// Print headers
@@ -318,15 +342,25 @@ func printTextServerInfo(name string, server registry.ServerMetadata) {
 
 	// Print example command
 	fmt.Println("\nExample Command:")
-	if server.IsRemote() {
-		fmt.Printf("  thv proxy %s\n", name)
-	} else {
-		fmt.Printf("  thv run %s\n", name)
-	}
+	fmt.Printf("  thv run %s\n", name)
 }
 
 // truncateString truncates a string to the specified length and adds "..." if truncated
+// It also sanitizes the string by replacing newlines and multiple spaces with single spaces
 func truncateString(s string, maxLen int) string {
+	// Replace newlines and tabs with spaces
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+
+	// Replace multiple consecutive spaces with a single space
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+
+	// Trim leading/trailing spaces
+	s = strings.TrimSpace(s)
+
 	if len(s) <= maxLen {
 		return s
 	}

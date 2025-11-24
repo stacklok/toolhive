@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"embed"
 	"fmt"
+	"regexp"
 	"text/template"
 )
 
@@ -16,12 +17,18 @@ var templateFS embed.FS
 type TemplateData struct {
 	// MCPPackage is the name of the MCP package to run.
 	MCPPackage string
-	// MCPArgs are the arguments to pass to the MCP package.
-	MCPArgs []string
+	// MCPPackageClean is the package name with version suffix removed.
+	// For example: "@org/package@1.2.3" becomes "@org/package", "package@1.0.0" becomes "package"
+	// This field is automatically populated by GetDockerfileTemplate.
+	MCPPackageClean string
 	// CACertContent is the content of the custom CA certificate to include in the image.
 	CACertContent string
 	// IsLocalPath indicates if the MCPPackage is a local path that should be copied into the container.
 	IsLocalPath bool
+	// BuildArgs are the arguments to bake into the container's ENTRYPOINT at build time.
+	// These are typically required subcommands (e.g., "start") that must always be present.
+	// Runtime arguments passed via "-- <args>" will be appended after these build args.
+	BuildArgs []string
 }
 
 // TransportType represents the type of transport to use.
@@ -36,8 +43,25 @@ const (
 	TransportTypeGO TransportType = "go"
 )
 
+// stripVersionSuffix removes version suffixes from package names.
+// It strips @version from the end of package names while preserving scoped package prefixes.
+// Examples:
+//   - "@org/package@1.2.3" -> "@org/package"
+//   - "package@1.0.0" -> "package"
+//   - "@org/package" -> "@org/package" (no version, unchanged)
+//   - "package" -> "package" (no version, unchanged)
+func stripVersionSuffix(pkg string) string {
+	// Match @version at the end, where version doesn't contain @ or /
+	// This preserves scoped packages like @org/package
+	re := regexp.MustCompile(`@[^@/]*$`)
+	return re.ReplaceAllString(pkg, "")
+}
+
 // GetDockerfileTemplate returns the Dockerfile template for the specified transport type.
 func GetDockerfileTemplate(transportType TransportType, data TemplateData) (string, error) {
+	// Populate MCPPackageClean with version-stripped package name
+	data.MCPPackageClean = stripVersionSuffix(data.MCPPackage)
+
 	var templateName string
 
 	// Determine the template name based on the transport type

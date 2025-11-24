@@ -56,6 +56,13 @@ type Config struct {
 	// be read from the host machine and included in spans for observability.
 	// Example: []string{"NODE_ENV", "DEPLOYMENT_ENV", "SERVICE_VERSION"}
 	EnvironmentVariables []string `json:"environmentVariables"`
+
+	// CustomAttributes contains custom resource attributes to be added to all telemetry signals.
+	// These are parsed from CLI flags (--otel-custom-attributes) or environment variables
+	// (OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.
+	// We use map[string]string for proper JSON serialization instead of []attribute.KeyValue
+	// which doesn't marshal/unmarshal correctly.
+	CustomAttributes map[string]string `json:"customAttributes,omitempty"`
 }
 
 // DefaultConfig returns a default telemetry configuration.
@@ -100,6 +107,7 @@ func NewProvider(ctx context.Context, config Config) (*Provider, error) {
 		providers.WithMetricsEnabled(config.MetricsEnabled),
 		providers.WithSamplingRate(config.SamplingRate),
 		providers.WithEnablePrometheusMetricsPath(config.EnablePrometheusMetricsPath),
+		providers.WithCustomAttributes(config.CustomAttributes),
 	}
 
 	telemetryProviders, err := providers.NewCompositeProvider(ctx, telemetryOptions...)

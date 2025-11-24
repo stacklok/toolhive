@@ -14,12 +14,12 @@ operator:
   # -- List of image pull secrets to use
   imagePullSecrets: []
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.3.5
+  image: ghcr.io/stacklok/toolhive/operator:v0.6.6
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.3.5
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.6.6
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0
@@ -54,6 +54,8 @@ operator:
     capabilities:
       drop:
       - ALL
+    seccompProfile:
+      type: RuntimeDefault
 
   # -- Liveness probe configuration for the operator
   livenessProbe:
@@ -91,6 +93,13 @@ operator:
     requests:
       cpu: 10m
       memory: 64Mi
+
+  # -- Go memory limits and garbage collection percentage for the operator container
+  gc:
+    # -- Go memory limits for the operator container
+    gomeglimit: 150MiB
+    # -- Go garbage collection percentage for the operator container
+    gogc: 75  # 75% heap growth before GC (as Go default)
 
   # -- RBAC configuration for the operator
   rbac:
@@ -180,13 +189,10 @@ operator:
   affinity: {}
 
 # -- All values for the registry API deployment and associated resources
-# NOTE: Registry API ServiceAccount and RBAC resources are only created when
-# operator.features.experimental is enabled
 registryAPI:
   # -- Container image for the registry API
-  image: "ghcr.io/stacklok/toolhive/thv-registry-api:latest"
+  image: "ghcr.io/stacklok/thv-registry-api:v0.2.0"
   # -- Service account configuration for the registry API
-  # This ServiceAccount is only created when operator.features.experimental is true
   serviceAccount:
     # -- Automatically mount a ServiceAccount's API credentials
     automountServiceAccountToken: true

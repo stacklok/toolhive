@@ -9,6 +9,8 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/remote"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/ignore"
@@ -16,10 +18,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
 
 // BuildContext defines the context in which the RunConfigBuilder is being used
@@ -40,6 +43,8 @@ type runConfigBuilder struct {
 	// Store ports separately for proper validation
 	port       int
 	targetPort int
+	// Store network mode to apply to permission profile after it's loaded
+	networkMode string
 	// Build context determines which validation and features are enabled
 	buildContext BuildContext
 }
@@ -74,11 +79,11 @@ func WithRemoteURL(remoteURL string) RunConfigBuilderOption {
 }
 
 // WithRemoteAuth sets the remote authentication configuration
-func WithRemoteAuth(config *RemoteAuthConfig) RunConfigBuilderOption {
+func WithRemoteAuth(config *remote.Config) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		if config == nil {
-			config = &RemoteAuthConfig{
-				CallbackPort: DefaultCallbackPort,
+			config = &remote.Config{
+				CallbackPort: remote.DefaultCallbackPort,
 			}
 		}
 		b.config.RemoteAuthConfig = config
@@ -218,6 +223,23 @@ func WithNetworkIsolation(isolate bool) RunConfigBuilderOption {
 	}
 }
 
+// WithTrustProxyHeaders sets whether to trust X-Forwarded-* headers from reverse proxies
+func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.TrustProxyHeaders = trust
+		return nil
+	}
+}
+
+// WithNetworkMode sets the network mode for the container.
+// The network mode will be applied to the permission profile after it is loaded.
+func WithNetworkMode(networkMode string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.networkMode = networkMode
+		return nil
+	}
+}
+
 // WithK8sPodPatch sets the Kubernetes pod template patch
 func WithK8sPodPatch(patch string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
@@ -300,18 +322,20 @@ func WithOIDCConfig(
 	jwksAuthTokenFile string,
 	resourceURL string,
 	jwksAllowPrivateIP bool,
+	insecureAllowHTTP bool,
 ) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
 			oidcClientID != "" || oidcClientSecret != "" {
 			b.config.OIDCConfig = &auth.TokenValidatorConfig{
-				Issuer:           oidcIssuer,
-				Audience:         oidcAudience,
-				JWKSURL:          oidcJwksURL,
-				IntrospectionURL: oidcIntrospectionURL,
-				ClientID:         oidcClientID,
-				ClientSecret:     oidcClientSecret,
-				AllowPrivateIP:   jwksAllowPrivateIP,
+				Issuer:            oidcIssuer,
+				Audience:          oidcAudience,
+				JWKSURL:           oidcJwksURL,
+				IntrospectionURL:  oidcIntrospectionURL,
+				ClientID:          oidcClientID,
+				ClientSecret:      oidcClientSecret,
+				AllowPrivateIP:    jwksAllowPrivateIP,
+				InsecureAllowHTTP: insecureAllowHTTP,
 			}
 		}
 
@@ -333,7 +357,15 @@ func WithOIDCConfig(
 	}
 }
 
-// WithTelemetryConfig configures telemetry settings
+// WithTokenExchangeConfig sets the token exchange configuration
+func WithTokenExchangeConfig(config *tokenexchange.Config) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.TokenExchangeConfig = config
+		return nil
+	}
+}
+
+// WithTelemetryConfig configures telemetry settings (legacy - custom attributes handled via middleware)
 func WithTelemetryConfig(
 	otelEndpoint string,
 	otelEnablePrometheusMetricsPath bool,
@@ -422,6 +454,7 @@ func WithIgnoreConfig(ignoreConfig *ignore.Config) RunConfigBuilderOption {
 // WithMiddlewareFromFlags creates middleware configurations directly from flag values
 func WithMiddlewareFromFlags(
 	oidcConfig *auth.TokenValidatorConfig,
+	tokenExchangeConfig *tokenexchange.Config,
 	toolsFilter []string,
 	toolsOverride map[string]ToolOverride,
 	telemetryConfig *telemetry.Config,
@@ -430,6 +463,7 @@ func WithMiddlewareFromFlags(
 	auditConfigPath string,
 	serverName string,
 	transportType string,
+	disableUsageMetrics bool,
 ) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		var middlewareConfigs []types.MiddlewareConfig
@@ -448,12 +482,12 @@ func WithMiddlewareFromFlags(
 		middlewareConfigs = addToolFilterMiddlewares(middlewareConfigs, toolsFilter, toolsOverride)
 
 		// Add core middlewares (always present)
-		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig)
+		middlewareConfigs = addCoreMiddlewares(middlewareConfigs, oidcConfig, tokenExchangeConfig, disableUsageMetrics)
 
 		// Add optional middlewares
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
 		middlewareConfigs = addAuthzMiddleware(middlewareConfigs, authzConfigPath)
-		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName)
+		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
 
 		// Set the populated middleware configs
 		b.config.MiddlewareConfigs = middlewareConfigs
@@ -512,7 +546,10 @@ func addToolFilterMiddlewares(
 
 // addCoreMiddlewares adds core middlewares that are always present
 func addCoreMiddlewares(
-	middlewareConfigs []types.MiddlewareConfig, oidcConfig *auth.TokenValidatorConfig,
+	middlewareConfigs []types.MiddlewareConfig,
+	oidcConfig *auth.TokenValidatorConfig,
+	tokenExchangeConfig *tokenexchange.Config,
+	disableUsageMetrics bool,
 ) []types.MiddlewareConfig {
 	// Authentication middleware (always present)
 	authParams := auth.MiddlewareParams{
@@ -522,10 +559,30 @@ func addCoreMiddlewares(
 		middlewareConfigs = append(middlewareConfigs, *authConfig)
 	}
 
+	// Token Exchange middleware (conditionally present)
+	if tokenExchangeConfig != nil {
+		tokenExchangeParams := tokenexchange.MiddlewareParams{
+			TokenExchangeConfig: tokenExchangeConfig,
+		}
+		if tokenExchangeMwConfig, err := types.NewMiddlewareConfig(tokenexchange.MiddlewareType, tokenExchangeParams); err == nil {
+			middlewareConfigs = append(middlewareConfigs, *tokenExchangeMwConfig)
+		} else {
+			logger.Warnf("Failed to create token exchange middleware config: %v", err)
+		}
+	}
+
 	// MCP Parser middleware (always present)
 	mcpParserParams := mcp.ParserMiddlewareParams{}
 	if mcpParserConfig, err := types.NewMiddlewareConfig(mcp.ParserMiddlewareType, mcpParserParams); err == nil {
 		middlewareConfigs = append(middlewareConfigs, *mcpParserConfig)
+	}
+
+	// Usage metrics middleware (if enabled)
+	if usagemetrics.ShouldEnableMetrics(disableUsageMetrics) {
+		usageMetricsParams := usagemetrics.MiddlewareParams{}
+		if usageMetricsConfig, err := types.NewMiddlewareConfig(usagemetrics.MiddlewareType, usageMetricsParams); err == nil {
+			middlewareConfigs = append(middlewareConfigs, *usageMetricsConfig)
+		}
 	}
 
 	return middlewareConfigs
@@ -582,15 +639,16 @@ func addAuthzMiddleware(
 func addAuditMiddleware(
 	middlewareConfigs []types.MiddlewareConfig,
 	enableAudit bool,
-	auditConfigPath, serverName string,
+	auditConfigPath, serverName, transportType string,
 ) []types.MiddlewareConfig {
 	if !enableAudit && auditConfigPath == "" {
 		return middlewareConfigs
 	}
 
 	auditParams := audit.MiddlewareParams{
-		ConfigPath: auditConfigPath, // Keep for backwards compatibility
-		Component:  serverName,      // Use server name as component
+		ConfigPath:    auditConfigPath, // Keep for backwards compatibility
+		Component:     serverName,      // Use server name as component
+		TransportType: transportType,   // Pass the actual transport type
 	}
 
 	// Read audit config contents if path is provided
@@ -611,7 +669,7 @@ func addAuditMiddleware(
 // NewOperatorRunConfigBuilder creates a new RunConfigBuilder configured for operator use
 func NewOperatorRunConfigBuilder(
 	ctx context.Context,
-	imageMetadata *registry.ImageMetadata,
+	imageMetadata *regtypes.ImageMetadata,
 	envVars map[string]string,
 	envVarValidator EnvVarValidator,
 	runConfigOptions ...RunConfigBuilderOption,
@@ -629,7 +687,7 @@ func NewOperatorRunConfigBuilder(
 // NewRunConfigBuilder creates the final RunConfig instance with validation and processing
 func NewRunConfigBuilder(
 	ctx context.Context,
-	imageMetadata *registry.ImageMetadata,
+	imageMetadata *regtypes.ImageMetadata,
 	envVars map[string]string,
 	envVarValidator EnvVarValidator,
 	runConfigOptions ...RunConfigBuilderOption,
@@ -647,7 +705,7 @@ func NewRunConfigBuilder(
 func internalRunConfigBuilder(
 	ctx context.Context,
 	b *runConfigBuilder,
-	imageMetadata *registry.ImageMetadata,
+	imageMetadata *regtypes.ImageMetadata,
 	envVars map[string]string,
 	envVarValidator EnvVarValidator,
 	runConfigOptions ...RunConfigBuilderOption,
@@ -695,7 +753,7 @@ func internalRunConfigBuilder(
 // This function also handles setting missing values based on the image metadata (if present).
 //
 //nolint:gocyclo // This function needs to be refactored to reduce cyclomatic complexity.
-func (b *runConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata) error {
+func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata) error {
 	c := b.config
 	var err error
 
@@ -745,6 +803,16 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	c.PermissionProfile, err = b.loadPermissionProfile(imageMetadata)
 	if err != nil {
 		return err
+	}
+
+	// Apply network mode to permission profile if specified
+	if b.networkMode != "" {
+		// Ensure Network permissions struct exists
+		if c.PermissionProfile.Network == nil {
+			c.PermissionProfile.Network = &permissions.NetworkPermissions{}
+		}
+		c.PermissionProfile.Network.Mode = b.networkMode
+		logger.Infof("Setting network mode to '%s' on permission profile", b.networkMode)
 	}
 
 	// Process volume mounts
@@ -826,7 +894,7 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *registry.ImageMetadata)
 	return nil
 }
 
-func (b *runConfigBuilder) loadPermissionProfile(imageMetadata *registry.ImageMetadata) (*permissions.Profile, error) {
+func (b *runConfigBuilder) loadPermissionProfile(imageMetadata *regtypes.ImageMetadata) (*permissions.Profile, error) {
 	// The permission profile object takes precedence over the name or path.
 	if b.config.PermissionProfile != nil {
 		return b.config.PermissionProfile, nil

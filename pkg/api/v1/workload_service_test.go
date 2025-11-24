@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/config"
 	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
@@ -19,7 +20,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 	t.Run("with names", func(t *testing.T) {
 		t.Parallel()
 
-		service := &WorkloadService{}
+		service := &WorkloadService{appConfig: &config.Config{}}
 
 		req := bulkOperationRequest{
 			Names: []string{"workload1", "workload2"},
@@ -50,6 +51,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 		service := &WorkloadService{
 			groupManager:    mockGroupManager,
 			workloadManager: mockWorkloadManager,
+			appConfig:       &config.Config{},
 		}
 
 		req := bulkOperationRequest{
@@ -65,7 +67,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 	t.Run("invalid group name", func(t *testing.T) {
 		t.Parallel()
 
-		service := &WorkloadService{}
+		service := &WorkloadService{appConfig: &config.Config{}}
 
 		req := bulkOperationRequest{
 			Group: "invalid-group-name-with-special-chars!@#",
@@ -91,6 +93,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 
 		service := &WorkloadService{
 			groupManager: mockGroupManager,
+			appConfig:    &config.Config{},
 		}
 
 		req := bulkOperationRequest{
@@ -123,6 +126,7 @@ func TestWorkloadService_GetWorkloadNamesFromRequest(t *testing.T) {
 		service := &WorkloadService{
 			groupManager:    mockGroupManager,
 			workloadManager: mockWorkloadManager,
+			appConfig:       &config.Config{},
 		}
 
 		req := bulkOperationRequest{

@@ -42,6 +42,10 @@ const (
 
 	// RegistryDataVolumeName is the name of the volume used for registry data
 	RegistryDataVolumeName = "registry-data"
+
+	// RegistryServerConfigVolumeName is the name of the volume used for registry server config
+	RegistryServerConfigVolumeName = "registry-server-config"
+
 	// RegistryDataMountPath is the mount path for registry data in containers
 	RegistryDataMountPath = "/data/registry"
 
@@ -59,7 +63,7 @@ const (
 // Manager handles registry API deployment operations
 type Manager interface {
 	// ReconcileAPIService orchestrates the deployment, service creation, and readiness checking for the registry API
-	ReconcileAPIService(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry, statusCollector mcpregistrystatus.Collector) error
+	ReconcileAPIService(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) *mcpregistrystatus.Error
 
 	// CheckAPIReadiness verifies that the deployed registry-API Deployment is ready
 	CheckAPIReadiness(ctx context.Context, deployment *appsv1.Deployment) bool

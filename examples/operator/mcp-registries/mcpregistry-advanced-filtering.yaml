@@ -207,7 +207,7 @@ spec:
   source:
     type: configmap
     format: toolhive
-    configmap:
+    configMapRef:
       name: advanced-filtering-registry-data
       key: registry.json
   syncPolicy:
@@ -235,7 +235,7 @@ spec:
   source:
     type: configmap
     format: toolhive
-    configmap:
+    configMapRef:
       name: advanced-filtering-registry-data
       key: registry.json
   syncPolicy:
@@ -264,7 +264,7 @@ spec:
   source:
     type: configmap
     format: toolhive
-    configmap:
+    configMapRef:
       name: advanced-filtering-registry-data
       key: registry.json
   filter:

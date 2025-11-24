@@ -25,11 +25,11 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/tools/watch"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/k8s"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/permissions"
 	transtypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -60,44 +60,12 @@ type Client struct {
 	namespaceFunc func() string
 }
 
-// getKubernetesConfig returns a Kubernetes REST config, trying in-cluster first,
-// then falling back to out-of-cluster configuration using kubeconfig
-func getKubernetesConfig() (*rest.Config, error) {
-	// Try in-cluster config first
-	config, err := rest.InClusterConfig()
-	if err == nil {
-		return config, nil
-	}
-
-	// If in-cluster config fails, try out-of-cluster config
-	// This will use the default kubeconfig loading rules:
-	// 1. KUBECONFIG environment variable
-	// 2. ~/.kube/config file
-	// 3. In-cluster config (already tried above)
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	configOverrides := &clientcmd.ConfigOverrides{}
-
-	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
-	config, err = kubeConfig.ClientConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create kubernetes config (tried both in-cluster and out-of-cluster): %w", err)
-	}
-
-	return config, nil
-}
-
 // NewClient creates a new container client
 func NewClient(_ context.Context) (*Client, error) {
-	// Get kubernetes config (in-cluster or out-of-cluster)
-	config, err := getKubernetesConfig()
+	// Get kubernetes client and config using the common package
+	clientset, config, err := k8s.NewClient()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create kubernetes config: %v", err)
-	}
-
-	// creates the clientset
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create kubernetes client: %v", err)
+		return nil, err
 	}
 
 	return NewClientWithConfig(clientset, config), nil
@@ -105,11 +73,7 @@ func NewClient(_ context.Context) (*Client, error) {
 
 // IsAvailable checks if kubernetes is available
 func IsAvailable() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := NewClient(ctx)
-	return err == nil
+	return k8s.IsAvailable()
 }
 
 // NewClientWithConfig creates a new container client with a provided config
@@ -861,7 +825,7 @@ func (c *Client) createHeadlessService(
 		return fmt.Errorf("failed to apply service: %v", err)
 	}
 
-	logger.Infof("Created headless service %s for SSE transport", containerName)
+	logger.Infof("Created headless service %s for HTTP transport", containerName)
 
 	options.SSEHeadlessServiceName = svcName
 	return nil
@@ -1233,5 +1197,5 @@ func (c *Client) getCurrentNamespace() string {
 		return c.namespaceFunc()
 	}
 
-	return GetCurrentNamespace()
+	return k8s.GetCurrentNamespace()
 }

@@ -1,0 +1,279 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: vmcp-composite-tool-definition
+spec:
+  description: Test VirtualMCPCompositeToolDefinition CRD validation and lifecycle
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 30s
+  steps:
+  - name: verify-operator
+    description: Ensure operator is ready before testing
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+
+  - name: create-valid-composite-tool
+    description: Create a valid composite tool definition
+    try:
+    - apply:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: VirtualMCPCompositeToolDefinition
+          metadata:
+            name: deploy-workflow
+            namespace: toolhive-system
+          spec:
+            name: deploy_and_verify
+            description: Deploy application and verify deployment status
+            timeout: 10m
+            failureMode: abort
+            steps:
+            - id: deploy
+              type: tool
+              tool: kubectl.apply
+              arguments:
+                manifest: "{{.params.manifest}}"
+                namespace: "{{.params.namespace}}"
+              timeout: 5m
+            - id: verify
+              type: tool
+              tool: kubectl.get
+              arguments:
+                resource: "deployment"
+                namespace: "{{.params.namespace}}"
+              dependsOn:
+              - deploy
+              timeout: 2m
+    - assert:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: VirtualMCPCompositeToolDefinition
+          metadata:
+            name: deploy-workflow
+            namespace: toolhive-system
+
+  - name: verify-valid-composite-tool-created
+    description: Verify valid composite tool was created successfully
+    try:
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying valid composite tool was created..."
+
+          # Check that resource exists and has expected spec
+          NAME=$(kubectl get vmcpctd deploy-workflow -n toolhive-system -o jsonpath='{.spec.name}' 2>/dev/null || echo "")
+
+          if [ "$NAME" = "deploy_and_verify" ]; then
+            echo "✓ Valid composite tool created with correct name"
+            exit 0
+          fi
+
+          echo "✗ Composite tool not found or has wrong name: '$NAME'"
+          kubectl get vmcpctd deploy-workflow -n toolhive-system -o yaml
+          exit 1
+
+  - name: test-invalid-duplicate-steps
+    description: Test CRD accepts resource with duplicate step IDs (validation not implemented yet)
+    try:
+    - apply:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: VirtualMCPCompositeToolDefinition
+          metadata:
+            name: duplicate-steps
+            namespace: toolhive-system
+          spec:
+            name: invalid_duplicate
+            description: Workflow with duplicate step IDs
+            steps:
+            - id: step1
+              type: tool
+              tool: kubectl.apply
+            - id: step1
+              type: tool
+              tool: kubectl.get
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying duplicate steps resource was created..."
+
+          # Note: Webhook validation is not yet implemented, so this will be accepted
+          # When webhook is added, this test should expect rejection
+
+          NAME=$(kubectl get vmcpctd duplicate-steps -n toolhive-system -o jsonpath='{.spec.name}' 2>/dev/null || echo "")
+
+          if [ "$NAME" = "invalid_duplicate" ]; then
+            echo "✓ Resource created (webhook validation not yet implemented)"
+            echo "⚠ TODO: When webhook is added, this test should expect admission rejection"
+            exit 0
+          fi
+
+          echo "✗ Resource not found"
+          exit 1
+
+  - name: test-invalid-tool-reference
+    description: Test CRD accepts resource with invalid tool reference (validation not implemented yet)
+    try:
+    - apply:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: VirtualMCPCompositeToolDefinition
+          metadata:
+            name: bad-tool-ref
+            namespace: toolhive-system
+          spec:
+            name: invalid_tool_ref
+            description: Workflow with invalid tool reference
+            steps:
+            - id: step1
+              type: tool
+              tool: invalid-no-dot
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying invalid tool reference resource was created..."
+
+          NAME=$(kubectl get vmcpctd bad-tool-ref -n toolhive-system -o jsonpath='{.spec.name}' 2>/dev/null || echo "")
+
+          if [ "$NAME" = "invalid_tool_ref" ]; then
+            echo "✓ Resource created (webhook validation not yet implemented)"
+            exit 0
+          fi
+
+          echo "✗ Resource not found"
+          exit 1
+
+  - name: test-invalid-circular-dependency
+    description: Test CRD accepts resource with circular dependencies (validation not implemented yet)
+    try:
+    - apply:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: VirtualMCPCompositeToolDefinition
+          metadata:
+            name: circular-deps
+            namespace: toolhive-system
+          spec:
+            name: circular_workflow
+            description: Workflow with circular dependencies
+            steps:
+            - id: step1
+              type: tool
+              tool: tool.a
+              dependsOn:
+              - step2
+            - id: step2
+              type: tool
+              tool: tool.b
+              dependsOn:
+              - step1
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying circular dependency resource was created..."
+
+          NAME=$(kubectl get vmcpctd circular-deps -n toolhive-system -o jsonpath='{.spec.name}' 2>/dev/null || echo "")
+
+          if [ "$NAME" = "circular_workflow" ]; then
+            echo "✓ Resource created (webhook validation not yet implemented)"
+            exit 0
+          fi
+
+          echo "✗ Resource not found"
+          exit 1
+
+  - name: test-composite-tool-with-parameters
+    description: Create composite tool with parameter schema
+    try:
+    - apply:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: VirtualMCPCompositeToolDefinition
+          metadata:
+            name: with-parameters
+            namespace: toolhive-system
+          spec:
+            name: parameterized_deploy
+            description: Deploy with parameters
+            parameters:
+              environment:
+                type: string
+                description: Target environment
+                required: true
+              replicas:
+                type: integer
+                description: Number of replicas
+                default: "3"
+            steps:
+            - id: deploy
+              type: tool
+              tool: kubectl.apply
+              arguments:
+                env: "{{.params.environment}}"
+                replicas: "{{.params.replicas}}"
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying composite tool with parameters was created..."
+
+          NAME=$(kubectl get vmcpctd with-parameters -n toolhive-system -o jsonpath='{.spec.name}' 2>/dev/null || echo "")
+
+          if [ "$NAME" = "parameterized_deploy" ]; then
+            echo "✓ Composite tool with parameters created successfully"
+
+            # Verify parameters were stored correctly
+            PARAM_COUNT=$(kubectl get vmcpctd with-parameters -n toolhive-system -o jsonpath='{.spec.parameters}' | jq 'length' 2>/dev/null || echo "0")
+            echo "  Parameters defined: $PARAM_COUNT"
+
+            exit 0
+          fi
+
+          echo "✗ Resource not found"
+          exit 1
+
+  - name: test-composite-tool-with-error-handling
+    description: Create composite tool with error handling
+    try:
+    - apply:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: VirtualMCPCompositeToolDefinition
+          metadata:
+            name: with-error-handling
+            namespace: toolhive-system
+          spec:
+            name: resilient_deploy
+            description: Deploy with retry logic
+            steps:
+            - id: deploy
+              type: tool
+              tool: kubectl.apply
+              onError:
+                action: retry
+                maxRetries: 3
+              timeout: 5m
+    - script:
+        content: |
+          #!/bin/bash
+          echo "Verifying composite tool with error handling was created..."
+
+          NAME=$(kubectl get vmcpctd with-error-handling -n toolhive-system -o jsonpath='{.spec.name}' 2>/dev/null || echo "")
+
+          if [ "$NAME" = "resilient_deploy" ]; then
+            echo "✓ Composite tool with error handling created successfully"
+
+            # Verify error handling was stored correctly
+            ERROR_ACTION=$(kubectl get vmcpctd with-error-handling -n toolhive-system -o jsonpath='{.spec.steps[0].onError.action}' 2>/dev/null || echo "")
+            MAX_RETRIES=$(kubectl get vmcpctd with-error-handling -n toolhive-system -o jsonpath='{.spec.steps[0].onError.maxRetries}' 2>/dev/null || echo "")
+
+            echo "  Error action: $ERROR_ACTION"
+            echo "  Max retries: $MAX_RETRIES"
+
+            exit 0
+          fi
+
+          echo "✗ Resource not found"
+          exit 1

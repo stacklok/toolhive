@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/verifier"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/registry"
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -35,7 +36,7 @@ var (
 )
 
 // Retriever is a function that retrieves the MCP server definition from the registry.
-type Retriever func(context.Context, string, string, string, string) (string, registry.ServerMetadata, error)
+type Retriever func(context.Context, string, string, string, string) (string, types.ServerMetadata, error)
 
 // GetMCPServer retrieves the MCP server definition from the registry.
 func GetMCPServer(
@@ -44,8 +45,8 @@ func GetMCPServer(
 	rawCACertPath string,
 	verificationType string,
 	groupName string,
-) (string, registry.ServerMetadata, error) {
-	var imageMetadata *registry.ImageMetadata
+) (string, types.ServerMetadata, error) {
+	var imageMetadata *types.ImageMetadata
 	var imageToUse string
 
 	imageManager := images.NewImageManager(ctx)
@@ -62,7 +63,7 @@ func GetMCPServer(
 		// If group name is provided, look up server in the group first
 		if groupName != "" {
 			var err error
-			var server registry.ServerMetadata
+			var server types.ServerMetadata
 			imageToUse, imageMetadata, server, err = handleGroupLookup(ctx, serverOrImage, groupName)
 			if err != nil {
 				return "", nil, err
@@ -73,7 +74,7 @@ func GetMCPServer(
 			}
 		} else {
 			var err error
-			var server registry.ServerMetadata
+			var server types.ServerMetadata
 			imageToUse, imageMetadata, server, err = handleRegistryLookup(ctx, serverOrImage)
 			if err != nil {
 				return "", nil, err
@@ -111,8 +112,8 @@ func handleProtocolScheme(
 	serverOrImage string,
 	rawCACertPath string,
 	imageManager images.ImageManager,
-) (string, *registry.ImageMetadata, error) {
-	var imageMetadata *registry.ImageMetadata
+) (string, *types.ImageMetadata, error) {
+	var imageMetadata *types.ImageMetadata
 	var imageToUse string
 
 	logger.Debugf("Detected protocol scheme: %s", serverOrImage)
@@ -134,8 +135,8 @@ func handleGroupLookup(
 	_ context.Context,
 	serverOrImage string,
 	groupName string,
-) (string, *registry.ImageMetadata, registry.ServerMetadata, error) {
-	var imageMetadata *registry.ImageMetadata
+) (string, *types.ImageMetadata, types.ServerMetadata, error) {
+	var imageMetadata *types.ImageMetadata
 	var imageToUse string
 
 	provider, err := registry.GetDefaultProvider()
@@ -154,7 +155,7 @@ func handleGroupLookup(
 	}
 
 	// First check if the server exists and whether it's remote
-	var server registry.ServerMetadata
+	var server types.ServerMetadata
 	var serverFound bool
 	if containerServer, exists := group.Servers[serverOrImage]; exists {
 		server = containerServer
@@ -170,7 +171,7 @@ func handleGroupLookup(
 			return serverOrImage, nil, server, nil
 		}
 		// It's a container server, get the ImageMetadata
-		if imgMetadata, ok := server.(*registry.ImageMetadata); ok {
+		if imgMetadata, ok := server.(*types.ImageMetadata); ok {
 			imageMetadata = imgMetadata
 			logger.Debugf("Found imageMetadata '%s' in group: %v", serverOrImage, imageMetadata)
 			imageToUse = imageMetadata.Image
@@ -191,8 +192,8 @@ func handleGroupLookup(
 func handleRegistryLookup(
 	_ context.Context,
 	serverOrImage string,
-) (string, *registry.ImageMetadata, registry.ServerMetadata, error) {
-	var imageMetadata *registry.ImageMetadata
+) (string, *types.ImageMetadata, types.ServerMetadata, error) {
+	var imageMetadata *types.ImageMetadata
 	var imageToUse string
 
 	// Try to find the server in the registry
@@ -316,7 +317,7 @@ func resolveCACertPath(flagValue string) string {
 }
 
 // verifyImage verifies the image using the specified verification setting (warn, enabled, or disabled)
-func verifyImage(image string, server *registry.ImageMetadata, verifySetting string) error {
+func verifyImage(image string, server *types.ImageMetadata, verifySetting string) error {
 	switch verifySetting {
 	case VerifyImageDisabled:
 		logger.Warn("Image verification is disabled")

@@ -62,10 +62,10 @@ func (*ToolFilterMiddleware) Close() error {
 }
 
 // CreateParserMiddleware factory function for MCP parser middleware
-func CreateParserMiddleware(_ *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
+func CreateParserMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
 
 	mcpMw := &ParserMiddleware{}
-	runner.AddMiddleware(mcpMw)
+	runner.AddMiddleware(config.Type, mcpMw)
 	return nil
 }
 
@@ -89,7 +89,7 @@ func CreateToolFilterMiddleware(config *types.MiddlewareConfig, runner types.Mid
 	}
 
 	toolFilterMw := &ToolFilterMiddleware{middleware: middleware}
-	runner.AddMiddleware(toolFilterMw)
+	runner.AddMiddleware(config.Type, toolFilterMw)
 	return nil
 }
 
@@ -113,6 +113,6 @@ func CreateToolCallFilterMiddleware(config *types.MiddlewareConfig, runner types
 	}
 
 	toolCallFilterMw := &ToolFilterMiddleware{middleware: middleware}
-	runner.AddMiddleware(toolCallFilterMw)
+	runner.AddMiddleware(config.Type, toolCallFilterMw)
 	return nil
 }

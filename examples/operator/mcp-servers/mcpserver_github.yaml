@@ -6,10 +6,7 @@ metadata:
 spec:
   image: ghcr.io/github/github-mcp-server
   transport: stdio
-  port: 8080
-  permissionProfile:
-    type: builtin
-    name: network
+  proxyPort: 8080
   secrets:
     - name: github-token
       key: token

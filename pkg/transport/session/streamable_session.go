@@ -17,7 +17,7 @@ type StreamableSession struct {
 // NewStreamableSession constructs a new streamable session with buffered channels
 func NewStreamableSession(id string) Session {
 	return &StreamableSession{
-		ProxySession: &ProxySession{id: id},
+		ProxySession: NewTypedProxySession(id, SessionTypeStreamable),
 		MessageCh:    make(chan jsonrpc2.Message, 100),
 		ResponseCh:   make(chan jsonrpc2.Message, 100),
 	}

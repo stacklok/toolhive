@@ -1,0 +1,14 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: toolhive-git-simple
+  namespace: toolhive-system
+spec:
+  displayName: "ToolHive Registry from Git"
+  source:
+    type: git
+    format: toolhive
+    git:
+      repository: "https://github.com/stacklok/toolhive"
+      branch: "main"
+      path: "pkg/registry/data/registry.json"

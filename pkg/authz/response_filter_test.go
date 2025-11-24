@@ -1,7 +1,6 @@
 package authz
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -130,32 +129,39 @@ func TestResponseFilteringWriter(t *testing.T) {
 				Result: json.RawMessage(responseData),
 			}
 
-			responseBytes, err := json.Marshal(jsonrpcResponse)
+			responseBytes, err := jsonrpc2.EncodeMessage(jsonrpcResponse)
 			require.NoError(t, err, "Failed to marshal JSON-RPC response")
 
 			// Create an HTTP request with claims in context
 			req, err := http.NewRequest(http.MethodPost, "/messages", nil)
 			require.NoError(t, err, "Failed to create HTTP request")
-			req = req.WithContext(context.WithValue(req.Context(), auth.ClaimsContextKey{}, tc.claims))
+			sub := tc.claims["sub"].(string)
+			name, _ := tc.claims["name"].(string)
+			identity := &auth.Identity{Subject: sub, Name: name, Claims: tc.claims}
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
 			// Create a response recorder
 			rr := httptest.NewRecorder()
 
 			// Create the response filtering writer
 			filteringWriter := NewResponseFilteringWriter(rr, authorizer, req, tc.method)
+			filteringWriter.ResponseWriter.Header().Set("Content-Type", "application/json")
 
 			// Write the response data
 			_, err = filteringWriter.Write(responseBytes)
 			require.NoError(t, err, "Failed to write response data")
 
 			// Flush the response
-			err = filteringWriter.Flush()
+			err = filteringWriter.FlushAndFilter()
 			require.NoError(t, err, "Failed to flush response")
 
 			// Parse the filtered response
-			var filteredResponse jsonrpc2.Response
-			err = json.Unmarshal(rr.Body.Bytes(), &filteredResponse)
+			var message jsonrpc2.Message
+			message, err = jsonrpc2.DecodeMessage(rr.Body.Bytes())
 			require.NoError(t, err, "Failed to unmarshal filtered response")
+
+			filteredResponse, ok := message.(*jsonrpc2.Response)
+			require.True(t, ok, "Response should be a JSON-RPC response")
 
 			// Verify the response was filtered correctly
 			assert.Nil(t, filteredResponse.Error, "Response should not have an error")
@@ -251,7 +257,7 @@ func TestResponseFilteringWriter_NonListOperations(t *testing.T) {
 	require.NoError(t, err, "Failed to write response data")
 
 	// Flush the response
-	err = filteringWriter.Flush()
+	err = filteringWriter.FlushAndFilter()
 	require.NoError(t, err, "Failed to flush response")
 
 	// Verify the response passed through unchanged
@@ -293,7 +299,7 @@ func TestResponseFilteringWriter_ErrorResponse(t *testing.T) {
 	require.NoError(t, err, "Failed to write response data")
 
 	// Flush the response
-	err = filteringWriter.Flush()
+	err = filteringWriter.FlushAndFilter()
 	require.NoError(t, err, "Failed to flush response")
 
 	// Verify the error response passed through unchanged

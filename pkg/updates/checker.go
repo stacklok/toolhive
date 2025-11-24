@@ -76,6 +76,40 @@ const (
 	updateInterval       = 30 * time.Minute
 )
 
+// TryGetAnonymousID returns the instance ID from the updates file if it exists.
+// This is a read-only operation - it never generates a new ID.
+// Returns empty string if the file doesn't exist or doesn't contain an instance ID.
+// Use this for optional features like metrics that shouldn't trigger ID generation.
+// TODO this should probably be extracted into its own package to handle instance ID generation.
+func TryGetAnonymousID() (string, error) {
+	path, err := xdg.DataFile(updateFilePathSuffix)
+	if err != nil {
+		return "", fmt.Errorf("unable to access update file path: %w", err)
+	}
+
+	// #nosec G304: File path is not configurable at this time.
+	rawContents, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// File doesn't exist yet - return empty (don't generate)
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to read update file: %w", err)
+	}
+
+	var contents updateFile
+	if err := json.Unmarshal(rawContents, &contents); err != nil {
+		// If corrupted, try to recover the instance ID
+		if recoveredFile, recoverErr := recoverCorruptedJSON(rawContents); recoverErr == nil {
+			return recoveredFile.InstanceID, nil
+		}
+		return "", fmt.Errorf("failed to deserialize update file: %w", err)
+	}
+
+	// Return whatever is in the file, even if empty
+	return contents.InstanceID, nil
+}
+
 // componentInfo represents component-specific update timing information.
 type componentInfo struct {
 	LastCheck time.Time `json:"last_check"`

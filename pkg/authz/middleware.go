@@ -177,7 +177,7 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 			next.ServeHTTP(filteringWriter, r)
 
 			// Flush the filtered response
-			if err := filteringWriter.Flush(); err != nil {
+			if err := filteringWriter.FlushAndFilter(); err != nil {
 				// If flushing fails, we've already started writing the response,
 				// so we can't return an error response. Just log it.
 				logger.Warnf("Error flushing filtered response: %v", err)
@@ -263,6 +263,6 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	}
 
 	authzMw := &FactoryMiddleware{middleware: middleware}
-	runner.AddMiddleware(authzMw)
+	runner.AddMiddleware(config.Type, authzMw)
 	return nil
 }

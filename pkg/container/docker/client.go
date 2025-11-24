@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	rt "runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -116,6 +117,7 @@ type deployOps interface {
 		upstreamPort int,
 		attachStdio bool,
 		externalEndpointsConfig map[string]*network.EndpointSettings,
+		networkPermissions *permissions.NetworkPermissions,
 	) (int, error)
 }
 
@@ -198,13 +200,20 @@ func (c *Client) DeployWorkload(
 	var additionalDNS string
 	networkName := fmt.Sprintf("toolhive-%s-internal", name)
 	externalEndpointsConfig := map[string]*network.EndpointSettings{
-		networkName:         {},
-		"toolhive-external": {},
+		networkName: {},
 	}
 
-	err = c.ops.createExternalNetworks(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create external networks: %v", err)
+	// Only create external networks and add endpoints if we're not using a custom network mode like "host" or "none"
+	if permissionConfig.NetworkMode == "" || permissionConfig.NetworkMode == "bridge" || permissionConfig.NetworkMode == "default" {
+		// Add toolhive-external to endpoints config for default networking modes
+		externalEndpointsConfig["toolhive-external"] = &network.EndpointSettings{}
+
+		err = c.ops.createExternalNetworks(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("failed to create external networks: %v", err)
+		}
+	} else {
+		logger.Infof("Skipping external network creation for custom network mode: %s", permissionConfig.NetworkMode)
 	}
 
 	networkIsolation := false
@@ -283,19 +292,33 @@ func (c *Client) DeployWorkload(
 		return 0, nil
 	}
 
+	firstPortInt, err := extractFirstPort(options)
+	if err != nil {
+		return 0, err // extractFirstPort already wraps the error with context.
+	}
 	if isolateNetwork {
 		// just extract the first exposed port
-		firstPortInt, err := extractFirstPort(options)
-		if err != nil {
-			return 0, err // extractFirstPort already wraps the error with context.
-		}
-		hostPort, err = c.ops.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig)
+		hostPort, err = c.ops.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig,
+			permissionProfile.Network)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create ingress container: %v", err)
 		}
 	}
 
-	return hostPort, nil
+	// NOTE: this is a hack to get the final port for the workload.
+	// The intended behavior is the following
+	// * if network is "bridge" (default) and network isolation is not enabled, then
+	//   the Proxy should use the Docker assigned port
+	// * if network is "bridge" (default) and network isolation is enabled, then
+	//   the Proxy should use the egress container port
+	// * if network is "host", then the Proxy should use the MCP server port
+	//
+	// The last case is not supported in VM-based installations like Docker Desktop.
+	// Unfortunately, there's no reliable way to know if the user is using a VM-based
+	// installation and we assume that Linux installations are Docker Engine installations.
+	finalPort := calculateFinalPort(hostPort, firstPortInt, permissionConfig.NetworkMode)
+
+	return finalPort, nil
 }
 
 // ListWorkloads lists workloads
@@ -533,14 +556,21 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadName string) (runt
 		created = time.Time{} // Use zero time if parsing fails
 	}
 
+	// Convert start time
+	startedAt, err := time.Parse(time.RFC3339Nano, info.State.StartedAt)
+	if err != nil {
+		startedAt = time.Time{} // Use zero time if parsing fails
+	}
+
 	return runtime.ContainerInfo{
-		Name:    strings.TrimPrefix(info.Name, "/"),
-		Image:   info.Config.Image,
-		Status:  info.State.Status,
-		State:   dockerToDomainStatus(info.State.Status),
-		Created: created,
-		Labels:  info.Config.Labels,
-		Ports:   ports,
+		Name:      strings.TrimPrefix(info.Name, "/"),
+		Image:     info.Config.Image,
+		Status:    info.State.Status,
+		State:     dockerToDomainStatus(info.State.Status),
+		Created:   created,
+		StartedAt: startedAt,
+		Labels:    info.Config.Labels,
+		Ports:     ports,
 	}, nil
 }
 
@@ -734,15 +764,18 @@ func convertRelativePathToAbsolute(source string, mountDecl permissions.MountDec
 		return source, true
 	}
 
-	// Get the current working directory
-	cwd, err := os.Getwd()
+	// Special case for Windows: expand ~ to user profile directory.
+	if rt.GOOS == "windows" && strings.HasPrefix(source, "~") {
+		homeDir := os.Getenv("USERPROFILE")
+		source = strings.Replace(source, "~", homeDir, 1)
+	}
+
+	absPath, err := filepath.Abs(source)
 	if err != nil {
-		logger.Warnf("Warning: Failed to get current working directory: %v", err)
+		logger.Warnf("Warning: Failed to convert to absolute path: %s (%v)", mountDecl, err)
 		return "", false
 	}
 
-	// Convert relative path to absolute path
-	absPath := filepath.Join(cwd, source)
 	logger.Infof("Converting relative path to absolute: %s -> %s", mountDecl, absPath)
 	return absPath, true
 }
@@ -753,13 +786,19 @@ func (c *Client) getPermissionConfigFromProfile(
 	transportType string,
 	ignoreConfig *ignore.Config,
 ) (*runtime.PermissionConfig, error) {
+	// Get network mode from permission profile
+	networkMode := ""
+	if profile.Network != nil && profile.Network.Mode != "" {
+		networkMode = profile.Network.Mode
+	}
+
 	// Start with a default permission config
 	config := &runtime.PermissionConfig{
 		Mounts:      []runtime.Mount{},
-		NetworkMode: "", // set to blank as podman is not recognizing the "none" value when we attach to other networks
+		NetworkMode: networkMode,
 		CapDrop:     []string{"ALL"},
 		CapAdd:      []string{},
-		SecurityOpt: []string{},
+		SecurityOpt: []string{"label:disable"},
 		Privileged:  profile.Privileged,
 	}
 
@@ -1299,6 +1338,9 @@ func (c *Client) createContainer(
 	if err != nil {
 		return "", NewContainerError(err, "", fmt.Sprintf("failed to create container: %v", err))
 	}
+	if resp.Warnings != nil {
+		logger.Debugf("Container creation warnings: %v", resp.Warnings)
+	}
 
 	// Start the container
 	err = c.api.ContainerStart(ctx, resp.ID, container.StartOptions{})
@@ -1345,7 +1387,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 		NetworkMode: container.NetworkMode("bridge"),
 		CapAdd:      nil,
 		CapDrop:     nil,
-		SecurityOpt: nil,
+		SecurityOpt: []string{"label:disable"},
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},
@@ -1371,10 +1413,21 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 	return dnsContainerId, dnsContainerIP, nil
 }
 
-func (c *Client) createMcpContainer(ctx context.Context, name string, networkName string, image string, command []string,
-	envVars map[string]string, labels map[string]string, attachStdio bool, permissionConfig *runtime.PermissionConfig,
-	additionalDNS string, exposedPorts map[string]struct{}, portBindings map[string][]runtime.PortBinding,
-	isolateNetwork bool) error {
+func (c *Client) createMcpContainer(
+	ctx context.Context,
+	name string,
+	networkName string,
+	image string,
+	command []string,
+	envVars map[string]string,
+	labels map[string]string,
+	attachStdio bool,
+	permissionConfig *runtime.PermissionConfig,
+	additionalDNS string,
+	exposedPorts map[string]struct{},
+	portBindings map[string][]runtime.PortBinding,
+	isolateNetwork bool,
+) error {
 	// Create container configuration
 	config := &container.Config{
 		Image:        image,
@@ -1417,7 +1470,14 @@ func (c *Client) createMcpContainer(ctx context.Context, name string, networkNam
 
 	// create mcp container
 	internalEndpointsConfig := map[string]*network.EndpointSettings{}
-	if isolateNetwork {
+
+	// Check if we have a custom network mode (e.g., "host", "none", etc.)
+	if permissionConfig.NetworkMode != "" && permissionConfig.NetworkMode != "bridge" && permissionConfig.NetworkMode != "default" {
+		// For custom network modes like "host", "none", etc., don't add any endpoint configurations
+		// The NetworkMode in hostConfig will handle the networking
+		logger.Infof("Using custom network mode: %s", permissionConfig.NetworkMode)
+		// Leave internalEndpointsConfig as empty map
+	} else if isolateNetwork {
 		internalEndpointsConfig[networkName] = &network.EndpointSettings{
 			NetworkID: networkName,
 		}
@@ -1452,7 +1512,7 @@ func addEgressEnvVars(envVars map[string]string, egressContainerName string) map
 }
 
 func (c *Client) createIngressContainer(ctx context.Context, containerName string, upstreamPort int, attachStdio bool,
-	externalEndpointsConfig map[string]*network.EndpointSettings) (int, error) {
+	externalEndpointsConfig map[string]*network.EndpointSettings, networkPermissions *permissions.NetworkPermissions) (int, error) {
 	squidPort, err := networking.FindOrUsePort(upstreamPort + 1)
 	if err != nil {
 		return 0, fmt.Errorf("failed to find or use port %d: %v", squidPort, err)
@@ -1480,6 +1540,7 @@ func (c *Client) createIngressContainer(ctx context.Context, containerName strin
 		squidExposedPorts,
 		externalEndpointsConfig,
 		squidPortBindings,
+		networkPermissions,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create ingress container: %v", err)

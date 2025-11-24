@@ -3,15 +3,17 @@
 package client
 
 import (
-	"bytes"
 	"context"
-	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -137,11 +139,35 @@ func createMockClientConfigs() []mcpClientConfig {
 			Extension:            JSON,
 		},
 		{
+			ClientType:           OpenCode,
+			Description:          "OpenCode application (Mock)",
+			RelPath:              []string{"mock_opencode"},
+			SettingsFile:         "opencode.json",
+			MCPServersPathPrefix: "/mcp",
+			Extension:            JSON,
+		},
+		{
+			ClientType:           Kiro,
+			Description:          "Kiro application (Mock)",
+			RelPath:              []string{"mock_kiro"},
+			SettingsFile:         "mcp.json",
+			MCPServersPathPrefix: "/mcpServers",
+			Extension:            JSON,
+		},
+		{
 			ClientType:           Goose,
 			Description:          "Goose AI agent (Mock)",
 			RelPath:              []string{"mock_goose"},
 			SettingsFile:         "config.yaml",
 			MCPServersPathPrefix: "/extensions",
+			Extension:            YAML,
+		},
+		{
+			ClientType:           Continue,
+			Description:          "Continue.dev extension (Mock)",
+			RelPath:              []string{"mock_continue"},
+			SettingsFile:         "config.yaml",
+			MCPServersPathPrefix: "/mcpServers",
 			Extension:            YAML,
 		},
 	}
@@ -177,27 +203,14 @@ func CreateTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 	}
 }
 
-func TestFindClientConfigs(t *testing.T) {
-	t.Parallel()
-	logger.Initialize()
-
+//nolint:paralleltest // This test modifies global logger
+func TestFindClientConfigs(t *testing.T) { // Can't run in parallel because it uses global logger
 	// Setup a temporary home directory for testing
 	tempHome := t.TempDir()
 
 	t.Run("InvalidConfigFileFormat", func(t *testing.T) {
-		t.Parallel() // Now we can use parallel since we don't modify global state
-		// Set up environment for unstructured logs and capture stderr before initializing logger
-		originalUnstructuredLogs := os.Getenv("UNSTRUCTURED_LOGS")
-		os.Setenv("UNSTRUCTURED_LOGS", "true")
-		defer os.Setenv("UNSTRUCTURED_LOGS", originalUnstructuredLogs)
-
-		// Capture log output to verify error logging
-		originalStderr := os.Stderr
-		r, w, _ := os.Pipe()
-		os.Stderr = w
-
-		// Re-initialize logger to use the captured stderr
-		logger.Initialize()
+		// Initialize in-memory test logger
+		observerLogs := initializeTest(t)
 
 		// Create an invalid JSON file
 		invalidPath := filepath.Join(tempHome, ".cursor", "invalid.json")
@@ -257,19 +270,46 @@ func TestFindClientConfigs(t *testing.T) {
 		// We expect 1 config (VSCode) since cursor with invalid JSON should be skipped
 		assert.Len(t, configs, 1, "Should find configs for valid clients only, skipping invalid ones")
 
-		// Restore stderr and capture log output
-		w.Close()
-		os.Stderr = originalStderr
+		// Read all log entries
+		var sb strings.Builder
+		for _, entry := range observerLogs.All() {
+			sb.WriteString(entry.Message)
+		}
 
-		var capturedOutput bytes.Buffer
-		io.Copy(&capturedOutput, r)
-		logOutput := capturedOutput.String()
+		logOutput := sb.String()
 
 		// Verify that the error was logged
 		assert.Contains(t, logOutput, "Unable to process client config for cursor", "Should log warning about cursor client config")
 		assert.Contains(t, logOutput, "failed to validate config file format", "Should log the specific validation error")
 		assert.Contains(t, logOutput, "cursor", "Should mention cursor in the error message")
 	})
+}
+
+func initializeTest(t *testing.T) *observer.ObservedLogs {
+	t.Helper()
+
+	// Set log level based on current debug flag
+	var level zap.AtomicLevel
+	if viper.GetBool("debug") {
+		level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	} else {
+		level = zap.NewAtomicLevelAt(zap.InfoLevel)
+	}
+
+	core, observedLogs := observer.New(level)
+	testLogger := zap.New(core)
+
+	// Save original logger for restoring
+	originalLogger := zap.L()
+
+	zap.ReplaceGlobals(testLogger)
+
+	// Restore original logger
+	t.Cleanup(func() {
+		zap.ReplaceGlobals(originalLogger)
+	})
+
+	return observedLogs
 }
 
 func TestSuccessfulClientConfigOperations(t *testing.T) {
@@ -307,6 +347,11 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				string(AmpWindsurf),
 				string(LMStudio),
 				string(Goose),
+				string(Trae),
+				string(Continue),
+				string(OpenCode),
+				string(Kiro),
+				string(Antigravity),
 			},
 		},
 	}
@@ -358,7 +403,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			switch cf.ClientType {
 			case VSCode, VSCodeInsider:
 				assert.Contains(t, string(content), `"mcp":`,
-					"Cconfig should contain mcp key")
+					"Config should contain mcp key")
 				assert.Contains(t, string(content), `"servers":`,
 					"VSCode config should contain servers key")
 			case Cursor:
@@ -394,12 +439,20 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case AmpWindsurf:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"AmpWindsurf config should contain mcpServers key")
-			case LMStudio:
+			case LMStudio, Trae, Kiro, Antigravity:
 				assert.Contains(t, string(content), `"mcpServers":`,
-					"LMStudio config should contain mcpServers key")
+					"Config should contain mcpServers key")
+			case OpenCode:
+				assert.Contains(t, string(content), `"mcp":`,
+					"OpenCode config should contain mcp key")
 			case Goose:
-				assert.Contains(t, string(content), `extensions:`,
-					"Goose config should contain extensions key")
+				// YAML files are created empty and initialized on first use
+				// Just verify the file exists and is readable
+				assert.NotNil(t, content, "Goose config should be readable")
+			case Continue:
+				// YAML files are created empty and initialized on first use
+				// Just verify the file exists and is readable
+				assert.NotNil(t, content, "Continue config should be readable")
 			}
 		}
 	})
@@ -433,7 +486,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose:
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}
@@ -464,4 +517,215 @@ func createTestConfigFilesWithConfigs(t *testing.T, homeDir string, clientConfig
 			require.NoError(t, err)
 		}
 	}
+}
+
+func TestCreateClientConfig(t *testing.T) {
+	t.Parallel()
+	logger.Initialize()
+
+	testConfig := &config.Config{
+		Secrets: config.Secrets{
+			ProviderType: "encrypted",
+		},
+		Clients: config.Clients{
+			RegisteredClients: []string{
+				string(VSCode),
+				string(Goose),
+			},
+		},
+	}
+
+	t.Run("CreateJSONClientConfig", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create mock client config for JSON client (VSCode)
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           VSCode,
+				Description:          "Visual Studio Code (Mock)",
+				RelPath:              []string{"mock_vscode"},
+				SettingsFile:         "settings.json",
+				MCPServersPathPrefix: "/mcp/servers",
+				Extension:            JSON,
+			},
+		}
+
+		// Create the parent directory structure that would normally exist
+		configDir := filepath.Join(tempHome, "mock_vscode")
+		err := os.MkdirAll(configDir, 0755)
+		require.NoError(t, err)
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should create a new JSON file
+		cf, err := manager.CreateClientConfig(VSCode)
+		require.NoError(t, err, "Should successfully create new JSON client config")
+		require.NotNil(t, cf, "Should return a config file")
+
+		// Verify the file was created
+		_, statErr := os.Stat(cf.Path)
+		require.NoError(t, statErr, "Config file should exist after creation")
+
+		// Verify the file contains an empty JSON object
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err, "Should be able to read created file")
+		assert.Equal(t, "{}", string(content), "JSON config should contain empty object")
+
+		// Verify file permissions
+		fileInfo, err := os.Stat(cf.Path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0600), fileInfo.Mode().Perm(), "File should have 0600 permissions")
+	})
+
+	t.Run("CreateYAMLClientConfig", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create mock client config for YAML client (Goose)
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           Goose,
+				Description:          "Goose AI agent (Mock)",
+				RelPath:              []string{"mock_goose"},
+				SettingsFile:         "config.yaml",
+				MCPServersPathPrefix: "/extensions",
+				Extension:            YAML,
+			},
+		}
+
+		// Create the parent directory structure that would normally exist
+		configDir := filepath.Join(tempHome, "mock_goose")
+		err := os.MkdirAll(configDir, 0755)
+		require.NoError(t, err)
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should create a new YAML file
+		cf, err := manager.CreateClientConfig(Goose)
+		require.NoError(t, err, "Should successfully create new YAML client config")
+		require.NotNil(t, cf, "Should return a config file")
+
+		// Verify the file was created
+		_, statErr := os.Stat(cf.Path)
+		require.NoError(t, statErr, "Config file should exist after creation")
+
+		// Verify the file is empty (YAML files start empty)
+		content, err := os.ReadFile(cf.Path)
+		require.NoError(t, err, "Should be able to read created file")
+		assert.Equal(t, "", string(content), "YAML config should be empty initially")
+
+		// Verify file permissions
+		fileInfo, err := os.Stat(cf.Path)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0600), fileInfo.Mode().Perm(), "File should have 0600 permissions")
+	})
+
+	t.Run("CreateClientConfigFileAlreadyExists", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create mock client config
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           VSCode,
+				Description:          "Visual Studio Code (Mock)",
+				RelPath:              []string{"mock_vscode"},
+				SettingsFile:         "settings.json",
+				MCPServersPathPrefix: "/mcp/servers",
+				Extension:            JSON,
+			},
+		}
+
+		// Pre-create the config file
+		configDir := filepath.Join(tempHome, "mock_vscode")
+		err := os.MkdirAll(configDir, 0755)
+		require.NoError(t, err)
+		configPath := filepath.Join(configDir, "settings.json")
+		err = os.WriteFile(configPath, []byte(testValidJSON), 0644)
+		require.NoError(t, err)
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should fail because file already exists
+		cf, err := manager.CreateClientConfig(VSCode)
+		assert.Error(t, err, "Should return error when config file already exists")
+		assert.Nil(t, cf, "Should not return a config file on error")
+		assert.Contains(t, err.Error(), "already exists", "Error should mention file already exists")
+	})
+
+	t.Run("CreateClientConfigUnsupportedClientType", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create empty mock client configs (no supported clients)
+		mockClientConfigs := []mcpClientConfig{}
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig with unsupported client type
+		cf, err := manager.CreateClientConfig(VSCode)
+		assert.Error(t, err, "Should return error for unsupported client type")
+		assert.Nil(t, cf, "Should not return a config file on error")
+		assert.Contains(t, err.Error(), "unsupported client type", "Error should mention unsupported client type")
+	})
+
+	t.Run("CreateClientConfigWriteError", func(t *testing.T) {
+		t.Parallel()
+		// Setup a temporary home directory for testing
+		tempHome := t.TempDir()
+
+		configProvider, cleanup := CreateTestConfigProvider(t, testConfig)
+		defer cleanup()
+
+		// Create mock client config with a path that will cause write error
+		mockClientConfigs := []mcpClientConfig{
+			{
+				ClientType:           VSCode,
+				Description:          "Visual Studio Code (Mock)",
+				RelPath:              []string{"readonly_dir", "nested"},
+				SettingsFile:         "settings.json",
+				MCPServersPathPrefix: "/mcp/servers",
+				Extension:            JSON,
+			},
+		}
+
+		// Create the nested directory first and make it readonly
+		nestedDir := filepath.Join(tempHome, "readonly_dir", "nested")
+		err := os.MkdirAll(nestedDir, 0755)
+		require.NoError(t, err)
+
+		// Now make the nested directory read-only so we can't create files in it
+		err = os.Chmod(nestedDir, 0444)
+		require.NoError(t, err)
+		defer os.Chmod(nestedDir, 0755) // Cleanup
+
+		manager := NewTestClientManager(tempHome, nil, mockClientConfigs, configProvider)
+
+		// Call CreateClientConfig - this should fail due to permission error
+		// Note: The exact error depends on how os.Stat behaves with readonly dirs
+		cf, err := manager.CreateClientConfig(VSCode)
+		assert.Error(t, err, "Should return error when unable to write file")
+		assert.Nil(t, cf, "Should not return a config file on error")
+		// Accept either error message since readonly directory can trigger different error paths
+		hasExpectedError := strings.Contains(err.Error(), "failed to create client config file") ||
+			strings.Contains(err.Error(), "already exists")
+		assert.True(t, hasExpectedError, "Error should mention creation failure or file exists, got: %v", err.Error())
+	})
 }

@@ -1,12 +1,13 @@
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
-  name: yardstick
+  name: ($testPrefix)
   namespace: toolhive-system
 spec:
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
   transport: stdio
-  port: 8080
+  proxyMode: sse
+  proxyPort: 8080
   permissionProfile:
     type: builtin
     name: network

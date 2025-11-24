@@ -1,0 +1,122 @@
+name: E2E Tests Lifecycle
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'cmd/vmcp/**'
+      - 'cmd/thv-operator/**'
+      - 'pkg/**'
+      - 'test/e2e/thv-operator/**'
+      - '.github/workflows/test-e2e-lifecycle.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-test-lifecycle:
+    name: E2E Test Lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      YARDSTICK_IMAGE: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [
+          "kindest/node:v1.32.8",
+          "kindest/node:v1.33.4",
+          "kindest/node:v1.34.0"
+        ]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+    - name: Set up Helm
+      uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+    - name: Setup Ko
+      uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
+
+    - name: Set up Go
+      uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
+      with:
+        go-version-file: 'go.mod'
+        cache: true
+
+    - name: Install Task
+      uses: arduino/setup-task@v2
+      with:
+        version: 3.44.1
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create KIND Cluster with port mappings
+      uses: helm/kind-action@92086f6be054225fa813e0a4b13787fc9088faab # pin@v1.12.0
+      with:
+        cluster_name: toolhive
+        version: v0.29.0
+        config: test/e2e/thv-operator/kind-config.yaml
+        node_image: ${{ matrix.version }}
+
+    - name: Setup cluster and install CRDs
+      run: |
+        kind get kubeconfig --name toolhive > kconfig.yaml
+        export KUBECONFIG=kconfig.yaml
+        task operator-install-crds
+
+    - name: Build and load test images
+      run: |
+        # Build and load vmcp image
+        echo "Building vmcp image..."
+        VMCP_IMAGE=$(KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/vmcp | tail -n 1)
+        echo "Loading vmcp image ${VMCP_IMAGE} into kind..."
+        kind load docker-image --name toolhive ${VMCP_IMAGE}
+
+        # Save VMCP_IMAGE for later steps
+        echo "VMCP_IMAGE=${VMCP_IMAGE}" >> $GITHUB_ENV
+        echo "Built and loaded vmcp image: ${VMCP_IMAGE}"
+
+        # Pull and load test server image
+        echo "Pulling and loading yardstick test server image..."
+        docker pull ${{ env.YARDSTICK_IMAGE }}
+        kind load docker-image --name toolhive ${{ env.YARDSTICK_IMAGE }}
+
+    - name: Deploy operator with VMCP_IMAGE
+      run: |
+        export KUBECONFIG=kconfig.yaml
+        echo "Deploying operator with vmcp image: ${{ env.VMCP_IMAGE }}"
+
+        # Build operator and proxyrunner images
+        OPERATOR_IMAGE=$(KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1)
+        TOOLHIVE_IMAGE=$(KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-proxyrunner | tail -n 1)
+
+        # Load operator images into kind
+        kind load docker-image --name toolhive ${OPERATOR_IMAGE}
+        kind load docker-image --name toolhive ${TOOLHIVE_IMAGE}
+
+        # Deploy operator with VMCP_IMAGE environment variable
+        helm upgrade --install toolhive-operator deploy/charts/operator \
+          --set operator.image=${OPERATOR_IMAGE} \
+          --set operator.toolhiveRunnerImage=${TOOLHIVE_IMAGE} \
+          --set-string 'operator.env[0].name=VMCP_IMAGE' \
+          --set-string "operator.env[0].value=${{ env.VMCP_IMAGE }}" \
+          --namespace toolhive-system \
+          --create-namespace \
+          --kubeconfig kconfig.yaml
+
+        # Wait for operator to be ready
+        kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=2m --kubeconfig kconfig.yaml
+
+    - name: Run VirtualMCP Lifecycle E2E tests
+      run: |
+        export KUBECONFIG=kconfig.yaml
+        task thv-operator-e2e-test-run
+
+    - name: Cleanup cluster
+      if: always()
+      run: |
+        kind delete cluster --name toolhive

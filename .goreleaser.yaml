@@ -26,9 +26,11 @@ builds:
     binary: thv
 # This section defines the release format.
 archives:
-  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - formats: [ 'tar.gz' ]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
+        formats: [ 'zip' ]
 # This section defines how to release to winget.
 winget:
  - name: thv
@@ -102,10 +104,9 @@ signs:
   - cmd: cosign
     args:
       - "sign-blob"
-      - "--output-signature=${signature}"
-      - "--output-certificate=${certificate}"
+      - "--bundle=${signature}" # cosign v3+: bundles signature and certificate together
       - "${artifact}"
       - "--yes" # needed on cosign 2.0.0+
     artifacts: archive
     output: true
-    certificate: '{{ trimsuffix (trimsuffix .Env.artifact ".zip") ".tar.gz" }}.pem'
+    signature: "${artifact}.sigstore.json"

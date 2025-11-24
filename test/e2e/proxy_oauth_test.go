@@ -82,17 +82,17 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 		// Wait for OIDC server to be ready
 		Eventually(func() error {
 			return checkServerHealth(fmt.Sprintf("%s/.well-known/openid-configuration", mockOIDCBaseURL))
-		}, 30*time.Second, 1*time.Second).Should(Succeed())
+		}, 5*time.Minute, 1*time.Second).Should(Succeed())
 
 		// Start OSV MCP server that will be our target
 		By("Starting OSV MCP server as target")
 		e2e.NewTHVCommand(config, "run",
 			"--name", osvServerName,
-			"--transport", "sse",
+			"--transport", "streamable-http",
 			"osv").ExpectSuccess()
 
 		// Wait for OSV server to be ready
-		err = e2e.WaitForMCPServer(config, osvServerName, 60*time.Second)
+		err = e2e.WaitForMCPServer(config, osvServerName, 5*time.Minute)
 		Expect(err).ToNot(HaveOccurred())
 	})
 
@@ -154,7 +154,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			By("Testing proxy endpoint accessibility")
 			// Try to access the proxy endpoint
 			client := &http.Client{Timeout: 10 * time.Second}
-			resp, err := client.Get(fmt.Sprintf("http://localhost:%d/sse", proxyPort))
+			resp, err := client.Get(fmt.Sprintf("http://localhost:%d/mcp", proxyPort))
 			if err == nil {
 				defer resp.Body.Close()
 				// We expect some response, even if it's not a successful MCP connection
@@ -320,9 +320,9 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			Expect(err).ToNot(HaveOccurred())
 
 			By("Extracting base URL for transparent proxy")
-			// The URL from thv list is like: http://127.0.0.1:21929/sse#container-name
+			// With streamable-http: http://127.0.0.1:21929/mcp (no fragment)
 			// But the transparent proxy needs the base URL: http://127.0.0.1:21929
-			baseURL := strings.TrimSuffix(strings.Split(osvServerURL, "#")[0], "/sse")
+			baseURL := strings.TrimSuffix(osvServerURL, "/mcp")
 			GinkgoWriter.Printf("Original server URL: %s\n", osvServerURL)
 			GinkgoWriter.Printf("Base URL for proxy: %s\n", baseURL)
 
@@ -373,17 +373,17 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			time.Sleep(5 * time.Second)
 
 			By("Testing MCP connection through proxy")
-			proxyURL := fmt.Sprintf("http://localhost:%d/sse", proxyPort)
+			proxyURL := fmt.Sprintf("http://localhost:%d/mcp", proxyPort)
 
 			// Wait for proxy to be ready for MCP connections
-			err = e2e.WaitForMCPServerReady(config, proxyURL, "sse", 60*time.Second)
+			err = e2e.WaitForMCPServerReady(config, proxyURL, "streamable-http", 5*time.Minute)
 			if err != nil {
 				GinkgoWriter.Printf("MCP connection through proxy failed: %v\n", err)
 				Skip("Skipping MCP test due to proxy not being ready")
 			}
 
 			By("Creating MCP client through proxy")
-			mcpClient, err := e2e.NewMCPClientForSSE(config, proxyURL)
+			mcpClient, err := e2e.NewMCPClientForStreamableHTTP(config, proxyURL)
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
@@ -410,7 +410,7 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			Expect(err).ToNot(HaveOccurred())
 
 			By("Extracting base URL for transparent proxy")
-			baseURL := strings.TrimSuffix(strings.Split(osvServerURL, "#")[0], "/sse")
+			baseURL := strings.TrimSuffix(osvServerURL, "/mcp")
 			GinkgoWriter.Printf("Base URL for proxy: %s\n", baseURL)
 
 			By("Starting the proxy with OAuth-enabled MCP support")
@@ -442,11 +442,11 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			time.Sleep(3 * time.Second) // longer than the 2s lifespan
 
 			By("Reconnecting via MCP to trigger token refresh")
-			proxyURL := fmt.Sprintf("http://localhost:%d/sse", proxyPort)
-			err = e2e.WaitForMCPServerReady(config, proxyURL, "sse", 10*time.Second)
+			proxyURL := fmt.Sprintf("http://localhost:%d/mcp", proxyPort)
+			err = e2e.WaitForMCPServerReady(config, proxyURL, "streamable-http", 5*time.Minute)
 			Expect(err).ToNot(HaveOccurred(), "MCP server not ready after token expiry")
 
-			mcpClient, err := e2e.NewMCPClientForSSE(config, proxyURL)
+			mcpClient, err := e2e.NewMCPClientForStreamableHTTP(config, proxyURL)
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 

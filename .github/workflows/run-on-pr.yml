@@ -17,21 +17,30 @@ jobs:
   linting:
     name: Linting
     uses: ./.github/workflows/lint.yml
+  security-scan:
+    name: Security Scan
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/security-scan.yml
   tests:
     name: Tests
     uses: ./.github/workflows/test.yml
     secrets: inherit
-  e2e-tests:
-    name: E2E Tests
-    uses: ./.github/workflows/e2e-tests.yml
   docs:
     name: Docs
     uses: ./.github/workflows/verify-docgen.yml
   codegen:
     name: Codegen
     uses: ./.github/workflows/verify-gen.yml
+  # Tier 2: Expensive integration tests - only run after all fast checks pass
+  e2e-tests:
+    name: E2E Tests
+    needs: [linting, tests, docs, codegen]
+    uses: ./.github/workflows/e2e-tests.yml
   operator-ci:
     name: Operator CI
+    needs: [linting, tests, docs, codegen]
     permissions:
       contents: read
     uses: ./.github/workflows/operator-ci.yml

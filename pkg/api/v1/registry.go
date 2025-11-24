@@ -9,7 +9,8 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regpkg "github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 const (
@@ -25,6 +26,8 @@ const (
 	RegistryTypeFile RegistryType = "file"
 	// RegistryTypeURL represents a remote URL registry
 	RegistryTypeURL RegistryType = "url"
+	// RegistryTypeAPI represents an MCP Registry API endpoint
+	RegistryTypeAPI RegistryType = "api"
 	// RegistryTypeDefault represents a built-in registry
 	RegistryTypeDefault RegistryType = "default"
 )
@@ -37,6 +40,11 @@ func (rr *RegistryRoutes) getRegistryInfo() (RegistryType, string) {
 // getRegistryInfoWithProvider returns the registry type and the source using the provided config provider
 func getRegistryInfoWithProvider(configProvider config.Provider) (RegistryType, string) {
 	cfg := configProvider.GetConfig()
+
+	// Check API URL first (highest priority for live data)
+	if cfg.RegistryApiUrl != "" {
+		return RegistryTypeAPI, cfg.RegistryApiUrl
+	}
 
 	if cfg.RegistryUrl != "" {
 		return RegistryTypeURL, cfg.RegistryUrl
@@ -51,8 +59,8 @@ func getRegistryInfoWithProvider(configProvider config.Provider) (RegistryType, 
 }
 
 // getCurrentProvider returns the current registry provider using the injected config
-func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (registry.Provider, bool) {
-	provider, err := registry.GetDefaultProviderWithConfig(rr.configProvider)
+func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Provider, bool) {
+	provider, err := regpkg.GetDefaultProviderWithConfig(rr.configProvider)
 	if err != nil {
 		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
 		logger.Errorf("Failed to get registry provider: %v", err)
@@ -234,57 +242,21 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Validate that only one of URL or LocalPath is provided
-	if req.URL != nil && req.LocalPath != nil {
-		http.Error(w, "Cannot specify both URL and local path", http.StatusBadRequest)
+	// Validate that only one of URL, APIURL, or LocalPath is provided
+	if err := validateRegistryRequest(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	var responseType string
-	var message string
-
-	// Handle reset to default (no URL or LocalPath specified)
-	if req.URL == nil && req.LocalPath == nil {
-		// Use the config provider to unset the registry
-		provider := rr.configProvider
-		if err := provider.UnsetRegistry(); err != nil {
-			logger.Errorf("Failed to unset registry: %v", err)
-			http.Error(w, "Failed to reset registry configuration", http.StatusInternalServerError)
-			return
-		}
-		responseType = "default"
-		message = "Registry configuration reset to default"
-	} else if req.URL != nil {
-		// Handle URL update
-		allowPrivateIP := false
-		if req.AllowPrivateIP != nil {
-			allowPrivateIP = *req.AllowPrivateIP
-		}
-
-		// Use the config provider to update the registry URL
-		if err := rr.configProvider.SetRegistryURL(*req.URL, allowPrivateIP); err != nil {
-			logger.Errorf("Failed to set registry URL: %v", err)
-			http.Error(w, fmt.Sprintf("Failed to set registry URL: %v", err), http.StatusBadRequest)
-			return
-		}
-		responseType = "url"
-		message = fmt.Sprintf("Successfully set registry URL: %s", *req.URL)
-	} else if req.LocalPath != nil {
-		// Handle local path update
-		// Use the config provider to update the registry file
-		provider := rr.configProvider
-
-		if err := provider.SetRegistryFile(*req.LocalPath); err != nil {
-			logger.Errorf("Failed to set registry file: %v", err)
-			http.Error(w, fmt.Sprintf("Failed to set registry file: %v", err), http.StatusBadRequest)
-			return
-		}
-		responseType = "file"
-		message = fmt.Sprintf("Successfully set local registry file: %s", *req.LocalPath)
+	// Process the registry update
+	responseType, message, err := rr.processRegistryUpdate(&req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	// Reset the default provider to pick up configuration changes
-	registry.ResetDefaultProvider()
+	regpkg.ResetDefaultProvider()
 
 	response := UpdateRegistryResponse{
 		Message: message,
@@ -297,6 +269,79 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
+}
+
+// validateRegistryRequest validates that only one registry type is specified
+func validateRegistryRequest(req *UpdateRegistryRequest) error {
+	if (req.URL != nil && req.APIURL != nil) ||
+		(req.URL != nil && req.LocalPath != nil) ||
+		(req.APIURL != nil && req.LocalPath != nil) {
+		return fmt.Errorf("cannot specify more than one registry type (url, api_url, or local_path)")
+	}
+	return nil
+}
+
+// processRegistryUpdate processes the registry update based on request type
+func (rr *RegistryRoutes) processRegistryUpdate(req *UpdateRegistryRequest) (string, string, error) {
+	if req.URL == nil && req.APIURL == nil && req.LocalPath == nil {
+		return rr.handleRegistryReset()
+	}
+	if req.URL != nil {
+		return rr.handleRegistryURL(*req.URL, req.AllowPrivateIP)
+	}
+	if req.APIURL != nil {
+		return rr.handleRegistryAPIURL(*req.APIURL, req.AllowPrivateIP)
+	}
+	if req.LocalPath != nil {
+		return rr.handleRegistryLocalPath(*req.LocalPath)
+	}
+	return "", "", fmt.Errorf("no valid registry configuration provided")
+}
+
+// handleRegistryReset resets the registry to default
+func (rr *RegistryRoutes) handleRegistryReset() (string, string, error) {
+	if err := rr.configProvider.UnsetRegistry(); err != nil {
+		logger.Errorf("Failed to unset registry: %v", err)
+		return "", "", fmt.Errorf("failed to reset registry configuration")
+	}
+	return "default", "Registry configuration reset to default", nil
+}
+
+// handleRegistryURL updates the registry URL
+func (rr *RegistryRoutes) handleRegistryURL(url string, allowPrivateIP *bool) (string, string, error) {
+	allow := false
+	if allowPrivateIP != nil {
+		allow = *allowPrivateIP
+	}
+
+	if err := rr.configProvider.SetRegistryURL(url, allow); err != nil {
+		logger.Errorf("Failed to set registry URL: %v", err)
+		return "", "", fmt.Errorf("failed to set registry URL: %v", err)
+	}
+	return "url", fmt.Sprintf("Successfully set registry URL: %s", url), nil
+}
+
+// handleRegistryAPIURL updates the registry API URL
+func (rr *RegistryRoutes) handleRegistryAPIURL(apiURL string, allowPrivateIP *bool) (string, string, error) {
+	allow := false
+	if allowPrivateIP != nil {
+		allow = *allowPrivateIP
+	}
+
+	if err := rr.configProvider.SetRegistryAPI(apiURL, allow); err != nil {
+		logger.Errorf("Failed to set registry API URL: %v", err)
+		return "", "", fmt.Errorf("failed to set registry API URL: %v", err)
+	}
+	return "api", fmt.Sprintf("Successfully set registry API URL: %s", apiURL), nil
+}
+
+// handleRegistryLocalPath updates the registry local path
+func (rr *RegistryRoutes) handleRegistryLocalPath(localPath string) (string, string, error) {
+	if err := rr.configProvider.SetRegistryFile(localPath); err != nil {
+		logger.Errorf("Failed to set registry file: %v", err)
+		return "", "", fmt.Errorf("failed to set registry file: %v", err)
+	}
+	return "file", fmt.Sprintf("Successfully set local registry file: %s", localPath), nil
 }
 
 //	 removeRegistry
@@ -514,9 +559,11 @@ type getServerResponse struct {
 type UpdateRegistryRequest struct {
 	// Registry URL (for remote registries)
 	URL *string `json:"url,omitempty"`
+	// MCP Registry API URL
+	APIURL *string `json:"api_url,omitempty"`
 	// Local registry file path
 	LocalPath *string `json:"local_path,omitempty"`
-	// Allow private IP addresses for registry URL
+	// Allow private IP addresses for registry URL or API URL
 	AllowPrivateIP *bool `json:"allow_private_ip,omitempty"`
 }
 

@@ -2,7 +2,6 @@ package authz
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +20,7 @@ import (
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
+	"github.com/stacklok/toolhive/test/testkit"
 )
 
 func TestMiddleware(t *testing.T) {
@@ -225,7 +225,8 @@ func TestMiddleware(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 
 			// Add claims to the request context
-			req = req.WithContext(context.WithValue(req.Context(), auth.ClaimsContextKey{}, tc.claims))
+			identity := &auth.Identity{Subject: "test-user", Claims: tc.claims}
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
 			// Create a response recorder
 			rr := httptest.NewRecorder()
@@ -321,7 +322,7 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		// Test CreateMiddleware
 		err = CreateMiddleware(middlewareConfig, mockRunner)
@@ -367,7 +368,7 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		// Test CreateMiddleware
 		err = CreateMiddleware(middlewareConfig, mockRunner)
@@ -404,7 +405,7 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-		mockRunner.EXPECT().AddMiddleware(gomock.Any()).Times(1)
+		mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Times(1)
 
 		// Test CreateMiddleware - should succeed even with invalid path because ConfigData takes precedence
 		err = CreateMiddleware(middlewareConfig, mockRunner)
@@ -506,4 +507,339 @@ func TestFactoryCreateMiddleware(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to unmarshal authorization middleware parameters")
 	})
+}
+
+func TestMiddlewareToolsListTestkit(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name       string
+		teskitOpts []testkit.TestMCPServerOption
+		policies   []string
+		expected   []any
+	}{
+		// application/json tests
+		{
+			name: "application/json - all allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("foo", "A test tool", func() string { return "Foo" }),
+				testkit.WithJSONClientType(),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			expected: []any{
+				map[string]any{"name": "foo", "description": "A test tool"},
+			},
+		},
+		{
+			name: "application/json - one allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("foo", "A test tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("bar", "A test tool", func() string { return "Bar" }),
+				testkit.WithJSONClientType(),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			expected: []any{
+				map[string]any{"name": "foo", "description": "A test tool"},
+			},
+		},
+		{
+			name: "application/json - none allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("bar", "A test tool", func() string { return "Bar" }),
+				testkit.WithJSONClientType(),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			expected: []any{},
+		},
+
+		// text/event-stream tests
+		{
+			name: "text/event-stream - all allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("foo", "A test tool", func() string { return "Foo" }),
+				testkit.WithSSEClientType(),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			expected: []any{
+				map[string]any{"name": "foo", "description": "A test tool"},
+			},
+		},
+		{
+			name: "text/event-stream - one allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("foo", "A test tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("bar", "A test tool", func() string { return "Bar" }),
+				testkit.WithSSEClientType(),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			expected: []any{
+				map[string]any{"name": "foo", "description": "A test tool"},
+			},
+		},
+		{
+			name: "text/event-stream - none allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("bar", "A test tool", func() string { return "Bar" }),
+				testkit.WithSSEClientType(),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			expected: []any{},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create a Cedar authorizer
+			authorizer, err := NewCedarAuthorizer(
+				CedarAuthorizerConfig{
+					Policies:     tc.policies,
+					EntitiesJSON: `[]`,
+				},
+			)
+			require.NoError(t, err, "Failed to create Cedar authorizer")
+
+			claims := jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			}
+
+			opts := tc.teskitOpts
+			opts = append(opts, testkit.WithMiddlewares(
+				func(h http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						identity := &auth.Identity{
+							Subject: claims["sub"].(string),
+							Name:    claims["name"].(string),
+							Claims:  claims,
+						}
+						r = r.WithContext(auth.WithIdentity(r.Context(), identity))
+						h.ServeHTTP(w, r)
+					})
+				},
+				mcpparser.ParsingMiddleware,
+				authorizer.Middleware,
+			))
+			server, client, err := testkit.NewStreamableTestServer(opts...)
+			require.NoError(t, err)
+			defer server.Close()
+
+			respBody, err := client.ToolsList()
+			require.NoError(t, err)
+
+			var rpc map[string]any
+			err = json.Unmarshal(respBody, &rpc)
+			require.NoError(t, err)
+
+			assert.Equal(t, "2.0", rpc["jsonrpc"])
+			require.NotNil(t, rpc["result"])
+
+			result, ok := rpc["result"].(map[string]any)
+			require.True(t, ok)
+
+			tools, ok := result["tools"].([]any)
+			require.True(t, ok)
+			require.Equal(t, len(tc.expected), len(tools), "Tool count should match: '%+v' '%+v'", tc.expected, tools)
+
+			for _, expected := range tc.expected {
+				expected, ok := expected.(map[string]any)
+				require.True(t, ok)
+				found := false
+
+				for _, tool := range tools {
+					tool, ok := tool.(map[string]any)
+					require.True(t, ok)
+
+					if tool["name"] == expected["name"] {
+						found = true
+						assert.Equal(t, expected["description"], tool["description"])
+						assert.Equal(t, expected["name"], tool["name"])
+					}
+				}
+
+				require.True(t, found, "Tool %s not found", expected["name"])
+			}
+		})
+	}
+}
+
+func TestMiddlewareToolsCallTestkit(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name          string
+		teskitOpts    []testkit.TestMCPServerOption
+		policies      []string
+		expected      any
+		expectedError bool
+	}{
+		// application/json tests
+		{
+			name: "application/json - all allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("foo", "A test tool", func() string { return "Foo" }),
+				testkit.WithJSONClientType(),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			expected: "Foo",
+		},
+		{
+			name: "application/json - one allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("foo", "A test tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("bar", "A test tool", func() string { return "Bar" }),
+				testkit.WithJSONClientType(),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			expected: "Foo",
+		},
+		{
+			name: "application/json - none allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("bar", "A test tool", func() string { return "Bar" }),
+				testkit.WithJSONClientType(),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			expected:      nil,
+			expectedError: true,
+		},
+
+		// text/event-stream tests
+		{
+			name: "text/event-stream - all allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("foo", "A test tool", func() string { return "Foo" }),
+				testkit.WithSSEClientType(),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			expected: "Foo",
+		},
+		{
+			name: "text/event-stream - one allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("foo", "A test tool", func() string { return "Foo" }),
+				//nolint:goconst
+				testkit.WithTool("bar", "A test tool", func() string { return "Bar" }),
+				testkit.WithSSEClientType(),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			expected: "Foo",
+		},
+		{
+			name: "text/event-stream - none allowed",
+			teskitOpts: []testkit.TestMCPServerOption{
+				//nolint:goconst
+				testkit.WithTool("bar", "A test tool", func() string { return "Bar" }),
+				testkit.WithSSEClientType(),
+			},
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource == Tool::"foo");`,
+			},
+			expected:      nil,
+			expectedError: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create a Cedar authorizer
+			authorizer, err := NewCedarAuthorizer(
+				CedarAuthorizerConfig{
+					Policies:     tc.policies,
+					EntitiesJSON: `[]`,
+				},
+			)
+			require.NoError(t, err, "Failed to create Cedar authorizer")
+
+			claims := jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			}
+
+			opts := tc.teskitOpts
+			opts = append(opts, testkit.WithMiddlewares(
+				func(h http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						identity := &auth.Identity{
+							Subject: claims["sub"].(string),
+							Name:    claims["name"].(string),
+							Claims:  claims,
+						}
+						r = r.WithContext(auth.WithIdentity(r.Context(), identity))
+						h.ServeHTTP(w, r)
+					})
+				},
+				mcpparser.ParsingMiddleware,
+				authorizer.Middleware,
+			))
+			server, client, err := testkit.NewStreamableTestServer(opts...)
+			require.NoError(t, err)
+			defer server.Close()
+
+			respBody, err := client.ToolsCall("foo")
+			require.NoError(t, err)
+
+			var rpc map[string]any
+			err = json.Unmarshal(respBody, &rpc)
+			require.NoError(t, err)
+
+			assert.Equal(t, "2.0", rpc["jsonrpc"])
+
+			if tc.expected != nil {
+				require.NotNil(t, rpc["result"], "Result is nil: %+v", string(respBody))
+
+				result, ok := rpc["result"].(map[string]any)
+				require.True(t, ok)
+
+				tools, ok := result["content"].([]any)
+				require.True(t, ok)
+
+				toolRes, ok := tools[0].(map[string]any)
+				require.True(t, ok)
+				require.Equal(t, tc.expected, toolRes["text"])
+			}
+			if tc.expectedError {
+				require.NotNil(t, rpc["error"])
+			}
+		})
+	}
 }

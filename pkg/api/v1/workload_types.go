@@ -6,7 +6,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -59,6 +59,8 @@ type updateRequest struct {
 	ProxyMode string `json:"proxy_mode"`
 	// Whether network isolation is turned on. This applies the rules in the permission profile.
 	NetworkIsolation bool `json:"network_isolation"`
+	// Whether to trust X-Forwarded-* headers from reverse proxies
+	TrustProxyHeaders bool `json:"trust_proxy_headers"`
 	// Tools filter
 	ToolsFilter []string `json:"tools"`
 	// Tools override
@@ -108,6 +110,8 @@ type remoteOAuthConfig struct {
 	CallbackPort int `json:"callback_port,omitempty"`
 	// Whether to skip opening browser for OAuth flow (defaults to false)
 	SkipBrowser bool `json:"skip_browser,omitempty"`
+	// OAuth 2.0 resource indicator (RFC 8707)
+	Resource string `json:"resource,omitempty"`
 }
 
 // createRequest represents the request to create a new workload
@@ -199,20 +203,45 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 	var oAuthConfig remoteOAuthConfig
 	var headers []*registry.Header
 	if runConfig.RemoteAuthConfig != nil {
+		// Parse ClientSecret from CLI format to SecretParameter (for details API)
+		var clientSecretParam *secrets.SecretParameter
+		if runConfig.RemoteAuthConfig.ClientSecret != "" {
+			// Parse the CLI format: "<name>,target=<target>"
+			if secretParam, err := secrets.ParseSecretParameter(runConfig.RemoteAuthConfig.ClientSecret); err == nil {
+				clientSecretParam = &secretParam
+			}
+			// Ignore invalid secrets rather than failing the entire conversion
+		}
+
 		oAuthConfig = remoteOAuthConfig{
 			Issuer:       runConfig.RemoteAuthConfig.Issuer,
 			AuthorizeURL: runConfig.RemoteAuthConfig.AuthorizeURL,
 			TokenURL:     runConfig.RemoteAuthConfig.TokenURL,
 			ClientID:     runConfig.RemoteAuthConfig.ClientID,
+			ClientSecret: clientSecretParam,
 			Scopes:       runConfig.RemoteAuthConfig.Scopes,
+			UsePKCE:      runConfig.RemoteAuthConfig.UsePKCE,
 			OAuthParams:  runConfig.RemoteAuthConfig.OAuthParams,
 			CallbackPort: runConfig.RemoteAuthConfig.CallbackPort,
 			SkipBrowser:  runConfig.RemoteAuthConfig.SkipBrowser,
+			Resource:     runConfig.RemoteAuthConfig.Resource,
 		}
 		headers = runConfig.RemoteAuthConfig.Headers
 	}
 
 	authzConfigPath := ""
+
+	// Convert ToolsOverride from runner.ToolOverride to API toolOverride
+	var toolsOverride map[string]toolOverride
+	if runConfig.ToolsOverride != nil {
+		toolsOverride = make(map[string]toolOverride, len(runConfig.ToolsOverride))
+		for key, override := range runConfig.ToolsOverride {
+			toolsOverride[key] = toolOverride{
+				Name:        override.Name,
+				Description: override.Description,
+			}
+		}
+	}
 
 	return &createRequest{
 		updateRequest: updateRequest{
@@ -230,7 +259,9 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			PermissionProfile: runConfig.PermissionProfile,
 			ProxyMode:         string(runConfig.ProxyMode),
 			NetworkIsolation:  runConfig.IsolateNetwork,
+			TrustProxyHeaders: runConfig.TrustProxyHeaders,
 			ToolsFilter:       runConfig.ToolsFilter,
+			ToolsOverride:     toolsOverride,
 			Group:             runConfig.Group,
 			URL:               runConfig.RemoteURL,
 			OAuthConfig:       oAuthConfig,

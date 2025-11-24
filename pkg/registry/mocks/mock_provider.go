@@ -12,7 +12,7 @@ package mocks
 import (
 	reflect "reflect"
 
-	registry "github.com/stacklok/toolhive/pkg/registry"
+	registry "github.com/stacklok/toolhive/pkg/registry/registry"
 	gomock "go.uber.org/mock/gomock"
 )
 

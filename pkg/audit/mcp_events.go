@@ -5,6 +5,8 @@ package audit
 const (
 	// EventTypeMCPInitialize represents an MCP initialization event
 	EventTypeMCPInitialize = "mcp_initialize"
+	// EventTypeSSEConnection represents an SSE connection event
+	EventTypeSSEConnection = "sse_connection"
 	// EventTypeMCPToolCall represents an MCP tool call event
 	EventTypeMCPToolCall = "mcp_tool_call"
 	// EventTypeMCPToolsList represents an MCP tools list event

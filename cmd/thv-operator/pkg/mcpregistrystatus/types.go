@@ -5,29 +5,57 @@ import (
 	"context"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
-//go:generate mockgen -destination=mocks/mock_collector.go -package=mocks -source=types.go Collector
+// Error represents a structured error with condition information for operator components
+type Error struct {
+	Err             error
+	Message         string
+	ConditionType   string
+	ConditionReason string
+}
 
-// Collector defines the interface for collecting MCPRegistry status updates.
-// It provides methods to collect status changes during reconciliation
-// and apply them in a single batch update at the end.
-type Collector interface {
+func (e *Error) Error() string {
+	return e.Message
+}
+
+func (e *Error) Unwrap() error {
+	return e.Err
+}
+
+//go:generate mockgen -destination=mocks/mock_collector.go -package=mocks -source=types.go APIStatusCollector,StatusDeriver,StatusManager
+
+// APIStatusCollector handles API-related status updates
+type APIStatusCollector interface {
+	// Status returns the API status
+	Status() *mcpv1alpha1.APIStatus
+
+	// SetAPIStatus sets the detailed API status
+	SetAPIStatus(phase mcpv1alpha1.APIPhase, message string, endpoint string)
+
 	// SetAPIReadyCondition sets the API ready condition with the specified reason, message, and status
 	SetAPIReadyCondition(reason, message string, status metav1.ConditionStatus)
+}
 
-	// SetAPIEndpoint sets the API endpoint in the status
-	SetAPIEndpoint(endpoint string)
+// StatusDeriver handles overall status derivation logic
+type StatusDeriver interface {
+	// DeriveOverallStatus derives the overall MCPRegistry phase and message from component statuses
+	DeriveOverallStatus(apiStatus *mcpv1alpha1.APIStatus) (mcpv1alpha1.MCPRegistryPhase, string)
+}
 
-	// SetPhase sets the MCPRegistry phase in the status
-	SetPhase(phase mcpv1alpha1.MCPRegistryPhase)
+// StatusManager orchestrates all status updates and provides access to domain-specific collectors
+type StatusManager interface {
+	// API returns the API status collector
+	API() APIStatusCollector
 
-	// SetMessage sets the status message
-	SetMessage(message string)
+	// SetOverallStatus sets the overall phase and message explicitly (for special cases)
+	SetOverallStatus(phase mcpv1alpha1.MCPRegistryPhase, message string)
 
-	// Apply applies all collected status changes in a single batch update
-	Apply(ctx context.Context, statusWriter client.StatusWriter) error
+	// SetCondition sets a general condition
+	SetCondition(conditionType, reason, message string, status metav1.ConditionStatus)
+
+	// UpdateStatus updates the status of the MCPRegistry if any change happened
+	UpdateStatus(ctx context.Context, mcpRegistryStatus *mcpv1alpha1.MCPRegistryStatus) bool
 }

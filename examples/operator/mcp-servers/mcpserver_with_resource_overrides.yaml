@@ -6,10 +6,7 @@ metadata:
 spec:
   image: docker.io/mcp/github
   transport: stdio
-  port: 8080
-  permissionProfile:
-    type: builtin
-    name: network
+  proxyPort: 8080
   secrets:
     - name: github-token
       key: GITHUB_PERSONAL_ACCESS_TOKEN
@@ -27,6 +24,7 @@ spec:
       memory: "128Mi"
   resourceOverrides:
     proxyDeployment:
+      # Annotations and labels for the proxy deployment
       annotations:
         example.com/deployment-annotation: "custom-deployment-value"
         monitoring.example.com/scrape: "true"
@@ -35,6 +33,14 @@ spec:
         example.com/deployment-label: "custom-deployment-label"
         environment: "production"
         team: "platform"
+
+      # Environment variables for the proxy runner container (thv-proxyrunner)
+      # These affect the ToolHive proxy itself, not the MCP server it manages
+      env:
+        - name: CUSTOM_PROXY_VAR
+          value: "custom-value"
+        - name: TOOLHIVE_DEBUG
+          value: "true"  # Enable debug logging to see detailed token exchange, middleware, and proxy logs
     proxyService:
       annotations:
         example.com/service-annotation: "custom-service-value"

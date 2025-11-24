@@ -791,6 +791,6 @@
   "timepicker": {},
   "timezone": "",
   "title": "ToolHive MCP Server & Proxy Runner Dashboard - OTEL RemoteWrite to Prometheus (with kubestats)",
-  "uid": "toolhive-mcp-grafana-dashboard-otel-remotewrite",
+  "uid": "toolhive-mcp-otel-remotewrite",
   "version": 3
 }

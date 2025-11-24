@@ -3,24 +3,26 @@ package registry
 import (
 	"fmt"
 	"strings"
+
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // BaseProvider provides common implementation for registry providers
 type BaseProvider struct {
 	// GetRegistryFunc is a function that fetches the registry data
 	// This allows different providers to implement their own data fetching logic
-	GetRegistryFunc func() (*Registry, error)
+	GetRegistryFunc func() (*types.Registry, error)
 }
 
 // NewBaseProvider creates a new base provider with the given registry function
-func NewBaseProvider(getRegistry func() (*Registry, error)) *BaseProvider {
+func NewBaseProvider(getRegistry func() (*types.Registry, error)) *BaseProvider {
 	return &BaseProvider{
 		GetRegistryFunc: getRegistry,
 	}
 }
 
 // GetServer returns a specific server by name (container or remote)
-func (p *BaseProvider) GetServer(name string) (ServerMetadata, error) {
+func (p *BaseProvider) GetServer(name string) (types.ServerMetadata, error) {
 	reg, err := p.GetRegistryFunc()
 	if err != nil {
 		return nil, err
@@ -36,14 +38,14 @@ func (p *BaseProvider) GetServer(name string) (ServerMetadata, error) {
 }
 
 // SearchServers searches for servers matching the query (both container and remote)
-func (p *BaseProvider) SearchServers(query string) ([]ServerMetadata, error) {
+func (p *BaseProvider) SearchServers(query string) ([]types.ServerMetadata, error) {
 	reg, err := p.GetRegistryFunc()
 	if err != nil {
 		return nil, err
 	}
 
 	query = strings.ToLower(query)
-	var results []ServerMetadata
+	var results []types.ServerMetadata
 
 	// Search container servers
 	for name, server := range reg.Servers {
@@ -63,7 +65,7 @@ func (p *BaseProvider) SearchServers(query string) ([]ServerMetadata, error) {
 }
 
 // ListServers returns all servers (both container and remote)
-func (p *BaseProvider) ListServers() ([]ServerMetadata, error) {
+func (p *BaseProvider) ListServers() ([]types.ServerMetadata, error) {
 	reg, err := p.GetRegistryFunc()
 	if err != nil {
 		return nil, err
@@ -76,14 +78,14 @@ func (p *BaseProvider) ListServers() ([]ServerMetadata, error) {
 // Legacy methods for backward compatibility
 
 // GetImageServer returns a specific container server by name (legacy method)
-func (p *BaseProvider) GetImageServer(name string) (*ImageMetadata, error) {
+func (p *BaseProvider) GetImageServer(name string) (*types.ImageMetadata, error) {
 	server, err := p.GetServer(name)
 	if err != nil {
 		return nil, err
 	}
 
 	// Type assert to ImageMetadata
-	if img, ok := server.(*ImageMetadata); ok {
+	if img, ok := server.(*types.ImageMetadata); ok {
 		return img, nil
 	}
 
@@ -91,16 +93,16 @@ func (p *BaseProvider) GetImageServer(name string) (*ImageMetadata, error) {
 }
 
 // SearchImageServers searches for container servers matching the query (legacy method)
-func (p *BaseProvider) SearchImageServers(query string) ([]*ImageMetadata, error) {
+func (p *BaseProvider) SearchImageServers(query string) ([]*types.ImageMetadata, error) {
 	servers, err := p.SearchServers(query)
 	if err != nil {
 		return nil, err
 	}
 
 	// Filter to only container servers
-	var results []*ImageMetadata
+	var results []*types.ImageMetadata
 	for _, server := range servers {
-		if img, ok := server.(*ImageMetadata); ok {
+		if img, ok := server.(*types.ImageMetadata); ok {
 			results = append(results, img)
 		}
 	}
@@ -109,16 +111,16 @@ func (p *BaseProvider) SearchImageServers(query string) ([]*ImageMetadata, error
 }
 
 // ListImageServers returns all container servers (legacy method)
-func (p *BaseProvider) ListImageServers() ([]*ImageMetadata, error) {
+func (p *BaseProvider) ListImageServers() ([]*types.ImageMetadata, error) {
 	servers, err := p.ListServers()
 	if err != nil {
 		return nil, err
 	}
 
 	// Filter to only container servers
-	var results []*ImageMetadata
+	var results []*types.ImageMetadata
 	for _, server := range servers {
-		if img, ok := server.(*ImageMetadata); ok {
+		if img, ok := server.(*types.ImageMetadata); ok {
 			results = append(results, img)
 		}
 	}

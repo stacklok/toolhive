@@ -791,6 +791,6 @@
   "timepicker": {},
   "timezone": "",
   "title": "ToolHive MCP Server & Proxy Runner Dashboard - Scrape from OTEL (with kubestats)",
-  "uid": "toolhive-mcp-grafana-dashboard-otel-scrape",
+  "uid": "toolhive-mcp-otel-scrape",
   "version": 9
 }

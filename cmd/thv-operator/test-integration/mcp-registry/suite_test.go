@@ -1,0 +1,138 @@
+package operator_test
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"go.uber.org/zap/zapcore"
+	"k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
+)
+
+var (
+	k8sClient client.Client
+	testEnv   *envtest.Environment
+	testMgr   ctrl.Manager
+	ctx       context.Context
+	cancel    context.CancelFunc
+)
+
+func TestOperatorE2E(t *testing.T) { //nolint:paralleltest // E2E tests should not run in parallel
+	RegisterFailHandler(Fail)
+
+	suiteConfig, reporterConfig := GinkgoConfiguration()
+	// Only show verbose output for failures
+	reporterConfig.Verbose = false
+	reporterConfig.VeryVerbose = false
+	reporterConfig.FullTrace = false
+
+	RunSpecs(t, "MCPRegistry Controller Integration Test Suite", suiteConfig, reporterConfig)
+}
+
+var _ = BeforeSuite(func() {
+	// Only log errors unless a test fails
+	logLevel := zapcore.ErrorLevel
+	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true), zap.Level(logLevel)))
+
+	ctx, cancel = context.WithCancel(context.TODO())
+
+	By("bootstrapping test environment")
+
+	// Check if we should use an existing cluster (for CI/CD)
+	useExistingCluster := os.Getenv("USE_EXISTING_CLUSTER") == "true"
+
+	// // Get kubebuilder assets path
+	kubebuilderAssets := os.Getenv("KUBEBUILDER_ASSETS")
+
+	if !useExistingCluster {
+		By(fmt.Sprintf("using kubebuilder assets from: %s", kubebuilderAssets))
+		if kubebuilderAssets == "" {
+			By("WARNING: no kubebuilder assets found, test may fail")
+		}
+	}
+
+	testEnv = &envtest.Environment{
+		UseExistingCluster: &useExistingCluster,
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "..", "..", "deploy", "charts", "operator-crds", "crds"),
+		},
+		ErrorIfCRDPathMissing: true,
+		BinaryAssetsDirectory: kubebuilderAssets,
+	}
+
+	cfg, err := testEnv.Start()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(cfg).NotTo(BeNil())
+
+	// Add MCPRegistry scheme
+	err = mcpv1alpha1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Create controller-runtime client
+	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	Expect(err).NotTo(HaveOccurred())
+	Expect(k8sClient).NotTo(BeNil())
+
+	// Verify MCPRegistry CRD is available
+	By("verifying MCPRegistry CRD is available")
+	Eventually(func() error {
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{}
+		return k8sClient.Get(ctx, client.ObjectKey{
+			Namespace: "default",
+			Name:      "test-availability-check",
+		}, mcpRegistry)
+	}, time.Minute, time.Second).Should(MatchError(ContainSubstring("not found")))
+
+	// Set up the manager for controllers (only for envtest, not existing cluster)
+	if !useExistingCluster {
+		By("setting up controller manager for envtest")
+		testMgr, err = ctrl.NewManager(cfg, ctrl.Options{
+			Scheme: scheme.Scheme,
+			Metrics: metricsserver.Options{
+				BindAddress: "0", // Disable metrics server for tests
+			},
+			HealthProbeBindAddress: "0", // Disable health probe for tests
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Set up MCPRegistry controller
+		By("setting up MCPRegistry controller")
+		err = controllers.NewMCPRegistryReconciler(testMgr.GetClient(), testMgr.GetScheme()).SetupWithManager(testMgr)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Start the manager in the background
+		By("starting controller manager")
+		go func() {
+			defer GinkgoRecover()
+			err = testMgr.Start(ctx)
+			Expect(err).NotTo(HaveOccurred(), "failed to run manager")
+		}()
+
+		// Wait for the manager to be ready
+		By("waiting for controller manager to be ready")
+		Eventually(func() bool {
+			return testMgr.GetCache().WaitForCacheSync(ctx)
+		}, time.Minute, time.Second).Should(BeTrue())
+	}
+})
+
+var _ = AfterSuite(func() {
+	cancel()
+	By("tearing down the test environment")
+	err := testEnv.Stop()
+	Expect(err).NotTo(HaveOccurred())
+})

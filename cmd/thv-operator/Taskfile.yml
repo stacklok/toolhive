@@ -33,6 +33,12 @@ tasks:
       - kind create cluster --name toolhive
       - kind get kubeconfig --name toolhive > kconfig.yaml
 
+  kind-setup-e2e:
+    desc: Setup a local Kind cluster with port mappings for e2e testing (allows accessing NodePort services on localhost)
+    cmds:
+      - kind create cluster --name toolhive --config {{.ROOT_DIR}}/test/e2e/thv-operator/kind-config.yaml
+      - kind get kubeconfig --name toolhive > kconfig.yaml
+
   kind-destroy:
     desc: Destroy a local Kind cluster
     cmds:
@@ -125,39 +131,28 @@ tasks:
   operator-deploy-local:
     desc: |
       Build the ToolHive runtime and Operator image locally and deploy it to the K8s cluster.
-      Set ENABLE_EXPERIMENTAL_FEATURES=true to enable experimental features in the operator
-      and automatically build and deploy the registry API image.
+      Set ENABLE_EXPERIMENTAL_FEATURES=true to enable experimental features in the operator.
+      Registry API image is pulled from ghcr.io/stacklok/thv-registry-api:latest
       Example: task operator-deploy-local ENABLE_EXPERIMENTAL_FEATURES=true
     platforms: [linux, darwin]
     vars:
       ENABLE_EXPERIMENTAL_FEATURES: '{{.ENABLE_EXPERIMENTAL_FEATURES | default "false"}}'
+      REGISTRY_API_IMAGE: '{{.REGISTRY_API_IMAGE | default "ghcr.io/stacklok/thv-registry-api:latest"}}'
       OPERATOR_IMAGE:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1
       TOOLHIVE_IMAGE:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-proxyrunner | tail -n 1
-      REGISTRY_API_IMAGE:
-        sh: |
-          if [ "{{.ENABLE_EXPERIMENTAL_FEATURES}}" = "true" ]; then
-            KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-registry-api | tail -n 1
-          else
-            echo ""
-          fi
     cmds:
       - echo "Loading toolhive operator image {{.OPERATOR_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.OPERATOR_IMAGE}}
       - echo "Loading toolhive image {{.TOOLHIVE_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.TOOLHIVE_IMAGE}}
       - |
-        if [ "{{.ENABLE_EXPERIMENTAL_FEATURES}}" = "true" ]; then
-          echo "Loading registry API image {{.REGISTRY_API_IMAGE}} into kind..."
-          kind load docker-image --name toolhive {{.REGISTRY_API_IMAGE}}
-        fi
-      - |
         helm upgrade --install toolhive-operator deploy/charts/operator \
         --set operator.image={{.OPERATOR_IMAGE}} \
         --set operator.toolhiveRunnerImage={{.TOOLHIVE_IMAGE}} \
         --set operator.features.experimental={{.ENABLE_EXPERIMENTAL_FEATURES}} \
-        {{if eq .ENABLE_EXPERIMENTAL_FEATURES "true"}}--set registryAPI.image={{.REGISTRY_API_IMAGE}}{{end}} \
+        --set registryAPI.image={{.REGISTRY_API_IMAGE}} \
         --namespace toolhive-system \
         --create-namespace \
         --kubeconfig kconfig.yaml \
@@ -195,17 +190,31 @@ tasks:
   operator-test:
     desc: Run tests for the operator
     cmds:
-      - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-      - KUBEBUILDER_ASSETS="$(shell setup-envtest use 1.28.0 -p path)" go test ./cmd/thv-operator/... -coverprofile cover.out
+      - go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
+      # we have to use ldflags to avoid the LC_DYSYMTAB linker error. 
+      # https://github.com/stacklok/toolhive/issues/1687
+      - go test -ldflags=-extldflags=-Wl,-w -v -json -race $(go list ./cmd/thv-operator/... | grep -v '/test-integration') | gotestfmt -hide "all"
 
+  operator-test-integration:
+    desc: Run integration tests for the operator using envtest
+    cmds:
+      - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.22
+      - go install github.com/onsi/ginkgo/v2/ginkgo@latest
+      # Run tests in parallel using ginkgo -p flag (uses number of CPU cores by default)
+      - KUBEBUILDER_ASSETS="$($(go env GOPATH)/bin/setup-envtest use 1.31.0 -p path)" $(go env GOPATH)/bin/ginkgo --succinct -v -p ./cmd/thv-operator/test-integration/...
+
+  # Backwards compatibility
   operator-e2e-test:
+    deps: [operator-e2e-test-chainsaw]
+
+  operator-e2e-test-chainsaw:
     desc: Run E2E tests for the operator
     cmds:
       - |
         if [ -z "$CI" ]; then
           if ! command -v chainsaw >/dev/null 2>&1; then
             echo "Chainsaw not found, installing..."
-            go install github.com/kubernetes-sigs/chainsaw/cmd/chainsaw@latest
+            go install github.com/kyverno/chainsaw@latest
           fi
         fi
       - chainsaw test --test-dir test/e2e/chainsaw/operator/multi-tenancy/setup
@@ -214,6 +223,40 @@ tasks:
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/setup
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/test-scenarios
       - chainsaw test --test-dir test/e2e/chainsaw/operator/single-tenancy/cleanup
+
+  thv-operator-e2e-test:
+    desc: |
+      Full E2E test workflow: setup cluster, deploy operator, run tests, and cleanup.
+      For manual testing:
+        1. task kind-setup-e2e
+        2. task operator-install-crds
+        3. task operator-deploy-local
+        4. task thv-operator-e2e-test-run (can run multiple times)
+        5. task kind-destroy
+    platforms: [linux, darwin]
+    cmds:
+      - defer: task kind-destroy
+      - task: kind-setup-e2e
+      - task: operator-install-crds
+      - task: operator-deploy-local
+      - task: thv-operator-e2e-test-run
+
+  thv-operator-e2e-test-run:
+    desc: |
+      Run only the Ginkgo E2E tests against an existing cluster.
+      This task assumes:
+      - A Kind cluster named 'toolhive' exists
+      - CRDs are installed
+      - Operator is deployed
+      - kconfig.yaml exists in project root
+      Use this to re-run tests without recreating the cluster.
+    platforms: [linux, darwin]
+    cmds:
+      - echo "Running Ginkgo E2E tests..."
+      - go install github.com/onsi/ginkgo/v2/ginkgo@latest
+      - |
+        KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v \
+          {{.ROOT_DIR}}/test/e2e/thv-operator/...
 
   operator-run:
     desc: Run the operator controller locally
@@ -262,12 +305,21 @@ tasks:
 
   ocp-build-and-push:
     desc: Build ToolHive and Operator images and push them to OpenShift registry
+    vars:
+      SHA:  
+        sh: git rev-parse HEAD || echo "unknown"
     cmds:
       - task: ocp-registry-login
       - echo "Building and pushing toolhive operator image to {{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}..."
-      - KO_DOCKER_REPO={{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}} ko build --push --base-import-paths {{if eq .OCP_INSECURE_REGISTRY "true"}}--insecure-registry{{end}} ./cmd/thv-operator
+      - task: build-operator-image-ubi
+        vars:
+          REPO: "{{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}"
+      - eval "{{.CONTAINER_RUNTIME}} push {{if eq .OCP_INSECURE_REGISTRY "true"}}--tls-verify=false{{end}} {{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}/thv-operator:{{.SHA}}-ubi"
       - echo "Building and pushing toolhive proxy runner image to {{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}..."
-      - KO_DOCKER_REPO={{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}} ko build --push --base-import-paths {{if eq .OCP_INSECURE_REGISTRY "true"}}--insecure-registry{{end}} ./cmd/thv-proxyrunner
+      - task: build-proxyrunner-image-ubi
+        vars:
+          REPO: "{{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}"
+      - eval "{{.CONTAINER_RUNTIME}} push {{if eq .OCP_INSECURE_REGISTRY "true"}}--tls-verify=false{{end}} {{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}/thv-proxyrunner:{{.SHA}}-ubi"
       - echo "Images pushed successfully to {{.OCP_REGISTRY_ROUTE}}/{{.OCP_PROJECT}}"
 
   ocp-verify-push:
@@ -276,17 +328,20 @@ tasks:
       - echo "Checking image streams in project {{.OCP_PROJECT}}..."
       - oc get is -n {{.OCP_PROJECT}}
       - echo "Describing thv-operator image stream..."
-      - oc describe is thv-operator -n {{.OCP_PROJECT}} || echo "thv-operator image stream not found"
+      - oc describe is thv-operator -n {{.OCP_PROJECT}} || (echo "thv-operator image stream not found" && exit 1)
       - echo "Describing thv-proxyrunner image stream..."
-      - oc describe is thv-proxyrunner -n {{.OCP_PROJECT}} || echo "thv-proxyrunner image stream not found"
+      - oc describe is thv-proxyrunner -n {{.OCP_PROJECT}} || (echo "thv-proxyrunner image stream not found" && exit 1)
 
   ocp-deploy-operator:
     desc: Deploy ToolHive Operator to OpenShift using locally built images
+    vars:
+      SHA:  
+        sh: git rev-parse HEAD || echo "unknown"
     cmds:
       - |
         helm upgrade --install toolhive-operator deploy/charts/operator \
-        --set operator.image=image-registry.openshift-image-registry.svc:5000/{{.OCP_PROJECT}}/thv-operator:latest \
-        --set operator.toolhiveRunnerImage=image-registry.openshift-image-registry.svc:5000/{{.OCP_PROJECT}}/thv-proxyrunner:latest \
+        --set operator.image=image-registry.openshift-image-registry.svc:5000/{{.OCP_PROJECT}}/thv-operator:{{.SHA}}-ubi \
+        --set operator.toolhiveRunnerImage=image-registry.openshift-image-registry.svc:5000/{{.OCP_PROJECT}}/thv-proxyrunner:{{.SHA}}-ubi \
         --namespace {{.OCP_PROJECT}} \
         --create-namespace \
         {{ .CLI_ARGS }}
@@ -336,3 +391,51 @@ tasks:
       - echo "Keycloak will be available at http://localhost:8080"
       - echo "Use 'task keycloak:get-admin-creds' to get login credentials"
       - kubectl port-forward service/keycloak-dev-service -n keycloak 8080:8080 --kubeconfig kconfig.yaml
+
+  build-operator-image-ubi:
+    desc: Build the operator image
+    vars:
+      COMMIT:
+        sh: git rev-parse --short HEAD || echo "unknown"
+      BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
+      SHA:  
+        sh: git rev-parse HEAD || echo "unknown"
+      REPO: '{{.REPO | default "ghcr.io/stacklok/toolhive"}}'
+      PLATFORM:
+        sh: echo "${PLATFORM:-linux/$(go env GOARCH)}" 
+    cmds:
+      - >
+        eval "{{.CONTAINER_RUNTIME}} build --platform={{.PLATFORM}} --load
+        -t {{.REPO}}/thv-operator:{{.SHA}}-ubi
+        --build-arg CODEDIR=cmd/thv-operator
+        --build-arg VERSION={{.SHA}}-ubi
+        --build-arg COMMIT={{.COMMIT}}
+        --build-arg BUILD_DATE={{.BUILD_DATE}}
+        --label name=\"toolhive-operator\"
+        --label vendor=\"Stacklok\"
+        --label maintainer=\"Stacklok\"
+        -f containers/operator/Dockerfile ."
+
+  build-proxyrunner-image-ubi:
+    desc: Build the proxyrunner image
+    vars:
+      COMMIT:
+        sh: git rev-parse --short HEAD || echo "unknown"
+      BUILD_DATE: '{{dateInZone "2006-01-02T15:04:05Z" (now) "UTC"}}'
+      SHA:  
+        sh: git rev-parse HEAD || echo "unknown"
+      REPO: '{{.REPO | default "ghcr.io/stacklok/toolhive"}}'
+      PLATFORM:
+        sh: echo "${PLATFORM:-linux/$(go env GOARCH)}"
+    cmds:
+      - >
+        eval "{{.CONTAINER_RUNTIME}} build --platform={{.PLATFORM}} --load
+        -t {{.REPO}}/thv-proxyrunner:{{.SHA}}-ubi
+        --build-arg CODEDIR=cmd/thv-proxyrunner
+        --build-arg VERSION={{.SHA}}-ubi
+        --build-arg COMMIT={{.COMMIT}}
+        --build-arg BUILD_DATE={{.BUILD_DATE}}
+        --label name=\"toolhive-proxyrunner\"
+        --label vendor=\"Stacklok\"
+        --label maintainer=\"Stacklok\"
+        -f containers/operator/Dockerfile ."

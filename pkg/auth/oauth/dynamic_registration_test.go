@@ -204,6 +204,80 @@ func TestNewDynamicClientRegistrationRequest(t *testing.T) {
 	}
 }
 
+func TestDynamicClientRegistrationRequest_ScopeSerialization(t *testing.T) {
+	t.Parallel()
+
+	// This test verifies RFC 7591 Section 2 compliance for scope serialization.
+	// Per the spec, scopes MUST be serialized as a space-delimited string, not a JSON array.
+	// Empty/nil scopes should result in the scope field being omitted entirely (omitempty),
+	// which is RFC 7591 compliant since the scope parameter is optional.
+
+	tests := []struct {
+		name              string
+		scopes            []string
+		shouldOmitScope   bool
+		expectedScopeJSON string // Expected scope field in JSON, empty if omitted
+	}{
+		{
+			name:            "nil scopes should omit scope field entirely",
+			scopes:          nil,
+			shouldOmitScope: true,
+		},
+		{
+			name:            "empty slice scopes should omit scope field entirely",
+			scopes:          []string{},
+			shouldOmitScope: true,
+		},
+		{
+			name:              "single scope should be space-delimited string per RFC 7591",
+			scopes:            []string{"openid"},
+			shouldOmitScope:   false,
+			expectedScopeJSON: `"scope":"openid"`,
+		},
+		{
+			name:              "multiple scopes should be space-delimited string per RFC 7591",
+			scopes:            []string{"openid", "profile"},
+			shouldOmitScope:   false,
+			expectedScopeJSON: `"scope":"openid profile"`,
+		},
+		{
+			name:              "three scopes should be space-delimited string per RFC 7591",
+			scopes:            []string{"openid", "profile", "email"},
+			shouldOmitScope:   false,
+			expectedScopeJSON: `"scope":"openid profile email"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Create request with specified scopes
+			request := NewDynamicClientRegistrationRequest(tt.scopes, 8666)
+
+			// Marshal to JSON
+			jsonBytes, err := json.Marshal(request)
+			require.NoError(t, err, "JSON marshaling should succeed")
+
+			jsonStr := string(jsonBytes)
+
+			// Verify scope field behavior
+			if tt.shouldOmitScope {
+				assert.NotContains(t, jsonStr, `"scope"`,
+					"JSON should NOT contain scope field when scopes are empty/nil (omitempty behavior)")
+			} else {
+				assert.Contains(t, jsonStr, tt.expectedScopeJSON,
+					"JSON should contain expected scope field")
+			}
+
+			// Verify other required fields are always present
+			assert.Contains(t, jsonStr, `"redirect_uris"`, "redirect_uris should be present")
+			assert.Contains(t, jsonStr, `"client_name"`, "client_name should be present")
+			assert.Contains(t, jsonStr, `"grant_types"`, "grant_types should be present")
+		})
+	}
+}
+
 func TestRegisterClientDynamically(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -277,6 +351,33 @@ func TestRegisterClientDynamically(t *testing.T) {
 			name: "invalid request - no redirect URIs",
 			request: &DynamicClientRegistrationRequest{
 				ClientName: "Test Client",
+			},
+			expectedError: true,
+		},
+		{
+			name: "invalid request - scope with spaces",
+			request: &DynamicClientRegistrationRequest{
+				ClientName:   "Test Client",
+				RedirectURIs: []string{"http://localhost:8080/callback"},
+				Scopes:       []string{"openid", "profile email", "another"},
+			},
+			expectedError: true,
+		},
+		{
+			name: "invalid request - scope with leading space",
+			request: &DynamicClientRegistrationRequest{
+				ClientName:   "Test Client",
+				RedirectURIs: []string{"http://localhost:8080/callback"},
+				Scopes:       []string{" openid"},
+			},
+			expectedError: true,
+		},
+		{
+			name: "invalid request - scope with trailing space",
+			request: &DynamicClientRegistrationRequest{
+				ClientName:   "Test Client",
+				RedirectURIs: []string{"http://localhost:8080/callback"},
+				Scopes:       []string{"openid "},
 			},
 			expectedError: true,
 		},
@@ -364,3 +465,150 @@ func TestDynamicClientRegistrationResponse_Validation(t *testing.T) {
 }
 
 // TestIsLocalhost is already defined in oidc_test.go
+
+// TestScopeList_MarshalJSON tests that the ScopeList marshaling works correctly
+// and produces RFC 7591 compliant space-delimited strings.
+func TestScopeList_MarshalJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		scopes   ScopeList
+		wantJSON string
+		wantOmit bool // If true, expect omitempty to hide the field
+	}{
+		{
+			name:     "nil scopes => empty string (omitempty will hide at struct level)",
+			scopes:   nil,
+			wantJSON: `""`,
+			wantOmit: true,
+		},
+		{
+			name:     "empty slice => empty string (omitempty will hide at struct level)",
+			scopes:   ScopeList{},
+			wantJSON: `""`,
+			wantOmit: true,
+		},
+		{
+			name:     "single scope => string",
+			scopes:   ScopeList{"openid"},
+			wantJSON: `"openid"`,
+		},
+		{
+			name:     "two scopes => space-delimited string",
+			scopes:   ScopeList{"openid", "profile"},
+			wantJSON: `"openid profile"`,
+		},
+		{
+			name:     "three scopes => space-delimited string",
+			scopes:   ScopeList{"openid", "profile", "email"},
+			wantJSON: `"openid profile email"`,
+		},
+		{
+			name:     "scopes with special characters",
+			scopes:   ScopeList{"read:user", "write:repo"},
+			wantJSON: `"read:user write:repo"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			jsonBytes, err := json.Marshal(tt.scopes)
+			require.NoError(t, err, "marshaling should succeed")
+
+			jsonStr := string(jsonBytes)
+			assert.Equal(t, tt.wantJSON, jsonStr, "marshaled JSON should match expected format")
+
+			// Verify omitempty behavior in a struct
+			// Note: omitempty checks the Go value (empty slice) before calling MarshalJSON,
+			// so empty slices are omitted regardless of what MarshalJSON returns.
+			if tt.wantOmit {
+				type testStruct struct {
+					Scope ScopeList `json:"scope,omitempty"`
+				}
+				s := testStruct{Scope: tt.scopes}
+				structJSON, err := json.Marshal(s)
+				require.NoError(t, err)
+				assert.Equal(t, "{}", string(structJSON), "omitempty should hide empty scope field")
+			}
+		})
+	}
+}
+
+// TestScopeList_UnmarshalJSON tests that the ScopeList unmarshaling works correctly.
+func TestScopeList_UnmarshalJSON(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		jsonIn  string
+		want    []string
+		wantErr bool
+	}{
+		{
+			name:   "space-delimited string",
+			jsonIn: `"openid profile email"`,
+			want:   []string{"openid", "profile", "email"},
+		},
+		{
+			name:   "empty string => nil",
+			jsonIn: `""`,
+			want:   nil,
+		},
+		{
+			name:   "string with extra spaces",
+			jsonIn: `"  openid   profile  "`,
+			want:   []string{"openid", "profile"},
+		},
+		{
+			name:   "normal array",
+			jsonIn: `["openid","profile","email"]`,
+			want:   []string{"openid", "profile", "email"},
+		},
+		{
+			name:   "array with whitespace and empties",
+			jsonIn: `["  openid  ",""," profile "]`,
+			want:   []string{"openid", "profile"},
+		},
+		{
+			name:   "all-empty array => nil",
+			jsonIn: `["","  "]`,
+			want:   nil,
+		},
+		{
+			name:   "explicit null => nil",
+			jsonIn: `null`,
+			want:   nil,
+		},
+		{
+			name:    "invalid type (number)",
+			jsonIn:  `123`,
+			wantErr: true,
+		},
+		{
+			name:    "invalid type (object)",
+			jsonIn:  `{"not":"valid"}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt // capture loop variable
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var s ScopeList
+			err := json.Unmarshal([]byte(tt.jsonIn), &s)
+
+			if tt.wantErr {
+				assert.Error(t, err, "expected error but got none")
+				return
+			}
+
+			assert.NoError(t, err, "unexpected unmarshal error")
+			assert.Equal(t, tt.want, []string(s))
+		})
+	}
+}

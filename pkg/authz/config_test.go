@@ -2,7 +2,6 @@ package authz
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -250,7 +249,8 @@ func TestCreateMiddleware(t *testing.T) {
 		"sub":  "user123",
 		"name": "John Doe",
 	}
-	ctx := context.WithValue(req.Context(), auth.ClaimsContextKey{}, claims)
+	identity := &auth.Identity{Subject: "user123", Claims: claims}
+	ctx := auth.WithIdentity(req.Context(), identity)
 	req = req.WithContext(ctx)
 
 	// Create a response recorder

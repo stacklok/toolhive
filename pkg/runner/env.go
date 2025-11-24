@@ -10,7 +10,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -114,13 +114,22 @@ func (v *CLIEnvVarValidator) Validate(
 			if envVar.Required {
 
 				if envVar.Secret {
-					value, err := secretsManager.GetSecret(ctx, envVar.Name)
-					if err != nil {
-						logger.Warnf("Unable to find secret %s in the secrets manager: %v", envVar.Name, err)
+					// Check if secrets manager is available before attempting to retrieve secret.
+					// Falls back to prompt if unavailable or secret not found.
+					if secretsManager != nil {
+						value, err := secretsManager.GetSecret(ctx, envVar.Name)
+						if err != nil {
+							logger.Warnf("Unable to find secret %s in the secrets manager: %v", envVar.Name, err)
+						} else {
+							addNewVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList)
+							continue
+						}
 					} else {
-						addNewVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList)
-						continue
+						logger.Warnf("Secrets manager not configured (setup incomplete or missing provider) - " +
+							"falling back to prompt")
 					}
+
+					// If secrets manager unavailable or secret not found, fall through to prompt
 				}
 
 				value, err := promptForEnvironmentVariable(envVar)

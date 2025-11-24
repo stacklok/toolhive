@@ -2,6 +2,50 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Available Subagents
+
+ToolHive uses specialized AI subagents for different aspects of development. These agents are configured in `.claude/agents/` and MUST be invoked when you need to perform tasks that come under their expertise:
+
+### Core Development Agents
+
+- **toolhive-expert**: Deep expert on ToolHive architecture, codebase structure, design patterns, and implementation guidance. Use for general ToolHive questions, architecture decisions, and navigating the codebase.
+
+- **golang-code-writer**: Expert Go developer for writing clean, idiomatic Go code. Use when creating new functions, structs, interfaces, or complete packages.
+
+- **unit-test-writer**: Specialized in writing comprehensive unit tests for Go code. Use when you need thorough test coverage for functions, methods, or components.
+
+- **code-reviewer**: Reviews code for ToolHive best practices, security patterns, Go conventions, and architectural consistency. Use after significant code changes.
+
+- **tech-lead-orchestrator**: Provides architectural oversight, task delegation, and technical leadership for code development projects. Use for complex features or architectural decisions.
+
+### Specialized Domain Agents
+
+- **kubernetes-expert**: Specialized in Kubernetes operator patterns, CRDs, controllers, and cloud-native architecture for ToolHive. Use for operator-specific questions or K8s resources.
+
+- **mcp-protocol-expert**: Specialized in MCP (Model Context Protocol) specification, transport implementations, and protocol compliance. Use when working with MCP transports or protocol details.
+
+- **oauth-expert**: Specialized in OAuth 2.0, OIDC, token exchange, and authentication flows for ToolHive. Use for auth/authz implementation.
+
+- **site-reliability-engineer**: Expert on observability and monitoring (logging, metrics, tracing) including OpenTelemetry instrumentation. Use for telemetry and monitoring setup.
+
+### Support Agents
+
+- **documentation-writer**: Maintains consistent documentation, updates CLI docs, and ensures documentation matches code behavior. Use when updating docs.
+
+- **security-advisor**: Provides security guidance for coding tasks, including code reviews, architecture decisions, and secure implementation patterns.
+
+### When to Use Subagents
+
+Invoke specialized agents when:
+- You need expertise in their specific domain (e.g., Kubernetes, OAuth, MCP protocol)
+- Writing new code (use golang-code-writer)
+- Creating tests (use unit-test-writer)
+- Orchestrating the different tasks to other subagents that are required for completing work asked by the user (use tech-lead-orchestrator)
+- Reviewing code that is written (use code-reviewer)
+- Working with observability/monitoring (use site-reliability-engineer)
+
+The agents work together - for example, tech-lead-orchestrator might delegate to golang-code-writer for implementation and then to code-reviewer for validation.
+
 ## Project Overview
 
 ToolHive is a lightweight, secure manager for MCP (Model Context Protocol: https://modelcontextprotocol.io) servers written in Go. It provides three main components:
@@ -87,6 +131,23 @@ The test framework uses Ginkgo and Gomega for BDD-style testing.
    - `runner/`: MCP server execution logic
    - `transport/`: Communication protocols (HTTP, SSE, stdio, streamable)
    - `workloads/`: Workload lifecycle management
+
+4. **Virtual MCP Server (`cmd/vmcp/`)**
+   - Core packages in `pkg/vmcp/`:
+     - `aggregator/`: Backend discovery (CLI/K8s), capability querying, conflict resolution (prefix/priority/manual)
+     - `router/`: Routes MCP requests (tools/resources/prompts) to backends
+     - `auth/`: Two-boundary auth model (incoming: clients→vMCP; outgoing: vMCP→backends)
+     - `composer/`: Multi-step workflow execution with DAG-based parallel/sequential support
+     - `config/`: Platform-agnostic config model (works for CLI YAML and K8s CRDs)
+     - `server/`: HTTP server implementation with session management and auth middleware
+     - `client/`: Backend MCP client using mark3labs/mcp-go SDK
+     - `cache/`: Token caching with pluggable backends
+   - K8s CRDs in `cmd/thv-operator/api/v1alpha1/`:
+     - `VirtualMCPServer`: Main vMCP server resource (GroupRef, auth configs, aggregation, composite tools)
+     - `VirtualMCPCompositeToolDefinition`: Reusable composite tool workflows
+     - `MCPGroup`: Defines backend workload collections
+     - `MCPServer`, `MCPRegistry`, `MCPRemoteProxy`: Backend workload types
+     - `MCPExternalAuthConfig`, `ToolConfig`: Supporting config resources
 
 ### Key Design Patterns
 
@@ -200,6 +261,39 @@ Follow conventional commit format:
 - Capitalize subject line
 - Do not end subject line with period
 - Use body to explain what and why vs. how
+
+## Architecture Documentation
+
+ToolHive maintains comprehensive architecture documentation in `docs/arch/`. When making changes that affect architecture, you MUST update the relevant documentation to keep it in sync with the code.
+
+### When to Update Documentation
+
+Update architecture docs when you:
+- Add or modify core components (workloads, transports, middleware, permissions, registry, groups)
+- Change system design patterns, abstractions, or interfaces
+- Modify the RunConfig schema or permission profiles
+- Update the Kubernetes operator or CRDs
+- Add new architectural concepts or change how components interact
+
+### Which Documentation to Update
+
+| Code Changes | Documentation Files |
+|--------------|---------------------|
+| Core packages (`pkg/workloads/`, `pkg/transport/`, `pkg/permissions/`, `pkg/registry/`, `pkg/groups/`) | `docs/arch/02-core-concepts.md` + topic-specific doc (e.g., `08-workloads-lifecycle.md`, `06-registry-system.md`) |
+| RunConfig schema (`pkg/runner/config.go`) | `docs/arch/05-runconfig-and-permissions.md` |
+| Middleware (`pkg/*/middleware.go`) | `docs/middleware.md` and `docs/arch/02-core-concepts.md` |
+| Operator or CRDs (`cmd/thv-operator/`, `api/`) | `docs/arch/09-operator-architecture.md` |
+| Major architectural changes | `docs/arch/00-overview.md` and `docs/arch/02-core-concepts.md` |
+
+### Documentation Guidelines
+
+- Include code references using `file_path` format (without line numbers since they change frequently)
+- Update Mermaid diagrams when component interactions change
+- Keep terminology consistent with definitions in `docs/arch/02-core-concepts.md`
+- Cross-reference related documentation
+- Explain design decisions and the "why" behind changes
+
+For the complete documentation structure and navigation, see `docs/arch/README.md`.
 
 ## Development Best Practices
 

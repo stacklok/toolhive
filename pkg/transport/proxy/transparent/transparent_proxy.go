@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/transport/session"
@@ -37,19 +38,21 @@ import (
 //nolint:revive // Intentionally named TransparentProxy despite package name
 type TransparentProxy struct {
 	// Basic configuration
-	host          string
-	port          int
-	containerName string
-	targetURI     string
+	host      string
+	port      int
+	targetURI string
 
 	// HTTP server
 	server *http.Server
 
 	// Middleware chain
-	middlewares []types.MiddlewareFunction
+	middlewares []types.NamedMiddleware
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
+
+	// Track if Stop() has been called
+	stopped bool
 
 	// Shutdown channel
 	shutdownCh chan struct{}
@@ -83,19 +86,17 @@ type TransparentProxy struct {
 func NewTransparentProxy(
 	host string,
 	port int,
-	containerName string,
 	targetURI string,
 	prometheusHandler http.Handler,
 	authInfoHandler http.Handler,
 	enableHealthCheck bool,
 	isRemote bool,
 	transportType string,
-	middlewares ...types.MiddlewareFunction,
+	middlewares ...types.NamedMiddleware,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
 		host:              host,
 		port:              port,
-		containerName:     containerName,
 		targetURI:         targetURI,
 		middlewares:       middlewares,
 		shutdownCh:        make(chan struct{}),
@@ -106,11 +107,14 @@ func NewTransparentProxy(
 		transportType:     transportType,
 	}
 
-	// Create MCP pinger and health checker only if enabled
+	// Create health checker always for Kubernetes probes
+	// For remote proxies, pass nil pinger since we can't ping authenticated servers
+	// For local proxies, create pinger to check MCP server status
+	var mcpPinger healthcheck.MCPPinger
 	if enableHealthCheck {
-		mcpPinger := NewMCPPinger(targetURI)
-		proxy.healthChecker = healthcheck.NewHealthChecker("sse", mcpPinger)
+		mcpPinger = NewMCPPinger(targetURI)
 	}
+	proxy.healthChecker = healthcheck.NewHealthChecker(transportType, mcpPinger)
 
 	return proxy
 }
@@ -125,7 +129,7 @@ func (p *TransparentProxy) setServerInitialized() {
 		p.mutex.Lock()
 		p.IsServerInitialized = true
 		p.mutex.Unlock()
-		logger.Infof("Server was initialized successfully for %s", p.containerName)
+		logger.Infof("Server was initialized successfully for %s", p.targetURI)
 	}
 }
 
@@ -216,7 +220,7 @@ func (t *tracingTransport) detectInitialize(body []byte) bool {
 		return false
 	}
 	if rpc.Method == "initialize" {
-		logger.Infof("Detected initialize method call for %s", t.p.containerName)
+		logger.Infof("Detected initialize method call for %s", t.p.targetURI)
 		return true
 	}
 	return false
@@ -327,9 +331,8 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// Apply middleware chain in reverse order (last middleware is applied first)
 	var finalHandler http.Handler = handler
 	for i := len(p.middlewares) - 1; i >= 0; i-- {
-		finalHandler = p.middlewares[i](finalHandler)
-		// TODO: we should really log the middleware name here
-		logger.Infof("Applied middleware %d", i+1)
+		finalHandler = p.middlewares[i].Function(finalHandler)
+		logger.Infof("Applied middleware: %s", p.middlewares[i].Name)
 	}
 
 	// Add the proxy handler for all paths except /health
@@ -352,26 +355,19 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		mux.Handle("/metrics", p.prometheusHandler)
 		logger.Info("Prometheus metrics endpoint enabled at /metrics")
 	}
+
+	// Add .well-known discovery endpoints if auth info handler is provided (no middlewares, RFC 9728 compliant)
+	// Handles /.well-known/oauth-protected-resource and subpaths (e.g., /mcp)
+	if wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler); wellKnownHandler != nil {
+		mux.Handle("/.well-known/", wellKnownHandler)
+		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/ (no middlewares)")
+	}
+
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", p.host, p.port))
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 	p.listener = ln
-
-	// Add .well-known path space handler if auth info handler is provided (no middlewares)
-	if p.authInfoHandler != nil {
-		// Create a handler that routes .well-known requests
-		wellKnownHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/.well-known/oauth-protected-resource":
-				p.authInfoHandler.ServeHTTP(w, r)
-			default:
-				http.NotFound(w, r)
-			}
-		})
-		mux.Handle("/.well-known/", wellKnownHandler)
-		logger.Info("Well-known discovery endpoints enabled at /.well-known/ (no middlewares)")
-	}
 
 	// Create the server
 	p.server = &http.Server{
@@ -380,8 +376,10 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
 	}
 
+	// Capture server in local variable to avoid race with Stop()
+	server := p.server
 	go func() {
-		err := p.server.Serve(ln)
+		err := server.Serve(ln)
 		if err != nil && err != http.ErrServerClosed {
 			var opErr *net.OpError
 			if errors.As(err, &opErr) && opErr.Op == "accept" {
@@ -414,24 +412,24 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 	for {
 		select {
 		case <-parentCtx.Done():
-			logger.Infof("Context cancelled, stopping health monitor for %s", p.containerName)
+			logger.Infof("Context cancelled, stopping health monitor for %s", p.targetURI)
 			return
 		case <-p.shutdownCh:
-			logger.Infof("Shutdown initiated, stopping health monitor for %s", p.containerName)
+			logger.Infof("Shutdown initiated, stopping health monitor for %s", p.targetURI)
 			return
 		case <-ticker.C:
 			// Perform health check only if mcp server has been initialized
 			if p.IsServerInitialized {
 				alive := p.healthChecker.CheckHealth(parentCtx)
 				if alive.Status != healthcheck.StatusHealthy {
-					logger.Infof("Health check failed for %s; initiating proxy shutdown", p.containerName)
+					logger.Infof("Health check failed for %s; initiating proxy shutdown", p.targetURI)
 					if err := p.Stop(parentCtx); err != nil {
-						logger.Errorf("Failed to stop proxy for %s: %v", p.containerName, err)
+						logger.Errorf("Failed to stop proxy for %s: %v", p.targetURI, err)
 					}
 					return
 				}
 			} else {
-				logger.Infof("MCP server not initialized yet, skipping health check for %s", p.containerName)
+				logger.Infof("MCP server not initialized yet, skipping health check for %s", p.targetURI)
 			}
 		}
 	}
@@ -441,6 +439,15 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 func (p *TransparentProxy) Stop(ctx context.Context) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
+
+	// Check if already stopped
+	if p.stopped {
+		logger.Debugf("Proxy for %s is already stopped, skipping", p.targetURI)
+		return nil
+	}
+
+	// Mark as stopped before closing channel
+	p.stopped = true
 
 	// Signal shutdown
 	close(p.shutdownCh)
@@ -452,7 +459,7 @@ func (p *TransparentProxy) Stop(ctx context.Context) error {
 			logger.Warnf("Error during proxy shutdown: %v", err)
 			return err
 		}
-		logger.Infof("Server for %s stopped successfully", p.containerName)
+		logger.Infof("Server for %s stopped successfully", p.targetURI)
 		p.server = nil
 	}
 

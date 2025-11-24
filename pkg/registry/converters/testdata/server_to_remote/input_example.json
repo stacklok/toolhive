@@ -1,0 +1,54 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+  "name": "io.github.stacklok/example-remote",
+  "description": "Example remote MCP server accessed via SSE",
+  "repository": {
+    "url": "https://github.com/example/remote-mcp-server",
+    "source": "github"
+  },
+  "version": "1.0.0",
+  "remotes": [
+    {
+      "type": "sse",
+      "url": "https://api.example.com/mcp",
+      "headers": [
+        {
+          "description": "Bearer token for API authentication",
+          "isRequired": true,
+          "isSecret": true,
+          "name": "Authorization"
+        },
+        {
+          "description": "API version to use",
+          "name": "X-API-Version"
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "io.github.stacklok": {
+        "https://api.example.com/mcp": {
+          "metadata": {
+            "last_updated": "2025-10-20T10:00:00Z",
+            "pulls": 500,
+            "stars": 150
+          },
+          "status": "active",
+          "tags": [
+            "remote",
+            "sse",
+            "api"
+          ],
+          "tier": "Community",
+          "tools": [
+            "get_data",
+            "send_notification",
+            "query_api"
+          ],
+          "transport": "sse"
+        }
+      }
+    }
+  }
+}

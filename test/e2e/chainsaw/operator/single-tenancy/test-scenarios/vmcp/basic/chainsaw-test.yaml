@@ -1,0 +1,45 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: vmcp-crd
+spec:
+  description: Test VirtualMCPServer CRD creation
+  steps:
+  - name: create-mcpgroup
+    try:
+    - apply:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: MCPGroup
+          metadata:
+            name: test-group
+          spec:
+            description: "Test group for VirtualMCPServer"
+
+  - name: create-virtualmcpserver
+    try:
+    - apply:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: VirtualMCPServer
+          metadata:
+            name: test-vmcp
+          spec:
+            groupRef:
+              name: test-group
+            incomingAuth:
+              oidcConfig:
+                type: inline
+                inline:
+                  issuer: https://auth.example.com
+                  audience: virtual-mcp
+            outgoingAuth:
+              source: discovered
+            aggregation:
+              conflictResolution: prefix
+    - assert:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1alpha1
+          kind: VirtualMCPServer
+          metadata:
+            name: test-vmcp

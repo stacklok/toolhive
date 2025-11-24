@@ -146,8 +146,9 @@ spec:
   displayName: "Production-Ready MCP Servers"
   source:
     type: configmap
-    configmap:
+    configMapRef:
       name: minimal-registry-data
+      key: registry.json
   filter:
     tags:
       include:

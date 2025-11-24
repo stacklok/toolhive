@@ -61,6 +61,11 @@ components:
         clientSecret:
           description: ClientSecret is the optional OIDC client secret for introspection
           type: string
+        insecureAllowHTTP:
+          description: |-
+            InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+            WARNING: This is insecure and should NEVER be used in production
+          type: boolean
         introspectionURL:
           description: IntrospectionURL is the optional introspection endpoint for
             validating tokens
@@ -125,6 +130,11 @@ components:
       - AmpWindsurf
       - LMStudio
       - Goose
+      - Trae
+      - Continue
+      - OpenCode
+      - Kiro
+      - Antigravity
     client.MCPClientStatus:
       properties:
         client_type:
@@ -146,6 +156,11 @@ components:
           - AmpWindsurf
           - LMStudio
           - Goose
+          - Trae
+          - Continue
+          - OpenCode
+          - Kiro
+          - Antigravity
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -195,7 +210,10 @@ components:
             This is embedded in the URL.
           type: integer
         proxy_mode:
-          description: ProxyMode is the proxy mode for stdio transport (sse or streamable-http).
+          description: |-
+            ProxyMode is the proxy mode that clients should use to connect.
+            For stdio transports, this will be the proxy mode (sse or streamable-http).
+            For direct transports (sse/streamable-http), this will be the same as TransportType.
           type: string
         remote:
           description: Remote indicates whether this is a remote workload (true) or
@@ -245,9 +263,26 @@ components:
           description: Whether to print resolved overlay paths for debugging
           type: boolean
       type: object
+    permissions.InboundNetworkPermissions:
+      description: Inbound defines inbound network permissions
+      properties:
+        allow_host:
+          description: AllowHost is a list of allowed hosts for inbound connections
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
     permissions.NetworkPermissions:
       description: Network defines network permissions
       properties:
+        inbound:
+          $ref: '#/components/schemas/permissions.InboundNetworkPermissions'
+        mode:
+          description: |-
+            Mode specifies the network mode for the container (e.g., "host", "bridge", "none")
+            When empty, the default container runtime network mode is used
+          type: string
         outbound:
           $ref: '#/components/schemas/permissions.OutboundNetworkPermissions'
       type: object
@@ -513,6 +548,9 @@ components:
             OAuthParams contains additional OAuth parameters to include in the authorization request
             These are server-specific parameters like "prompt", "response_mode", etc.
           type: object
+        resource:
+          description: Resource is the OAuth 2.0 resource indicator (RFC 8707)
+          type: string
         scopes:
           description: |-
             Scopes are the OAuth scopes to request
@@ -658,48 +696,56 @@ components:
         predicate_type:
           type: string
       type: object
-    runner.RemoteAuthConfig:
+    remote.Config:
       description: RemoteAuthConfig contains OAuth configuration for remote MCP servers
       properties:
-        authorizeURL:
+        authorize_url:
           type: string
-        callbackPort:
+        callback_port:
           type: integer
-        clientID:
+        client_id:
           type: string
-        clientSecret:
+        client_secret:
           type: string
-        clientSecretFile:
+        client_secret_file:
           type: string
-        envVars:
+        env_vars:
           description: Environment variables for the client
           items:
             $ref: '#/components/schemas/registry.EnvVar'
           type: array
+          uniqueItems: false
         headers:
           description: Headers for HTTP requests
           items:
             $ref: '#/components/schemas/registry.Header'
           type: array
+          uniqueItems: false
         issuer:
           description: OAuth endpoint configuration (from registry)
           type: string
-        oauthParams:
+        oauth_params:
           additionalProperties:
             type: string
           description: OAuth parameters for server-specific customization
           type: object
+        resource:
+          description: Resource is the OAuth 2.0 resource indicator (RFC 8707).
+          type: string
         scopes:
           items:
             type: string
           type: array
-        skipBrowser:
+          uniqueItems: false
+        skip_browser:
           type: boolean
         timeout:
           example: 5m
           type: string
-        tokenURL:
+        token_url:
           type: string
+        use_pkce:
+          type: boolean
       type: object
     runner.RunConfig:
       properties:
@@ -793,7 +839,7 @@ components:
         proxy_mode:
           $ref: '#/components/schemas/types.ProxyMode'
         remote_auth_config:
-          $ref: '#/components/schemas/runner.RemoteAuthConfig'
+          $ref: '#/components/schemas/remote.Config'
         remote_url:
           description: RemoteURL is the URL of the remote MCP server (if running remotely)
           type: string
@@ -822,6 +868,8 @@ components:
           description: ThvCABundle is the path to the CA certificate bundle for ToolHive
             HTTP operations
           type: string
+        token_exchange_config:
+          $ref: '#/components/schemas/tokenexchange.Config'
         tools_filter:
           description: ToolsFilter is the list of tools to filter
           items:
@@ -842,6 +890,10 @@ components:
           - TransportTypeSSE
           - TransportTypeStreamableHTTP
           - TransportTypeInspector
+        trust_proxy_headers:
+          description: TrustProxyHeaders indicates whether to trust X-Forwarded-*
+            headers from reverse proxies
+          type: boolean
         volumes:
           description: |-
             Volumes are the directory mounts to pass to the container
@@ -872,6 +924,7 @@ components:
       - WorkloadStatusUnhealthy
       - WorkloadStatusRemoving
       - WorkloadStatusUnknown
+      - WorkloadStatusUnauthenticated
     secrets.SecretParameter:
       properties:
         name:
@@ -882,6 +935,16 @@ components:
     telemetry.Config:
       description: TelemetryConfig contains the OpenTelemetry configuration
       properties:
+        customAttributes:
+          additionalProperties:
+            type: string
+          description: |-
+            CustomAttributes contains custom resource attributes to be added to all telemetry signals.
+            These are parsed from CLI flags (--otel-custom-attributes) or environment variables
+            (OTEL_RESOURCE_ATTRIBUTES) as key=value pairs.
+            We use map[string]string for proper JSON serialization instead of []attribute.KeyValue
+            which doesn't marshal/unmarshal correctly.
+          type: object
         enablePrometheusMetricsPath:
           description: |-
             EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint
@@ -933,6 +996,44 @@ components:
             When false, no tracer provider is created even if an endpoint is configured
           type: boolean
       type: object
+    tokenexchange.Config:
+      description: TokenExchangeConfig contains token exchange configuration for external
+        authentication
+      properties:
+        audience:
+          description: Audience is the target audience for the exchanged token
+          type: string
+        client_id:
+          description: ClientID is the OAuth 2.0 client identifier
+          type: string
+        client_secret:
+          description: ClientSecret is the OAuth 2.0 client secret
+          type: string
+        external_token_header_name:
+          description: ExternalTokenHeaderName is the name of the custom header to
+            use when HeaderStrategy is "custom"
+          type: string
+        header_strategy:
+          description: |-
+            HeaderStrategy determines how to inject the token
+            Valid values: HeaderStrategyReplace (default), HeaderStrategyCustom
+          type: string
+        scopes:
+          description: Scopes is the list of scopes to request for the exchanged token
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        subject_token_type:
+          description: |-
+            SubjectTokenType specifies the type of the subject token being exchanged.
+            Common values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.
+            If empty, defaults to tokenTypeAccessToken.
+          type: string
+        token_url:
+          description: TokenURL is the OAuth 2.0 token endpoint URL
+          type: string
+      type: object
     types.MiddlewareConfig:
       properties:
         parameters:
@@ -964,13 +1065,17 @@ components:
       x-enum-varnames:
       - RegistryTypeFile
       - RegistryTypeURL
+      - RegistryTypeAPI
       - RegistryTypeDefault
     v1.UpdateRegistryRequest:
       description: Request containing registry configuration updates
       properties:
         allow_private_ip:
-          description: Allow private IP addresses for registry URL
+          description: Allow private IP addresses for registry URL or API URL
           type: boolean
+        api_url:
+          description: MCP Registry API URL
+          type: string
         local_path:
           description: Local registry file path
           type: string
@@ -1016,6 +1121,11 @@ components:
             - AmpWindsurf
             - LMStudio
             - Goose
+            - Trae
+            - Continue
+            - OpenCode
+            - Kiro
+            - Antigravity
           type: array
           uniqueItems: false
       type: object
@@ -1066,6 +1176,11 @@ components:
           - AmpWindsurf
           - LMStudio
           - Goose
+          - Trae
+          - Continue
+          - OpenCode
+          - Kiro
+          - Antigravity
       type: object
     v1.createClientResponse:
       properties:
@@ -1094,6 +1209,11 @@ components:
           - AmpWindsurf
           - LMStudio
           - Goose
+          - Trae
+          - Continue
+          - OpenCode
+          - Kiro
+          - Antigravity
       type: object
     v1.createGroupRequest:
       properties:
@@ -1180,6 +1300,9 @@ components:
         transport:
           description: Transport configuration
           type: string
+        trust_proxy_headers:
+          description: Whether to trust X-Forwarded-* headers from reverse proxies
+          type: boolean
         url:
           description: Remote server specific fields
           type: string
@@ -1244,6 +1367,7 @@ components:
           x-enum-varnames:
           - RegistryTypeFile
           - RegistryTypeURL
+          - RegistryTypeAPI
           - RegistryTypeDefault
         version:
           description: Version of the registry schema
@@ -1403,6 +1527,9 @@ components:
             type: string
           description: Additional OAuth parameters for server-specific customization
           type: object
+        resource:
+          description: OAuth 2.0 resource indicator (RFC 8707)
+          type: string
         scopes:
           description: OAuth scopes to request
           items:
@@ -1533,6 +1660,9 @@ components:
         transport:
           description: Transport configuration
           type: string
+        trust_proxy_headers:
+          description: Whether to trust X-Forwarded-* headers from reverse proxies
+          type: boolean
         url:
           description: Remote server specific fields
           type: string
@@ -1590,6 +1720,7 @@ components:
           - WorkloadStatusUnhealthy
           - WorkloadStatusRemoving
           - WorkloadStatusUnknown
+          - WorkloadStatusUnauthenticated
       type: object
 externalDocs:
   description: ""
@@ -2517,6 +2648,12 @@ paths:
               schema:
                 type: string
           description: Logs for the specified workload
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid workload name
         "404":
           content:
             application/json:
@@ -2524,6 +2661,42 @@ paths:
                 type: string
           description: Not Found
       summary: Get logs for a specific workload
+      tags:
+      - logs
+  /api/v1beta/workloads/{name}/proxy-logs:
+    get:
+      description: Retrieve proxy logs for a specific workload by name from the file
+        system.
+      parameters:
+      - description: Workload name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: string
+            text/plain:
+              schema:
+                type: string
+          description: Proxy logs for the specified workload
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Invalid workload name
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Proxy logs not found for workload
+      summary: Get proxy logs for a specific workload
       tags:
       - logs
   /api/v1beta/workloads/{name}/restart:

@@ -9,9 +9,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/permissions"
-	"github.com/stacklok/toolhive/pkg/registry"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
@@ -29,8 +33,8 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 		"network": "invalid-network-format"
 	}`
 
-	imageMetadata := &registry.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name: "test-image",
 		},
 		Permissions: &permissions.Profile{
@@ -65,7 +69,7 @@ func TestRunConfigBuilder_Build_WithPermissionProfile(t *testing.T) {
 		profileContent            string // The JSON content for the profile file
 		needsTempFile             bool   // Whether this test case needs a temp file
 		expectedPermissionProfile *permissions.Profile
-		imageMetadata             *registry.ImageMetadata
+		imageMetadata             *regtypes.ImageMetadata
 		expectError               bool
 	}{
 		{
@@ -365,6 +369,72 @@ func createTempProfileFile(t *testing.T, content string) (string, func()) {
 	return tempFile.Name(), cleanup
 }
 
+// TestAddCoreMiddlewares_TokenExchangeIntegration verifies token-exchange middleware integration and parameter propagation.
+func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
+	t.Parallel()
+
+	// Prevent nil pointer dereference in the logger.
+	logger.Initialize()
+
+	t.Run("token-exchange NOT added when config is nil", func(t *testing.T) {
+		t.Parallel()
+
+		var mws []types.MiddlewareConfig
+		// OIDC config can be empty for this unit test since we're only testing token-exchange behavior.
+		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, nil, false)
+
+		// Expect only auth + mcp parser when token-exchange config == nil
+		assert.Equal(t, auth.MiddlewareType, mws[0].Type, "first middleware should be auth")
+		assert.Equal(t, mcp.ParserMiddlewareType, mws[1].Type, "second middleware should be MCP parser")
+
+		// Ensure token-exchange type is not present in any middleware slot.
+		for i, mw := range mws {
+			assert.NotEqual(t, tokenexchange.MiddlewareType, mw.Type, "middleware[%d] should not be token-exchange", i)
+		}
+	})
+
+	t.Run("token-exchange IS added, correctly ordered and parameters populated when config provided", func(t *testing.T) {
+		t.Parallel()
+
+		var mws []types.MiddlewareConfig
+		// Provide a realistic config to ensure full parameter serialization and propagation.
+		teCfg := &tokenexchange.Config{
+			TokenURL:     "https://example.com/token",
+			ClientID:     "test-client-id",
+			ClientSecret: "test-client-secret",
+			Audience:     "test-audience",
+			Scopes:       []string{"scope1", "scope2"},
+			// SubjectTokenType: "", // default is access_token if empty
+			HeaderStrategy: tokenexchange.HeaderStrategyReplace, // default behavior
+			// ExternalTokenHeaderName not required for replace strategy
+		}
+
+		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, teCfg, false)
+
+		// Expect auth, token-exchange, then mcp parser — verify correct order and count.
+		assert.Equal(t, auth.MiddlewareType, mws[0].Type, "first middleware should be auth")
+		assert.Equal(t, tokenexchange.MiddlewareType, mws[1].Type, "second middleware should be token-exchange")
+		assert.Equal(t, mcp.ParserMiddlewareType, mws[2].Type, "third middleware should be MCP parser")
+
+		// Verify the token-exchange middleware parameters are serialized and populated.
+		require.NotNil(t, mws[1].Parameters, "token-exchange middleware Parameters should not be nil")
+		require.NotZero(t, len(mws[1].Parameters), "token-exchange middleware Parameters should not be empty")
+
+		// Deserialize middleware parameters and validate field propagation.
+		var mwParams tokenexchange.MiddlewareParams
+		err := json.Unmarshal(mws[1].Parameters, &mwParams)
+		require.NoError(t, err, "unmarshal of middleware Parameters should not fail")
+
+		require.NotNil(t, mwParams.TokenExchangeConfig, "TokenExchangeConfig in middleware params should not be nil")
+		assert.Equal(t, teCfg.TokenURL, mwParams.TokenExchangeConfig.TokenURL, "TokenURL should propagate into middleware params")
+		assert.Equal(t, teCfg.ClientID, mwParams.TokenExchangeConfig.ClientID, "ClientID should propagate into middleware params")
+		assert.Equal(t, teCfg.ClientSecret, mwParams.TokenExchangeConfig.ClientSecret, "ClientSecret should propagate into middleware params")
+		assert.Equal(t, teCfg.Audience, mwParams.TokenExchangeConfig.Audience, "Audience should propagate into middleware params")
+		assert.Equal(t, teCfg.Scopes, mwParams.TokenExchangeConfig.Scopes, "Scopes should propagate into middleware params")
+		assert.Equal(t, teCfg.HeaderStrategy, mwParams.TokenExchangeConfig.HeaderStrategy, "HeaderStrategy should propagate into middleware params")
+	})
+}
+
 func TestRunConfigBuilder_WithToolOverride(t *testing.T) {
 	t.Parallel()
 
@@ -485,8 +555,8 @@ func TestRunConfigBuilder_ToolOverrideMutualExclusivity(t *testing.T) {
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 
-	imageMetadata := &registry.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:  "test-image",
 			Tools: []string{"tool1", "tool2", "tool3"},
 		},
@@ -564,8 +634,8 @@ func TestRunConfigBuilder_ToolOverrideWithToolsFilter(t *testing.T) {
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
 
-	imageMetadata := &registry.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:  "test-image",
 			Tools: []string{"tool1", "tool2", "tool3"},
 		},
@@ -628,8 +698,8 @@ func TestNewOperatorRunConfigBuilder(t *testing.T) {
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
-	imageMetadata := &registry.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:  "test-image",
 			Tools: []string{"tool1", "tool2", "tool3"},
 		},
@@ -697,8 +767,8 @@ func TestWithEnvVars(t *testing.T) {
 
 			// Create a mock environment variable validator
 			mockValidator := &mockEnvVarValidator{}
-			imageMetadata := &registry.ImageMetadata{
-				BaseServerMetadata: registry.BaseServerMetadata{
+			imageMetadata := &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Name:  "test-image",
 					Tools: []string{"tool1", "tool2", "tool3"},
 				},
@@ -725,8 +795,8 @@ func TestWithEnvVarsOverwrite(t *testing.T) {
 
 	// Create a mock environment variable validator
 	mockValidator := &mockEnvVarValidator{}
-	imageMetadata := &registry.ImageMetadata{
-		BaseServerMetadata: registry.BaseServerMetadata{
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{
 			Name:  "test-image",
 			Tools: []string{"tool1", "tool2", "tool3"},
 		},
@@ -810,8 +880,8 @@ func TestBuildForOperator(t *testing.T) {
 
 			// Create a mock environment variable validator
 			mockValidator := &mockEnvVarValidator{}
-			imageMetadata := &registry.ImageMetadata{
-				BaseServerMetadata: registry.BaseServerMetadata{
+			imageMetadata := &regtypes.ImageMetadata{
+				BaseServerMetadata: regtypes.BaseServerMetadata{
 					Name:  "test-image",
 					Tools: []string{"tool1", "tool2", "tool3"},
 				},
@@ -919,4 +989,49 @@ func TestRunConfigSerialization_WithEnvFileDir(t *testing.T) {
 	assert.Equal(t, "/vault/secrets", deserializedConfig.EnvFileDir, "EnvFileDir should be correctly deserialized")
 	assert.Equal(t, config.Name, deserializedConfig.Name, "Name should be correctly deserialized")
 	assert.Equal(t, config.Image, deserializedConfig.Image, "Image should be correctly deserialized")
+}
+
+func TestRunConfigBuilder_WithIndividualTransportOptions(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+	mockValidator := &mockEnvVarValidator{}
+
+	tests := []struct {
+		name               string
+		opts               []RunConfigBuilderOption
+		expectedTransport  string
+		checkPort          bool
+		expectedPort       int
+		checkTargetPort    bool
+		expectedTargetPort int
+	}{}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			envVars := make(map[string]string)
+
+			opts := append([]RunConfigBuilderOption{
+				WithImage("test-image"),
+				WithName("test-name"),
+			}, tt.opts...)
+
+			config, err := NewRunConfigBuilder(ctx, nil, envVars, mockValidator, opts...)
+			require.NoError(t, err, "Creating RunConfig should not fail")
+			require.NotNil(t, config, "RunConfig should not be nil")
+
+			assert.Equal(t, tt.expectedTransport, string(config.Transport), "Transport should match expected value")
+
+			if tt.checkPort {
+				assert.Equal(t, tt.expectedPort, config.Port, "Port should match expected value")
+			}
+
+			if tt.checkTargetPort {
+				assert.Equal(t, tt.expectedTargetPort, config.TargetPort, "TargetPort should match expected value")
+			}
+		})
+	}
 }

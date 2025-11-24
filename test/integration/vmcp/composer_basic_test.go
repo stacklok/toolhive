@@ -18,6 +18,7 @@ type composerTestCase struct {
 	workflow    *composer.WorkflowDefinition
 	params      map[string]any
 	wantStrings []string // Strings that must appear in output
+	wantError   bool     // Expect workflow to return an error
 }
 
 // runComposerTest executes a single composer test case.
@@ -42,6 +43,17 @@ func runComposerTest(t *testing.T, tc composerTestCase) {
 	defer client.Close()
 
 	result := client.CallTool(ctx, tc.workflow.Name, tc.params)
+
+	// Handle error vs success expectations
+	if tc.wantError {
+		text := helpers.AssertToolCallError(t, result)
+		if len(tc.wantStrings) > 0 {
+			helpers.AssertTextContains(t, text, tc.wantStrings...)
+		}
+		t.Logf("Test %q completed with expected error: %s", tc.name, text)
+		return
+	}
+
 	text := helpers.AssertToolCallSuccess(t, result)
 
 	// Verify expected strings
@@ -208,6 +220,90 @@ func TestVMCPComposer(t *testing.T) {
 			},
 			params:      map[string]any{"name": "testuser", "count": "42"},
 			wantStrings: []string{"name=testuser", "count=42"},
+		},
+		// Error handling tests
+		{
+			name: "SingleStepToolError",
+			tools: []helpers.BackendTool{
+				helpers.NewErrorBackendTool("failing_tool", "Always fails", "TOOL_ERROR: operation failed"),
+			},
+			workflow: &composer.WorkflowDefinition{
+				Name:        "single_error",
+				Description: "Single step that errors",
+				Parameters:  map[string]any{},
+				FailureMode: "abort",
+				Steps: []composer.WorkflowStep{
+					{ID: "fail", Type: composer.StepTypeTool, Tool: "test_failing_tool", Arguments: map[string]any{}},
+				},
+			},
+			params:      map[string]any{},
+			wantError:   true,
+			wantStrings: []string{"TOOL_ERROR"},
+		},
+		{
+			name: "AbortMode_StopsOnFirstError",
+			tools: []helpers.BackendTool{
+				helpers.NewErrorBackendTool("error_step", "Fails", "STEP_FAILED"),
+				helpers.NewBackendTool("success_step", "Succeeds", func(_ context.Context, _ map[string]any) string { return "SUCCESS" }),
+			},
+			workflow: &composer.WorkflowDefinition{
+				Name:        "abort_test",
+				Description: "Abort on first error",
+				Parameters:  map[string]any{},
+				FailureMode: "abort",
+				Steps: []composer.WorkflowStep{
+					{ID: "error", Type: composer.StepTypeTool, Tool: "test_error_step", Arguments: map[string]any{}},
+					{ID: "success", Type: composer.StepTypeTool, Tool: "test_success_step", Arguments: map[string]any{}, DependsOn: []string{"error"}},
+				},
+			},
+			params:      map[string]any{},
+			wantError:   true,
+			wantStrings: []string{"STEP_FAILED"},
+		},
+		{
+			name: "ContinueMode_PartialSuccess",
+			tools: []helpers.BackendTool{
+				helpers.NewErrorBackendTool("fail_a", "Fails A", "ERROR_A"),
+				helpers.NewBackendTool("ok_b", "OK B", func(_ context.Context, _ map[string]any) string { return "SUCCESS_B" }),
+			},
+			workflow: &composer.WorkflowDefinition{
+				Name:        "continue_test",
+				Description: "Continue despite errors",
+				Parameters:  map[string]any{},
+				FailureMode: "continue",
+				Steps: []composer.WorkflowStep{
+					// Independent parallel steps
+					{ID: "a", Type: composer.StepTypeTool, Tool: "test_fail_a", Arguments: map[string]any{}},
+					{ID: "b", Type: composer.StepTypeTool, Tool: "test_ok_b", Arguments: map[string]any{}},
+				},
+			},
+			params: map[string]any{},
+			// Continue mode returns success with partial results
+			wantError:   false,
+			wantStrings: []string{"SUCCESS_B"},
+		},
+		{
+			name: "MultipleParallelErrors",
+			tools: []helpers.BackendTool{
+				helpers.NewErrorBackendTool("fail_1", "Fails 1", "ERROR_1"),
+				helpers.NewErrorBackendTool("fail_2", "Fails 2", "ERROR_2"),
+				helpers.NewErrorBackendTool("fail_3", "Fails 3", "ERROR_3"),
+			},
+			workflow: &composer.WorkflowDefinition{
+				Name:        "multi_error",
+				Description: "Multiple parallel failures",
+				Parameters:  map[string]any{},
+				FailureMode: "abort",
+				Steps: []composer.WorkflowStep{
+					{ID: "f1", Type: composer.StepTypeTool, Tool: "test_fail_1", Arguments: map[string]any{}},
+					{ID: "f2", Type: composer.StepTypeTool, Tool: "test_fail_2", Arguments: map[string]any{}},
+					{ID: "f3", Type: composer.StepTypeTool, Tool: "test_fail_3", Arguments: map[string]any{}},
+				},
+			},
+			params:    map[string]any{},
+			wantError: true,
+			// At least one error message should appear
+			wantStrings: []string{"ERROR"},
 		},
 	}
 

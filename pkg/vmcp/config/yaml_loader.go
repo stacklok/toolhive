@@ -163,6 +163,7 @@ type rawCompositeTool struct {
 	Parameters  map[string]map[string]any `yaml:"parameters"`
 	Timeout     string                    `yaml:"timeout"`
 	Steps       []*rawWorkflowStep        `yaml:"steps"`
+	Output      *rawOutputConfig          `yaml:"output"`
 }
 
 type rawWorkflowStep struct {
@@ -188,6 +189,19 @@ type rawStepErrorHandling struct {
 
 type rawElicitationResponse struct {
 	Action string `yaml:"action"`
+}
+
+type rawOutputConfig struct {
+	Properties map[string]rawOutputProperty `yaml:"properties"`
+	Required   []string                     `yaml:"required"`
+}
+
+type rawOutputProperty struct {
+	Type        string                       `yaml:"type"`
+	Description string                       `yaml:"description"`
+	Value       string                       `yaml:"value"`
+	Properties  map[string]rawOutputProperty `yaml:"properties"`
+	Default     any                          `yaml:"default"`
 }
 
 // transformToConfig converts the raw YAML structure to the unified Config model.
@@ -544,6 +558,15 @@ func (l *YAMLLoader) transformCompositeTools(raw []*rawCompositeTool) ([]*Compos
 			tool.Steps = append(tool.Steps, step)
 		}
 
+		// Transform output config
+		if rawTool.Output != nil {
+			outputCfg, err := l.transformOutputConfig(rawTool.Output)
+			if err != nil {
+				return nil, fmt.Errorf("tool %s, output: %w", rawTool.Name, err)
+			}
+			tool.Output = outputCfg
+		}
+
 		tools = append(tools, tool)
 	}
 
@@ -605,4 +628,48 @@ func (*YAMLLoader) transformWorkflowStep(raw *rawWorkflowStep) (*WorkflowStepCon
 	}
 
 	return step, nil
+}
+
+func (*YAMLLoader) transformOutputConfig(raw *rawOutputConfig) (*OutputConfig, error) {
+	if raw == nil {
+		return nil, nil
+	}
+
+	cfg := &OutputConfig{
+		Properties: make(map[string]OutputProperty),
+		Required:   raw.Required,
+	}
+
+	for name, rawProp := range raw.Properties {
+		prop, err := transformOutputProperty(&rawProp)
+		if err != nil {
+			return nil, fmt.Errorf("property %s: %w", name, err)
+		}
+		cfg.Properties[name] = prop
+	}
+
+	return cfg, nil
+}
+
+func transformOutputProperty(raw *rawOutputProperty) (OutputProperty, error) {
+	prop := OutputProperty{
+		Type:        raw.Type,
+		Description: raw.Description,
+		Value:       raw.Value,
+		Default:     raw.Default,
+	}
+
+	// Transform nested properties for object types
+	if len(raw.Properties) > 0 {
+		prop.Properties = make(map[string]OutputProperty)
+		for name, rawNestedProp := range raw.Properties {
+			nestedProp, err := transformOutputProperty(&rawNestedProp)
+			if err != nil {
+				return OutputProperty{}, fmt.Errorf("nested property %s: %w", name, err)
+			}
+			prop.Properties[name] = nestedProp
+		}
+	}
+
+	return prop, nil
 }

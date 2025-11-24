@@ -30,20 +30,11 @@ type MCPRegistrySpec struct {
 	// +optional
 	DisplayName string `json:"displayName,omitempty"`
 
-	// Source defines the configuration for the registry data source
+	// Sources defines the configuration for multiple registry data sources
+	// Each source can have its own sync policy and filters
+	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:Required
-	Source MCPRegistrySource `json:"source"`
-
-	// SyncPolicy defines the automatic synchronization behavior for the registry.
-	// If specified, enables automatic synchronization at the given interval.
-	// Manual synchronization is always supported via annotation-based triggers
-	// regardless of this setting.
-	// +optional
-	SyncPolicy *SyncPolicy `json:"syncPolicy,omitempty"`
-
-	// Filter defines include/exclude patterns for registry content
-	// +optional
-	Filter *RegistryFilter `json:"filter,omitempty"`
+	Sources []MCPRegistrySourceConfig `json:"sources"`
 
 	// EnforceServers indicates whether MCPServers in this namespace must have their images
 	// present in at least one registry in the namespace. When any registry in the namespace
@@ -53,6 +44,31 @@ type MCPRegistrySpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	EnforceServers bool `json:"enforceServers,omitempty"`
+}
+
+// MCPRegistrySourceConfig defines a registry data source with its associated sync policy and filters
+type MCPRegistrySourceConfig struct {
+	// Name is an identifier for this source (used for volume naming, logging and status reporting)
+	// Must be unique within the MCPRegistry
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+	Name string `json:"name"`
+
+	// Source defines the source configuration for registry data
+	MCPRegistrySource `json:",inline"`
+
+	// SyncPolicy defines the automatic synchronization behavior for this source.
+	// If specified, enables automatic synchronization at the given interval.
+	// Manual synchronization is always supported via annotation-based triggers
+	// regardless of this setting.
+	// +optional
+	SyncPolicy *SyncPolicy `json:"syncPolicy,omitempty"`
+
+	// Filter defines include/exclude patterns for registry content from this source
+	// +optional
+	Filter *RegistryFilter `json:"filter,omitempty"`
 }
 
 // MCPRegistrySource defines the source configuration for registry data
@@ -361,7 +377,7 @@ const (
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 //+kubebuilder:resource:scope=Namespaced,categories=toolhive
 //nolint:lll
-//+kubebuilder:validation:XValidation:rule="self.spec.source.type == 'configmap' ? has(self.spec.source.configMapRef) : (self.spec.source.type == 'git' ? has(self.spec.source.git) : (self.spec.source.type == 'api' ? has(self.spec.source.api) : true))",message="configMapRef field is required when source type is 'configmap', git field is required when source type is 'git', api field is required when source type is 'api'"
+//+kubebuilder:validation:XValidation:rule="self.spec.sources.all(s, s.type == 'configmap' ? has(s.configMapRef) : (s.type == 'git' ? has(s.git) : (s.type == 'api' ? has(s.api) : true)))",message="Each source must have the appropriate configuration for its type"
 
 // MCPRegistry is the Schema for the mcpregistries API
 type MCPRegistry struct {
@@ -391,23 +407,20 @@ func (r *MCPRegistry) GetAPIResourceName() string {
 	return fmt.Sprintf("%s-api", r.Name)
 }
 
-// IsConfigMapRegistrySource returns true if the registry source is a configmap
-func (r *MCPRegistry) IsConfigMapRegistrySource() bool {
-	return r.Spec.Source.Type == RegistrySourceTypeConfigMap
+// GetConfigMapSources returns all ConfigMap sources from the registry
+func (r *MCPRegistry) GetConfigMapSources() []MCPRegistrySourceConfig {
+	var configMapSources []MCPRegistrySourceConfig
+	for _, source := range r.Spec.Sources {
+		if source.Type == RegistrySourceTypeConfigMap {
+			configMapSources = append(configMapSources, source)
+		}
+	}
+	return configMapSources
 }
 
-// GetConfigMapSourceName returns the name of the configmap source
-// if its present, otherwise returns an empty string
-func (r *MCPRegistry) GetConfigMapSourceName() string {
-	if !r.IsConfigMapRegistrySource() {
-		return ""
-	}
-
-	if r.Spec.Source.ConfigMapRef == nil {
-		return ""
-	}
-
-	return r.Spec.Source.ConfigMapRef.Name
+// HasConfigMapSources returns true if any of the sources are ConfigMaps
+func (r *MCPRegistry) HasConfigMapSources() bool {
+	return len(r.GetConfigMapSources()) > 0
 }
 
 // DeriveOverallPhase determines the overall MCPRegistry phase based on sync and API status

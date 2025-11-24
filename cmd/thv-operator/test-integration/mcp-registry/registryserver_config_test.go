@@ -182,7 +182,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			},
 			map[string]string{
 				"type":     "file", // ConfigMap sources become file type in the server config
-				"path":     filepath.Join(config.RegistryJSONFilePath, config.RegistryJSONFileName),
+				"path":     filepath.Join(fmt.Sprintf("%s/source-0", config.RegistryJSONFilePath), config.RegistryJSONFileName),
 				"interval": "1h",
 			},
 			func(deployment *appsv1.Deployment, registry *mcpv1alpha1.MCPRegistry) {
@@ -327,32 +327,43 @@ func (*serverConfigTestHelpers) verifyNoSourceDataVolume(deployment *appsv1.Depl
 		fmt.Sprintf("Deployment should NOT have a ConfigMap volume for the source data when using %s source", sourceType))
 }
 
-// verifySourceDataVolume verifies the source data ConfigMap volume for ConfigMap sources
+// verifySourceDataVolume verifies the source data ConfigMap volumes for ConfigMap sources
 func (*serverConfigTestHelpers) verifySourceDataVolume(deployment *appsv1.Deployment, registry *mcpv1alpha1.MCPRegistry) {
-	expectedSourceConfigMapName := registry.GetConfigMapSourceName()
+	// Get all ConfigMap sources
+	configMapSources := registry.GetConfigMapSources()
 
-	// Check volume
-	sourceDataVolumeFound := false
-	for _, volume := range deployment.Spec.Template.Spec.Volumes {
-		if volume.Name == registryapi.RegistryDataVolumeName && volume.ConfigMap != nil {
-			Expect(volume.ConfigMap.LocalObjectReference.Name).To(Equal(expectedSourceConfigMapName))
-			sourceDataVolumeFound = true
-			break
+	// For each ConfigMap source, verify its volume and mount
+	for i, source := range configMapSources {
+		if source.ConfigMapRef == nil {
+			continue
 		}
-	}
-	Expect(sourceDataVolumeFound).To(BeTrue(), "Deployment should have a volume for the source data ConfigMap")
 
-	// Check mount
-	sourceDataMountFound := false
-	for _, mount := range deployment.Spec.Template.Spec.Containers[0].VolumeMounts {
-		if mount.Name == registryapi.RegistryDataVolumeName {
-			Expect(mount.MountPath).To(Equal(config.RegistryJSONFilePath))
-			Expect(mount.ReadOnly).To(BeTrue())
-			sourceDataMountFound = true
-			break
+		expectedVolumeName := fmt.Sprintf("registry-source-%d-%s", i, source.Name)
+		expectedMountPath := fmt.Sprintf("%s/source-%d", config.RegistryJSONFilePath, i)
+
+		// Check volume exists
+		volumeFound := false
+		for _, volume := range deployment.Spec.Template.Spec.Volumes {
+			if volume.Name == expectedVolumeName && volume.ConfigMap != nil {
+				Expect(volume.ConfigMap.LocalObjectReference.Name).To(Equal(source.ConfigMapRef.Name))
+				volumeFound = true
+				break
+			}
 		}
+		Expect(volumeFound).To(BeTrue(), fmt.Sprintf("Deployment should have a volume for source %s", source.Name))
+
+		// Check mount exists
+		mountFound := false
+		for _, mount := range deployment.Spec.Template.Spec.Containers[0].VolumeMounts {
+			if mount.Name == expectedVolumeName {
+				Expect(mount.MountPath).To(Equal(expectedMountPath))
+				Expect(mount.ReadOnly).To(BeTrue())
+				mountFound = true
+				break
+			}
+		}
+		Expect(mountFound).To(BeTrue(), fmt.Sprintf("Deployment should have a volume mount for source %s", source.Name))
 	}
-	Expect(sourceDataMountFound).To(BeTrue(), "Deployment should have a volume mount for the source data ConfigMap")
 }
 
 // waitForAndGetServerConfigMap waits for the server config ConfigMap to be created and returns it

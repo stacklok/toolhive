@@ -34,8 +34,14 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: mcpv1alpha1.MCPRegistrySpec{
-					Source: mcpv1alpha1.MCPRegistrySource{
-						Type: "github",
+					Sources: []mcpv1alpha1.MCPRegistrySourceConfig{
+						{
+							Name: "default",
+							MCPRegistrySource: mcpv1alpha1.MCPRegistrySource{
+								Type:   "github",
+								Format: mcpv1alpha1.RegistryFormatToolHive,
+							},
+						},
 					},
 				},
 			},

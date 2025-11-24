@@ -34,7 +34,8 @@ func NewMCPRegistryTestHelper(ctx context.Context, k8sClient client.Client, name
 
 // RegistryBuilder provides a fluent interface for building MCPRegistry objects
 type RegistryBuilder struct {
-	registry *mcpv1alpha1.MCPRegistry
+	registry      *mcpv1alpha1.MCPRegistry
+	currentSource *mcpv1alpha1.MCPRegistrySourceConfig // Track the current source being configured
 }
 
 // NewRegistryBuilder creates a new MCPRegistry builder
@@ -48,61 +49,90 @@ func (h *MCPRegistryTestHelper) NewRegistryBuilder(name string) *RegistryBuilder
 					"test.toolhive.io/suite": "operator-e2e",
 				},
 			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{},
-		},
-	}
-}
-
-// WithConfigMapSource configures the registry with a ConfigMap source
-func (rb *RegistryBuilder) WithConfigMapSource(configMapName, key string) *RegistryBuilder {
-	rb.registry.Spec.Source = mcpv1alpha1.MCPRegistrySource{
-		Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
-		Format: mcpv1alpha1.RegistryFormatToolHive,
-		ConfigMapRef: &corev1.ConfigMapKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: configMapName,
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Sources: []mcpv1alpha1.MCPRegistrySourceConfig{}, // Initialize empty sources array
 			},
-			Key: key,
 		},
+	}
+}
+
+// AddSource starts configuring a new source
+func (rb *RegistryBuilder) AddSource(name string) *RegistryBuilder {
+	source := mcpv1alpha1.MCPRegistrySourceConfig{
+		Name: name,
+		MCPRegistrySource: mcpv1alpha1.MCPRegistrySource{
+			Format: mcpv1alpha1.RegistryFormatToolHive, // Default format
+		},
+	}
+	rb.registry.Spec.Sources = append(rb.registry.Spec.Sources, source)
+	rb.currentSource = &rb.registry.Spec.Sources[len(rb.registry.Spec.Sources)-1]
+	return rb
+}
+
+// WithConfigMapSource configures the current source as a ConfigMap source
+func (rb *RegistryBuilder) WithConfigMapSource(configMapName, key string) *RegistryBuilder {
+	if rb.currentSource == nil {
+		// If no source is current, create a default one
+		rb.AddSource("default")
+	}
+	rb.currentSource.Type = mcpv1alpha1.RegistrySourceTypeConfigMap
+	rb.currentSource.Format = mcpv1alpha1.RegistryFormatToolHive
+	rb.currentSource.ConfigMapRef = &corev1.ConfigMapKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{
+			Name: configMapName,
+		},
+		Key: key,
 	}
 	return rb
 }
 
-// WithGitSource configures the registry with a Git source
+// WithGitSource configures the current source as a Git source
 func (rb *RegistryBuilder) WithGitSource(repository, branch, path string) *RegistryBuilder {
-	rb.registry.Spec.Source = mcpv1alpha1.MCPRegistrySource{
-		Type:   mcpv1alpha1.RegistrySourceTypeGit,
-		Format: mcpv1alpha1.RegistryFormatToolHive, // Default to ToolHive format
-		Git: &mcpv1alpha1.GitSource{
-			Repository: repository,
-			Branch:     branch,
-			Path:       path,
-		},
+	if rb.currentSource == nil {
+		// If no source is current, create a default one
+		rb.AddSource("default")
+	}
+	rb.currentSource.Type = mcpv1alpha1.RegistrySourceTypeGit
+	rb.currentSource.Format = mcpv1alpha1.RegistryFormatToolHive // Default to ToolHive format
+	rb.currentSource.Git = &mcpv1alpha1.GitSource{
+		Repository: repository,
+		Branch:     branch,
+		Path:       path,
 	}
 	return rb
 }
 
-// WithAPISource configures the registry with an API source
+// WithAPISource configures the current source as an API source
 func (rb *RegistryBuilder) WithAPISource(endpoint string) *RegistryBuilder {
-	rb.registry.Spec.Source = mcpv1alpha1.MCPRegistrySource{
-		Type:   mcpv1alpha1.RegistrySourceTypeAPI,
-		Format: mcpv1alpha1.RegistryFormatToolHive, // Default to ToolHive format
-		API: &mcpv1alpha1.APISource{
-			Endpoint: endpoint,
-		},
+	if rb.currentSource == nil {
+		// If no source is current, create a default one
+		rb.AddSource("default")
+	}
+	rb.currentSource.Type = mcpv1alpha1.RegistrySourceTypeAPI
+	rb.currentSource.Format = mcpv1alpha1.RegistryFormatToolHive // Default to ToolHive format
+	rb.currentSource.API = &mcpv1alpha1.APISource{
+		Endpoint: endpoint,
 	}
 	return rb
 }
 
-// WithUpstreamFormat configures the registry to use upstream MCP format
+// WithUpstreamFormat configures the current source to use upstream MCP format
 func (rb *RegistryBuilder) WithUpstreamFormat() *RegistryBuilder {
-	rb.registry.Spec.Source.Format = mcpv1alpha1.RegistryFormatToolHive
+	if rb.currentSource == nil {
+		// If no source is current, create a default one
+		rb.AddSource("default")
+	}
+	rb.currentSource.Format = mcpv1alpha1.RegistryFormatToolHive
 	return rb
 }
 
-// WithSyncPolicy configures the sync policy
+// WithSyncPolicy configures the sync policy for the current source
 func (rb *RegistryBuilder) WithSyncPolicy(interval string) *RegistryBuilder {
-	rb.registry.Spec.SyncPolicy = &mcpv1alpha1.SyncPolicy{
+	if rb.currentSource == nil {
+		// If no source is current, create a default one
+		rb.AddSource("default")
+	}
+	rb.currentSource.SyncPolicy = &mcpv1alpha1.SyncPolicy{
 		Interval: interval,
 	}
 	return rb
@@ -126,51 +156,67 @@ func (rb *RegistryBuilder) WithLabel(key, value string) *RegistryBuilder {
 	return rb
 }
 
-// WithNameIncludeFilter sets name include patterns for filtering
+// WithNameIncludeFilter sets name include patterns for filtering on the current source
 func (rb *RegistryBuilder) WithNameIncludeFilter(patterns []string) *RegistryBuilder {
-	if rb.registry.Spec.Filter == nil {
-		rb.registry.Spec.Filter = &mcpv1alpha1.RegistryFilter{}
+	if rb.currentSource == nil {
+		// If no source is current, create a default one
+		rb.AddSource("default")
 	}
-	if rb.registry.Spec.Filter.NameFilters == nil {
-		rb.registry.Spec.Filter.NameFilters = &mcpv1alpha1.NameFilter{}
+	if rb.currentSource.Filter == nil {
+		rb.currentSource.Filter = &mcpv1alpha1.RegistryFilter{}
 	}
-	rb.registry.Spec.Filter.NameFilters.Include = patterns
+	if rb.currentSource.Filter.NameFilters == nil {
+		rb.currentSource.Filter.NameFilters = &mcpv1alpha1.NameFilter{}
+	}
+	rb.currentSource.Filter.NameFilters.Include = patterns
 	return rb
 }
 
-// WithNameExcludeFilter sets name exclude patterns for filtering
+// WithNameExcludeFilter sets name exclude patterns for filtering on the current source
 func (rb *RegistryBuilder) WithNameExcludeFilter(patterns []string) *RegistryBuilder {
-	if rb.registry.Spec.Filter == nil {
-		rb.registry.Spec.Filter = &mcpv1alpha1.RegistryFilter{}
+	if rb.currentSource == nil {
+		// If no source is current, create a default one
+		rb.AddSource("default")
 	}
-	if rb.registry.Spec.Filter.NameFilters == nil {
-		rb.registry.Spec.Filter.NameFilters = &mcpv1alpha1.NameFilter{}
+	if rb.currentSource.Filter == nil {
+		rb.currentSource.Filter = &mcpv1alpha1.RegistryFilter{}
 	}
-	rb.registry.Spec.Filter.NameFilters.Exclude = patterns
+	if rb.currentSource.Filter.NameFilters == nil {
+		rb.currentSource.Filter.NameFilters = &mcpv1alpha1.NameFilter{}
+	}
+	rb.currentSource.Filter.NameFilters.Exclude = patterns
 	return rb
 }
 
-// WithTagIncludeFilter sets tag include patterns for filtering
+// WithTagIncludeFilter sets tag include patterns for filtering on the current source
 func (rb *RegistryBuilder) WithTagIncludeFilter(tags []string) *RegistryBuilder {
-	if rb.registry.Spec.Filter == nil {
-		rb.registry.Spec.Filter = &mcpv1alpha1.RegistryFilter{}
+	if rb.currentSource == nil {
+		// If no source is current, create a default one
+		rb.AddSource("default")
 	}
-	if rb.registry.Spec.Filter.Tags == nil {
-		rb.registry.Spec.Filter.Tags = &mcpv1alpha1.TagFilter{}
+	if rb.currentSource.Filter == nil {
+		rb.currentSource.Filter = &mcpv1alpha1.RegistryFilter{}
 	}
-	rb.registry.Spec.Filter.Tags.Include = tags
+	if rb.currentSource.Filter.Tags == nil {
+		rb.currentSource.Filter.Tags = &mcpv1alpha1.TagFilter{}
+	}
+	rb.currentSource.Filter.Tags.Include = tags
 	return rb
 }
 
-// WithTagExcludeFilter sets tag exclude patterns for filtering
+// WithTagExcludeFilter sets tag exclude patterns for filtering on the current source
 func (rb *RegistryBuilder) WithTagExcludeFilter(tags []string) *RegistryBuilder {
-	if rb.registry.Spec.Filter == nil {
-		rb.registry.Spec.Filter = &mcpv1alpha1.RegistryFilter{}
+	if rb.currentSource == nil {
+		// If no source is current, create a default one
+		rb.AddSource("default")
 	}
-	if rb.registry.Spec.Filter.Tags == nil {
-		rb.registry.Spec.Filter.Tags = &mcpv1alpha1.TagFilter{}
+	if rb.currentSource.Filter == nil {
+		rb.currentSource.Filter = &mcpv1alpha1.RegistryFilter{}
 	}
-	rb.registry.Spec.Filter.Tags.Exclude = tags
+	if rb.currentSource.Filter.Tags == nil {
+		rb.currentSource.Filter.Tags = &mcpv1alpha1.TagFilter{}
+	}
+	rb.currentSource.Filter.Tags.Exclude = tags
 	return rb
 }
 

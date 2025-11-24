@@ -72,158 +72,173 @@ spec:
                   MCPServers with images not found in any registry will be rejected.
                   When false (default), MCPServers can be deployed regardless of registry presence.
                 type: boolean
-              filter:
-                description: Filter defines include/exclude patterns for registry
-                  content
-                properties:
-                  names:
-                    description: NameFilters defines name-based filtering
-                    properties:
-                      exclude:
-                        description: Exclude is a list of glob patterns to exclude
-                        items:
-                          type: string
-                        type: array
-                      include:
-                        description: Include is a list of glob patterns to include
-                        items:
-                          type: string
-                        type: array
-                    type: object
-                  tags:
-                    description: Tags defines tag-based filtering
-                    properties:
-                      exclude:
-                        description: Exclude is a list of tags to exclude
-                        items:
-                          type: string
-                        type: array
-                      include:
-                        description: Include is a list of tags to include
-                        items:
-                          type: string
-                        type: array
-                    type: object
-                type: object
-              source:
-                description: Source defines the configuration for the registry data
-                  source
-                properties:
-                  api:
-                    description: |-
-                      API defines the API source configuration
-                      Only used when Type is "api"
-                    properties:
-                      endpoint:
-                        description: |-
-                          Endpoint is the base API URL (without path)
-                          The controller will append the appropriate paths:
-                          Phase 1 (ToolHive API):
-                            - /v0/servers - List all servers (single response, no pagination)
-                            - /v0/servers/{name} - Get specific server (future)
-                            - /v0/info - Get registry metadata (future)
-                          Example: "http://my-registry-api.default.svc.cluster.local/api"
-                        minLength: 1
-                        pattern: ^https?://.*
-                        type: string
-                    required:
-                    - endpoint
-                    type: object
-                  configMapRef:
-                    description: |-
-                      ConfigMapRef defines the ConfigMap source configuration
-                      Only used when Type is "configmap"
-                    properties:
-                      key:
-                        description: The key to select.
-                        type: string
-                      name:
-                        default: ""
-                        description: |-
-                          Name of the referent.
-                          This field is effectively required, but due to backwards compatibility is
-                          allowed to be empty. Instances of this type with an empty value here are
-                          almost certainly wrong.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                      optional:
-                        description: Specify whether the ConfigMap or its key must
-                          be defined
-                        type: boolean
-                    required:
-                    - key
-                    type: object
-                    x-kubernetes-map-type: atomic
-                  format:
-                    default: toolhive
-                    description: Format is the data format (toolhive, upstream)
-                    enum:
-                    - toolhive
-                    - upstream
-                    type: string
-                  git:
-                    description: |-
-                      Git defines the Git repository source configuration
-                      Only used when Type is "git"
-                    properties:
-                      branch:
-                        description: Branch is the Git branch to use (mutually exclusive
-                          with Tag and Commit)
-                        minLength: 1
-                        type: string
-                      commit:
-                        description: Commit is the Git commit SHA to use (mutually
-                          exclusive with Branch and Tag)
-                        minLength: 1
-                        type: string
-                      path:
-                        default: registry.json
-                        description: Path is the path to the registry file within
-                          the repository
-                        pattern: ^.*\.json$
-                        type: string
-                      repository:
-                        description: Repository is the Git repository URL (HTTP/HTTPS/SSH)
-                        minLength: 1
-                        pattern: ^(file:///|https?://|git@|ssh://|git://).*
-                        type: string
-                      tag:
-                        description: Tag is the Git tag to use (mutually exclusive
-                          with Branch and Commit)
-                        minLength: 1
-                        type: string
-                    required:
-                    - repository
-                    type: object
-                  type:
-                    default: configmap
-                    description: Type is the type of source (configmap, git, api)
-                    enum:
-                    - configmap
-                    - git
-                    - api
-                    type: string
-                required:
-                - type
-                type: object
-              syncPolicy:
+              sources:
                 description: |-
-                  SyncPolicy defines the automatic synchronization behavior for the registry.
-                  If specified, enables automatic synchronization at the given interval.
-                  Manual synchronization is always supported via annotation-based triggers
-                  regardless of this setting.
-                properties:
-                  interval:
-                    description: |-
-                      Interval is the sync interval for automatic synchronization (Go duration format)
-                      Examples: "1h", "30m", "24h"
-                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
-                    type: string
-                required:
-                - interval
-                type: object
+                  Sources defines the configuration for multiple registry data sources
+                  Each source can have its own sync policy and filters
+                items:
+                  description: MCPRegistrySourceConfig defines a registry data source
+                    with its associated sync policy and filters
+                  properties:
+                    api:
+                      description: |-
+                        API defines the API source configuration
+                        Only used when Type is "api"
+                      properties:
+                        endpoint:
+                          description: |-
+                            Endpoint is the base API URL (without path)
+                            The controller will append the appropriate paths:
+                            Phase 1 (ToolHive API):
+                              - /v0/servers - List all servers (single response, no pagination)
+                              - /v0/servers/{name} - Get specific server (future)
+                              - /v0/info - Get registry metadata (future)
+                            Example: "http://my-registry-api.default.svc.cluster.local/api"
+                          minLength: 1
+                          pattern: ^https?://.*
+                          type: string
+                      required:
+                      - endpoint
+                      type: object
+                    configMapRef:
+                      description: |-
+                        ConfigMapRef defines the ConfigMap source configuration
+                        Only used when Type is "configmap"
+                      properties:
+                        key:
+                          description: The key to select.
+                          type: string
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                        optional:
+                          description: Specify whether the ConfigMap or its key must
+                            be defined
+                          type: boolean
+                      required:
+                      - key
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    filter:
+                      description: Filter defines include/exclude patterns for registry
+                        content from this source
+                      properties:
+                        names:
+                          description: NameFilters defines name-based filtering
+                          properties:
+                            exclude:
+                              description: Exclude is a list of glob patterns to exclude
+                              items:
+                                type: string
+                              type: array
+                            include:
+                              description: Include is a list of glob patterns to include
+                              items:
+                                type: string
+                              type: array
+                          type: object
+                        tags:
+                          description: Tags defines tag-based filtering
+                          properties:
+                            exclude:
+                              description: Exclude is a list of tags to exclude
+                              items:
+                                type: string
+                              type: array
+                            include:
+                              description: Include is a list of tags to include
+                              items:
+                                type: string
+                              type: array
+                          type: object
+                      type: object
+                    format:
+                      default: toolhive
+                      description: Format is the data format (toolhive, upstream)
+                      enum:
+                      - toolhive
+                      - upstream
+                      type: string
+                    git:
+                      description: |-
+                        Git defines the Git repository source configuration
+                        Only used when Type is "git"
+                      properties:
+                        branch:
+                          description: Branch is the Git branch to use (mutually exclusive
+                            with Tag and Commit)
+                          minLength: 1
+                          type: string
+                        commit:
+                          description: Commit is the Git commit SHA to use (mutually
+                            exclusive with Branch and Tag)
+                          minLength: 1
+                          type: string
+                        path:
+                          default: registry.json
+                          description: Path is the path to the registry file within
+                            the repository
+                          pattern: ^.*\.json$
+                          type: string
+                        repository:
+                          description: Repository is the Git repository URL (HTTP/HTTPS/SSH)
+                          minLength: 1
+                          pattern: ^(file:///|https?://|git@|ssh://|git://).*
+                          type: string
+                        tag:
+                          description: Tag is the Git tag to use (mutually exclusive
+                            with Branch and Commit)
+                          minLength: 1
+                          type: string
+                      required:
+                      - repository
+                      type: object
+                    name:
+                      description: |-
+                        Name is an identifier for this source (used for volume naming, logging and status reporting)
+                        Must be unique within the MCPRegistry
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    syncPolicy:
+                      description: |-
+                        SyncPolicy defines the automatic synchronization behavior for this source.
+                        If specified, enables automatic synchronization at the given interval.
+                        Manual synchronization is always supported via annotation-based triggers
+                        regardless of this setting.
+                      properties:
+                        interval:
+                          description: |-
+                            Interval is the sync interval for automatic synchronization (Go duration format)
+                            Examples: "1h", "30m", "24h"
+                          pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                          type: string
+                      required:
+                      - interval
+                      type: object
+                    type:
+                      default: configmap
+                      description: Type is the type of source (configmap, git, api)
+                      enum:
+                      - configmap
+                      - git
+                      - api
+                      type: string
+                  required:
+                  - name
+                  - type
+                  type: object
+                minItems: 1
+                type: array
             required:
-            - source
+            - sources
             type: object
           status:
             description: MCPRegistryStatus defines the observed state of MCPRegistry
@@ -423,12 +438,10 @@ spec:
             type: object
         type: object
         x-kubernetes-validations:
-        - message: configMapRef field is required when source type is 'configmap',
-            git field is required when source type is 'git', api field is required
-            when source type is 'api'
-          rule: 'self.spec.source.type == ''configmap'' ? has(self.spec.source.configMapRef)
-            : (self.spec.source.type == ''git'' ? has(self.spec.source.git) : (self.spec.source.type
-            == ''api'' ? has(self.spec.source.api) : true))'
+        - message: Each source must have the appropriate configuration for its type
+          rule: 'self.spec.sources.all(s, s.type == ''configmap'' ? has(s.configMapRef)
+            : (s.type == ''git'' ? has(s.git) : (s.type == ''api'' ? has(s.api) :
+            true)))'
     served: true
     storage: true
     subresources:

@@ -61,6 +61,7 @@ Phase 2: Will add support for upstream MCP Registry API with pagination
 
 _Appears in:_
 - [MCPRegistrySource](#mcpregistrysource)
+- [MCPRegistrySourceConfig](#mcpregistrysourceconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -372,6 +373,7 @@ GitSource defines Git repository source configuration
 
 _Appears in:_
 - [MCPRegistrySource](#mcpregistrysource)
+- [MCPRegistrySourceConfig](#mcpregistrysourceconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -731,7 +733,7 @@ MCPRegistrySource defines the source configuration for registry data
 
 
 _Appears in:_
-- [MCPRegistrySpec](#mcpregistryspec)
+- [MCPRegistrySourceConfig](#mcpregistrysourceconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -740,6 +742,29 @@ _Appears in:_
 | `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef defines the ConfigMap source configuration<br />Only used when Type is "configmap" |  |  |
 | `git` _[GitSource](#gitsource)_ | Git defines the Git repository source configuration<br />Only used when Type is "git" |  |  |
 | `api` _[APISource](#apisource)_ | API defines the API source configuration<br />Only used when Type is "api" |  |  |
+
+
+#### MCPRegistrySourceConfig
+
+
+
+MCPRegistrySourceConfig defines a registry data source with its associated sync policy and filters
+
+
+
+_Appears in:_
+- [MCPRegistrySpec](#mcpregistryspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is an identifier for this source (used for volume naming, logging and status reporting)<br />Must be unique within the MCPRegistry |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` <br />Required: \{\} <br /> |
+| `type` _string_ | Type is the type of source (configmap, git, api) | configmap | Enum: [configmap git api] <br /> |
+| `format` _string_ | Format is the data format (toolhive, upstream) | toolhive | Enum: [toolhive upstream] <br /> |
+| `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef defines the ConfigMap source configuration<br />Only used when Type is "configmap" |  |  |
+| `git` _[GitSource](#gitsource)_ | Git defines the Git repository source configuration<br />Only used when Type is "git" |  |  |
+| `api` _[APISource](#apisource)_ | API defines the API source configuration<br />Only used when Type is "api" |  |  |
+| `syncPolicy` _[SyncPolicy](#syncpolicy)_ | SyncPolicy defines the automatic synchronization behavior for this source.<br />If specified, enables automatic synchronization at the given interval.<br />Manual synchronization is always supported via annotation-based triggers<br />regardless of this setting. |  |  |
+| `filter` _[RegistryFilter](#registryfilter)_ | Filter defines include/exclude patterns for registry content from this source |  |  |
 
 
 #### MCPRegistrySpec
@@ -756,9 +781,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `displayName` _string_ | DisplayName is a human-readable name for the registry |  |  |
-| `source` _[MCPRegistrySource](#mcpregistrysource)_ | Source defines the configuration for the registry data source |  | Required: \{\} <br /> |
-| `syncPolicy` _[SyncPolicy](#syncpolicy)_ | SyncPolicy defines the automatic synchronization behavior for the registry.<br />If specified, enables automatic synchronization at the given interval.<br />Manual synchronization is always supported via annotation-based triggers<br />regardless of this setting. |  |  |
-| `filter` _[RegistryFilter](#registryfilter)_ | Filter defines include/exclude patterns for registry content |  |  |
+| `sources` _[MCPRegistrySourceConfig](#mcpregistrysourceconfig) array_ | Sources defines the configuration for multiple registry data sources<br />Each source can have its own sync policy and filters |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `enforceServers` _boolean_ | EnforceServers indicates whether MCPServers in this namespace must have their images<br />present in at least one registry in the namespace. When any registry in the namespace<br />has this field set to true, enforcement is enabled for the entire namespace.<br />MCPServers with images not found in any registry will be rejected.<br />When false (default), MCPServers can be deployed regardless of registry presence. | false |  |
 
 
@@ -1388,7 +1411,7 @@ RegistryFilter defines include/exclude patterns for registry content
 
 
 _Appears in:_
-- [MCPRegistrySpec](#mcpregistryspec)
+- [MCPRegistrySourceConfig](#mcpregistrysourceconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1572,7 +1595,7 @@ regardless of this policy setting.
 
 
 _Appears in:_
-- [MCPRegistrySpec](#mcpregistryspec)
+- [MCPRegistrySourceConfig](#mcpregistrysourceconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |

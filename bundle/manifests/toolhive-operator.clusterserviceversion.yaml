@@ -1,0 +1,358 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  name: toolhive-operator.v0.3.5
+  namespace: placeholder
+  annotations:
+    capabilities: Basic Install
+    categories: Developer Tools,Integration & Delivery
+    certified: "false"
+    containerImage: ghcr.io/stacklok/toolhive/operator:v0.3.5
+    createdAt: "2025-01-27T00:00:00Z"
+    operators.operatorframework.io/builder: operator-sdk-v1.34.0
+    operators.operatorframework.io/project_layout: go.kubebuilder.io/v3
+    repository: https://github.com/stacklok/toolhive
+    support: OKD Community
+    alm-examples: |
+      [
+        {
+          "apiVersion": "toolhive.stacklok.dev/v1alpha1",
+          "kind": "MCPServer",
+          "metadata": {
+            "name": "example-mcp-server"
+          },
+          "spec": {
+            "image": "docker.io/mcp/fetch",
+            "transport": "stdio",
+            "port": 8080,
+            "permissionProfile": {
+              "type": "builtin",
+              "name": "network"
+            },
+            "resources": {
+              "limits": {
+                "cpu": "100m",
+                "memory": "128Mi"
+              },
+              "requests": {
+                "cpu": "50m",
+                "memory": "64Mi"
+              }
+            }
+          }
+        }
+      ]
+spec:
+  displayName: ToolHive Operator
+  keywords:
+    - mcp
+    - model-context-protocol
+    - kubernetes
+    - operator
+    - toolhive
+    - stacklok
+  maintainers:
+    - email: support@stacklok.com
+      name: Stacklok
+  provider:
+    name: Stacklok
+  links:
+    - name: Documentation
+      url: https://docs.stacklok.com/toolhive/
+    - name: Source Code
+      url: https://github.com/stacklok/toolhive
+    - name: Operator Repository
+      url: https://github.com/stacklok/toolhive/tree/main/cmd/thv-operator
+  maturity: alpha
+  version: 0.3.5
+  minKubeVersion: 1.25.0
+  installModes:
+    - type: OwnNamespace
+      supported: true
+    - type: SingleNamespace
+      supported: true
+    - type: MultiNamespace
+      supported: true
+    - type: AllNamespaces
+      supported: true
+  install:
+    strategy: deployment
+    spec:
+      clusterPermissions:
+        - serviceAccountName: toolhive-operator
+          rules:
+            # Core resources
+            - apiGroups:
+                - ""
+              resources:
+                - configmaps
+                - serviceaccounts
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - ""
+              resources:
+                - events
+              verbs:
+                - create
+                - patch
+            - apiGroups:
+                - ""
+              resources:
+                - pods
+                - secrets
+              verbs:
+                - get
+                - list
+                - watch
+            - apiGroups:
+                - ""
+              resources:
+                - pods/attach
+              verbs:
+                - create
+                - get
+            - apiGroups:
+                - ""
+              resources:
+                - pods/log
+              verbs:
+                - get
+            - apiGroups:
+                - ""
+              resources:
+                - services
+              verbs:
+                - apply
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            # Apps resources
+            - apiGroups:
+                - apps
+              resources:
+                - deployments
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - apps
+              resources:
+                - statefulsets
+              verbs:
+                - apply
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            # RBAC resources
+            - apiGroups:
+                - rbac.authorization.k8s.io
+              resources:
+                - rolebindings
+                - roles
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            # ToolHive CRDs
+            - apiGroups:
+                - toolhive.stacklok.dev
+              resources:
+                - mcpregistries
+                - mcpservers
+                - mcptoolconfigs
+              verbs:
+                - create
+                - delete
+                - get
+                - list
+                - patch
+                - update
+                - watch
+            - apiGroups:
+                - toolhive.stacklok.dev
+              resources:
+                - mcpregistries/finalizers
+                - mcpservers/finalizers
+                - mcptoolconfigs/finalizers
+              verbs:
+                - update
+            - apiGroups:
+                - toolhive.stacklok.dev
+              resources:
+                - mcpregistries/status
+                - mcpservers/status
+                - mcptoolconfigs/status
+              verbs:
+                - get
+                - patch
+                - update
+            # Leader election permissions
+            - apiGroups:
+                - coordination.k8s.io
+              resources:
+                - leases
+              verbs:
+                - get
+                - list
+                - watch
+                - create
+                - update
+                - patch
+                - delete
+      deployments:
+        - name: toolhive-operator
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                name: toolhive-operator
+            template:
+              metadata:
+                labels:
+                  name: toolhive-operator
+              spec:
+                serviceAccountName: toolhive-operator
+                securityContext:
+                  runAsNonRoot: true
+                  seccompProfile:
+                    type: RuntimeDefault
+                terminationGracePeriodSeconds: 10
+                containers:
+                  - name: manager
+                    image: ghcr.io/stacklok/toolhive/operator:v0.3.5
+                    imagePullPolicy: IfNotPresent
+                    args:
+                      - --leader-elect
+                    ports:
+                      - containerPort: 8080
+                        name: metrics
+                        protocol: TCP
+                      - containerPort: 8081
+                        name: health
+                        protocol: TCP
+                    env:
+                      - name: UNSTRUCTURED_LOGS
+                        value: "false"
+                      - name: ENABLE_EXPERIMENTAL_FEATURES
+                        value: "false"
+                      - name: TOOLHIVE_RUNNER_IMAGE
+                        value: ghcr.io/stacklok/toolhive/proxyrunner:v0.3.5
+                      - name: TOOLHIVE_PROXY_HOST
+                        value: "0.0.0.0"
+                      - name: TOOLHIVE_REGISTRY_API_IMAGE
+                        value: ghcr.io/stacklok/toolhive/thv-registry-api:latest
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      runAsNonRoot: true
+                      seccompProfile:
+                        type: RuntimeDefault
+                      capabilities:
+                        drop:
+                          - ALL
+                    livenessProbe:
+                      httpGet:
+                        path: /healthz
+                        port: 8081
+                      initialDelaySeconds: 15
+                      periodSeconds: 20
+                    readinessProbe:
+                      httpGet:
+                        path: /readyz
+                        port: 8081
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+                    resources:
+                      limits:
+                        cpu: 500m
+                        memory: 128Mi
+                      requests:
+                        cpu: 10m
+                        memory: 64Mi
+  customresourcedefinitions:
+    owned:
+      - name: mcpservers.toolhive.stacklok.dev
+        version: v1alpha1
+        kind: MCPServer
+        displayName: MCP Server
+        description: MCPServer is the Schema for the mcpservers API. It represents an MCP server instance in Kubernetes.
+        resources:
+          - kind: Deployment
+            version: v1
+          - kind: Service
+            version: v1
+        specDescriptors:
+          - description: Container image for the MCP server
+            displayName: Image
+            path: image
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:text
+          - description: Transport method (stdio, streamable-http, or sse)
+            displayName: Transport
+            path: transport
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:fieldGroup:transport
+          - description: Port to expose the MCP server on
+            displayName: Port
+            path: port
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:number
+          - description: Permission profile configuration
+            displayName: Permission Profile
+            path: permissionProfile
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:fieldGroup:permissionProfile
+          - description: Resource requirements for the container
+            displayName: Resources
+            path: resources
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:resourceRequirements
+        statusDescriptors:
+          - description: Current phase of the MCPServer
+            displayName: Phase
+            path: phase
+            x-descriptors:
+              - urn:alm:descriptor:io.kubernetes.phase
+          - description: URL to access the MCP server
+            displayName: URL
+            path: url
+            x-descriptors:
+              - urn:alm:descriptor:com.tectonic.ui:text
+      - name: mcpregistries.toolhive.stacklok.dev
+        version: v1alpha1
+        kind: MCPRegistry
+        displayName: MCP Registry
+        description: MCPRegistry manages MCP server registries. This is an experimental feature.
+        resources: []
+      - name: mcptoolconfigs.toolhive.stacklok.dev
+        version: v1alpha1
+        kind: MCPToolConfig
+        displayName: MCP Tool Config
+        description: MCPToolConfig configures tool filtering and overrides for MCP servers.
+        resources: []
+    required: []
+

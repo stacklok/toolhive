@@ -1,0 +1,300 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.3
+  name: mcpregistries.toolhive.stacklok.dev
+spec:
+  group: toolhive.stacklok.dev
+  names:
+    categories:
+    - toolhive
+    kind: MCPRegistry
+    listKind: MCPRegistryList
+    plural: mcpregistries
+    singular: mcpregistry
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.serverCount
+      name: Servers
+      type: integer
+    - jsonPath: .status.deployedServerCount
+      name: Deployed
+      type: integer
+    - jsonPath: .status.lastSyncTime
+      name: Last Sync
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          MCPRegistry is the Schema for the mcpregistries API
+          ⚠️ Experimental API (v1alpha1) — subject to change.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: MCPRegistrySpec defines the desired state of MCPRegistry
+            properties:
+              displayName:
+                description: DisplayName is a human-readable name for the registry
+                type: string
+              filter:
+                description: Filter defines include/exclude patterns for registry
+                  content
+                properties:
+                  names:
+                    description: NameFilters defines name-based filtering
+                    properties:
+                      exclude:
+                        description: Exclude is a list of glob patterns to exclude
+                        items:
+                          type: string
+                        type: array
+                      include:
+                        description: Include is a list of glob patterns to include
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  tags:
+                    description: Tags defines tag-based filtering
+                    properties:
+                      exclude:
+                        description: Exclude is a list of tags to exclude
+                        items:
+                          type: string
+                        type: array
+                      include:
+                        description: Include is a list of tags to include
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                type: object
+              source:
+                description: Source defines the configuration for the registry data
+                  source
+                properties:
+                  configmap:
+                    description: |-
+                      ConfigMap defines the ConfigMap source configuration
+                      Only used when Type is "configmap"
+                    properties:
+                      key:
+                        default: registry.json
+                        description: Key is the key in the ConfigMap that contains
+                          the registry data
+                        minLength: 1
+                        type: string
+                      name:
+                        description: Name is the name of the ConfigMap
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  format:
+                    default: toolhive
+                    description: Format is the data format (toolhive, upstream)
+                    enum:
+                    - toolhive
+                    - upstream
+                    type: string
+                  type:
+                    default: configmap
+                    description: Type is the type of source (configmap)
+                    enum:
+                    - configmap
+                    type: string
+                required:
+                - type
+                type: object
+              syncPolicy:
+                description: |-
+                  SyncPolicy defines the automatic synchronization behavior for the registry.
+                  If specified, enables automatic synchronization at the given interval.
+                  Manual synchronization is always supported via annotation-based triggers
+                  regardless of this setting.
+                properties:
+                  interval:
+                    description: |-
+                      Interval is the sync interval for automatic synchronization (Go duration format)
+                      Examples: "1h", "30m", "24h"
+                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                    type: string
+                required:
+                - interval
+                type: object
+            required:
+            - source
+            type: object
+          status:
+            description: MCPRegistryStatus defines the observed state of MCPRegistry
+            properties:
+              apiEndpoint:
+                description: APIEndpoint is the URL of the registry API service
+                type: string
+              conditions:
+                description: Conditions represent the latest available observations
+                  of the MCPRegistry's state
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              deployedServerCount:
+                description: DeployedServerCount is the number of deployed servers
+                  with matching labels
+                minimum: 0
+                type: integer
+              lastManualSyncTrigger:
+                description: |-
+                  LastManualSyncTrigger tracks the last processed manual sync annotation value
+                  Used to detect new manual sync requests via toolhive.stacklok.dev/sync-trigger annotation
+                type: string
+              lastSyncHash:
+                description: |-
+                  LastSyncHash is the hash of the last successfully synced data
+                  Used to detect changes in source data
+                type: string
+              lastSyncTime:
+                description: LastSyncTime is the timestamp of the last successful
+                  sync
+                format: date-time
+                type: string
+              message:
+                description: Message provides additional information about the current
+                  phase
+                type: string
+              phase:
+                description: Phase represents the current phase of the MCPRegistry
+                enum:
+                - Pending
+                - Ready
+                - Failed
+                - Syncing
+                - Terminating
+                type: string
+              serverCount:
+                description: ServerCount is the total number of servers in the registry
+                minimum: 0
+                type: integer
+              storageRef:
+                description: StorageRef is a reference to the internal storage location
+                properties:
+                  configMapRef:
+                    description: |-
+                      ConfigMapRef is a reference to a ConfigMap storage
+                      Only used when Type is "configmap"
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  type:
+                    description: Type is the storage type (configmap)
+                    enum:
+                    - configmap
+                    type: string
+                required:
+                - type
+                type: object
+              syncAttempts:
+                description: SyncAttempts is the number of sync attempts since last
+                  success
+                minimum: 0
+                type: integer
+            type: object
+        type: object
+        x-kubernetes-validations:
+        - message: configMap field is required when source type is 'configmap'
+          rule: 'self.spec.source.type == ''configmap'' ? has(self.spec.source.configmap)
+            : true'
+    served: true
+    storage: true
+    subresources:
+      status: {}

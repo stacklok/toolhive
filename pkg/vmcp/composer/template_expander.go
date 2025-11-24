@@ -206,9 +206,9 @@ func (e *defaultTemplateExpander) EvaluateCondition(
 
 	// Parse as boolean
 	switch result {
-	case "true", "True", "TRUE":
+	case "true", "True", "TRUE": //nolint:goconst // Boolean literals are clearer than constants
 		return true, nil
-	case "false", "False", "FALSE":
+	case "false", "False", "FALSE": //nolint:goconst // Boolean literals are clearer than constants
 		return false, nil
 	default:
 		return false, fmt.Errorf("condition must evaluate to 'true' or 'false', got: %q", result)

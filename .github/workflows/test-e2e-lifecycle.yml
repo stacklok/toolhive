@@ -62,12 +62,11 @@ jobs:
         config: test/e2e/thv-operator/kind-config.yaml
         node_image: ${{ matrix.version }}
 
-    - name: Setup cluster
+    - name: Setup cluster and install CRDs
       run: |
         kind get kubeconfig --name toolhive > kconfig.yaml
         export KUBECONFIG=kconfig.yaml
         task operator-install-crds
-        task operator-deploy-local
 
     - name: Build and load test images
       run: |
@@ -77,10 +76,40 @@ jobs:
         echo "Loading vmcp image ${VMCP_IMAGE} into kind..."
         kind load docker-image --name toolhive ${VMCP_IMAGE}
 
+        # Save VMCP_IMAGE for later steps
+        echo "VMCP_IMAGE=${VMCP_IMAGE}" >> $GITHUB_ENV
+        echo "Built and loaded vmcp image: ${VMCP_IMAGE}"
+
         # Pull and load test server image
         echo "Pulling and loading yardstick test server image..."
         docker pull ${{ env.YARDSTICK_IMAGE }}
         kind load docker-image --name toolhive ${{ env.YARDSTICK_IMAGE }}
+
+    - name: Deploy operator with VMCP_IMAGE
+      run: |
+        export KUBECONFIG=kconfig.yaml
+        echo "Deploying operator with vmcp image: ${{ env.VMCP_IMAGE }}"
+
+        # Build operator and proxyrunner images
+        OPERATOR_IMAGE=$(KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1)
+        TOOLHIVE_IMAGE=$(KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-proxyrunner | tail -n 1)
+
+        # Load operator images into kind
+        kind load docker-image --name toolhive ${OPERATOR_IMAGE}
+        kind load docker-image --name toolhive ${TOOLHIVE_IMAGE}
+
+        # Deploy operator with VMCP_IMAGE environment variable
+        helm upgrade --install toolhive-operator deploy/charts/operator \
+          --set operator.image=${OPERATOR_IMAGE} \
+          --set operator.toolhiveRunnerImage=${TOOLHIVE_IMAGE} \
+          --set-string 'operator.env[0].name=VMCP_IMAGE' \
+          --set-string "operator.env[0].value=${{ env.VMCP_IMAGE }}" \
+          --namespace toolhive-system \
+          --create-namespace \
+          --kubeconfig kconfig.yaml
+
+        # Wait for operator to be ready
+        kubectl rollout status deployment/toolhive-operator -n toolhive-system --timeout=2m --kubeconfig kconfig.yaml
 
     - name: Run VirtualMCP Lifecycle E2E tests
       run: |

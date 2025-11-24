@@ -9,6 +9,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // Composer executes composite tool workflows that orchestrate multi-step
@@ -58,6 +60,10 @@ type WorkflowDefinition struct {
 	// FailureMode defines how to handle step failures.
 	// Options: "abort" (default), "continue", "best_effort"
 	FailureMode string
+
+	// Output defines the structured output schema for this workflow.
+	// If nil, the workflow returns the last step's output (backward compatible).
+	Output *config.OutputConfig
 
 	// Metadata stores additional workflow information.
 	Metadata map[string]string
@@ -375,7 +381,7 @@ type ElicitationProtocolHandler interface {
 		ctx context.Context,
 		workflowID string,
 		stepID string,
-		config *ElicitationConfig,
+		elicitConfig *ElicitationConfig,
 	) (*ElicitationResponse, error)
 }
 

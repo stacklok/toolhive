@@ -14,6 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     if: contains(github.event.pull_request.labels.*.name, 'size/XL')
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
       - name: Check for justification
         id: check
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -53,38 +56,19 @@ jobs:
               return;
             }
 
+            // Read the message template from file
+            const fs = require('fs');
+            const template = fs.readFileSync('.github/workflows/pr-size-justification-template.md', 'utf8');
+            const contributingLink = `https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/CONTRIBUTING.md#code-quality-expectations`;
+            const message = template.replace('CONTRIBUTING_LINK', contributingLink);
+
             // Request changes with explanation
             await github.rest.pulls.createReview({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber,
               event: 'REQUEST_CHANGES',
-              body: `## Large PR Detected
-
-This PR exceeds 1000 lines of changes and requires justification before it can be reviewed.
-
-### How to unblock this PR:
-
-Add a section to your PR description with the following format:
-
-\`\`\`markdown
-## Large PR Justification
-
-[Explain why this PR must be large, such as:]
-- Generated code that cannot be split
-- Large refactoring that must be atomic
-- Multiple related changes that would break if separated
-- Migration or data transformation
-\`\`\`
-
-### Alternative:
-
-Consider splitting this PR into smaller, focused changes (< 1000 lines each) for easier review and reduced risk.
-
-See our [Contributing Guidelines](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/CONTRIBUTING.md#code-quality-expectations) for more details.
-
----
-*This review will be automatically dismissed once you add the justification section.*`
+              body: message
             });
 
             console.log('Created review requesting changes');

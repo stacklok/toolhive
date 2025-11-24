@@ -29,8 +29,6 @@ ToolHive keeps you in control of your MCP estate. Integrate with popular clients
   <img src="docs/images/toolhive-diagram-light.svg" alt="ToolHive diagram" width="800" style="padding: 20px 0" />
 </picture>
 
-[Why ToolHive?](#why-toolhive) | [Quick links](#quick-links) | [Core capabilities](#core-capabilities) | [Flexible deployment](#flexible-deployment) [Contributing](#contributing) | [License](#license)
-
 ---
 
 <table>
@@ -64,6 +62,7 @@ ToolHive keeps you in control of your MCP estate. Integrate with popular clients
   - [CLI](https://docs.stacklok.com/toolhive/tutorials/quickstart-cli)
   - [Kubernetes Operator](https://docs.stacklok.com/toolhive/tutorials/quickstart-k8s)
 - 💬 [Discord](https://discord.gg/stacklok)
+- 🤝 [Contributing](#contributing)
 
 ---
 

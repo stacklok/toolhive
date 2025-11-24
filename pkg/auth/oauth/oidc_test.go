@@ -168,21 +168,30 @@ func TestDiscoverOIDCEndpoints(t *testing.T) {
 			serverResponse: func() *httptest.Server {
 				var server *httptest.Server
 				server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					assert.Equal(t, "/.well-known/openid-configuration", r.URL.Path)
 					assert.Equal(t, "ToolHive/1.0", r.Header.Get("User-Agent"))
 					assert.Equal(t, "application/json", r.Header.Get("Accept"))
 
-					doc := OIDCDiscoveryDocument{
-						Issuer:                        server.URL,
-						AuthorizationEndpoint:         server.URL + "/auth",
-						TokenEndpoint:                 server.URL + "/token",
-						JWKSURI:                       server.URL + "/jwks",
-						UserinfoEndpoint:              server.URL + "/userinfo",
-						CodeChallengeMethodsSupported: []string{"S256"},
-					}
+					switch r.URL.Path {
+					case wellKnownPath:
+						doc := OIDCDiscoveryDocument{
+							Issuer:                        server.URL,
+							AuthorizationEndpoint:         server.URL + "/auth",
+							TokenEndpoint:                 server.URL + "/token",
+							JWKSURI:                       server.URL + "/jwks",
+							UserinfoEndpoint:              server.URL + "/userinfo",
+							CodeChallengeMethodsSupported: []string{"S256"},
+							// No registration_endpoint - this will trigger fallback to OAuth endpoint
+						}
 
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(doc)
+						w.Header().Set("Content-Type", "application/json")
+						json.NewEncoder(w).Encode(doc)
+					case wellKnownOAuthServerPath:
+						// OAuth endpoint may be called as fallback when registration_endpoint is missing
+						// Return 404 to indicate it's not available
+						w.WriteHeader(http.StatusNotFound)
+					default:
+						t.Errorf("unexpected path: %s", r.URL.Path)
+					}
 				}))
 				return server
 			},
@@ -876,24 +885,30 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 			serverResponse: func() *httptest.Server {
 				var server *httptest.Server
 				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path != "/.well-known/openid-configuration" {
-						t.Errorf("unexpected path: %s", r.URL.Path)
-					}
-
 					// Use the actual server URL but replace 127.0.0.1 with localhost
 					issuerURL := strings.Replace(server.URL, "127.0.0.1", "localhost", 1)
 
-					doc := OIDCDiscoveryDocument{
-						Issuer:                        issuerURL,
-						AuthorizationEndpoint:         issuerURL + "/auth",
-						TokenEndpoint:                 issuerURL + "/token",
-						JWKSURI:                       issuerURL + "/jwks",
-						UserinfoEndpoint:              issuerURL + "/userinfo",
-						CodeChallengeMethodsSupported: []string{"S256", "plain"},
-					}
+					switch r.URL.Path {
+					case wellKnownPath:
+						doc := OIDCDiscoveryDocument{
+							Issuer:                        issuerURL,
+							AuthorizationEndpoint:         issuerURL + "/auth",
+							TokenEndpoint:                 issuerURL + "/token",
+							JWKSURI:                       issuerURL + "/jwks",
+							UserinfoEndpoint:              issuerURL + "/userinfo",
+							CodeChallengeMethodsSupported: []string{"S256", "plain"},
+							// No registration_endpoint - this will trigger fallback to OAuth endpoint
+						}
 
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(doc)
+						w.Header().Set("Content-Type", "application/json")
+						json.NewEncoder(w).Encode(doc)
+					case wellKnownOAuthServerPath:
+						// OAuth endpoint may be called as fallback when registration_endpoint is missing
+						// Return 404 to indicate it's not available
+						w.WriteHeader(http.StatusNotFound)
+					default:
+						t.Errorf("unexpected path: %s", r.URL.Path)
+					}
 				}))
 				return server
 			},
@@ -913,21 +928,30 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 			serverResponse: func() *httptest.Server {
 				var server *httptest.Server
 				server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					assert.Equal(t, "/.well-known/openid-configuration", r.URL.Path)
 					assert.Equal(t, "ToolHive/1.0", r.Header.Get("User-Agent"))
 					assert.Equal(t, "application/json", r.Header.Get("Accept"))
 
-					doc := OIDCDiscoveryDocument{
-						Issuer:                        server.URL,
-						AuthorizationEndpoint:         server.URL + "/auth",
-						TokenEndpoint:                 server.URL + "/token",
-						JWKSURI:                       server.URL + "/jwks",
-						UserinfoEndpoint:              server.URL + "/userinfo",
-						CodeChallengeMethodsSupported: []string{"S256"},
-					}
+					switch r.URL.Path {
+					case wellKnownPath:
+						doc := OIDCDiscoveryDocument{
+							Issuer:                        server.URL,
+							AuthorizationEndpoint:         server.URL + "/auth",
+							TokenEndpoint:                 server.URL + "/token",
+							JWKSURI:                       server.URL + "/jwks",
+							UserinfoEndpoint:              server.URL + "/userinfo",
+							CodeChallengeMethodsSupported: []string{"S256"},
+							// No registration_endpoint - this will trigger fallback to OAuth endpoint
+						}
 
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(doc)
+						w.Header().Set("Content-Type", "application/json")
+						json.NewEncoder(w).Encode(doc)
+					case wellKnownOAuthServerPath:
+						// OAuth endpoint may be called as fallback when registration_endpoint is missing
+						// Return 404 to indicate it's not available
+						w.WriteHeader(http.StatusNotFound)
+					default:
+						t.Errorf("unexpected path: %s", r.URL.Path)
+					}
 				}))
 				return server
 			},

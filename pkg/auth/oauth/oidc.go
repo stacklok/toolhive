@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
@@ -136,6 +137,23 @@ func discoverOIDCEndpointsWithClientAndValidation(
 
 	doc, err := try(oidcURL, true)
 	if err == nil {
+		// OIDC discovery succeeded, but check if we need registration_endpoint
+		// If it's missing, try OAuth authorization server well-known URL as fallback
+		if doc.RegistrationEndpoint == "" {
+			logger.Debugf("OIDC discovery succeeded but registration_endpoint is missing, " +
+				"trying OAuth authorization server well-known URL")
+			oauthDoc, oauthErr := try(oauthURL, false)
+			if oauthErr == nil && oauthDoc.RegistrationEndpoint != "" {
+				// Validate issuer matches before merging
+				if oauthDoc.Issuer == doc.Issuer {
+					doc.RegistrationEndpoint = oauthDoc.RegistrationEndpoint
+					logger.Infof("Found registration_endpoint in OAuth authorization server metadata: %s", doc.RegistrationEndpoint)
+				} else {
+					logger.Warnf("Issuer mismatch between OIDC (%s) and OAuth (%s) discovery documents, not merging registration_endpoint",
+						doc.Issuer, oauthDoc.Issuer)
+				}
+			}
+		}
 		return doc, nil
 	}
 	oidcErr := err

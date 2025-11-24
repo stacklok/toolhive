@@ -153,6 +153,16 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			configYAML := serverConfigMap.Data["config.yaml"]
 			testHelpers.verifyConfigMapContent(configYAML, registry.Name, expectedConfigContent)
 
+			// Verify the appropriate source type field is present (file, git, or api)
+			// This is determined by which source is configured in the registry
+			if registry.Spec.Registries[0].ConfigMapRef != nil {
+				Expect(configYAML).To(ContainSubstring("file:"), "ConfigMap source should have file field")
+			} else if registry.Spec.Registries[0].Git != nil {
+				Expect(configYAML).To(ContainSubstring("git:"), "Git source should have git field")
+			} else if registry.Spec.Registries[0].API != nil {
+				Expect(configYAML).To(ContainSubstring("api:"), "API source should have api field")
+			}
+
 			By("verifying the ConfigMap is owned by the MCPRegistry")
 			testHelpers.verifyConfigMapOwnership(serverConfigMap, registry)
 
@@ -181,7 +191,6 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 					Create(registryHelper)
 			},
 			map[string]string{
-				"type":     "file", // ConfigMap sources become file type in the server config
 				"path":     filepath.Join(config.RegistryJSONFilePath, config.RegistryJSONFileName),
 				"interval": "1h",
 			},
@@ -204,7 +213,6 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 					Create(registryHelper)
 			},
 			map[string]string{
-				"type":       "git",
 				"repository": "https://github.com/mcp-servers/example-registry.git",
 				"branch":     "main",
 				"interval":   "2h",
@@ -225,7 +233,6 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 					Create(registryHelper)
 			},
 			map[string]string{
-				"type":     "api",
 				"endpoint": "http://registry-api.default.svc.cluster.local:8080/api",
 				"interval": "30m",
 			},
@@ -385,6 +392,7 @@ func (*serverConfigTestHelpers) verifyConfigMapBasics(configMap *corev1.ConfigMa
 // verifyConfigMapContent verifies source-specific content in the config.yaml
 func (*serverConfigTestHelpers) verifyConfigMapContent(configYAML string, registryName string, expectedContent map[string]string) {
 	Expect(configYAML).To(ContainSubstring(fmt.Sprintf("registryName: %s", registryName)))
+	Expect(configYAML).To(ContainSubstring("registries:"))
 	Expect(configYAML).To(ContainSubstring("format: toolhive"))
 
 	for key, value := range expectedContent {

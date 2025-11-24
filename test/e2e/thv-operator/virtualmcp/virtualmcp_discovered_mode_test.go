@@ -20,21 +20,75 @@ import (
 
 var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 	var (
-		testNamespace   = "default"
-		mcpGroupName    = "test-discovered-group"
-		vmcpServerName  = "test-vmcp-discovered"
-		backend1Name    = "backend-fetch"
-		backend2Name    = "backend-osv"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
-		vmcpNodePort    int32
+		testNamespace       = "default"
+		mcpGroupName        = "test-discovered-group"
+		vmcpServerName      = "test-vmcp-discovered"
+		backend1Name        = "backend-fetch"
+		backend2Name        = "backend-osv"
+		authConfigName      = "test-token-exchange-auth"
+		authSecretName      = "test-auth-secret"
+		mockOAuthServerName = "mock-oauth-discovered"
+		timeout             = 5 * time.Minute
+		pollingInterval     = 5 * time.Second
+		vmcpNodePort        int32
 	)
 
 	vmcpServiceName := func() string {
 		return fmt.Sprintf("vmcp-%s", vmcpServerName)
 	}
 
+	mockOAuthTokenURL := func() string {
+		return fmt.Sprintf("http://%s.%s.svc.cluster.local/token", mockOAuthServerName, testNamespace)
+	}
+
 	BeforeAll(func() {
+		By("Deploying mock OAuth server for token exchange")
+		DeployMockOIDCServerHTTP(ctx, k8sClient, testNamespace, mockOAuthServerName)
+
+		By("Creating auth secret for token exchange")
+		authSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      authSecretName,
+				Namespace: testNamespace,
+			},
+			StringData: map[string]string{
+				"client-secret": "test-client-secret-value",
+			},
+		}
+		Expect(k8sClient.Create(ctx, authSecret)).To(Succeed())
+
+		By("Creating MCPExternalAuthConfig for token exchange")
+		externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      authConfigName,
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+					TokenURL: mockOAuthTokenURL(),
+					ClientID: "test-client-id",
+					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						Name: authSecretName,
+						Key:  "client-secret",
+					},
+					Audience:         "https://api.example.com",
+					Scopes:           []string{"read", "write"},
+					SubjectTokenType: "access_token",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, externalAuthConfig)).To(Succeed())
+
+		By("Waiting for MCPExternalAuthConfig to be ready")
+		Eventually(func() error {
+			config := &mcpv1alpha1.MCPExternalAuthConfig{}
+			return k8sClient.Get(ctx, types.NamespacedName{
+				Name:      authConfigName,
+				Namespace: testNamespace,
+			}, config)
+		}, timeout, pollingInterval).Should(Succeed())
+
 		By("Creating MCPGroup")
 		mcpGroup := &mcpv1alpha1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{
@@ -59,7 +113,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			return mcpGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
 		}, timeout, pollingInterval).Should(BeTrue())
 
-		By("Creating first backend MCPServer - fetch (streamable-http)")
+		By("Creating first backend MCPServer WITH auth - fetch (streamable-http)")
 		backend1 := &mcpv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backend1Name,
@@ -71,11 +125,14 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,
+				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+					Name: authConfigName,
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, backend1)).To(Succeed())
 
-		By("Creating second backend MCPServer - osv (streamable-http)")
+		By("Creating second backend MCPServer WITHOUT auth - osv (streamable-http)")
 		backend2 := &mcpv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backend2Name,
@@ -130,7 +187,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 		// Backends will be tested through VirtualMCPServer aggregation
 		By("Backend MCPServers are running (ClusterIP services)")
 
-		By("Creating VirtualMCPServer in discovered mode")
+		By("Creating VirtualMCPServer in discovered mode with discovered auth")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
@@ -142,6 +199,9 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
+				},
+				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+					Source: "discovered", // Discovered mode - auth discovered from backend MCPServers
 				},
 				// Discovered mode is the default - tools from all backends in the group are automatically discovered
 				Aggregation: &mcpv1alpha1.AggregationConfig{
@@ -220,6 +280,31 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 		if err := k8sClient.Delete(ctx, mcpGroup); err != nil {
 			GinkgoWriter.Printf("Warning: failed to delete MCPGroup: %v\n", err)
 		}
+
+		By("Cleaning up MCPExternalAuthConfig")
+		externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      authConfigName,
+				Namespace: testNamespace,
+			},
+		}
+		if err := k8sClient.Delete(ctx, externalAuthConfig); err != nil {
+			GinkgoWriter.Printf("Warning: failed to delete MCPExternalAuthConfig: %v\n", err)
+		}
+
+		By("Cleaning up auth secret")
+		authSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      authSecretName,
+				Namespace: testNamespace,
+			},
+		}
+		if err := k8sClient.Delete(ctx, authSecret); err != nil {
+			GinkgoWriter.Printf("Warning: failed to delete auth secret: %v\n", err)
+		}
+
+		By("Cleaning up mock OAuth server")
+		CleanupMockServer(ctx, k8sClient, testNamespace, mockOAuthServerName, "")
 	})
 
 	// Individual backend tests removed - backends are validated through VirtualMCPServer aggregation

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -270,6 +271,31 @@ func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1
 	strategyType, metadata, err := converters.ExternalAuthConfigToStrategyMetadata(externalAuth)
 	if err != nil {
 		return fmt.Errorf("failed to convert MCPExternalAuthConfig to strategy metadata: %w", err)
+	}
+
+	// For discovered auth, fetch the actual secret value from Kubernetes
+	// (unlike inline mode where secrets are mounted as env vars in the pod)
+	if strategyType == "token_exchange" && externalAuth.Spec.TokenExchange != nil {
+		if secretRef := externalAuth.Spec.TokenExchange.ClientSecretRef; secretRef != nil {
+			secret := &corev1.Secret{}
+			secretKey := types.NamespacedName{
+				Name:      secretRef.Name,
+				Namespace: mcpServer.Namespace,
+			}
+			if err := d.k8sClient.Get(ctx, secretKey, secret); err != nil {
+				return fmt.Errorf("failed to get client secret %s: %w", secretRef.Name, err)
+			}
+
+			secretValue, ok := secret.Data[secretRef.Key]
+			if !ok {
+				return fmt.Errorf("client secret %s is missing key %s", secretRef.Name, secretRef.Key)
+			}
+
+			// Replace client_secret_env with actual client_secret value
+			// This allows vMCP to use the secret without requiring it to be mounted as an env var
+			delete(metadata, "client_secret_env")
+			metadata["client_secret"] = string(secretValue)
+		}
 	}
 
 	// Populate backend auth fields

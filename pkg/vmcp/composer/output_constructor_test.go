@@ -246,6 +246,148 @@ func TestConstructOutputFromConfig(t *testing.T) {
 			wantErr:     true,
 			errMsg:      "failed to deserialize JSON",
 		},
+		{
+			name: "empty string value from template",
+			outputCfg: &config.OutputConfig{
+				Properties: map[string]config.OutputProperty{
+					"message": {
+						Type:        "string",
+						Description: "Empty message",
+						Value:       "{{.steps.step1.output.empty}}",
+					},
+				},
+			},
+			workflowCtx: &WorkflowContext{
+				Steps: map[string]*StepResult{
+					"step1": {
+						Status: StepStatusCompleted,
+						Output: map[string]any{
+							"empty": "",
+						},
+					},
+				},
+			},
+			want: map[string]any{
+				"message": "",
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing field with no value placeholder and no default",
+			outputCfg: &config.OutputConfig{
+				Properties: map[string]config.OutputProperty{
+					"result": {
+						Type:        "string",
+						Description: "Result",
+						Value:       "{{.steps.step1.output.nonexistent}}",
+					},
+				},
+			},
+			workflowCtx: &WorkflowContext{
+				Steps: map[string]*StepResult{
+					"step1": {
+						Status: StepStatusCompleted,
+						Output: map[string]any{
+							"data": "value",
+						},
+					},
+				},
+			},
+			// Without default, <no value> is returned as-is
+			want: map[string]any{
+				"result": "<no value>",
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing field with no value placeholder and default",
+			outputCfg: &config.OutputConfig{
+				Properties: map[string]config.OutputProperty{
+					"result": {
+						Type:        "string",
+						Description: "Result",
+						Value:       "{{.steps.step1.output.nonexistent}}",
+						Default:     "default_value",
+					},
+				},
+			},
+			workflowCtx: &WorkflowContext{
+				Steps: map[string]*StepResult{
+					"step1": {
+						Status: StepStatusCompleted,
+						Output: map[string]any{
+							"data": "value",
+						},
+					},
+				},
+			},
+			// With default, the default value should be used instead of <no value>
+			want: map[string]any{
+				"result": "default_value",
+			},
+			wantErr: false,
+		},
+		{
+			name: "integer field with no value placeholder and default",
+			outputCfg: &config.OutputConfig{
+				Properties: map[string]config.OutputProperty{
+					"count": {
+						Type:        "integer",
+						Description: "Count",
+						Value:       "{{.steps.step1.output.missing_count}}",
+						Default:     42,
+					},
+				},
+			},
+			workflowCtx: &WorkflowContext{
+				Steps: map[string]*StepResult{
+					"step1": {
+						Status: StepStatusCompleted,
+						Output: map[string]any{
+							"other": "value",
+						},
+					},
+				},
+			},
+			want: map[string]any{
+				"count": int64(42),
+			},
+			wantErr: false,
+		},
+		{
+			name: "empty string is different from no value",
+			outputCfg: &config.OutputConfig{
+				Properties: map[string]config.OutputProperty{
+					"value1": {
+						Type:        "string",
+						Description: "Empty string from backend",
+						Value:       "{{.steps.step1.output.empty}}",
+						Default:     "should_not_be_used",
+					},
+					"value2": {
+						Type:        "string",
+						Description: "Missing field",
+						Value:       "{{.steps.step1.output.missing}}",
+						Default:     "should_be_used",
+					},
+				},
+			},
+			workflowCtx: &WorkflowContext{
+				Steps: map[string]*StepResult{
+					"step1": {
+						Status: StepStatusCompleted,
+						Output: map[string]any{
+							"empty": "", // Explicit empty string
+						},
+					},
+				},
+			},
+			want: map[string]any{
+				"value1": "",               // Empty string preserved
+				"value2": "should_be_used", // Default used for missing field
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

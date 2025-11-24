@@ -11,6 +11,16 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
+const (
+	// Type constants for output properties
+	typeString  = "string"
+	typeInteger = "integer"
+	typeNumber  = "number"
+	typeBoolean = "boolean"
+	typeObject  = "object"
+	typeArray   = "array"
+)
+
 // constructOutputFromConfig builds the workflow output from the output configuration.
 // This expands templates in the Value fields, deserializes JSON for object types,
 // applies default values on expansion failure, and validates the final output.
@@ -34,11 +44,15 @@ func (e *workflowEngine) constructOutputFromConfig(
 		output[propertyName] = value
 	}
 
-	// Validate required fields are present
+	// Validate required fields are present and non-nil
 	if len(outputConfig.Required) > 0 {
 		for _, requiredField := range outputConfig.Required {
-			if _, exists := output[requiredField]; !exists {
+			value, exists := output[requiredField]
+			if !exists {
 				return nil, fmt.Errorf("required output field %q is missing", requiredField)
+			}
+			if value == nil {
+				return nil, fmt.Errorf("required output field %q is nil", requiredField)
 			}
 		}
 	}
@@ -103,7 +117,7 @@ func (e *workflowEngine) constructOutputPropertyFromValue(
 	}
 
 	// For object types, attempt JSON deserialization
-	if propertyDef.Type == "object" { //nolint:goconst // Type literals are clearer than constants here
+	if propertyDef.Type == typeObject {
 		var obj map[string]any
 		if err := json.Unmarshal([]byte(expandedStr), &obj); err != nil {
 			// JSON deserialization failed - try default value
@@ -117,7 +131,7 @@ func (e *workflowEngine) constructOutputPropertyFromValue(
 	}
 
 	// For array types, attempt JSON deserialization
-	if propertyDef.Type == "array" {
+	if propertyDef.Type == typeArray {
 		var arr []any
 		if err := json.Unmarshal([]byte(expandedStr), &arr); err != nil {
 			// JSON deserialization failed - try default value
@@ -173,10 +187,10 @@ func (e *workflowEngine) constructOutputPropertyFromProperties(
 // coerceStringToType converts a string value to the specified type.
 func (*workflowEngine) coerceStringToType(value string, targetType string) (any, error) {
 	switch targetType {
-	case "string":
+	case typeString:
 		return value, nil
 
-	case "integer":
+	case typeInteger:
 		// Try to parse as integer
 		intVal, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
@@ -184,7 +198,7 @@ func (*workflowEngine) coerceStringToType(value string, targetType string) (any,
 		}
 		return intVal, nil
 
-	case "number":
+	case typeNumber:
 		// Try to parse as float
 		floatVal, err := strconv.ParseFloat(value, 64)
 		if err != nil {
@@ -192,7 +206,7 @@ func (*workflowEngine) coerceStringToType(value string, targetType string) (any,
 		}
 		return floatVal, nil
 
-	case "boolean":
+	case typeBoolean:
 		// Try to parse as boolean
 		switch value {
 		case "true", "True", "TRUE", "1": //nolint:goconst // Boolean literals are clearer than constants
@@ -220,14 +234,14 @@ func (*workflowEngine) coerceDefaultValue(defaultVal any, targetType string) (an
 
 	// If default is already the correct type, return as-is
 	switch targetType {
-	case "string":
+	case typeString:
 		if str, ok := defaultVal.(string); ok {
 			return str, nil
 		}
 		// Convert other types to string
 		return fmt.Sprintf("%v", defaultVal), nil
 
-	case "integer":
+	case typeInteger:
 		// Handle various integer representations
 		switch v := defaultVal.(type) {
 		case int:
@@ -237,16 +251,26 @@ func (*workflowEngine) coerceDefaultValue(defaultVal any, targetType string) (an
 		case int64:
 			return v, nil
 		case float64:
-			return int64(v), nil
+			// Check for potential truncation
+			intVal := int64(v)
+			if float64(intVal) != v {
+				logger.Warnf("Potential precision loss converting float64 %v to int64 %d", v, intVal)
+			}
+			return intVal, nil
 		case float32:
-			return int64(v), nil
+			// Check for potential truncation
+			intVal := int64(v)
+			if float32(intVal) != v {
+				logger.Warnf("Potential precision loss converting float32 %v to int64 %d", v, intVal)
+			}
+			return intVal, nil
 		case string:
 			return strconv.ParseInt(v, 10, 64)
 		default:
 			return nil, fmt.Errorf("cannot coerce default value %v (type %T) to integer", defaultVal, defaultVal)
 		}
 
-	case "number":
+	case typeNumber:
 		// Handle various number representations
 		switch v := defaultVal.(type) {
 		case float64:
@@ -265,7 +289,7 @@ func (*workflowEngine) coerceDefaultValue(defaultVal any, targetType string) (an
 			return nil, fmt.Errorf("cannot coerce default value %v (type %T) to number", defaultVal, defaultVal)
 		}
 
-	case "boolean":
+	case typeBoolean:
 		switch v := defaultVal.(type) {
 		case bool:
 			return v, nil
@@ -285,7 +309,7 @@ func (*workflowEngine) coerceDefaultValue(defaultVal any, targetType string) (an
 			return nil, fmt.Errorf("cannot coerce default value %v (type %T) to boolean", defaultVal, defaultVal)
 		}
 
-	case "object":
+	case typeObject:
 		// For objects, accept maps or JSON strings
 		if objMap, ok := defaultVal.(map[string]any); ok {
 			return objMap, nil
@@ -299,7 +323,7 @@ func (*workflowEngine) coerceDefaultValue(defaultVal any, targetType string) (an
 		}
 		return nil, fmt.Errorf("cannot coerce default value %v (type %T) to object", defaultVal, defaultVal)
 
-	case "array":
+	case typeArray:
 		// For arrays, accept slices or JSON strings
 		if arr, ok := defaultVal.([]any); ok {
 			return arr, nil

@@ -147,6 +147,13 @@ func validateOutputProperty(name string, prop config.OutputProperty, depth int) 
 		}
 	}
 
+	// Validate default value type matches declared type
+	if prop.Default != nil {
+		if err := validateDefaultValueType(prop.Default, prop.Type, name); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -181,4 +188,75 @@ func validateTemplateSyntax(tmpl string) error {
 	}
 
 	return nil
+}
+
+// validateDefaultValueType validates that a default value is compatible with the declared type.
+// This performs basic type checking to catch configuration errors early.
+func validateDefaultValueType(defaultVal any, targetType string, propertyName string) error {
+	switch targetType {
+	case "string":
+		// Strings accept any type (will be converted via fmt.Sprintf)
+		return nil
+
+	case "integer":
+		// Accept integer types and numeric types that can be converted
+		switch defaultVal.(type) {
+		case int, int32, int64, float32, float64, string:
+			return nil
+		default:
+			return NewValidationError("output.properties.default",
+				fmt.Sprintf("property %q has default value of type %T, expected integer-compatible type", propertyName, defaultVal),
+				nil)
+		}
+
+	case "number":
+		// Accept numeric types
+		switch defaultVal.(type) {
+		case float32, float64, int, int32, int64, string:
+			return nil
+		default:
+			return NewValidationError("output.properties.default",
+				fmt.Sprintf("property %q has default value of type %T, expected number-compatible type", propertyName, defaultVal),
+				nil)
+		}
+
+	case "boolean":
+		// Accept boolean types and convertible types
+		switch defaultVal.(type) {
+		case bool, int, int32, int64, string:
+			return nil
+		default:
+			return NewValidationError("output.properties.default",
+				fmt.Sprintf("property %q has default value of type %T, expected boolean-compatible type", propertyName, defaultVal),
+				nil)
+		}
+
+	case "object":
+		// Accept map or string (JSON)
+		switch defaultVal.(type) {
+		case map[string]any, string:
+			return nil
+		default:
+			return NewValidationError("output.properties.default",
+				fmt.Sprintf("property %q has default value of type %T, expected object or JSON string",
+					propertyName, defaultVal),
+				nil)
+		}
+
+	case "array":
+		// Accept slice or string (JSON)
+		switch defaultVal.(type) {
+		case []any, string:
+			return nil
+		default:
+			return NewValidationError("output.properties.default",
+				fmt.Sprintf("property %q has default value of type %T, expected array ([]any) or JSON string", propertyName, defaultVal),
+				nil)
+		}
+
+	default:
+		return NewValidationError("output.properties.type",
+			fmt.Sprintf("property %q has unsupported type %q", propertyName, targetType),
+			nil)
+	}
 }

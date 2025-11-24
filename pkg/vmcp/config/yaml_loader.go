@@ -64,12 +64,14 @@ type rawConfig struct {
 type rawIncomingAuth struct {
 	Type string `yaml:"type"`
 	OIDC *struct {
-		Issuer          string   `yaml:"issuer"`
-		ClientID        string   `yaml:"client_id"`
-		ClientSecretEnv string   `yaml:"client_secret_env"` // Environment variable name containing the client secret
-		Audience        string   `yaml:"audience"`
-		Resource        string   `yaml:"resource"`
-		Scopes          []string `yaml:"scopes"`
+		Issuer                          string   `yaml:"issuer"`
+		ClientID                        string   `yaml:"client_id"`
+		ClientSecretEnv                 string   `yaml:"client_secret_env"` // Environment variable name containing the client secret
+		Audience                        string   `yaml:"audience"`
+		Resource                        string   `yaml:"resource"`
+		Scopes                          []string `yaml:"scopes"`
+		ProtectedResourceAllowPrivateIP bool     `yaml:"protected_resource_allow_private_ip"`
+		InsecureAllowHTTP               bool     `yaml:"insecure_allow_http"`
 	} `yaml:"oidc"`
 	Authz *struct {
 		Type     string   `yaml:"type"`
@@ -254,12 +256,14 @@ func (*YAMLLoader) transformIncomingAuth(raw *rawIncomingAuth) (*IncomingAuthCon
 
 	if raw.OIDC != nil {
 		cfg.OIDC = &OIDCConfig{
-			Issuer:          raw.OIDC.Issuer,
-			ClientID:        raw.OIDC.ClientID,
-			ClientSecretEnv: raw.OIDC.ClientSecretEnv,
-			Audience:        raw.OIDC.Audience,
-			Resource:        raw.OIDC.Resource,
-			Scopes:          raw.OIDC.Scopes,
+			Issuer:                          raw.OIDC.Issuer,
+			ClientID:                        raw.OIDC.ClientID,
+			ClientSecretEnv:                 raw.OIDC.ClientSecretEnv,
+			Audience:                        raw.OIDC.Audience,
+			Resource:                        raw.OIDC.Resource,
+			Scopes:                          raw.OIDC.Scopes,
+			ProtectedResourceAllowPrivateIP: raw.OIDC.ProtectedResourceAllowPrivateIP,
+			InsecureAllowHTTP:               raw.OIDC.InsecureAllowHTTP,
 		}
 	}
 

@@ -46,8 +46,6 @@ func NewDefaultAggregator(
 // QueryCapabilities queries a single backend for its MCP capabilities.
 // Returns the raw capabilities (tools, resources, prompts) from the backend.
 func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.Backend) (*BackendCapabilities, error) {
-	logger.Debugf("Querying capabilities from backend %s", backend.ID)
-
 	// Create a BackendTarget from the Backend
 	// Use BackendToTarget helper to ensure all fields (including auth) are copied
 	target := vmcp.BackendToTarget(&backend)

@@ -37,44 +37,43 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 		return fmt.Sprintf("vmcp-%s", vmcpServerName)
 	}
 
-	mockOAuthTokenURL := func() string {
-		return fmt.Sprintf("http://%s.%s.svc.cluster.local/token", mockOAuthServerName, testNamespace)
-	}
-
 	BeforeAll(func() {
 		By("Deploying mock OAuth server for token exchange")
 		DeployMockOIDCServerHTTP(ctx, k8sClient, testNamespace, mockOAuthServerName)
 
-		By("Creating auth secret for token exchange")
+		By("Creating default MCPGroup to prevent migration errors")
+		defaultGroup := &mcpv1alpha1.MCPGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "default",
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.MCPGroupSpec{},
+		}
+		Expect(k8sClient.Create(ctx, defaultGroup)).To(Succeed())
+
+		By("Creating auth secret for bearer token")
 		authSecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      authSecretName,
 				Namespace: testNamespace,
 			},
 			StringData: map[string]string{
-				"client-secret": "test-client-secret-value",
+				"bearer-token": "Bearer test-bearer-token-value",
 			},
 		}
 		Expect(k8sClient.Create(ctx, authSecret)).To(Succeed())
 
-		By("Creating MCPExternalAuthConfig for token exchange")
+		By("Creating MCPExternalAuthConfig for header injection (OIDC bearer token)")
 		externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      authConfigName,
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
-					TokenURL: mockOAuthTokenURL(),
-					ClientID: "test-client-id",
-					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-						Name: authSecretName,
-						Key:  "client-secret",
-					},
-					Audience:         "https://api.example.com",
-					Scopes:           []string{"read", "write"},
-					SubjectTokenType: "access_token",
+				Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
+				HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+					HeaderName: "Authorization",
+					Value:      "Bearer test-bearer-token-value",
 				},
 			},
 		}
@@ -185,7 +184,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 
 		// Skip NodePort lookup for backends - MCPServers use ClusterIP services
 		// Backends will be tested through VirtualMCPServer aggregation
-		By("Backend MCPServers are running (ClusterIP services)")
+		By("All backend MCPServers are running (ClusterIP services)")
 
 		By("Creating VirtualMCPServer in discovered mode with discovered auth")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
@@ -238,6 +237,17 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 	})
 
 	AfterAll(func() {
+		By("Cleaning up default MCPGroup")
+		defaultGroup := &mcpv1alpha1.MCPGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "default",
+				Namespace: testNamespace,
+			},
+		}
+		if err := k8sClient.Delete(ctx, defaultGroup); err != nil {
+			GinkgoWriter.Printf("Warning: failed to delete default MCPGroup: %v\n", err)
+		}
+
 		By("Cleaning up VirtualMCPServer")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
@@ -328,7 +338,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
-		It("should aggregate tools from both backends", func() {
+		It("should aggregate tools from all backends", func() {
 			By("Creating MCP client for VirtualMCPServer")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
 			mcpClient, err := client.NewStreamableHttpClient(serverURL)
@@ -343,7 +353,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = "2024-11-05"
+			initRequest.Params.ProtocolVersion = mcpProtocolVersion
 			initRequest.Params.ClientInfo = mcp.Implementation{
 				Name:    "toolhive-e2e-test",
 				Version: "1.0.0",
@@ -363,18 +373,30 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				GinkgoWriter.Printf("  Aggregated tool: %s - %s\n", tool.Name, tool.Description)
 			}
 
-			// In discovered mode with prefix conflict resolution, tools from both backends should be available
+			// In discovered mode with prefix conflict resolution, tools from all backends should be available
 			// fetch server has 'fetch' tool, osv server has vulnerability scanning tools
 			// With prefix strategy, they should be prefixed with backend names
-			Expect(len(tools.Tools)).To(BeNumerically(">=", 2),
-				"VirtualMCPServer should aggregate tools from both backends")
+			Expect(len(tools.Tools)).To(BeNumerically(">=", 4),
+				"VirtualMCPServer should aggregate tools from both backends (3 from osv, 1+ from fetch)")
 
-			// Verify we have tools from both backends (with prefixes due to conflict resolution)
+			// Verify we have tools from all backends (with prefixes due to conflict resolution)
 			toolNames := make([]string, len(tools.Tools))
+			hasFetchTool := false
+			hasOsvTool := false
 			for i, tool := range tools.Tools {
 				toolNames[i] = tool.Name
+				if strings.HasPrefix(tool.Name, "backend-fetch") {
+					hasFetchTool = true
+				}
+				if strings.HasPrefix(tool.Name, "backend-osv") {
+					hasOsvTool = true
+				}
 			}
 			GinkgoWriter.Printf("All aggregated tool names: %v\n", toolNames)
+
+			// Fail early if expected tools are missing
+			Expect(hasOsvTool).To(BeTrue(), "Should have tools from backend-osv")
+			Expect(hasFetchTool).To(BeTrue(), "Should have tools from backend-fetch (requires header injection auth)")
 		})
 
 		It("should be able to call tools through VirtualMCPServer", func() {
@@ -392,7 +414,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = "2024-11-05"
+			initRequest.Params.ProtocolVersion = mcpProtocolVersion
 			initRequest.Params.ClientInfo = mcp.Implementation{
 				Name:    "toolhive-e2e-test",
 				Version: "1.0.0",
@@ -437,6 +459,97 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			} else {
 				GinkgoWriter.Printf("Warning: fetch tool not found in aggregated tools\n")
 			}
+		})
+	})
+
+	Context("when verifying auth discovery and configuration", func() {
+		It("should discover and apply header injection auth to authenticated backends", func() {
+			By("Verifying authenticated backend's tools are available through VirtualMCPServer")
+			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			Expect(err).ToNot(HaveOccurred())
+			defer mcpClient.Close()
+
+			By("Starting transport and initializing connection")
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			err = mcpClient.Start(ctx)
+			Expect(err).ToNot(HaveOccurred())
+
+			initRequest := mcp.InitializeRequest{}
+			initRequest.Params.ProtocolVersion = mcpProtocolVersion
+			initRequest.Params.ClientInfo = mcp.Implementation{
+				Name:    "toolhive-auth-test",
+				Version: "1.0.0",
+			}
+
+			_, err = mcpClient.Initialize(ctx, initRequest)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("Verifying tools from authenticated backend (fetch) are accessible")
+			listRequest := mcp.ListToolsRequest{}
+			tools, err := mcpClient.ListTools(ctx, listRequest)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tools.Tools).ToNot(BeEmpty())
+
+			// Verify that the authenticated backend's tool is present
+			// This confirms auth was properly discovered and applied during aggregation
+			var fetchTool string
+			for _, tool := range tools.Tools {
+				if strings.Contains(tool.Name, "fetch") {
+					fetchTool = tool.Name
+					break
+				}
+			}
+			Expect(fetchTool).ToNot(BeEmpty(), "Should find fetch tool from authenticated backend - confirms header injection auth was applied")
+
+			GinkgoWriter.Printf("Successfully discovered tool %s from authenticated backend\n", fetchTool)
+		})
+
+		It("should properly discover auth configuration from MCPServer", func() {
+			By("Verifying authenticated backend has ExternalAuthConfigRef")
+			backend := &mcpv1alpha1.MCPServer{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      backend1Name,
+				Namespace: testNamespace,
+			}, backend)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(backend.Spec.ExternalAuthConfigRef).ToNot(BeNil(),
+				"Authenticated backend should have ExternalAuthConfigRef")
+			Expect(backend.Spec.ExternalAuthConfigRef.Name).To(Equal(authConfigName),
+				"Backend should reference the header injection auth config")
+
+			By("Verifying MCPExternalAuthConfig is configured correctly")
+			authConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      authConfigName,
+				Namespace: testNamespace,
+			}, authConfig)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(authConfig.Spec.Type).To(Equal(mcpv1alpha1.ExternalAuthTypeHeaderInjection),
+				"Auth config should be header injection type")
+			Expect(authConfig.Spec.HeaderInjection).ToNot(BeNil())
+			Expect(authConfig.Spec.HeaderInjection.HeaderName).To(Equal("Authorization"),
+				"Header should be Authorization")
+			Expect(authConfig.Spec.HeaderInjection.Value).To(ContainSubstring("Bearer"),
+				"Header value should contain Bearer token")
+
+			By("Verifying VirtualMCPServer uses discovered auth mode")
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			}, vmcpServer)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(vmcpServer.Spec.OutgoingAuth).ToNot(BeNil())
+			Expect(vmcpServer.Spec.OutgoingAuth.Source).To(Equal("discovered"),
+				"VirtualMCPServer should use discovered auth mode")
+
+			GinkgoWriter.Printf("Auth discovery verified: backend -> ExternalAuthConfig -> OAuth server\n")
 		})
 	})
 

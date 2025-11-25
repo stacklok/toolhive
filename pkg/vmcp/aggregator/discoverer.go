@@ -142,9 +142,6 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vm
 		}
 		backend.Metadata["group"] = groupRef
 
-		logger.Debugf("Discovered backend %s: %s (%s) with health status %s",
-			backend.ID, backend.BaseURL, backend.TransportType, backend.HealthStatus)
-
 		backends = append(backends, *backend)
 	}
 
@@ -165,13 +162,25 @@ func (d *backendDiscoverer) applyAuthConfigToBackend(backend *vmcp.Backend, back
 	}
 
 	// Determine if we should use discovered auth or config-based auth
-	useDiscoveredAuth := d.shouldUseDiscoveredAuth(backendName, backend.AuthStrategy)
+	var useDiscoveredAuth bool
+	switch d.authConfig.Source {
+	case "discovered":
+		// In discovered mode, use auth discovered from MCPServer (if any exists)
+		// If no auth is discovered, try config-based auth (if configured)
+		useDiscoveredAuth = backend.AuthStrategy != ""
+	case "mixed":
+		// In mixed mode, use discovered auth as default, but allow config overrides
+		// If there's no explicit config for this backend, use discovered auth
+		_, hasExplicitConfig := d.authConfig.Backends[backendName]
+		useDiscoveredAuth = !hasExplicitConfig && backend.AuthStrategy != ""
+	default:
+		// For inline or other modes, use config-based auth
+		useDiscoveredAuth = false
+	}
 
 	if useDiscoveredAuth {
 		// Keep the auth discovered from MCPServer (already populated in backend)
-		if backend.AuthStrategy != "" {
-			logger.Debugf("Backend %s using discovered auth strategy: %s", backendName, backend.AuthStrategy)
-		}
+		logger.Debugf("Backend %s using discovered auth strategy: %s", backendName, backend.AuthStrategy)
 	} else {
 		// Use auth from config (inline mode or explicit override in mixed mode)
 		authStrategy, authMetadata := d.authConfig.ResolveForBackend(backendName)
@@ -180,23 +189,5 @@ func (d *backendDiscoverer) applyAuthConfigToBackend(backend *vmcp.Backend, back
 			backend.AuthMetadata = authMetadata
 			logger.Debugf("Backend %s configured with auth strategy from config: %s", backendName, authStrategy)
 		}
-	}
-}
-
-// shouldUseDiscoveredAuth determines if discovered auth should be used for a backend
-// based on the configured source mode.
-func (d *backendDiscoverer) shouldUseDiscoveredAuth(backendName, discoveredAuthStrategy string) bool {
-	switch d.authConfig.Source {
-	case "discovered":
-		// In discovered mode, always use auth discovered from MCPServer
-		return true
-	case "mixed":
-		// In mixed mode, use discovered auth as default, but allow config overrides
-		// If there's no explicit config for this backend, use discovered auth
-		_, hasExplicitConfig := d.authConfig.Backends[backendName]
-		return !hasExplicitConfig && discoveredAuthStrategy != ""
-	default:
-		// For inline or other modes, use config-based auth
-		return false
 	}
 }

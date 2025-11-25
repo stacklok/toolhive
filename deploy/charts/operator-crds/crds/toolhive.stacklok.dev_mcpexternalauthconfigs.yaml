@@ -56,6 +56,41 @@ spec:
               MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
               MCPServer resources in the same namespace.
             properties:
+              headerInjection:
+                description: |-
+                  HeaderInjection configures custom HTTP header injection
+                  Only used when Type is "headerInjection"
+                properties:
+                  headerName:
+                    description: HeaderName is the name of the HTTP header to inject
+                    minLength: 1
+                    type: string
+                  value:
+                    description: |-
+                      Value is the header value (for non-sensitive data)
+                      Either Value or ValueSecretRef must be specified, but not both
+                    type: string
+                  valueSecretRef:
+                    description: |-
+                      ValueSecretRef references a Kubernetes Secret containing the header value (recommended for sensitive data)
+                      Either Value or ValueSecretRef must be specified, but not both
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                required:
+                - headerName
+                type: object
+                x-kubernetes-validations:
+                - message: value XOR valueSecretRef
+                  rule: size(self.value) > 0 != has(self.valueSecretRef)
               tokenExchange:
                 description: |-
                   TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange
@@ -119,6 +154,7 @@ spec:
                 description: Type is the type of external authentication to configure
                 enum:
                 - tokenExchange
+                - headerInjection
                 type: string
             required:
             - type

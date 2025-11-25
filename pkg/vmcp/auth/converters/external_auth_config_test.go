@@ -114,7 +114,7 @@ func TestExternalAuthConfigToStrategyMetadata(t *testing.T) {
 				},
 			},
 			wantErr:     true,
-			errContains: "unsupported external auth type",
+			errContains: "unsupported auth type",
 		},
 		{
 			name: "token exchange type with nil config",
@@ -138,81 +138,6 @@ func TestExternalAuthConfigToStrategyMetadata(t *testing.T) {
 			t.Parallel()
 
 			strategyType, metadata, err := ExternalAuthConfigToStrategyMetadata(tt.externalAuth)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-				return
-			}
-
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantStrategyType, strategyType)
-			assert.Equal(t, tt.wantMetadata, metadata)
-		})
-	}
-}
-
-func TestConvertTokenExchangeConfig(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name             string
-		tokenExchange    *mcpv1alpha1.TokenExchangeConfig
-		wantStrategyType string
-		wantMetadata     map[string]any
-		wantErr          bool
-		errContains      string
-	}{
-		{
-			name:          "nil config returns error",
-			tokenExchange: nil,
-			wantErr:       true,
-			errContains:   "token exchange config is nil",
-		},
-		{
-			name: "subject token type normalization",
-			tokenExchange: &mcpv1alpha1.TokenExchangeConfig{
-				TokenURL:         "https://auth.example.com/token",
-				SubjectTokenType: "jwt",
-			},
-			wantStrategyType: "token_exchange",
-			wantMetadata: map[string]any{
-				"token_url":          "https://auth.example.com/token",
-				"subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
-			},
-			wantErr: false,
-		},
-		{
-			name: "invalid subject token type",
-			tokenExchange: &mcpv1alpha1.TokenExchangeConfig{
-				TokenURL:         "https://auth.example.com/token",
-				SubjectTokenType: "invalid_type",
-			},
-			wantErr:     true,
-			errContains: "invalid subject token type",
-		},
-		{
-			name: "multiple scopes",
-			tokenExchange: &mcpv1alpha1.TokenExchangeConfig{
-				TokenURL: "https://auth.example.com/token",
-				Scopes:   []string{"scope1", "scope2", "scope3"},
-			},
-			wantStrategyType: "token_exchange",
-			wantMetadata: map[string]any{
-				"token_url": "https://auth.example.com/token",
-				"scopes":    []string{"scope1", "scope2", "scope3"},
-			},
-			wantErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			strategyType, metadata, err := convertTokenExchangeConfig(tt.tokenExchange)
 
 			if tt.wantErr {
 				require.Error(t, err)

@@ -343,6 +343,23 @@ _Appears in:_
 | `name` _string_ | Name is the name of the MCPExternalAuthConfig resource |  | Required: \{\} <br /> |
 
 
+#### ExternalAuthType
+
+_Underlying type:_ _string_
+
+ExternalAuthType represents the type of external authentication
+
+
+
+_Appears in:_
+- [MCPExternalAuthConfigSpec](#mcpexternalauthconfigspec)
+
+| Field | Description |
+| --- | --- |
+| `tokenExchange` | ExternalAuthTypeTokenExchange is the type for RFC-8693 token exchange<br /> |
+| `headerInjection` | ExternalAuthTypeHeaderInjection is the type for custom header injection<br /> |
+
+
 #### FailureHandlingConfig
 
 
@@ -396,6 +413,25 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the MCPGroup resource in the same namespace |  | Required: \{\} <br /> |
+
+
+#### HeaderInjectionConfig
+
+
+
+HeaderInjectionConfig holds configuration for custom HTTP header injection authentication.
+This allows injecting a static or secret-based header value into requests to backend MCP servers.
+
+
+
+_Appears in:_
+- [MCPExternalAuthConfigSpec](#mcpexternalauthconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `headerName` _string_ | HeaderName is the name of the HTTP header to inject |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `value` _string_ | Value is the header value (for non-sensitive data)<br />Either Value or ValueSecretRef must be specified, but not both |  |  |
+| `valueSecretRef` _[SecretKeyRef](#secretkeyref)_ | ValueSecretRef references a Kubernetes Secret containing the header value (recommended for sensitive data)<br />Either Value or ValueSecretRef must be specified, but not both |  |  |
 
 
 #### IncomingAuthConfig
@@ -542,8 +578,9 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange] <br />Required: \{\} <br /> |
+| `type` _[ExternalAuthType](#externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection] <br />Required: \{\} <br /> |
 | `tokenExchange` _[TokenExchangeConfig](#tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  |  |
+| `headerInjection` _[HeaderInjectionConfig](#headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  |  |
 
 
 #### MCPExternalAuthConfigStatus
@@ -1497,6 +1534,7 @@ SecretKeyRef is a reference to a key within a Secret
 
 
 _Appears in:_
+- [HeaderInjectionConfig](#headerinjectionconfig)
 - [InlineOIDCConfig](#inlineoidcconfig)
 - [RedisCacheConfig](#rediscacheconfig)
 - [TokenExchangeConfig](#tokenexchangeconfig)

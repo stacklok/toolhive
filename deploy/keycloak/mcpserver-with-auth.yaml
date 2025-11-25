@@ -5,7 +5,7 @@ metadata:
   namespace: toolhive-system
 spec:
   # Simple echo MCP server for testing
-  image: ghcr.io/stackloklabs/gofetch/server:0.0.4
+  image: ghcr.io/stackloklabs/gofetch/server:0.0.6
   resourceOverrides:
     proxyDeployment:
       env:

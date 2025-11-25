@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
@@ -214,8 +215,9 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 
 // initializeClient performs MCP protocol initialization handshake and returns server capabilities.
 // This allows the caller to determine which optional features the server supports.
+// Retries up to 3 times if "session terminated (404)" error occurs due to stale session from readiness checks.
 func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabilities, error) {
-	result, err := c.Initialize(ctx, mcp.InitializeRequest{
+	initRequest := mcp.InitializeRequest{
 		Params: mcp.InitializeParams{
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
 			ClientInfo: mcp.Implementation{
@@ -231,11 +233,33 @@ func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabil
 				},
 			},
 		},
-	})
-	if err != nil {
-		return nil, err
 	}
-	return &result.Capabilities, nil
+
+	const maxRetries = 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		result, err := c.Initialize(ctx, initRequest)
+		if err == nil {
+			return &result.Capabilities, nil
+		}
+
+		lastErr = err
+
+		// Only retry on session terminated errors
+		if strings.Contains(err.Error(), "session terminated") && strings.Contains(err.Error(), "404") {
+			if attempt < maxRetries {
+				logger.Debugf("Retrying initialize after session terminated (404) error (attempt %d/%d)", attempt, maxRetries)
+				continue
+			}
+			logger.Warnf("Failed to initialize after %d attempts: %v", maxRetries, err)
+		} else {
+			// For other errors, fail immediately
+			return nil, err
+		}
+	}
+
+	return nil, lastErr
 }
 
 // queryTools queries tools from a backend if the server advertises tool support.

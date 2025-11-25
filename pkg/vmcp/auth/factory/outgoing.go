@@ -72,6 +72,16 @@ func NewOutgoingAuthRegistry(
 
 	// Collect and register all unique strategy types from configuration
 	strategyTypes := collectStrategyTypes(cfg)
+
+	// In "discovered" mode, backends' auth is determined at runtime from their
+	// ExternalAuthConfigRef. We don't know what strategies will be needed upfront,
+	// so we must register ALL possible strategies to ensure they're available.
+	if cfg.Source == "discovered" || cfg.Source == "mixed" {
+		// Register all known strategy types for discovered/mixed mode
+		strategyTypes[strategies.StrategyTypeHeaderInjection] = struct{}{}
+		strategyTypes[strategies.StrategyTypeTokenExchange] = struct{}{}
+	}
+
 	if err := registerStrategies(registry, strategyTypes, envReader); err != nil {
 		return nil, err
 	}

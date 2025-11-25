@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -245,63 +243,27 @@ func isStandardK8sAnnotation(key string) bool {
 // discoverAuthConfig discovers and populates authentication configuration from the MCPServer's ExternalAuthConfigRef.
 // This enables runtime discovery of backend authentication requirements.
 func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer, backend *vmcp.Backend) error {
-	// Check if MCPServer has an ExternalAuthConfigRef
-	if mcpServer.Spec.ExternalAuthConfigRef == nil {
-		// No auth config to discover - backend will use default or unauthenticated
+	// Discover and resolve auth using the converters package
+	strategyType, metadata, err := converters.DiscoverAndResolveAuth(
+		ctx,
+		mcpServer.Spec.ExternalAuthConfigRef,
+		mcpServer.Namespace,
+		d.k8sClient,
+	)
+	if err != nil {
+		return err
+	}
+
+	// If no auth was discovered, nothing to populate
+	if strategyType == "" {
 		logger.Debugf("MCPServer %s has no ExternalAuthConfigRef, no auth config to discover", mcpServer.Name)
 		return nil
-	}
-
-	// Fetch the MCPExternalAuthConfig
-	externalAuth := &mcpv1alpha1.MCPExternalAuthConfig{}
-	key := types.NamespacedName{
-		Name:      mcpServer.Spec.ExternalAuthConfigRef.Name,
-		Namespace: mcpServer.Namespace,
-	}
-
-	if err := d.k8sClient.Get(ctx, key, externalAuth); err != nil {
-		if errors.IsNotFound(err) {
-			return fmt.Errorf("MCPExternalAuthConfig %s not found in namespace %s",
-				mcpServer.Spec.ExternalAuthConfigRef.Name, mcpServer.Namespace)
-		}
-		return fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
-	}
-
-	// Convert MCPExternalAuthConfig to auth strategy metadata using the converter
-	strategyType, metadata, err := converters.ExternalAuthConfigToStrategyMetadata(externalAuth)
-	if err != nil {
-		return fmt.Errorf("failed to convert MCPExternalAuthConfig to strategy metadata: %w", err)
-	}
-
-	// For discovered auth, fetch the actual secret value from Kubernetes
-	// (unlike inline mode where secrets are mounted as env vars in the pod)
-	if strategyType == "token_exchange" && externalAuth.Spec.TokenExchange != nil {
-		if secretRef := externalAuth.Spec.TokenExchange.ClientSecretRef; secretRef != nil {
-			secret := &corev1.Secret{}
-			secretKey := types.NamespacedName{
-				Name:      secretRef.Name,
-				Namespace: mcpServer.Namespace,
-			}
-			if err := d.k8sClient.Get(ctx, secretKey, secret); err != nil {
-				return fmt.Errorf("failed to get client secret %s: %w", secretRef.Name, err)
-			}
-
-			secretValue, ok := secret.Data[secretRef.Key]
-			if !ok {
-				return fmt.Errorf("client secret %s is missing key %s", secretRef.Name, secretRef.Key)
-			}
-
-			// Replace client_secret_env with actual client_secret value
-			// This allows vMCP to use the secret without requiring it to be mounted as an env var
-			delete(metadata, "client_secret_env")
-			metadata["client_secret"] = string(secretValue)
-		}
 	}
 
 	// Populate backend auth fields
 	backend.AuthStrategy = strategyType
 	backend.AuthMetadata = metadata
 
-	logger.Debugf("Discovered auth config for MCPServer %s: strategy=%s", mcpServer.Name, strategyType)
+	logger.Debugf("Discovered auth config for MCPServer %s: strategy=%s", mcpServer.Name, backend.AuthStrategy)
 	return nil
 }

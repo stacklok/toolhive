@@ -14,14 +14,14 @@ import (
 func TestUpstreamRegistry_JSONSerialization(t *testing.T) {
 	t.Parallel()
 	registry := &UpstreamRegistry{
-		Schema:  "https://example.com/schema.json",
+		Schema:  "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
 		Version: "1.0.0",
-		Meta: RegistryMeta{
+		Meta: UpstreamMeta{
 			LastUpdated: time.Now().Format(time.RFC3339),
 		},
-		Data: RegistryData{
+		Data: UpstreamData{
 			Servers: []upstreamv0.ServerJSON{},
-			Groups:  []RegistryGroup{},
+			Groups:  []UpstreamGroup{},
 		},
 	}
 
@@ -44,14 +44,14 @@ func TestUpstreamRegistry_JSONSerialization(t *testing.T) {
 func TestUpstreamRegistry_YAMLSerialization(t *testing.T) {
 	t.Parallel()
 	registry := &UpstreamRegistry{
-		Schema:  "https://example.com/schema.json",
+		Schema:  "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
 		Version: "1.0.0",
-		Meta: RegistryMeta{
+		Meta: UpstreamMeta{
 			LastUpdated: "2024-01-15T10:30:00Z",
 		},
-		Data: RegistryData{
+		Data: UpstreamData{
 			Servers: []upstreamv0.ServerJSON{},
-			Groups:  []RegistryGroup{},
+			Groups:  []UpstreamGroup{},
 		},
 	}
 
@@ -72,14 +72,14 @@ func TestUpstreamRegistry_YAMLSerialization(t *testing.T) {
 func TestUpstreamRegistry_WithGroups(t *testing.T) {
 	t.Parallel()
 	registry := &UpstreamRegistry{
-		Schema:  "https://example.com/schema.json",
+		Schema:  "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
 		Version: "1.0.0",
-		Meta: RegistryMeta{
+		Meta: UpstreamMeta{
 			LastUpdated: time.Now().Format(time.RFC3339),
 		},
-		Data: RegistryData{
+		Data: UpstreamData{
 			Servers: []upstreamv0.ServerJSON{},
-			Groups: []RegistryGroup{
+			Groups: []UpstreamGroup{
 				{
 					Name:        "test-group",
 					Description: "Test group for testing",
@@ -105,12 +105,12 @@ func TestUpstreamRegistry_SchemaField(t *testing.T) {
 	registry := &UpstreamRegistry{
 		Schema:  "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
 		Version: "1.0.0",
-		Meta: RegistryMeta{
+		Meta: UpstreamMeta{
 			LastUpdated: time.Now().Format(time.RFC3339),
 		},
-		Data: RegistryData{
+		Data: UpstreamData{
 			Servers: []upstreamv0.ServerJSON{},
-			Groups:  []RegistryGroup{},
+			Groups:  []UpstreamGroup{},
 		},
 	}
 
@@ -131,14 +131,14 @@ func TestRegistryMeta_TimeFormat(t *testing.T) {
 
 	// Test RFC3339 timestamp format
 	timestamp := "2024-01-15T10:30:00Z"
-	meta := RegistryMeta{
+	meta := UpstreamMeta{
 		LastUpdated: timestamp,
 	}
 
 	jsonData, err := json.Marshal(meta)
 	require.NoError(t, err)
 
-	var decoded RegistryMeta
+	var decoded UpstreamMeta
 	err = json.Unmarshal(jsonData, &decoded)
 	require.NoError(t, err)
 	assert.Equal(t, timestamp, decoded.LastUpdated)
@@ -153,7 +153,7 @@ func TestRegistryData_EmptyGroups(t *testing.T) {
 	t.Parallel()
 
 	// Test that groups can be omitted (omitempty)
-	data := RegistryData{
+	data := UpstreamData{
 		Servers: []upstreamv0.ServerJSON{},
 	}
 
@@ -164,7 +164,7 @@ func TestRegistryData_EmptyGroups(t *testing.T) {
 	assert.NotContains(t, string(jsonData), "groups")
 
 	// Test with empty slice - also omitted due to omitempty
-	data.Groups = []RegistryGroup{}
+	data.Groups = []UpstreamGroup{}
 	jsonData, err = json.Marshal(data)
 	require.NoError(t, err)
 
@@ -175,7 +175,7 @@ func TestRegistryData_EmptyGroups(t *testing.T) {
 func TestRegistryGroup_Structure(t *testing.T) {
 	t.Parallel()
 
-	group := RegistryGroup{
+	group := UpstreamGroup{
 		Name:        "test-group",
 		Description: "A test group for testing purposes",
 		Servers: []upstreamv0.ServerJSON{
@@ -190,7 +190,7 @@ func TestRegistryGroup_Structure(t *testing.T) {
 	jsonData, err := json.Marshal(group)
 	require.NoError(t, err)
 
-	var decoded RegistryGroup
+	var decoded UpstreamGroup
 	err = json.Unmarshal(jsonData, &decoded)
 	require.NoError(t, err)
 	assert.Equal(t, group.Name, decoded.Name)

@@ -15,12 +15,12 @@ func NewUpstreamRegistryFromUpstreamServers(servers []upstreamv0.ServerJSON) *ty
 	return &types.UpstreamRegistry{
 		Schema:  "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
 		Version: "1.0.0",
-		Meta: types.RegistryMeta{
+		Meta: types.UpstreamMeta{
 			LastUpdated: time.Now().Format(time.RFC3339),
 		},
-		Data: types.RegistryData{
+		Data: types.UpstreamData{
 			Servers: servers,
-			Groups:  []types.RegistryGroup{},
+			Groups:  []types.UpstreamGroup{},
 		},
 	}
 }
@@ -56,12 +56,12 @@ func NewUpstreamRegistryFromToolhiveRegistry(toolhiveReg *types.Registry) (*type
 	return &types.UpstreamRegistry{
 		Schema:  "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
 		Version: toolhiveReg.Version,
-		Meta: types.RegistryMeta{
+		Meta: types.UpstreamMeta{
 			LastUpdated: toolhiveReg.LastUpdated,
 		},
-		Data: types.RegistryData{
+		Data: types.UpstreamData{
 			Servers: servers,
-			Groups:  []types.RegistryGroup{},
+			Groups:  []types.UpstreamGroup{},
 		},
 	}, nil
 }

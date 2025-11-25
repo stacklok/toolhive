@@ -406,7 +406,7 @@ func TestValidateUpstreamRegistry(t *testing.T) {
 		{
 			name: "valid registry with all fields",
 			data: `{
-				"$schema": "https://example.com/schema.json",
+				"$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
 				"version": "1.0.0",
 				"meta": {
 					"last_updated": "2024-01-15T10:30:00Z"
@@ -421,7 +421,7 @@ func TestValidateUpstreamRegistry(t *testing.T) {
 		{
 			name: "valid registry without groups (optional)",
 			data: `{
-				"$schema": "https://example.com/schema.json",
+				"$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
 				"version": "1.0.0",
 				"meta": {
 					"last_updated": "2024-01-15T10:30:00Z"
@@ -435,6 +435,7 @@ func TestValidateUpstreamRegistry(t *testing.T) {
 		{
 			name: "valid registry with group",
 			data: `{
+				"$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
 				"version": "1.0.0",
 				"meta": {
 					"last_updated": "2024-01-15T10:30:00Z"

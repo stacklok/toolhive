@@ -252,7 +252,7 @@ func TestRegistrySchemaValidation(t *testing.T) {
 				}
 			}`,
 			expectError:   true,
-			errorContains: "additional properties",
+			errorContains: "Additional property",
 		},
 		{
 			name: "valid remote server",
@@ -331,7 +331,8 @@ func TestValidateRegistrySchemaWithInvalidJSON(t *testing.T) {
 
 	err := ValidateRegistrySchema([]byte(invalidJSON))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to parse registry data")
+	// gojsonschema returns validation error for invalid JSON
+	assert.Contains(t, err.Error(), "invalid character")
 }
 
 // TestValidateEmbeddedRegistryCanLoadData tests that we can actually load the embedded registry
@@ -390,4 +391,203 @@ func TestMultipleValidationErrors(t *testing.T) {
 	assert.Contains(t, errorMsg, "2.", "Should have multiple numbered errors")
 
 	t.Logf("Multi-error output:\n%s", errorMsg)
+}
+
+// TestValidateUpstreamRegistry tests the ValidateUpstreamRegistry function
+func TestValidateUpstreamRegistry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		data          string
+		wantErr       bool
+		errorContains string
+	}{
+		{
+			name: "valid registry with all fields",
+			data: `{
+				"$schema": "https://example.com/schema.json",
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": [],
+					"groups": []
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "valid registry without groups (optional)",
+			data: `{
+				"$schema": "https://example.com/schema.json",
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": []
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "valid registry with group",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": [],
+					"groups": [
+						{
+							"name": "test-group",
+							"description": "Test group",
+							"servers": []
+						}
+					]
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "missing meta",
+			data: `{
+				"version": "1.0.0",
+				"data": {
+					"servers": []
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "meta",
+		},
+		{
+			name: "missing data",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "data",
+		},
+		{
+			name: "missing servers in data",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {}
+			}`,
+			wantErr:       true,
+			errorContains: "servers",
+		},
+		{
+			name: "missing last_updated in meta",
+			data: `{
+				"version": "1.0.0",
+				"meta": {},
+				"data": {
+					"servers": []
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "last_updated",
+		},
+		{
+			name: "invalid version format",
+			data: `{
+				"version": "invalid",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": []
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "version",
+		},
+		{
+			name: "invalid date format",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "not-a-date"
+				},
+				"data": {
+					"servers": []
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "date-time",
+		},
+		{
+			name: "missing required group fields",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": [],
+					"groups": [
+						{
+							"name": "incomplete-group"
+						}
+					]
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "description",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateUpstreamRegistry([]byte(tt.data))
+			if tt.wantErr {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestValidateUpstreamRegistry_RealWorld tests validation with realistic registry data
+func TestValidateUpstreamRegistry_RealWorld(t *testing.T) {
+	t.Parallel()
+
+	// Simulate a realistic upstream registry
+	realWorldRegistry := `{
+		"$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/registry.schema.json",
+		"version": "1.0.0",
+		"meta": {
+			"last_updated": "2024-11-25T10:30:00Z"
+		},
+		"data": {
+			"servers": [
+				{
+					"$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+					"name": "io.github.stacklok/test-server",
+					"description": "A test MCP server",
+					"version": "1.0.0",
+					"title": "Test Server"
+				}
+			],
+			"groups": []
+		}
+	}`
+
+	err := ValidateUpstreamRegistry([]byte(realWorldRegistry))
+	assert.NoError(t, err, "Real-world registry example should validate successfully")
 }

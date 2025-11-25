@@ -181,6 +181,19 @@ Build environment variable names should be validated:
 - Must match pattern `^[A-Z][A-Z0-9_]*$` (uppercase letters, numbers, underscores)
 - Cannot override critical Docker variables (e.g., `PATH`, `HOME`)
 
+### Value Escaping and Injection Safety
+
+Environment variable values are injected into Dockerfiles using Go template syntax with double quotes:
+```dockerfile
+ENV {{$key}}="{{$value}}"
+```
+
+To prevent shell escape vulnerabilities:
+- Values containing double quotes (`"`) should be escaped or rejected
+- Validation should check for potentially dangerous characters like backticks, `$()`, and other shell metacharacters
+- The template rendering should use proper escaping mechanisms to prevent injection attacks
+- Consider restricting characters to alphanumeric, hyphens, underscores, forward slashes, colons, and dots for URL-like values
+
 ### No Credential Storage
 
 This proposal does not include credential storage. If a mirror requires authentication, users should use URL-embedded credentials (not recommended) or configure credentials through other mechanisms. Future work may address secure credential injection.

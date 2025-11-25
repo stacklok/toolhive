@@ -206,6 +206,10 @@ func (e *workflowEngine) ExecuteWorkflow(
 	// Workflow completed successfully
 	result.Status = WorkflowStatusCompleted
 
+	// Update workflow metadata before output construction
+	// This ensures {{.workflow.*}} template variables are available with accurate values
+	e.updateWorkflowMetadata(workflowCtx, result.StartTime, WorkflowStatusCompleted)
+
 	// Construct output based on configuration
 	if def.Output == nil {
 		// Backward compatible: return last step output
@@ -879,6 +883,34 @@ func (e *workflowEngine) CancelWorkflow(ctx context.Context, workflowID string) 
 
 	logger.Infof("Workflow %s marked as cancelled", workflowID)
 	return nil
+}
+
+// updateWorkflowMetadata updates the workflow metadata with current execution state.
+// This should be called before output construction to ensure template variables
+// like {{.workflow.duration_ms}} and {{.workflow.step_count}} have accurate values.
+func (*workflowEngine) updateWorkflowMetadata(
+	workflowCtx *WorkflowContext,
+	startTime time.Time,
+	status WorkflowStatusType,
+) {
+	workflowCtx.mu.Lock()
+	defer workflowCtx.mu.Unlock()
+
+	if workflowCtx.Workflow == nil {
+		return
+	}
+
+	// Count completed steps
+	completedSteps := 0
+	for _, step := range workflowCtx.Steps {
+		if step.Status == StepStatusCompleted {
+			completedSteps++
+		}
+	}
+
+	workflowCtx.Workflow.StepCount = completedSteps
+	workflowCtx.Workflow.Status = status
+	workflowCtx.Workflow.DurationMs = time.Since(startTime).Milliseconds()
 }
 
 // applyParameterDefaults applies default values from JSON Schema to workflow parameters.

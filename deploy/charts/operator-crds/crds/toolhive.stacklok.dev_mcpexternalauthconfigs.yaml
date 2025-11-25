@@ -65,15 +65,9 @@ spec:
                     description: HeaderName is the name of the HTTP header to inject
                     minLength: 1
                     type: string
-                  value:
-                    description: |-
-                      Value is the header value (for non-sensitive data)
-                      Either Value or ValueSecretRef must be specified, but not both
-                    type: string
                   valueSecretRef:
-                    description: |-
-                      ValueSecretRef references a Kubernetes Secret containing the header value (recommended for sensitive data)
-                      Either Value or ValueSecretRef must be specified, but not both
+                    description: ValueSecretRef references a Kubernetes Secret containing
+                      the header value
                     properties:
                       key:
                         description: Key is the key within the secret
@@ -87,11 +81,8 @@ spec:
                     type: object
                 required:
                 - headerName
+                - valueSecretRef
                 type: object
-                x-kubernetes-validations:
-                - message: Either value or valueSecretRef must be specified, but not
-                    both
-                  rule: (has(self.value) && self.value != '') != has(self.valueSecretRef)
               tokenExchange:
                 description: |-
                   TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange

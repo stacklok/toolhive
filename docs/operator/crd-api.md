@@ -420,7 +420,8 @@ _Appears in:_
 
 
 HeaderInjectionConfig holds configuration for custom HTTP header injection authentication.
-This allows injecting a static or secret-based header value into requests to backend MCP servers.
+This allows injecting a secret-based header value into requests to backend MCP servers.
+For security reasons, only secret references are supported (no plaintext values).
 
 
 
@@ -430,8 +431,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `headerName` _string_ | HeaderName is the name of the HTTP header to inject |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `value` _string_ | Value is the header value (for non-sensitive data)<br />Either Value or ValueSecretRef must be specified, but not both |  |  |
-| `valueSecretRef` _[SecretKeyRef](#secretkeyref)_ | ValueSecretRef references a Kubernetes Secret containing the header value (recommended for sensitive data)<br />Either Value or ValueSecretRef must be specified, but not both |  |  |
+| `valueSecretRef` _[SecretKeyRef](#secretkeyref)_ | ValueSecretRef references a Kubernetes Secret containing the header value |  | Required: \{\} <br /> |
 
 
 #### IncomingAuthConfig

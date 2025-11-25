@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 )
 
 // HeaderInjectionConverter converts MCPExternalAuthConfig HeaderInjection to vMCP header_injection strategy metadata.
@@ -31,25 +32,17 @@ func (*HeaderInjectionConverter) ConvertToMetadata(
 	}
 
 	metadata := make(map[string]any)
-	metadata["header_name"] = headerInjection.HeaderName
-
-	// Set env var reference if secret is used
-	if headerInjection.ValueSecretRef != nil {
-		metadata["header_value_env"] = "TOOLHIVE_HEADER_INJECTION_VALUE"
-	} else if headerInjection.Value != "" {
-		// Direct value (not recommended for sensitive data)
-		metadata["header_value"] = headerInjection.Value
-	} else {
-		return nil, fmt.Errorf("header injection must specify either value or valueSecretRef")
-	}
+	metadata[strategies.MetadataHeaderName] = headerInjection.HeaderName
+	metadata[strategies.MetadataHeaderValueEnv] = "TOOLHIVE_HEADER_INJECTION_VALUE"
 
 	return metadata, nil
 }
 
 // ResolveSecrets fetches the header value secret from Kubernetes and replaces the env var reference
-// with the actual secret value. This is used in discovered auth mode where secrets cannot be
-// mounted as environment variables because the vMCP pod doesn't know about backend auth configs
-// at pod creation time.
+// with the actual secret value. Unlike token exchange which can use environment variables in
+// non-discovered mode, header injection always requires dynamic secret resolution because backends
+// can be added or modified at runtime, even in non-discovered mode. The vMCP pod cannot know all
+// backend auth configs at pod creation time.
 func (*HeaderInjectionConverter) ResolveSecrets(
 	ctx context.Context,
 	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
@@ -59,32 +52,34 @@ func (*HeaderInjectionConverter) ResolveSecrets(
 ) (map[string]any, error) {
 	headerInjection := externalAuth.Spec.HeaderInjection
 	if headerInjection == nil {
-		return metadata, fmt.Errorf("header injection config is nil")
+		return nil, fmt.Errorf("header injection config is nil")
 	}
 
-	// If using a secret reference, fetch and resolve it
-	if headerInjection.ValueSecretRef != nil {
-		secret := &corev1.Secret{}
-		secretKey := types.NamespacedName{
-			Name:      headerInjection.ValueSecretRef.Name,
-			Namespace: namespace,
-		}
-
-		if err := k8sClient.Get(ctx, secretKey, secret); err != nil {
-			return metadata, fmt.Errorf("failed to get secret %s/%s: %w",
-				namespace, headerInjection.ValueSecretRef.Name, err)
-		}
-
-		secretValue, ok := secret.Data[headerInjection.ValueSecretRef.Key]
-		if !ok {
-			return metadata, fmt.Errorf("secret %s/%s does not contain key %s",
-				namespace, headerInjection.ValueSecretRef.Name, headerInjection.ValueSecretRef.Key)
-		}
-
-		// Replace the env var reference with actual secret value
-		delete(metadata, "header_value_env")
-		metadata["header_value"] = string(secretValue)
+	if headerInjection.ValueSecretRef == nil {
+		return nil, fmt.Errorf("valueSecretRef is nil")
 	}
+
+	// Fetch and resolve the secret
+	secret := &corev1.Secret{}
+	secretKey := types.NamespacedName{
+		Name:      headerInjection.ValueSecretRef.Name,
+		Namespace: namespace,
+	}
+
+	if err := k8sClient.Get(ctx, secretKey, secret); err != nil {
+		return nil, fmt.Errorf("failed to get secret %s/%s: %w",
+			namespace, headerInjection.ValueSecretRef.Name, err)
+	}
+
+	secretValue, ok := secret.Data[headerInjection.ValueSecretRef.Key]
+	if !ok {
+		return nil, fmt.Errorf("secret %s/%s does not contain key %s",
+			namespace, headerInjection.ValueSecretRef.Name, headerInjection.ValueSecretRef.Key)
+	}
+
+	// Replace the env var reference with actual secret value
+	delete(metadata, strategies.MetadataHeaderValueEnv)
+	metadata[strategies.MetadataHeaderValue] = string(secretValue)
 
 	return metadata, nil
 }

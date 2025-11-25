@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -70,21 +72,60 @@ func (*TokenExchangeConverter) ConvertToMetadata(
 	return metadata, nil
 }
 
-// ResolveSecrets for token exchange is typically a no-op because secrets are mounted as
-// environment variables in the vMCP pod. The client_secret_env reference points to an
-// environment variable that Kubernetes will populate from the secret at runtime.
+// ResolveSecrets fetches the client secret from Kubernetes and replaces the env var reference
+// with the actual secret value. Unlike non-discovered mode where secrets can be mounted as
+// environment variables at pod creation time, discovered mode requires dynamic secret resolution
+// because the vMCP pod doesn't know about backend auth configs at pod creation time.
 //
-// This method is provided for interface compliance but doesn't fetch secrets from Kubernetes
-// because token exchange secrets are mounted at pod creation time, unlike discovered auth mode
-// where secrets must be resolved dynamically.
+// This method:
+//  1. Checks if client_secret_env is present in metadata
+//  2. Fetches the referenced Kubernetes secret
+//  3. Replaces client_secret_env with client_secret containing the actual value
+//
+// If client_secret_env is not present (or client_secret is already set), metadata is returned unchanged.
 func (*TokenExchangeConverter) ResolveSecrets(
-	_ context.Context,
-	_ *mcpv1alpha1.MCPExternalAuthConfig,
-	_ client.Client,
-	_ string,
+	ctx context.Context,
+	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
+	k8sClient client.Client,
+	namespace string,
 	metadata map[string]any,
 ) (map[string]any, error) {
-	// Token exchange secrets are mounted as environment variables at pod creation time
-	// No runtime secret resolution needed
+	tokenExchange := externalAuth.Spec.TokenExchange
+	if tokenExchange == nil {
+		return nil, fmt.Errorf("token exchange config is nil")
+	}
+
+	// If no client_secret_env is present, nothing to resolve
+	if _, hasEnvRef := metadata["client_secret_env"]; !hasEnvRef {
+		return metadata, nil
+	}
+
+	// If ClientSecretRef is not configured, we cannot resolve
+	if tokenExchange.ClientSecretRef == nil {
+		return nil, fmt.Errorf("clientSecretRef is nil")
+	}
+
+	// Fetch and resolve the secret
+	secret := &corev1.Secret{}
+	secretKey := types.NamespacedName{
+		Name:      tokenExchange.ClientSecretRef.Name,
+		Namespace: namespace,
+	}
+
+	if err := k8sClient.Get(ctx, secretKey, secret); err != nil {
+		return nil, fmt.Errorf("failed to get secret %s/%s: %w",
+			namespace, tokenExchange.ClientSecretRef.Name, err)
+	}
+
+	secretValue, ok := secret.Data[tokenExchange.ClientSecretRef.Key]
+	if !ok {
+		return nil, fmt.Errorf("secret %s/%s does not contain key %s",
+			namespace, tokenExchange.ClientSecretRef.Name, tokenExchange.ClientSecretRef.Key)
+	}
+
+	// Replace the env var reference with actual secret value
+	delete(metadata, "client_secret_env")
+	metadata["client_secret"] = string(secretValue)
+
 	return metadata, nil
 }

@@ -211,10 +211,10 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 // discoverBackends initializes managers, discovers backends, and creates backend client
 // Returns empty backends list with no error if running in Kubernetes where CLI discovery doesn't work
 func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, vmcp.BackendClient, error) {
-	// Create outgoing authentication registry from configuration
+	// Create outgoing authentication registry
 	logger.Info("Initializing outgoing authentication")
 	envReader := &env.OSReader{}
-	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, cfg.OutgoingAuth, envReader)
+	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, envReader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
 	}

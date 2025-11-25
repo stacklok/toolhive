@@ -81,23 +81,17 @@ type TokenExchangeConfig struct {
 }
 
 // HeaderInjectionConfig holds configuration for custom HTTP header injection authentication.
-// This allows injecting a static or secret-based header value into requests to backend MCP servers.
-// +kubebuilder:validation:XValidation:rule="(has(self.value) && self.value != '') != has(self.valueSecretRef)",message="Either value or valueSecretRef must be specified, but not both"
+// This allows injecting a secret-based header value into requests to backend MCP servers.
+// For security reasons, only secret references are supported (no plaintext values).
 type HeaderInjectionConfig struct {
 	// HeaderName is the name of the HTTP header to inject
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	HeaderName string `json:"headerName"`
 
-	// Value is the header value (for non-sensitive data)
-	// Either Value or ValueSecretRef must be specified, but not both
-	// +optional
-	Value string `json:"value,omitempty"`
-
-	// ValueSecretRef references a Kubernetes Secret containing the header value (recommended for sensitive data)
-	// Either Value or ValueSecretRef must be specified, but not both
-	// +optional
-	ValueSecretRef *SecretKeyRef `json:"valueSecretRef,omitempty"`
+	// ValueSecretRef references a Kubernetes Secret containing the header value
+	// +kubebuilder:validation:Required
+	ValueSecretRef *SecretKeyRef `json:"valueSecretRef"`
 }
 
 // SecretKeyRef is a reference to a key within a Secret

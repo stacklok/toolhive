@@ -44,7 +44,22 @@ type Registry struct {
 	converters map[mcpv1alpha1.ExternalAuthType]StrategyConverter
 }
 
-// NewRegistry creates a new converter registry with all built-in converters registered
+var (
+	defaultRegistry     *Registry
+	defaultRegistryOnce sync.Once
+)
+
+// DefaultRegistry returns the singleton default registry with all built-in converters registered.
+// This registry is lazily initialized once and reused across all calls.
+func DefaultRegistry() *Registry {
+	defaultRegistryOnce.Do(func() {
+		defaultRegistry = NewRegistry()
+	})
+	return defaultRegistry
+}
+
+// NewRegistry creates a new converter registry with all built-in converters registered.
+// For most use cases, use DefaultRegistry() instead to avoid unnecessary allocations.
 func NewRegistry() *Registry {
 	r := &Registry{
 		converters: make(map[mcpv1alpha1.ExternalAuthType]StrategyConverter),
@@ -76,7 +91,7 @@ func (r *Registry) GetConverter(authType mcpv1alpha1.ExternalAuthType) (Strategy
 	return converter, nil
 }
 
-// ConvertToStrategyMetadata is a convenience function that creates a registry and converts
+// ConvertToStrategyMetadata is a convenience function that uses the default registry to convert
 // an external auth config to strategy metadata. This is the main entry point for converting
 // auth configs at runtime.
 func ConvertToStrategyMetadata(
@@ -86,7 +101,7 @@ func ConvertToStrategyMetadata(
 		return "", nil, fmt.Errorf("external auth config is nil")
 	}
 
-	registry := NewRegistry()
+	registry := DefaultRegistry()
 	converter, err := registry.GetConverter(externalAuth.Spec.Type)
 	if err != nil {
 		return "", nil, err
@@ -100,7 +115,8 @@ func ConvertToStrategyMetadata(
 	return converter.StrategyType(), metadata, nil
 }
 
-// ResolveSecretsForStrategy is a convenience function that resolves secrets for a given strategy
+// ResolveSecretsForStrategy is a convenience function that uses the default registry to resolve
+// secrets for a given strategy.
 func ResolveSecretsForStrategy(
 	ctx context.Context,
 	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
@@ -109,13 +125,13 @@ func ResolveSecretsForStrategy(
 	metadata map[string]any,
 ) (map[string]any, error) {
 	if externalAuth == nil {
-		return metadata, fmt.Errorf("external auth config is nil")
+		return nil, fmt.Errorf("external auth config is nil")
 	}
 
-	registry := NewRegistry()
+	registry := DefaultRegistry()
 	converter, err := registry.GetConverter(externalAuth.Spec.Type)
 	if err != nil {
-		return metadata, err
+		return nil, err
 	}
 
 	return converter.ResolveSecrets(ctx, externalAuth, k8sClient, namespace, metadata)

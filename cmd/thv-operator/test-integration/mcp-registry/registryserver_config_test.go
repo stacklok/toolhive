@@ -191,7 +191,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 					Create(registryHelper)
 			},
 			map[string]string{
-				"path":     filepath.Join(config.RegistryJSONFilePath, config.RegistryJSONFileName),
+				"path":     filepath.Join(config.RegistryJSONFilePath, "default", config.RegistryJSONFileName),
 				"interval": "1h",
 			},
 			func(deployment *appsv1.Deployment, registry *mcpv1alpha1.MCPRegistry) {

@@ -246,6 +246,12 @@ func validateRegistryNames(registries []mcpv1alpha1.MCPRegistryConfig) error {
 	return nil
 }
 
+func buildFilePath(registryName string) *FileConfig {
+	return &FileConfig{
+		Path: filepath.Join(RegistryJSONFilePath, registryName, RegistryJSONFileName),
+	}
+}
+
 func buildRegistryConfig(registrySpec *mcpv1alpha1.MCPRegistryConfig) (*RegistryConfig, error) {
 	if registrySpec.Name == "" {
 		return nil, fmt.Errorf("registry name is required")
@@ -268,9 +274,7 @@ func buildRegistryConfig(registrySpec *mcpv1alpha1.MCPRegistryConfig) (*Registry
 		// because the configmap will be mounted as a file in the registry server container.
 		// this stops the registry server worrying about configmap sources when all it has to do
 		// is read the file on startup
-		registryConfig.File = &FileConfig{
-			Path: filepath.Join(RegistryJSONFilePath, RegistryJSONFileName),
-		}
+		registryConfig.File = buildFilePath(registrySpec.Name)
 	}
 	if registrySpec.Git != nil {
 		sourceCount++

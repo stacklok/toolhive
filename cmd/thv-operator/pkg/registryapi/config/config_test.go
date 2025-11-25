@@ -201,7 +201,7 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 		assert.Equal(t, "default", config.Registries[0].Name)
 		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[0].Format)
 		require.NotNil(t, config.Registries[0].File)
-		assert.Equal(t, filepath.Join(RegistryJSONFilePath, RegistryJSONFileName), config.Registries[0].File.Path)
+		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "default", RegistryJSONFileName), config.Registries[0].File.Path)
 		require.NotNil(t, config.Registries[0].SyncPolicy)
 		assert.Equal(t, "1h", config.Registries[0].SyncPolicy.Interval)
 	})
@@ -985,7 +985,7 @@ func TestBuildConfig_MultipleRegistries(t *testing.T) {
 	// Verify first registry
 	assert.Equal(t, "registry1", config.Registries[0].Name)
 	require.NotNil(t, config.Registries[0].File)
-	assert.Equal(t, filepath.Join(RegistryJSONFilePath, RegistryJSONFileName), config.Registries[0].File.Path)
+	assert.Equal(t, filepath.Join(RegistryJSONFilePath, "registry1", RegistryJSONFileName), config.Registries[0].File.Path)
 	require.NotNil(t, config.Registries[0].SyncPolicy)
 	assert.Equal(t, "1h", config.Registries[0].SyncPolicy.Interval)
 	assert.Nil(t, config.Registries[0].Filter)

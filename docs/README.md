@@ -15,11 +15,12 @@ For user-facing documentation, please refer to the
   - [Building ToolHive](#building-toolhive)
   - [Running tests](#running-tests)
   - [Other development tasks](#other-development-tasks)
+- [Note on EXPERIMENTAL features](#note-on-experimental-features)
 - [Contributing](#contributing)
 
 Explore the contents of this directory to find more detailed information on
-specific topics related to ToolHive development including architectural details
-and [design proposals](./proposals).
+specific topics related to ToolHive development including
+[architectural details](./arch/README.md) and [design proposals](./proposals).
 
 For information on the ToolHive Operator, see the
 [ToolHive Operator README](../cmd/thv-operator/README.md) and
@@ -32,7 +33,7 @@ install Go and set up your development environment.
 
 ### Prerequisites
 
-- **Go**: ToolHive requires Go 1.24. You can download and install Go from the
+- **Go**: ToolHive requires Go 1.25. You can download and install Go from the
   [official Go website](https://go.dev/doc/install).
 
 - **Task** (Recommended): Install the [Task](https://taskfile.dev/) tool to run
@@ -98,9 +99,9 @@ task --list
 
 ## Note on EXPERIMENTAL features
 
-From time to time, ToolHive may include features marked as EXPERIMENTAL.
-These features are not yet fully stable and may be subject to change or removal
-in future releases. They are provided for early testing and feedback.
+From time to time, ToolHive may include features marked as EXPERIMENTAL. These
+features are not yet fully stable and may be subject to change or removal in
+future releases. They are provided for early testing and feedback.
 
 ## Contributing
 

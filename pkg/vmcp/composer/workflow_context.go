@@ -28,7 +28,7 @@ func (m *workflowContextManager) CreateContext(params map[string]any) *WorkflowC
 	defer m.mu.Unlock()
 
 	workflowID := uuid.New().String()
-	startTime := time.Now()
+	startTime := time.Now().UTC()
 
 	ctx := &WorkflowContext{
 		WorkflowID: workflowID,

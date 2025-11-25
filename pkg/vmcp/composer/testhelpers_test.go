@@ -81,7 +81,7 @@ func (te *testEngine) expectToolCallWithAnyArgs(toolName string, output map[stri
 
 // newWorkflowContext creates a test workflow context.
 func newWorkflowContext(params map[string]any) *WorkflowContext {
-	startTime := time.Now()
+	startTime := time.Now().UTC()
 	return &WorkflowContext{
 		WorkflowID: "test-workflow",
 		Params:     params,

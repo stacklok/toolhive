@@ -757,3 +757,275 @@ func TestYAMLLoader_transformWorkflowStep(t *testing.T) {
 		})
 	}
 }
+
+// TestYAMLLoader_transformOutputConfig tests the transformation of output configuration
+// from raw YAML structures to the OutputConfig model.
+func TestYAMLLoader_transformOutputConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		raw     *rawOutputConfig
+		verify  func(t *testing.T, cfg *OutputConfig)
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "nil config returns nil",
+			raw:  nil,
+			verify: func(t *testing.T, cfg *OutputConfig) {
+				t.Helper()
+				assert.Nil(t, cfg)
+			},
+		},
+		{
+			name: "simple property with all fields",
+			raw: &rawOutputConfig{
+				Properties: map[string]rawOutputProperty{
+					"message": {
+						Type:        "string",
+						Description: "Result message",
+						Value:       "{{.steps.fetch.output.text}}",
+						Default:     "default message",
+					},
+				},
+				Required: []string{"message"},
+			},
+			verify: func(t *testing.T, cfg *OutputConfig) {
+				t.Helper()
+				require.NotNil(t, cfg)
+				assert.Len(t, cfg.Properties, 1)
+				assert.Equal(t, []string{"message"}, cfg.Required)
+
+				msgProp, exists := cfg.Properties["message"]
+				require.True(t, exists)
+				assert.Equal(t, "string", msgProp.Type)
+				assert.Equal(t, "Result message", msgProp.Description)
+				assert.Equal(t, "{{.steps.fetch.output.text}}", msgProp.Value)
+				assert.Equal(t, "default message", msgProp.Default)
+			},
+		},
+		{
+			name: "multiple properties with different types",
+			raw: &rawOutputConfig{
+				Properties: map[string]rawOutputProperty{
+					"message": {
+						Type:        "string",
+						Description: "Result message",
+						Value:       "{{.steps.fetch.output.text}}",
+					},
+					"count": {
+						Type:        "integer",
+						Description: "Item count",
+						Value:       "{{.steps.fetch.output.count}}",
+					},
+					"success": {
+						Type:        "boolean",
+						Description: "Success flag",
+						Value:       "{{.steps.fetch.output.success}}",
+					},
+					"score": {
+						Type:        "number",
+						Description: "Quality score",
+						Value:       "{{.steps.fetch.output.score}}",
+					},
+				},
+			},
+			verify: func(t *testing.T, cfg *OutputConfig) {
+				t.Helper()
+				require.NotNil(t, cfg)
+				assert.Len(t, cfg.Properties, 4)
+
+				// Verify each property type
+				for name, expectedType := range map[string]string{
+					"message": "string",
+					"count":   "integer",
+					"success": "boolean",
+					"score":   "number",
+				} {
+					prop, exists := cfg.Properties[name]
+					require.True(t, exists, "property %s should exist", name)
+					assert.Equal(t, expectedType, prop.Type, "property %s type mismatch", name)
+				}
+			},
+		},
+		{
+			name: "nested object properties",
+			raw: &rawOutputConfig{
+				Properties: map[string]rawOutputProperty{
+					"user": {
+						Type:        "object",
+						Description: "User information",
+						Properties: map[string]rawOutputProperty{
+							"id": {
+								Type:        "string",
+								Description: "User ID",
+								Value:       "{{.steps.fetch_user.output.id}}",
+							},
+							"stats": {
+								Type:        "object",
+								Description: "User statistics",
+								Properties: map[string]rawOutputProperty{
+									"posts": {
+										Type:        "integer",
+										Description: "Number of posts",
+										Value:       "{{.steps.fetch_user.output.post_count}}",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			verify: func(t *testing.T, cfg *OutputConfig) {
+				t.Helper()
+				require.NotNil(t, cfg)
+
+				userProp, exists := cfg.Properties["user"]
+				require.True(t, exists)
+				assert.Equal(t, "object", userProp.Type)
+
+				// Verify second-level nested properties
+				statsProp, exists := userProp.Properties["stats"]
+				require.True(t, exists)
+				assert.Equal(t, "object", statsProp.Type)
+
+				postsProp, exists := statsProp.Properties["posts"]
+				require.True(t, exists)
+				assert.Equal(t, "integer", postsProp.Type)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			loader := &YAMLLoader{}
+			cfg, err := loader.transformOutputConfig(tt.raw)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errMsg != "" {
+					assert.Contains(t, err.Error(), tt.errMsg)
+				}
+			} else {
+				require.NoError(t, err)
+				if tt.verify != nil {
+					tt.verify(t, cfg)
+				}
+			}
+		})
+	}
+}
+
+// TestYAMLLoader_transformCompositeTools_WithOutputConfig tests that composite tools
+// with output configurations are correctly parsed and transformed.
+func TestYAMLLoader_transformCompositeTools_WithOutputConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		raw     []*rawCompositeTool
+		verify  func(t *testing.T, tools []*CompositeToolConfig)
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "composite tool with simple output config",
+			raw: []*rawCompositeTool{
+				{
+					Name:        "data_processor",
+					Description: "Process data with typed output",
+					Parameters: map[string]map[string]any{
+						"source": {"type": "string"},
+					},
+					Steps: []*rawWorkflowStep{
+						{ID: "fetch", Tool: "data.fetch"},
+					},
+					Output: &rawOutputConfig{
+						Properties: map[string]rawOutputProperty{
+							"message": {
+								Type:        "string",
+								Description: "Result message",
+								Value:       "{{.steps.fetch.output.text}}",
+							},
+						},
+						Required: []string{"message"},
+					},
+				},
+			},
+			verify: func(t *testing.T, tools []*CompositeToolConfig) {
+				t.Helper()
+				require.Len(t, tools, 1)
+				tool := tools[0]
+
+				assert.Equal(t, "data_processor", tool.Name)
+				require.NotNil(t, tool.Output, "Output config should not be nil")
+				assert.Len(t, tool.Output.Properties, 1)
+				assert.Equal(t, []string{"message"}, tool.Output.Required)
+			},
+		},
+		{
+			name: "composite tool without output config (backward compatible)",
+			raw: []*rawCompositeTool{
+				{
+					Name:        "simple_tool",
+					Description: "Tool without output config",
+					Steps:       []*rawWorkflowStep{{ID: "step1", Tool: "some.tool"}},
+					Output:      nil,
+				},
+			},
+			verify: func(t *testing.T, tools []*CompositeToolConfig) {
+				t.Helper()
+				require.Len(t, tools, 1)
+				assert.Nil(t, tools[0].Output, "Output should be nil for backward compatibility")
+			},
+		},
+		{
+			name: "multiple composite tools with and without output configs",
+			raw: []*rawCompositeTool{
+				{
+					Name:  "tool_with_output",
+					Steps: []*rawWorkflowStep{{ID: "step1", Tool: "tool1"}},
+					Output: &rawOutputConfig{
+						Properties: map[string]rawOutputProperty{
+							"result": {Type: "string", Value: "{{.steps.step1.output.text}}"},
+						},
+					},
+				},
+				{
+					Name:   "tool_without_output",
+					Steps:  []*rawWorkflowStep{{ID: "step2", Tool: "tool2"}},
+					Output: nil,
+				},
+			},
+			verify: func(t *testing.T, tools []*CompositeToolConfig) {
+				t.Helper()
+				require.Len(t, tools, 2)
+				assert.NotNil(t, tools[0].Output)
+				assert.Nil(t, tools[1].Output)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			loader := &YAMLLoader{}
+			tools, err := loader.transformCompositeTools(tt.raw)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errMsg != "" {
+					assert.Contains(t, err.Error(), tt.errMsg)
+				}
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, tools)
+				if tt.verify != nil {
+					tt.verify(t, tools)
+				}
+			}
+		})
+	}
+}

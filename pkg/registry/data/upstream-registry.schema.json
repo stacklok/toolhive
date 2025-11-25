@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/registry.schema.json",
+  "$id": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
   "title": "ToolHive Registry Schema",
   "description": "Schema for ToolHive registry format using official MCP server schema",
   "type": "object",

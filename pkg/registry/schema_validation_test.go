@@ -569,7 +569,7 @@ func TestValidateUpstreamRegistry_RealWorld(t *testing.T) {
 
 	// Simulate a realistic upstream registry
 	realWorldRegistry := `{
-		"$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/registry.schema.json",
+		"$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
 		"version": "1.0.0",
 		"meta": {
 			"last_updated": "2024-11-25T10:30:00Z"

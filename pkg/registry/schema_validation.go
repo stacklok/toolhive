@@ -8,14 +8,14 @@ import (
 	"github.com/xeipuuv/gojsonschema"
 )
 
-//go:embed data/schema.json data/registry.schema.json
+//go:embed data/toolhive-legacy-registry.schema.json data/upstream-registry.schema.json
 var embeddedSchemaFS embed.FS
 
 // ValidateRegistrySchema validates registry JSON data against the registry schema
 // This validates the old ToolHive registry format (flat structure).
 func ValidateRegistrySchema(registryData []byte) error {
 	// Load the schema from the embedded filesystem
-	schemaData, err := embeddedSchemaFS.ReadFile("data/schema.json")
+	schemaData, err := embeddedSchemaFS.ReadFile("data/toolhive-legacy-registry.schema.json")
 	if err != nil {
 		return fmt.Errorf("failed to read embedded registry schema: %w", err)
 	}
@@ -65,12 +65,12 @@ func ValidateEmbeddedRegistry() error {
 	return ValidateRegistrySchema(registryData)
 }
 
-// ValidateUpstreamRegistry validates UpstreamRegistry JSON data against the registry.schema.json
+// ValidateUpstreamRegistry validates UpstreamRegistry JSON data against the upstream-registry.schema.json
 // This validates the complete registry structure including meta, data, servers, and groups.
 // It uses gojsonschema which automatically handles HTTP/HTTPS schema references.
 func ValidateUpstreamRegistry(registryData []byte) error {
 	// Load the schema from the embedded filesystem
-	schemaData, err := embeddedSchemaFS.ReadFile("data/registry.schema.json")
+	schemaData, err := embeddedSchemaFS.ReadFile("data/upstream-registry.schema.json")
 	if err != nil {
 		return fmt.Errorf("failed to read embedded registry schema: %w", err)
 	}

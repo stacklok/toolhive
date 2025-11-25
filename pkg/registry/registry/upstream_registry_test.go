@@ -103,7 +103,7 @@ func TestUpstreamRegistry_SchemaField(t *testing.T) {
 	t.Parallel()
 
 	registry := &UpstreamRegistry{
-		Schema:  "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/registry.schema.json",
+		Schema:  "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
 		Version: "1.0.0",
 		Meta: RegistryMeta{
 			LastUpdated: time.Now().Format(time.RFC3339),
@@ -117,7 +117,7 @@ func TestUpstreamRegistry_SchemaField(t *testing.T) {
 	// Verify schema field is correctly serialized with "$schema" key
 	jsonData, err := json.Marshal(registry)
 	require.NoError(t, err)
-	assert.Contains(t, string(jsonData), `"$schema":"https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/registry.schema.json"`)
+	assert.Contains(t, string(jsonData), `"$schema":"https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json"`)
 
 	// Verify schema field can be deserialized
 	var decoded UpstreamRegistry

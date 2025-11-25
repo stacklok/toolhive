@@ -1,7 +1,7 @@
 name: PR Size Labeler
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened]
 
 permissions:
@@ -17,7 +17,6 @@ jobs:
         id: pr
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const pr = await github.rest.pulls.get({
               owner: context.repo.owner,
@@ -41,7 +40,6 @@ jobs:
         id: size
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const changes = ${{ steps.pr.outputs.result }};
             const total = changes.total;
@@ -66,7 +64,6 @@ jobs:
       - name: Remove old size labels
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const sizeLabels = ['size/XS', 'size/S', 'size/M', 'size/L', 'size/XL'];
 
@@ -91,7 +88,6 @@ jobs:
       - name: Add new size label
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const sizeLabel = ${{ steps.size.outputs.result }};
 

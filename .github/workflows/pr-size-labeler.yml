@@ -1,4 +1,4 @@
-name: PR Size Labeler
+name: PR Size Labeler - Calculate
 
 on:
   pull_request:
@@ -6,11 +6,10 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
-  label-pr-size:
-    name: Label PR Size
+  calculate-pr-size:
+    name: Calculate PR Size
     runs-on: ubuntu-latest
     steps:
       - name: Get PR details
@@ -61,40 +60,15 @@ jobs:
             console.log(`PR size: ${total} lines -> ${sizeLabel}`);
             return sizeLabel;
 
-      - name: Remove old size labels
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+      - name: Save size label to artifact
+        run: |
+          mkdir -p pr-size
+          echo "${{ steps.size.outputs.result }}" > pr-size/label.txt
+          echo "${{ github.event.pull_request.number }}" > pr-size/pr-number.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          script: |
-            const sizeLabels = ['size/XS', 'size/S', 'size/M', 'size/L', 'size/XL'];
-
-            const currentLabels = await github.rest.issues.listLabelsOnIssue({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number
-            });
-
-            for (const label of currentLabels.data) {
-              if (sizeLabels.includes(label.name)) {
-                console.log(`Removing old size label: ${label.name}`);
-                await github.rest.issues.removeLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: context.issue.number,
-                  name: label.name
-                });
-              }
-            }
-
-      - name: Add new size label
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        with:
-          script: |
-            const sizeLabel = ${{ steps.size.outputs.result }};
-
-            console.log(`Adding size label: ${sizeLabel}`);
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              labels: [sizeLabel]
-            });
+          name: pr-size-label
+          path: pr-size/
+          retention-days: 1

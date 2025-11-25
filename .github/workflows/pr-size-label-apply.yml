@@ -1,0 +1,78 @@
+name: PR Size Labeler - Apply
+
+on:
+  workflow_run:
+    workflows: ["PR Size Labeler - Calculate"]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  apply-size-label:
+    name: Apply Size Label
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: pr-size-label
+          path: pr-size/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Read PR number and size label
+        id: read
+        run: |
+          PR_NUMBER=$(cat pr-size/pr-number.txt)
+          SIZE_LABEL=$(cat pr-size/label.txt | tr -d '"')
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "size_label=$SIZE_LABEL" >> $GITHUB_OUTPUT
+          echo "PR #$PR_NUMBER should get label: $SIZE_LABEL"
+
+      - name: Remove old size labels
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_NUMBER: ${{ steps.read.outputs.pr_number }}
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER);
+            const sizeLabels = ['size/XS', 'size/S', 'size/M', 'size/L', 'size/XL'];
+
+            const currentLabels = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber
+            });
+
+            for (const label of currentLabels.data) {
+              if (sizeLabels.includes(label.name)) {
+                console.log(`Removing old size label: ${label.name}`);
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: prNumber,
+                  name: label.name
+                });
+              }
+            }
+
+      - name: Add new size label
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_NUMBER: ${{ steps.read.outputs.pr_number }}
+          SIZE_LABEL: ${{ steps.read.outputs.size_label }}
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER);
+            const sizeLabel = process.env.SIZE_LABEL;
+
+            console.log(`Adding size label: ${sizeLabel} to PR #${prNumber}`);
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              labels: [sizeLabel]
+            });

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-24T00:19:53Z",
+  "last_updated": "2025-11-25T00:17:27Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -180,9 +180,9 @@
         "read_paper"
       ],
       "metadata": {
-        "stars": 1825,
+        "stars": 1895,
         "pulls": 77,
-        "last_updated": "2025-10-30T02:32:40Z"
+        "last_updated": "2025-11-24T02:36:20Z"
       },
       "repository_url": "https://github.com/blazickjp/arxiv-mcp-server",
       "tags": [
@@ -878,69 +878,15 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "search_engine",
         "scrape_as_markdown",
-        "scrape_as_html",
-        "extract",
-        "session_stats",
-        "web_data_amazon_product",
-        "web_data_amazon_product_reviews",
-        "web_data_amazon_product_search",
-        "web_data_walmart_product",
-        "web_data_walmart_seller",
-        "web_data_ebay_product",
-        "web_data_homedepot_products",
-        "web_data_zara_products",
-        "web_data_etsy_products",
-        "web_data_bestbuy_products",
-        "web_data_linkedin_person_profile",
-        "web_data_linkedin_company_profile",
-        "web_data_linkedin_job_listings",
-        "web_data_linkedin_posts",
-        "web_data_linkedin_people_search",
-        "web_data_crunchbase_company",
-        "web_data_zoominfo_company_profile",
-        "web_data_instagram_profiles",
-        "web_data_instagram_posts",
-        "web_data_instagram_reels",
-        "web_data_instagram_comments",
-        "web_data_facebook_posts",
-        "web_data_facebook_marketplace_listings",
-        "web_data_facebook_company_reviews",
-        "web_data_facebook_events",
-        "web_data_tiktok_profiles",
-        "web_data_tiktok_posts",
-        "web_data_tiktok_shop",
-        "web_data_tiktok_comments",
-        "web_data_google_maps_reviews",
-        "web_data_google_shopping",
-        "web_data_google_play_store",
-        "web_data_apple_app_store",
-        "web_data_reuter_news",
-        "web_data_github_repository_file",
-        "web_data_yahoo_finance_business",
-        "web_data_x_posts",
-        "web_data_zillow_properties_listing",
-        "web_data_booking_hotel_listings",
-        "web_data_youtube_profiles",
-        "web_data_youtube_comments",
-        "web_data_youtube_videos",
-        "web_data_reddit_posts",
-        "browser_create_session",
-        "browser_navigate",
-        "browser_click",
-        "browser_type",
-        "browser_scroll",
-        "browser_screenshot",
-        "browser_get_page_content",
-        "browser_wait_for_element",
-        "browser_execute_script",
-        "browser_close_session"
+        "scrape_batch",
+        "search_engine",
+        "search_engine_batch"
       ],
       "metadata": {
-        "stars": 1525,
+        "stars": 1601,
         "pulls": 65,
-        "last_updated": "2025-10-30T02:32:41Z"
+        "last_updated": "2025-11-24T02:36:20Z"
       },
       "repository_url": "https://github.com/brightdata/brightdata-mcp",
       "tags": [
@@ -950,7 +896,7 @@
         "automation",
         "browser"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/brightdata-mcp:2.5.0",
+      "image": "ghcr.io/stacklok/dockyard/npx/brightdata-mcp:2.6.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -2135,7 +2081,7 @@
         "update",
         "issues"
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.21.0",
+      "image": "ghcr.io/github/github-mcp-server:v0.22.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -2291,7 +2237,7 @@
         "milestones",
         "pipelines"
       ],
-      "image": "iwakitakuma/gitlab-mcp:2.0.12",
+      "image": "iwakitakuma/gitlab-mcp:2.0.13",
       "target_port": 3002,
       "permissions": {
         "network": {
@@ -4976,7 +4922,7 @@
         "error-tracking",
         "observability"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.21.0",
+      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.23.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -5804,9 +5750,9 @@
         "search-flight"
       ],
       "metadata": {
-        "stars": 3,
+        "stars": 4,
         "pulls": 0,
-        "last_updated": "2025-10-29T02:34:00Z"
+        "last_updated": "2025-11-24T02:36:19Z"
       },
       "repository_url": "https://github.com/alpic-ai/kiwi-mcp-server-public",
       "tags": [
@@ -6371,7 +6317,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-10-30T02:32:40Z"
+        "last_updated": "2025-11-24T02:36:20Z"
       },
       "tags": [
         "remote",
@@ -6413,7 +6359,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-10-30T02:32:40Z"
+        "last_updated": "2025-11-24T02:36:20Z"
       },
       "tags": [
         "remote",

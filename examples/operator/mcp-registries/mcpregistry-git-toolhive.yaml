@@ -5,20 +5,20 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "ToolHive Official Registry (Git)"
-  source:
-    type: git
-    format: toolhive
-    git:
-      repository: "https://github.com/stacklok/toolhive"
-      branch: "main"
-      path: "pkg/registry/data/registry.json"
-  syncPolicy:
-    interval: "1h"
-  filter:
-    tags:
-      include:
-        - "database"
-        - "filesystem"
-        - "api"
-      exclude:
-        - "experimental"
+  registries:
+    - name: default
+      format: toolhive
+      git:
+        repository: "https://github.com/stacklok/toolhive"
+        branch: "main"
+        path: "pkg/registry/data/registry.json"
+      syncPolicy:
+        interval: "1h"
+      filter:
+        tags:
+          include:
+            - "database"
+            - "filesystem"
+            - "api"
+          exclude:
+            - "experimental"

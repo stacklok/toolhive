@@ -5,21 +5,22 @@ metadata:
   namespace: default
 spec:
   displayName: "Filtered ToolHive Registry via API"
-  source:
-    type: api
-    api:
-      # Base API URL - controller will append /v0/servers
-      endpoint: "http://my-registry-api.default.svc.cluster.local"
-  syncPolicy:
-    # Sync every 30 minutes
-    interval: "30m"
-  # Apply filters to the fetched registry data
-  filter:
-    names:
-      # Only include these servers
-      include: ["filesystem", "github", "gitlab"]
-    tags:
-      # Only include servers with "official" tag
-      include: ["official"]
-      # Exclude experimental servers
-      exclude: ["experimental"]
+  registries:
+    - name: default
+      format: toolhive
+      api:
+        # Base API URL - controller will append /v0/servers
+        endpoint: "http://my-registry-api.default.svc.cluster.local"
+      syncPolicy:
+        # Sync every 30 minutes
+        interval: "30m"
+      # Apply filters to the fetched registry data
+      filter:
+        names:
+          # Only include these servers
+          include: ["filesystem", "github", "gitlab"]
+        tags:
+          # Only include servers with "official" tag
+          include: ["official"]
+          # Exclude experimental servers
+          exclude: ["experimental"]

@@ -150,8 +150,9 @@ spec:
   # - docker.io/anthropic/mcp-tools:v1.0.0
   # - docker.io/mcp/code-analyzer:v2.1.0 (from the development-tools group)
   enforceServers: true
-  source:
-    type: configmap
-    configMapRef:
-      name: enforcing-registry-data
-      key: registry.json
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: enforcing-registry-data
+        key: registry.json

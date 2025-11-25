@@ -5,10 +5,11 @@ metadata:
   namespace: default
 spec:
   displayName: "ToolHive Registry via API"
-  source:
-    type: api
-    api:
-      # Base API URL - controller will append /v0/servers
-      endpoint: "http://my-registry-api.default.svc.cluster.local"
-  syncPolicy:
-    interval: "1h"
+  registries:
+    - name: default
+      format: toolhive
+      api:
+        # Base API URL - controller will append /v0/servers
+        endpoint: "http://my-registry-api.default.svc.cluster.local"
+      syncPolicy:
+        interval: "1h"

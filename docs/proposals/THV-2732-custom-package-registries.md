@@ -165,10 +165,10 @@ thv run go://github.com/mark3labs/mcp-filesystem-server
 
 ### Viewing Generated Dockerfile
 
-Users can verify their configuration is being applied:
+Users can verify their configuration is being applied using the `build` command with `--dry-run`:
 
 ```bash
-thv run --dry-run npx://@modelcontextprotocol/server-github
+thv build --dry-run npx://@modelcontextprotocol/server-github
 ```
 
 This outputs the generated Dockerfile with all configured environment variables.

@@ -101,19 +101,20 @@ const (
 type Config struct {
 	// RegistryName is the name/identifier for this registry instance
 	// Defaults to "default" if not specified
-	RegistryName string            `yaml:"registryName,omitempty"`
-	Source       *SourceConfig     `yaml:"source"`
-	SyncPolicy   *SyncPolicyConfig `yaml:"syncPolicy,omitempty"`
-	Filter       *FilterConfig     `yaml:"filter,omitempty"`
+	RegistryName string           `yaml:"registryName,omitempty"`
+	Registries   []RegistryConfig `yaml:"registries"`
 }
 
-// SourceConfig defines the data source configuration
-type SourceConfig struct {
-	Type   string      `yaml:"type"`
-	Format string      `yaml:"format"`
-	Git    *GitConfig  `yaml:"git,omitempty"`
-	API    *APIConfig  `yaml:"api,omitempty"`
-	File   *FileConfig `yaml:"file,omitempty"`
+// RegistryConfig defines the configuration for a registry data source
+type RegistryConfig struct {
+	// Name is a unique identifier for this registry configuration
+	Name       string            `yaml:"name"`
+	Format     string            `yaml:"format"`
+	Git        *GitConfig        `yaml:"git,omitempty"`
+	API        *APIConfig        `yaml:"api,omitempty"`
+	File       *FileConfig       `yaml:"file,omitempty"`
+	SyncPolicy *SyncPolicyConfig `yaml:"syncPolicy,omitempty"`
+	Filter     *FilterConfig     `yaml:"filter,omitempty"`
 }
 
 // GitConfig defines Git source settings
@@ -208,102 +209,126 @@ func (cm *configManager) BuildConfig() (*Config, error) {
 
 	config.RegistryName = mcpRegistry.Name
 
-	if err := buildSourceConfig(&mcpRegistry.Spec.Source, &config); err != nil {
-		return nil, fmt.Errorf("failed to build source configuration: %w", err)
+	if len(mcpRegistry.Spec.Registries) == 0 {
+		return nil, fmt.Errorf("at least one registry must be specified")
 	}
 
-	if err := buildSyncPolicyConfig(mcpRegistry.Spec.SyncPolicy, &config); err != nil {
-		return nil, fmt.Errorf("failed to build sync policy configuration: %w", err)
+	// Validate registry names are unique
+	if err := validateRegistryNames(mcpRegistry.Spec.Registries); err != nil {
+		return nil, fmt.Errorf("invalid registry configuration: %w", err)
 	}
 
-	buildFilterConfig(mcpRegistry.Spec.Filter, &config)
+	// Build registry configs
+	config.Registries = make([]RegistryConfig, 0, len(mcpRegistry.Spec.Registries))
+	for _, registrySpec := range mcpRegistry.Spec.Registries {
+		registryConfig, err := buildRegistryConfig(&registrySpec)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build registry configuration for %q: %w", registrySpec.Name, err)
+		}
+		config.Registries = append(config.Registries, *registryConfig)
+	}
 
 	return &config, nil
 }
 
-func buildFilterConfig(filter *mcpv1alpha1.RegistryFilter, config *Config) {
-	if filter == nil {
-		return
-	}
-
-	// Initialize Filter if needed
-	if config.Filter == nil {
-		config.Filter = &FilterConfig{}
-	}
-
-	if filter.NameFilters != nil {
-		config.Filter.Names = &NameFilterConfig{
-			Include: filter.NameFilters.Include,
-			Exclude: filter.NameFilters.Exclude,
+// validateRegistryNames ensures all registry names are unique
+func validateRegistryNames(registries []mcpv1alpha1.MCPRegistryConfig) error {
+	seen := make(map[string]bool)
+	for _, registry := range registries {
+		if registry.Name == "" {
+			return fmt.Errorf("registry name is required")
 		}
-	}
-
-	if filter.Tags != nil {
-		config.Filter.Tags = &TagFilterConfig{
-			Include: filter.Tags.Include,
-			Exclude: filter.Tags.Exclude,
+		if seen[registry.Name] {
+			return fmt.Errorf("duplicate registry name: %q", registry.Name)
 		}
+		seen[registry.Name] = true
 	}
-}
-
-func buildSyncPolicyConfig(syncPolicy *mcpv1alpha1.SyncPolicy, config *Config) error {
-	if syncPolicy == nil {
-		return fmt.Errorf("sync policy configuration is required")
-	}
-
-	if syncPolicy.Interval == "" {
-		return fmt.Errorf("sync policy interval is required")
-	}
-
-	config.SyncPolicy = &SyncPolicyConfig{
-		Interval: syncPolicy.Interval,
-	}
-
 	return nil
 }
 
-func buildSourceConfig(source *mcpv1alpha1.MCPRegistrySource, config *Config) error {
-	if source == nil || source.Type == "" {
-		return fmt.Errorf("source type is required")
+func buildFilePath(registryName string) *FileConfig {
+	return &FileConfig{
+		Path: filepath.Join(RegistryJSONFilePath, registryName, RegistryJSONFileName),
+	}
+}
+
+func buildRegistryConfig(registrySpec *mcpv1alpha1.MCPRegistryConfig) (*RegistryConfig, error) {
+	if registrySpec.Name == "" {
+		return nil, fmt.Errorf("registry name is required")
 	}
 
-	sourceConfig := SourceConfig{}
-
-	if source.Format == "" {
-		return fmt.Errorf("source format is required")
+	registryConfig := RegistryConfig{
+		Name:   registrySpec.Name,
+		Format: registrySpec.Format,
 	}
-	sourceConfig.Format = source.Format
 
-	switch source.Type {
-	case mcpv1alpha1.RegistrySourceTypeConfigMap:
+	if registrySpec.Format == "" {
+		registryConfig.Format = mcpv1alpha1.RegistryFormatToolHive
+	}
+
+	// Determine source type and build appropriate config
+	sourceCount := 0
+	if registrySpec.ConfigMapRef != nil {
+		sourceCount++
 		// we use the file source config for configmap sources
 		// because the configmap will be mounted as a file in the registry server container.
 		// this stops the registry server worrying about configmap sources when all it has to do
 		// is read the file on startup
-		sourceConfig.File = &FileConfig{
-			Path: filepath.Join(RegistryJSONFilePath, RegistryJSONFileName),
-		}
-		sourceConfig.Type = SourceTypeFile
-	case mcpv1alpha1.RegistrySourceTypeGit:
-		gitConfig, err := buildGitSourceConfig(source.Git)
+		registryConfig.File = buildFilePath(registrySpec.Name)
+	}
+	if registrySpec.Git != nil {
+		sourceCount++
+		gitConfig, err := buildGitSourceConfig(registrySpec.Git)
 		if err != nil {
-			return fmt.Errorf("failed to build Git source configuration: %w", err)
+			return nil, fmt.Errorf("failed to build Git source configuration: %w", err)
 		}
-		sourceConfig.Git = gitConfig
-		sourceConfig.Type = SourceTypeGit
-	case mcpv1alpha1.RegistrySourceTypeAPI:
-		apiConfig, err := buildAPISourceConfig(source.API)
+		registryConfig.Git = gitConfig
+	}
+	if registrySpec.API != nil {
+		sourceCount++
+		apiConfig, err := buildAPISourceConfig(registrySpec.API)
 		if err != nil {
-			return fmt.Errorf("failed to build API source configuration: %w", err)
+			return nil, fmt.Errorf("failed to build API source configuration: %w", err)
 		}
-		sourceConfig.API = apiConfig
-		sourceConfig.Type = SourceTypeAPI
-	default:
-		return fmt.Errorf("unsupported source type: %s", source.Type)
+		registryConfig.API = apiConfig
 	}
 
-	config.Source = &sourceConfig
-	return nil
+	if sourceCount == 0 {
+		return nil, fmt.Errorf("exactly one source type (ConfigMapRef, Git, or API) must be specified")
+	}
+	if sourceCount > 1 {
+		return nil, fmt.Errorf("only one source type (ConfigMapRef, Git, or API) can be specified")
+	}
+
+	// Build sync policy
+	if registrySpec.SyncPolicy != nil {
+		if registrySpec.SyncPolicy.Interval == "" {
+			return nil, fmt.Errorf("sync policy interval is required")
+		}
+		registryConfig.SyncPolicy = &SyncPolicyConfig{
+			Interval: registrySpec.SyncPolicy.Interval,
+		}
+	}
+
+	// Build filter
+	if registrySpec.Filter != nil {
+		filterConfig := &FilterConfig{}
+		if registrySpec.Filter.NameFilters != nil {
+			filterConfig.Names = &NameFilterConfig{
+				Include: registrySpec.Filter.NameFilters.Include,
+				Exclude: registrySpec.Filter.NameFilters.Exclude,
+			}
+		}
+		if registrySpec.Filter.Tags != nil {
+			filterConfig.Tags = &TagFilterConfig{
+				Include: registrySpec.Filter.Tags.Include,
+				Exclude: registrySpec.Filter.Tags.Exclude,
+			}
+		}
+		registryConfig.Filter = filterConfig
+	}
+
+	return &registryConfig, nil
 }
 
 func buildGitSourceConfig(git *mcpv1alpha1.GitSource) (*GitConfig, error) {

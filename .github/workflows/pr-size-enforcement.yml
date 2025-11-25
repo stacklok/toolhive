@@ -47,7 +47,7 @@ jobs:
           cat pr-enforcement/result.json
 
       - name: Upload artifact
-        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: pr-enforcement-result
           path: pr-enforcement/

@@ -271,8 +271,8 @@ func handleHTTPResponse(resp *http.Response) (*DynamicClientRegistrationResponse
 		// - 405 Method Not Allowed: endpoint exists but POST not allowed
 		// - 501 Not Implemented: DCR feature not implemented
 		if resp.StatusCode == http.StatusNotFound ||
-		   resp.StatusCode == http.StatusMethodNotAllowed ||
-		   resp.StatusCode == http.StatusNotImplemented {
+			resp.StatusCode == http.StatusMethodNotAllowed ||
+			resp.StatusCode == http.StatusNotImplemented {
 			return nil, fmt.Errorf("this provider does not support Dynamic Client Registration (DCR) - HTTP %d. "+
 				"Please configure OAuth client credentials using --remote-auth-client-id and --remote-auth-client-secret flags, "+
 				"or register a client manually with the provider. Error details: %s",

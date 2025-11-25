@@ -12,7 +12,7 @@ jobs:
   enforce-xl-justification:
     name: Enforce XL PR Justification
     runs-on: ubuntu-latest
-    if: contains(github.event.pull_request.labels.*.name, 'size/XL')
+    if: github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'size/XL')
     steps:
       - name: Checkout repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5

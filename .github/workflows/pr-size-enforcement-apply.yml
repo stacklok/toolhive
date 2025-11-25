@@ -34,9 +34,11 @@ jobs:
 
       - name: Request changes if no justification
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          RESULT_JSON: ${{ steps.read.outputs.result }}
         with:
           script: |
-            const result = ${{ steps.read.outputs.result }};
+            const result = JSON.parse(process.env.RESULT_JSON);
 
             console.log('Enforcement result:', result);
 
@@ -83,9 +85,11 @@ jobs:
 
       - name: Dismiss review if justification added
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          RESULT_JSON: ${{ steps.read.outputs.result }}
         with:
           script: |
-            const result = ${{ steps.read.outputs.result }};
+            const result = JSON.parse(process.env.RESULT_JSON);
 
             if (!result.shouldDismiss) {
               console.log('No dismissal needed, skipping');

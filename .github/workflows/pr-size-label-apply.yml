@@ -34,9 +34,11 @@ jobs:
 
       - name: Remove old size labels
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_NUMBER: ${{ steps.read.outputs.pr_number }}
         with:
           script: |
-            const prNumber = ${{ steps.read.outputs.pr_number }};
+            const prNumber = parseInt(process.env.PR_NUMBER);
             const sizeLabels = ['size/XS', 'size/S', 'size/M', 'size/L', 'size/XL'];
 
             const currentLabels = await github.rest.issues.listLabelsOnIssue({
@@ -59,10 +61,13 @@ jobs:
 
       - name: Add new size label
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          PR_NUMBER: ${{ steps.read.outputs.pr_number }}
+          SIZE_LABEL: ${{ steps.read.outputs.size_label }}
         with:
           script: |
-            const prNumber = ${{ steps.read.outputs.pr_number }};
-            const sizeLabel = '${{ steps.read.outputs.size_label }}';
+            const prNumber = parseInt(process.env.PR_NUMBER);
+            const sizeLabel = process.env.SIZE_LABEL;
 
             console.log(`Adding size label: ${sizeLabel} to PR #${prNumber}`);
             await github.rest.issues.addLabels({

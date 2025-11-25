@@ -2,8 +2,10 @@ package registry
 
 import (
 	"encoding/json"
+	"regexp"
 	"testing"
 
+	"github.com/modelcontextprotocol/registry/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -591,4 +593,103 @@ func TestValidateUpstreamRegistry_RealWorld(t *testing.T) {
 
 	err := ValidateUpstreamRegistry([]byte(realWorldRegistry))
 	assert.NoError(t, err, "Real-world registry example should validate successfully")
+}
+
+// TestUpstreamRegistrySchemaVersionSync ensures that the schema reference in
+// upstream-registry.schema.json matches the schema version from the Go package
+// (model.CurrentSchemaVersion). This prevents schema drift when upgrading the
+// modelcontextprotocol/registry package.
+func TestUpstreamRegistrySchemaVersionSync(t *testing.T) {
+	t.Parallel()
+
+	// Read the upstream registry schema file
+	schemaPath := "data/upstream-registry.schema.json"
+	schemaData, err := embeddedSchemaFS.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatalf("Failed to read embedded schema file: %v", err)
+	}
+
+	// Parse the schema JSON
+	var schema map[string]interface{}
+	if err := json.Unmarshal(schemaData, &schema); err != nil {
+		t.Fatalf("Failed to parse schema JSON: %v", err)
+	}
+
+	// Navigate to the $ref field in data.properties.servers.items
+	data, ok := schema["properties"].(map[string]interface{})["data"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Failed to navigate to data field in schema")
+	}
+
+	dataProps, ok := data["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Failed to get data properties in schema")
+	}
+
+	servers, ok := dataProps["servers"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Failed to navigate to servers field in schema")
+	}
+
+	items, ok := servers["items"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Failed to get items field from servers")
+	}
+
+	refURL, ok := items["$ref"].(string)
+	if !ok {
+		t.Fatal("Failed to get $ref URL from items")
+	}
+
+	// Extract the date from the URL
+	// Expected format: https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json
+	re := regexp.MustCompile(`/schemas/([0-9]{4}-[0-9]{2}-[0-9]{2})/`)
+	matches := re.FindStringSubmatch(refURL)
+	if len(matches) != 2 {
+		t.Fatalf("Failed to extract date from schema URL: %s", refURL)
+	}
+	schemaDate := matches[1]
+
+	// Compare with the Go package constant
+	expectedDate := model.CurrentSchemaVersion
+	if schemaDate != expectedDate {
+		t.Errorf("Schema version mismatch!\n"+
+			"  Schema file (%s): %s\n"+
+			"  Go package (model.CurrentSchemaVersion): %s\n\n"+
+			"To fix: Update pkg/registry/data/upstream-registry.schema.json to use date %s:\n"+
+			"  In data.properties.servers.items.$ref:\n"+
+			"  \"$ref\": \"https://static.modelcontextprotocol.io/schemas/%s/server.schema.json\"",
+			schemaPath, schemaDate, expectedDate, expectedDate, expectedDate)
+	}
+
+	// Also check groups schema if present
+	groups, ok := dataProps["groups"].(map[string]interface{})
+	if ok {
+		groupItems, ok := groups["items"].(map[string]interface{})
+		if ok {
+			groupProps, ok := groupItems["properties"].(map[string]interface{})
+			if ok {
+				groupServers, ok := groupProps["servers"].(map[string]interface{})
+				if ok {
+					groupServerItems, ok := groupServers["items"].(map[string]interface{})
+					if ok {
+						groupRefURL, ok := groupServerItems["$ref"].(string)
+						if ok {
+							groupMatches := re.FindStringSubmatch(groupRefURL)
+							if len(groupMatches) == 2 {
+								groupSchemaDate := groupMatches[1]
+								if groupSchemaDate != expectedDate {
+									t.Errorf("Groups schema version mismatch!\n"+
+										"  Groups $ref date: %s\n"+
+										"  Expected: %s\n\n"+
+										"To fix: Update data.properties.groups.items.properties.servers.items.$ref",
+										groupSchemaDate, expectedDate)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }

@@ -4,11 +4,14 @@ The ToolHive Kubernetes Operator manages MCP (Model Context Protocol) servers an
 
 This operator is built using [Kubebuilder](https://book.kubebuilder.io/), a framework for building Kubernetes APIs using Custom Resource Definitions (CRDs).
 
+This guide is intended for developers working on the ToolHive Operator. For user-facing documentation, please refer to the [ToolHive docs website](https://docs.stacklok.com/toolhive/guides-k8s).
+
 ## Overview
 
 The operator introduces two main Custom Resource Definitions (CRDs):
 
 ### MCPServer
+
 Represents an MCP server in Kubernetes. When you create an `MCPServer` resource, the operator automatically:
 
 1. Creates a Deployment to run the MCP server
@@ -94,14 +97,16 @@ To run the Operator end-to-end (E2E) tests locally, ensure you have the followin
 ### Steps
 
 1. **Set up the Kind cluster:**
-  ```bash
-  task operator:kind-setup
-  ```
+
+```bash
+task operator:kind-setup
+```
 
 2. **Run the Operator E2E tests:**
-  ```bash
-  task operator:operator-e2e-test
-  ```
+
+```bash
+task operator:operator-e2e-test
+```
 
 Note: The Taskfile will ensure Chainsaw is installed locally if not present. In CI, Chainsaw is installed via the GitHub Action.
 
@@ -143,11 +148,11 @@ spec:
   mcpPort: 8080
   resources:
     limits:
-      cpu: "100m"
-      memory: "128Mi"
+      cpu: '100m'
+      memory: '128Mi'
     requests:
-      cpu: "50m"
-      memory: "64Mi"
+      cpu: '50m'
+      memory: '64Mi'
 ```
 
 Apply this resource:
@@ -185,6 +190,7 @@ kubectl create secret generic github-token -n toolhive-system --from-literal=tok
 Then apply the MCPServer resource.
 
 The `secrets` field has the following parameters:
+
 - `name`: The name of the Kubernetes secret (required)
 - `key`: The key in the secret itself (required)
 - `targetEnvName`: The environment variable to be used when setting up the secret in the MCP server (optional). If left unspecified, it defaults to the key.
@@ -210,7 +216,7 @@ kubectl describe mcpserver <name>
 ### MCPServer Spec
 
 | Field               | Description                                        | Required | Default |
-|---------------------|----------------------------------------------------|----------|---------|
+| ------------------- | -------------------------------------------------- | -------- | ------- |
 | `image`             | Container image for the MCP server                 | Yes      | -       |
 | `transport`         | Transport method (stdio, streamable-http or sse)   | No       | stdio   |
 | `proxyPort`         | Port to expose the MCP server on                   | No       | 8080    |
@@ -269,14 +275,14 @@ metadata:
   name: my-registry
   namespace: toolhive-system
 spec:
-  displayName: "My MCP Registry"
+  displayName: 'My MCP Registry'
   source:
     type: configmap
     configMapRef:
-      name: my-registry-data    # References the user-created ConfigMap
-      key: registry.json        # Key in ConfigMap (required)
+      name: my-registry-data # References the user-created ConfigMap
+      key: registry.json # Key in ConfigMap (required)
   syncPolicy:
-    interval: "1h"
+    interval: '1h'
 ```
 
 For complete MCPRegistry examples and documentation, see [REGISTRY.md](REGISTRY.md).
@@ -317,16 +323,19 @@ This operator is scaffolded using Kubebuilder. If you want to make changes to th
 #### Common Commands
 
 Generate CRD manifests:
+
 ```bash
 kubebuilder create api --group toolhive --version v1alpha1 --kind MCPServer
 ```
 
 Update CRD manifests after changing API types:
+
 ```bash
 task operator-manifests
 ```
 
 Run the controller locally:
+
 ```bash
 task operator-run
 ```

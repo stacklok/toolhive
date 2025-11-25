@@ -13,9 +13,15 @@ import (
 // This is used when ingesting data from upstream MCP Registry API endpoints.
 func NewUpstreamRegistryFromUpstreamServers(servers []upstreamv0.ServerJSON) *types.UpstreamRegistry {
 	return &types.UpstreamRegistry{
-		Version:     "1.0.0",
-		LastUpdated: time.Now().Format(time.RFC3339),
-		Servers:     servers,
+		Schema:  "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
+		Version: "1.0.0",
+		Meta: types.UpstreamMeta{
+			LastUpdated: time.Now().Format(time.RFC3339),
+		},
+		Data: types.UpstreamData{
+			Servers: servers,
+			Groups:  []types.UpstreamGroup{},
+		},
 	}
 }
 
@@ -48,8 +54,14 @@ func NewUpstreamRegistryFromToolhiveRegistry(toolhiveReg *types.Registry) (*type
 	}
 
 	return &types.UpstreamRegistry{
-		Version:     toolhiveReg.Version,
-		LastUpdated: toolhiveReg.LastUpdated,
-		Servers:     servers,
+		Schema:  "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
+		Version: toolhiveReg.Version,
+		Meta: types.UpstreamMeta{
+			LastUpdated: toolhiveReg.LastUpdated,
+		},
+		Data: types.UpstreamData{
+			Servers: servers,
+			Groups:  []types.UpstreamGroup{},
+		},
 	}, nil
 }

@@ -5,10 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"strings"
 	"text/template"
 
-	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/xeipuuv/gojsonschema"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -374,61 +373,27 @@ func validateJSONSchema(schemaBytes []byte) error {
 		return nil // Empty schema is allowed
 	}
 
-	// Parse the schema JSON
+	// Parse the schema JSON to verify it's valid JSON
 	var schemaDoc interface{}
 	if err := json.Unmarshal(schemaBytes, &schemaDoc); err != nil {
 		return fmt.Errorf("failed to parse JSON: %v", err)
 	}
 
-	// Compile the schema to validate it's a valid JSON Schema
-	compiler := jsonschema.NewCompiler()
-	schemaID := "schema://validation"
-	if err := compiler.AddResource(schemaID, schemaDoc); err != nil {
-		return formatJSONSchemaError(err)
-	}
+	// Use gojsonschema to validate the schema by attempting to use it as a schema
+	// We validate an empty object against the schema - if the schema itself is invalid,
+	// gojsonschema will return an error during schema loading
+	schemaLoader := gojsonschema.NewBytesLoader(schemaBytes)
+	documentLoader := gojsonschema.NewStringLoader("{}")
 
-	if _, err := compiler.Compile(schemaID); err != nil {
-		return formatJSONSchemaError(err)
+	// If this succeeds, the schema is valid JSON Schema
+	// If it fails during schema loading, the schema is invalid
+	_, err := gojsonschema.Validate(schemaLoader, documentLoader)
+	if err != nil {
+		// Check if error is about the schema itself (not validation failure)
+		return fmt.Errorf("invalid JSON Schema: %v", err)
 	}
 
 	return nil
-}
-
-// formatJSONSchemaError formats JSON Schema validation errors for better readability
-func formatJSONSchemaError(err error) error {
-	if validationErr, ok := err.(*jsonschema.ValidationError); ok {
-		var errorMessages []string
-		collectJSONSchemaErrors(validationErr, &errorMessages)
-		if len(errorMessages) > 0 {
-			return fmt.Errorf("%s", strings.Join(errorMessages, "; "))
-		}
-	}
-	return err
-}
-
-// collectJSONSchemaErrors recursively collects all validation error messages
-func collectJSONSchemaErrors(err *jsonschema.ValidationError, messages *[]string) {
-	if err == nil {
-		return
-	}
-
-	// If this error has causes, recurse into them
-	if len(err.Causes) > 0 {
-		for _, cause := range err.Causes {
-			collectJSONSchemaErrors(cause, messages)
-		}
-		return
-	}
-
-	// This is a leaf error - format it
-	output := err.BasicOutput()
-	if output != nil && output.Error != nil {
-		errorMsg := output.Error.String()
-		if output.InstanceLocation != "" {
-			errorMsg = fmt.Sprintf("%s at '%s'", errorMsg, output.InstanceLocation)
-		}
-		*messages = append(*messages, errorMsg)
-	}
 }
 
 // validateDuration validates duration format (e.g., "30s", "5m", "1h")

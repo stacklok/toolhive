@@ -20,7 +20,7 @@ import (
 
 const (
 	httpsScheme   = "https"
-	wellKnownPath = "/.well-known/openid-configuration"
+	wellKnownPath = WellKnownOIDCPath
 )
 
 // testDiscoverOIDCEndpoints is a test version that skips TLS verification
@@ -168,21 +168,30 @@ func TestDiscoverOIDCEndpoints(t *testing.T) {
 			serverResponse: func() *httptest.Server {
 				var server *httptest.Server
 				server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					assert.Equal(t, "/.well-known/openid-configuration", r.URL.Path)
 					assert.Equal(t, "ToolHive/1.0", r.Header.Get("User-Agent"))
 					assert.Equal(t, "application/json", r.Header.Get("Accept"))
 
-					doc := OIDCDiscoveryDocument{
-						Issuer:                        server.URL,
-						AuthorizationEndpoint:         server.URL + "/auth",
-						TokenEndpoint:                 server.URL + "/token",
-						JWKSURI:                       server.URL + "/jwks",
-						UserinfoEndpoint:              server.URL + "/userinfo",
-						CodeChallengeMethodsSupported: []string{"S256"},
-					}
+					switch r.URL.Path {
+					case wellKnownPath:
+						doc := OIDCDiscoveryDocument{
+							Issuer:                        server.URL,
+							AuthorizationEndpoint:         server.URL + "/auth",
+							TokenEndpoint:                 server.URL + "/token",
+							JWKSURI:                       server.URL + "/jwks",
+							UserinfoEndpoint:              server.URL + "/userinfo",
+							CodeChallengeMethodsSupported: []string{"S256"},
+							// No registration_endpoint - this will trigger fallback to OAuth endpoint
+						}
 
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(doc)
+						w.Header().Set("Content-Type", "application/json")
+						json.NewEncoder(w).Encode(doc)
+					case WellKnownOAuthServerPath:
+						// OAuth endpoint may be called as fallback when registration_endpoint is missing
+						// Return 404 to indicate it's not available
+						w.WriteHeader(http.StatusNotFound)
+					default:
+						t.Errorf("unexpected path: %s", r.URL.Path)
+					}
 				}))
 				return server
 			},
@@ -876,24 +885,30 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 			serverResponse: func() *httptest.Server {
 				var server *httptest.Server
 				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path != "/.well-known/openid-configuration" {
-						t.Errorf("unexpected path: %s", r.URL.Path)
-					}
-
 					// Use the actual server URL but replace 127.0.0.1 with localhost
 					issuerURL := strings.Replace(server.URL, "127.0.0.1", "localhost", 1)
 
-					doc := OIDCDiscoveryDocument{
-						Issuer:                        issuerURL,
-						AuthorizationEndpoint:         issuerURL + "/auth",
-						TokenEndpoint:                 issuerURL + "/token",
-						JWKSURI:                       issuerURL + "/jwks",
-						UserinfoEndpoint:              issuerURL + "/userinfo",
-						CodeChallengeMethodsSupported: []string{"S256", "plain"},
-					}
+					switch r.URL.Path {
+					case wellKnownPath:
+						doc := OIDCDiscoveryDocument{
+							Issuer:                        issuerURL,
+							AuthorizationEndpoint:         issuerURL + "/auth",
+							TokenEndpoint:                 issuerURL + "/token",
+							JWKSURI:                       issuerURL + "/jwks",
+							UserinfoEndpoint:              issuerURL + "/userinfo",
+							CodeChallengeMethodsSupported: []string{"S256", "plain"},
+							// No registration_endpoint - this will trigger fallback to OAuth endpoint
+						}
 
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(doc)
+						w.Header().Set("Content-Type", "application/json")
+						json.NewEncoder(w).Encode(doc)
+					case WellKnownOAuthServerPath:
+						// OAuth endpoint may be called as fallback when registration_endpoint is missing
+						// Return 404 to indicate it's not available
+						w.WriteHeader(http.StatusNotFound)
+					default:
+						t.Errorf("unexpected path: %s", r.URL.Path)
+					}
 				}))
 				return server
 			},
@@ -913,21 +928,30 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 			serverResponse: func() *httptest.Server {
 				var server *httptest.Server
 				server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					assert.Equal(t, "/.well-known/openid-configuration", r.URL.Path)
 					assert.Equal(t, "ToolHive/1.0", r.Header.Get("User-Agent"))
 					assert.Equal(t, "application/json", r.Header.Get("Accept"))
 
-					doc := OIDCDiscoveryDocument{
-						Issuer:                        server.URL,
-						AuthorizationEndpoint:         server.URL + "/auth",
-						TokenEndpoint:                 server.URL + "/token",
-						JWKSURI:                       server.URL + "/jwks",
-						UserinfoEndpoint:              server.URL + "/userinfo",
-						CodeChallengeMethodsSupported: []string{"S256"},
-					}
+					switch r.URL.Path {
+					case wellKnownPath:
+						doc := OIDCDiscoveryDocument{
+							Issuer:                        server.URL,
+							AuthorizationEndpoint:         server.URL + "/auth",
+							TokenEndpoint:                 server.URL + "/token",
+							JWKSURI:                       server.URL + "/jwks",
+							UserinfoEndpoint:              server.URL + "/userinfo",
+							CodeChallengeMethodsSupported: []string{"S256"},
+							// No registration_endpoint - this will trigger fallback to OAuth endpoint
+						}
 
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(doc)
+						w.Header().Set("Content-Type", "application/json")
+						json.NewEncoder(w).Encode(doc)
+					case WellKnownOAuthServerPath:
+						// OAuth endpoint may be called as fallback when registration_endpoint is missing
+						// Return 404 to indicate it's not available
+						w.WriteHeader(http.StatusNotFound)
+					default:
+						t.Errorf("unexpected path: %s", r.URL.Path)
+					}
 				}))
 				return server
 			},
@@ -1263,6 +1287,133 @@ func TestValidateEndpointURL_AdditionalCases(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestBuildWellKnownURLs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name              string
+		issuer            string
+		insecureAllowHTTP bool
+		expectError       bool
+		errorMsg          string
+		expectedOIDCURL   string
+		expectedOAuthURL  string
+	}{
+		{
+			name:             "root issuer without path",
+			issuer:           "https://example.com",
+			expectedOIDCURL:  "https://example.com/.well-known/openid-configuration",
+			expectedOAuthURL: "https://example.com/.well-known/oauth-authorization-server",
+		},
+		{
+			name:             "root issuer with trailing slash",
+			issuer:           "https://example.com/",
+			expectedOIDCURL:  "https://example.com/.well-known/openid-configuration",
+			expectedOAuthURL: "https://example.com/.well-known/oauth-authorization-server",
+		},
+		{
+			name:             "issuer with single tenant path",
+			issuer:           "https://example.com/realm",
+			expectedOIDCURL:  "https://example.com/realm/.well-known/openid-configuration",
+			expectedOAuthURL: "https://example.com/.well-known/oauth-authorization-server/realm",
+		},
+		{
+			name:             "issuer with nested tenant path",
+			issuer:           "https://example.com/tenant/subtenant",
+			expectedOIDCURL:  "https://example.com/tenant/subtenant/.well-known/openid-configuration",
+			expectedOAuthURL: "https://example.com/.well-known/oauth-authorization-server/tenant/subtenant",
+		},
+		{
+			name:             "issuer with tenant path and trailing slash",
+			issuer:           "https://example.com/realm/",
+			expectedOIDCURL:  "https://example.com/realm/.well-known/openid-configuration",
+			expectedOAuthURL: "https://example.com/.well-known/oauth-authorization-server/realm",
+		},
+		{
+			name:             "localhost HTTP allowed",
+			issuer:           "http://localhost:8080",
+			expectedOIDCURL:  "http://localhost:8080/.well-known/openid-configuration",
+			expectedOAuthURL: "http://localhost:8080/.well-known/oauth-authorization-server",
+		},
+		{
+			name:             "localhost HTTP with path",
+			issuer:           "http://localhost:8080/realm",
+			expectedOIDCURL:  "http://localhost:8080/realm/.well-known/openid-configuration",
+			expectedOAuthURL: "http://localhost:8080/.well-known/oauth-authorization-server/realm",
+		},
+		{
+			name:             "127.0.0.1 HTTP allowed",
+			issuer:           "http://127.0.0.1:8080",
+			expectedOIDCURL:  "http://127.0.0.1:8080/.well-known/openid-configuration",
+			expectedOAuthURL: "http://127.0.0.1:8080/.well-known/oauth-authorization-server",
+		},
+		{
+			name:              "insecureAllowHTTP allows non-HTTPS",
+			issuer:            "http://example.com",
+			insecureAllowHTTP: true,
+			expectedOIDCURL:   "http://example.com/.well-known/openid-configuration",
+			expectedOAuthURL:  "http://example.com/.well-known/oauth-authorization-server",
+		},
+		{
+			name:        "invalid URL - malformed",
+			issuer:      "://invalid",
+			expectError: true,
+			errorMsg:    "invalid issuer URL",
+		},
+		{
+			name:        "invalid URL - no scheme",
+			issuer:      "not-a-url",
+			expectError: true,
+			errorMsg:    "issuer must use HTTPS",
+		},
+		{
+			name:        "non-HTTPS issuer rejected",
+			issuer:      "http://example.com",
+			expectError: true,
+			errorMsg:    "issuer must use HTTPS",
+		},
+		{
+			name:   "issuer with URL-encoded path",
+			issuer: "https://example.com/my%20realm",
+			// EscapedPath() returns encoded path, and url.String() encodes again, so we get double encoding
+			expectedOIDCURL:  "https://example.com/my%2520realm/.well-known/openid-configuration",
+			expectedOAuthURL: "https://example.com/.well-known/oauth-authorization-server/my%2520realm",
+		},
+		{
+			name:             "issuer with query parameters (should be ignored)",
+			issuer:           "https://example.com/realm?param=value",
+			expectedOIDCURL:  "https://example.com/realm/.well-known/openid-configuration",
+			expectedOAuthURL: "https://example.com/.well-known/oauth-authorization-server/realm",
+		},
+		{
+			name:             "issuer with fragment (should be ignored)",
+			issuer:           "https://example.com/realm#fragment",
+			expectedOIDCURL:  "https://example.com/realm/.well-known/openid-configuration",
+			expectedOAuthURL: "https://example.com/.well-known/oauth-authorization-server/realm",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			oidcURL, oauthURL, err := buildWellKnownURLs(tt.issuer, tt.insecureAllowHTTP)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+				assert.Empty(t, oidcURL)
+				assert.Empty(t, oauthURL)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedOIDCURL, oidcURL, "OIDC URL should match expected")
+			assert.Equal(t, tt.expectedOAuthURL, oauthURL, "OAuth URL should match expected")
 		})
 	}
 }

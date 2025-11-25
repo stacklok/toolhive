@@ -105,8 +105,8 @@ func TestDiscoverOIDCEndpointsWithRegistration(t *testing.T) {
 				responseTemplate = tt.response
 				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					// Handle both OIDC and OAuth discovery endpoints
-					if r.URL.Path == "/.well-known/openid-configuration" ||
-						r.URL.Path == "/.well-known/oauth-authorization-server" {
+					if r.URL.Path == WellKnownOIDCPath ||
+						r.URL.Path == WellKnownOAuthServerPath {
 						w.Header().Set("Content-Type", "application/json")
 						w.WriteHeader(http.StatusOK)
 						// Replace placeholder with actual server URL
@@ -462,6 +462,99 @@ func TestDynamicClientRegistrationResponse_Validation(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "test-client-id", result.ClientID)
+}
+
+func TestDiscoverOIDCEndpointsWithRegistrationFallback(t *testing.T) {
+	t.Parallel()
+
+	// Test case: OIDC well-known succeeds but lacks registration_endpoint,
+	// OAuth authorization server well-known has it
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		baseURL := "http://" + r.Host
+		switch r.URL.Path {
+		case WellKnownOIDCPath:
+			// OIDC discovery - no registration_endpoint
+			response := `{
+				"issuer": "` + baseURL + `",
+				"authorization_endpoint": "` + baseURL + `/oauth/authorize",
+				"token_endpoint": "` + baseURL + `/oauth/token",
+				"userinfo_endpoint": "` + baseURL + `/oauth/userinfo",
+				"jwks_uri": "` + baseURL + `/oauth/jwks"
+			}`
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(response))
+		case WellKnownOAuthServerPath:
+			// OAuth authorization server - has registration_endpoint
+			response := `{
+				"issuer": "` + baseURL + `",
+				"authorization_endpoint": "` + baseURL + `/oauth/authorize",
+				"token_endpoint": "` + baseURL + `/oauth/token",
+				"registration_endpoint": "` + baseURL + `/oauth/register"
+			}`
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(response))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	result, err := DiscoverOIDCEndpoints(context.Background(), server.URL)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, server.URL, result.Issuer)
+	assert.NotEmpty(t, result.AuthorizationEndpoint)
+	assert.NotEmpty(t, result.TokenEndpoint)
+	// Registration endpoint should be found from OAuth authorization server well-known
+	assert.NotEmpty(t, result.RegistrationEndpoint, "registration_endpoint should be found via OAuth authorization server fallback")
+	assert.Equal(t, server.URL+"/oauth/register", result.RegistrationEndpoint)
+}
+
+func TestDiscoverOIDCEndpointsWithRegistrationFallbackIssuerMismatch(t *testing.T) {
+	t.Parallel()
+
+	// Test case: OIDC and OAuth have different issuers - should not merge
+	// Use DiscoverActualIssuer which doesn't validate issuer, allowing us to test the merge logic
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		baseURL := "http://" + r.Host
+		switch r.URL.Path {
+		case WellKnownOIDCPath:
+			// OIDC discovery - no registration_endpoint, different issuer
+			response := `{
+				"issuer": "https://oidc.example.com",
+				"authorization_endpoint": "` + baseURL + `/oauth/authorize",
+				"token_endpoint": "` + baseURL + `/oauth/token",
+				"userinfo_endpoint": "` + baseURL + `/oauth/userinfo",
+				"jwks_uri": "` + baseURL + `/oauth/jwks"
+			}`
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(response))
+		case WellKnownOAuthServerPath:
+			// OAuth authorization server - has registration_endpoint but different issuer
+			response := `{
+				"issuer": "https://oauth.example.com",
+				"authorization_endpoint": "` + baseURL + `/oauth/authorize",
+				"token_endpoint": "` + baseURL + `/oauth/token",
+				"registration_endpoint": "` + baseURL + `/oauth/register"
+			}`
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(response))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	// Use DiscoverActualIssuer which doesn't validate issuer, allowing us to test merge logic
+	result, err := DiscoverActualIssuer(context.Background(), server.URL)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	// Registration endpoint should NOT be merged due to issuer mismatch
+	assert.Empty(t, result.RegistrationEndpoint, "registration_endpoint should not be merged when issuers don't match")
 }
 
 // TestIsLocalhost is already defined in oidc_test.go

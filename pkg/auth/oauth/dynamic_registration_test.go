@@ -12,10 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const (
-	wellKnownOAuthServerPath = "/.well-known/oauth-authorization-server"
-)
-
 func TestDiscoverOIDCEndpointsWithRegistration(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -109,8 +105,8 @@ func TestDiscoverOIDCEndpointsWithRegistration(t *testing.T) {
 				responseTemplate = tt.response
 				server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					// Handle both OIDC and OAuth discovery endpoints
-					if r.URL.Path == wellKnownPath ||
-						r.URL.Path == wellKnownOAuthServerPath {
+					if r.URL.Path == WellKnownOIDCPath ||
+						r.URL.Path == WellKnownOAuthServerPath {
 						w.Header().Set("Content-Type", "application/json")
 						w.WriteHeader(http.StatusOK)
 						// Replace placeholder with actual server URL
@@ -477,7 +473,7 @@ func TestDiscoverOIDCEndpointsWithRegistrationFallback(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		baseURL := "http://" + r.Host
 		switch r.URL.Path {
-		case wellKnownPath:
+		case WellKnownOIDCPath:
 			// OIDC discovery - no registration_endpoint
 			response := `{
 				"issuer": "` + baseURL + `",
@@ -488,7 +484,7 @@ func TestDiscoverOIDCEndpointsWithRegistrationFallback(t *testing.T) {
 			}`
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(response))
-		case wellKnownOAuthServerPath:
+		case WellKnownOAuthServerPath:
 			// OAuth authorization server - has registration_endpoint
 			response := `{
 				"issuer": "` + baseURL + `",
@@ -525,7 +521,7 @@ func TestDiscoverOIDCEndpointsWithRegistrationFallbackIssuerMismatch(t *testing.
 		w.Header().Set("Content-Type", "application/json")
 		baseURL := "http://" + r.Host
 		switch r.URL.Path {
-		case wellKnownPath:
+		case WellKnownOIDCPath:
 			// OIDC discovery - no registration_endpoint, different issuer
 			response := `{
 				"issuer": "https://oidc.example.com",
@@ -536,7 +532,7 @@ func TestDiscoverOIDCEndpointsWithRegistrationFallbackIssuerMismatch(t *testing.
 			}`
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(response))
-		case wellKnownOAuthServerPath:
+		case WellKnownOAuthServerPath:
 			// OAuth authorization server - has registration_endpoint but different issuer
 			response := `{
 				"issuer": "https://oauth.example.com",

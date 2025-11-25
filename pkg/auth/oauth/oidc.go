@@ -19,6 +19,16 @@ import (
 // UserAgent is the user agent for the ToolHive MCP client
 const UserAgent = "ToolHive/1.0"
 
+// Well-known endpoint paths for OIDC and OAuth discovery
+const (
+	// WellKnownOIDCPath is the standard OIDC discovery endpoint path
+	// per OpenID Connect Discovery 1.0 specification
+	WellKnownOIDCPath = "/.well-known/openid-configuration"
+	// WellKnownOAuthServerPath is the standard OAuth authorization server metadata endpoint path
+	// per RFC 8414 (OAuth 2.0 Authorization Server Metadata)
+	WellKnownOAuthServerPath = "/.well-known/oauth-authorization-server"
+)
+
 // OIDCDiscoveryDocument represents the OIDC discovery document structure
 // This is a simplified wrapper around the Zitadel OIDC discovery
 type OIDCDiscoveryDocument struct {
@@ -69,22 +79,11 @@ func discoverOIDCEndpointsWithClientAndValidation(
 	validateIssuer bool,
 	insecureAllowHTTP bool,
 ) (*OIDCDiscoveryDocument, error) {
-	// Validate issuer URL
-	issuerURL, err := url.Parse(issuer)
+
+	oidcURL, oauthURL, err := buildWellKnownURLs(issuer, insecureAllowHTTP)
 	if err != nil {
-		return nil, fmt.Errorf("invalid issuer URL: %w", err)
+		return nil, fmt.Errorf("failed to build well-known URLs: %w", err)
 	}
-
-	// Ensure HTTPS for security (except localhost for development or when explicitly allowed for testing)
-	if issuerURL.Scheme != "https" && !networking.IsLocalhost(issuerURL.Host) && !insecureAllowHTTP {
-		return nil, fmt.Errorf("issuer must use HTTPS: %s (use insecureAllowHTTP for testing only)", issuer)
-	}
-
-	// Build both well-known URLs (handles tenant/realm paths)
-	base := issuerURL.Scheme + "://" + issuerURL.Host
-	tenant := strings.Trim(issuerURL.EscapedPath(), "/")
-	oidcURL := base + path.Join("/", tenant, ".well-known", "openid-configuration")
-	oauthURL := base + path.Join("/.well-known/oauth-authorization-server", tenant)
 
 	if client == nil {
 		client = &http.Client{
@@ -265,4 +264,46 @@ func createOAuthConfigFromOIDCWithClient(
 		CallbackPort:          callbackPort,
 		Resource:              resource,
 	}, nil
+}
+
+func buildWellKnownURLs(issuer string, insecureAllowHTTP bool) (oidcURL, oauthURL string, err error) {
+	// Parse issuer
+	issuerURL, err := url.Parse(issuer)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid issuer URL: %w", err)
+	}
+
+	// Enforce HTTPS except localhost or explicit override
+	if issuerURL.Scheme != "https" &&
+		!networking.IsLocalhost(issuerURL.Host) &&
+		!insecureAllowHTTP {
+		return "", "", fmt.Errorf("issuer must use HTTPS: %s (use insecureAllowHTTP for testing only)", issuer)
+	}
+
+	// Extract tenant/realm path (may be nested)
+	tenant := strings.Trim(issuerURL.EscapedPath(), "/")
+
+	// Base = scheme + host
+	base := &url.URL{
+		Scheme: issuerURL.Scheme,
+		Host:   issuerURL.Host,
+	}
+
+	//
+	// Build OIDC Discovery URL
+	//   /{tenant}/.well-known/openid-configuration
+	//
+	oidc := *base
+	oidc.Path = path.Join("/", tenant, WellKnownOIDCPath)
+	oidcURL = oidc.String()
+
+	//
+	// Build OAuth AS Metadata URL
+	//   /.well-known/oauth-authorization-server/{tenant}
+	//
+	oauth := *base
+	oauth.Path = path.Join(WellKnownOAuthServerPath, tenant)
+	oauthURL = oauth.String()
+
+	return oidcURL, oauthURL, nil
 }

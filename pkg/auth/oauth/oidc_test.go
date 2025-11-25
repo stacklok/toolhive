@@ -20,7 +20,7 @@ import (
 
 const (
 	httpsScheme   = "https"
-	wellKnownPath = "/.well-known/openid-configuration"
+	wellKnownPath = WellKnownOIDCPath
 )
 
 // testDiscoverOIDCEndpoints is a test version that skips TLS verification
@@ -185,7 +185,7 @@ func TestDiscoverOIDCEndpoints(t *testing.T) {
 
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(doc)
-					case wellKnownOAuthServerPath:
+					case WellKnownOAuthServerPath:
 						// OAuth endpoint may be called as fallback when registration_endpoint is missing
 						// Return 404 to indicate it's not available
 						w.WriteHeader(http.StatusNotFound)
@@ -902,7 +902,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(doc)
-					case wellKnownOAuthServerPath:
+					case WellKnownOAuthServerPath:
 						// OAuth endpoint may be called as fallback when registration_endpoint is missing
 						// Return 404 to indicate it's not available
 						w.WriteHeader(http.StatusNotFound)
@@ -945,7 +945,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(doc)
-					case wellKnownOAuthServerPath:
+					case WellKnownOAuthServerPath:
 						// OAuth endpoint may be called as fallback when registration_endpoint is missing
 						// Return 404 to indicate it's not available
 						w.WriteHeader(http.StatusNotFound)

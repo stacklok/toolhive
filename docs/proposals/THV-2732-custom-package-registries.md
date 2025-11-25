@@ -53,7 +53,7 @@ build_env:
   # Package mirror configuration
   NPM_CONFIG_REGISTRY: "https://npm.corp.example.com"
   PIP_INDEX_URL: "https://pypi.corp.example.com/simple"
-  UV_INDEX_URL: "https://pypi.corp.example.com/simple"
+  UV_DEFAULT_INDEX: "https://pypi.corp.example.com/simple"
   GOPROXY: "https://goproxy.corp.example.com"
   # Other build-time configurations
   GOPRIVATE: "github.com/myorg/*"
@@ -133,7 +133,7 @@ thv config set cacert /path/to/corporate-ca.pem
 # Configure package mirrors
 thv config set build-env NPM_CONFIG_REGISTRY https://artifactory.corp.example.com/api/npm/npm-remote/
 thv config set build-env PIP_INDEX_URL https://artifactory.corp.example.com/api/pypi/pypi-remote/simple
-thv config set build-env UV_INDEX_URL https://artifactory.corp.example.com/api/pypi/pypi-remote/simple
+thv config set build-env UV_DEFAULT_INDEX https://artifactory.corp.example.com/api/pypi/pypi-remote/simple
 thv config set build-env GOPROXY https://artifactory.corp.example.com/api/go/go-remote
 
 # Verify configuration

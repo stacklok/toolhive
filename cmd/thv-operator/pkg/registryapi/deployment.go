@@ -77,11 +77,7 @@ func (m *manager) ensureDeployment(
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
 	// Build the desired deployment configuration
-	deployment, err := m.buildRegistryAPIDeployment(mcpRegistry, configManager)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to build deployment configuration")
-		return nil, fmt.Errorf("failed to build deployment configuration: %w", err)
-	}
+	deployment := m.buildRegistryAPIDeployment(mcpRegistry, configManager)
 	deploymentName := deployment.Name
 
 	// Set owner reference for automatic garbage collection
@@ -92,7 +88,7 @@ func (m *manager) ensureDeployment(
 
 	// Check if deployment already exists
 	existing := &appsv1.Deployment{}
-	err = m.client.Get(ctx, client.ObjectKey{
+	err := m.client.Get(ctx, client.ObjectKey{
 		Name:      deploymentName,
 		Namespace: mcpRegistry.Namespace,
 	}, existing)
@@ -122,10 +118,10 @@ func (m *manager) ensureDeployment(
 // buildRegistryAPIDeployment creates and configures a Deployment object for the registry API.
 // This function handles all deployment configuration including labels, container specs, probes,
 // and storage manager integration. It returns a fully configured deployment ready for Kubernetes API operations.
-func (m *manager) buildRegistryAPIDeployment(
+func (*manager) buildRegistryAPIDeployment(
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
 	configManager config.ConfigManager,
-) (*appsv1.Deployment, error) {
+) *appsv1.Deployment {
 	// Generate deployment name using the established pattern
 	deploymentName := mcpRegistry.GetAPIResourceName()
 
@@ -133,7 +129,19 @@ func (m *manager) buildRegistryAPIDeployment(
 	labels := labelsForRegistryAPI(mcpRegistry, deploymentName)
 
 	// Build the PodTemplateSpec using the functional options pattern
-	podTemplateSpec := DefaultRegistryAPIPodTemplateSpec(labels, "hash-dummy-value")
+	// This includes all mount configurations via the builder pattern
+	builder := NewPodTemplateSpecBuilder()
+	podTemplateSpec := builder.Apply(
+		WithLabels(labels),
+		WithAnnotations(map[string]string{
+			"toolhive.stacklok.dev/config-hash": "hash-dummy-value",
+		}),
+		WithServiceAccountName(DefaultServiceAccountName),
+		WithContainer(BuildRegistryAPIContainer(getRegistryAPIImage())),
+		WithRegistryServerConfigMount(registryAPIContainerName, configManager.GetRegistryServerConfigMapName()),
+		WithRegistrySourceMounts(registryAPIContainerName, mcpRegistry.Spec.Registries),
+		WithRegistryStorageMount(registryAPIContainerName),
+	).Build()
 
 	// Create basic deployment specification with named container
 	deployment := &appsv1.Deployment{
@@ -154,20 +162,7 @@ func (m *manager) buildRegistryAPIDeployment(
 		},
 	}
 
-	// Configure storage-specific aspects using the new inverted dependency approach
-	if err := m.configureRegistryServerConfigMounts(deployment, registryAPIContainerName, configManager); err != nil {
-		return nil, fmt.Errorf("failed to configure registry server config mounts: %w", err)
-	}
-
-	if err := m.configureRegistrySourceMounts(deployment, mcpRegistry, registryAPIContainerName); err != nil {
-		return nil, fmt.Errorf("failed to configure registry source mounts: %w", err)
-	}
-
-	if err := m.configureRegistryStorageMounts(deployment, registryAPIContainerName); err != nil {
-		return nil, fmt.Errorf("failed to configure registry storage mounts: %w", err)
-	}
-
-	return deployment, nil
+	return deployment
 }
 
 // getRegistryAPIImage returns the registry API container image to use
@@ -182,34 +177,4 @@ func getRegistryAPIImageWithEnvGetter(envGetter func(string) string) string {
 		return img
 	}
 	return "ghcr.io/stacklok/thv-registry-api:latest"
-}
-
-// findContainerByName finds a container by name in a slice of containers
-func findContainerByName(containers []corev1.Container, name string) *corev1.Container {
-	for i := range containers {
-		if containers[i].Name == name {
-			return &containers[i]
-		}
-	}
-	return nil
-}
-
-// hasVolume checks if a volume with the given name exists in the volumes slice
-func hasVolume(volumes []corev1.Volume, name string) bool {
-	for _, volume := range volumes {
-		if volume.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-// hasVolumeMount checks if a volume mount with the given name exists in the volume mounts slice
-func hasVolumeMount(volumeMounts []corev1.VolumeMount, name string) bool {
-	for _, mount := range volumeMounts {
-		if mount.Name == name {
-			return true
-		}
-	}
-	return false
 }

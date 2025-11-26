@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -347,6 +348,260 @@ func TestVMCPComposer(t *testing.T) {
 			wantError: true,
 			// At least one error message should appear
 			wantStrings: []string{"ERROR"},
+		},
+		// Advanced error handling and edge case tests
+		//
+		// Test: StepTimeoutDuringRetry
+		// Verifies that step timeout is respected even when retry is configured.
+		// The slow tool takes longer than the step timeout, so it should fail due
+		// to timeout rather than exhausting all retry attempts.
+		{
+			name: "StepTimeoutDuringRetry",
+			tools: []helpers.BackendTool{
+				// Tool that delays 500ms before returning - longer than the 50ms step timeout
+				helpers.NewSlowBackendTool("slow_tool", "Slow tool that times out", 500*time.Millisecond, "SUCCESS"),
+			},
+			workflow: &composer.WorkflowDefinition{
+				Name:        "timeout_retry",
+				Description: "Tests that timeout is respected during retry attempts",
+				Parameters:  map[string]any{},
+				FailureMode: "abort",
+				Steps: []composer.WorkflowStep{
+					{
+						ID:        "slow_step",
+						Type:      composer.StepTypeTool,
+						Tool:      "test_slow_tool",
+						Arguments: map[string]any{},
+						// Step timeout is shorter than the tool delay
+						Timeout: 50 * time.Millisecond,
+						OnError: &composer.ErrorHandler{
+							Action:     "retry",
+							RetryCount: 3,
+							RetryDelay: 10 * time.Millisecond,
+						},
+					},
+				},
+			},
+			params:    map[string]any{},
+			wantError: true,
+			// Should fail due to timeout - the error message should indicate timeout or context deadline
+			wantStrings: []string{},
+		},
+		// Test: ConditionalStepReferencingSkippedStep
+		// Tests template expansion when a step references output from a skipped step.
+		// Step 1 has a condition that evaluates to false (gets skipped).
+		// Step 2 depends on Step 1 and tries to use its output in arguments.
+		//
+		// DISCUSSION: When a step is skipped, referencing its output via template
+		// (e.g., {{.steps.step1.output.text}}) returns "<no value>" (Go template default
+		// for missing map keys). The workflow succeeds and the dependent step runs with
+		// this placeholder value.
+		//
+		// This may or may not be the desired behavior. Alternatives to consider:
+		// - Fail the workflow when referencing skipped step output
+		// - Skip dependent steps automatically when their dependency is skipped
+		// - Provide an explicit "default" value mechanism for skipped step references
+		{
+			name: "ConditionalStepReferencingSkippedStep",
+			tools: []helpers.BackendTool{
+				helpers.NewBackendTool("producer", "Produces data",
+					func(_ context.Context, _ map[string]any) string {
+						return "PRODUCED_DATA"
+					}),
+				helpers.NewBackendTool("consumer", "Consumes data",
+					func(_ context.Context, args map[string]any) string {
+						data, _ := args["data"].(string)
+						// The data will be "<no value>" from the skipped step's template expansion
+						return "RECEIVED:" + data
+					}),
+			},
+			workflow: &composer.WorkflowDefinition{
+				Name:        "skipped_ref",
+				Description: "Tests referencing output from a skipped step",
+				Parameters:  map[string]any{},
+				FailureMode: "abort",
+				Steps: []composer.WorkflowStep{
+					{
+						ID:        "step1",
+						Type:      composer.StepTypeTool,
+						Tool:      "test_producer",
+						Arguments: map[string]any{},
+						// Condition that always evaluates to false - step will be skipped
+						Condition: "false",
+					},
+					{
+						ID:   "step2",
+						Type: composer.StepTypeTool,
+						Tool: "test_consumer",
+						Arguments: map[string]any{
+							// Reference output from skipped step - will expand to "<no value>"
+							"data": "{{.steps.step1.output.text}}",
+						},
+						DependsOn: []string{"step1"},
+					},
+				},
+				Output: &config.OutputConfig{
+					Properties: map[string]config.OutputProperty{
+						"result": {
+							Type:        "string",
+							Description: "Consumer result",
+							Value:       "{{.steps.step2.output.text}}",
+						},
+					},
+				},
+			},
+			params: map[string]any{},
+			// The workflow succeeds. Step2 receives "<no value>" from the skipped step's
+			// template expansion (Go template default for missing keys).
+			// Note: "<no value>" is JSON-escaped as "\u003cno value\u003e" in the response.
+			wantError:   false,
+			wantStrings: []string{"RECEIVED:", "no value"},
+		},
+		// Test: OutputMissingRequiredField
+		// Tests output construction when a required output field template references
+		// a non-existent field.
+		//
+		// NOTE: The `Required` field in OutputConfig does NOT validate that the
+		// templated value is non-empty. When a template references a non-existent
+		// field (e.g., {{.steps.step1.output.nonexistent_field}}), it expands to
+		// "<no value>" (Go template default) WITHOUT failing.
+		//
+		// DISCUSSION: This is potentially surprising behavior that may warrant a fix.
+		// Users may expect `Required` to ensure meaningful values are present.
+		// Consider:
+		// - Adding validation that required fields don't contain "<no value>"
+		// - Using Go template's "missingkey=error" option for strict mode
+		// - Documenting this behavior clearly if it's intentional
+		{
+			name: "OutputMissingRequiredField",
+			tools: []helpers.BackendTool{
+				helpers.NewBackendTool("simple_tool", "Returns simple output",
+					func(_ context.Context, _ map[string]any) string {
+						// Returns text output but not a "special_field" that the output requires
+						return "simple_result"
+					}),
+			},
+			workflow: &composer.WorkflowDefinition{
+				Name:        "missing_required",
+				Description: "Tests output with template referencing non-existent field",
+				Parameters:  map[string]any{},
+				FailureMode: "abort",
+				Steps: []composer.WorkflowStep{
+					{
+						ID:        "step1",
+						Type:      composer.StepTypeTool,
+						Tool:      "test_simple_tool",
+						Arguments: map[string]any{},
+					},
+				},
+				Output: &config.OutputConfig{
+					Properties: map[string]config.OutputProperty{
+						"result": {
+							Type:        "string",
+							Description: "Result field referencing non-existent step output field",
+							// Reference a field that doesn't exist in the step output
+							// This will expand to "<no value>" instead of failing
+							Value: "{{.steps.step1.output.nonexistent_field}}",
+						},
+					},
+					// Required does not validate that the value is non-empty
+					Required: []string{"result"},
+				},
+			},
+			params: map[string]any{},
+			// The workflow succeeds - Required does not enforce non-empty values.
+			// The result field will contain "<no value>" from the template expansion.
+			// Note: "<no value>" is JSON-escaped as "\u003cno value\u003e" in the response.
+			wantError:   false,
+			wantStrings: []string{"no value"},
+		},
+		// Test: ContinueModeWithFailedDependency
+		// Tests what happens in "continue" failure mode when a dependent step
+		// tries to use output from a failed step.
+		// - Step A fails with an error
+		// - Step B depends on Step A and tries to use its output
+		// - Step C is independent (no dependencies)
+		//
+		// NOTE: In "continue" mode, dependent steps still run even when their
+		// dependency failed. They receive "<no value>" placeholder for the failed
+		// step's output. Step B is NOT skipped - it executes with the placeholder.
+		//
+		// DISCUSSION: This may or may not be desired behavior. Alternative approaches:
+		// - Skip dependent steps automatically when their dependency fails
+		// - Allow steps to declare "skip_on_dependency_failure: true"
+		// - Provide a way to detect failed dependencies in conditions
+		//
+		// Current behavior means dependent steps must handle "<no value>" gracefully
+		// or the workflow may produce unexpected results.
+		{
+			name: "ContinueModeWithFailedDependency",
+			tools: []helpers.BackendTool{
+				helpers.NewErrorBackendTool("fail_first", "Always fails", "DEPENDENCY_FAILED"),
+				helpers.NewBackendTool("use_output", "Uses output from dependency",
+					func(_ context.Context, args map[string]any) string {
+						data, _ := args["data"].(string)
+						// data will be "<no value>" from the failed dependency
+						return "PROCESSED:" + data
+					}),
+				helpers.NewBackendTool("independent", "Independent step",
+					func(_ context.Context, _ map[string]any) string {
+						return "INDEPENDENT_SUCCESS"
+					}),
+			},
+			workflow: &composer.WorkflowDefinition{
+				Name:        "continue_failed_dep",
+				Description: "Tests continue mode when a step depends on a failed step",
+				Parameters:  map[string]any{},
+				FailureMode: "continue",
+				Steps: []composer.WorkflowStep{
+					{
+						ID:        "step_a",
+						Type:      composer.StepTypeTool,
+						Tool:      "test_fail_first",
+						Arguments: map[string]any{},
+					},
+					{
+						ID:   "step_b",
+						Type: composer.StepTypeTool,
+						Tool: "test_use_output",
+						Arguments: map[string]any{
+							// Reference output from failed step - will expand to "<no value>"
+							"data": "{{.steps.step_a.output.text}}",
+						},
+						DependsOn: []string{"step_a"},
+					},
+					{
+						// Independent step that succeeds regardless
+						ID:        "step_c",
+						Type:      composer.StepTypeTool,
+						Tool:      "test_independent",
+						Arguments: map[string]any{},
+					},
+				},
+				Output: &config.OutputConfig{
+					Properties: map[string]config.OutputProperty{
+						"independent_result": {
+							Type:        "string",
+							Description: "Result from independent step",
+							Value:       "{{.steps.step_c.output.text}}",
+						},
+						"dependent_result": {
+							Type:        "string",
+							Description: "Result from dependent step (runs with placeholder from failed dep)",
+							Value:       "{{.steps.step_b.output.text}}",
+							Default:     "SKIPPED_DUE_TO_DEPENDENCY",
+						},
+					},
+				},
+			},
+			params: map[string]any{},
+			// In continue mode, the workflow succeeds with partial results.
+			// Step B runs (not skipped!) with "<no value>" from failed step_a.
+			// Step C (independent) also succeeds.
+			// Both outputs are present in the result.
+			// Note: "<no value>" is JSON-escaped as "\u003cno value\u003e" in the response.
+			wantError:   false,
+			wantStrings: []string{"INDEPENDENT_SUCCESS", "PROCESSED:", "no value"},
 		},
 	}
 

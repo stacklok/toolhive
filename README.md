@@ -1,6 +1,6 @@
 <p float="left">
   <picture>
-    <img src="docs/images/toolhive-icon-1024.png" alt="ToolHive Studio logo" height="100" align="middle" />
+    <img src="docs/images/toolhive-icon-1024.png" alt="ToolHive logo" height="100" align="middle" />
   </picture>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/toolhive-wordmark-white.png">
@@ -108,7 +108,7 @@ Deploy, run, and manage MCP servers locally or in a Kubernetes cluster with secu
 
 Simplify MCP adoption for developers and knowledge workers across your enterprise
 
-- Cross-platform [desktop app](https://github.com/stacklok/toolhive-studio) and browser-based cloud UI
+- Cross-platform [desktop app](https://github.com/stacklok/toolhive-studio) and browser-based [cloud UI](https://github.com/stacklok/toolhive-cloud-ui)
 - Make it easy for admins to curate MCP servers and tools
 - Automate server discovery
 - Install MCP servers with a single click
@@ -153,7 +153,7 @@ Teams and organizations manage MCP servers and registries centrally using famili
 - Enterprise-grade security and observability: OIDC/OAuth SSO, secure token exchange, audit logging, OpenTelemetry, and Prometheus metrics
 - Hybrid registry server: curate from upstream registries, dynamically register local MCP servers, or proxy trusted remote services
 
-**Get started:** [Quickstart](https://docs.stacklok.com/toolhive/tutorials/quickstart-k8s), [How-to guides](https://docs.stacklok.com/toolhive/guides-k8s), [CRD reference](https://docs.stacklok.com/toolhive/reference/crd-spec), \[Example manifests\](./examples/operator/)
+**Get started:** [Quickstart](https://docs.stacklok.com/toolhive/tutorials/quickstart-k8s), [How-to guides](https://docs.stacklok.com/toolhive/guides-k8s), [CRD reference](https://docs.stacklok.com/toolhive/reference/crd-spec), [Example manifests](./examples/operator/)
 
 ### Hybrid
 
@@ -163,16 +163,21 @@ End users access approved MCP servers through a secure, browser-based cloud UI. 
 
 Enterprise teams can also leverage ToolHive to integrate MCP servers into custom internal tools, agentic workflows, or chat-based interfaces, using the same runtime and access controls.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/toolhive-platform-dark.svg">
+  <img src="docs/images/toolhive-platform-light.svg" alt="ToolHive platform diagram" width="800" style="padding: 20px 0" />
+</picture>
+
 ---
 
 ## Contributing
 
-We welcome contributions and feedback from the community\!
+We welcome contributions and feedback from the community!
 
 - 🐛 [Report issues](https://github.com/stacklok/toolhive/issues)
 - 💬 [Join our Discord](https://discord.gg/stacklok)
 
-If you have ideas, suggestions, or want to get involved, check out our contributing guide or open an issue. Join us in making ToolHive even better\!
+If you have ideas, suggestions, or want to get involved, check out our contributing guide or open an issue. Join us in making ToolHive even better!
 
 Contribute to the CLI, API, and Kubernetes Operator (this repo):
 
@@ -183,6 +188,7 @@ Contribute to the CLI, API, and Kubernetes Operator (this repo):
 Contribute to the UI, registry, and docs:
 
 - 💻 [Desktop UI repository](https://github.com/stacklok/toolhive-studio)
+- ☁️ [Cloud UI repository](https://github.com/stacklok/toolhive-cloud-ui)
 - 📦 [ToolHive registry server repository](https://github.com/stacklok/toolhive-registry-server)
 - 🛠️ [ToolHive's built-in registry](https://github.com/stacklok/toolhive-registry)
 - 📚 [Documentation repository](https://github.com/stacklok/docs-website)

@@ -222,10 +222,10 @@ func (*manager) configureRegistrySourceMounts(
 	}
 
 	// Iterate through all registry configurations to handle multiple ConfigMap sources
-	for i, registry := range mcpRegistry.Spec.Registries {
+	for _, registry := range mcpRegistry.Spec.Registries {
 		if registry.ConfigMapRef != nil {
 			// Create unique volume name for each ConfigMap source
-			volumeName := fmt.Sprintf("registry-data-%d-%s", i, registry.Name)
+			volumeName := fmt.Sprintf("registry-data-source-%s", registry.Name)
 
 			// Add volume if it doesn't exist
 			if !hasVolume(deployment.Spec.Template.Spec.Volumes, volumeName) {

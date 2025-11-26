@@ -2,28 +2,11 @@ package converters
 
 import (
 	"fmt"
-	"time"
 
 	upstreamv0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
 
 	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
-
-// NewUpstreamRegistryFromUpstreamServers creates a UpstreamRegistry from upstream ServerJSON array.
-// This is used when ingesting data from upstream MCP Registry API endpoints.
-func NewUpstreamRegistryFromUpstreamServers(servers []upstreamv0.ServerJSON) *types.UpstreamRegistry {
-	return &types.UpstreamRegistry{
-		Schema:  "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
-		Version: "1.0.0",
-		Meta: types.UpstreamMeta{
-			LastUpdated: time.Now().Format(time.RFC3339),
-		},
-		Data: types.UpstreamData{
-			Servers: servers,
-			Groups:  []types.UpstreamGroup{},
-		},
-	}
-}
 
 // NewUpstreamRegistryFromToolhiveRegistry creates a UpstreamRegistry from ToolHive Registry.
 // This converts ToolHive format to upstream ServerJSON using the converters package.

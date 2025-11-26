@@ -11,6 +11,7 @@ import (
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
 	"github.com/stacklok/toolhive/pkg/certs"
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -123,7 +124,20 @@ func createTemplateData(
 		}
 	}
 
+	// Load build environment variables from configuration
+	addBuildEnvToTemplate(&templateData)
+
 	return templateData, nil
+}
+
+// addBuildEnvToTemplate loads build environment variables from config and adds them to template data.
+func addBuildEnvToTemplate(templateData *templates.TemplateData) {
+	provider := config.NewProvider()
+	buildEnv := provider.GetAllBuildEnv()
+	if len(buildEnv) > 0 {
+		templateData.BuildEnv = buildEnv
+		logger.Debugf("Loaded %d build environment variable(s) from configuration", len(buildEnv))
+	}
 }
 
 // addCACertToTemplate reads and validates a CA certificate, adding it to the template data.

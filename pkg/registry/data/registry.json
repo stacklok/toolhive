@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-25T00:17:27Z",
+  "last_updated": "2025-11-26T00:18:02Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1321,7 +1321,7 @@
         "documentation",
         "code-examples"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.29",
+      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.30",
       "permissions": {
         "network": {
           "outbound": {
@@ -2904,9 +2904,9 @@
         "dbg_enable_breakpoint"
       ],
       "metadata": {
-        "stars": 4063,
+        "stars": 4350,
         "pulls": 99,
-        "last_updated": "2025-10-30T02:32:41Z"
+        "last_updated": "2025-11-25T02:33:25Z"
       },
       "repository_url": "https://github.com/mrexodia/ida-pro-mcp",
       "tags": [
@@ -3211,9 +3211,9 @@
         "refine_ui"
       ],
       "metadata": {
-        "stars": 3861,
+        "stars": 3956,
         "pulls": 128,
-        "last_updated": "2025-10-31T02:32:12Z"
+        "last_updated": "2025-11-25T02:33:25Z"
       },
       "repository_url": "https://github.com/21st-dev/magic-mcp",
       "tags": [
@@ -3267,9 +3267,9 @@
         "run_chdb_select_query"
       ],
       "metadata": {
-        "stars": 576,
+        "stars": 599,
         "pulls": 81,
-        "last_updated": "2025-10-31T02:32:13Z"
+        "last_updated": "2025-11-25T02:33:27Z"
       },
       "repository_url": "https://github.com/ClickHouse/mcp-clickhouse",
       "tags": [
@@ -3357,9 +3357,9 @@
         "dynamic_tools_from_ide"
       ],
       "metadata": {
-        "stars": 924,
+        "stars": 931,
         "pulls": 77,
-        "last_updated": "2025-10-31T02:32:12Z"
+        "last_updated": "2025-11-25T02:33:26Z"
       },
       "repository_url": "https://github.com/JetBrains/mcp-jetbrains",
       "tags": [
@@ -3419,9 +3419,9 @@
         "enable_features"
       ],
       "metadata": {
-        "stars": 773,
+        "stars": 818,
         "pulls": 141,
-        "last_updated": "2025-10-31T02:32:12Z"
+        "last_updated": "2025-11-25T02:33:26Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -4488,7 +4488,7 @@
         "evaluation",
         "ai"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.23",
+      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.24",
       "permissions": {
         "network": {
           "outbound": {

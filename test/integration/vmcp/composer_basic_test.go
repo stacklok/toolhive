@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/integration/vmcp/helpers"
 )
 
@@ -63,9 +64,6 @@ func runComposerTest(t *testing.T, tc composerTestCase) {
 }
 
 // TestVMCPComposer runs table-driven tests for composer workflow patterns.
-// Note: Tests use plain text output instead of structured JSON fields due to
-// a known bug where MCP tool results aren't parsed into structured data.
-// See: https://github.com/stacklok/toolhive/issues/2669
 func TestVMCPComposer(t *testing.T) {
 	t.Parallel()
 
@@ -103,6 +101,15 @@ func TestVMCPComposer(t *testing.T) {
 						},
 						DependsOn: []string{"gen"}},
 				},
+				Output: &config.OutputConfig{
+					Properties: map[string]config.OutputProperty{
+						"result": {
+							Type:        "string",
+							Description: "Processed result",
+							Value:       "{{.steps.proc.output.text}}",
+						},
+					},
+				},
 			},
 			params:      map[string]any{"prefix": "Hello", "suffix": "[DONE]"},
 			wantStrings: []string{"HELLO", "GENERATED", "[DONE]"},
@@ -137,6 +144,15 @@ func TestVMCPComposer(t *testing.T) {
 							"c": "{{.steps.c.output.text}}",
 						},
 						DependsOn: []string{"a", "b", "c"}},
+				},
+				Output: &config.OutputConfig{
+					Properties: map[string]config.OutputProperty{
+						"combined": {
+							Type:        "string",
+							Description: "Combined result from all tasks",
+							Value:       "{{.steps.agg.output.text}}",
+						},
+					},
 				},
 			},
 			params:      map[string]any{},
@@ -188,6 +204,15 @@ func TestVMCPComposer(t *testing.T) {
 						},
 						DependsOn: []string{"left", "right"}},
 				},
+				Output: &config.OutputConfig{
+					Properties: map[string]config.OutputProperty{
+						"merged": {
+							Type:        "string",
+							Description: "Merged result from diamond DAG",
+							Value:       "{{.steps.merge.output.text}}",
+						},
+					},
+				},
 			},
 			params:      map[string]any{"input": "test"},
 			wantStrings: []string{"MERGED", "L(", "R(", "started:test"},
@@ -216,6 +241,15 @@ func TestVMCPComposer(t *testing.T) {
 							"name":  "{{.params.name}}",
 							"count": "{{.params.count}}",
 						}},
+				},
+				Output: &config.OutputConfig{
+					Properties: map[string]config.OutputProperty{
+						"echo_result": {
+							Type:        "string",
+							Description: "Echo result with parameters",
+							Value:       "{{.steps.echo.output.text}}",
+						},
+					},
 				},
 			},
 			params:      map[string]any{"name": "testuser", "count": "42"},
@@ -276,6 +310,15 @@ func TestVMCPComposer(t *testing.T) {
 					{ID: "a", Type: composer.StepTypeTool, Tool: "test_fail_a", Arguments: map[string]any{}},
 					{ID: "b", Type: composer.StepTypeTool, Tool: "test_ok_b", Arguments: map[string]any{}},
 				},
+				Output: &config.OutputConfig{
+					Properties: map[string]config.OutputProperty{
+						"result_b": {
+							Type:        "string",
+							Description: "Result from successful step B",
+							Value:       "{{.steps.b.output.text}}",
+						},
+					},
+				},
 			},
 			params: map[string]any{},
 			// Continue mode returns success with partial results
@@ -331,6 +374,15 @@ func TestVMCPComposer_WorkflowListed(t *testing.T) {
 		FailureMode: "abort",
 		Steps: []composer.WorkflowStep{
 			{ID: "step1", Type: composer.StepTypeTool, Tool: "test_noop", Arguments: map[string]any{}},
+		},
+		Output: &config.OutputConfig{
+			Properties: map[string]config.OutputProperty{
+				"result": {
+					Type:        "string",
+					Description: "Noop result",
+					Value:       "{{.steps.step1.output.text}}",
+				},
+			},
 		},
 	}
 

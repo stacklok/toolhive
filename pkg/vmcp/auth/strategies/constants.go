@@ -27,4 +27,10 @@ const (
 	// MetadataHeaderValue is the key for the HTTP header value in metadata.
 	// Used by HeaderInjectionStrategy to identify the value to inject.
 	MetadataHeaderValue = "header_value"
+
+	// MetadataHeaderValueEnv is the key for the environment variable name
+	// that contains the header value. Used by converters during the conversion
+	// phase to indicate that secret resolution is needed. This is replaced with
+	// MetadataHeaderValue (containing the actual secret) before reaching the strategy.
+	MetadataHeaderValueEnv = "header_value_env"
 )

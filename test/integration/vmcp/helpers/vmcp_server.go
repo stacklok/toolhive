@@ -12,9 +12,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/env"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
-	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
@@ -122,35 +120,9 @@ func NewVMCPServer(
 		opt(config)
 	}
 
-	// Create outgoing auth registry and register strategies used by backends
-	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, nil, &env.OSReader{})
+	// Create outgoing auth registry with all strategies registered
+	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, &env.OSReader{})
 	require.NoError(tb, err)
-
-	// Scan backends to determine which strategies need to be registered
-	// This is needed because we pass nil config to NewOutgoingAuthRegistry (which only registers unauthenticated)
-	// but backends may use other strategies like header_injection
-	strategyTypes := make(map[string]struct{})
-	for _, backend := range backends {
-		if backend.AuthStrategy != "" && backend.AuthStrategy != "unauthenticated" {
-			strategyTypes[backend.AuthStrategy] = struct{}{}
-		}
-	}
-
-	// Register additional strategies found in backends
-	for strategyType := range strategyTypes {
-		var strategy vmcpauth.Strategy
-		switch strategyType {
-		case strategies.StrategyTypeHeaderInjection:
-			strategy = strategies.NewHeaderInjectionStrategy()
-		case strategies.StrategyTypeTokenExchange:
-			strategy = strategies.NewTokenExchangeStrategy(&env.OSReader{})
-		default:
-			tb.Fatalf("unknown auth strategy type: %s", strategyType)
-		}
-
-		err = outgoingRegistry.RegisterStrategy(strategyType, strategy)
-		require.NoError(tb, err, "failed to register strategy %s", strategyType)
-	}
 
 	// Create backend client
 	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)

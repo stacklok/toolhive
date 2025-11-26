@@ -9,9 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -134,6 +132,9 @@ func (m *manager) buildRegistryAPIDeployment(
 	// Define labels using common function
 	labels := labelsForRegistryAPI(mcpRegistry, deploymentName)
 
+	// Build the PodTemplateSpec using the functional options pattern
+	podTemplateSpec := DefaultRegistryAPIPodTemplateSpec(labels, "hash-dummy-value")
+
 	// Create basic deployment specification with named container
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -149,65 +150,7 @@ func (m *manager) buildRegistryAPIDeployment(
 					"app.kubernetes.io/component": "registry-api",
 				},
 			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
-					Annotations: map[string]string{
-						"toolhive.stacklok.dev/config-hash": "hash-dummy-value",
-					},
-				},
-				Spec: corev1.PodSpec{
-					ServiceAccountName: DefaultServiceAccountName,
-					Containers: []corev1.Container{
-						{
-							Name:  registryAPIContainerName,
-							Image: getRegistryAPIImage(),
-							Args: []string{
-								ServeCommand,
-							},
-							Ports: []corev1.ContainerPort{
-								{
-									ContainerPort: RegistryAPIPort,
-									Name:          RegistryAPIPortName,
-									Protocol:      corev1.ProtocolTCP,
-								},
-							},
-							// Add resource limits and requests for production readiness
-							Resources: corev1.ResourceRequirements{
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse(DefaultCPURequest),
-									corev1.ResourceMemory: resource.MustParse(DefaultMemoryRequest),
-								},
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse(DefaultCPULimit),
-									corev1.ResourceMemory: resource.MustParse(DefaultMemoryLimit),
-								},
-							},
-							// Add liveness and readiness probes
-							LivenessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: HealthCheckPath,
-										Port: intstr.FromInt32(RegistryAPIPort),
-									},
-								},
-								InitialDelaySeconds: LivenessInitialDelay,
-								PeriodSeconds:       LivenessPeriod,
-							},
-							ReadinessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: ReadinessCheckPath,
-										Port: intstr.FromInt32(RegistryAPIPort),
-									},
-								},
-								InitialDelaySeconds: ReadinessInitialDelay,
-								PeriodSeconds:       ReadinessPeriod,
-							},
-						},
-					},
-				},
-			},
+			Template: podTemplateSpec,
 		},
 	}
 

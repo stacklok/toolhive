@@ -392,27 +392,6 @@ func (r *MCPRegistry) GetAPIResourceName() string {
 	return fmt.Sprintf("%s-api", r.Name)
 }
 
-// IsConfigMapRegistrySource returns true if any registry source is a configmap
-func (r *MCPRegistry) IsConfigMapRegistrySource() bool {
-	for _, registry := range r.Spec.Registries {
-		if registry.ConfigMapRef != nil {
-			return true
-		}
-	}
-	return false
-}
-
-// GetConfigMapSourceName returns the name of the first configmap source
-// if present, otherwise returns an empty string
-func (r *MCPRegistry) GetConfigMapSourceName() string {
-	for _, registry := range r.Spec.Registries {
-		if registry.ConfigMapRef != nil {
-			return registry.ConfigMapRef.Name
-		}
-	}
-	return ""
-}
-
 // DeriveOverallPhase determines the overall MCPRegistry phase based on sync and API status
 func (r *MCPRegistry) DeriveOverallPhase() MCPRegistryPhase {
 	syncStatus := r.Status.SyncStatus

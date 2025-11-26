@@ -213,7 +213,7 @@ Set the workflow's `failureMode` to control global error behavior:
 ```yaml
 spec:
   name: resilient_workflow
-  failureMode: continue  # Options: abort, continue, best_effort
+  failureMode: continue  # Options: abort, continue
   steps:
     # ...
 ```
@@ -224,7 +224,6 @@ spec:
 |------|----------|----------|
 | `abort` | Stop immediately on first error (default) | Critical workflows where partial completion is dangerous |
 | `continue` | Log errors but continue executing remaining steps | Data collection where some failures are acceptable |
-| `best_effort` | Try all steps, aggregate errors at end | Monitoring/reporting where you want maximum data |
 
 ### Step-Level Error Handling
 

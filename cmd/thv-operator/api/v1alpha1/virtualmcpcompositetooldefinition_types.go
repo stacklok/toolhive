@@ -41,8 +41,7 @@ type VirtualMCPCompositeToolDefinitionSpec struct {
 	// FailureMode defines the failure handling strategy
 	// - abort: Stop execution on first failure (default)
 	// - continue: Continue executing remaining steps
-	// - best_effort: Try all steps, report partial success
-	// +kubebuilder:validation:Enum=abort;continue;best_effort
+	// +kubebuilder:validation:Enum=abort;continue
 	// +kubebuilder:default=abort
 	// +optional
 	FailureMode string `json:"failureMode,omitempty"`

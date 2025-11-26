@@ -1,6 +1,6 @@
 <p float="left">
   <picture>
-    <img src="docs/images/toolhive-icon-1024.png" alt="ToolHive Studio logo" height="100" align="middle" />
+    <img src="docs/images/toolhive-icon-1024.png" alt="ToolHive logo" height="100" align="middle" />
   </picture>
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/toolhive-wordmark-white.png">
@@ -188,6 +188,7 @@ Contribute to the CLI, API, and Kubernetes Operator (this repo):
 Contribute to the UI, registry, and docs:
 
 - 💻 [Desktop UI repository](https://github.com/stacklok/toolhive-studio)
+- ☁️ [Cloud UI repository](https://github.com/stacklok/toolhive-cloud-ui)
 - 📦 [ToolHive registry server repository](https://github.com/stacklok/toolhive-registry-server)
 - 🛠️ [ToolHive's built-in registry](https://github.com/stacklok/toolhive-registry)
 - 📚 [Documentation repository](https://github.com/stacklok/docs-website)

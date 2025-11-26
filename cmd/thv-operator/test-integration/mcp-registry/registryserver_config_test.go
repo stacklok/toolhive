@@ -321,7 +321,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 				Spec: mcpv1alpha1.MCPRegistrySpec{
 					Registries: []mcpv1alpha1.MCPRegistryConfig{
 						{
-							Name:   "source-alpha",
+							Name:   "alpha",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{
@@ -334,7 +334,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 							},
 						},
 						{
-							Name:   "source-beta",
+							Name:   "beta",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{
@@ -347,7 +347,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 							},
 						},
 						{
-							Name:   "source-gamma",
+							Name:   "gamma",
 							Format: mcpv1alpha1.RegistryFormatToolHive,
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{
@@ -385,26 +385,26 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			}
 
 			// Check for expected volume names
-			Expect(volumeNames["registry-data-0-source-alpha"]).To(BeTrue(), "Volume for source-alpha not found")
-			Expect(volumeNames["registry-data-1-source-beta"]).To(BeTrue(), "Volume for source-beta not found")
-			Expect(volumeNames["registry-data-2-source-gamma"]).To(BeTrue(), "Volume for source-gamma not found")
+			Expect(volumeNames["registry-data-source-alpha"]).To(BeTrue(), "Volume for source-alpha not found")
+			Expect(volumeNames["registry-data-source-beta"]).To(BeTrue(), "Volume for source-beta not found")
+			Expect(volumeNames["registry-data-source-gamma"]).To(BeTrue(), "Volume for source-gamma not found")
 
 			// Verify volumes point to correct ConfigMaps
 			for _, volume := range deployment.Spec.Template.Spec.Volumes {
 				switch volume.Name {
-				case "registry-data-0-source-alpha":
+				case "registry-data-source-alpha":
 					Expect(volume.ConfigMap).NotTo(BeNil())
 					Expect(volume.ConfigMap.LocalObjectReference.Name).To(Equal(configMap1.Name))
 					Expect(volume.ConfigMap.Items).To(HaveLen(1))
 					Expect(volume.ConfigMap.Items[0].Key).To(Equal("servers.json"))
 					Expect(volume.ConfigMap.Items[0].Path).To(Equal("registry.json"))
-				case "registry-data-1-source-beta":
+				case "registry-data-source-beta":
 					Expect(volume.ConfigMap).NotTo(BeNil())
 					Expect(volume.ConfigMap.LocalObjectReference.Name).To(Equal(configMap2.Name))
 					Expect(volume.ConfigMap.Items).To(HaveLen(1))
 					Expect(volume.ConfigMap.Items[0].Key).To(Equal("data.json"))
 					Expect(volume.ConfigMap.Items[0].Path).To(Equal("registry.json"))
-				case "registry-data-2-source-gamma":
+				case "registry-data-source-gamma":
 					Expect(volume.ConfigMap).NotTo(BeNil())
 					Expect(volume.ConfigMap.LocalObjectReference.Name).To(Equal(configMap3.Name))
 					Expect(volume.ConfigMap.Items).To(HaveLen(1))
@@ -423,9 +423,9 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			}
 
 			// Verify mount paths match expected pattern /config/registry/{registryName}/
-			Expect(mounts["registry-data-source-alpha"]).To(Equal("/config/registry/source-alpha"))
-			Expect(mounts["registry-data-source-beta"]).To(Equal("/config/registry/source-beta"))
-			Expect(mounts["registry-data-source-gamma"]).To(Equal("/config/registry/source-gamma"))
+			Expect(mounts["registry-data-source-alpha"]).To(Equal("/config/registry/alpha"))
+			Expect(mounts["registry-data-source-beta"]).To(Equal("/config/registry/beta"))
+			Expect(mounts["registry-data-source-gamma"]).To(Equal("/config/registry/gamma"))
 
 			// Verify all mounts are read-only
 			for _, mount := range container.VolumeMounts {
@@ -450,14 +450,14 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			Expect(configYAML).NotTo(BeEmpty())
 
 			// Verify all three sources are in the config with correct file paths
-			Expect(configYAML).To(ContainSubstring("name: source-alpha"))
-			Expect(configYAML).To(ContainSubstring("name: source-beta"))
-			Expect(configYAML).To(ContainSubstring("name: source-gamma"))
+			Expect(configYAML).To(ContainSubstring("name: alpha"))
+			Expect(configYAML).To(ContainSubstring("name: beta"))
+			Expect(configYAML).To(ContainSubstring("name: gamma"))
 
 			// Verify file paths are correct
-			Expect(configYAML).To(ContainSubstring("path: /config/registry/source-alpha/registry.json"))
-			Expect(configYAML).To(ContainSubstring("path: /config/registry/source-beta/registry.json"))
-			Expect(configYAML).To(ContainSubstring("path: /config/registry/source-gamma/registry.json"))
+			Expect(configYAML).To(ContainSubstring("path: /config/registry/alpha/registry.json"))
+			Expect(configYAML).To(ContainSubstring("path: /config/registry/beta/registry.json"))
+			Expect(configYAML).To(ContainSubstring("path: /config/registry/gamma/registry.json"))
 
 			// Verify sync intervals
 			Expect(configYAML).To(ContainSubstring("interval: 10m"))

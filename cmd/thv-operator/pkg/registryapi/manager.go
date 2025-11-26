@@ -221,29 +221,46 @@ func (*manager) configureRegistrySourceMounts(
 		return fmt.Errorf("container '%s' not found in deployment", containerName)
 	}
 
-	if mcpRegistry.IsConfigMapRegistrySource() {
-		registryDataVolumeName := RegistryDataVolumeName
-		if !hasVolume(deployment.Spec.Template.Spec.Volumes, registryDataVolumeName) {
-			registryDataVolume := corev1.Volume{
-				Name: registryDataVolumeName,
-				VolumeSource: corev1.VolumeSource{
-					ConfigMap: &corev1.ConfigMapVolumeSource{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: mcpRegistry.GetConfigMapSourceName(),
+	// Iterate through all registry configurations to handle multiple ConfigMap sources
+	for _, registry := range mcpRegistry.Spec.Registries {
+		if registry.ConfigMapRef != nil {
+			// Create unique volume name for each ConfigMap source
+			volumeName := fmt.Sprintf("registry-data-source-%s", registry.Name)
+
+			// Add volume if it doesn't exist
+			if !hasVolume(deployment.Spec.Template.Spec.Volumes, volumeName) {
+				volume := corev1.Volume{
+					Name: volumeName,
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: registry.ConfigMapRef.Name,
+							},
+							// Mount only the specified key as registry.json
+							Items: []corev1.KeyToPath{
+								{
+									Key:  registry.ConfigMapRef.Key,
+									Path: "registry.json",
+								},
+							},
 						},
 					},
-				},
+				}
+				deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, volume)
 			}
-			deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, registryDataVolume)
-		}
 
-		if !hasVolumeMount(container.VolumeMounts, registryDataVolumeName) {
-			registryDataVolumeMount := corev1.VolumeMount{
-				Name:      registryDataVolumeName,
-				MountPath: config.RegistryJSONFilePath, // Mount only this key from the ConfigMap as a file
-				ReadOnly:  true,                        // ConfigMaps are always read-only
+			// Add volume mount if it doesn't exist
+			if !hasVolumeMount(container.VolumeMounts, volumeName) {
+				// Mount path follows the pattern /config/registry/{registryName}/
+				// This matches what buildFilePath expects in config.go
+				mountPath := filepath.Join(config.RegistryJSONFilePath, registry.Name)
+				volumeMount := corev1.VolumeMount{
+					Name:      volumeName,
+					MountPath: mountPath,
+					ReadOnly:  true, // ConfigMaps are always read-only
+				}
+				container.VolumeMounts = append(container.VolumeMounts, volumeMount)
 			}
-			container.VolumeMounts = append(container.VolumeMounts, registryDataVolumeMount)
 		}
 	}
 

@@ -22,7 +22,7 @@ func (*HeaderInjectionConverter) StrategyType() string {
 }
 
 // ConvertToMetadata converts HeaderInjectionConfig to header_injection strategy metadata (without secrets resolved).
-// Secret references are represented as environment variable names that will be resolved later.
+// The secret value will be added by ResolveSecrets.
 func (*HeaderInjectionConverter) ConvertToMetadata(
 	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
 ) (map[string]any, error) {
@@ -33,16 +33,15 @@ func (*HeaderInjectionConverter) ConvertToMetadata(
 
 	metadata := make(map[string]any)
 	metadata[strategies.MetadataHeaderName] = headerInjection.HeaderName
-	metadata[strategies.MetadataHeaderValueEnv] = "TOOLHIVE_HEADER_INJECTION_VALUE"
 
 	return metadata, nil
 }
 
-// ResolveSecrets fetches the header value secret from Kubernetes and replaces the env var reference
-// with the actual secret value. Unlike token exchange which can use environment variables in
-// non-discovered mode, header injection always requires dynamic secret resolution because backends
-// can be added or modified at runtime, even in non-discovered mode. The vMCP pod cannot know all
-// backend auth configs at pod creation time.
+// ResolveSecrets fetches the header value secret from Kubernetes and adds it to the metadata.
+// Unlike token exchange which can use environment variables in non-discovered mode, header
+// injection always requires dynamic secret resolution because backends can be added or modified
+// at runtime, even in non-discovered mode. The vMCP pod cannot know all backend auth configs
+// at pod creation time.
 func (*HeaderInjectionConverter) ResolveSecrets(
 	ctx context.Context,
 	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
@@ -77,8 +76,7 @@ func (*HeaderInjectionConverter) ResolveSecrets(
 			namespace, headerInjection.ValueSecretRef.Name, headerInjection.ValueSecretRef.Key)
 	}
 
-	// Replace the env var reference with actual secret value
-	delete(metadata, strategies.MetadataHeaderValueEnv)
+	// Add the resolved secret value to metadata
 	metadata[strategies.MetadataHeaderValue] = string(secretValue)
 
 	return metadata, nil

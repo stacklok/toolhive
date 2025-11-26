@@ -296,7 +296,6 @@ func TestConvertToStrategyMetadata(t *testing.T) {
 		assert.Equal(t, "header_injection", strategyType)
 		assert.NotNil(t, metadata)
 		assert.Equal(t, "X-API-Key", metadata["header_name"])
-		assert.Equal(t, "TOOLHIVE_HEADER_INJECTION_VALUE", metadata["header_value_env"])
 	})
 
 	t.Run("converts token exchange config", func(t *testing.T) {

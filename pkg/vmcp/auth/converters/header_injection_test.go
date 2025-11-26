@@ -50,8 +50,7 @@ func TestHeaderInjectionConverter_ConvertToMetadata(t *testing.T) {
 				},
 			},
 			wantMetadata: map[string]any{
-				"header_name":      "X-API-Key",
-				"header_value_env": "TOOLHIVE_HEADER_INJECTION_VALUE",
+				"header_name": "X-API-Key",
 			},
 			wantErr: false,
 		},
@@ -133,8 +132,7 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 				},
 			},
 			inputMeta: map[string]any{
-				"header_name":      "X-API-Key",
-				"header_value_env": "TOOLHIVE_HEADER_INJECTION_VALUE",
+				"header_name": "X-API-Key",
 			},
 			wantMetadata: map[string]any{
 				"header_name":  "X-API-Key",
@@ -161,8 +159,7 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 				},
 			},
 			inputMeta: map[string]any{
-				"header_name":      "X-API-Key",
-				"header_value_env": "TOOLHIVE_HEADER_INJECTION_VALUE",
+				"header_name": "X-API-Key",
 			},
 			wantErr:     true,
 			errContains: "failed to get secret",
@@ -195,8 +192,7 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 				},
 			},
 			inputMeta: map[string]any{
-				"header_name":      "X-API-Key",
-				"header_value_env": "TOOLHIVE_HEADER_INJECTION_VALUE",
+				"header_name": "X-API-Key",
 			},
 			wantErr:     true,
 			errContains: "does not contain key",

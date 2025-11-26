@@ -283,6 +283,73 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			wantNotContains: nil,
 			wantErr:         true,
 		},
+		{
+			name:          "NPX transport with BuildEnv",
+			transportType: TransportTypeNPX,
+			data: TemplateData{
+				MCPPackage: "example-package",
+				BuildEnv: map[string]string{
+					"NPM_CONFIG_REGISTRY": "https://npm.corp.example.com",
+				},
+			},
+			wantContains: []string{
+				"FROM node:",
+				"# Custom build environment variables",
+				`ENV NPM_CONFIG_REGISTRY="https://npm.corp.example.com"`,
+				"npm install --save example-package",
+			},
+			wantMatches: []string{
+				`FROM node:\d+-alpine AS builder`,
+			},
+			wantNotContains: nil,
+			wantErr:         false,
+		},
+		{
+			name:          "UVX transport with BuildEnv",
+			transportType: TransportTypeUVX,
+			data: TemplateData{
+				MCPPackage: "example-package",
+				BuildEnv: map[string]string{
+					"PIP_INDEX_URL":    "https://pypi.corp.example.com/simple",
+					"UV_DEFAULT_INDEX": "https://pypi.corp.example.com/simple",
+				},
+			},
+			wantContains: []string{
+				"FROM python:",
+				"# Custom build environment variables",
+				`ENV PIP_INDEX_URL="https://pypi.corp.example.com/simple"`,
+				`ENV UV_DEFAULT_INDEX="https://pypi.corp.example.com/simple"`,
+				"uv tool install",
+			},
+			wantMatches: []string{
+				`FROM python:\d+\.\d+-slim AS builder`,
+			},
+			wantNotContains: nil,
+			wantErr:         false,
+		},
+		{
+			name:          "GO transport with BuildEnv",
+			transportType: TransportTypeGO,
+			data: TemplateData{
+				MCPPackage: "example-package",
+				BuildEnv: map[string]string{
+					"GOPROXY":   "https://goproxy.corp.example.com",
+					"GOPRIVATE": "github.com/myorg/*",
+				},
+			},
+			wantContains: []string{
+				"FROM golang:",
+				"# Custom build environment variables",
+				`ENV GOPROXY="https://goproxy.corp.example.com"`,
+				`ENV GOPRIVATE="github.com/myorg/*"`,
+				"go install",
+			},
+			wantMatches: []string{
+				`FROM golang:\d+\.\d+-alpine AS builder`,
+			},
+			wantNotContains: nil,
+			wantErr:         false,
+		},
 	}
 
 	for _, tt := range tests {

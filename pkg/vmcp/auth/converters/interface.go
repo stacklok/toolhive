@@ -136,3 +136,60 @@ func ResolveSecretsForStrategy(
 
 	return converter.ResolveSecrets(ctx, externalAuth, k8sClient, namespace, metadata)
 }
+
+// DiscoverAndResolveAuth discovers authentication configuration from an MCPServer's
+// ExternalAuthConfigRef and resolves it to a strategy type and metadata.
+// This is the main entry point for auth discovery from Kubernetes.
+//
+// Returns:
+//   - strategyType: The auth strategy type (e.g., "token_exchange", "header_injection")
+//   - metadata: The resolved auth metadata with secrets fetched from Kubernetes
+//   - error: Any error that occurred during discovery or resolution
+//
+// Returns empty string and nil if externalAuthConfigRef is nil (no auth configured).
+func DiscoverAndResolveAuth(
+	ctx context.Context,
+	externalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	namespace string,
+	k8sClient client.Client,
+) (strategyType string, metadata map[string]any, err error) {
+	// Check if there's an ExternalAuthConfigRef
+	if externalAuthConfigRef == nil {
+		// No auth config to discover
+		return "", nil, nil
+	}
+
+	// Fetch the MCPExternalAuthConfig
+	externalAuth := &mcpv1alpha1.MCPExternalAuthConfig{}
+	key := client.ObjectKey{
+		Name:      externalAuthConfigRef.Name,
+		Namespace: namespace,
+	}
+
+	if err := k8sClient.Get(ctx, key, externalAuth); err != nil {
+		return "", nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", externalAuthConfigRef.Name, err)
+	}
+
+	// Get the converter registry
+	registry := DefaultRegistry()
+
+	// Get the converter for this auth type
+	converter, err := registry.GetConverter(externalAuth.Spec.Type)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to get converter for auth type %s: %w", externalAuth.Spec.Type, err)
+	}
+
+	// Convert to metadata (without secrets resolved)
+	metadata, err = converter.ConvertToMetadata(externalAuth)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to convert to metadata: %w", err)
+	}
+
+	// Resolve secrets from Kubernetes
+	metadata, err = converter.ResolveSecrets(ctx, externalAuth, k8sClient, namespace, metadata)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to resolve secrets: %w", err)
+	}
+
+	return converter.StrategyType(), metadata, nil
+}

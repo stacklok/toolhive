@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 )
 
 // k8sDiscoverer is a direct implementation of Discoverer for Kubernetes workloads.
@@ -95,7 +96,7 @@ func (d *k8sDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workloadNa
 	}
 
 	// Convert MCPServer to Backend
-	backend := d.mcpServerToBackend(mcpServer)
+	backend := d.mcpServerToBackend(ctx, mcpServer)
 
 	// Skip workloads without a URL (not accessible)
 	if backend.BaseURL == "" {
@@ -107,7 +108,9 @@ func (d *k8sDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workloadNa
 }
 
 // mcpServerToBackend converts an MCPServer CRD to a vmcp.Backend.
-func (*k8sDiscoverer) mcpServerToBackend(mcpServer *mcpv1alpha1.MCPServer) *vmcp.Backend {
+// If the MCPServer has an ExternalAuthConfigRef, it will be fetched and converted to auth strategy metadata.
+// Auth discovery errors are logged but do not fail backend creation.
+func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) *vmcp.Backend {
 	// Parse transport type
 	transportType, err := transporttypes.ParseTransportType(mcpServer.Spec.Transport)
 	if err != nil {
@@ -177,7 +180,46 @@ func (*k8sDiscoverer) mcpServerToBackend(mcpServer *mcpv1alpha1.MCPServer) *vmcp
 		backend.Metadata["namespace"] = mcpServer.Namespace
 	}
 
+	// Discover and populate authentication configuration from MCPServer
+	if err := d.discoverAuthConfig(ctx, mcpServer, backend); err != nil {
+		// Log warning but don't fail - backend can still be used without auth
+		logger.Warnf("Failed to discover auth config for MCPServer %s: %v", mcpServer.Name, err)
+	}
+
 	return backend
+}
+
+// discoverAuthConfig discovers and populates authentication configuration from the MCPServer's ExternalAuthConfigRef.
+// This enables runtime discovery of backend authentication requirements.
+//
+// Return behavior:
+//   - Returns nil error if ExternalAuthConfigRef is nil (no auth config) - this is expected behavior
+//   - Returns nil error if auth config is discovered and successfully populated into backend
+//   - Returns error if auth config exists but discovery/resolution fails (e.g., missing secret, invalid config)
+func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer, backend *vmcp.Backend) error {
+	// Discover and resolve auth using the converters package
+	strategyType, metadata, err := converters.DiscoverAndResolveAuth(
+		ctx,
+		mcpServer.Spec.ExternalAuthConfigRef,
+		mcpServer.Namespace,
+		d.k8sClient,
+	)
+	if err != nil {
+		return err
+	}
+
+	// If no auth was discovered, nothing to populate
+	if strategyType == "" {
+		logger.Debugf("MCPServer %s has no ExternalAuthConfigRef, no auth config to discover", mcpServer.Name)
+		return nil
+	}
+
+	// Populate backend auth fields
+	backend.AuthStrategy = strategyType
+	backend.AuthMetadata = metadata
+
+	logger.Debugf("Discovered auth config for MCPServer %s: strategy=%s", mcpServer.Name, backend.AuthStrategy)
+	return nil
 }
 
 // mapK8SWorkloadPhaseToHealth converts a MCPServerPhase to a backend health status.

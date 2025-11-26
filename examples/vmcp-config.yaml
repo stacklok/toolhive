@@ -49,8 +49,6 @@ outgoing_auth:
   # Default behavior for backends without explicit config
   default:
     type: unauthenticated  # unauthenticated | header_injection | token_exchange
-    # TODO: Uncomment when pass_through is implemented
-    # type: pass_through  # Forward client token unchanged
 
   # Per-backend authentication configurations
   # IMPORTANT: These tokens are for backend APIs (e.g., github-api, jira-api),
@@ -92,10 +90,6 @@ outgoing_auth:
     #     client_secret_env: "JIRA_EXCHANGE_SECRET"
     #     audience: "jira-api"  # Token audience for Jira API
     #     scopes: ["read:jira-work", "write:jira-work"]
-
-    # TODO: Uncomment when pass_through strategy is implemented
-    # internal-db:
-    #   type: pass_through  # Forward client token unchanged
 
 # ===== TOKEN CACHING =====
 # Token cache configuration

@@ -171,8 +171,7 @@ type OutgoingAuthConfig struct {
 
 // BackendAuthStrategy defines how to authenticate to a specific backend.
 type BackendAuthStrategy struct {
-	// Type is the auth strategy: "pass_through", "token_exchange", "client_credentials",
-	// "service_account", "header_injection", "oauth_proxy"
+	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange"
 	Type string `json:"type" yaml:"type"`
 
 	// Metadata contains strategy-specific configuration.

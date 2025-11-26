@@ -609,7 +609,6 @@ spec:
                           description: Type defines the authentication type
                           enum:
                           - discovered
-                          - pass_through
                           - external_auth_config_ref
                           type: string
                       required:
@@ -639,7 +638,6 @@ spec:
                         description: Type defines the authentication type
                         enum:
                         - discovered
-                        - pass_through
                         - external_auth_config_ref
                         type: string
                     required:

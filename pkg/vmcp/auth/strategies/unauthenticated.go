@@ -20,7 +20,7 @@ import (
 //
 // Security Warning: Only use this strategy when you are certain the backend
 // requires no authentication. For production deployments, prefer explicit
-// authentication strategies (pass_through, header_injection, token_exchange).
+// authentication strategies (header_injection, token_exchange).
 //
 // Configuration: No metadata required, but any metadata is accepted and ignored.
 //

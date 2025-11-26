@@ -346,3 +346,119 @@ func TestProviderRegistryOperations(t *testing.T) {
 		assert.NoError(t, err)
 	})
 }
+
+func TestProviderBuildEnvOperations(t *testing.T) {
+	t.Parallel()
+	logger.Initialize()
+
+	t.Run("PathProvider_BuildEnvOperations", func(t *testing.T) {
+		t.Parallel()
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "buildenv_config.yaml")
+		provider := NewPathProvider(configPath)
+
+		// Create initial config
+		_, err := provider.LoadOrCreateConfig()
+		require.NoError(t, err)
+
+		// Test GetAllBuildEnv when empty
+		envVars := provider.GetAllBuildEnv()
+		assert.Empty(t, envVars)
+
+		// Test GetBuildEnv when not set
+		value, exists := provider.GetBuildEnv("NPM_CONFIG_REGISTRY")
+		assert.False(t, exists)
+		assert.Equal(t, "", value)
+
+		// Test SetBuildEnv
+		err = provider.SetBuildEnv("NPM_CONFIG_REGISTRY", "https://npm.corp.example.com")
+		assert.NoError(t, err)
+
+		// Test GetBuildEnv after setting
+		value, exists = provider.GetBuildEnv("NPM_CONFIG_REGISTRY")
+		assert.True(t, exists)
+		assert.Equal(t, "https://npm.corp.example.com", value)
+
+		// Test SetBuildEnv with multiple variables
+		err = provider.SetBuildEnv("GOPROXY", "https://goproxy.corp.example.com")
+		assert.NoError(t, err)
+
+		// Test GetAllBuildEnv with multiple variables
+		envVars = provider.GetAllBuildEnv()
+		assert.Len(t, envVars, 2)
+		assert.Equal(t, "https://npm.corp.example.com", envVars["NPM_CONFIG_REGISTRY"])
+		assert.Equal(t, "https://goproxy.corp.example.com", envVars["GOPROXY"])
+
+		// Test UnsetBuildEnv
+		err = provider.UnsetBuildEnv("NPM_CONFIG_REGISTRY")
+		assert.NoError(t, err)
+
+		value, exists = provider.GetBuildEnv("NPM_CONFIG_REGISTRY")
+		assert.False(t, exists)
+		assert.Equal(t, "", value)
+
+		// Verify GOPROXY still exists
+		value, exists = provider.GetBuildEnv("GOPROXY")
+		assert.True(t, exists)
+		assert.Equal(t, "https://goproxy.corp.example.com", value)
+
+		// Test UnsetAllBuildEnv
+		err = provider.UnsetAllBuildEnv()
+		assert.NoError(t, err)
+
+		envVars = provider.GetAllBuildEnv()
+		assert.Empty(t, envVars)
+	})
+
+	t.Run("PathProvider_BuildEnvValidation", func(t *testing.T) {
+		t.Parallel()
+		tempDir := t.TempDir()
+		configPath := filepath.Join(tempDir, "buildenv_validation_config.yaml")
+		provider := NewPathProvider(configPath)
+
+		// Create initial config
+		_, err := provider.LoadOrCreateConfig()
+		require.NoError(t, err)
+
+		// Test invalid key format
+		err = provider.SetBuildEnv("invalid_key", "value")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid environment variable name")
+
+		// Test reserved key
+		err = provider.SetBuildEnv("PATH", "/usr/local/bin")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "reserved")
+
+		// Test invalid value with shell metacharacters
+		err = provider.SetBuildEnv("TEST_VAR", "$(whoami)")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "dangerous characters")
+	})
+
+	t.Run("KubernetesProvider_BuildEnvOperations", func(t *testing.T) {
+		t.Parallel()
+		provider := NewKubernetesProvider()
+
+		// Test SetBuildEnv (should be no-op)
+		err := provider.SetBuildEnv("NPM_CONFIG_REGISTRY", "https://npm.corp.example.com")
+		assert.NoError(t, err)
+
+		// Test GetBuildEnv (should return empty)
+		value, exists := provider.GetBuildEnv("NPM_CONFIG_REGISTRY")
+		assert.False(t, exists)
+		assert.Equal(t, "", value)
+
+		// Test GetAllBuildEnv (should return empty map)
+		envVars := provider.GetAllBuildEnv()
+		assert.Empty(t, envVars)
+
+		// Test UnsetBuildEnv (should be no-op)
+		err = provider.UnsetBuildEnv("NPM_CONFIG_REGISTRY")
+		assert.NoError(t, err)
+
+		// Test UnsetAllBuildEnv (should be no-op)
+		err = provider.UnsetAllBuildEnv()
+		assert.NoError(t, err)
+	})
+}

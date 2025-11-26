@@ -250,13 +250,6 @@ func TestDAGExecutor_ErrorHandling(t *testing.T) {
 			wantErr:     false,
 			wantAllRun:  true,
 		},
-		{
-			name:        "best_effort on error",
-			failureMode: "best_effort",
-			failAt:      "step2",
-			wantErr:     false,
-			wantAllRun:  true,
-		},
 	}
 
 	for _, tt := range tests {

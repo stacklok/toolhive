@@ -1855,7 +1855,7 @@ _Appears in:_
 | `parameters` _object (keys:string, values:[ParameterSpec](#parameterspec))_ | Parameters defines the input parameter schema for the workflow<br />Each key is a parameter name, each value is the parameter specification |  |  |
 | `steps` _[WorkflowStep](#workflowstep) array_ | Steps defines the workflow step definitions<br />Steps are executed sequentially in Phase 1<br />Phase 2 will support DAG execution via dependsOn |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `timeout` _string_ | Timeout is the overall workflow timeout<br />Defaults to 30m if not specified | 30m | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m\|h))+$` <br /> |
-| `failureMode` _string_ | FailureMode defines the failure handling strategy<br />- abort: Stop execution on first failure (default)<br />- continue: Continue executing remaining steps<br />- best_effort: Try all steps, report partial success | abort | Enum: [abort continue best_effort] <br /> |
+| `failureMode` _string_ | FailureMode defines the failure handling strategy<br />- abort: Stop execution on first failure (default)<br />- continue: Continue executing remaining steps | abort | Enum: [abort continue] <br /> |
 
 
 #### VirtualMCPCompositeToolDefinitionStatus

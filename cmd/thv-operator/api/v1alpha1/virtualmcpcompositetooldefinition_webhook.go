@@ -84,12 +84,11 @@ func (r *VirtualMCPCompositeToolDefinition) Validate() error {
 	// Validate failure mode
 	if r.Spec.FailureMode != "" {
 		validModes := map[string]bool{
-			"abort":       true,
-			"continue":    true,
-			"best_effort": true,
+			"abort":    true,
+			"continue": true,
 		}
 		if !validModes[r.Spec.FailureMode] {
-			errors = append(errors, "spec.failureMode must be one of: abort, continue, best_effort")
+			errors = append(errors, "spec.failureMode must be one of: abort, continue")
 		}
 	}
 

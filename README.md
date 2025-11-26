@@ -153,7 +153,7 @@ Teams and organizations manage MCP servers and registries centrally using famili
 - Enterprise-grade security and observability: OIDC/OAuth SSO, secure token exchange, audit logging, OpenTelemetry, and Prometheus metrics
 - Hybrid registry server: curate from upstream registries, dynamically register local MCP servers, or proxy trusted remote services
 
-**Get started:** [Quickstart](https://docs.stacklok.com/toolhive/tutorials/quickstart-k8s), [How-to guides](https://docs.stacklok.com/toolhive/guides-k8s), [CRD reference](https://docs.stacklok.com/toolhive/reference/crd-spec), \[Example manifests\](./examples/operator/)
+**Get started:** [Quickstart](https://docs.stacklok.com/toolhive/tutorials/quickstart-k8s), [How-to guides](https://docs.stacklok.com/toolhive/guides-k8s), [CRD reference](https://docs.stacklok.com/toolhive/reference/crd-spec), [Example manifests](./examples/operator/)
 
 ### Hybrid
 
@@ -163,16 +163,21 @@ End users access approved MCP servers through a secure, browser-based cloud UI. 
 
 Enterprise teams can also leverage ToolHive to integrate MCP servers into custom internal tools, agentic workflows, or chat-based interfaces, using the same runtime and access controls.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/toolhive-platform-dark.svg">
+  <img src="docs/images/toolhive-platform-light.svg" alt="ToolHive platform diagram" width="800" style="padding: 20px 0" />
+</picture>
+
 ---
 
 ## Contributing
 
-We welcome contributions and feedback from the community\!
+We welcome contributions and feedback from the community!
 
 - 🐛 [Report issues](https://github.com/stacklok/toolhive/issues)
 - 💬 [Join our Discord](https://discord.gg/stacklok)
 
-If you have ideas, suggestions, or want to get involved, check out our contributing guide or open an issue. Join us in making ToolHive even better\!
+If you have ideas, suggestions, or want to get involved, check out our contributing guide or open an issue. Join us in making ToolHive even better!
 
 Contribute to the CLI, API, and Kubernetes Operator (this repo):
 

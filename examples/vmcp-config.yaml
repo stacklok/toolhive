@@ -20,7 +20,7 @@ group: "engineering-team"  # Reference to ToolHive group
 
 # ===== INCOMING AUTHENTICATION (Client → Virtual MCP) =====
 incoming_auth:
-  type: oidc  # Options: oidc | anonymous | local
+  type: oidc  # Options: oidc | anonymous
   # OIDC configuration
   oidc:
     issuer: "https://keycloak.example.com/realms/myrealm"

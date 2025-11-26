@@ -108,7 +108,7 @@ Deploy, run, and manage MCP servers locally or in a Kubernetes cluster with secu
 
 Simplify MCP adoption for developers and knowledge workers across your enterprise
 
-- Cross-platform [desktop app](https://github.com/stacklok/toolhive-studio) and browser-based cloud UI
+- Cross-platform [desktop app](https://github.com/stacklok/toolhive-studio) and browser-based [cloud UI](https://github.com/stacklok/toolhive-cloud-ui)
 - Make it easy for admins to curate MCP servers and tools
 - Automate server discovery
 - Install MCP servers with a single click

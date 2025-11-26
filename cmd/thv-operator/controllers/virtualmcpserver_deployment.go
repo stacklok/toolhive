@@ -53,7 +53,7 @@ var vmcpRBACRules = []rbacv1.PolicyRule{
 	},
 	{
 		APIGroups: []string{"toolhive.stacklok.dev"},
-		Resources: []string{"mcpgroups", "mcpservers"},
+		Resources: []string{"mcpgroups", "mcpservers", "mcpexternalauthconfigs"},
 		Verbs:     []string{"get", "list", "watch"},
 	},
 }

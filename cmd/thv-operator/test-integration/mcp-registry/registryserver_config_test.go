@@ -572,10 +572,10 @@ func (*serverConfigTestHelpers) verifyNoSourceDataVolume(deployment *appsv1.Depl
 // verifySourceDataVolume verifies the source data ConfigMap volume for ConfigMap sources
 func (*serverConfigTestHelpers) verifySourceDataVolume(deployment *appsv1.Deployment, registry *mcpv1alpha1.MCPRegistry) {
 	// With multiple source support, we need to check each ConfigMap source
-	for i, registryConfig := range registry.Spec.Registries {
+	for _, registryConfig := range registry.Spec.Registries {
 		if registryConfig.ConfigMapRef != nil {
 			expectedSourceConfigMapName := registryConfig.ConfigMapRef.Name
-			expectedVolumeName := fmt.Sprintf("registry-data-%d-%s", i, registryConfig.Name)
+			expectedVolumeName := fmt.Sprintf("registry-data-source-%s", registryConfig.Name)
 			expectedMountPath := filepath.Join(config.RegistryJSONFilePath, registryConfig.Name)
 
 			// Check volume

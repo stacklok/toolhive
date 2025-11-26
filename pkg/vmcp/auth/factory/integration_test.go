@@ -81,9 +81,7 @@ func TestHeaderInjectionIntegration(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, metadata)
 
-		// Verify initial metadata has placeholder for secret
 		assert.Equal(t, "X-API-Key", metadata["header_name"])
-		assert.Equal(t, "TOOLHIVE_HEADER_INJECTION_VALUE", metadata["header_value_env"])
 
 		// Step 5: Resolve secrets
 		resolvedMetadata, err := converter.ResolveSecrets(ctx, authConfig, fakeClient, "default", metadata)

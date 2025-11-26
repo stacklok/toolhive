@@ -595,6 +595,20 @@ func TestValidateUpstreamRegistry_RealWorld(t *testing.T) {
 	assert.NoError(t, err, "Real-world registry example should validate successfully")
 }
 
+// walkJSONObjects walks through nested JSON objects following the provided path.
+// Returns the final object and true if successful, or nil and false if any path segment fails.
+func walkJSONObjects(root map[string]any, paths ...string) (map[string]any, bool) {
+	current := root
+	for _, path := range paths {
+		next, ok := current[path].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current = next
+	}
+	return current, true
+}
+
 // TestUpstreamRegistrySchemaVersionSync ensures that the schema reference in
 // upstream-registry.schema.json matches the schema version from the Go package
 // (model.CurrentSchemaVersion). This prevents schema drift when upgrading the
@@ -616,24 +630,9 @@ func TestUpstreamRegistrySchemaVersionSync(t *testing.T) {
 	}
 
 	// Navigate to the $ref field in data.properties.servers.items
-	data, ok := schema["properties"].(map[string]interface{})["data"].(map[string]interface{})
+	items, ok := walkJSONObjects(schema, "properties", "data", "properties", "servers", "items")
 	if !ok {
-		t.Fatal("Failed to navigate to data field in schema")
-	}
-
-	dataProps, ok := data["properties"].(map[string]interface{})
-	if !ok {
-		t.Fatal("Failed to get data properties in schema")
-	}
-
-	servers, ok := dataProps["servers"].(map[string]interface{})
-	if !ok {
-		t.Fatal("Failed to navigate to servers field in schema")
-	}
-
-	items, ok := servers["items"].(map[string]interface{})
-	if !ok {
-		t.Fatal("Failed to get items field from servers")
+		t.Fatal("Failed to navigate to data.properties.servers.items in schema")
 	}
 
 	refURL, ok := items["$ref"].(string)
@@ -663,31 +662,19 @@ func TestUpstreamRegistrySchemaVersionSync(t *testing.T) {
 	}
 
 	// Also check groups schema if present
-	groups, ok := dataProps["groups"].(map[string]interface{})
+	groupServerItems, ok := walkJSONObjects(schema, "properties", "data", "properties", "groups", "items", "properties", "servers", "items")
 	if ok {
-		groupItems, ok := groups["items"].(map[string]interface{})
+		groupRefURL, ok := groupServerItems["$ref"].(string)
 		if ok {
-			groupProps, ok := groupItems["properties"].(map[string]interface{})
-			if ok {
-				groupServers, ok := groupProps["servers"].(map[string]interface{})
-				if ok {
-					groupServerItems, ok := groupServers["items"].(map[string]interface{})
-					if ok {
-						groupRefURL, ok := groupServerItems["$ref"].(string)
-						if ok {
-							groupMatches := re.FindStringSubmatch(groupRefURL)
-							if len(groupMatches) == 2 {
-								groupSchemaDate := groupMatches[1]
-								if groupSchemaDate != expectedDate {
-									t.Errorf("Groups schema version mismatch!\n"+
-										"  Groups $ref date: %s\n"+
-										"  Expected: %s\n\n"+
-										"To fix: Update data.properties.groups.items.properties.servers.items.$ref",
-										groupSchemaDate, expectedDate)
-								}
-							}
-						}
-					}
+			groupMatches := re.FindStringSubmatch(groupRefURL)
+			if len(groupMatches) == 2 {
+				groupSchemaDate := groupMatches[1]
+				if groupSchemaDate != expectedDate {
+					t.Errorf("Groups schema version mismatch!\n"+
+						"  Groups $ref date: %s\n"+
+						"  Expected: %s\n\n"+
+						"To fix: Update data.properties.groups.items.properties.servers.items.$ref",
+						groupSchemaDate, expectedDate)
 				}
 			}
 		}

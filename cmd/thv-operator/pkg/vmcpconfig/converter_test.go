@@ -73,6 +73,45 @@ func TestConvertCompositeTools_Parameters(t *testing.T) {
 			expectNilParams: false,
 			description:     "Should correctly parse complex JSON Schema with required array",
 		},
+		{
+			// This test case explicitly verifies that description and default fields
+			// at the property level are preserved, addressing issue #2775
+			name: "parameters with description and default fields (issue #2775)",
+			parameters: &runtime.RawExtension{Raw: []byte(`{
+				"type": "object",
+				"properties": {
+					"environment": {
+						"type": "string",
+						"description": "Target deployment environment",
+						"default": "staging"
+					},
+					"replicas": {
+						"type": "integer",
+						"description": "Number of pod replicas",
+						"default": 3
+					}
+				},
+				"required": ["environment"]
+			}`)},
+			expectedParams: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"environment": map[string]any{
+						"type":        "string",
+						"description": "Target deployment environment",
+						"default":     "staging",
+					},
+					"replicas": map[string]any{
+						"type":        "integer",
+						"description": "Number of pod replicas",
+						"default":     float64(3), // JSON numbers unmarshal as float64
+					},
+				},
+				"required": []any{"environment"},
+			},
+			expectNilParams: false,
+			description:     "Should preserve description and default fields per issue #2775",
+		},
 	}
 
 	for _, tt := range tests {

@@ -49,32 +49,31 @@ spec:
 
 ### Parameters
 
-Define input parameters with type validation:
+Parameters are defined using standard JSON Schema format, per the MCP specification. The top-level must be `type: object` with `properties` defining the individual parameters:
 
 ```yaml
 spec:
   name: deploy_app
   description: Deploy application with configuration
   parameters:
-    environment:
-      type: string
-      description: Target environment (dev, staging, prod)
-      required: true
-
-    replicas:
-      type: integer
-      description: Number of pod replicas
-      default: "3"
-      required: false
-
-    enable_monitoring:
-      type: boolean
-      description: Enable Prometheus monitoring
-      default: "true"
-      required: false
+    type: object
+    properties:
+      environment:
+        type: string
+        description: Target environment (dev, staging, prod)
+      replicas:
+        type: integer
+        description: Number of pod replicas
+        default: 3
+      enable_monitoring:
+        type: boolean
+        description: Enable Prometheus monitoring
+        default: true
+    required:
+      - environment
 ```
 
-**Supported Parameter Types**:
+**Supported Property Types** (per JSON Schema):
 - `string`
 - `integer`
 - `number`
@@ -289,10 +288,13 @@ spec:
   description: Deploy application to Kubernetes
 
   parameters:
-    environment:
-      type: string
-      required: true
-      description: Target environment
+    type: object
+    properties:
+      environment:
+        type: string
+        description: Target environment
+    required:
+      - environment
 
   steps:
     - id: apply
@@ -319,15 +321,19 @@ spec:
   description: Deploy application and verify it's healthy
 
   parameters:
-    environment:
-      type: string
-      required: true
-    replicas:
-      type: integer
-      default: "3"
-    health_check_timeout:
-      type: string
-      default: "5m"
+    type: object
+    properties:
+      environment:
+        type: string
+        description: Target deployment environment
+      replicas:
+        type: integer
+        default: 3
+      health_check_timeout:
+        type: string
+        default: "5m"
+    required:
+      - environment
 
   steps:
     - id: validate_config
@@ -389,18 +395,21 @@ spec:
   description: Gather diagnostic information for incident investigation
 
   parameters:
-    service:
-      type: string
-      required: true
-      description: Service name to investigate
-    namespace:
-      type: string
-      required: true
-      description: Kubernetes namespace
-    time_range:
-      type: string
-      default: "1h"
-      description: Time range for log collection
+    type: object
+    properties:
+      service:
+        type: string
+        description: Service name to investigate
+      namespace:
+        type: string
+        description: Kubernetes namespace
+      time_range:
+        type: string
+        default: "1h"
+        description: Time range for log collection
+    required:
+      - service
+      - namespace
 
   steps:
     - id: get_pod_status
@@ -470,18 +479,23 @@ spec:
   description: Progressive canary deployment with rollback capability
 
   parameters:
-    service:
-      type: string
-      required: true
-    image:
-      type: string
-      required: true
-    canary_percentage:
-      type: integer
-      default: "10"
-    success_threshold:
-      type: number
-      default: "0.99"
+    type: object
+    properties:
+      service:
+        type: string
+        description: Service name for canary deployment
+      image:
+        type: string
+        description: Container image to deploy
+      canary_percentage:
+        type: integer
+        default: 10
+      success_threshold:
+        type: number
+        default: 0.99
+    required:
+      - service
+      - image
 
   steps:
     - id: validate_image

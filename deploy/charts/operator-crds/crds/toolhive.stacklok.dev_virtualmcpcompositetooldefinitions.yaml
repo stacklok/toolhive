@@ -91,30 +91,21 @@ spec:
                 pattern: ^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$
                 type: string
               parameters:
-                additionalProperties:
-                  description: ParameterSpec defines a parameter for a composite tool
-                  properties:
-                    default:
-                      description: Default is the default value for the parameter
-                      type: string
-                    description:
-                      description: Description describes the parameter
-                      type: string
-                    required:
-                      default: false
-                      description: Required indicates if the parameter is required
-                      type: boolean
-                    type:
-                      description: Type is the parameter type (string, integer, boolean,
-                        etc.)
-                      type: string
-                  required:
-                  - type
-                  type: object
                 description: |-
-                  Parameters defines the input parameter schema for the workflow
-                  Each key is a parameter name, each value is the parameter specification
+                  Parameters defines the input parameter schema for the workflow in JSON Schema format.
+                  Should be a JSON Schema object with "type": "object" and "properties".
+                  Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
+                  Example:
+                    {
+                      "type": "object",
+                      "properties": {
+                        "param1": {"type": "string", "default": "value"},
+                        "param2": {"type": "integer"}
+                      },
+                      "required": ["param2"]
+                    }
                 type: object
+                x-kubernetes-preserve-unknown-fields: true
               steps:
                 description: |-
                   Steps defines the workflow step definitions

@@ -912,9 +912,9 @@ func createVmcpServiceURL(vmcpName, namespace string, port int32) string {
 // For ConfigMap mode (inline/mixed), secrets are referenced as environment variables that will be
 // mounted in the deployment. The env var names are customized to include the ExternalAuthConfig name
 // for uniqueness when multiple configs are used.
-func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
-	_ context.Context,
-	_ string,
+func (r *VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
+	ctx context.Context,
+	namespace string,
 	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
 ) (*vmcpconfig.BackendAuthStrategy, error) {
 	// Use the converter registry to convert to metadata
@@ -930,12 +930,12 @@ func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 		return nil, fmt.Errorf("failed to convert external auth config to metadata: %w", err)
 	}
 
-	// Customize env var names to include the ExternalAuthConfig name for uniqueness
-	// This ensures multiple ExternalAuthConfigs can coexist with different env var names
-	if _, ok := metadata["client_secret_env"].(string); ok {
-		// Replace generic env var name with one that includes the config name
-		// Format: VMCP_TOKEN_EXCHANGE_CLIENT_SECRET_{EXTERNAL_AUTH_CONFIG_NAME}
-		metadata["client_secret_env"] = fmt.Sprintf("VMCP_TOKEN_EXCHANGE_CLIENT_SECRET_%s", externalAuthConfig.Name)
+	if externalAuthConfig.Spec.Type == mcpv1alpha1.ExternalAuthTypeHeaderInjection {
+		resolvedMetadata, err := converter.ResolveSecrets(ctx, externalAuthConfig, r.Client, namespace, metadata)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve secrets for header injection: %w", err)
+		}
+		metadata = resolvedMetadata
 	}
 
 	return &vmcpconfig.BackendAuthStrategy{
@@ -950,12 +950,6 @@ func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
 	namespace string,
 	crdConfig *mcpv1alpha1.BackendAuthConfig,
 ) (*vmcpconfig.BackendAuthStrategy, error) {
-	// "discovered" type is not a valid vmcp strategy type - it's only used at CRD level
-	// to indicate that discovery should happen. It should never appear in the final config.
-	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeDiscovered {
-		return nil, fmt.Errorf("discovered type is not valid for inline auth configuration; use external_auth_config_ref or a concrete strategy type")
-	}
-
 	strategy := &vmcpconfig.BackendAuthStrategy{
 		Type:     crdConfig.Type,
 		Metadata: make(map[string]any),

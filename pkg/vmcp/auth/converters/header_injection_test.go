@@ -244,15 +244,12 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 			_ = mcpv1alpha1.AddToScheme(scheme)
 
 			// Add secret if provided
-			var objects []runtime.Object
+			clientBuilder := fake.NewClientBuilder().WithScheme(scheme)
 			if tt.secret != nil {
-				objects = append(objects, tt.secret)
+				clientBuilder = clientBuilder.WithObjects(tt.secret)
 			}
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithRuntimeObjects(objects...).
-				Build()
+			fakeClient := clientBuilder.Build()
 
 			converter := &HeaderInjectionConverter{}
 			metadata, err := converter.ResolveSecrets(

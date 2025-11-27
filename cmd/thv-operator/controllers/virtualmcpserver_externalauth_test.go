@@ -20,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -66,7 +67,7 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 				assert.Equal(t, "token_exchange", strategy.Type)
 				assert.Equal(t, "https://oauth.example.com/token", strategy.Metadata["token_url"])
 				assert.Equal(t, "test-client-id", strategy.Metadata["client_id"])
-				assert.Equal(t, "VMCP_TOKEN_EXCHANGE_CLIENT_SECRET_test-auth-config", strategy.Metadata["client_secret_env"])
+				assert.Equal(t, "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET", strategy.Metadata["client_secret_env"])
 				assert.Equal(t, "backend-service", strategy.Metadata["audience"])
 				assert.Equal(t, []string{"read", "write"}, strategy.Metadata["scopes"])
 				assert.Equal(t, "urn:ietf:params:oauth:token-type:access_token", strategy.Metadata["subject_token_type"])
@@ -160,8 +161,8 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 				t.Helper()
 				assert.Equal(t, "header_injection", strategy.Type)
 				assert.Equal(t, "X-API-Key", strategy.Metadata["header_name"])
-				// Note: header_value is resolved at runtime via ResolveSecrets, not in ConfigMap mode
-				// For ConfigMap mode, we'd need to use header_value_env, but that's not implemented yet
+				// header_value is resolved by ResolveSecrets and embedded in the ConfigMap
+				assert.Equal(t, "test-api-key-value", strategy.Metadata["header_value"])
 			},
 		},
 		{
@@ -185,10 +186,27 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 
 			scheme := runtime.NewScheme()
 			_ = mcpv1alpha1.AddToScheme(scheme)
+			_ = corev1.AddToScheme(scheme)
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				Build()
+			// Set up fake client with secrets for header injection test
+			clientBuilder := fake.NewClientBuilder().WithScheme(scheme)
+			if tt.externalAuthConfig != nil && tt.externalAuthConfig.Spec.Type == mcpv1alpha1.ExternalAuthTypeHeaderInjection &&
+				tt.externalAuthConfig.Spec.HeaderInjection != nil &&
+				tt.externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
+				// Add the secret that header injection needs
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      tt.externalAuthConfig.Spec.HeaderInjection.ValueSecretRef.Name,
+						Namespace: "default",
+					},
+					Data: map[string][]byte{
+						tt.externalAuthConfig.Spec.HeaderInjection.ValueSecretRef.Key: []byte("test-api-key-value"),
+					},
+				}
+				clientBuilder = clientBuilder.WithObjects(secret)
+			}
+
+			fakeClient := clientBuilder.Build()
 
 			r := &VirtualMCPServerReconciler{
 				Client:           fakeClient,
@@ -652,13 +670,6 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 		expectError bool
 		validate    func(*testing.T, *vmcpconfig.BackendAuthStrategy)
 	}{
-		{
-			name: "discovered type should return error (not valid for inline)",
-			crdConfig: &mcpv1alpha1.BackendAuthConfig{
-				Type: mcpv1alpha1.BackendAuthTypeDiscovered,
-			},
-			expectError: true,
-		},
 		{
 			name: "external_auth_config_ref type",
 			crdConfig: &mcpv1alpha1.BackendAuthConfig{

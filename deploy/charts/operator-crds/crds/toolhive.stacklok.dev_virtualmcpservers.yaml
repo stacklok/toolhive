@@ -515,11 +515,10 @@ spec:
                     - type
                     type: object
                   type:
-                    description: 'Type defines the authentication type: anonymous,
-                      local, or oidc'
+                    description: 'Type defines the authentication type: anonymous
+                      or oidc'
                     enum:
                     - anonymous
-                    - local
                     - oidc
                     type: string
                 type: object

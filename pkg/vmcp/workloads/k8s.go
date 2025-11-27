@@ -98,6 +98,12 @@ func (d *k8sDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workloadNa
 	// Convert MCPServer to Backend
 	backend := d.mcpServerToBackend(ctx, mcpServer)
 
+	// If auth discovery failed, mcpServerToBackend returns nil
+	if backend == nil {
+		logger.Warnf("Skipping workload %s due to auth discovery failure", workloadName)
+		return nil, nil
+	}
+
 	// Skip workloads without a URL (not accessible)
 	if backend.BaseURL == "" {
 		logger.Debugf("Skipping workload %s without URL", workloadName)
@@ -182,8 +188,11 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 
 	// Discover and populate authentication configuration from MCPServer
 	if err := d.discoverAuthConfig(ctx, mcpServer, backend); err != nil {
-		// Log warning but don't fail - backend can still be used without auth
-		logger.Warnf("Failed to discover auth config for MCPServer %s: %v", mcpServer.Name, err)
+		// If auth discovery fails, we must fail - don't silently allow unauthorized access
+		// This is a security-critical operation: if auth is configured but fails to load,
+		// we should not proceed without it
+		logger.Errorf("Failed to discover auth config for MCPServer %s: %v", mcpServer.Name, err)
+		return nil
 	}
 
 	return backend

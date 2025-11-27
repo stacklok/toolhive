@@ -133,6 +133,9 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 				Aggregation: &mcpv1alpha1.AggregationConfig{
 					ConflictResolution: "prefix",
 					// Tool filtering: only allow echo from backend1, nothing from backend2
+					// TODO(#2779): Currently there's no way to exclude all tools from a backend.
+					// Using a non-matching filter as a workaround until excludeAll is implemented.
+					// See: https://github.com/stacklok/toolhive/issues/2779
 					Tools: []mcpv1alpha1.WorkloadToolConfig{
 						{
 							Workload: backend1Name,
@@ -140,7 +143,7 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 						},
 						{
 							Workload: backend2Name,
-							Filter:   []string{}, // Empty filter = expose nothing
+							Filter:   []string{"nonexistent_tool"}, // Filter out all tools (workaround)
 						},
 					},
 				},
@@ -254,14 +257,15 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 			}
 			Expect(hasBackend1Tool).To(BeTrue(), "Should have echo tool from backend1")
 
-			// Should NOT have any tool from backend2 (filter was empty)
+			// Should NOT have any tool from backend2 (filtered with non-matching filter)
+			// TODO(#2779): Once excludeAll is implemented, update this test to use it
 			hasBackend2Tool := false
 			for _, name := range toolNames {
 				if strings.Contains(name, backend2Name) {
 					hasBackend2Tool = true
 				}
 			}
-			Expect(hasBackend2Tool).To(BeFalse(), "Should NOT have any tool from backend2 (filtered out)")
+			Expect(hasBackend2Tool).To(BeFalse(), "Should NOT have any tool from backend2 (filtered out via non-matching filter)")
 		})
 
 		It("should still allow calling filtered tools", func() {
@@ -351,7 +355,8 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 			Expect(backend1Config.Filter).To(ContainElement("echo"))
 
 			Expect(backend2Config).ToNot(BeNil())
-			Expect(backend2Config.Filter).To(BeEmpty(), "Backend2 should have empty filter")
+			// TODO(#2779): Once excludeAll is implemented, update this to use excludeAll: true
+			Expect(backend2Config.Filter).To(ContainElement("nonexistent_tool"), "Backend2 should have non-matching filter as workaround")
 		})
 	})
 })

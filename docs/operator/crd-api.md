@@ -322,6 +322,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `action` _string_ | Action defines the action to take on error | abort | Enum: [abort continue retry] <br /> |
 | `maxRetries` _integer_ | MaxRetries is the maximum number of retries<br />Only used when Action is "retry" |  |  |
+| `retryDelay` _string_ | RetryDelay is the delay between retry attempts<br />Only used when Action is "retry" |  | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m))+$` <br /> |
 
 
 #### ExternalAuthConfigRef

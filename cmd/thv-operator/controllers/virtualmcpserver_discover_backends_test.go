@@ -44,6 +44,8 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 		vmcp                *mcpv1alpha1.VirtualMCPServer
 		mcpGroup            *mcpv1alpha1.MCPGroup
 		mcpServers          []mcpv1alpha1.MCPServer
+		authConfigs         []mcpv1alpha1.MCPExternalAuthConfig // Auth configs referenced by MCPServers
+		secrets             []corev1.Secret                     // Secrets referenced by auth configs
 		expectedBackends    int
 		expectedStatuses    map[string]string // backend name -> status
 		expectedAuthConfigs map[string]string // backend name -> authConfigRef
@@ -150,6 +152,37 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 					Status: mcpv1alpha1.MCPServerStatus{
 						Phase: mcpv1alpha1.MCPServerPhaseRunning,
 						URL:   "http://mcp-backend-1-proxy.default.svc.cluster.local:8080",
+					},
+				},
+			},
+			authConfigs: []mcpv1alpha1.MCPExternalAuthConfig{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-auth-config",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+						Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+						TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+							TokenURL: "https://auth.example.com/token",
+							ClientID: "test-client",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: "my-auth-secret",
+								Key:  "client-secret",
+							},
+							Audience: "test-audience",
+						},
+					},
+				},
+			},
+			secrets: []corev1.Secret{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "my-auth-secret",
+						Namespace: "default",
+					},
+					Data: map[string][]byte{
+						"client-secret": []byte("test-secret-value"),
 					},
 				},
 			},
@@ -319,11 +352,18 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 
 			scheme := runtime.NewScheme()
 			_ = mcpv1alpha1.AddToScheme(scheme)
+			_ = corev1.AddToScheme(scheme)
 
 			// Build objects list for fake client
 			objects := []client.Object{tt.vmcp, tt.mcpGroup}
 			for i := range tt.mcpServers {
 				objects = append(objects, &tt.mcpServers[i])
+			}
+			for i := range tt.authConfigs {
+				objects = append(objects, &tt.authConfigs[i])
+			}
+			for i := range tt.secrets {
+				objects = append(objects, &tt.secrets[i])
 			}
 
 			fakeClient := fake.NewClientBuilder().

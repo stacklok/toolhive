@@ -255,11 +255,10 @@ func TestDiscoverAuth_AuthConfigNotFound(t *testing.T) {
 	ctx := context.Background()
 	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, "test-server")
 
-	// Should still return the backend but without auth (logs warning)
+	// Should return nil backend when auth config is referenced but not found
+	// This is security-critical: fail closed rather than allowing unauthorized access
 	require.NoError(t, err)
-	require.NotNil(t, backend)
-	assert.Empty(t, backend.AuthStrategy)
-	assert.Nil(t, backend.AuthMetadata)
+	require.Nil(t, backend, "Should return nil backend when auth config is missing")
 }
 
 func TestDiscoverAuth_SecretNotFound(t *testing.T) {
@@ -312,11 +311,10 @@ func TestDiscoverAuth_SecretNotFound(t *testing.T) {
 	ctx := context.Background()
 	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, "test-server")
 
-	// Should still return the backend but without auth (logs warning)
+	// Should return nil backend when secret is missing
+	// This is security-critical: fail closed rather than allowing unauthorized access
 	require.NoError(t, err)
-	require.NotNil(t, backend)
-	assert.Empty(t, backend.AuthStrategy)
-	assert.Nil(t, backend.AuthMetadata)
+	require.Nil(t, backend, "Should return nil backend when secret is missing")
 }
 
 func TestMCPServerToBackend_BasicFields(t *testing.T) {

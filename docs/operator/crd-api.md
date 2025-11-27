@@ -60,7 +60,7 @@ Phase 2: Will add support for upstream MCP Registry API with pagination
 
 
 _Appears in:_
-- [MCPRegistrySource](#mcpregistrysource)
+- [MCPRegistryConfig](#mcpregistryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -156,7 +156,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type defines the authentication type |  | Enum: [discovered pass_through external_auth_config_ref] <br />Required: \{\} <br /> |
+| `type` _string_ | Type defines the authentication type |  | Enum: [discovered external_auth_config_ref] <br />Required: \{\} <br /> |
 | `externalAuthConfigRef` _[ExternalAuthConfigRef](#externalauthconfigref)_ | ExternalAuthConfigRef references an MCPExternalAuthConfig resource<br />Only used when Type is "external_auth_config_ref" |  |  |
 
 
@@ -343,6 +343,23 @@ _Appears in:_
 | `name` _string_ | Name is the name of the MCPExternalAuthConfig resource |  | Required: \{\} <br /> |
 
 
+#### ExternalAuthType
+
+_Underlying type:_ _string_
+
+ExternalAuthType represents the type of external authentication
+
+
+
+_Appears in:_
+- [MCPExternalAuthConfigSpec](#mcpexternalauthconfigspec)
+
+| Field | Description |
+| --- | --- |
+| `tokenExchange` | ExternalAuthTypeTokenExchange is the type for RFC-8693 token exchange<br /> |
+| `headerInjection` | ExternalAuthTypeHeaderInjection is the type for custom header injection<br /> |
+
+
 #### FailureHandlingConfig
 
 
@@ -371,7 +388,7 @@ GitSource defines Git repository source configuration
 
 
 _Appears in:_
-- [MCPRegistrySource](#mcpregistrysource)
+- [MCPRegistryConfig](#mcpregistryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -396,6 +413,25 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the MCPGroup resource in the same namespace |  | Required: \{\} <br /> |
+
+
+#### HeaderInjectionConfig
+
+
+
+HeaderInjectionConfig holds configuration for custom HTTP header injection authentication.
+This allows injecting a secret-based header value into requests to backend MCP servers.
+For security reasons, only secret references are supported (no plaintext values).
+
+
+
+_Appears in:_
+- [MCPExternalAuthConfigSpec](#mcpexternalauthconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `headerName` _string_ | HeaderName is the name of the HTTP header to inject |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `valueSecretRef` _[SecretKeyRef](#secretkeyref)_ | ValueSecretRef references a Kubernetes Secret containing the header value |  | Required: \{\} <br /> |
 
 
 #### IncomingAuthConfig
@@ -542,8 +578,9 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange] <br />Required: \{\} <br /> |
+| `type` _[ExternalAuthType](#externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection] <br />Required: \{\} <br /> |
 | `tokenExchange` _[TokenExchangeConfig](#tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  |  |
+| `headerInjection` _[HeaderInjectionConfig](#headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  |  |
 
 
 #### MCPExternalAuthConfigStatus
@@ -682,6 +719,28 @@ _Appears in:_
 | `status` _[MCPRegistryStatus](#mcpregistrystatus)_ |  |  |  |
 
 
+#### MCPRegistryConfig
+
+
+
+MCPRegistryConfig defines the configuration for a registry data source
+
+
+
+_Appears in:_
+- [MCPRegistrySpec](#mcpregistryspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is a unique identifier for this registry configuration within the MCPRegistry |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `format` _string_ | Format is the data format (toolhive, upstream) | toolhive | Enum: [toolhive upstream] <br /> |
+| `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef defines the ConfigMap source configuration<br />Mutually exclusive with Git and API |  |  |
+| `git` _[GitSource](#gitsource)_ | Git defines the Git repository source configuration<br />Mutually exclusive with ConfigMapRef and API |  |  |
+| `api` _[APISource](#apisource)_ | API defines the API source configuration<br />Mutually exclusive with ConfigMapRef and Git |  |  |
+| `syncPolicy` _[SyncPolicy](#syncpolicy)_ | SyncPolicy defines the automatic synchronization behavior for this registry.<br />If specified, enables automatic synchronization at the given interval.<br />Manual synchronization is always supported via annotation-based triggers<br />regardless of this setting. |  |  |
+| `filter` _[RegistryFilter](#registryfilter)_ | Filter defines include/exclude patterns for registry content |  |  |
+
+
 #### MCPRegistryList
 
 
@@ -723,26 +782,6 @@ _Appears in:_
 | `Terminating` | MCPRegistryPhaseTerminating means the MCPRegistry is being deleted<br /> |
 
 
-#### MCPRegistrySource
-
-
-
-MCPRegistrySource defines the source configuration for registry data
-
-
-
-_Appears in:_
-- [MCPRegistrySpec](#mcpregistryspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `type` _string_ | Type is the type of source (configmap, git, api) | configmap | Enum: [configmap git api] <br /> |
-| `format` _string_ | Format is the data format (toolhive, upstream) | toolhive | Enum: [toolhive upstream] <br /> |
-| `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef defines the ConfigMap source configuration<br />Only used when Type is "configmap" |  |  |
-| `git` _[GitSource](#gitsource)_ | Git defines the Git repository source configuration<br />Only used when Type is "git" |  |  |
-| `api` _[APISource](#apisource)_ | API defines the API source configuration<br />Only used when Type is "api" |  |  |
-
-
 #### MCPRegistrySpec
 
 
@@ -757,9 +796,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `displayName` _string_ | DisplayName is a human-readable name for the registry |  |  |
-| `source` _[MCPRegistrySource](#mcpregistrysource)_ | Source defines the configuration for the registry data source |  | Required: \{\} <br /> |
-| `syncPolicy` _[SyncPolicy](#syncpolicy)_ | SyncPolicy defines the automatic synchronization behavior for the registry.<br />If specified, enables automatic synchronization at the given interval.<br />Manual synchronization is always supported via annotation-based triggers<br />regardless of this setting. |  |  |
-| `filter` _[RegistryFilter](#registryfilter)_ | Filter defines include/exclude patterns for registry content |  |  |
+| `registries` _[MCPRegistryConfig](#mcpregistryconfig) array_ | Registries defines the configuration for the registry data sources |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `enforceServers` _boolean_ | EnforceServers indicates whether MCPServers in this namespace must have their images<br />present in at least one registry in the namespace. When any registry in the namespace<br />has this field set to true, enforcement is enabled for the entire namespace.<br />MCPServers with images not found in any registry will be rejected.<br />When false (default), MCPServers can be deployed regardless of registry presence. | false |  |
 
 
@@ -1389,7 +1426,7 @@ RegistryFilter defines include/exclude patterns for registry content
 
 
 _Appears in:_
-- [MCPRegistrySpec](#mcpregistryspec)
+- [MCPRegistryConfig](#mcpregistryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1497,6 +1534,7 @@ SecretKeyRef is a reference to a key within a Secret
 
 
 _Appears in:_
+- [HeaderInjectionConfig](#headerinjectionconfig)
 - [InlineOIDCConfig](#inlineoidcconfig)
 - [RedisCacheConfig](#rediscacheconfig)
 - [TokenExchangeConfig](#tokenexchangeconfig)
@@ -1573,7 +1611,7 @@ regardless of this policy setting.
 
 
 _Appears in:_
-- [MCPRegistrySpec](#mcpregistryspec)
+- [MCPRegistryConfig](#mcpregistryconfig)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1817,7 +1855,7 @@ _Appears in:_
 | `parameters` _object (keys:string, values:[ParameterSpec](#parameterspec))_ | Parameters defines the input parameter schema for the workflow<br />Each key is a parameter name, each value is the parameter specification |  |  |
 | `steps` _[WorkflowStep](#workflowstep) array_ | Steps defines the workflow step definitions<br />Steps are executed sequentially in Phase 1<br />Phase 2 will support DAG execution via dependsOn |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `timeout` _string_ | Timeout is the overall workflow timeout<br />Defaults to 30m if not specified | 30m | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m\|h))+$` <br /> |
-| `failureMode` _string_ | FailureMode defines the failure handling strategy<br />- abort: Stop execution on first failure (default)<br />- continue: Continue executing remaining steps<br />- best_effort: Try all steps, report partial success | abort | Enum: [abort continue best_effort] <br /> |
+| `failureMode` _string_ | FailureMode defines the failure handling strategy<br />- abort: Stop execution on first failure (default)<br />- continue: Continue executing remaining steps | abort | Enum: [abort continue] <br /> |
 
 
 #### VirtualMCPCompositeToolDefinitionStatus

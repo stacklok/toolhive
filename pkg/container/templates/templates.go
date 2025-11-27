@@ -29,6 +29,10 @@ type TemplateData struct {
 	// These are typically required subcommands (e.g., "start") that must always be present.
 	// Runtime arguments passed via "-- <args>" will be appended after these build args.
 	BuildArgs []string
+	// BuildEnv contains environment variables to inject into the Dockerfile builder stage.
+	// These are used for configuring package managers (e.g., custom registry URLs).
+	// Keys must be uppercase with underscores, values are validated for safety.
+	BuildEnv map[string]string
 }
 
 // TransportType represents the type of transport to use.

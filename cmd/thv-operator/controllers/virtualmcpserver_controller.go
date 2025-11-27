@@ -27,10 +27,10 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
-	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/groups"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -1006,67 +1006,38 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 }
 
 // convertExternalAuthConfigToStrategy converts an MCPExternalAuthConfig to a BackendAuthStrategy.
+// This uses the converter registry to support all auth types (token exchange, header injection, etc.).
+// For ConfigMap mode (inline/mixed), secrets are referenced as environment variables that will be
+// mounted in the deployment. The env var names are customized to include the ExternalAuthConfig name
+// for uniqueness when multiple configs are used.
 func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 	_ context.Context,
 	_ string,
 	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
 ) (*vmcpconfig.BackendAuthStrategy, error) {
-	// Map ExternalAuthConfig.Type to vmcp auth strategy type
-	var strategyType string
-	var metadata map[string]any
+	// Use the converter registry to convert to metadata
+	registry := converters.DefaultRegistry()
+	converter, err := registry.GetConverter(externalAuthConfig.Spec.Type)
+	if err != nil {
+		return nil, fmt.Errorf("unsupported external auth type: %w", err)
+	}
 
-	switch externalAuthConfig.Spec.Type {
-	case mcpv1alpha1.ExternalAuthTypeTokenExchange:
-		strategyType = "token_exchange"
-		metadata = make(map[string]any)
+	// Convert to metadata (this will use env var references for secrets)
+	metadata, err := converter.ConvertToMetadata(externalAuthConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert external auth config to metadata: %w", err)
+	}
 
-		if externalAuthConfig.Spec.TokenExchange == nil {
-			return nil, fmt.Errorf("tokenExchange configuration is nil for type tokenExchange")
-		}
-
-		te := externalAuthConfig.Spec.TokenExchange
-
-		// Required fields
-		metadata["token_url"] = te.TokenURL
-		metadata["audience"] = te.Audience
-
-		// Optional fields
-		if te.ClientID != "" {
-			metadata["client_id"] = te.ClientID
-		}
-
-		// Handle client secret - use environment variable reference
-		if te.ClientSecretRef != nil {
-			// Generate environment variable name that will be mounted in the deployment
-			// Format: VMCP_TOKEN_EXCHANGE_CLIENT_SECRET_{EXTERNAL_AUTH_CONFIG_NAME}
-			envVarName := fmt.Sprintf("VMCP_TOKEN_EXCHANGE_CLIENT_SECRET_%s", externalAuthConfig.Name)
-			metadata["client_secret_env"] = envVarName
-		}
-
-		if len(te.Scopes) > 0 {
-			metadata["scopes"] = te.Scopes
-		}
-
-		if te.SubjectTokenType != "" {
-			// Normalize token type
-			normalized, err := tokenexchange.NormalizeTokenType(te.SubjectTokenType)
-			if err != nil {
-				return nil, fmt.Errorf("invalid subjectTokenType: %w", err)
-			}
-			metadata["subject_token_type"] = normalized
-		}
-
-		// Handle external token header name
-		if te.ExternalTokenHeaderName != "" {
-			metadata["external_token_header_name"] = te.ExternalTokenHeaderName
-		}
-
-	default:
-		return nil, fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
+	// Customize env var names to include the ExternalAuthConfig name for uniqueness
+	// This ensures multiple ExternalAuthConfigs can coexist with different env var names
+	if _, ok := metadata["client_secret_env"].(string); ok {
+		// Replace generic env var name with one that includes the config name
+		// Format: VMCP_TOKEN_EXCHANGE_CLIENT_SECRET_{EXTERNAL_AUTH_CONFIG_NAME}
+		metadata["client_secret_env"] = fmt.Sprintf("VMCP_TOKEN_EXCHANGE_CLIENT_SECRET_%s", externalAuthConfig.Name)
 	}
 
 	return &vmcpconfig.BackendAuthStrategy{
-		Type:     strategyType,
+		Type:     converter.StrategyType(),
 		Metadata: metadata,
 	}, nil
 }

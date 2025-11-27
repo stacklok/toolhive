@@ -14,7 +14,7 @@ spec:
   name: my_workflow_name        # Tool name exposed to clients
   description: What it does      # Required description
   timeout: 30m                   # Optional: workflow timeout (default: 30m)
-  failureMode: abort             # Optional: abort|continue|best_effort (default: abort)
+  failureMode: abort             # Optional: abort|continue (default: abort)
 
   parameters:                    # Optional: input parameters
     param_name:
@@ -116,7 +116,6 @@ All Go template built-ins are available: `index`, `len`, `range`, `with`, `print
 spec:
   failureMode: abort             # Stop on first error (default)
   failureMode: continue          # Log errors, continue workflow
-  failureMode: best_effort       # Try all steps, aggregate errors
 ```
 
 ### Step-Level (Overrides Workflow)

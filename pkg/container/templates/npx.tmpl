@@ -1,5 +1,10 @@
 FROM node:22-alpine AS builder
 
+{{if .BuildEnv}}
+# Custom build environment variables
+{{range $key, $value := .BuildEnv}}ENV {{$key}}="{{$value}}"
+{{end}}
+{{end}}
 {{if .CACertContent}}
 # Add custom CA certificate BEFORE any network operations
 # This ensures that package managers can verify TLS certificates in corporate networks

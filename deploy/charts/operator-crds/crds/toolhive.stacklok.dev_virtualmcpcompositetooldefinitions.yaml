@@ -80,11 +80,9 @@ spec:
                   FailureMode defines the failure handling strategy
                   - abort: Stop execution on first failure (default)
                   - continue: Continue executing remaining steps
-                  - best_effort: Try all steps, report partial success
                 enum:
                 - abort
                 - continue
-                - best_effort
                 type: string
               name:
                 description: Name is the workflow name exposed as a composite tool

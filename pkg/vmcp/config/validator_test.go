@@ -212,17 +212,6 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			},
 			wantErr: false,
 		},
-		// TODO: Uncomment when pass_through strategy is implemented
-		// {
-		// 	name: "valid inline source with pass_through default",
-		// 	auth: &OutgoingAuthConfig{
-		// 		Source: "inline",
-		// 		Default: &BackendAuthStrategy{
-		// 			Type: "pass_through",
-		// 		},
-		// 	},
-		// 	wantErr: false,
-		// },
 		// TODO: Uncomment when token_exchange strategy is implemented
 		// {
 		// 	name: "valid token_exchange backend",

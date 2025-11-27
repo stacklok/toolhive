@@ -443,9 +443,9 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 			name: "valid failure mode configuration",
 			ctd: &VirtualMCPCompositeToolDefinition{
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
-					Name:        "best_effort_deploy",
-					Description: "Deploy with best effort",
-					FailureMode: "best_effort",
+					Name:        "continue_deploy",
+					Description: "Deploy with continue mode",
+					FailureMode: "continue",
 					Steps: []WorkflowStep{
 						{
 							ID:   "deploy1",
@@ -476,7 +476,7 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.failureMode must be one of: abort, continue, best_effort",
+			errMsg:  "spec.failureMode must be one of: abort, continue",
 		},
 		{
 			name: "valid conditional step",

@@ -144,12 +144,12 @@ func (*VirtualMCPServer) validateBackendAuth(backendName string, auth BackendAut
 			return fmt.Errorf("spec.outgoingAuth.backends[%s].externalAuthConfigRef.name is required", backendName)
 		}
 
-	case BackendAuthTypeDiscovered, BackendAuthTypePassThrough:
+	case BackendAuthTypeDiscovered:
 		// No additional validation needed
 
 	default:
 		return fmt.Errorf(
-			"spec.outgoingAuth.backends[%s].type must be one of: discovered, pass_through, service_account, external_auth_config_ref",
+			"spec.outgoingAuth.backends[%s].type must be one of: discovered, external_auth_config_ref",
 			backendName)
 	}
 

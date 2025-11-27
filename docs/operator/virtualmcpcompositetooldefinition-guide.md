@@ -236,7 +236,7 @@ spec:
   description: Deploy with multiple retries
 
   # Failure handling strategy
-  failureMode: best_effort
+  failureMode: continue
 
   steps:
     - id: deploy_primary
@@ -253,7 +253,6 @@ spec:
 **Failure Modes**:
 - `abort`: Stop on first failure (default)
 - `continue`: Execute all steps regardless of failures
-- `best_effort`: Try all steps, report partial success
 
 ### Template Syntax
 
@@ -455,7 +454,7 @@ spec:
         action: continue
 
   timeout: 15m
-  failureMode: best_effort
+  failureMode: continue
 ```
 
 ### Example 4: Multi-Stage Deployment

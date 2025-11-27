@@ -108,7 +108,7 @@ type OutgoingAuthConfig struct {
 // BackendAuthConfig defines authentication configuration for a backend MCPServer
 type BackendAuthConfig struct {
 	// Type defines the authentication type
-	// +kubebuilder:validation:Enum=discovered;pass_through;external_auth_config_ref
+	// +kubebuilder:validation:Enum=discovered;external_auth_config_ref
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
@@ -516,9 +516,6 @@ const (
 const (
 	// BackendAuthTypeDiscovered automatically discovers from backend's externalAuthConfigRef
 	BackendAuthTypeDiscovered = "discovered"
-
-	// BackendAuthTypePassThrough forwards client token unchanged
-	BackendAuthTypePassThrough = "pass_through"
 
 	// BackendAuthTypeExternalAuthConfigRef references an MCPExternalAuthConfig resource
 	BackendAuthTypeExternalAuthConfigRef = "external_auth_config_ref"

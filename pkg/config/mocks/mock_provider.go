@@ -40,6 +40,35 @@ func (m *MockProvider) EXPECT() *MockProviderMockRecorder {
 	return m.recorder
 }
 
+// GetAllBuildEnv mocks base method.
+func (m *MockProvider) GetAllBuildEnv() map[string]string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetAllBuildEnv")
+	ret0, _ := ret[0].(map[string]string)
+	return ret0
+}
+
+// GetAllBuildEnv indicates an expected call of GetAllBuildEnv.
+func (mr *MockProviderMockRecorder) GetAllBuildEnv() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllBuildEnv", reflect.TypeOf((*MockProvider)(nil).GetAllBuildEnv))
+}
+
+// GetBuildEnv mocks base method.
+func (m *MockProvider) GetBuildEnv(key string) (string, bool) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetBuildEnv", key)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(bool)
+	return ret0, ret1
+}
+
+// GetBuildEnv indicates an expected call of GetBuildEnv.
+func (mr *MockProviderMockRecorder) GetBuildEnv(key any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetBuildEnv", reflect.TypeOf((*MockProvider)(nil).GetBuildEnv), key)
+}
+
 // GetCACert mocks base method.
 func (m *MockProvider) GetCACert() (string, bool, bool) {
 	m.ctrl.T.Helper()
@@ -102,6 +131,20 @@ func (mr *MockProviderMockRecorder) LoadOrCreateConfig() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadOrCreateConfig", reflect.TypeOf((*MockProvider)(nil).LoadOrCreateConfig))
 }
 
+// SetBuildEnv mocks base method.
+func (m *MockProvider) SetBuildEnv(key, value string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetBuildEnv", key, value)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetBuildEnv indicates an expected call of SetBuildEnv.
+func (mr *MockProviderMockRecorder) SetBuildEnv(key, value any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetBuildEnv", reflect.TypeOf((*MockProvider)(nil).SetBuildEnv), key, value)
+}
+
 // SetCACert mocks base method.
 func (m *MockProvider) SetCACert(certPath string) error {
 	m.ctrl.T.Helper()
@@ -156,6 +199,34 @@ func (m *MockProvider) SetRegistryURL(registryURL string, allowPrivateRegistryIp
 func (mr *MockProviderMockRecorder) SetRegistryURL(registryURL, allowPrivateRegistryIp any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetRegistryURL", reflect.TypeOf((*MockProvider)(nil).SetRegistryURL), registryURL, allowPrivateRegistryIp)
+}
+
+// UnsetAllBuildEnv mocks base method.
+func (m *MockProvider) UnsetAllBuildEnv() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UnsetAllBuildEnv")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UnsetAllBuildEnv indicates an expected call of UnsetAllBuildEnv.
+func (mr *MockProviderMockRecorder) UnsetAllBuildEnv() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnsetAllBuildEnv", reflect.TypeOf((*MockProvider)(nil).UnsetAllBuildEnv))
+}
+
+// UnsetBuildEnv mocks base method.
+func (m *MockProvider) UnsetBuildEnv(key string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UnsetBuildEnv", key)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UnsetBuildEnv indicates an expected call of UnsetBuildEnv.
+func (mr *MockProviderMockRecorder) UnsetBuildEnv(key any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnsetBuildEnv", reflect.TypeOf((*MockProvider)(nil).UnsetBuildEnv), key)
 }
 
 // UnsetCACert mocks base method.

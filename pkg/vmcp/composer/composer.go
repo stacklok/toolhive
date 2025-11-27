@@ -337,8 +337,31 @@ type WorkflowContext struct {
 	// and does not require synchronization. Steps should not modify this map during execution.
 	Variables map[string]any
 
-	// mu protects concurrent access to Steps map during parallel execution.
+	// Workflow contains workflow-level metadata (ID, start time, step count, status).
+	// Access must be synchronized using mu.
+	Workflow *WorkflowMetadata
+
+	// mu protects concurrent access to Steps map and Workflow metadata during parallel execution.
 	mu sync.RWMutex
+}
+
+// WorkflowMetadata contains workflow-level metadata available in templates.
+type WorkflowMetadata struct {
+	// ID is the unique workflow execution ID.
+	ID string
+
+	// StartTime is when the workflow started execution.
+	StartTime time.Time
+
+	// StepCount is the number of steps executed so far.
+	StepCount int
+
+	// Status is the current workflow status.
+	Status WorkflowStatusType
+
+	// DurationMs is the workflow duration in milliseconds.
+	// This is calculated dynamically at template expansion time.
+	DurationMs int64
 }
 
 // WorkflowStateStore manages workflow execution state.

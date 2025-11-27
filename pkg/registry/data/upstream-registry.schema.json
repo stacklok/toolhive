@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
+  "title": "ToolHive Registry Schema",
+  "description": "Schema for ToolHive registry format using official MCP server schema",
+  "type": "object",
+  "required": [
+    "version",
+    "meta",
+    "data"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri",
+      "description": "JSON Schema URI for this registry format"
+    },
+    "version": {
+      "type": "string",
+      "description": "Schema version of the registry",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "example": "1.0.0"
+    },
+    "meta": {
+      "type": "object",
+      "required": [
+        "last_updated"
+      ],
+      "properties": {
+        "last_updated": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the registry was last updated, in RFC3339 format",
+          "example": "2024-01-15T10:30:00Z"
+        }
+      }
+    },
+    "data": {
+      "type": "object",
+      "required": [
+        "servers"
+      ],
+      "properties": {
+        "servers": {
+          "type": "array",
+          "description": "Array of MCP servers using the official MCP server schema",
+          "items": {
+            "$ref": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json"
+          }
+        },
+        "groups": {
+          "type": "array",
+          "description": "Groups of related MCP servers",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "description",
+              "servers"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Unique identifier for the group"
+              },
+              "description": {
+                "type": "string",
+                "description": "Description of the group's purpose"
+              },
+              "servers": {
+                "type": "array",
+                "description": "Array of servers in this group",
+                "items": {
+                  "$ref": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

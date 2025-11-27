@@ -34,6 +34,7 @@ type Config struct {
 	OTEL                   OpenTelemetryConfig `yaml:"otel,omitempty"`
 	DefaultGroupMigration  bool                `yaml:"default_group_migration,omitempty"`
 	DisableUsageMetrics    bool                `yaml:"disable_usage_metrics,omitempty"`
+	BuildEnv               map[string]string   `yaml:"build_env,omitempty"`
 }
 
 // Secrets contains the settings for secrets management.

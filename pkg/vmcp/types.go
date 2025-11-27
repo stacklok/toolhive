@@ -47,7 +47,7 @@ type BackendTarget struct {
 
 	// AuthStrategy identifies the authentication strategy for this backend.
 	// The actual authentication is handled by OutgoingAuthRegistry interface.
-	// Examples: "pass_through", "token_exchange", "client_credentials", "oauth_proxy"
+	// Examples: "unauthenticated", "header_injection", "token_exchange"
 	AuthStrategy string
 
 	// AuthMetadata contains strategy-specific authentication metadata.

@@ -274,13 +274,6 @@ func TestBackendAuthConfigTypes(t *testing.T) {
 			isValid: true,
 		},
 		{
-			name: "pass_through_auth",
-			authConfig: BackendAuthConfig{
-				Type: BackendAuthTypePassThrough,
-			},
-			isValid: true,
-		},
-		{
 			name: "external_auth_config_ref_valid",
 			authConfig: BackendAuthConfig{
 				Type: BackendAuthTypeExternalAuthConfigRef,

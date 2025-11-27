@@ -67,7 +67,7 @@ incoming_auth:
 outgoing_auth:
   source: inline
   default:
-    type: pass_through
+    type: unauthenticated
 aggregation:
   conflict_resolution: prefix
   conflict_resolution_config:

@@ -53,56 +53,74 @@ func (h *MCPRegistryTestHelper) NewRegistryBuilder(name string) *RegistryBuilder
 	}
 }
 
+// ensureRegistryConfig ensures there's at least one registry config in the array
+func (rb *RegistryBuilder) ensureRegistryConfig() {
+	if len(rb.registry.Spec.Registries) == 0 {
+		rb.registry.Spec.Registries = []mcpv1alpha1.MCPRegistryConfig{
+			{
+				Name:   "default",
+				Format: mcpv1alpha1.RegistryFormatToolHive,
+			},
+		}
+	}
+}
+
+// getCurrentRegistryConfig returns the last registry config in the array (for chaining)
+func (rb *RegistryBuilder) getCurrentRegistryConfig() *mcpv1alpha1.MCPRegistryConfig {
+	rb.ensureRegistryConfig()
+	return &rb.registry.Spec.Registries[len(rb.registry.Spec.Registries)-1]
+}
+
 // WithConfigMapSource configures the registry with a ConfigMap source
 func (rb *RegistryBuilder) WithConfigMapSource(configMapName, key string) *RegistryBuilder {
-	rb.registry.Spec.Source = mcpv1alpha1.MCPRegistrySource{
-		Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
-		Format: mcpv1alpha1.RegistryFormatToolHive,
-		ConfigMapRef: &corev1.ConfigMapKeySelector{
-			LocalObjectReference: corev1.LocalObjectReference{
-				Name: configMapName,
-			},
-			Key: key,
+	registryConfig := rb.getCurrentRegistryConfig()
+	registryConfig.ConfigMapRef = &corev1.ConfigMapKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{
+			Name: configMapName,
 		},
+		Key: key,
 	}
 	return rb
 }
 
 // WithGitSource configures the registry with a Git source
 func (rb *RegistryBuilder) WithGitSource(repository, branch, path string) *RegistryBuilder {
-	rb.registry.Spec.Source = mcpv1alpha1.MCPRegistrySource{
-		Type:   mcpv1alpha1.RegistrySourceTypeGit,
-		Format: mcpv1alpha1.RegistryFormatToolHive, // Default to ToolHive format
-		Git: &mcpv1alpha1.GitSource{
-			Repository: repository,
-			Branch:     branch,
-			Path:       path,
-		},
+	registryConfig := rb.getCurrentRegistryConfig()
+	registryConfig.Git = &mcpv1alpha1.GitSource{
+		Repository: repository,
+		Branch:     branch,
+		Path:       path,
 	}
 	return rb
 }
 
 // WithAPISource configures the registry with an API source
 func (rb *RegistryBuilder) WithAPISource(endpoint string) *RegistryBuilder {
-	rb.registry.Spec.Source = mcpv1alpha1.MCPRegistrySource{
-		Type:   mcpv1alpha1.RegistrySourceTypeAPI,
-		Format: mcpv1alpha1.RegistryFormatToolHive, // Default to ToolHive format
-		API: &mcpv1alpha1.APISource{
-			Endpoint: endpoint,
-		},
+	registryConfig := rb.getCurrentRegistryConfig()
+	registryConfig.API = &mcpv1alpha1.APISource{
+		Endpoint: endpoint,
 	}
+	return rb
+}
+
+// WithRegistryName sets the name for the current registry config
+func (rb *RegistryBuilder) WithRegistryName(name string) *RegistryBuilder {
+	registryConfig := rb.getCurrentRegistryConfig()
+	registryConfig.Name = name
 	return rb
 }
 
 // WithUpstreamFormat configures the registry to use upstream MCP format
 func (rb *RegistryBuilder) WithUpstreamFormat() *RegistryBuilder {
-	rb.registry.Spec.Source.Format = mcpv1alpha1.RegistryFormatToolHive
+	registryConfig := rb.getCurrentRegistryConfig()
+	registryConfig.Format = mcpv1alpha1.RegistryFormatToolHive
 	return rb
 }
 
-// WithSyncPolicy configures the sync policy
+// WithSyncPolicy configures the sync policy for the current registry
 func (rb *RegistryBuilder) WithSyncPolicy(interval string) *RegistryBuilder {
-	rb.registry.Spec.SyncPolicy = &mcpv1alpha1.SyncPolicy{
+	registryConfig := rb.getCurrentRegistryConfig()
+	registryConfig.SyncPolicy = &mcpv1alpha1.SyncPolicy{
 		Interval: interval,
 	}
 	return rb
@@ -126,51 +144,55 @@ func (rb *RegistryBuilder) WithLabel(key, value string) *RegistryBuilder {
 	return rb
 }
 
-// WithNameIncludeFilter sets name include patterns for filtering
+// WithNameIncludeFilter sets name include patterns for filtering on the current registry
 func (rb *RegistryBuilder) WithNameIncludeFilter(patterns []string) *RegistryBuilder {
-	if rb.registry.Spec.Filter == nil {
-		rb.registry.Spec.Filter = &mcpv1alpha1.RegistryFilter{}
+	registryConfig := rb.getCurrentRegistryConfig()
+	if registryConfig.Filter == nil {
+		registryConfig.Filter = &mcpv1alpha1.RegistryFilter{}
 	}
-	if rb.registry.Spec.Filter.NameFilters == nil {
-		rb.registry.Spec.Filter.NameFilters = &mcpv1alpha1.NameFilter{}
+	if registryConfig.Filter.NameFilters == nil {
+		registryConfig.Filter.NameFilters = &mcpv1alpha1.NameFilter{}
 	}
-	rb.registry.Spec.Filter.NameFilters.Include = patterns
+	registryConfig.Filter.NameFilters.Include = patterns
 	return rb
 }
 
-// WithNameExcludeFilter sets name exclude patterns for filtering
+// WithNameExcludeFilter sets name exclude patterns for filtering on the current registry
 func (rb *RegistryBuilder) WithNameExcludeFilter(patterns []string) *RegistryBuilder {
-	if rb.registry.Spec.Filter == nil {
-		rb.registry.Spec.Filter = &mcpv1alpha1.RegistryFilter{}
+	registryConfig := rb.getCurrentRegistryConfig()
+	if registryConfig.Filter == nil {
+		registryConfig.Filter = &mcpv1alpha1.RegistryFilter{}
 	}
-	if rb.registry.Spec.Filter.NameFilters == nil {
-		rb.registry.Spec.Filter.NameFilters = &mcpv1alpha1.NameFilter{}
+	if registryConfig.Filter.NameFilters == nil {
+		registryConfig.Filter.NameFilters = &mcpv1alpha1.NameFilter{}
 	}
-	rb.registry.Spec.Filter.NameFilters.Exclude = patterns
+	registryConfig.Filter.NameFilters.Exclude = patterns
 	return rb
 }
 
-// WithTagIncludeFilter sets tag include patterns for filtering
+// WithTagIncludeFilter sets tag include patterns for filtering on the current registry
 func (rb *RegistryBuilder) WithTagIncludeFilter(tags []string) *RegistryBuilder {
-	if rb.registry.Spec.Filter == nil {
-		rb.registry.Spec.Filter = &mcpv1alpha1.RegistryFilter{}
+	registryConfig := rb.getCurrentRegistryConfig()
+	if registryConfig.Filter == nil {
+		registryConfig.Filter = &mcpv1alpha1.RegistryFilter{}
 	}
-	if rb.registry.Spec.Filter.Tags == nil {
-		rb.registry.Spec.Filter.Tags = &mcpv1alpha1.TagFilter{}
+	if registryConfig.Filter.Tags == nil {
+		registryConfig.Filter.Tags = &mcpv1alpha1.TagFilter{}
 	}
-	rb.registry.Spec.Filter.Tags.Include = tags
+	registryConfig.Filter.Tags.Include = tags
 	return rb
 }
 
-// WithTagExcludeFilter sets tag exclude patterns for filtering
+// WithTagExcludeFilter sets tag exclude patterns for filtering on the current registry
 func (rb *RegistryBuilder) WithTagExcludeFilter(tags []string) *RegistryBuilder {
-	if rb.registry.Spec.Filter == nil {
-		rb.registry.Spec.Filter = &mcpv1alpha1.RegistryFilter{}
+	registryConfig := rb.getCurrentRegistryConfig()
+	if registryConfig.Filter == nil {
+		registryConfig.Filter = &mcpv1alpha1.RegistryFilter{}
 	}
-	if rb.registry.Spec.Filter.Tags == nil {
-		rb.registry.Spec.Filter.Tags = &mcpv1alpha1.TagFilter{}
+	if registryConfig.Filter.Tags == nil {
+		registryConfig.Filter.Tags = &mcpv1alpha1.TagFilter{}
 	}
-	rb.registry.Spec.Filter.Tags.Exclude = tags
+	registryConfig.Filter.Tags.Exclude = tags
 	return rb
 }
 

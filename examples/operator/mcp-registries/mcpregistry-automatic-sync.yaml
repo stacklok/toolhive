@@ -230,20 +230,20 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Auto-Sync MCP Server Registry"
-  source:
-    type: configmap
-    format: toolhive
-    configMapRef:
-      name: auto-sync-registry-data
-      key: registry.json
-  syncPolicy:
-    interval: "30m"  # Automatically sync every 30 minutes
-  filter:
-    tags:
-      include:
-        - "database"    # Only database servers
-        - "production"  # Only production-ready servers
-      exclude:
-        - "experimental"  # Exclude experimental servers
-        - "deprecated"    # Exclude deprecated servers
-        - "beta"          # Exclude beta versions
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: auto-sync-registry-data
+        key: registry.json
+      syncPolicy:
+        interval: "30m"  # Automatically sync every 30 minutes
+      filter:
+        tags:
+          include:
+            - "database"    # Only database servers
+            - "production"  # Only production-ready servers
+          exclude:
+            - "experimental"  # Exclude experimental servers
+            - "deprecated"    # Exclude deprecated servers
+            - "beta"          # Exclude beta versions

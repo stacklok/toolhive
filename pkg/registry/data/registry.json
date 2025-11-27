@@ -1,7 +1,7 @@
 {
-  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-25T00:17:27Z",
+  "last_updated": "2025-11-27T00:17:56Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -365,7 +365,7 @@
         "server",
         "data-center"
       ],
-      "image": "ghcr.io/sooperset/mcp-atlassian:0.11.9",
+      "image": "ghcr.io/sooperset/mcp-atlassian:0.11.10",
       "permissions": {
         "network": {
           "outbound": {
@@ -815,7 +815,7 @@
         "database",
         "storage"
       ],
-      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:1.0.0",
+      "image": "mcr.microsoft.com/azure-sdk/azure-mcp:1.0.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -967,9 +967,9 @@
         "browserbase_stagehand_observe"
       ],
       "metadata": {
-        "stars": 2757,
+        "stars": 2849,
         "pulls": 133,
-        "last_updated": "2025-11-01T02:32:39Z"
+        "last_updated": "2025-11-26T02:34:00Z"
       },
       "repository_url": "https://github.com/browserbase/mcp-server-browserbase",
       "tags": [
@@ -1321,7 +1321,7 @@
         "documentation",
         "code-examples"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.29",
+      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.30",
       "permissions": {
         "network": {
           "outbound": {
@@ -2081,7 +2081,7 @@
         "update",
         "issues"
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.22.0",
+      "image": "ghcr.io/github/github-mcp-server:v0.23.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -2515,7 +2515,7 @@
       "metadata": {
         "stars": 369,
         "pulls": 109,
-        "last_updated": "2025-11-01T02:32:38Z"
+        "last_updated": "2025-11-26T02:33:59Z"
       },
       "repository_url": "https://github.com/graphlit/graphlit-mcp-server",
       "tags": [
@@ -2525,7 +2525,7 @@
         "ingestion",
         "data-connectors"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20251007001",
+      "image": "ghcr.io/stacklok/dockyard/npx/graphlit-mcp-server:1.0.20251122001",
       "permissions": {
         "network": {
           "outbound": {
@@ -2904,9 +2904,9 @@
         "dbg_enable_breakpoint"
       ],
       "metadata": {
-        "stars": 4063,
+        "stars": 4350,
         "pulls": 99,
-        "last_updated": "2025-10-30T02:32:41Z"
+        "last_updated": "2025-11-25T02:33:25Z"
       },
       "repository_url": "https://github.com/mrexodia/ida-pro-mcp",
       "tags": [
@@ -3211,9 +3211,9 @@
         "refine_ui"
       ],
       "metadata": {
-        "stars": 3861,
+        "stars": 3956,
         "pulls": 128,
-        "last_updated": "2025-10-31T02:32:12Z"
+        "last_updated": "2025-11-25T02:33:25Z"
       },
       "repository_url": "https://github.com/21st-dev/magic-mcp",
       "tags": [
@@ -3267,9 +3267,9 @@
         "run_chdb_select_query"
       ],
       "metadata": {
-        "stars": 576,
+        "stars": 599,
         "pulls": 81,
-        "last_updated": "2025-10-31T02:32:13Z"
+        "last_updated": "2025-11-25T02:33:27Z"
       },
       "repository_url": "https://github.com/ClickHouse/mcp-clickhouse",
       "tags": [
@@ -3357,9 +3357,9 @@
         "dynamic_tools_from_ide"
       ],
       "metadata": {
-        "stars": 924,
+        "stars": 931,
         "pulls": 77,
-        "last_updated": "2025-10-31T02:32:12Z"
+        "last_updated": "2025-11-25T02:33:26Z"
       },
       "repository_url": "https://github.com/JetBrains/mcp-jetbrains",
       "tags": [
@@ -3419,9 +3419,9 @@
         "enable_features"
       ],
       "metadata": {
-        "stars": 773,
+        "stars": 818,
         "pulls": 141,
-        "last_updated": "2025-10-31T02:32:12Z"
+        "last_updated": "2025-11-25T02:33:26Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -3486,9 +3486,9 @@
         "write_neo4j_cypher"
       ],
       "metadata": {
-        "stars": 773,
+        "stars": 821,
         "pulls": 91,
-        "last_updated": "2025-10-31T02:32:13Z"
+        "last_updated": "2025-11-26T02:33:59Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -3563,9 +3563,9 @@
         "list_memories"
       ],
       "metadata": {
-        "stars": 777,
+        "stars": 821,
         "pulls": 105,
-        "last_updated": "2025-11-01T02:32:38Z"
+        "last_updated": "2025-11-26T02:34:00Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -4488,7 +4488,7 @@
         "evaluation",
         "ai"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.23",
+      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.27",
       "permissions": {
         "network": {
           "outbound": {
@@ -4922,7 +4922,7 @@
         "error-tracking",
         "observability"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.23.0",
+      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.23.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -4997,6 +4997,98 @@
           "outbound": {}
         }
       }
+    },
+    "sonarqube": {
+      "description": "Integration with SonarQube Server or Cloud for code quality and security analysis.",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "stdio",
+      "tools": [
+        "analyze_code_snippet",
+        "analyze_file_list",
+        "change_sonar_issue_status",
+        "create_webhook",
+        "get_component_measures",
+        "get_project_quality_gate_status",
+        "get_raw_source",
+        "get_scm_info",
+        "get_system_health",
+        "get_system_info",
+        "get_system_logs",
+        "get_system_status",
+        "list_enterprises",
+        "list_languages",
+        "list_portfolios",
+        "list_quality_gates",
+        "list_rule_repositories",
+        "list_webhooks",
+        "ping_system",
+        "search_dependency_risks",
+        "search_metrics",
+        "search_my_sonarqube_projects",
+        "search_sonar_issues_in_projects",
+        "show_rule",
+        "toggle_automatic_analysis"
+      ],
+      "metadata": {
+        "stars": 183,
+        "pulls": 0,
+        "last_updated": "2025-11-26T19:14:14Z"
+      },
+      "repository_url": "https://github.com/SonarSource/sonarqube-mcp-server",
+      "tags": [
+        "sonarqube",
+        "code-quality",
+        "security",
+        "analysis",
+        "quality-gates",
+        "sast",
+        "sca",
+        "software-composition-analysis",
+        "secrets-detection",
+        "iac-scanning",
+        "code-coverage",
+        "code-smells"
+      ],
+      "image": "docker.io/mcp/sonarqube:latest",
+      "permissions": {
+        "network": {
+          "outbound": {
+            "insecure_allow_all": true,
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "env_vars": [
+        {
+          "name": "SONARQUBE_TOKEN",
+          "description": "SonarQube user auth token with necessary scopes",
+          "required": true,
+          "secret": true
+        },
+        {
+          "name": "SONARQUBE_URL",
+          "description": "SonarQube Server base URL (required for self-hosted instances)",
+          "required": false
+        },
+        {
+          "name": "SONARQUBE_ORG",
+          "description": "SonarQube Cloud organization key (required for SonarQube Cloud)",
+          "required": false
+        },
+        {
+          "name": "SONARQUBE_TOOLSETS",
+          "description": "Comma-separated list of toolsets to enable (e.g., analysis,issues,quality-gates - see docs)",
+          "required": false
+        },
+        {
+          "name": "SONARQUBE_READ_ONLY",
+          "description": "Set to \"true\" to disable all write operations",
+          "required": false
+        }
+      ]
     },
     "sqlite": {
       "description": "Provides tools and resources for querying SQLite databases.",
@@ -5370,6 +5462,53 @@
           "outbound": {}
         }
       }
+    },
+    "toolhive-doc-mcp": {
+      "description": "MCP server for semantic search over Stacklok documentation using vector embeddings",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "query_docs",
+        "get_chunk"
+      ],
+      "repository_url": "https://github.com/stacklok/toolhive-doc-mcp",
+      "tags": [
+        "documentation",
+        "search",
+        "semantic-search",
+        "stacklok",
+        "toolhive",
+        "vector-embeddings"
+      ],
+      "image": "ghcr.io/stackloklabs/toolhive-doc-mcp:v0.0.5",
+      "target_port": 8080,
+      "env_vars": [
+        {
+          "name": "OTEL_ENABLED",
+          "description": "Enable/disable OpenTelemetry logging",
+          "required": false,
+          "default": "true"
+        },
+        {
+          "name": "OTEL_ENDPOINT",
+          "description": "OpenTelemetry collector endpoint",
+          "required": false,
+          "default": "http://otel-collector.otel.svc.cluster.local:4318"
+        },
+        {
+          "name": "OTEL_SERVICE_NAME",
+          "description": "Service name for telemetry",
+          "required": false,
+          "default": "toolhive-doc-mcp"
+        },
+        {
+          "name": "OTEL_SERVICE_VERSION",
+          "description": "Service version for telemetry",
+          "required": false,
+          "default": "1.0.0"
+        }
+      ]
     }
   },
   "remote_servers": {
@@ -5859,7 +5998,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-10-31T22:51:30Z"
+        "last_updated": "2025-11-26T02:33:59Z"
       },
       "tags": [
         "remote",
@@ -6297,6 +6436,37 @@
         "homepage": "https://docs.stripe.com/mcp"
       },
       "url": "https://mcp.stripe.com"
+    },
+    "toolhive-doc-mcp-remote": {
+      "description": "Remote MCP server for semantic search over Stacklok documentation using vector embeddings",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "streamable-http",
+      "tools": [
+        "query_docs",
+        "get_chunk"
+      ],
+      "metadata": {
+        "stars": 0,
+        "pulls": 0,
+        "last_updated": "2025-11-26T00:00:00Z"
+      },
+      "repository_url": "https://github.com/stacklok/toolhive-doc-mcp",
+      "tags": [
+        "remote",
+        "documentation",
+        "search",
+        "semantic-search",
+        "stacklok",
+        "toolhive",
+        "vector-embeddings"
+      ],
+      "custom_metadata": {
+        "author": "Stacklok",
+        "homepage": "https://github.com/stacklok/toolhive-doc-mcp",
+        "license": "Apache-2.0"
+      },
+      "url": "https://toolhive-doc-mcp.stacklok.dev"
     },
     "vercel": {
       "description": "Vercel's official remote MCP server for deployment platform and project management",

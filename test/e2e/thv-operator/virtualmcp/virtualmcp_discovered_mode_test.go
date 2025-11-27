@@ -337,13 +337,20 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			if targetToolName != "" {
 				GinkgoWriter.Printf("Testing tool call for: %s\n", targetToolName)
 
+				// Use a standard timeout for the tool call
+				toolCallCtx, toolCallCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer toolCallCancel()
+
 				callRequest := mcp.CallToolRequest{}
 				callRequest.Params.Name = targetToolName
 				callRequest.Params.Arguments = map[string]any{
-					"url": "https://example.com",
+					// Use localhost to avoid external network dependencies
+					// The test validates that VirtualMCPServer can route tool calls to backends,
+					// not that the fetch tool itself works (that's tested in the backend's own tests)
+					"url": "http://127.0.0.1:1",
 				}
 
-				result, err := mcpClient.CallTool(ctx, callRequest)
+				result, err := mcpClient.CallTool(toolCallCtx, callRequest)
 				Expect(err).ToNot(HaveOccurred(),
 					fmt.Sprintf("Should be able to call tool '%s' through VirtualMCPServer", targetToolName))
 				Expect(result).ToNot(BeNil())

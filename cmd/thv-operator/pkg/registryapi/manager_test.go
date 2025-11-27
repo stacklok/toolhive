@@ -78,18 +78,20 @@ func TestReconcileAPIService(t *testing.T) {
 				Namespace: "test-namespace",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Source: mcpv1alpha1.MCPRegistrySource{
-					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
-					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMapRef: &corev1.ConfigMapKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: "test-configmap",
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "default",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
 						},
-						Key: "registry.json",
+						SyncPolicy: &mcpv1alpha1.SyncPolicy{
+							Interval: "10m",
+						},
 					},
-				},
-				SyncPolicy: &mcpv1alpha1.SyncPolicy{
-					Interval: "10m",
 				},
 			},
 		}
@@ -153,12 +155,20 @@ func TestReconcileAPIService(t *testing.T) {
 				Namespace: "test-namespace",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Source: mcpv1alpha1.MCPRegistrySource{
-					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
-					Format: mcpv1alpha1.RegistryFormatToolHive,
-				},
-				SyncPolicy: &mcpv1alpha1.SyncPolicy{
-					Interval: "10m",
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "default",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+						SyncPolicy: &mcpv1alpha1.SyncPolicy{
+							Interval: "10m",
+						},
+					},
 				},
 			},
 		}
@@ -207,18 +217,20 @@ func TestReconcileAPIService(t *testing.T) {
 				Namespace: "test-namespace",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Source: mcpv1alpha1.MCPRegistrySource{
-					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
-					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMapRef: &corev1.ConfigMapKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: "test-configmap",
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "default",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
 						},
-						Key: "registry.json",
+						SyncPolicy: &mcpv1alpha1.SyncPolicy{
+							Interval: "10m",
+						},
 					},
-				},
-				SyncPolicy: &mcpv1alpha1.SyncPolicy{
-					Interval: "10m",
 				},
 			},
 		}

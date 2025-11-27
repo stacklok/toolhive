@@ -138,6 +138,33 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 			expectError: true,
 		},
 		{
+			name: "header injection",
+			externalAuthConfig: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "header-auth",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
+					HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+						HeaderName: "X-API-Key",
+						ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: "api-key-secret",
+							Key:  "api-key",
+						},
+					},
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, strategy *vmcpconfig.BackendAuthStrategy) {
+				t.Helper()
+				assert.Equal(t, "header_injection", strategy.Type)
+				assert.Equal(t, "X-API-Key", strategy.Metadata["header_name"])
+				// Note: header_value is resolved at runtime via ResolveSecrets, not in ConfigMap mode
+				// For ConfigMap mode, we'd need to use header_value_env, but that's not implemented yet
+			},
+		},
+		{
 			name: "unsupported auth type",
 			externalAuthConfig: &mcpv1alpha1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
@@ -275,7 +302,10 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 						Source: "mixed",
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 							"backend-1": {
-								Type: mcpv1alpha1.BackendAuthTypePassThrough,
+								Type: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
+								ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+									Name: "auth-config-override",
+								},
 							},
 						},
 					},
@@ -332,15 +362,29 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 						},
 					},
 				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "auth-config-override",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+						Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+						TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+							TokenURL: "https://oauth-override.example.com/token",
+							Audience: "backend-service-override",
+						},
+					},
+				},
 			},
 			workloadNames: []string{"backend-1", "backend-2"},
 			expectError:   false,
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				assert.Equal(t, "mixed", config.Source)
-				// backend-1 should use inline override (pass_through), not discovered
+				// backend-1 should use inline override, not discovered
 				assert.Contains(t, config.Backends, "backend-1")
-				assert.Equal(t, mcpv1alpha1.BackendAuthTypePassThrough, config.Backends["backend-1"].Type)
+				assert.Equal(t, "token_exchange", config.Backends["backend-1"].Type)
+				assert.Equal(t, "https://oauth-override.example.com/token", config.Backends["backend-1"].Metadata["token_url"])
 				// backend-2 should use discovered config
 				assert.Contains(t, config.Backends, "backend-2")
 				assert.Equal(t, "token_exchange", config.Backends["backend-2"].Type)
@@ -359,7 +403,10 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 						Source: "inline",
 						Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 							"backend-1": {
-								Type: mcpv1alpha1.BackendAuthTypePassThrough,
+								Type: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
+								ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+									Name: "auth-config-1",
+								},
 							},
 						},
 					},
@@ -400,7 +447,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 				assert.Equal(t, "inline", config.Source)
 				// Only inline config should be present
 				assert.Contains(t, config.Backends, "backend-1")
-				assert.Equal(t, mcpv1alpha1.BackendAuthTypePassThrough, config.Backends["backend-1"].Type)
+				assert.Equal(t, "token_exchange", config.Backends["backend-1"].Type)
 			},
 		},
 		{
@@ -415,7 +462,25 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 						Source: "discovered",
 						Default: &mcpv1alpha1.BackendAuthConfig{
-							Type: mcpv1alpha1.BackendAuthTypePassThrough,
+							Type: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
+							ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+								Name: "default-auth-config",
+							},
+						},
+					},
+				},
+			},
+			authConfigs: []mcpv1alpha1.MCPExternalAuthConfig{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "default-auth-config",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+						Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+						TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+							TokenURL: "https://oauth.example.com/token",
+							Audience: "backend-service",
 						},
 					},
 				},
@@ -425,7 +490,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
 				assert.NotNil(t, config.Default)
-				assert.Equal(t, mcpv1alpha1.BackendAuthTypePassThrough, config.Default.Type)
+				assert.Equal(t, "token_exchange", config.Default.Type)
 			},
 		},
 		{
@@ -588,14 +653,15 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 		validate    func(*testing.T, *vmcpconfig.BackendAuthStrategy)
 	}{
 		{
-			name: "pass_through type",
+			name: "discovered type (no conversion needed)",
 			crdConfig: &mcpv1alpha1.BackendAuthConfig{
-				Type: mcpv1alpha1.BackendAuthTypePassThrough,
+				Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 			},
 			expectError: false,
 			validate: func(t *testing.T, strategy *vmcpconfig.BackendAuthStrategy) {
 				t.Helper()
-				assert.Equal(t, mcpv1alpha1.BackendAuthTypePassThrough, strategy.Type)
+				// discovered type is not converted - it's handled at discovery time
+				assert.Equal(t, mcpv1alpha1.BackendAuthTypeDiscovered, strategy.Type)
 				assert.Empty(t, strategy.Metadata)
 			},
 		},

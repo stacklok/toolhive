@@ -90,7 +90,7 @@ spec:
   outgoingAuth:
     source: discovered
     default:
-      type: pass_through
+      type: discovered
 ```
 
 **Example (inline mode)**:
@@ -119,7 +119,7 @@ spec:
   outgoingAuth:
     source: mixed
     default:
-      type: pass_through
+      type: discovered
     backends:
       # Override specific backends while others use discovery
       slack:
@@ -139,10 +139,7 @@ spec:
 **Fields**:
 - `type` (string, required): Authentication type
   - `discovered`: Automatically discover from backend
-  - `pass_through`: Forward client token unchanged
-  - `service_account`: Use service account credentials
   - `external_auth_config_ref`: Reference an MCPExternalAuthConfig resource
-- `serviceAccount` (ServiceAccountAuth, optional): Service account configuration (when type=service_account)
 - `externalAuthConfigRef` (ExternalAuthConfigRef, optional): Auth config reference (when type=external_auth_config_ref)
 
 ### `.spec.aggregation` (optional)
@@ -440,7 +437,7 @@ spec:
   outgoingAuth:
     source: discovered
     default:
-      type: pass_through
+      type: discovered
     backends:
       slack:  # Override for specific backend
         type: service_account

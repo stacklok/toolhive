@@ -1,6 +1,6 @@
 # ToolHive Operator CRDs Helm Chart
 
-![Version: 0.0.64](https://img.shields.io/badge/Version-0.0.64-informational?style=flat-square)
+![Version: 0.0.65](https://img.shields.io/badge/Version-0.0.65-informational?style=flat-square)
 ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square)
 
 A Helm chart for installing the ToolHive Operator CRDs into Kubernetes.

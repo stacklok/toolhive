@@ -37,12 +37,13 @@ jobs:
 
       - name: Validate proposal naming
         run: |
-          # Get the list of changed files in docs/proposals
-          CHANGED_FILES=$(git diff --name-only --diff-filter A origin/${{ github.base_ref }}...HEAD | grep '^docs/proposals/')
+          # Get the list of NEW files added in docs/proposals (not modifications to existing files)
+          CHANGED_FILES=$(git diff --name-only --diff-filter=A origin/${{ github.base_ref }}...HEAD | grep '^docs/proposals/' || true)
 
-          # This is here to avoid errors when running this workflow manually without a PR
+          # Skip validation if no new proposal files are being added
+          # (modifications to existing proposals don't need naming validation)
           if [ -z "$CHANGED_FILES" ]; then
-            echo "ℹ️ No proposal files changed in this PR"
+            echo "ℹ️ No new proposal files added in this PR (only modifications to existing proposals or manual trigger)"
             exit 0
           fi
 

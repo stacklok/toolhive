@@ -68,8 +68,8 @@ type GroupRef struct {
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
 type IncomingAuthConfig struct {
-	// Type defines the authentication type: anonymous, local, or oidc
-	// +kubebuilder:validation:Enum=anonymous;local;oidc
+	// Type defines the authentication type: anonymous or oidc
+	// +kubebuilder:validation:Enum=anonymous;oidc
 	// +optional
 	Type string `json:"type,omitempty"`
 

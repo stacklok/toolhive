@@ -447,7 +447,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type defines the authentication type: anonymous, local, or oidc |  | Enum: [anonymous local oidc] <br /> |
+| `type` _string_ | Type defines the authentication type: anonymous or oidc |  | Enum: [anonymous oidc] <br /> |
 | `oidcConfig` _[OIDCConfigRef](#oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration<br />Reuses MCPServer OIDC patterns |  |  |
 | `authzConfig` _[AuthzConfigRef](#authzconfigref)_ | AuthzConfig defines authorization policy configuration<br />Reuses MCPServer authz patterns |  |  |
 

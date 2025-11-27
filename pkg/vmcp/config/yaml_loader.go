@@ -158,12 +158,12 @@ type rawOperational struct {
 }
 
 type rawCompositeTool struct {
-	Name        string                    `yaml:"name"`
-	Description string                    `yaml:"description"`
-	Parameters  map[string]map[string]any `yaml:"parameters"`
-	Timeout     string                    `yaml:"timeout"`
-	Steps       []*rawWorkflowStep        `yaml:"steps"`
-	Output      *rawOutputConfig          `yaml:"output"`
+	Name        string             `yaml:"name"`
+	Description string             `yaml:"description"`
+	Parameters  map[string]any     `yaml:"parameters"` // Full JSON Schema format
+	Timeout     string             `yaml:"timeout"`
+	Steps       []*rawWorkflowStep `yaml:"steps"`
+	Output      *rawOutputConfig   `yaml:"output"`
 }
 
 type rawWorkflowStep struct {
@@ -526,27 +526,15 @@ func (l *YAMLLoader) transformCompositeTools(raw []*rawCompositeTool) ([]*Compos
 		tool := &CompositeToolConfig{
 			Name:        rawTool.Name,
 			Description: rawTool.Description,
-			Parameters:  make(map[string]ParameterSchema),
+			Parameters:  rawTool.Parameters, // Pass through JSON Schema directly
 			Timeout:     Duration(timeout),
 		}
 
-		// Transform parameters
-		for name, paramMap := range rawTool.Parameters {
-			typeVal, ok := paramMap["type"]
-			if !ok {
-				return nil, fmt.Errorf("tool %s, parameter %s: missing 'type' field", rawTool.Name, name)
+		// Validate parameters is valid JSON Schema if present
+		if len(rawTool.Parameters) > 0 {
+			if err := validateParametersJSONSchema(rawTool.Parameters, rawTool.Name); err != nil {
+				return nil, err
 			}
-			typeStr, ok := typeVal.(string)
-			if !ok {
-				return nil, fmt.Errorf("tool %s, parameter %s: 'type' field must be a string", rawTool.Name, name)
-			}
-			param := ParameterSchema{
-				Type: typeStr,
-			}
-			if def, ok := paramMap["default"]; ok {
-				param.Default = def
-			}
-			tool.Parameters[name] = param
 		}
 
 		// Transform steps
@@ -672,4 +660,53 @@ func transformOutputProperty(raw *rawOutputProperty) (OutputProperty, error) {
 	}
 
 	return prop, nil
+}
+
+// validateParametersJSONSchema validates that parameters follows JSON Schema format.
+// Per MCP specification, parameters should be a JSON Schema object with type "object".
+//
+// We enforce type="object" because MCP tools use named parameters (inputSchema.properties),
+// and non-object types (e.g., type="string") would mean a tool takes a single unnamed value,
+// which doesn't align with how MCP tool arguments work. The MCP SDK and specification
+// expect tools to have named parameters accessible via inputSchema.properties.
+func validateParametersJSONSchema(params map[string]any, toolName string) error {
+	if len(params) == 0 {
+		return nil
+	}
+
+	// Check if it has "type" field
+	typeVal, hasType := params["type"]
+	if !hasType {
+		return fmt.Errorf("tool %s: parameters must have 'type' field (should be 'object' for JSON Schema)", toolName)
+	}
+
+	// Type must be a string
+	typeStr, ok := typeVal.(string)
+	if !ok {
+		return fmt.Errorf("tool %s: parameters 'type' field must be a string", toolName)
+	}
+
+	// Type should be "object" for parameter schemas
+	if typeStr != "object" {
+		return fmt.Errorf("tool %s: parameters 'type' must be 'object' (got '%s')", toolName, typeStr)
+	}
+
+	// If properties exist, validate it's a map
+	if properties, hasProps := params["properties"]; hasProps {
+		if _, ok := properties.(map[string]any); !ok {
+			return fmt.Errorf("tool %s: parameters 'properties' must be an object", toolName)
+		}
+	}
+
+	// If required exists, validate it's an array
+	if required, hasRequired := params["required"]; hasRequired {
+		if _, ok := required.([]any); !ok {
+			// Also accept []string which may come from YAML
+			if _, ok := required.([]string); !ok {
+				return fmt.Errorf("tool %s: parameters 'required' must be an array", toolName)
+			}
+		}
+	}
+
+	return nil
 }

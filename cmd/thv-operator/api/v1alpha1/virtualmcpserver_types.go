@@ -185,9 +185,22 @@ type CompositeToolSpec struct {
 	// +kubebuilder:validation:Required
 	Description string `json:"description"`
 
-	// Parameters defines the input parameters for the composite tool
+	// Parameters defines the input parameter schema in JSON Schema format.
+	// Should be a JSON Schema object with "type": "object" and "properties".
+	// Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
+	// Example:
+	//   {
+	//     "type": "object",
+	//     "properties": {
+	//       "param1": {"type": "string", "default": "value"},
+	//       "param2": {"type": "integer"}
+	//     },
+	//     "required": ["param2"]
+	//   }
 	// +optional
-	Parameters map[string]ParameterSpec `json:"parameters,omitempty"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	Parameters *runtime.RawExtension `json:"parameters,omitempty"`
 
 	// Steps defines the workflow steps
 	// +kubebuilder:validation:Required
@@ -198,26 +211,6 @@ type CompositeToolSpec struct {
 	// +kubebuilder:default="30m"
 	// +optional
 	Timeout string `json:"timeout,omitempty"`
-}
-
-// ParameterSpec defines a parameter for a composite tool
-type ParameterSpec struct {
-	// Type is the parameter type (string, integer, boolean, etc.)
-	// +kubebuilder:validation:Required
-	Type string `json:"type"`
-
-	// Description describes the parameter
-	// +optional
-	Description string `json:"description,omitempty"`
-
-	// Default is the default value for the parameter
-	// +optional
-	Default string `json:"default,omitempty"`
-
-	// Required indicates if the parameter is required
-	// +kubebuilder:default=false
-	// +optional
-	Required bool `json:"required,omitempty"`
 }
 
 // WorkflowStep defines a step in a composite tool workflow

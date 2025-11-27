@@ -210,7 +210,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the name of the composite tool |  | Required: \{\} <br /> |
 | `description` _string_ | Description describes the composite tool |  | Required: \{\} <br /> |
-| `parameters` _object (keys:string, values:[ParameterSpec](#parameterspec))_ | Parameters defines the input parameters for the composite tool |  |  |
+| `parameters` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Parameters defines the input parameter schema in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Per MCP specification, this should follow standard JSON Schema for tool inputSchema.<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \} |  | Type: object <br /> |
 | `steps` _[WorkflowStep](#workflowstep) array_ | Steps defines the workflow steps |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `timeout` _string_ | Timeout is the maximum execution time for the composite tool | 30m |  |
 
@@ -1322,26 +1322,6 @@ _Appears in:_
 | `backends` _object (keys:string, values:[BackendAuthConfig](#backendauthconfig))_ | Backends defines per-backend authentication overrides<br />Works in all modes (discovered, inline, mixed) |  |  |
 
 
-#### ParameterSpec
-
-
-
-ParameterSpec defines a parameter for a composite tool
-
-
-
-_Appears in:_
-- [CompositeToolSpec](#compositetoolspec)
-- [VirtualMCPCompositeToolDefinitionSpec](#virtualmcpcompositetooldefinitionspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `type` _string_ | Type is the parameter type (string, integer, boolean, etc.) |  | Required: \{\} <br /> |
-| `description` _string_ | Description describes the parameter |  |  |
-| `default` _string_ | Default is the default value for the parameter |  |  |
-| `required` _boolean_ | Required indicates if the parameter is required | false |  |
-
-
 #### PermissionProfileRef
 
 
@@ -1852,7 +1832,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the workflow name exposed as a composite tool |  | MaxLength: 64 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$` <br />Required: \{\} <br /> |
 | `description` _string_ | Description is a human-readable description of the workflow |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `parameters` _object (keys:string, values:[ParameterSpec](#parameterspec))_ | Parameters defines the input parameter schema for the workflow<br />Each key is a parameter name, each value is the parameter specification |  |  |
+| `parameters` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Parameters defines the input parameter schema for the workflow in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Per MCP specification, this should follow standard JSON Schema for tool inputSchema.<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \} |  | Type: object <br /> |
 | `steps` _[WorkflowStep](#workflowstep) array_ | Steps defines the workflow step definitions<br />Steps are executed sequentially in Phase 1<br />Phase 2 will support DAG execution via dependsOn |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `timeout` _string_ | Timeout is the overall workflow timeout<br />Defaults to 30m if not specified | 30m | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m\|h))+$` <br /> |
 | `failureMode` _string_ | FailureMode defines the failure handling strategy<br />- abort: Stop execution on first failure (default)<br />- continue: Continue executing remaining steps | abort | Enum: [abort continue] <br /> |

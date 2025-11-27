@@ -364,3 +364,312 @@ func TestDefaultRegistryAPIPodTemplateSpec(t *testing.T) {
 	require.Len(t, pts.Spec.Containers, 1)
 	assert.Equal(t, registryAPIContainerName, pts.Spec.Containers[0].Name)
 }
+
+func TestMergePodTemplateSpecs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil user returns default", func(t *testing.T) {
+		t.Parallel()
+
+		defaultPTS := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				ServiceAccountName: "default-sa",
+			},
+		}
+
+		result := MergePodTemplateSpecs(defaultPTS, nil)
+
+		assert.Equal(t, "default-sa", result.Spec.ServiceAccountName)
+	})
+
+	t.Run("nil default returns user", func(t *testing.T) {
+		t.Parallel()
+
+		userPTS := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				ServiceAccountName: "user-sa",
+			},
+		}
+
+		result := MergePodTemplateSpecs(nil, userPTS)
+
+		assert.Equal(t, "user-sa", result.Spec.ServiceAccountName)
+	})
+
+	t.Run("both nil returns empty", func(t *testing.T) {
+		t.Parallel()
+
+		result := MergePodTemplateSpecs(nil, nil)
+
+		assert.Equal(t, corev1.PodTemplateSpec{}, result)
+	})
+
+	t.Run("user labels override defaults", func(t *testing.T) {
+		t.Parallel()
+
+		defaultPTS := &corev1.PodTemplateSpec{}
+		defaultPTS.Labels = map[string]string{
+			"app":     "default-app",
+			"version": "v1",
+		}
+
+		userPTS := &corev1.PodTemplateSpec{}
+		userPTS.Labels = map[string]string{
+			"app": "user-app",
+			"env": "prod",
+		}
+
+		result := MergePodTemplateSpecs(defaultPTS, userPTS)
+
+		assert.Equal(t, "user-app", result.Labels["app"])
+		assert.Equal(t, "v1", result.Labels["version"])
+		assert.Equal(t, "prod", result.Labels["env"])
+	})
+
+	t.Run("user service account overrides default", func(t *testing.T) {
+		t.Parallel()
+
+		defaultPTS := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				ServiceAccountName: "default-sa",
+			},
+		}
+
+		userPTS := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				ServiceAccountName: "user-sa",
+			},
+		}
+
+		result := MergePodTemplateSpecs(defaultPTS, userPTS)
+
+		assert.Equal(t, "user-sa", result.Spec.ServiceAccountName)
+	})
+
+	t.Run("user container image overrides default", func(t *testing.T) {
+		t.Parallel()
+
+		defaultPTS := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "app",
+						Image: "default-image:v1",
+					},
+				},
+			},
+		}
+
+		userPTS := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "app",
+						Image: "user-image:v2",
+					},
+				},
+			},
+		}
+
+		result := MergePodTemplateSpecs(defaultPTS, userPTS)
+
+		require.Len(t, result.Spec.Containers, 1)
+		assert.Equal(t, "user-image:v2", result.Spec.Containers[0].Image)
+	})
+
+	t.Run("user adds new container", func(t *testing.T) {
+		t.Parallel()
+
+		defaultPTS := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{Name: "app", Image: "app-image:v1"},
+				},
+			},
+		}
+
+		userPTS := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{Name: "sidecar", Image: "sidecar-image:v1"},
+				},
+			},
+		}
+
+		result := MergePodTemplateSpecs(defaultPTS, userPTS)
+
+		require.Len(t, result.Spec.Containers, 2)
+	})
+
+	t.Run("user volume overrides default with same name", func(t *testing.T) {
+		t.Parallel()
+
+		defaultPTS := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{
+						Name: "config",
+						VolumeSource: corev1.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "default-cm"},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		userPTS := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{
+						Name: "config",
+						VolumeSource: corev1.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "user-cm"},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		result := MergePodTemplateSpecs(defaultPTS, userPTS)
+
+		require.Len(t, result.Spec.Volumes, 1)
+		assert.Equal(t, "user-cm", result.Spec.Volumes[0].ConfigMap.Name)
+	})
+
+	t.Run("user tolerations override defaults", func(t *testing.T) {
+		t.Parallel()
+
+		defaultPTS := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Tolerations: []corev1.Toleration{
+					{Key: "default-key", Operator: corev1.TolerationOpExists},
+				},
+			},
+		}
+
+		userPTS := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Tolerations: []corev1.Toleration{
+					{Key: "user-key", Operator: corev1.TolerationOpEqual, Value: "value"},
+				},
+			},
+		}
+
+		result := MergePodTemplateSpecs(defaultPTS, userPTS)
+
+		require.Len(t, result.Spec.Tolerations, 1)
+		assert.Equal(t, "user-key", result.Spec.Tolerations[0].Key)
+	})
+}
+
+func TestMergeContainer(t *testing.T) {
+	t.Parallel()
+
+	t.Run("user image overrides default", func(t *testing.T) {
+		t.Parallel()
+
+		defaultContainer := corev1.Container{
+			Name:  "app",
+			Image: "default:v1",
+		}
+		userContainer := corev1.Container{
+			Name:  "app",
+			Image: "user:v2",
+		}
+
+		result := mergeContainer(defaultContainer, userContainer)
+
+		assert.Equal(t, "user:v2", result.Image)
+	})
+
+	t.Run("default image used when user image empty", func(t *testing.T) {
+		t.Parallel()
+
+		defaultContainer := corev1.Container{
+			Name:  "app",
+			Image: "default:v1",
+		}
+		userContainer := corev1.Container{
+			Name: "app",
+		}
+
+		result := mergeContainer(defaultContainer, userContainer)
+
+		assert.Equal(t, "default:v1", result.Image)
+	})
+
+	t.Run("env vars merged with user precedence", func(t *testing.T) {
+		t.Parallel()
+
+		defaultContainer := corev1.Container{
+			Name: "app",
+			Env: []corev1.EnvVar{
+				{Name: "VAR1", Value: "default1"},
+				{Name: "VAR2", Value: "default2"},
+			},
+		}
+		userContainer := corev1.Container{
+			Name: "app",
+			Env: []corev1.EnvVar{
+				{Name: "VAR1", Value: "user1"},
+				{Name: "VAR3", Value: "user3"},
+			},
+		}
+
+		result := mergeContainer(defaultContainer, userContainer)
+
+		require.Len(t, result.Env, 3)
+		// Find each env var
+		envMap := make(map[string]string)
+		for _, e := range result.Env {
+			envMap[e.Name] = e.Value
+		}
+		assert.Equal(t, "user1", envMap["VAR1"])
+		assert.Equal(t, "default2", envMap["VAR2"])
+		assert.Equal(t, "user3", envMap["VAR3"])
+	})
+
+	t.Run("user probe overrides default", func(t *testing.T) {
+		t.Parallel()
+
+		defaultContainer := corev1.Container{
+			Name: "app",
+			LivenessProbe: &corev1.Probe{
+				InitialDelaySeconds: 10,
+			},
+		}
+		userContainer := corev1.Container{
+			Name: "app",
+			LivenessProbe: &corev1.Probe{
+				InitialDelaySeconds: 30,
+			},
+		}
+
+		result := mergeContainer(defaultContainer, userContainer)
+
+		assert.Equal(t, int32(30), result.LivenessProbe.InitialDelaySeconds)
+	})
+
+	t.Run("default probe kept when user has none", func(t *testing.T) {
+		t.Parallel()
+
+		defaultContainer := corev1.Container{
+			Name: "app",
+			LivenessProbe: &corev1.Probe{
+				InitialDelaySeconds: 10,
+			},
+		}
+		userContainer := corev1.Container{
+			Name: "app",
+		}
+
+		result := mergeContainer(defaultContainer, userContainer)
+
+		require.NotNil(t, result.LivenessProbe)
+		assert.Equal(t, int32(10), result.LivenessProbe.InitialDelaySeconds)
+	})
+}

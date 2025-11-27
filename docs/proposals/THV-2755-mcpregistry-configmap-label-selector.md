@@ -24,6 +24,47 @@ A more Kubernetes-native approach would allow MCPRegistry to dynamically discove
 - Support for `matchExpressions` (keep initial implementation simple)
 - Detailed per-ConfigMap status reporting
 - Webhook-based validation (use CEL rules instead)
+- **Adding sync/fetch logic to the operator** (sync remains in the registry server)
+- **Making the registry server Kubernetes-aware** (it remains agnostic)
+
+## Architecture
+
+This proposal maintains a clear separation of concerns between the operator and the registry server:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Kubernetes Operator                               │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │  MCPRegistry Controller                                        │  │
+│  │  - Watches ConfigMaps matching label selector                  │  │
+│  │  - Aggregates registry data from multiple ConfigMaps           │  │
+│  │  - Applies conflict resolution (prefixing)                     │  │
+│  │  - Outputs aggregated ConfigMap                                │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  │ ConfigMap mounted as volume
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Registry Server                                   │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │  File Source Handler                                           │  │
+│  │  - Reads registry data from mounted file                       │  │
+│  │  - No knowledge of Kubernetes ConfigMaps                       │  │
+│  │  - Existing sync/refresh logic unchanged                       │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Architectural Principles
+
+1. **Operator handles Kubernetes primitives**: The operator is responsible for watching ConfigMaps, label selection, and aggregation. This is Kubernetes-native work that belongs in the operator.
+
+2. **Registry server remains Kubernetes-agnostic**: The registry server continues to read from file sources. It has no knowledge of ConfigMaps, label selectors, or Kubernetes APIs. This keeps the server portable and testable.
+
+3. **Clear data flow**: Operator discovers → aggregates → outputs ConfigMap → mounted as file → server reads file. The sync interval and refresh logic in the registry server remain unchanged.
+
+4. **No sync logic in operator**: The operator does NOT fetch from git, APIs, or perform periodic syncs. It only reacts to Kubernetes resource changes (ConfigMap create/update/delete events).
 
 ## Design
 
@@ -106,11 +147,14 @@ This means filter patterns like `configmap-a/*` can match prefixed server names.
 
 ### Watch Behavior
 
-The controller must:
+The controller watches Kubernetes resources and reacts to changes:
+
 1. Watch ConfigMaps in the MCPRegistry's namespace
 2. Filter watches by the selector labels for efficiency
 3. Re-reconcile MCPRegistry when matching ConfigMaps are added, modified, or deleted
 4. Handle ConfigMaps being added/removed dynamically
+
+**Important**: The controller does NOT poll or periodically sync. It reacts to Kubernetes watch events only. The `syncPolicy.interval` field applies to the registry server's file watching, not to the operator's ConfigMap discovery.
 
 ### Partial Failure Handling
 
@@ -130,39 +174,71 @@ CEL validation rules:
 
 ## Implementation
 
-### Phase 1: Core Implementation
+### Phase 1: Core Implementation (Operator Only)
+
+Changes are scoped to the **operator** - no changes to the registry server.
 
 1. **CRD Changes**
    - Add `ConfigMapSelector` type to `mcpregistry_types.go`
    - Add CEL validation for mutual exclusivity
    - Run `task operator-generate` and `task operator-manifests`
 
-2. **Source Handler**
-   - Implement `ConfigMapSelectorHandler` in `pkg/sources/`
-   - List ConfigMaps matching labels
-   - Fetch and parse registry data from each ConfigMap
+2. **ConfigMap Selector Handler** (in operator)
+   - Implement `ConfigMapSelectorHandler` in operator's `pkg/sources/`
+   - List ConfigMaps matching labels using Kubernetes client
+   - Parse registry data from each ConfigMap
    - Implement conflict detection and prefixing logic
+   - Output aggregated data to a ConfigMap that the registry server mounts
 
-3. **Controller Updates**
+3. **Controller Updates** (in operator)
    - Add ConfigMap watch with label predicates
    - Trigger reconciliation on matching ConfigMap changes
-   - Integrate selector handler with existing sync flow
+   - Update the output ConfigMap when source ConfigMaps change
 
-4. **Testing**
+4. **Registry Server Deployment**
+   - Mount the aggregated ConfigMap as a volume
+   - Configure registry server to use `file` source type pointing to the mounted path
+   - No code changes to registry server required
+
+5. **Testing**
    - Unit tests for selector matching and conflict resolution
    - Integration tests with envtest
    - E2E tests with Chainsaw
 
-5. **Documentation**
+6. **Documentation**
    - Update CRD reference docs
-   - Add usage examples
+   - Add usage examples showing the full flow
    - Bump Helm chart version
+
+### What This Does NOT Change
+
+- **Registry server code**: No modifications needed. It continues to read from file sources.
+- **Sync logic**: The registry server's sync/refresh mechanism is unchanged.
+- **Other source types**: Git and API sources continue to work as before.
+
+### Alternative Considered: Multiple File Sources
+
+The registry server supports multiple registries in a single config, each with its own file source. An alternative approach would be:
+
+1. Mount each discovered ConfigMap as a separate file
+2. Dynamically update the server's config with multiple file registries
+3. Let the server handle merging
+
+We chose **aggregation in the operator** instead because:
+- Server config doesn't need dynamic updates
+- Simpler deployment (single file mount)
+- Conflict resolution logic is centralized and testable
+- Server remains statically configured
 
 ### Phase 2: Future Enhancements
 
+**Operator enhancements:**
 - `matchExpressions` support for complex selection logic
 - Per-ConfigMap status reporting (if needed)
 - Configurable conflict resolution strategies (error, prefix, priority)
+
+**Registry server enhancement (separate work):**
+- **Directory source support**: Allow the registry server to read all files from a directory instead of a single file. This would enable mounting multiple ConfigMaps to a shared directory, with the server handling aggregation. This simplifies the operator (no aggregation needed) and moves merging logic to the server where it naturally belongs. This change would be in the [toolhive-registry-server](https://github.com/stacklok/toolhive-registry-server) repository, not the operator.
 
 ## Examples
 

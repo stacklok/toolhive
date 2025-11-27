@@ -653,17 +653,11 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 		validate    func(*testing.T, *vmcpconfig.BackendAuthStrategy)
 	}{
 		{
-			name: "discovered type (no conversion needed)",
+			name: "discovered type should return error (not valid for inline)",
 			crdConfig: &mcpv1alpha1.BackendAuthConfig{
 				Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 			},
-			expectError: false,
-			validate: func(t *testing.T, strategy *vmcpconfig.BackendAuthStrategy) {
-				t.Helper()
-				// discovered type is not converted - it's handled at discovery time
-				assert.Equal(t, mcpv1alpha1.BackendAuthTypeDiscovered, strategy.Type)
-				assert.Empty(t, strategy.Metadata)
-			},
+			expectError: true,
 		},
 		{
 			name: "external_auth_config_ref type",

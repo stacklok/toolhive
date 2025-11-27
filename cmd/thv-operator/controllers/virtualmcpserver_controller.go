@@ -907,7 +907,86 @@ func createVmcpServiceURL(vmcpName, namespace string, port int32) string {
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
 }
 
-// discoverExternalAuthConfigs discovers ExternalAuthConfig from MCPServers and adds them to the outgoing config
+// convertExternalAuthConfigToStrategy converts an MCPExternalAuthConfig to a BackendAuthStrategy.
+// This uses the converter registry to support all auth types (token exchange, header injection, etc.).
+// For ConfigMap mode (inline/mixed), secrets are referenced as environment variables that will be
+// mounted in the deployment. The env var names are customized to include the ExternalAuthConfig name
+// for uniqueness when multiple configs are used.
+func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
+	_ context.Context,
+	_ string,
+	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+) (*vmcpconfig.BackendAuthStrategy, error) {
+	// Use the converter registry to convert to metadata
+	registry := converters.DefaultRegistry()
+	converter, err := registry.GetConverter(externalAuthConfig.Spec.Type)
+	if err != nil {
+		return nil, fmt.Errorf("unsupported external auth type: %w", err)
+	}
+
+	// Convert to metadata (this will use env var references for secrets)
+	metadata, err := converter.ConvertToMetadata(externalAuthConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert external auth config to metadata: %w", err)
+	}
+
+	// Customize env var names to include the ExternalAuthConfig name for uniqueness
+	// This ensures multiple ExternalAuthConfigs can coexist with different env var names
+	if _, ok := metadata["client_secret_env"].(string); ok {
+		// Replace generic env var name with one that includes the config name
+		// Format: VMCP_TOKEN_EXCHANGE_CLIENT_SECRET_{EXTERNAL_AUTH_CONFIG_NAME}
+		metadata["client_secret_env"] = fmt.Sprintf("VMCP_TOKEN_EXCHANGE_CLIENT_SECRET_%s", externalAuthConfig.Name)
+	}
+
+	return &vmcpconfig.BackendAuthStrategy{
+		Type:     converter.StrategyType(),
+		Metadata: metadata,
+	}, nil
+}
+
+// convertBackendAuthConfigToVMCP converts a BackendAuthConfig from CRD to vmcp config.
+func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
+	ctx context.Context,
+	namespace string,
+	crdConfig *mcpv1alpha1.BackendAuthConfig,
+) (*vmcpconfig.BackendAuthStrategy, error) {
+	// "discovered" type is not a valid vmcp strategy type - it's only used at CRD level
+	// to indicate that discovery should happen. It should never appear in the final config.
+	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeDiscovered {
+		return nil, fmt.Errorf("discovered type is not valid for inline auth configuration; use external_auth_config_ref or a concrete strategy type")
+	}
+
+	strategy := &vmcpconfig.BackendAuthStrategy{
+		Type:     crdConfig.Type,
+		Metadata: make(map[string]any),
+	}
+
+	// Convert type-specific configuration to metadata
+	if crdConfig.ExternalAuthConfigRef != nil {
+		// Fetch the MCPExternalAuthConfig and convert it
+		externalAuthConfig, err := ctrlutil.GetExternalAuthConfigByName(
+			ctx, r.Client, namespace, crdConfig.ExternalAuthConfigRef.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", crdConfig.ExternalAuthConfigRef.Name, err)
+		}
+
+		// Convert the external auth config to strategy
+		convertedStrategy, err := r.convertExternalAuthConfigToStrategy(ctx, namespace, externalAuthConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert MCPExternalAuthConfig to strategy: %w", err)
+		}
+
+		// Use the converted strategy's type and metadata
+		strategy.Type = convertedStrategy.Type
+		strategy.Metadata = convertedStrategy.Metadata
+	}
+
+	return strategy, nil
+}
+
+// 1051
+//
+//	discovers ExternalAuthConfig from MCPServers and adds them to the outgoing config
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -1003,77 +1082,6 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	}
 
 	return outgoing, nil
-}
-
-// convertExternalAuthConfigToStrategy converts an MCPExternalAuthConfig to a BackendAuthStrategy.
-// This uses the converter registry to support all auth types (token exchange, header injection, etc.).
-// For ConfigMap mode (inline/mixed), secrets are referenced as environment variables that will be
-// mounted in the deployment. The env var names are customized to include the ExternalAuthConfig name
-// for uniqueness when multiple configs are used.
-func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
-	_ context.Context,
-	_ string,
-	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
-) (*vmcpconfig.BackendAuthStrategy, error) {
-	// Use the converter registry to convert to metadata
-	registry := converters.DefaultRegistry()
-	converter, err := registry.GetConverter(externalAuthConfig.Spec.Type)
-	if err != nil {
-		return nil, fmt.Errorf("unsupported external auth type: %w", err)
-	}
-
-	// Convert to metadata (this will use env var references for secrets)
-	metadata, err := converter.ConvertToMetadata(externalAuthConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert external auth config to metadata: %w", err)
-	}
-
-	// Customize env var names to include the ExternalAuthConfig name for uniqueness
-	// This ensures multiple ExternalAuthConfigs can coexist with different env var names
-	if _, ok := metadata["client_secret_env"].(string); ok {
-		// Replace generic env var name with one that includes the config name
-		// Format: VMCP_TOKEN_EXCHANGE_CLIENT_SECRET_{EXTERNAL_AUTH_CONFIG_NAME}
-		metadata["client_secret_env"] = fmt.Sprintf("VMCP_TOKEN_EXCHANGE_CLIENT_SECRET_%s", externalAuthConfig.Name)
-	}
-
-	return &vmcpconfig.BackendAuthStrategy{
-		Type:     converter.StrategyType(),
-		Metadata: metadata,
-	}, nil
-}
-
-// convertBackendAuthConfigToVMCP converts a BackendAuthConfig from CRD to vmcp config.
-func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
-	ctx context.Context,
-	namespace string,
-	crdConfig *mcpv1alpha1.BackendAuthConfig,
-) (*vmcpconfig.BackendAuthStrategy, error) {
-	strategy := &vmcpconfig.BackendAuthStrategy{
-		Type:     crdConfig.Type,
-		Metadata: make(map[string]any),
-	}
-
-	// Convert type-specific configuration to metadata
-	if crdConfig.ExternalAuthConfigRef != nil {
-		// Fetch the MCPExternalAuthConfig and convert it
-		externalAuthConfig, err := ctrlutil.GetExternalAuthConfigByName(
-			ctx, r.Client, namespace, crdConfig.ExternalAuthConfigRef.Name)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", crdConfig.ExternalAuthConfigRef.Name, err)
-		}
-
-		// Convert the external auth config to strategy
-		convertedStrategy, err := r.convertExternalAuthConfigToStrategy(ctx, namespace, externalAuthConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert MCPExternalAuthConfig to strategy: %w", err)
-		}
-
-		// Use the converted strategy's type and metadata
-		strategy.Type = convertedStrategy.Type
-		strategy.Metadata = convertedStrategy.Metadata
-	}
-
-	return strategy, nil
 }
 
 // discoverBackends discovers all MCPServers in the referenced MCPGroup and returns

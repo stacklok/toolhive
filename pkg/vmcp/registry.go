@@ -121,14 +121,15 @@ func BackendToTarget(backend *Backend) *BackendTarget {
 	}
 
 	return &BackendTarget{
-		WorkloadID:      backend.ID,
-		WorkloadName:    backend.Name,
-		BaseURL:         backend.BaseURL,
-		TransportType:   backend.TransportType,
-		AuthStrategy:    backend.AuthStrategy,
-		AuthMetadata:    backend.AuthMetadata,
-		SessionAffinity: false, // TODO: Add session affinity support in future phases
-		HealthStatus:    backend.HealthStatus,
-		Metadata:        backend.Metadata,
+		WorkloadID:         backend.ID,
+		WorkloadName:       backend.Name,
+		BaseURL:            backend.BaseURL,
+		TransportType:      backend.TransportType,
+		AuthStrategy:       backend.AuthStrategy,
+		AuthMetadata:       backend.AuthMetadata,
+		IncomingOIDCConfig: backend.IncomingOIDCConfig,
+		SessionAffinity:    false, // TODO: Add session affinity support in future phases
+		HealthStatus:       backend.HealthStatus,
+		Metadata:           backend.Metadata,
 	}
 }

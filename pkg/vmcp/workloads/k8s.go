@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -198,6 +200,12 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 		return nil
 	}
 
+	// Discover and populate incoming OIDC configuration from MCPServer
+	if err := d.discoverIncomingOIDCConfig(ctx, mcpServer, backend); err != nil {
+		logger.Errorf("Failed to discover incoming OIDC config for MCPServer %s: %v", mcpServer.Name, err)
+		return nil
+	}
+
 	return backend
 }
 
@@ -231,6 +239,89 @@ func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1
 	backend.AuthMetadata = metadata
 
 	logger.Debugf("Discovered auth config for MCPServer %s: strategy=%s", mcpServer.Name, backend.AuthStrategy)
+	return nil
+}
+
+// discoverIncomingOIDCConfig discovers and populates incoming OIDC configuration from the MCPServer's OIDCConfig.
+// When a backend MCPServer has OIDCConfig configured, it means clients (including vMCP) must authenticate
+// using OIDC to access that backend. This method discovers and converts the OIDC configuration so vMCP
+// can authenticate to the backend.
+//
+// Return behavior:
+//   - Returns nil error if OIDCConfig is nil (no OIDC required) - this is expected behavior
+//   - Returns nil error if OIDC config is discovered and successfully populated into backend
+//   - Returns error if OIDC config exists but discovery/resolution fails
+func (d *k8sDiscoverer) discoverIncomingOIDCConfig(
+	ctx context.Context, mcpServer *mcpv1alpha1.MCPServer, backend *vmcp.Backend,
+) error {
+	// If no OIDC config, nothing to discover
+	if mcpServer.Spec.OIDCConfig == nil {
+		logger.Debugf("MCPServer %s has no OIDCConfig, no incoming auth required", mcpServer.Name)
+		return nil
+	}
+
+	oidcConfig := mcpServer.Spec.OIDCConfig
+
+	// Convert OIDC config to map for storage in backend
+	config := make(map[string]interface{})
+
+	// Handle inline OIDC configuration
+	if oidcConfig.Type == "inline" && oidcConfig.Inline != nil {
+		inline := oidcConfig.Inline
+		config["issuer"] = inline.Issuer
+
+		if inline.Audience != "" {
+			config["audience"] = inline.Audience
+		}
+
+		if inline.ClientID != "" {
+			config["client_id"] = inline.ClientID
+		}
+
+		// Resolve client secret from secret reference if present
+		if inline.ClientSecretRef != nil {
+			secret := &corev1.Secret{}
+			secretKey := types.NamespacedName{
+				Name:      inline.ClientSecretRef.Name,
+				Namespace: mcpServer.Namespace,
+			}
+
+			if err := d.k8sClient.Get(ctx, secretKey, secret); err != nil {
+				return fmt.Errorf("failed to get secret %s/%s: %w",
+					mcpServer.Namespace, inline.ClientSecretRef.Name, err)
+			}
+
+			secretValue, ok := secret.Data[inline.ClientSecretRef.Key]
+			if !ok {
+				return fmt.Errorf("secret %s/%s does not contain key %s",
+					mcpServer.Namespace, inline.ClientSecretRef.Name, inline.ClientSecretRef.Key)
+			}
+
+			config["client_secret"] = string(secretValue)
+		} else if inline.ClientSecret != "" {
+			// Use direct client secret if provided (not recommended but supported)
+			config["client_secret"] = inline.ClientSecret
+		}
+
+		if inline.JWKSURL != "" {
+			config["jwks_url"] = inline.JWKSURL
+		}
+
+		if inline.IntrospectionURL != "" {
+			config["introspection_url"] = inline.IntrospectionURL
+		}
+
+		// Add security flags
+		config["insecure_allow_http"] = inline.InsecureAllowHTTP
+		config["jwks_allow_private_ip"] = inline.JWKSAllowPrivateIP
+		config["protected_resource_allow_private_ip"] = inline.ProtectedResourceAllowPrivateIP
+	}
+
+	// Store the discovered OIDC config
+	backend.IncomingOIDCConfig = config
+
+	logger.Infof("✓ Discovered incoming OIDC config for MCPServer %s: issuer=%s, client_id=%s",
+		mcpServer.Name, config["issuer"], config["client_id"])
 	return nil
 }
 

@@ -54,6 +54,11 @@ type BackendTarget struct {
 	// This is opaque to the router and interpreted by the authenticator.
 	AuthMetadata map[string]any
 
+	// IncomingOIDCConfig contains the discovered OIDC configuration for vMCP→backend authentication.
+	// When a backend MCPServer has OIDCConfig configured, vMCP must authenticate to that backend
+	// using OIDC. This field stores the discovered OIDC configuration.
+	IncomingOIDCConfig map[string]interface{}
+
 	// SessionAffinity indicates if requests from the same session
 	// must be routed to this specific backend instance.
 	SessionAffinity bool
@@ -133,6 +138,11 @@ type Backend struct {
 
 	// AuthMetadata contains strategy-specific auth configuration.
 	AuthMetadata map[string]any
+
+	// IncomingOIDCConfig contains the discovered OIDC configuration for vMCP→backend authentication.
+	// When a backend MCPServer has OIDCConfig configured, vMCP must authenticate to that backend
+	// using OIDC. This field stores the discovered OIDC configuration.
+	IncomingOIDCConfig map[string]interface{}
 
 	// Metadata stores additional backend information.
 	Metadata map[string]string

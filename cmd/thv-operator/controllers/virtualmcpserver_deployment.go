@@ -193,66 +193,81 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 		// Log level env var will be added here
 	}
 
-	// Mount OIDC client secret as environment variable
-	// The vmcp config file will reference this via client_secret_env: "VMCP_OIDC_CLIENT_SECRET"
-	//
-	// Two approaches are supported:
-	// 1. ClientSecretRef: References an existing Kubernetes Secret (recommended)
-	// 2. ClientSecret: Literal value that will be stored in a generated Secret
-	//
-	// Both cases result in the secret being mounted as an environment variable for security.
-	if vmcp.Spec.IncomingAuth != nil &&
-		vmcp.Spec.IncomingAuth.OIDCConfig != nil &&
-		vmcp.Spec.IncomingAuth.OIDCConfig.Inline != nil {
-		inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
+	// Mount OIDC client secret
+	env = append(env, r.buildOIDCEnvVars(vmcp)...)
 
-		// For testing: Skip OIDC discovery for example/test issuers
-		// This allows tests to run without requiring a real OIDC provider
-		if inline.Issuer != "" && (strings.Contains(inline.Issuer, "example.com") || strings.Contains(inline.Issuer, "test")) {
-			env = append(env, corev1.EnvVar{
-				Name:  "VMCP_SKIP_OIDC_DISCOVERY",
-				Value: "true",
-			})
-		}
+	// Mount outgoing auth secrets
+	env = append(env, r.buildOutgoingAuthEnvVars(ctx, vmcp)...)
 
-		if inline.ClientSecretRef != nil {
-			// Approach 1: Mount from existing Secret reference
-			env = append(env, corev1.EnvVar{
-				Name: "VMCP_OIDC_CLIENT_SECRET",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: inline.ClientSecretRef.Name,
-						},
-						Key: inline.ClientSecretRef.Key,
-					},
-				},
-			})
-		} else if inline.ClientSecret != "" {
-			// Approach 2: Mount from generated Secret containing literal value
-			// The generated secret is created by ensureOIDCClientSecret()
-			generatedSecretName := fmt.Sprintf("%s-oidc-client-secret", vmcp.Name)
-			env = append(env, corev1.EnvVar{
-				Name: "VMCP_OIDC_CLIENT_SECRET",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: generatedSecretName,
-						},
-						Key: "clientSecret",
-					},
-				},
-			})
-		}
+	// Note: Other secrets (Redis passwords, service account credentials) may be added here in the future
+	// following the same pattern of mounting from Kubernetes Secrets as environment variables.
+
+	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
+}
+
+// buildOIDCEnvVars builds environment variables for OIDC client secret mounting.
+func (*VirtualMCPServerReconciler) buildOIDCEnvVars(vmcp *mcpv1alpha1.VirtualMCPServer) []corev1.EnvVar {
+	var env []corev1.EnvVar
+
+	if vmcp.Spec.IncomingAuth == nil ||
+		vmcp.Spec.IncomingAuth.OIDCConfig == nil ||
+		vmcp.Spec.IncomingAuth.OIDCConfig.Inline == nil {
+		return env
 	}
 
-	// Mount client secrets from discovered ExternalAuthConfigs for outgoing auth
-	// This is needed when using discovered or mixed mode where backends reference ExternalAuthConfigs.
-	// The ConfigMap references env var names (e.g., "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET"),
-	// so we must mount the actual secrets as environment variables for vmcp to read at runtime.
-	if vmcp.Spec.OutgoingAuth != nil &&
-		(vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceDiscovered || vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceMixed) {
-		// Discover ExternalAuthConfigs from backends and mount their client secrets
+	inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
+
+	// For testing: Skip OIDC discovery for example/test issuers
+	if inline.Issuer != "" && (strings.Contains(inline.Issuer, "example.com") || strings.Contains(inline.Issuer, "test")) {
+		env = append(env, corev1.EnvVar{
+			Name:  "VMCP_SKIP_OIDC_DISCOVERY",
+			Value: "true",
+		})
+	}
+
+	if inline.ClientSecretRef != nil {
+		env = append(env, corev1.EnvVar{
+			Name: "VMCP_OIDC_CLIENT_SECRET",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: inline.ClientSecretRef.Name,
+					},
+					Key: inline.ClientSecretRef.Key,
+				},
+			},
+		})
+	} else if inline.ClientSecret != "" {
+		generatedSecretName := fmt.Sprintf("%s-oidc-client-secret", vmcp.Name)
+		env = append(env, corev1.EnvVar{
+			Name: "VMCP_OIDC_CLIENT_SECRET",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: generatedSecretName,
+					},
+					Key: "clientSecret",
+				},
+			},
+		})
+	}
+
+	return env
+}
+
+// buildOutgoingAuthEnvVars builds environment variables for outgoing auth secrets.
+func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) []corev1.EnvVar {
+	var env []corev1.EnvVar
+
+	if vmcp.Spec.OutgoingAuth == nil {
+		return env
+	}
+
+	// Mount secrets from discovered ExternalAuthConfigs (discovered/mixed mode)
+	if vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceDiscovered || vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceMixed {
 		discoveredSecrets, err := r.discoverExternalAuthConfigSecrets(ctx, vmcp)
 		if err != nil {
 			ctxLogger := log.FromContext(ctx)
@@ -263,22 +278,14 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 		}
 	}
 
-	// Mount client secrets from inline ExternalAuthConfigRefs
-	// This handles the case where inline mode explicitly references ExternalAuthConfigs
-	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
-		inlineSecrets, err := r.discoverInlineExternalAuthConfigSecrets(ctx, vmcp)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.V(1).Info("Failed to discover inline ExternalAuthConfig secrets, continuing without them",
-				"error", err)
-		} else {
-			env = append(env, inlineSecrets...)
-		}
+	// Mount secrets from inline ExternalAuthConfigRefs
+	if vmcp.Spec.OutgoingAuth.Backends != nil {
+		inlineSecrets := r.discoverInlineExternalAuthConfigSecrets(ctx, vmcp)
+		env = append(env, inlineSecrets...)
 	}
 
-	// Mount client secret from Default ExternalAuthConfigRef if specified
-	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Default != nil &&
-		vmcp.Spec.OutgoingAuth.Default.ExternalAuthConfigRef != nil {
+	// Mount secret from Default ExternalAuthConfigRef
+	if vmcp.Spec.OutgoingAuth.Default != nil && vmcp.Spec.OutgoingAuth.Default.ExternalAuthConfigRef != nil {
 		defaultSecret, err := r.getExternalAuthConfigSecretEnvVar(
 			ctx, vmcp.Namespace, vmcp.Spec.OutgoingAuth.Default.ExternalAuthConfigRef.Name)
 		if err != nil {
@@ -290,10 +297,7 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 		}
 	}
 
-	// Note: Other secrets (Redis passwords, service account credentials) may be added here in the future
-	// following the same pattern of mounting from Kubernetes Secrets as environment variables.
-
-	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
+	return env
 }
 
 // discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs from MCPServers in the group
@@ -354,7 +358,7 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) ([]corev1.EnvVar, error) {
+) []corev1.EnvVar {
 	var envVars []corev1.EnvVar
 	seenConfigs := make(map[string]bool) // Track which ExternalAuthConfigs we've already processed
 
@@ -385,7 +389,7 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 		}
 	}
 
-	return envVars, nil
+	return envVars
 }
 
 // getExternalAuthConfigSecretEnvVar returns an environment variable for the client secret

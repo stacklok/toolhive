@@ -910,8 +910,7 @@ func createVmcpServiceURL(vmcpName, namespace string, port int32) string {
 // convertExternalAuthConfigToStrategy converts an MCPExternalAuthConfig to a BackendAuthStrategy.
 // This uses the converter registry to support all auth types (token exchange, header injection, etc.).
 // For ConfigMap mode (inline/mixed), secrets are referenced as environment variables that will be
-// mounted in the deployment. The env var names are customized to include the ExternalAuthConfig name
-// for uniqueness when multiple configs are used.
+// mounted in the deployment.
 func (r *VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 	ctx context.Context,
 	namespace string,
@@ -978,9 +977,7 @@ func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
 	return strategy, nil
 }
 
-// 1051
-//
-//	discovers ExternalAuthConfig from MCPServers and adds them to the outgoing config
+// discovers ExternalAuthConfig from MCPServers and adds them to the outgoing config
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -1093,19 +1090,24 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 	// Create K8S workload discoverer for the VirtualMCPServer's namespace
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(r.Client, vmcp.Namespace)
 
-	// Get all workload names to build auth config
+	// Get all workload names in the group
 	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.Spec.GroupRef.Name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workloads in group: %w", err)
 	}
 
-	// Build outgoing auth config from discovered ExternalAuthConfig
-	authConfig, err := r.buildOutgoingAuthConfig(ctx, vmcp, workloadNames)
-	if err != nil {
-		ctxLogger.V(1).Info("Failed to build outgoing auth config, continuing without auth",
-			"error", err)
-		// Continue without auth config rather than failing
-		authConfig = nil
+	// Build outgoing auth config only if OutgoingAuth is explicitly configured
+	// This allows the aggregator to apply auth config to backends based on source mode
+	var authConfig *vmcpconfig.OutgoingAuthConfig
+	if vmcp.Spec.OutgoingAuth != nil {
+		var err error
+		authConfig, err = r.buildOutgoingAuthConfig(ctx, vmcp, workloadNames)
+		if err != nil {
+			ctxLogger.V(1).Info("Failed to build outgoing auth config, continuing without auth",
+				"error", err)
+			// Continue without auth config rather than failing
+			authConfig = nil
+		}
 	}
 
 	// Use the aggregator's unified backend discoverer to reuse discovery logic

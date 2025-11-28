@@ -72,11 +72,6 @@ func (c *Converter) Convert(
 		config.CompositeTools = c.convertCompositeTools(ctx, vmcp)
 	}
 
-	// Convert TokenCache
-	if vmcp.Spec.TokenCache != nil {
-		config.TokenCache = c.convertTokenCache(ctx, vmcp)
-	}
-
 	// Convert Operational
 	if vmcp.Spec.Operational != nil {
 		config.Operational = c.convertOperational(ctx, vmcp)
@@ -337,42 +332,6 @@ func convertArguments(args map[string]string) map[string]any {
 		result[k] = v
 	}
 	return result
-}
-
-// convertTokenCache converts TokenCacheConfig from CRD to vmcp config
-func (*Converter) convertTokenCache(
-	_ context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-) *vmcpconfig.TokenCacheConfig {
-	cache := &vmcpconfig.TokenCacheConfig{
-		Provider: vmcp.Spec.TokenCache.Provider,
-	}
-
-	if vmcp.Spec.TokenCache.Memory != nil {
-		cache.Memory = &vmcpconfig.MemoryCacheConfig{
-			MaxEntries: vmcp.Spec.TokenCache.Memory.MaxEntries,
-		}
-		if vmcp.Spec.TokenCache.Memory.TTLOffset != "" {
-			if duration, err := time.ParseDuration(vmcp.Spec.TokenCache.Memory.TTLOffset); err == nil {
-				cache.Memory.TTLOffset = vmcpconfig.Duration(duration)
-			}
-		}
-	}
-
-	if vmcp.Spec.TokenCache.Redis != nil {
-		cache.Redis = &vmcpconfig.RedisCacheConfig{
-			Address:   vmcp.Spec.TokenCache.Redis.Address,
-			DB:        vmcp.Spec.TokenCache.Redis.DB,
-			KeyPrefix: vmcp.Spec.TokenCache.Redis.KeyPrefix,
-			// TODO: Resolve password from secret reference when PasswordRef is set
-		}
-		//nolint:staticcheck // Empty branch reserved for future password reference resolution
-		if vmcp.Spec.TokenCache.Redis.PasswordRef != nil {
-			// Password will be resolved at runtime by vmcp binary via secret reference
-		}
-	}
-
-	return cache
 }
 
 // convertOperational converts OperationalConfig from CRD to vmcp config

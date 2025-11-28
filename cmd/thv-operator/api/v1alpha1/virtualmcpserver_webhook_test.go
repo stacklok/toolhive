@@ -369,67 +369,6 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			wantErr: true,
 			errMsg:  "spec.compositeTools[0].steps[1].id \"step1\" is duplicated",
 		},
-		{
-			name: "valid token cache - memory",
-			vmcp: &VirtualMCPServer{
-				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
-					TokenCache: &TokenCacheConfig{
-						Provider: "memory",
-						Memory: &MemoryCacheConfig{
-							MaxEntries: 1000,
-						},
-					},
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "valid token cache - redis with password",
-			vmcp: &VirtualMCPServer{
-				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
-					TokenCache: &TokenCacheConfig{
-						Provider: "redis",
-						Redis: &RedisCacheConfig{
-							Address: "redis:6379",
-							PasswordRef: &SecretKeyRef{
-								Name: "redis-secret",
-								Key:  "password",
-							},
-						},
-					},
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "invalid token cache - redis without address",
-			vmcp: &VirtualMCPServer{
-				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
-					TokenCache: &TokenCacheConfig{
-						Provider: "redis",
-						Redis:    &RedisCacheConfig{},
-					},
-				},
-			},
-			wantErr: true,
-			errMsg:  "spec.tokenCache.redis.address is required",
-		},
-		{
-			name: "invalid token cache - invalid provider",
-			vmcp: &VirtualMCPServer{
-				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
-					TokenCache: &TokenCacheConfig{
-						Provider: "invalid",
-					},
-				},
-			},
-			wantErr: true,
-			errMsg:  "spec.tokenCache.provider must be memory or redis",
-		},
 	}
 
 	for _, tt := range tests {

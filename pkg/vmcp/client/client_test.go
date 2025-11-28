@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authmocks "github.com/stacklok/toolhive/pkg/vmcp/auth/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 func TestHTTPBackendClient_ListCapabilities_WithMockFactory(t *testing.T) {
@@ -270,9 +271,14 @@ func TestAuthRoundTripper_RoundTrip(t *testing.T) {
 		{
 			name: "successful authentication adds headers and forwards request",
 			target: &vmcp.BackendTarget{
-				WorkloadID:   "backend-1",
-				AuthStrategy: "header_injection",
-				AuthMetadata: map[string]any{"key": "value"},
+				WorkloadID: "backend-1",
+				AuthConfig: &authtypes.BackendAuthStrategy{
+					Type: authtypes.StrategyTypeHeaderInjection,
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "Authorization",
+						HeaderValue: "Bearer test-token",
+					},
+				},
 			},
 			setupStrategy: func(ctrl *gomock.Controller) auth.Strategy {
 				mockStrategy := authmocks.NewMockStrategy(ctrl)
@@ -284,9 +290,9 @@ func TestAuthRoundTripper_RoundTrip(t *testing.T) {
 					Authenticate(
 						gomock.Any(),
 						gomock.Any(),
-						map[string]any{"key": "value"},
+						gomock.Any(),
 					).
-					DoAndReturn(func(_ context.Context, req *http.Request, _ map[string]any) error {
+					DoAndReturn(func(_ context.Context, req *http.Request, _ *authtypes.BackendAuthStrategy) error {
 						// Simulate adding auth header
 						req.Header.Set("Authorization", "Bearer test-token")
 						return nil
@@ -311,9 +317,10 @@ func TestAuthRoundTripper_RoundTrip(t *testing.T) {
 		{
 			name: "unauthenticated strategy skips authentication",
 			target: &vmcp.BackendTarget{
-				WorkloadID:   "backend-1",
-				AuthStrategy: "unauthenticated",
-				AuthMetadata: nil,
+				WorkloadID: "backend-1",
+				AuthConfig: &authtypes.BackendAuthStrategy{
+					Type: authtypes.StrategyTypeUnauthenticated,
+				},
 			},
 			setupStrategy: func(ctrl *gomock.Controller) auth.Strategy {
 				mockStrategy := authmocks.NewMockStrategy(ctrl)
@@ -325,9 +332,9 @@ func TestAuthRoundTripper_RoundTrip(t *testing.T) {
 					Authenticate(
 						gomock.Any(),
 						gomock.Any(),
-						gomock.Nil(),
+						gomock.Any(),
 					).
-					DoAndReturn(func(_ context.Context, _ *http.Request, _ map[string]any) error {
+					DoAndReturn(func(_ context.Context, _ *http.Request, _ *authtypes.BackendAuthStrategy) error {
 						// UnauthenticatedStrategy does nothing
 						return nil
 					})
@@ -350,21 +357,26 @@ func TestAuthRoundTripper_RoundTrip(t *testing.T) {
 		{
 			name: "authentication failure returns error without calling base transport",
 			target: &vmcp.BackendTarget{
-				WorkloadID:   "backend-1",
-				AuthStrategy: "header_injection",
-				AuthMetadata: map[string]any{"key": "value"},
+				WorkloadID: "backend-1",
+				AuthConfig: &authtypes.BackendAuthStrategy{
+					Type: authtypes.StrategyTypeHeaderInjection,
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "X-API-Key",
+						HeaderValue: "test-key",
+					},
+				},
 			},
 			setupStrategy: func(ctrl *gomock.Controller) auth.Strategy {
 				mockStrategy := authmocks.NewMockStrategy(ctrl)
 				mockStrategy.EXPECT().
 					Name().
-					Return("header_injection").
+					Return(authtypes.StrategyTypeHeaderInjection).
 					AnyTimes()
 				mockStrategy.EXPECT().
 					Authenticate(
 						gomock.Any(),
 						gomock.Any(),
-						map[string]any{"key": "value"},
+						gomock.Any(),
 					).
 					Return(errors.New("auth failed"))
 				return mockStrategy
@@ -381,21 +393,26 @@ func TestAuthRoundTripper_RoundTrip(t *testing.T) {
 		{
 			name: "base transport error propagates after successful auth",
 			target: &vmcp.BackendTarget{
-				WorkloadID:   "backend-1",
-				AuthStrategy: "header_injection",
-				AuthMetadata: map[string]any{"key": "value"},
+				WorkloadID: "backend-1",
+				AuthConfig: &authtypes.BackendAuthStrategy{
+					Type: authtypes.StrategyTypeHeaderInjection,
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "X-API-Key",
+						HeaderValue: "test-key",
+					},
+				},
 			},
 			setupStrategy: func(ctrl *gomock.Controller) auth.Strategy {
 				mockStrategy := authmocks.NewMockStrategy(ctrl)
 				mockStrategy.EXPECT().
 					Name().
-					Return("header_injection").
+					Return(authtypes.StrategyTypeHeaderInjection).
 					AnyTimes()
 				mockStrategy.EXPECT().
 					Authenticate(
 						gomock.Any(),
 						gomock.Any(),
-						map[string]any{"key": "value"},
+						gomock.Any(),
 					).
 					Return(nil)
 				return mockStrategy
@@ -412,23 +429,28 @@ func TestAuthRoundTripper_RoundTrip(t *testing.T) {
 		{
 			name: "request immutability - original request unchanged",
 			target: &vmcp.BackendTarget{
-				WorkloadID:   "backend-1",
-				AuthStrategy: "header_injection",
-				AuthMetadata: map[string]any{"key": "value"},
+				WorkloadID: "backend-1",
+				AuthConfig: &authtypes.BackendAuthStrategy{
+					Type: authtypes.StrategyTypeHeaderInjection,
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "X-API-Key",
+						HeaderValue: "test-key",
+					},
+				},
 			},
 			setupStrategy: func(ctrl *gomock.Controller) auth.Strategy {
 				mockStrategy := authmocks.NewMockStrategy(ctrl)
 				mockStrategy.EXPECT().
 					Name().
-					Return("header_injection").
+					Return(authtypes.StrategyTypeHeaderInjection).
 					AnyTimes()
 				mockStrategy.EXPECT().
 					Authenticate(
 						gomock.Any(),
 						gomock.Any(),
-						map[string]any{"key": "value"},
+						gomock.Any(),
 					).
-					DoAndReturn(func(_ context.Context, req *http.Request, _ map[string]any) error {
+					DoAndReturn(func(_ context.Context, req *http.Request, _ *authtypes.BackendAuthStrategy) error {
 						// Modify the cloned request
 						req.Header.Set("Authorization", "Bearer modified-token")
 						req.Header.Set("X-Custom-Header", "custom-value")
@@ -473,7 +495,7 @@ func TestAuthRoundTripper_RoundTrip(t *testing.T) {
 			authRT := &authRoundTripper{
 				base:         baseTransport,
 				authStrategy: mockStrategy,
-				authMetadata: tt.target.AuthMetadata,
+				authConfig:   tt.target.AuthConfig,
 				target:       tt.target,
 			}
 
@@ -548,51 +570,56 @@ func TestResolveAuthStrategy(t *testing.T) {
 		{
 			name: "defaults to unauthenticated when strategy is empty",
 			target: &vmcp.BackendTarget{
-				WorkloadID:   "backend-1",
-				AuthStrategy: "",
-				AuthMetadata: nil,
+				WorkloadID: "backend-1",
+				AuthConfig: nil, // nil AuthConfig defaults to unauthenticated
 			},
 			setupRegistry: func() auth.OutgoingAuthRegistry {
 				registry := auth.NewDefaultOutgoingAuthRegistry()
-				err := registry.RegisterStrategy("unauthenticated", &strategies.UnauthenticatedStrategy{})
+				err := registry.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{})
 				require.NoError(t, err)
 				return registry
 			},
 			expectError: false,
 			checkStrategy: func(t *testing.T, strategy auth.Strategy) {
 				t.Helper()
-				assert.Equal(t, "unauthenticated", strategy.Name())
+				assert.Equal(t, authtypes.StrategyTypeUnauthenticated, strategy.Name())
 			},
 		},
 		{
 			name: "resolves explicitly configured strategy",
 			target: &vmcp.BackendTarget{
-				WorkloadID:   "backend-1",
-				AuthStrategy: "header_injection",
-				AuthMetadata: map[string]any{"header_name": "X-API-Key", "header_value": "test-key"},
+				WorkloadID: "backend-1",
+				AuthConfig: &authtypes.BackendAuthStrategy{
+					Type: authtypes.StrategyTypeHeaderInjection,
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "X-API-Key",
+						HeaderValue: "test-key",
+					},
+				},
 			},
 			setupRegistry: func() auth.OutgoingAuthRegistry {
 				registry := auth.NewDefaultOutgoingAuthRegistry()
-				err := registry.RegisterStrategy("header_injection", strategies.NewHeaderInjectionStrategy())
+				err := registry.RegisterStrategy(authtypes.StrategyTypeHeaderInjection, strategies.NewHeaderInjectionStrategy())
 				require.NoError(t, err)
 				return registry
 			},
 			expectError: false,
 			checkStrategy: func(t *testing.T, strategy auth.Strategy) {
 				t.Helper()
-				assert.Equal(t, "header_injection", strategy.Name())
+				assert.Equal(t, authtypes.StrategyTypeHeaderInjection, strategy.Name())
 			},
 		},
 		{
 			name: "returns error for unknown strategy",
 			target: &vmcp.BackendTarget{
-				WorkloadID:   "backend-1",
-				AuthStrategy: "unknown_strategy",
-				AuthMetadata: nil,
+				WorkloadID: "backend-1",
+				AuthConfig: &authtypes.BackendAuthStrategy{
+					Type: "unknown_strategy",
+				},
 			},
 			setupRegistry: func() auth.OutgoingAuthRegistry {
 				registry := auth.NewDefaultOutgoingAuthRegistry()
-				err := registry.RegisterStrategy("unauthenticated", &strategies.UnauthenticatedStrategy{})
+				err := registry.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{})
 				require.NoError(t, err)
 				return registry
 			},
@@ -602,9 +629,8 @@ func TestResolveAuthStrategy(t *testing.T) {
 		{
 			name: "returns error when unauthenticated strategy not registered",
 			target: &vmcp.BackendTarget{
-				WorkloadID:   "backend-1",
-				AuthStrategy: "", // Empty strategy defaults to unauthenticated
-				AuthMetadata: nil,
+				WorkloadID: "backend-1",
+				AuthConfig: nil, // nil AuthConfig defaults to unauthenticated
 			},
 			setupRegistry: func() auth.OutgoingAuthRegistry {
 				// Don't register unauthenticated strategy

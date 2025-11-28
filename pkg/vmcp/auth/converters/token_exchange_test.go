@@ -13,22 +13,23 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 func TestTokenExchangeConverter_StrategyType(t *testing.T) {
 	t.Parallel()
 
 	converter := &TokenExchangeConverter{}
-	assert.Equal(t, "token_exchange", converter.StrategyType())
+	assert.Equal(t, authtypes.StrategyTypeTokenExchange, converter.StrategyType())
 }
 
-func TestTokenExchangeConverter_ConvertToMetadata(t *testing.T) {
+func TestTokenExchangeConverter_Convert(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name         string
 		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
-		wantMetadata map[string]any
+		wantStrategy *authtypes.BackendAuthStrategy
 		wantErr      bool
 		errContains  string
 	}{
@@ -48,21 +49,22 @@ func TestTokenExchangeConverter_ConvertToMetadata(t *testing.T) {
 							Name: "client-secret",
 							Key:  "secret",
 						},
-						Audience:                "https://api.example.com",
-						Scopes:                  []string{"read", "write"},
-						SubjectTokenType:        "access_token",
-						ExternalTokenHeaderName: "X-Upstream-Token",
+						Audience:         "https://api.example.com",
+						Scopes:           []string{"read", "write"},
+						SubjectTokenType: "access_token",
 					},
 				},
 			},
-			wantMetadata: map[string]any{
-				"token_url":                  "https://auth.example.com/token",
-				"client_id":                  "test-client",
-				"client_secret_env":          "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
-				"audience":                   "https://api.example.com",
-				"scopes":                     []string{"read", "write"},
-				"subject_token_type":         "urn:ietf:params:oauth:token-type:access_token",
-				"external_token_header_name": "X-Upstream-Token",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL:         "https://auth.example.com/token",
+					ClientID:         "test-client",
+					ClientSecretEnv:  "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+					Audience:         "https://api.example.com",
+					Scopes:           []string{"read", "write"},
+					SubjectTokenType: "urn:ietf:params:oauth:token-type:access_token",
+				},
 			},
 			wantErr: false,
 		},
@@ -80,8 +82,11 @@ func TestTokenExchangeConverter_ConvertToMetadata(t *testing.T) {
 					},
 				},
 			},
-			wantMetadata: map[string]any{
-				"token_url": "https://auth.example.com/token",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+				},
 			},
 			wantErr: false,
 		},
@@ -101,10 +106,13 @@ func TestTokenExchangeConverter_ConvertToMetadata(t *testing.T) {
 					},
 				},
 			},
-			wantMetadata: map[string]any{
-				"token_url": "https://auth.example.com/token",
-				"client_id": "test-client",
-				"audience":  "https://api.example.com",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+					ClientID: "test-client",
+					Audience: "https://api.example.com",
+				},
 			},
 			wantErr: false,
 		},
@@ -123,9 +131,12 @@ func TestTokenExchangeConverter_ConvertToMetadata(t *testing.T) {
 					},
 				},
 			},
-			wantMetadata: map[string]any{
-				"token_url":          "https://auth.example.com/token",
-				"subject_token_type": "urn:ietf:params:oauth:token-type:id_token",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL:         "https://auth.example.com/token",
+					SubjectTokenType: "urn:ietf:params:oauth:token-type:id_token",
+				},
 			},
 			wantErr: false,
 		},
@@ -144,9 +155,12 @@ func TestTokenExchangeConverter_ConvertToMetadata(t *testing.T) {
 					},
 				},
 			},
-			wantMetadata: map[string]any{
-				"token_url":          "https://auth.example.com/token",
-				"subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL:         "https://auth.example.com/token",
+					SubjectTokenType: "urn:ietf:params:oauth:token-type:jwt",
+				},
 			},
 			wantErr: false,
 		},
@@ -165,9 +179,12 @@ func TestTokenExchangeConverter_ConvertToMetadata(t *testing.T) {
 					},
 				},
 			},
-			wantMetadata: map[string]any{
-				"token_url":          "https://auth.example.com/token",
-				"subject_token_type": "urn:ietf:params:oauth:token-type:access_token",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL:         "https://auth.example.com/token",
+					SubjectTokenType: "urn:ietf:params:oauth:token-type:access_token",
+				},
 			},
 			wantErr: false,
 		},
@@ -186,9 +203,12 @@ func TestTokenExchangeConverter_ConvertToMetadata(t *testing.T) {
 					},
 				},
 			},
-			wantMetadata: map[string]any{
-				"token_url": "https://auth.example.com/token",
-				"scopes":    []string{"openid", "profile", "email"},
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+					Scopes:   []string{"openid", "profile", "email"},
+				},
 			},
 			wantErr: false,
 		},
@@ -214,7 +234,7 @@ func TestTokenExchangeConverter_ConvertToMetadata(t *testing.T) {
 			t.Parallel()
 
 			converter := &TokenExchangeConverter{}
-			metadata, err := converter.ConvertToMetadata(tt.externalAuth)
+			strategy, err := converter.Convert(tt.externalAuth)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -225,7 +245,7 @@ func TestTokenExchangeConverter_ConvertToMetadata(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantMetadata, metadata)
+			assert.Equal(t, tt.wantStrategy, strategy)
 		})
 	}
 }
@@ -234,13 +254,13 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
-		setupSecrets func(client.Client) error
-		inputMeta    map[string]any
-		wantMetadata map[string]any
-		wantErr      bool
-		errContains  string
+		name          string
+		externalAuth  *mcpv1alpha1.MCPExternalAuthConfig
+		setupSecrets  func(client.Client) error
+		inputStrategy *authtypes.BackendAuthStrategy
+		wantStrategy  *authtypes.BackendAuthStrategy
+		wantErr       bool
+		errContains   string
 	}{
 		{
 			name: "successful secret resolution",
@@ -273,20 +293,26 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 				}
 				return k8sClient.Create(context.Background(), secret)
 			},
-			inputMeta: map[string]any{
-				"token_url":         "https://auth.example.com/token",
-				"client_id":         "test-client",
-				"client_secret_env": "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+			inputStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL:        "https://auth.example.com/token",
+					ClientID:        "test-client",
+					ClientSecretEnv: "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+				},
 			},
-			wantMetadata: map[string]any{
-				"token_url":     "https://auth.example.com/token",
-				"client_id":     "test-client",
-				"client_secret": "my-secret-value",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL:     "https://auth.example.com/token",
+					ClientID:     "test-client",
+					ClientSecret: "my-secret-value",
+				},
 			},
 			wantErr: false,
 		},
 		{
-			name: "no-op when client_secret_env not present",
+			name: "no-op when ClientSecretEnv not present",
 			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
@@ -304,13 +330,19 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 					},
 				},
 			},
-			inputMeta: map[string]any{
-				"token_url": "https://auth.example.com/token",
-				"client_id": "test-client",
+			inputStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+					ClientID: "test-client",
+				},
 			},
-			wantMetadata: map[string]any{
-				"token_url": "https://auth.example.com/token",
-				"client_id": "test-client",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+					ClientID: "test-client",
+				},
 			},
 			wantErr: false,
 		},
@@ -328,11 +360,17 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 					},
 				},
 			},
-			inputMeta: map[string]any{
-				"token_url": "https://auth.example.com/token",
+			inputStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+				},
 			},
-			wantMetadata: map[string]any{
-				"token_url": "https://auth.example.com/token",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+				},
 			},
 			wantErr: false,
 		},
@@ -348,8 +386,11 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 					TokenExchange: nil,
 				},
 			},
-			inputMeta: map[string]any{
-				"client_secret_env": "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+			inputStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					ClientSecretEnv: "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+				},
 			},
 			wantErr:     true,
 			errContains: "token exchange config is nil",
@@ -370,8 +411,11 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 					},
 				},
 			},
-			inputMeta: map[string]any{
-				"client_secret_env": "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+			inputStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					ClientSecretEnv: "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+				},
 			},
 			wantErr:     true,
 			errContains: "clientSecretRef is nil",
@@ -395,8 +439,11 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 					},
 				},
 			},
-			inputMeta: map[string]any{
-				"client_secret_env": "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+			inputStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					ClientSecretEnv: "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+				},
 			},
 			wantErr:     true,
 			errContains: "failed to get secret",
@@ -432,8 +479,11 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 				}
 				return k8sClient.Create(context.Background(), secret)
 			},
-			inputMeta: map[string]any{
-				"client_secret_env": "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+			inputStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					ClientSecretEnv: "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+				},
 			},
 			wantErr:     true,
 			errContains: "does not contain key",
@@ -457,12 +507,12 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 			}
 
 			converter := &TokenExchangeConverter{}
-			metadata, err := converter.ResolveSecrets(
+			strategy, err := converter.ResolveSecrets(
 				context.Background(),
 				tt.externalAuth,
 				fakeClient,
 				tt.externalAuth.Namespace,
-				tt.inputMeta,
+				tt.inputStrategy,
 			)
 
 			if tt.wantErr {
@@ -474,7 +524,7 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantMetadata, metadata)
+			assert.Equal(t, tt.wantStrategy, strategy)
 		})
 	}
 }

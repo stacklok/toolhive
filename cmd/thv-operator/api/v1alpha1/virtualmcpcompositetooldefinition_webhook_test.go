@@ -363,7 +363,7 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 							ID:   "deploy",
 							Tool: "kubectl.apply",
 							OnError: &ErrorHandling{
-								Action:     "retry",
+								Action:     ErrorActionRetry,
 								MaxRetries: 3,
 							},
 						},
@@ -383,7 +383,7 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 							ID:   "deploy",
 							Tool: "kubectl.apply",
 							OnError: &ErrorHandling{
-								Action:     "retry",
+								Action:     ErrorActionRetry,
 								MaxRetries: 0,
 							},
 						},
@@ -455,7 +455,7 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
 					Name:        "continue_deploy",
 					Description: "Deploy with continue mode",
-					FailureMode: "continue",
+					FailureMode: ErrorActionContinue,
 					Steps: []WorkflowStep{
 						{
 							ID:   "deploy1",

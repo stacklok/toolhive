@@ -541,6 +541,18 @@ const (
 	WorkflowStepTypeElicitation = "elicitation"
 )
 
+// Error handling actions
+const (
+	// ErrorActionAbort aborts the workflow on error
+	ErrorActionAbort = "abort"
+
+	// ErrorActionContinue continues the workflow on error
+	ErrorActionContinue = "continue"
+
+	// ErrorActionRetry retries the step on error
+	ErrorActionRetry = "retry"
+)
+
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=vmcp;virtualmcp

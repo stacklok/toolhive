@@ -593,7 +593,7 @@ spec:
   # ===== OUTGOING AUTHENTICATION (Virtual MCP → Backends) =====
   outgoingAuth:
     # Configuration source
-    source: discovered  # inline | discovered | mixed
+    source: discovered  # inline | discovered
 
     # When source=discovered:
     # Virtual MCP queries each backend's MCPServer.spec.externalAuthConfigRef

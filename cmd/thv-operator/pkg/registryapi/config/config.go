@@ -340,8 +340,13 @@ func buildGitSourceConfig(git *mcpv1alpha1.GitSource) (*GitConfig, error) {
 		return nil, fmt.Errorf("git repository is required")
 	}
 
+	if git.Path == "" {
+		return nil, fmt.Errorf("git path is required")
+	}
+
 	serverGitConfig := GitConfig{
 		Repository: git.Repository,
+		Path:       git.Path,
 	}
 
 	switch {

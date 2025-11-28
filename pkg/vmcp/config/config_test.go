@@ -12,18 +12,18 @@ func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		config         *OutgoingAuthConfig
-		backendID      string
-		wantStrategy   *authtypes.BackendAuthStrategy
-		description    string
+		name         string
+		config       *OutgoingAuthConfig
+		backendID    string
+		wantStrategy *authtypes.BackendAuthStrategy
+		description  string
 	}{
 		{
-			name:           "nil config returns nil",
-			config:         nil,
-			backendID:      "backend1",
-			wantStrategy:   nil,
-			description:    "When config is nil, should return nil",
+			name:         "nil config returns nil",
+			config:       nil,
+			backendID:    "backend1",
+			wantStrategy: nil,
+			description:  "When config is nil, should return nil",
 		},
 		{
 			name: "backend-specific config takes precedence",

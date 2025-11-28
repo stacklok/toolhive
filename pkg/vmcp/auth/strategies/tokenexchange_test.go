@@ -67,14 +67,14 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		setupCtx        func() context.Context
-		strategy        *authtypes.BackendAuthStrategy
+		name             string
+		setupCtx         func() context.Context
+		strategy         *authtypes.BackendAuthStrategy
 		tokenURLOverride string // If set, replace the strategy's TokenURL with this server URL
-		setupServer     func() *httptest.Server
-		expectError     bool
-		errorContains   string
-		checkAuthHeader func(t *testing.T, req *http.Request)
+		setupServer      func() *httptest.Server
+		expectError      bool
+		errorContains    string
+		checkAuthHeader  func(t *testing.T, req *http.Request)
 	}{
 		{
 			name:     "successfully exchanges token",
@@ -93,7 +93,7 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 				},
 			},
 			tokenURLOverride: "PLACEHOLDER",
-			expectError: false,
+			expectError:      false,
 			checkAuthHeader: func(t *testing.T, req *http.Request) {
 				t.Helper()
 				assert.Equal(t, "Bearer backend-token-123", req.Header.Get("Authorization"))
@@ -116,7 +116,7 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 				},
 			},
 			tokenURLOverride: "PLACEHOLDER",
-			expectError: false,
+			expectError:      false,
 		},
 		{
 			name:     "includes scopes in token exchange",
@@ -135,7 +135,7 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 				},
 			},
 			tokenURLOverride: "PLACEHOLDER",
-			expectError: false,
+			expectError:      false,
 		},
 		{
 			name:     "includes client credentials in token exchange",
@@ -165,7 +165,7 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 				},
 			},
 			tokenURLOverride: "PLACEHOLDER",
-			expectError: false,
+			expectError:      false,
 		},
 		{
 			name:     "returns error when no identity in context",
@@ -182,8 +182,8 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 				},
 			},
 			tokenURLOverride: "PLACEHOLDER",
-			expectError:   true,
-			errorContains: "no identity",
+			expectError:      true,
+			errorContains:    "no identity",
 		},
 		{
 			name:     "returns error when identity has no token",
@@ -200,8 +200,8 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 				},
 			},
 			tokenURLOverride: "PLACEHOLDER",
-			expectError:   true,
-			errorContains: "no token",
+			expectError:      true,
+			errorContains:    "no token",
 		},
 		{
 			name:          "returns error when strategy is nil",
@@ -230,8 +230,8 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 				},
 			},
 			tokenURLOverride: "PLACEHOLDER",
-			expectError:   true,
-			errorContains: "token exchange failed",
+			expectError:      true,
+			errorContains:    "token exchange failed",
 		},
 		{
 			name:     "returns error when response is missing access_token",
@@ -252,8 +252,8 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 				},
 			},
 			tokenURLOverride: "PLACEHOLDER",
-			expectError:   true,
-			errorContains: "empty access_token",
+			expectError:      true,
+			errorContains:    "empty access_token",
 		},
 	}
 
@@ -349,14 +349,14 @@ func TestTokenExchangeStrategy_Validate(t *testing.T) {
 			},
 		},
 		{
-			name: "error on nil strategy",
-			strategy: nil,
+			name:        "error on nil strategy",
+			strategy:    nil,
 			expectError: "token_exchange configuration required",
 		},
 		{
 			name: "error on nil TokenExchange config",
 			strategy: &authtypes.BackendAuthStrategy{
-				Type: authtypes.StrategyTypeTokenExchange,
+				Type:          authtypes.StrategyTypeTokenExchange,
 				TokenExchange: nil,
 			},
 			expectError: "token_exchange configuration required",
@@ -364,7 +364,7 @@ func TestTokenExchangeStrategy_Validate(t *testing.T) {
 		{
 			name: "error on missing token_url",
 			strategy: &authtypes.BackendAuthStrategy{
-				Type: authtypes.StrategyTypeTokenExchange,
+				Type:          authtypes.StrategyTypeTokenExchange,
 				TokenExchange: &authtypes.TokenExchangeConfig{},
 			},
 			expectError: "token_url required",

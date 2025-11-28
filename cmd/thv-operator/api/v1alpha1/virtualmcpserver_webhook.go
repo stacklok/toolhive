@@ -346,6 +346,13 @@ func validateStepErrorHandling(toolIndex, stepIndex int, step WorkflowStep) erro
 			toolIndex, stepIndex)
 	}
 
+	if step.OnError.Action == "retry" && step.OnError.RetryDelay != "" {
+		if err := validateDuration(step.OnError.RetryDelay); err != nil {
+			return fmt.Errorf("spec.compositeTools[%d].steps[%d].onError.retryDelay: %w",
+				toolIndex, stepIndex, err)
+		}
+	}
+
 	return nil
 }
 

@@ -1,3 +1,4 @@
+{{- if not .Values.operator.testMode }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -47,7 +48,6 @@ spec:
             value: {{ .Values.operator.gc.gomeglimit | quote }}
           - name: GOGC
             value: {{ .Values.operator.gc.gogc | quote }}
-          # Always use structured JSON logs in Kubernetes (not configurable)
           - name: UNSTRUCTURED_LOGS
             value: "false"
           - name: POD_NAMESPACE
@@ -103,3 +103,4 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

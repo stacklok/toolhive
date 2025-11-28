@@ -128,51 +128,6 @@ aggregation:
 			wantErr: false,
 		},
 		{
-			name: "valid configuration with token cache",
-			yaml: `
-name: test-vmcp
-group: test-group
-
-incoming_auth:
-  type: anonymous
-
-outgoing_auth:
-  source: inline
-  default:
-    type: unauthenticated
-
-aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
-
-token_cache:
-  provider: memory
-  config:
-    max_entries: 1000
-    ttl_offset: 5m
-`,
-			want: func(t *testing.T, cfg *Config) {
-				t.Helper()
-				if cfg.TokenCache == nil {
-					t.Fatal("TokenCache is nil")
-				}
-				if cfg.TokenCache.Provider != CacheProviderMemory {
-					t.Errorf("TokenCache.Provider = %v, want memory", cfg.TokenCache.Provider)
-				}
-				if cfg.TokenCache.Memory == nil {
-					t.Fatal("TokenCache.Memory is nil")
-				}
-				if cfg.TokenCache.Memory.MaxEntries != 1000 {
-					t.Errorf("Memory.MaxEntries = %v, want 1000", cfg.TokenCache.Memory.MaxEntries)
-				}
-				if cfg.TokenCache.Memory.TTLOffset != Duration(5*time.Minute) {
-					t.Errorf("Memory.TTLOffset = %v, want 5m", cfg.TokenCache.Memory.TTLOffset)
-				}
-			},
-			wantErr: false,
-		},
-		{
 			name: "valid configuration with composite tools",
 			yaml: `
 name: test-vmcp
@@ -278,34 +233,6 @@ aggregation:
 				}
 			},
 			wantErr: false,
-		},
-		{
-			name: "invalid duration format",
-			yaml: `
-name: test-vmcp
-group: test-group
-
-incoming_auth:
-  type: anonymous
-
-outgoing_auth:
-  source: inline
-  default:
-    type: unauthenticated
-
-aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
-
-token_cache:
-  provider: memory
-  config:
-    max_entries: 1000
-    ttl_offset: invalid-duration
-`,
-			wantErr: true,
-			errMsg:  "invalid ttl_offset",
 		},
 		{
 			name: "composite tool with missing parameter type",

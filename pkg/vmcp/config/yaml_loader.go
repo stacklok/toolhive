@@ -55,7 +55,6 @@ type rawConfig struct {
 	IncomingAuth rawIncomingAuth `yaml:"incoming_auth"`
 	OutgoingAuth rawOutgoingAuth `yaml:"outgoing_auth"`
 	Aggregation  rawAggregation  `yaml:"aggregation"`
-	TokenCache   *rawTokenCache  `yaml:"token_cache"`
 	Operational  *rawOperational `yaml:"operational"`
 
 	CompositeTools []*rawCompositeTool `yaml:"composite_tools"`
@@ -126,18 +125,6 @@ type rawWorkloadToolConfig struct {
 type rawToolOverride struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
-}
-
-type rawTokenCache struct {
-	Provider string `yaml:"provider"`
-	Config   struct {
-		MaxEntries int    `yaml:"max_entries"`
-		TTLOffset  string `yaml:"ttl_offset"`
-		Address    string `yaml:"address"`
-		DB         int    `yaml:"db"`
-		KeyPrefix  string `yaml:"key_prefix"`
-		Password   string `yaml:"password"`
-	} `yaml:"config"`
 }
 
 type rawOperational struct {
@@ -231,15 +218,6 @@ func (l *YAMLLoader) transformToConfig(raw *rawConfig) (*Config, error) {
 		return nil, fmt.Errorf("aggregation: %w", err)
 	}
 	cfg.Aggregation = aggregation
-
-	// Transform token cache
-	if raw.TokenCache != nil {
-		tokenCache, err := l.transformTokenCache(raw.TokenCache)
-		if err != nil {
-			return nil, fmt.Errorf("token_cache: %w", err)
-		}
-		cfg.TokenCache = tokenCache
-	}
 
 	// Transform operational
 	if raw.Operational != nil {
@@ -416,41 +394,6 @@ func (*YAMLLoader) transformAggregation(raw *rawAggregation) (*AggregationConfig
 		}
 
 		cfg.Tools = append(cfg.Tools, tool)
-	}
-
-	return cfg, nil
-}
-
-func (*YAMLLoader) transformTokenCache(raw *rawTokenCache) (*TokenCacheConfig, error) {
-	cfg := &TokenCacheConfig{
-		Provider: raw.Provider,
-	}
-
-	switch raw.Provider {
-	case CacheProviderMemory:
-		ttlOffset, err := time.ParseDuration(raw.Config.TTLOffset)
-		if err != nil {
-			return nil, fmt.Errorf("invalid ttl_offset: %w", err)
-		}
-
-		cfg.Memory = &MemoryCacheConfig{
-			MaxEntries: raw.Config.MaxEntries,
-			TTLOffset:  Duration(ttlOffset),
-		}
-
-	case CacheProviderRedis:
-		ttlOffset, err := time.ParseDuration(raw.Config.TTLOffset)
-		if err != nil {
-			return nil, fmt.Errorf("invalid ttl_offset: %w", err)
-		}
-
-		cfg.Redis = &RedisCacheConfig{
-			Address:   raw.Config.Address,
-			DB:        raw.Config.DB,
-			KeyPrefix: raw.Config.KeyPrefix,
-			Password:  raw.Config.Password,
-			TTLOffset: Duration(ttlOffset),
-		}
 	}
 
 	return cfg, nil

@@ -820,80 +820,6 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			expectError:         false,
 		},
 		{
-			name: "Redis token cache with missing password",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "anonymous",
-					},
-					TokenCache: &mcpv1alpha1.TokenCacheConfig{
-						Provider: "redis",
-						Redis: &mcpv1alpha1.RedisCacheConfig{
-							Address: "redis:6379",
-							PasswordRef: &mcpv1alpha1.SecretKeyRef{
-								Name: "missing-redis-secret",
-								Key:  "password",
-							},
-						},
-					},
-				},
-			},
-			secrets:             []client.Object{},
-			expectAuthCondition: true,
-			expectedAuthStatus:  metav1.ConditionFalse,
-			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthInvalid,
-			expectError:         true,
-		},
-		{
-			name: "Redis token cache with valid password",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "anonymous",
-					},
-					TokenCache: &mcpv1alpha1.TokenCacheConfig{
-						Provider: "redis",
-						Redis: &mcpv1alpha1.RedisCacheConfig{
-							Address: "redis:6379",
-							PasswordRef: &mcpv1alpha1.SecretKeyRef{
-								Name: "redis-secret",
-								Key:  "password",
-							},
-						},
-					},
-				},
-			},
-			secrets: []client.Object{
-				&corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "redis-secret",
-						Namespace: "default",
-					},
-					Data: map[string][]byte{
-						"password": []byte("redis-password"),
-					},
-				},
-			},
-			expectAuthCondition: true,
-			expectedAuthStatus:  metav1.ConditionTrue,
-			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthValid,
-			expectError:         false,
-		},
-		{
 			name: "OIDC secret exists but missing required key",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -928,48 +854,6 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 					},
 					Data: map[string][]byte{
 						"wrong-key": []byte("supersecret"),
-					},
-				},
-			},
-			expectAuthCondition: true,
-			expectedAuthStatus:  metav1.ConditionFalse,
-			expectedAuthReason:  mcpv1alpha1.ConditionReasonAuthInvalid,
-			expectError:         true,
-		},
-		{
-			name: "Redis secret exists but missing required key",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "anonymous",
-					},
-					TokenCache: &mcpv1alpha1.TokenCacheConfig{
-						Provider: "redis",
-						Redis: &mcpv1alpha1.RedisCacheConfig{
-							Address: "redis:6379",
-							PasswordRef: &mcpv1alpha1.SecretKeyRef{
-								Name: "redis-secret",
-								Key:  "password",
-							},
-						},
-					},
-				},
-			},
-			secrets: []client.Object{
-				&corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "redis-secret",
-						Namespace: "default",
-					},
-					Data: map[string][]byte{
-						"not-password": []byte("redis-password"),
 					},
 				},
 			},

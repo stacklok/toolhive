@@ -13,14 +13,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
-// Token cache provider types
-const (
-	// CacheProviderMemory represents in-memory token cache provider
-	CacheProviderMemory = "memory"
-	// CacheProviderRedis represents Redis token cache provider
-	CacheProviderRedis = "redis"
-)
-
 // Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
 // This ensures duration values are serialized as "30s", "1m", etc. instead of nanosecond integers.
 type Duration time.Duration
@@ -88,9 +80,6 @@ type Config struct {
 	// Full workflow definitions are embedded in the configuration.
 	// For Kubernetes, complex workflows can also reference VirtualMCPCompositeToolDefinition CRDs.
 	CompositeTools []*CompositeToolConfig `json:"composite_tools,omitempty" yaml:"composite_tools,omitempty"`
-
-	// TokenCache configures token caching.
-	TokenCache *TokenCacheConfig `json:"token_cache,omitempty" yaml:"token_cache,omitempty"`
 
 	// Operational configures operational settings.
 	Operational *OperationalConfig `json:"operational,omitempty" yaml:"operational,omitempty"`
@@ -246,45 +235,6 @@ type ToolOverride struct {
 
 	// Description is the new tool description (for updating).
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
-}
-
-// TokenCacheConfig configures token caching.
-type TokenCacheConfig struct {
-	// Provider is the cache provider: "memory", "redis"
-	Provider string `json:"provider" yaml:"provider"`
-
-	// Memory contains memory cache config (when Provider = "memory").
-	Memory *MemoryCacheConfig `json:"memory,omitempty" yaml:"memory,omitempty"`
-
-	// Redis contains Redis cache config (when Provider = "redis").
-	Redis *RedisCacheConfig `json:"redis,omitempty" yaml:"redis,omitempty"`
-}
-
-// MemoryCacheConfig configures in-memory token caching.
-type MemoryCacheConfig struct {
-	// MaxEntries is the maximum number of cached tokens.
-	MaxEntries int `json:"max_entries" yaml:"max_entries"`
-
-	// TTLOffset is how long before expiry to refresh tokens.
-	TTLOffset Duration `json:"ttl_offset" yaml:"ttl_offset"`
-}
-
-// RedisCacheConfig configures Redis token caching.
-type RedisCacheConfig struct {
-	// Address is the Redis server address.
-	Address string `json:"address" yaml:"address"`
-
-	// DB is the Redis database number.
-	DB int `json:"db" yaml:"db"`
-
-	// KeyPrefix is the prefix for cache keys.
-	KeyPrefix string `json:"key_prefix,omitempty" yaml:"key_prefix,omitempty"`
-
-	// Password is the Redis password (or secret reference).
-	Password string `json:"password,omitempty" yaml:"password,omitempty"`
-
-	// TTLOffset is how long before expiry to refresh tokens.
-	TTLOffset Duration `json:"ttl_offset" yaml:"ttl_offset"`
 }
 
 // OperationalConfig contains operational settings.

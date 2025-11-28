@@ -34,10 +34,6 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	CompositeToolRefs []CompositeToolDefinitionRef `json:"compositeToolRefs,omitempty"`
 
-	// TokenCache configures token caching behavior
-	// +optional
-	TokenCache *TokenCacheConfig `json:"tokenCache,omitempty"`
-
 	// Operational defines operational settings like timeouts and health checks
 	// +optional
 	Operational *OperationalConfig `json:"operational,omitempty"`
@@ -281,64 +277,6 @@ type ErrorHandling struct {
 	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m))+$`
 	// +optional
 	RetryDelay string `json:"retryDelay,omitempty"`
-}
-
-// TokenCacheConfig configures token caching behavior
-type TokenCacheConfig struct {
-	// Provider defines the cache provider type
-	// +kubebuilder:validation:Enum=memory;redis
-	// +kubebuilder:default=memory
-	// +optional
-	Provider string `json:"provider,omitempty"`
-
-	// Memory configures in-memory token caching
-	// Only used when Provider is "memory"
-	// +optional
-	Memory *MemoryCacheConfig `json:"memory,omitempty"`
-
-	// Redis configures Redis token caching
-	// Only used when Provider is "redis"
-	// +optional
-	Redis *RedisCacheConfig `json:"redis,omitempty"`
-}
-
-// MemoryCacheConfig configures in-memory token caching
-type MemoryCacheConfig struct {
-	// MaxEntries is the maximum number of cache entries
-	// +kubebuilder:default=1000
-	// +optional
-	MaxEntries int `json:"maxEntries,omitempty"`
-
-	// TTLOffset is the duration before token expiry to refresh
-	// +kubebuilder:default="5m"
-	// +optional
-	TTLOffset string `json:"ttlOffset,omitempty"`
-}
-
-// RedisCacheConfig configures Redis token caching
-type RedisCacheConfig struct {
-	// Address is the Redis server address
-	// +kubebuilder:validation:Required
-	Address string `json:"address"`
-
-	// DB is the Redis database number
-	// +kubebuilder:default=0
-	// +optional
-	DB int `json:"db,omitempty"`
-
-	// KeyPrefix is the prefix for cache keys
-	// +kubebuilder:default="vmcp:tokens:"
-	// +optional
-	KeyPrefix string `json:"keyPrefix,omitempty"`
-
-	// PasswordRef references a secret containing the Redis password
-	// +optional
-	PasswordRef *SecretKeyRef `json:"passwordRef,omitempty"`
-
-	// TLS enables TLS for Redis connections
-	// +kubebuilder:default=false
-	// +optional
-	TLS bool `json:"tls,omitempty"`
 }
 
 // OperationalConfig defines operational settings

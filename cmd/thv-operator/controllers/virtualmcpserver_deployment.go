@@ -385,7 +385,6 @@ func getVmcpImage() string {
 // Validated secrets include:
 // - OIDC client secrets (IncomingAuth.OIDCConfig.Inline.ClientSecretRef)
 // - Service account credentials (OutgoingAuth.*.ServiceAccount.CredentialsRef)
-// - Redis passwords (TokenCache.Redis.PasswordRef)
 //
 // This follows the pattern from ctrlutil.GenerateOIDCClientSecretEnvVar() which validates secrets
 // exist before pod creation.
@@ -420,17 +419,6 @@ func (r *VirtualMCPServerReconciler) validateSecretReferences(
 			if err := r.validateBackendAuthSecrets(ctx, vmcp.Namespace, &backendAuth, fmt.Sprintf("backend %s", backendName)); err != nil {
 				return err
 			}
-		}
-	}
-
-	// Validate Redis password if configured
-	if vmcp.Spec.TokenCache != nil &&
-		vmcp.Spec.TokenCache.Redis != nil &&
-		vmcp.Spec.TokenCache.Redis.PasswordRef != nil {
-		if err := r.validateSecretKeyRef(ctx, vmcp.Namespace,
-			vmcp.Spec.TokenCache.Redis.PasswordRef,
-			"Redis password"); err != nil {
-			return err
 		}
 	}
 

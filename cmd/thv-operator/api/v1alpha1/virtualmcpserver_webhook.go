@@ -74,13 +74,6 @@ func (r *VirtualMCPServer) Validate() error {
 		}
 	}
 
-	// Validate TokenCache configuration
-	if r.Spec.TokenCache != nil {
-		if err := r.validateTokenCache(); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
@@ -350,42 +343,6 @@ func validateStepErrorHandling(toolIndex, stepIndex int, step WorkflowStep) erro
 		if err := validateDuration(step.OnError.RetryDelay); err != nil {
 			return fmt.Errorf("spec.compositeTools[%d].steps[%d].onError.retryDelay: %w",
 				toolIndex, stepIndex, err)
-		}
-	}
-
-	return nil
-}
-
-// validateTokenCache validates token cache configuration
-func (r *VirtualMCPServer) validateTokenCache() error {
-	cache := r.Spec.TokenCache
-
-	// Validate provider
-	if cache.Provider != "" {
-		validProviders := map[string]bool{
-			"memory": true,
-			"redis":  true,
-		}
-		if !validProviders[cache.Provider] {
-			return fmt.Errorf("spec.tokenCache.provider must be memory or redis")
-		}
-	}
-
-	// Validate provider-specific configuration
-	if cache.Provider == "redis" || (cache.Provider == "" && cache.Redis != nil) {
-		if cache.Redis == nil {
-			return fmt.Errorf("spec.tokenCache.redis is required when provider is redis")
-		}
-		if cache.Redis.Address == "" {
-			return fmt.Errorf("spec.tokenCache.redis.address is required")
-		}
-		if cache.Redis.PasswordRef != nil {
-			if cache.Redis.PasswordRef.Name == "" {
-				return fmt.Errorf("spec.tokenCache.redis.passwordRef.name is required when passwordRef is specified")
-			}
-			if cache.Redis.PasswordRef.Key == "" {
-				return fmt.Errorf("spec.tokenCache.redis.passwordRef.key is required when passwordRef is specified")
-			}
 		}
 	}
 

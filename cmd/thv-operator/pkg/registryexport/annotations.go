@@ -3,31 +3,22 @@
 package registryexport
 
 const (
-	// AnnotationRegistryURL is the external URL for registry export.
-	// When present on an MCP resource, the resource will be exported to the registry.
+	// AnnotationRegistryURL triggers export when present on an MCP resource.
 	AnnotationRegistryURL = "toolhive.stacklok.dev/registry-url"
-
-	// AnnotationRegistryDescription is the description for servers not in a source registry.
-	// Required when creating new registry entries for internal/custom servers.
+	// AnnotationRegistryDescription is required for registry entries.
 	AnnotationRegistryDescription = "toolhive.stacklok.dev/registry-description"
-
-	// AnnotationRegistryName overrides the generated server name in the registry.
-	// If not specified, a name is generated from namespace/name in reverse-DNS format.
+	// AnnotationRegistryName overrides the auto-generated server name.
 	AnnotationRegistryName = "toolhive.stacklok.dev/registry-name"
 
 	// ConfigMapSuffix is appended to namespace for the export ConfigMap name.
 	ConfigMapSuffix = "-registry-export"
-
 	// ConfigMapKey is the key in the ConfigMap for registry data.
 	ConfigMapKey = "registry.json"
-
-	// LabelRegistryExport identifies ConfigMaps created by the registry export controller.
+	// LabelRegistryExport identifies ConfigMaps created by this controller.
 	LabelRegistryExport = "toolhive.stacklok.dev/registry-export"
-
 	// LabelRegistryExportValue is the value for the registry export label.
 	LabelRegistryExportValue = "true"
-
-	// EnvEnableRegistryExport is the environment variable to enable/disable registry export.
+	// EnvEnableRegistryExport toggles the registry export feature.
 	EnvEnableRegistryExport = "ENABLE_REGISTRY_EXPORT"
 )
 

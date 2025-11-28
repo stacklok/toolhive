@@ -249,40 +249,6 @@ spec:
           dependsOn: ["confirm_deploy"]
 ```
 
-### `.spec.tokenCache` (optional)
-
-Configures token caching behavior.
-
-**Type**: `TokenCacheConfig`
-
-**Fields**:
-- `provider` (string, optional, default: "memory"): Cache provider type (`memory` or `redis`)
-- `memory` (MemoryCacheConfig, optional): In-memory cache configuration
-- `redis` (RedisCacheConfig, optional): Redis cache configuration
-
-**Example (memory)**:
-```yaml
-spec:
-  tokenCache:
-    provider: memory
-    memory:
-      maxEntries: 1000
-      ttlOffset: 5m
-```
-
-**Example (redis)**:
-```yaml
-spec:
-  tokenCache:
-    provider: redis
-    redis:
-      address: redis:6379
-      db: 0
-      passwordRef:
-        name: redis-secret
-        key: password
-```
-
 ### `.spec.operational` (optional)
 
 Defines operational settings like timeouts and health checks.
@@ -477,13 +443,6 @@ spec:
             title: "Incident {{.params.incident_id}} Analysis"
             description: "{{.steps.fetch_logs.output}}"
           dependsOn: ["fetch_logs"]
-
-  # Token caching
-  tokenCache:
-    provider: memory
-    memory:
-      maxEntries: 1000
-      ttlOffset: 5m
 
   # Operational settings
   operational:

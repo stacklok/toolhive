@@ -111,14 +111,14 @@ func TestConvertOutgoingAuth(t *testing.T) {
 		{
 			name: "with per-backend auth",
 			outgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-				Source: "mixed",
+				Source: "discovered",
 				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 					"backend-1": {
 						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 					},
 				},
 			},
-			expectedSource: "mixed",
+			expectedSource: "discovered",
 			hasDefault:     false,
 			backendCount:   1,
 		},
@@ -514,7 +514,7 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 			},
 			// OutgoingAuth with Backends map
 			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-				Source: "mixed",
+				Source: "discovered",
 				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 					"backend-zebra": {
 						Type: mcpv1alpha1.BackendAuthTypeDiscovered,

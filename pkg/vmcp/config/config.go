@@ -145,10 +145,9 @@ type AuthzConfig struct {
 
 // OutgoingAuthConfig configures backend authentication.
 type OutgoingAuthConfig struct {
-	// Source defines how to discover backend auth: "inline", "discovered", "mixed"
+	// Source defines how to discover backend auth: "inline", "discovered"
 	// - inline: Explicit configuration in OutgoingAuth
 	// - discovered: Auto-discover from backend MCPServer.externalAuthConfigRef (Kubernetes only)
-	// - mixed: Discover with selective overrides
 	Source string `json:"source" yaml:"source"`
 
 	// Default is the default auth strategy for backends without explicit config.

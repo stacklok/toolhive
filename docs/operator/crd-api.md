@@ -1328,9 +1328,9 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `source` _string_ | Source defines how backend authentication configurations are determined<br />- discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef<br />- inline: Explicit per-backend configuration in VirtualMCPServer<br />- mixed: Discover most, override specific backends | discovered | Enum: [discovered inline mixed] <br /> |
+| `source` _string_ | Source defines how backend authentication configurations are determined<br />- discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef<br />- inline: Explicit per-backend configuration in VirtualMCPServer | discovered | Enum: [discovered inline] <br /> |
 | `default` _[BackendAuthConfig](#backendauthconfig)_ | Default defines default behavior for backends without explicit auth config |  |  |
-| `backends` _object (keys:string, values:[BackendAuthConfig](#backendauthconfig))_ | Backends defines per-backend authentication overrides<br />Works in all modes (discovered, inline, mixed) |  |  |
+| `backends` _object (keys:string, values:[BackendAuthConfig](#backendauthconfig))_ | Backends defines per-backend authentication overrides<br />Works in all modes (discovered, inline) |  |  |
 
 
 #### PermissionProfileRef

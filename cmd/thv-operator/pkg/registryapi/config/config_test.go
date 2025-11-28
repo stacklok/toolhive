@@ -1000,3 +1000,149 @@ func TestBuildConfig_MultipleRegistries(t *testing.T) {
 	require.NotNil(t, config.Registries[1].Filter.Names)
 	assert.Equal(t, []string{"server-*"}, config.Registries[1].Filter.Names.Include)
 }
+
+func TestBuildConfig_DatabaseConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("default database config when nil", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "default",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				// DatabaseConfig not specified, should use defaults
+			},
+		}
+
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.NotNil(t, config.Database)
+
+		// Verify default values
+		assert.Equal(t, "postgres", config.Database.Host)
+		assert.Equal(t, 5432, config.Database.Port)
+		assert.Equal(t, "db_app", config.Database.User)
+		assert.Equal(t, "db_migrator", config.Database.MigrationUser)
+		assert.Equal(t, "registry", config.Database.Database)
+		assert.Equal(t, "disable", config.Database.SSLMode)
+		assert.Equal(t, 10, config.Database.MaxOpenConns)
+		assert.Equal(t, 2, config.Database.MaxIdleConns)
+		assert.Equal(t, "30m", config.Database.ConnMaxLifetime)
+	})
+
+	t.Run("custom database config", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "default",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				DatabaseConfig: &mcpv1alpha1.MCPRegistryDatabaseConfig{
+					Host:            "custom-postgres.example.com",
+					Port:            15432,
+					User:            "custom_app_user",
+					MigrationUser:   "custom_migrator",
+					Database:        "custom_registry_db",
+					SSLMode:         "require",
+					MaxOpenConns:    25,
+					MaxIdleConns:    5,
+					ConnMaxLifetime: "1h",
+				},
+			},
+		}
+
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.NotNil(t, config.Database)
+
+		// Verify custom values
+		assert.Equal(t, "custom-postgres.example.com", config.Database.Host)
+		assert.Equal(t, 15432, config.Database.Port)
+		assert.Equal(t, "custom_app_user", config.Database.User)
+		assert.Equal(t, "custom_migrator", config.Database.MigrationUser)
+		assert.Equal(t, "custom_registry_db", config.Database.Database)
+		assert.Equal(t, "require", config.Database.SSLMode)
+		assert.Equal(t, 25, config.Database.MaxOpenConns)
+		assert.Equal(t, 5, config.Database.MaxIdleConns)
+		assert.Equal(t, "1h", config.Database.ConnMaxLifetime)
+	})
+
+	t.Run("partial database config uses defaults for missing fields", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "default",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				DatabaseConfig: &mcpv1alpha1.MCPRegistryDatabaseConfig{
+					Host:     "custom-host",
+					Database: "custom-db",
+					// Other fields omitted, should use defaults
+				},
+			},
+		}
+
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.NotNil(t, config.Database)
+
+		// Verify custom values are used
+		assert.Equal(t, "custom-host", config.Database.Host)
+		assert.Equal(t, "custom-db", config.Database.Database)
+
+		// Verify defaults are used for omitted fields
+		assert.Equal(t, 5432, config.Database.Port)
+		assert.Equal(t, "db_app", config.Database.User)
+		assert.Equal(t, "db_migrator", config.Database.MigrationUser)
+		assert.Equal(t, "disable", config.Database.SSLMode)
+		assert.Equal(t, 10, config.Database.MaxOpenConns)
+		assert.Equal(t, 2, config.Database.MaxIdleConns)
+		assert.Equal(t, "30m", config.Database.ConnMaxLifetime)
+	})
+}

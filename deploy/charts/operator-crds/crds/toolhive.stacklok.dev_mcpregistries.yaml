@@ -60,6 +60,80 @@ spec:
           spec:
             description: MCPRegistrySpec defines the desired state of MCPRegistry
             properties:
+              databaseConfig:
+                description: |-
+                  DatabaseConfig defines the PostgreSQL database configuration for the registry API server.
+                  If not specified, defaults will be used:
+                    - Host: "postgres"
+                    - Port: 5432
+                    - User: "db_app"
+                    - MigrationUser: "db_migrator"
+                    - Database: "registry"
+                    - SSLMode: "disable"
+                    - MaxOpenConns: 10
+                    - MaxIdleConns: 2
+                    - ConnMaxLifetime: "30m"
+                properties:
+                  connMaxLifetime:
+                    default: 30m
+                    description: |-
+                      ConnMaxLifetime is the maximum amount of time a connection may be reused (Go duration format)
+                      Examples: "30m", "1h", "24h"
+                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                    type: string
+                  database:
+                    default: registry
+                    description: Database is the database name
+                    type: string
+                  host:
+                    default: postgres
+                    description: Host is the database server hostname
+                    type: string
+                  maxIdleConns:
+                    default: 2
+                    description: MaxIdleConns is the maximum number of idle connections
+                      in the pool
+                    minimum: 0
+                    type: integer
+                  maxOpenConns:
+                    default: 10
+                    description: MaxOpenConns is the maximum number of open connections
+                      to the database
+                    minimum: 1
+                    type: integer
+                  migrationUser:
+                    default: db_migrator
+                    description: |-
+                      MigrationUser is the migration user (elevated privileges: CREATE, ALTER, DROP)
+                      Used for running database schema migrations
+                      Credentials should be provided via pgpass file or environment variables
+                    type: string
+                  port:
+                    default: 5432
+                    description: Port is the database server port
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  sslMode:
+                    default: disable
+                    description: |-
+                      SSLMode is the SSL mode for the connection
+                      Valid values: disable, allow, prefer, require, verify-ca, verify-full
+                    enum:
+                    - disable
+                    - allow
+                    - prefer
+                    - require
+                    - verify-ca
+                    - verify-full
+                    type: string
+                  user:
+                    default: db_app
+                    description: |-
+                      User is the application user (limited privileges: SELECT, INSERT, UPDATE, DELETE)
+                      Credentials should be provided via pgpass file or environment variables
+                    type: string
+                type: object
               displayName:
                 description: DisplayName is a human-readable name for the registry
                 type: string

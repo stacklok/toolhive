@@ -1,13 +1,11 @@
 package virtualmcp
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -217,32 +215,14 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		})
 
 		It("should aggregate echo tools from both yardstick backends", func() {
-			By("Creating MCP client for VirtualMCPServer")
-			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			By("Creating and initializing MCP client for VirtualMCPServer")
+			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-yardstick-test", 30*time.Second)
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
-			By("Starting transport and initializing connection")
-			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			err = mcpClient.Start(testCtx)
-			Expect(err).ToNot(HaveOccurred())
-
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-yardstick-test",
-				Version: "1.0.0",
-			}
-
-			_, err = mcpClient.Initialize(testCtx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
-
 			By("Listing tools from VirtualMCPServer")
 			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(testCtx, listRequest)
+			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).ToNot(BeEmpty(), "VirtualMCPServer should aggregate tools from backends")
 
@@ -279,32 +259,14 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		})
 
 		It("should successfully call echo tool through VirtualMCPServer", func() {
-			By("Creating MCP client for VirtualMCPServer")
-			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			By("Creating and initializing MCP client for VirtualMCPServer")
+			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-yardstick-test", 30*time.Second)
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
-			By("Starting transport and initializing connection")
-			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			err = mcpClient.Start(testCtx)
-			Expect(err).ToNot(HaveOccurred())
-
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-yardstick-test",
-				Version: "1.0.0",
-			}
-
-			_, err = mcpClient.Initialize(testCtx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
-
 			By("Listing available tools")
 			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(testCtx, listRequest)
+			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).ToNot(BeEmpty())
 
@@ -320,9 +282,6 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			Expect(targetToolName).ToNot(BeEmpty(), "Should find an echo tool")
 
 			By(fmt.Sprintf("Calling echo tool: %s", targetToolName))
-			toolCallCtx, toolCallCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer toolCallCancel()
-
 			// Yardstick echo tool requires alphanumeric input
 			testInput := "hello123"
 			callRequest := mcp.CallToolRequest{}
@@ -331,7 +290,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				"input": testInput,
 			}
 
-			result, err := mcpClient.CallTool(toolCallCtx, callRequest)
+			result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
 			Expect(err).ToNot(HaveOccurred(),
 				fmt.Sprintf("Should be able to call tool '%s' through VirtualMCPServer", targetToolName))
 			Expect(result).ToNot(BeNil())

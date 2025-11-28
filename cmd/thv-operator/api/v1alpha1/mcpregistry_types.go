@@ -54,6 +54,20 @@ type MCPRegistrySpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
+
+	// DatabaseConfig defines the PostgreSQL database configuration for the registry API server.
+	// If not specified, defaults will be used:
+	//   - Host: "postgres"
+	//   - Port: 5432
+	//   - User: "db_app"
+	//   - MigrationUser: "db_migrator"
+	//   - Database: "registry"
+	//   - SSLMode: "prefer"
+	//   - MaxOpenConns: 10
+	//   - MaxIdleConns: 2
+	//   - ConnMaxLifetime: "30m"
+	// +optional
+	DatabaseConfig *MCPRegistryDatabaseConfig `json:"databaseConfig,omitempty"`
 }
 
 // MCPRegistryConfig defines the configuration for a registry data source
@@ -185,6 +199,66 @@ type TagFilter struct {
 	// Exclude is a list of tags to exclude
 	// +optional
 	Exclude []string `json:"exclude,omitempty"`
+}
+
+// MCPRegistryDatabaseConfig defines PostgreSQL database configuration for the registry API server.
+// Uses a two-user security model: separate users for operations and migrations.
+type MCPRegistryDatabaseConfig struct {
+	// Host is the database server hostname
+	// +kubebuilder:default="postgres"
+	// +optional
+	Host string `json:"host,omitempty"`
+
+	// Port is the database server port
+	// +kubebuilder:default=5432
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Port int `json:"port,omitempty"`
+
+	// User is the application user (limited privileges: SELECT, INSERT, UPDATE, DELETE)
+	// Credentials should be provided via pgpass file or environment variables
+	// +kubebuilder:default="db_app"
+	// +optional
+	User string `json:"user,omitempty"`
+
+	// MigrationUser is the migration user (elevated privileges: CREATE, ALTER, DROP)
+	// Used for running database schema migrations
+	// Credentials should be provided via pgpass file or environment variables
+	// +kubebuilder:default="db_migrator"
+	// +optional
+	MigrationUser string `json:"migrationUser,omitempty"`
+
+	// Database is the database name
+	// +kubebuilder:default="registry"
+	// +optional
+	Database string `json:"database,omitempty"`
+
+	// SSLMode is the SSL mode for the connection
+	// Valid values: disable, allow, prefer, require, verify-ca, verify-full
+	// +kubebuilder:validation:Enum=disable;allow;prefer;require;verify-ca;verify-full
+	// +kubebuilder:default="prefer"
+	// +optional
+	SSLMode string `json:"sslMode,omitempty"`
+
+	// MaxOpenConns is the maximum number of open connections to the database
+	// +kubebuilder:default=10
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxOpenConns int `json:"maxOpenConns,omitempty"`
+
+	// MaxIdleConns is the maximum number of idle connections in the pool
+	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxIdleConns int `json:"maxIdleConns,omitempty"`
+
+	// ConnMaxLifetime is the maximum amount of time a connection may be reused (Go duration format)
+	// Examples: "30m", "1h", "24h"
+	// +kubebuilder:validation:Pattern=^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+	// +kubebuilder:default="30m"
+	// +optional
+	ConnMaxLifetime string `json:"connMaxLifetime,omitempty"`
 }
 
 // MCPRegistryStatus defines the observed state of MCPRegistry

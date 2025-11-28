@@ -103,6 +103,41 @@ type Config struct {
 	// Defaults to "default" if not specified
 	RegistryName string           `yaml:"registryName,omitempty"`
 	Registries   []RegistryConfig `yaml:"registries"`
+	Database     *DatabaseConfig  `yaml:"database,omitempty"`
+}
+
+// DatabaseConfig defines PostgreSQL database configuration
+// Uses two-user security model: separate users for operations and migrations
+type DatabaseConfig struct {
+	// Host is the database server hostname
+	Host string `yaml:"host"`
+
+	// Port is the database server port
+	Port int `yaml:"port"`
+
+	// User is the application user (limited privileges: SELECT, INSERT, UPDATE, DELETE)
+	// Credentials provided via pgpass file
+	User string `yaml:"user"`
+
+	// MigrationUser is the migration user (elevated privileges: CREATE, ALTER, DROP)
+	// Used for running database schema migrations
+	// Credentials provided via pgpass file
+	MigrationUser string `yaml:"migrationUser"`
+
+	// Database is the database name
+	Database string `yaml:"database"`
+
+	// SSLMode is the SSL mode for the connection
+	SSLMode string `yaml:"sslMode"`
+
+	// MaxOpenConns is the maximum number of open connections to the database
+	MaxOpenConns int `yaml:"maxOpenConns"`
+
+	// MaxIdleConns is the maximum number of idle connections in the pool
+	MaxIdleConns int `yaml:"maxIdleConns"`
+
+	// ConnMaxLifetime is the maximum amount of time a connection may be reused
+	ConnMaxLifetime string `yaml:"connMaxLifetime"`
 }
 
 // RegistryConfig defines the configuration for a registry data source
@@ -227,6 +262,9 @@ func (cm *configManager) BuildConfig() (*Config, error) {
 		}
 		config.Registries = append(config.Registries, *registryConfig)
 	}
+
+	// Build database configuration from CRD spec or use defaults
+	config.Database = buildDatabaseConfig(mcpRegistry.Spec.DatabaseConfig)
 
 	return &config, nil
 }
@@ -370,4 +408,57 @@ func buildAPISourceConfig(api *mcpv1alpha1.APISource) (*APIConfig, error) {
 	return &APIConfig{
 		Endpoint: api.Endpoint,
 	}, nil
+}
+
+// buildDatabaseConfig creates a DatabaseConfig from the CRD spec.
+// If the spec is nil or fields are empty, sensible defaults are used.
+func buildDatabaseConfig(dbConfig *mcpv1alpha1.MCPRegistryDatabaseConfig) *DatabaseConfig {
+	// Default values
+	config := &DatabaseConfig{
+		Host:            "postgres",
+		Port:            5432,
+		User:            "db_app",
+		MigrationUser:   "db_migrator",
+		Database:        "registry",
+		SSLMode:         "prefer",
+		MaxOpenConns:    10,
+		MaxIdleConns:    2,
+		ConnMaxLifetime: "30m",
+	}
+
+	// If no database config specified, return defaults
+	if dbConfig == nil {
+		return config
+	}
+
+	// Override defaults with values from CRD spec if provided
+	if dbConfig.Host != "" {
+		config.Host = dbConfig.Host
+	}
+	if dbConfig.Port != 0 {
+		config.Port = dbConfig.Port
+	}
+	if dbConfig.User != "" {
+		config.User = dbConfig.User
+	}
+	if dbConfig.MigrationUser != "" {
+		config.MigrationUser = dbConfig.MigrationUser
+	}
+	if dbConfig.Database != "" {
+		config.Database = dbConfig.Database
+	}
+	if dbConfig.SSLMode != "" {
+		config.SSLMode = dbConfig.SSLMode
+	}
+	if dbConfig.MaxOpenConns != 0 {
+		config.MaxOpenConns = dbConfig.MaxOpenConns
+	}
+	if dbConfig.MaxIdleConns != 0 {
+		config.MaxIdleConns = dbConfig.MaxIdleConns
+	}
+	if dbConfig.ConnMaxLifetime != "" {
+		config.ConnMaxLifetime = dbConfig.ConnMaxLifetime
+	}
+
+	return config
 }

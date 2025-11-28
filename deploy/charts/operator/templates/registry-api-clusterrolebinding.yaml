@@ -6,6 +6,9 @@ metadata:
     app.kubernetes.io/name: toolhive-registry-api
     app.kubernetes.io/component: registry-api
     app.kubernetes.io/managed-by: toolhive-operator
+  annotations:
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-delete-policy": before-hook-creation
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

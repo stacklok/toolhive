@@ -1,1 +1,15 @@
-# empty values file as we do not need any values for the CRDs at the moment
+# Configuration for CRD installation
+crds:
+  install:
+    # -- Install server-related CRDs (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, and ToolConfig).
+    # Users who only need registry or aggregation features can set this to false to skip
+    # installing server management CRDs.
+    server: true
+    # -- Install registry CRD (MCPRegistry).
+    # Users who only need server management without registry features can set this to false
+    # to skip installing the registry CRD.
+    registry: true
+    # -- Install Virtual MCP CRDs (VirtualMCPServer and VirtualMCPCompositeToolDefinition).
+    # Users who only need core MCP server management can set this to false to skip
+    # installing Virtual MCP aggregation features.
+    virtualMCP: true

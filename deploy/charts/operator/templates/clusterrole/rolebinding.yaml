@@ -6,6 +6,9 @@ metadata:
   name: toolhive-operator-manager-rolebinding
   labels:
     {{- include "toolhive.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-delete-policy": before-hook-creation
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

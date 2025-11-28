@@ -1,0 +1,3 @@
+{{- if .Values.crds.install.virtualMCP }}
+{{ $.Files.Get "crd-files/toolhive.stacklok.dev_mcpgroups.yaml" }}
+{{- end }}

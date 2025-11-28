@@ -1,6 +1,7 @@
 # Configuration for chart-testing (ct) install command
 # See: https://github.com/helm/chart-testing
 
+skip-clean-up: true
 charts:
   - deploy/charts/operator-crds
   - deploy/charts/operator

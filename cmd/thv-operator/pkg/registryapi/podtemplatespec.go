@@ -2,11 +2,13 @@
 package registryapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -17,15 +19,45 @@ import (
 type PodTemplateSpecOption func(*corev1.PodTemplateSpec)
 
 // PodTemplateSpecBuilder builds a PodTemplateSpec using the functional options pattern.
+// When created with NewPodTemplateSpecBuilderFrom, the builder stores the user's template
+// and applies options as defaults. Build() merges them with user values taking precedence.
 type PodTemplateSpecBuilder struct {
-	podTemplateSpec *corev1.PodTemplateSpec
+	// userTemplate is the user-provided PodTemplateSpec (if any)
+	userTemplate *corev1.PodTemplateSpec
+	// defaultSpec is built up via Apply() with options acting as defaults
+	defaultSpec *corev1.PodTemplateSpec
 }
 
-// NewPodTemplateSpecBuilder creates a new PodTemplateSpecBuilder with default values.
-func NewPodTemplateSpecBuilder() *PodTemplateSpecBuilder {
-	return &PodTemplateSpecBuilder{
-		podTemplateSpec: &corev1.PodTemplateSpec{},
+// NewPodTemplateSpecBuilderFrom creates a new PodTemplateSpecBuilder with a user-provided template.
+// The user template is deep-copied to avoid mutating the original.
+// Options applied via Apply() act as defaults - Build() will merge them with user values,
+// where user values take precedence over defaults.
+func NewPodTemplateSpecBuilderFrom(userTemplate *corev1.PodTemplateSpec) *PodTemplateSpecBuilder {
+	var userCopy *corev1.PodTemplateSpec
+	if userTemplate != nil {
+		userCopy = userTemplate.DeepCopy()
 	}
+	return &PodTemplateSpecBuilder{
+		userTemplate: userCopy,
+		defaultSpec:  &corev1.PodTemplateSpec{},
+	}
+}
+
+// Apply applies the given options to build up the default PodTemplateSpec.
+func (b *PodTemplateSpecBuilder) Apply(opts ...PodTemplateSpecOption) *PodTemplateSpecBuilder {
+	for _, opt := range opts {
+		opt(b.defaultSpec)
+	}
+	return b
+}
+
+// Build returns the final PodTemplateSpec.
+// If a user template was provided, merges defaults with user values (user takes precedence).
+func (b *PodTemplateSpecBuilder) Build() corev1.PodTemplateSpec {
+	if b.userTemplate == nil {
+		return *b.defaultSpec
+	}
+	return MergePodTemplateSpecs(b.defaultSpec, b.userTemplate)
 }
 
 // WithLabels sets the labels on the PodTemplateSpec.
@@ -196,17 +228,28 @@ func WithRegistrySourceMounts(containerName string, registries []mcpv1alpha1.MCP
 	}
 }
 
-// Apply applies the given options to the PodTemplateSpecBuilder.
-func (b *PodTemplateSpecBuilder) Apply(opts ...PodTemplateSpecOption) *PodTemplateSpecBuilder {
-	for _, opt := range opts {
-		opt(b.podTemplateSpec)
+// ParsePodTemplateSpec parses a runtime.RawExtension into a PodTemplateSpec.
+// Returns nil if the raw extension is nil or empty.
+// Returns an error if the raw extension contains invalid PodTemplateSpec data.
+func ParsePodTemplateSpec(raw *runtime.RawExtension) (*corev1.PodTemplateSpec, error) {
+	if raw == nil || raw.Raw == nil || len(raw.Raw) == 0 {
+		return nil, nil
 	}
-	return b
+
+	var pts corev1.PodTemplateSpec
+	if err := json.Unmarshal(raw.Raw, &pts); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal PodTemplateSpec: %w", err)
+	}
+
+	return &pts, nil
 }
 
-// Build returns the configured PodTemplateSpec.
-func (b *PodTemplateSpecBuilder) Build() corev1.PodTemplateSpec {
-	return *b.podTemplateSpec
+// ValidatePodTemplateSpec validates a runtime.RawExtension contains valid PodTemplateSpec data.
+// Returns nil if the raw extension is nil, empty, or contains valid data.
+// Returns an error if the raw extension contains invalid PodTemplateSpec data.
+func ValidatePodTemplateSpec(raw *runtime.RawExtension) error {
+	_, err := ParsePodTemplateSpec(raw)
+	return err
 }
 
 // BuildRegistryAPIContainer creates the registry-api container with default configuration.
@@ -255,19 +298,6 @@ func BuildRegistryAPIContainer(image string) corev1.Container {
 			PeriodSeconds:       ReadinessPeriod,
 		},
 	}
-}
-
-// DefaultRegistryAPIPodTemplateSpec creates a default PodTemplateSpec for the registry-api.
-func DefaultRegistryAPIPodTemplateSpec(labels map[string]string, configHash string) corev1.PodTemplateSpec {
-	builder := NewPodTemplateSpecBuilder()
-	return builder.Apply(
-		WithLabels(labels),
-		WithAnnotations(map[string]string{
-			"toolhive.stacklok.dev/config-hash": configHash,
-		}),
-		WithServiceAccountName(DefaultServiceAccountName),
-		WithContainer(BuildRegistryAPIContainer(getRegistryAPIImage())),
-	).Build()
 }
 
 // MergePodTemplateSpecs merges a default PodTemplateSpec with a user-provided one.

@@ -8,6 +8,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -94,6 +95,17 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 	ctxLogger.Info("Reconciling MCPRegistry", "MCPRegistry.Name", mcpRegistry.Name, "phase", mcpRegistry.Status.Phase,
 		"apiPhase", apiPhase, "apiEndpoint", apiEndpoint)
+
+	// Validate PodTemplateSpec early - before other operations
+	if mcpRegistry.HasPodTemplateSpec() {
+		// Validate PodTemplateSpec early - before other operations
+		// This ensures we fail fast if the spec is invalid
+		if !r.validateAndUpdatePodTemplateStatus(ctx, mcpRegistry) {
+			// Invalid PodTemplateSpec - return without error to avoid infinite retries
+			// The user must fix the spec and the next reconciliation will retry
+			return ctrl.Result{}, nil
+		}
+	}
 
 	// 2. Handle deletion if DeletionTimestamp is set
 	if mcpRegistry.GetDeletionTimestamp() != nil {
@@ -300,4 +312,54 @@ func (*MCPRegistryReconciler) applyStatusUpdates(
 	}
 
 	return nil
+}
+
+// validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and updates the MCPRegistry status
+// with appropriate conditions. Returns true if validation passes, false otherwise.
+func (r *MCPRegistryReconciler) validateAndUpdatePodTemplateStatus(
+	ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry,
+) bool {
+	ctxLogger := log.FromContext(ctx)
+
+	// Validate the PodTemplateSpec by attempting to parse it
+	err := registryapi.ValidatePodTemplateSpec(mcpRegistry.GetPodTemplateSpecRaw())
+	if err != nil {
+		// Set phase and message
+		mcpRegistry.Status.Phase = mcpv1alpha1.MCPRegistryPhaseFailed
+		mcpRegistry.Status.Message = fmt.Sprintf("Invalid PodTemplateSpec: %v", err)
+
+		// Set condition for invalid PodTemplateSpec
+		meta.SetStatusCondition(&mcpRegistry.Status.Conditions, metav1.Condition{
+			Type:               mcpv1alpha1.ConditionRegistryPodTemplateValid,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: mcpRegistry.Generation,
+			Reason:             mcpv1alpha1.ConditionReasonRegistryPodTemplateInvalid,
+			Message:            fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
+		})
+
+		// Update status with the condition
+		if statusErr := r.Status().Update(ctx, mcpRegistry); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPRegistry status with PodTemplateSpec validation")
+			return false
+		}
+
+		ctxLogger.Error(err, "PodTemplateSpec validation failed")
+		return false
+	}
+
+	// Set condition for valid PodTemplateSpec
+	meta.SetStatusCondition(&mcpRegistry.Status.Conditions, metav1.Condition{
+		Type:               mcpv1alpha1.ConditionRegistryPodTemplateValid,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: mcpRegistry.Generation,
+		Reason:             mcpv1alpha1.ConditionReasonRegistryPodTemplateValid,
+		Message:            "PodTemplateSpec is valid",
+	})
+
+	// Update status with the condition
+	if statusErr := r.Status().Update(ctx, mcpRegistry); statusErr != nil {
+		ctxLogger.Error(statusErr, "Failed to update MCPRegistry status with PodTemplateSpec validation")
+	}
+
+	return true
 }

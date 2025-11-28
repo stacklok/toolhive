@@ -59,11 +59,25 @@ wrap_crd() {
         echo  # Add a newline after the header
 
         # Add the actual CRD content (skip the first line if it's just '---')
+        # and inject the keep annotation after the "annotations:" line
+        local content
         if [ "$(head -1 "${source_file}")" = "---" ]; then
-            tail -n +2 "${source_file}"
+            content=$(tail -n +2 "${source_file}")
         else
-            cat "${source_file}"
+            content=$(cat "${source_file}")
         fi
+
+        # Inject the keep annotation after "metadata:\n  annotations:"
+        echo "$content" | awk '
+            /^  annotations:$/ {
+                print
+                print "    {{- if .Values.crds.keep }}"
+                print "    helm.sh/resource-policy: keep"
+                print "    {{- end }}"
+                next
+            }
+            { print }
+        '
 
         # Add footer from template
         cat "${SCRIPT_DIR}/crd-footer.tpl"

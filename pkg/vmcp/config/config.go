@@ -211,6 +211,8 @@ type AggregationConfig struct {
 
 	// Tools contains per-workload tool configuration.
 	Tools []*WorkloadToolConfig `json:"tools,omitempty" yaml:"tools,omitempty"`
+
+	ExcludeAllTools bool `json:"excludeAllTools,omitempty"`
 }
 
 // ConflictResolutionConfig contains conflict resolution settings.
@@ -233,6 +235,8 @@ type WorkloadToolConfig struct {
 
 	// Overrides maps tool names to override configurations.
 	Overrides map[string]*ToolOverride `json:"overrides,omitempty" yaml:"overrides,omitempty"`
+
+	ExcludeAll bool `json:"excludeAll,omitempty"`
 }
 
 // ToolOverride defines tool name/description overrides.

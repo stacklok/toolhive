@@ -18,13 +18,19 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
-var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
+// Compile-time check to ensure corev1 is used (for Service type)
+var _ = corev1.ServiceSpec{}
+
+// YardstickImage is the container image for the yardstick MCP server
+const YardstickImage = "ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2"
+
+var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 	var (
 		testNamespace   = "default"
-		mcpGroupName    = "test-discovered-group"
-		vmcpServerName  = "test-vmcp-discovered"
-		backend1Name    = "backend-fetch"
-		backend2Name    = "backend-osv"
+		mcpGroupName    = "test-yardstick-group"
+		vmcpServerName  = "test-vmcp-yardstick"
+		backend1Name    = "yardstick-a"
+		backend2Name    = "yardstick-b"
 		timeout         = 5 * time.Minute
 		pollingInterval = 5 * time.Second
 		vmcpNodePort    int32
@@ -35,14 +41,14 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 	}
 
 	BeforeAll(func() {
-		By("Creating MCPGroup")
+		By("Creating MCPGroup for yardstick backends")
 		mcpGroup := &mcpv1alpha1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      mcpGroupName,
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPGroupSpec{
-				Description: "Test MCP Group for VirtualMCP discovered mode E2E tests",
+				Description: "Test MCP Group for yardstick-based E2E tests",
 			},
 		}
 		Expect(k8sClient.Create(ctx, mcpGroup)).To(Succeed())
@@ -59,7 +65,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			return mcpGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
 		}, timeout, pollingInterval).Should(BeTrue())
 
-		By("Creating first backend MCPServer - fetch (streamable-http)")
+		By("Creating first yardstick backend MCPServer")
 		backend1 := &mcpv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backend1Name,
@@ -67,15 +73,18 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
-				Image:     "ghcr.io/stackloklabs/gofetch/server:1.0.1",
+				Image:     YardstickImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,
+				Env: []mcpv1alpha1.EnvVar{
+					{Name: "TRANSPORT", Value: "streamable-http"},
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, backend1)).To(Succeed())
 
-		By("Creating second backend MCPServer - osv (streamable-http)")
+		By("Creating second yardstick backend MCPServer")
 		backend2 := &mcpv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backend2Name,
@@ -83,54 +92,36 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
-				Image:     "ghcr.io/stackloklabs/osv-mcp/server:0.0.7",
+				Image:     YardstickImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,
+				Env: []mcpv1alpha1.EnvVar{
+					{Name: "TRANSPORT", Value: "streamable-http"},
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, backend2)).To(Succeed())
 
 		By("Waiting for backend MCPServers to be ready")
-		Eventually(func() error {
-			server := &mcpv1alpha1.MCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      backend1Name,
-				Namespace: testNamespace,
-			}, server)
-			if err != nil {
-				return fmt.Errorf("failed to get server: %w", err)
-			}
+		for _, backendName := range []string{backend1Name, backend2Name} {
+			Eventually(func() error {
+				server := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      backendName,
+					Namespace: testNamespace,
+				}, server)
+				if err != nil {
+					return fmt.Errorf("failed to get server: %w", err)
+				}
+				if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+					return nil
+				}
+				return fmt.Errorf("%s not ready yet, phase: %s", backendName, server.Status.Phase)
+			}, timeout, pollingInterval).Should(Succeed(), fmt.Sprintf("%s should be ready", backendName))
+		}
 
-			// Check for Running phase
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
-				return nil
-			}
-			return fmt.Errorf("backend 1 not ready yet, phase: %s", server.Status.Phase)
-		}, timeout, pollingInterval).Should(Succeed(), "Backend 1 should be ready")
-
-		Eventually(func() error {
-			server := &mcpv1alpha1.MCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      backend2Name,
-				Namespace: testNamespace,
-			}, server)
-			if err != nil {
-				return fmt.Errorf("failed to get server: %w", err)
-			}
-
-			// Check for Running phase
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
-				return nil
-			}
-			return fmt.Errorf("backend 2 not ready yet, phase: %s", server.Status.Phase)
-		}, timeout, pollingInterval).Should(Succeed(), "Backend 2 should be ready")
-
-		// Skip NodePort lookup for backends - MCPServers use ClusterIP services
-		// Backends will be tested through VirtualMCPServer aggregation
-		By("Backend MCPServers are running (ClusterIP services)")
-
-		By("Creating VirtualMCPServer in discovered mode")
+		By("Creating VirtualMCPServer with prefix conflict resolution")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
@@ -143,9 +134,8 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 					Type: "anonymous",
 				},
-				// Discovered mode is the default - tools from all backends in the group are automatically discovered
 				Aggregation: &mcpv1alpha1.AggregationConfig{
-					ConflictResolution: "prefix", // Use prefix strategy to avoid conflicts
+					ConflictResolution: "prefix",
 				},
 				ServiceType: "NodePort",
 			},
@@ -174,7 +164,6 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 		}, timeout, pollingInterval).Should(Succeed())
 
 		By(fmt.Sprintf("VirtualMCPServer accessible at http://localhost:%d", vmcpNodePort))
-		By("Backend servers use ClusterIP and are accessed through VirtualMCPServer")
 	})
 
 	AfterAll(func() {
@@ -185,29 +174,17 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				Namespace: testNamespace,
 			},
 		}
-		if err := k8sClient.Delete(ctx, vmcpServer); err != nil {
-			GinkgoWriter.Printf("Warning: failed to delete VirtualMCPServer: %v\n", err)
-		}
+		_ = k8sClient.Delete(ctx, vmcpServer)
 
 		By("Cleaning up backend MCPServers")
-		backend1 := &mcpv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      backend1Name,
-				Namespace: testNamespace,
-			},
-		}
-		if err := k8sClient.Delete(ctx, backend1); err != nil {
-			GinkgoWriter.Printf("Warning: failed to delete backend 1: %v\n", err)
-		}
-
-		backend2 := &mcpv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      backend2Name,
-				Namespace: testNamespace,
-			},
-		}
-		if err := k8sClient.Delete(ctx, backend2); err != nil {
-			GinkgoWriter.Printf("Warning: failed to delete backend 2: %v\n", err)
+		for _, backendName := range []string{backend1Name, backend2Name} {
+			backend := &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      backendName,
+					Namespace: testNamespace,
+				},
+			}
+			_ = k8sClient.Delete(ctx, backend)
 		}
 
 		By("Cleaning up MCPGroup")
@@ -217,14 +194,10 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				Namespace: testNamespace,
 			},
 		}
-		if err := k8sClient.Delete(ctx, mcpGroup); err != nil {
-			GinkgoWriter.Printf("Warning: failed to delete MCPGroup: %v\n", err)
-		}
+		_ = k8sClient.Delete(ctx, mcpGroup)
 	})
 
-	// Individual backend tests removed - backends are validated through VirtualMCPServer aggregation
-
-	Context("when testing VirtualMCPServer aggregation", func() {
+	Context("when testing basic yardstick aggregation", func() {
 		It("should be accessible via NodePort", func() {
 			By("Testing HTTP connectivity to VirtualMCPServer")
 			httpClient := &http.Client{Timeout: 10 * time.Second}
@@ -243,7 +216,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
-		It("should aggregate tools from both backends", func() {
+		It("should aggregate echo tools from both yardstick backends", func() {
 			By("Creating MCP client for VirtualMCPServer")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
 			mcpClient, err := client.NewStreamableHttpClient(serverURL)
@@ -251,25 +224,25 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			defer mcpClient.Close()
 
 			By("Starting transport and initializing connection")
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			err = mcpClient.Start(ctx)
+			err = mcpClient.Start(testCtx)
 			Expect(err).ToNot(HaveOccurred())
 
 			initRequest := mcp.InitializeRequest{}
 			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-e2e-test",
+				Name:    "toolhive-yardstick-test",
 				Version: "1.0.0",
 			}
 
-			_, err = mcpClient.Initialize(ctx, initRequest)
+			_, err = mcpClient.Initialize(testCtx, initRequest)
 			Expect(err).ToNot(HaveOccurred())
 
 			By("Listing tools from VirtualMCPServer")
 			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(ctx, listRequest)
+			tools, err := mcpClient.ListTools(testCtx, listRequest)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).ToNot(BeEmpty(), "VirtualMCPServer should aggregate tools from backends")
 
@@ -278,21 +251,34 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				GinkgoWriter.Printf("  Aggregated tool: %s - %s\n", tool.Name, tool.Description)
 			}
 
-			// In discovered mode with prefix conflict resolution, tools from both backends should be available
-			// fetch server has 'fetch' tool, osv server has vulnerability scanning tools
-			// With prefix strategy, they should be prefixed with backend names
+			// With prefix conflict resolution, both yardstick backends should expose "echo" tool
+			// prefixed with their workload name: yardstick-a_echo, yardstick-b_echo
 			Expect(len(tools.Tools)).To(BeNumerically(">=", 2),
-				"VirtualMCPServer should aggregate tools from both backends")
+				"VirtualMCPServer should aggregate echo tools from both backends")
 
-			// Verify we have tools from both backends (with prefixes due to conflict resolution)
+			// Verify we have prefixed tools from both backends
 			toolNames := make([]string, len(tools.Tools))
 			for i, tool := range tools.Tools {
 				toolNames[i] = tool.Name
 			}
 			GinkgoWriter.Printf("All aggregated tool names: %v\n", toolNames)
+
+			// Check that we have tools from both backends (with prefixes)
+			hasBackend1Tool := false
+			hasBackend2Tool := false
+			for _, name := range toolNames {
+				if strings.Contains(name, backend1Name) {
+					hasBackend1Tool = true
+				}
+				if strings.Contains(name, backend2Name) {
+					hasBackend2Tool = true
+				}
+			}
+			Expect(hasBackend1Tool).To(BeTrue(), "Should have tool from backend 1")
+			Expect(hasBackend2Tool).To(BeTrue(), "Should have tool from backend 2")
 		})
 
-		It("should be able to call tools through VirtualMCPServer", func() {
+		It("should successfully call echo tool through VirtualMCPServer", func() {
 			By("Creating MCP client for VirtualMCPServer")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
 			mcpClient, err := client.NewStreamableHttpClient(serverURL)
@@ -300,69 +286,63 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			defer mcpClient.Close()
 
 			By("Starting transport and initializing connection")
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			err = mcpClient.Start(ctx)
+			err = mcpClient.Start(testCtx)
 			Expect(err).ToNot(HaveOccurred())
 
 			initRequest := mcp.InitializeRequest{}
 			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-e2e-test",
+				Name:    "toolhive-yardstick-test",
 				Version: "1.0.0",
 			}
 
-			_, err = mcpClient.Initialize(ctx, initRequest)
+			_, err = mcpClient.Initialize(testCtx, initRequest)
 			Expect(err).ToNot(HaveOccurred())
 
 			By("Listing available tools")
 			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(ctx, listRequest)
+			tools, err := mcpClient.ListTools(testCtx, listRequest)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).ToNot(BeEmpty())
 
-			By("Calling a tool through VirtualMCPServer")
-			// Find a tool we can call with simple arguments
-			// The fetch tool (with prefix) should be available and can be called with a URL
+			By("Finding an echo tool to call")
 			var targetToolName string
 			for _, tool := range tools.Tools {
-				// Look for the fetch tool (may have a prefix like "backend-fetch__fetch")
-				if tool.Name == fetchToolName || strings.HasSuffix(tool.Name, fetchToolName) {
+				// Look for any echo tool (may have prefix)
+				if strings.Contains(tool.Name, "echo") {
 					targetToolName = tool.Name
 					break
 				}
 			}
+			Expect(targetToolName).ToNot(BeEmpty(), "Should find an echo tool")
 
-			if targetToolName != "" {
-				GinkgoWriter.Printf("Testing tool call for: %s\n", targetToolName)
+			By(fmt.Sprintf("Calling echo tool: %s", targetToolName))
+			toolCallCtx, toolCallCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer toolCallCancel()
 
-				// Use a standard timeout for the tool call
-				toolCallCtx, toolCallCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer toolCallCancel()
-
-				callRequest := mcp.CallToolRequest{}
-				callRequest.Params.Name = targetToolName
-				callRequest.Params.Arguments = map[string]any{
-					// Use localhost to avoid external network dependencies
-					// The test validates that VirtualMCPServer can route tool calls to backends,
-					// not that the fetch tool itself works (that's tested in the backend's own tests)
-					"url": "http://127.0.0.1:1",
-				}
-
-				result, err := mcpClient.CallTool(toolCallCtx, callRequest)
-				Expect(err).ToNot(HaveOccurred(),
-					fmt.Sprintf("Should be able to call tool '%s' through VirtualMCPServer", targetToolName))
-				Expect(result).ToNot(BeNil())
-
-				GinkgoWriter.Printf("Tool call successful: %s\n", targetToolName)
-			} else {
-				GinkgoWriter.Printf("Warning: fetch tool not found in aggregated tools\n")
+			// Yardstick echo tool requires alphanumeric input
+			testInput := "hello123"
+			callRequest := mcp.CallToolRequest{}
+			callRequest.Params.Name = targetToolName
+			callRequest.Params.Arguments = map[string]any{
+				"input": testInput,
 			}
+
+			result, err := mcpClient.CallTool(toolCallCtx, callRequest)
+			Expect(err).ToNot(HaveOccurred(),
+				fmt.Sprintf("Should be able to call tool '%s' through VirtualMCPServer", targetToolName))
+			Expect(result).ToNot(BeNil())
+
+			// Verify the echo response contains our input
+			GinkgoWriter.Printf("Tool call result: %+v\n", result)
+			Expect(result.Content).ToNot(BeEmpty(), "Should have content in response")
 		})
 	})
 
-	Context("when verifying discovered mode behavior", func() {
+	Context("when verifying VirtualMCPServer status", func() {
 		It("should have correct aggregation configuration", func() {
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
@@ -375,16 +355,26 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			Expect(vmcpServer.Spec.Aggregation.ConflictResolution).To(Equal("prefix"))
 		})
 
-		It("should discover both backends in the group", func() {
+		It("should discover both yardstick backends in the group", func() {
 			backends, err := GetMCPGroupBackends(ctx, k8sClient, mcpGroupName, testNamespace)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(backends).To(HaveLen(2), "Should discover both backends in the group")
+			Expect(backends).To(HaveLen(2), "Should discover both yardstick backends in the group")
 
 			backendNames := make([]string, len(backends))
 			for i, backend := range backends {
 				backendNames[i] = backend.Name
 			}
 			Expect(backendNames).To(ContainElements(backend1Name, backend2Name))
+		})
+
+		It("should have VirtualMCPServer in Ready phase", func() {
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			}, vmcpServer)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(vmcpServer.Status.Phase).To(Equal(mcpv1alpha1.VirtualMCPServerPhaseReady))
 		})
 	})
 })

@@ -287,7 +287,7 @@ var _ = Describe("VirtualMCPServer Token Exchange Auth", Ordered, func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcpProtocolVersion
+			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 			initRequest.Params.ClientInfo = mcp.Implementation{
 				Name:    "toolhive-e2e-test",
 				Version: "1.0.0",

@@ -20,7 +20,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
-	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 var rootCmd = &cobra.Command{
@@ -161,10 +160,6 @@ This command checks:
 				cfg.OutgoingAuth.Source)
 			logger.Infof("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution)
 
-			if cfg.TokenCache != nil {
-				logger.Infof("  Token Cache: %s", cfg.TokenCache.Provider)
-			}
-
 			if len(cfg.CompositeTools) > 0 {
 				logger.Infof("  Composite Tools: %d defined", len(cfg.CompositeTools))
 			}
@@ -212,10 +207,10 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 // discoverBackends initializes managers, discovers backends, and creates backend client
 // Returns empty backends list with no error if running in Kubernetes where CLI discovery doesn't work
 func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, vmcp.BackendClient, error) {
-	// Create outgoing authentication registry from configuration
+	// Create outgoing authentication registry
 	logger.Info("Initializing outgoing authentication")
 	envReader := &env.OSReader{}
-	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, cfg.OutgoingAuth, envReader)
+	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, envReader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
 	}
@@ -227,32 +222,22 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 	}
 
 	// Initialize managers for backend discovery
-	logger.Info("Initializing workload and group managers")
-	workloadsManager, err := workloads.NewManager(ctx)
-	if err != nil {
-		logger.Warnf("Failed to create workloads manager (expected in Kubernetes): %v", err)
-		logger.Warnf("Backend discovery will be skipped - continuing with empty backend list")
-		return []vmcp.Backend{}, backendClient, nil
-	}
-
+	logger.Info("Initializing group manager")
 	groupsManager, err := groups.NewManager()
 	if err != nil {
-		logger.Warnf("Failed to create groups manager (expected in Kubernetes): %v", err)
-		logger.Warnf("Backend discovery will be skipped - continuing with empty backend list")
-		return []vmcp.Backend{}, backendClient, nil
+		return nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
 	}
 
-	// Create backend discoverer and discover backends
-	discoverer := aggregator.NewCLIBackendDiscoverer(workloadsManager, groupsManager, cfg.OutgoingAuth)
+	// Create backend discoverer based on runtime environment
+	discoverer, err := aggregator.NewBackendDiscoverer(ctx, groupsManager, cfg.OutgoingAuth)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create backend discoverer: %w", err)
+	}
 
 	logger.Infof("Discovering backends in group: %s", cfg.Group)
 	backends, err := discoverer.Discover(ctx, cfg.Group)
 	if err != nil {
-		// Handle discovery errors gracefully - this is expected in Kubernetes
-		logger.Warnf("CLI backend discovery failed (likely running in Kubernetes): %v", err)
-		logger.Warnf("Kubernetes backend discovery is not yet implemented - continuing with empty backend list")
-		logger.Warnf("The vmcp server will start but won't proxy any backends until this feature is implemented")
-		return []vmcp.Backend{}, backendClient, nil
+		return nil, nil, fmt.Errorf("failed to discover backends: %w", err)
 	}
 
 	if len(backends) == 0 {

@@ -34,10 +34,6 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	CompositeToolRefs []CompositeToolDefinitionRef `json:"compositeToolRefs,omitempty"`
 
-	// TokenCache configures token caching behavior
-	// +optional
-	TokenCache *TokenCacheConfig `json:"tokenCache,omitempty"`
-
 	// Operational defines operational settings like timeouts and health checks
 	// +optional
 	Operational *OperationalConfig `json:"operational,omitempty"`
@@ -68,8 +64,8 @@ type GroupRef struct {
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
 type IncomingAuthConfig struct {
-	// Type defines the authentication type: anonymous, local, or oidc
-	// +kubebuilder:validation:Enum=anonymous;local;oidc
+	// Type defines the authentication type: anonymous or oidc
+	// +kubebuilder:validation:Enum=anonymous;oidc
 	// +optional
 	Type string `json:"type,omitempty"`
 
@@ -108,7 +104,7 @@ type OutgoingAuthConfig struct {
 // BackendAuthConfig defines authentication configuration for a backend MCPServer
 type BackendAuthConfig struct {
 	// Type defines the authentication type
-	// +kubebuilder:validation:Enum=discovered;pass_through;external_auth_config_ref
+	// +kubebuilder:validation:Enum=discovered;external_auth_config_ref
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
@@ -185,9 +181,22 @@ type CompositeToolSpec struct {
 	// +kubebuilder:validation:Required
 	Description string `json:"description"`
 
-	// Parameters defines the input parameters for the composite tool
+	// Parameters defines the input parameter schema in JSON Schema format.
+	// Should be a JSON Schema object with "type": "object" and "properties".
+	// Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
+	// Example:
+	//   {
+	//     "type": "object",
+	//     "properties": {
+	//       "param1": {"type": "string", "default": "value"},
+	//       "param2": {"type": "integer"}
+	//     },
+	//     "required": ["param2"]
+	//   }
 	// +optional
-	Parameters map[string]ParameterSpec `json:"parameters,omitempty"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	Parameters *runtime.RawExtension `json:"parameters,omitempty"`
 
 	// Steps defines the workflow steps
 	// +kubebuilder:validation:Required
@@ -200,40 +209,20 @@ type CompositeToolSpec struct {
 	Timeout string `json:"timeout,omitempty"`
 }
 
-// ParameterSpec defines a parameter for a composite tool
-type ParameterSpec struct {
-	// Type is the parameter type (string, integer, boolean, etc.)
-	// +kubebuilder:validation:Required
-	Type string `json:"type"`
-
-	// Description describes the parameter
-	// +optional
-	Description string `json:"description,omitempty"`
-
-	// Default is the default value for the parameter
-	// +optional
-	Default string `json:"default,omitempty"`
-
-	// Required indicates if the parameter is required
-	// +kubebuilder:default=false
-	// +optional
-	Required bool `json:"required,omitempty"`
-}
-
 // WorkflowStep defines a step in a composite tool workflow
 type WorkflowStep struct {
 	// ID is the unique identifier for this step
 	// +kubebuilder:validation:Required
 	ID string `json:"id"`
 
-	// Type is the step type (tool_call, elicitation, etc.)
-	// +kubebuilder:validation:Enum=tool_call;elicitation
-	// +kubebuilder:default=tool_call
+	// Type is the step type (tool, elicitation, etc.)
+	// +kubebuilder:validation:Enum=tool;elicitation
+	// +kubebuilder:default=tool
 	// +optional
 	Type string `json:"type,omitempty"`
 
 	// Tool is the tool to call (format: "workload.tool_name")
-	// Only used when Type is "tool_call"
+	// Only used when Type is "tool"
 	// +optional
 	Tool string `json:"tool,omitempty"`
 
@@ -282,64 +271,12 @@ type ErrorHandling struct {
 	// Only used when Action is "retry"
 	// +optional
 	MaxRetries int `json:"maxRetries,omitempty"`
-}
 
-// TokenCacheConfig configures token caching behavior
-type TokenCacheConfig struct {
-	// Provider defines the cache provider type
-	// +kubebuilder:validation:Enum=memory;redis
-	// +kubebuilder:default=memory
+	// RetryDelay is the delay between retry attempts
+	// Only used when Action is "retry"
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m))+$`
 	// +optional
-	Provider string `json:"provider,omitempty"`
-
-	// Memory configures in-memory token caching
-	// Only used when Provider is "memory"
-	// +optional
-	Memory *MemoryCacheConfig `json:"memory,omitempty"`
-
-	// Redis configures Redis token caching
-	// Only used when Provider is "redis"
-	// +optional
-	Redis *RedisCacheConfig `json:"redis,omitempty"`
-}
-
-// MemoryCacheConfig configures in-memory token caching
-type MemoryCacheConfig struct {
-	// MaxEntries is the maximum number of cache entries
-	// +kubebuilder:default=1000
-	// +optional
-	MaxEntries int `json:"maxEntries,omitempty"`
-
-	// TTLOffset is the duration before token expiry to refresh
-	// +kubebuilder:default="5m"
-	// +optional
-	TTLOffset string `json:"ttlOffset,omitempty"`
-}
-
-// RedisCacheConfig configures Redis token caching
-type RedisCacheConfig struct {
-	// Address is the Redis server address
-	// +kubebuilder:validation:Required
-	Address string `json:"address"`
-
-	// DB is the Redis database number
-	// +kubebuilder:default=0
-	// +optional
-	DB int `json:"db,omitempty"`
-
-	// KeyPrefix is the prefix for cache keys
-	// +kubebuilder:default="vmcp:tokens:"
-	// +optional
-	KeyPrefix string `json:"keyPrefix,omitempty"`
-
-	// PasswordRef references a secret containing the Redis password
-	// +optional
-	PasswordRef *SecretKeyRef `json:"passwordRef,omitempty"`
-
-	// TLS enables TLS for Redis connections
-	// +kubebuilder:default=false
-	// +optional
-	TLS bool `json:"tls,omitempty"`
+	RetryDelay string `json:"retryDelay,omitempty"`
 }
 
 // OperationalConfig defines operational settings
@@ -408,6 +345,32 @@ type CircuitBreakerConfig struct {
 	Timeout string `json:"timeout,omitempty"`
 }
 
+// DiscoveredBackend represents a discovered backend MCPServer in the MCPGroup
+type DiscoveredBackend struct {
+	// Name is the name of the backend MCPServer
+	Name string `json:"name"`
+
+	// AuthConfigRef is the name of the discovered MCPExternalAuthConfig (if any)
+	// +optional
+	AuthConfigRef string `json:"authConfigRef,omitempty"`
+
+	// AuthType is the type of authentication configured
+	// +optional
+	AuthType string `json:"authType,omitempty"`
+
+	// Status is the current status of the backend (ready, degraded, unavailable)
+	// +optional
+	Status string `json:"status,omitempty"`
+
+	// LastHealthCheck is the timestamp of the last health check
+	// +optional
+	LastHealthCheck metav1.Time `json:"lastHealthCheck,omitempty"`
+
+	// URL is the URL of the backend MCPServer
+	// +optional
+	URL string `json:"url,omitempty"`
+}
+
 // VirtualMCPServerStatus defines the observed state of VirtualMCPServer
 type VirtualMCPServerStatus struct {
 	// Conditions represent the latest available observations of the VirtualMCPServer's state
@@ -430,6 +393,14 @@ type VirtualMCPServerStatus struct {
 	// URL is the URL where the Virtual MCP server can be accessed
 	// +optional
 	URL string `json:"url,omitempty"`
+
+	// DiscoveredBackends lists discovered backend configurations from the MCPGroup
+	// +optional
+	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
+
+	// BackendCount is the number of discovered backends
+	// +optional
+	BackendCount int `json:"backendCount,omitempty"`
 }
 
 // VirtualMCPServerPhase represents the lifecycle phase of a VirtualMCPServer
@@ -483,9 +454,6 @@ const (
 	// BackendAuthTypeDiscovered automatically discovers from backend's externalAuthConfigRef
 	BackendAuthTypeDiscovered = "discovered"
 
-	// BackendAuthTypePassThrough forwards client token unchanged
-	BackendAuthTypePassThrough = "pass_through"
-
 	// BackendAuthTypeExternalAuthConfigRef references an MCPExternalAuthConfig resource
 	BackendAuthTypeExternalAuthConfigRef = "external_auth_config_ref"
 )
@@ -505,10 +473,22 @@ const (
 // Workflow step types
 const (
 	// WorkflowStepTypeToolCall calls a backend tool
-	WorkflowStepTypeToolCall = "tool_call"
+	WorkflowStepTypeToolCall = "tool"
 
 	// WorkflowStepTypeElicitation requests user input
 	WorkflowStepTypeElicitation = "elicitation"
+)
+
+// Error handling actions
+const (
+	// ErrorActionAbort aborts the workflow on error
+	ErrorActionAbort = "abort"
+
+	// ErrorActionContinue continues the workflow on error
+	ErrorActionContinue = "continue"
+
+	// ErrorActionRetry retries the step on error
+	ErrorActionRetry = "retry"
 )
 
 //+kubebuilder:object:root=true
@@ -516,6 +496,7 @@ const (
 //+kubebuilder:resource:shortName=vmcp;virtualmcp
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="The phase of the VirtualMCPServer"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url",description="Virtual MCP server URL"
+//+kubebuilder:printcolumn:name="Backends",type="integer",JSONPath=".status.backendCount",description="Discovered backends count"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Age"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 

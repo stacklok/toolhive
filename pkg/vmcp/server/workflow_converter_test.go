@@ -264,3 +264,122 @@ func TestConvertSteps_ComplexWorkflow(t *testing.T) {
 	assert.NotEmpty(t, result[2].Condition)
 	assert.Equal(t, []string{"confirm"}, result[2].DependsOn)
 }
+
+// TestConvertConfigToWorkflowDefinitions_WithOutputConfig tests that output configuration
+// is correctly copied from CompositeToolConfig to WorkflowDefinition.
+func TestConvertConfigToWorkflowDefinitions_WithOutputConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		input  []*config.CompositeToolConfig
+		verify func(t *testing.T, defs map[string]*composer.WorkflowDefinition)
+	}{
+		{
+			name: "composite tool with output config",
+			input: []*config.CompositeToolConfig{
+				{
+					Name:        "data_processor",
+					Description: "Process data with typed output",
+					Steps: []*config.WorkflowStepConfig{
+						{ID: "fetch", Type: "tool", Tool: "data.fetch"},
+					},
+					Output: &config.OutputConfig{
+						Properties: map[string]config.OutputProperty{
+							"message": {
+								Type:        "string",
+								Description: "Result message",
+								Value:       "{{.steps.fetch.output.text}}",
+							},
+							"count": {
+								Type:        "integer",
+								Description: "Item count",
+								Value:       "{{.steps.fetch.output.count}}",
+							},
+						},
+						Required: []string{"message"},
+					},
+				},
+			},
+			verify: func(t *testing.T, defs map[string]*composer.WorkflowDefinition) {
+				t.Helper()
+				require.Len(t, defs, 1)
+
+				def, exists := defs["data_processor"]
+				require.True(t, exists)
+				require.NotNil(t, def.Output, "Output should be set on WorkflowDefinition")
+
+				assert.Len(t, def.Output.Properties, 2)
+				assert.Equal(t, []string{"message"}, def.Output.Required)
+
+				msgProp, exists := def.Output.Properties["message"]
+				require.True(t, exists)
+				assert.Equal(t, "string", msgProp.Type)
+				assert.Equal(t, "Result message", msgProp.Description)
+			},
+		},
+		{
+			name: "composite tool without output config (backward compatible)",
+			input: []*config.CompositeToolConfig{
+				{
+					Name:   "simple_tool",
+					Steps:  []*config.WorkflowStepConfig{{ID: "step1", Type: "tool", Tool: "tool"}},
+					Output: nil,
+				},
+			},
+			verify: func(t *testing.T, defs map[string]*composer.WorkflowDefinition) {
+				t.Helper()
+				require.Len(t, defs, 1)
+
+				def, exists := defs["simple_tool"]
+				require.True(t, exists)
+				assert.Nil(t, def.Output, "Output should be nil for backward compatibility")
+			},
+		},
+		{
+			name: "multiple tools with mixed output configs",
+			input: []*config.CompositeToolConfig{
+				{
+					Name:  "with_output",
+					Steps: []*config.WorkflowStepConfig{{ID: "s1", Type: "tool", Tool: "t1"}},
+					Output: &config.OutputConfig{
+						Properties: map[string]config.OutputProperty{
+							"result": {Type: "string", Value: "{{.steps.s1.output.text}}"},
+						},
+					},
+				},
+				{
+					Name:   "without_output",
+					Steps:  []*config.WorkflowStepConfig{{ID: "s2", Type: "tool", Tool: "t2"}},
+					Output: nil,
+				},
+			},
+			verify: func(t *testing.T, defs map[string]*composer.WorkflowDefinition) {
+				t.Helper()
+				require.Len(t, defs, 2)
+
+				withOutput := defs["with_output"]
+				require.NotNil(t, withOutput)
+				assert.NotNil(t, withOutput.Output)
+
+				withoutOutput := defs["without_output"]
+				require.NotNil(t, withoutOutput)
+				assert.Nil(t, withoutOutput.Output)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := ConvertConfigToWorkflowDefinitions(tt.input)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+
+			if tt.verify != nil {
+				tt.verify(t, result)
+			}
+		})
+	}
+}

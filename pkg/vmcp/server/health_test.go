@@ -56,6 +56,9 @@ func createTestServer(t *testing.T) *server.Server {
 		}, nil).
 		AnyTimes()
 
+	// Mock Stop to be called during server shutdown
+	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
+
 	srv, err := server.New(&server.Config{
 		Name:    "test-vmcp",
 		Version: "1.0.0",

@@ -12,7 +12,7 @@ import (
 	runtime "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
 	registrymocks "github.com/stacklok/toolhive/pkg/registry/mocks"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	workloadsmocks "github.com/stacklok/toolhive/pkg/workloads/mocks"
 )
 

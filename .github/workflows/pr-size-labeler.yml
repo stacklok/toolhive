@@ -1,0 +1,74 @@
+name: PR Size Labeler - Calculate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  calculate-pr-size:
+    name: Calculate PR Size
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get PR details
+        id: pr
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+
+            const additions = pr.data.additions;
+            const deletions = pr.data.deletions;
+            const totalChanges = additions + deletions;
+
+            console.log(`PR #${context.issue.number}: +${additions} -${deletions} (${totalChanges} total)`);
+
+            return {
+              additions: additions,
+              deletions: deletions,
+              total: totalChanges
+            };
+
+      - name: Determine size label
+        id: size
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const changes = ${{ steps.pr.outputs.result }};
+            const total = changes.total;
+
+            let sizeLabel = '';
+
+            if (total < 100) {
+              sizeLabel = 'size/XS';
+            } else if (total < 300) {
+              sizeLabel = 'size/S';
+            } else if (total < 600) {
+              sizeLabel = 'size/M';
+            } else if (total < 1000) {
+              sizeLabel = 'size/L';
+            } else {
+              sizeLabel = 'size/XL';
+            }
+
+            console.log(`PR size: ${total} lines -> ${sizeLabel}`);
+            return sizeLabel;
+
+      - name: Save size label to artifact
+        run: |
+          mkdir -p pr-size
+          echo "${{ steps.size.outputs.result }}" > pr-size/label.txt
+          echo "${{ github.event.pull_request.number }}" > pr-size/pr-number.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: pr-size-label
+          path: pr-size/
+          retention-days: 1

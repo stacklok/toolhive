@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -32,8 +31,12 @@ func NewManager() (Manager, error) {
 func newCRDManager() (Manager, error) {
 	// Create a scheme for controller-runtime client
 	scheme := runtime.NewScheme()
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(mcpv1alpha1.AddToScheme(scheme))
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add client-go scheme: %w", err)
+	}
+	if err := mcpv1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add MCP v1alpha1 scheme: %w", err)
+	}
 
 	// Create controller-runtime client with custom scheme
 	k8sClient, err := k8s.NewControllerRuntimeClient(scheme)

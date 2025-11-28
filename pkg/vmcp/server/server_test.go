@@ -153,6 +153,7 @@ func TestServer_Stop(t *testing.T) {
 		mockRouter := routerMocks.NewMockRouter(ctrl)
 		mockBackendClient := mocks.NewMockBackendClient(ctrl)
 		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+		mockDiscoveryMgr.EXPECT().Stop().Times(1)
 
 		s, err := server.New(&server.Config{}, mockRouter, mockBackendClient, mockDiscoveryMgr, []vmcp.Backend{}, nil)
 		require.NoError(t, err)

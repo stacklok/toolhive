@@ -18,6 +18,9 @@ var (
 
 	// ErrContainerExited is returned when a container has exited unexpectedly
 	ErrContainerExited = fmt.Errorf("container exited unexpectedly")
+
+	// ErrContainerRemoved is returned when a container has been removed
+	ErrContainerRemoved = fmt.Errorf("container removed")
 )
 
 // ContainerError represents an error related to container operations

@@ -32,14 +32,14 @@ spec:
             failureMode: abort
             steps:
             - id: deploy
-              type: tool_call
+              type: tool
               tool: kubectl.apply
               arguments:
                 manifest: "{{.params.manifest}}"
                 namespace: "{{.params.namespace}}"
               timeout: 5m
             - id: verify
-              type: tool_call
+              type: tool
               tool: kubectl.get
               arguments:
                 resource: "deployment"
@@ -90,10 +90,10 @@ spec:
             description: Workflow with duplicate step IDs
             steps:
             - id: step1
-              type: tool_call
+              type: tool
               tool: kubectl.apply
             - id: step1
-              type: tool_call
+              type: tool
               tool: kubectl.get
     - script:
         content: |
@@ -129,7 +129,7 @@ spec:
             description: Workflow with invalid tool reference
             steps:
             - id: step1
-              type: tool_call
+              type: tool
               tool: invalid-no-dot
     - script:
         content: |
@@ -161,12 +161,12 @@ spec:
             description: Workflow with circular dependencies
             steps:
             - id: step1
-              type: tool_call
+              type: tool
               tool: tool.a
               dependsOn:
               - step2
             - id: step2
-              type: tool_call
+              type: tool
               tool: tool.b
               dependsOn:
               - step1
@@ -209,7 +209,7 @@ spec:
                 default: "3"
             steps:
             - id: deploy
-              type: tool_call
+              type: tool
               tool: kubectl.apply
               arguments:
                 env: "{{.params.environment}}"
@@ -249,7 +249,7 @@ spec:
             description: Deploy with retry logic
             steps:
             - id: deploy
-              type: tool_call
+              type: tool
               tool: kubectl.apply
               onError:
                 action: retry

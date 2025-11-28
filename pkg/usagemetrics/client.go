@@ -54,10 +54,17 @@ func NewClient(endpoint string) *Client {
 // SendMetrics sends the metrics record to the API
 func (c *Client) SendMetrics(instanceID string, record MetricRecord) error {
 	// Use cached anonymous ID (set at client creation)
-	// Skip sending if anonymous ID is not initialized
-	if c.anonymousID == "" {
-		logger.Debugf("Skipping metrics send - anonymous ID not yet initialized")
-		return nil
+	// For operator-deployed proxies without filesystem access, anonymous_id will be empty,
+	// but we still send metrics with a default value.
+	anonymousID := c.anonymousID
+	if anonymousID == "" {
+		// Only use default for operator-deployed proxies (detected via K8s env vars)
+		if rt.IsKubernetesRuntimeWithEnv(&env.OSReader{}) {
+			anonymousID = "operator-proxy"
+		} else {
+			// For local deployments, empty anonymous_id means file doesn't exist yet - skip sending
+			return nil
+		}
 	}
 
 	data, err := json.Marshal(record)
@@ -71,8 +78,8 @@ func (c *Client) SendMetrics(instanceID string, record MetricRecord) error {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(instanceIDHeader, instanceID)     // Proxy instance ID
-	req.Header.Set(anonymousIDHeader, c.anonymousID) // User anonymous ID
+	req.Header.Set(instanceIDHeader, instanceID)   // Proxy instance ID
+	req.Header.Set(anonymousIDHeader, anonymousID) // User anonymous ID (or default for operator)
 	req.Header.Set(userAgentHeader, generateUserAgent())
 
 	resp, err := c.client.Do(req)

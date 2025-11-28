@@ -205,6 +205,12 @@ spec:
                       jwksUrl:
                         description: JWKSURL is the URL to fetch the JWKS from
                         type: string
+                      protectedResourceAllowPrivateIP:
+                        default: false
+                        description: |-
+                          ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
+                          Use with caution - only enable for trusted internal IDPs or testing
+                        type: boolean
                       thvCABundlePath:
                         description: |-
                           ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests

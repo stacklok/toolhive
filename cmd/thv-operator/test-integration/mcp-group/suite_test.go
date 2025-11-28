@@ -39,11 +39,20 @@ var (
 func TestControllers(t *testing.T) {
 	t.Parallel()
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "MCPGroup Controller Integration Suite")
+
+	suiteConfig, reporterConfig := GinkgoConfiguration()
+	// Only show verbose output for failures
+	reporterConfig.Verbose = false
+	reporterConfig.VeryVerbose = false
+	reporterConfig.FullTrace = false
+
+	RunSpecs(t, "MCPGroup Controller Integration Test Suite", suiteConfig, reporterConfig)
 }
 
 var _ = BeforeSuite(func() {
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true), zap.Level(zapcore.DebugLevel)))
+	// Only log errors unless a test fails
+	logLevel := zapcore.ErrorLevel
+	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true), zap.Level(logLevel)))
 
 	ctx, cancel = context.WithCancel(context.TODO())
 

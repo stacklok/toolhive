@@ -1,7 +1,7 @@
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: streamable-http-mcp-server
+  name: st-streamable-http
 spec:
   description: Deploys Streamable HTTP MCP server and verifies it's running
   timeouts:
@@ -9,6 +9,10 @@ spec:
     assert: 120s
     cleanup: 30s
     exec: 300s
+  template: true
+  bindings:
+    - name: testPrefix
+      value: "st-streamable-http"
   steps:
   - name: verify-operator
     description: Ensure operator is ready before testing
@@ -48,15 +52,18 @@ spec:
     description: Test the StreamableHTTP->StreamableHTTP MCP server by sending requests at the toolhive proxy
     try:
     - script:
+        env:
+          - name: loadBalancerServiceName
+            value: (join('-', ['mcp', $testPrefix, 'proxy-lb']))
         content: |
           # Get LoadBalancer external IP
-          echo "Getting LoadBalancer external IP for service mcp-yardstick-proxy-lb..."
+          echo "Getting LoadBalancer external IP for service $loadBalancerServiceName..."
 
-          EXTERNAL_IP=$(kubectl get svc mcp-yardstick-proxy-lb -n toolhive-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          EXTERNAL_IP=$(kubectl get svc $loadBalancerServiceName -n toolhive-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
           
           if [ -z "$EXTERNAL_IP" ]; then
             echo "LoadBalancer did not get external IP within timeout"
-            kubectl describe svc mcp-yardstick-proxy-lb -n toolhive-system
+            kubectl describe svc $loadBalancerServiceName -n toolhive-system
             exit 1
           fi
           

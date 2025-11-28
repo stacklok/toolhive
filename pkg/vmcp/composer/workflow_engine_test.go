@@ -13,6 +13,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	routermocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
 )
@@ -291,15 +292,20 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 
 	// Track execution timing to verify parallel execution
 	var executionMu sync.Mutex
-	startTimes := make(map[string]time.Time)
-	endTimes := make(map[string]time.Time)
+	// Use sequence numbers instead of wall-clock time to verify ordering.
+	// This is immune to race detector overhead and timing precision issues.
+	startSeq := make(map[string]int64)
+	endSeq := make(map[string]int64)
+	var seqCounter atomic.Int64
 	var concurrentCount int32
 	var maxConcurrent int32
 
 	// Helper to track execution timing
 	trackStart := func(stepID string) {
+		// Increment atomically outside the lock to reduce critical section
+		seq := seqCounter.Add(1)
 		executionMu.Lock()
-		startTimes[stepID] = time.Now()
+		startSeq[stepID] = seq
 		executionMu.Unlock()
 
 		// Track concurrency
@@ -314,8 +320,9 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 
 	trackEnd := func(stepID string) {
 		atomic.AddInt32(&concurrentCount, -1)
+		seq := seqCounter.Add(1)
 		executionMu.Lock()
-		endTimes[stepID] = time.Now()
+		endSeq[stepID] = seq
 		executionMu.Unlock()
 	}
 
@@ -404,20 +411,211 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 
 	// Verify parallel execution performance
 	// Sequential would be: 50+50+30 = 130ms
-	// Parallel should be: max(50,50)+30 = 80ms
-	// With overhead, should be < 120ms
-	assert.Less(t, totalDuration, 120*time.Millisecond,
+	// Parallel should be: max(50,50)+30 = 80ms expected
+	// Use 200ms timeout (2.5x expected time) to account for race detector instrumentation overhead
+	assert.Less(t, totalDuration, 200*time.Millisecond,
 		"parallel execution should be faster than sequential")
 
 	// Verify concurrency - at least 2 steps should run concurrently
 	assert.GreaterOrEqual(t, int(maxConcurrent), 2,
 		"at least 2 steps should run concurrently")
 
-	// Verify both fetch steps completed before report
-	if len(startTimes) >= 3 && len(endTimes) >= 2 {
-		assert.True(t, endTimes["fetch_logs"].Before(startTimes["create_report"]),
-			"fetch_logs should complete before create_report starts")
-		assert.True(t, endTimes["fetch_metrics"].Before(startTimes["create_report"]),
-			"fetch_metrics should complete before create_report starts")
+	// Verify both fetch steps completed before report using sequence numbers
+	require.Len(t, startSeq, 3, "all steps should have start sequences")
+	require.Len(t, endSeq, 3, "all steps should have end sequences")
+	assert.Less(t, endSeq["fetch_logs"], startSeq["create_report"],
+		"fetch_logs (seq %d) should complete before create_report starts (seq %d)",
+		endSeq["fetch_logs"], startSeq["create_report"])
+	assert.Less(t, endSeq["fetch_metrics"], startSeq["create_report"],
+		"fetch_metrics (seq %d) should complete before create_report starts (seq %d)",
+		endSeq["fetch_metrics"], startSeq["create_report"])
+}
+
+func TestWorkflowEngine_ExecuteWorkflow_WithWorkflowMetadata(t *testing.T) {
+	t.Parallel()
+
+	te := newTestEngine(t)
+
+	// Workflow that uses workflow metadata in output
+	workflow := &WorkflowDefinition{
+		Name:        "metadata_test",
+		Description: "Test workflow metadata in output templates",
+		Steps: []WorkflowStep{
+			toolStep("fetch_data", "data.fetch", map[string]any{
+				"source": "{{.params.source}}",
+			}),
+			toolStepWithDeps("process", "data.process", map[string]any{
+				"data": "{{.steps.fetch_data.output.result}}",
+			}, []string{"fetch_data"}),
+		},
+		Output: &config.OutputConfig{
+			Properties: map[string]config.OutputProperty{
+				"summary": {
+					Type:        "object",
+					Description: "Workflow execution summary",
+					Properties: map[string]config.OutputProperty{
+						"workflow_id": {
+							Type:        "string",
+							Description: "Workflow execution ID",
+							Value:       "{{.workflow.id}}",
+						},
+						"duration_ms": {
+							Type:        "integer",
+							Description: "Workflow duration in milliseconds",
+							Value:       "{{.workflow.duration_ms}}",
+						},
+						"step_count": {
+							Type:        "integer",
+							Description: "Number of completed steps",
+							Value:       "{{.workflow.step_count}}",
+						},
+						"status": {
+							Type:        "string",
+							Description: "Workflow status",
+							Value:       "{{.workflow.status}}",
+						},
+						"start_time": {
+							Type:        "string",
+							Description: "Workflow start time",
+							Value:       "{{.workflow.start_time}}",
+						},
+					},
+				},
+				"data_result": {
+					Type:        "string",
+					Description: "Processed data result",
+					Value:       "{{.steps.process.output.value}}",
+				},
+			},
+		},
 	}
+
+	// Setup expectations with delays to ensure duration > 0
+	target := &vmcp.BackendTarget{
+		WorkloadID:   "test-backend",
+		WorkloadName: "test",
+		BaseURL:      "http://test:8080",
+	}
+
+	te.Router.EXPECT().RouteTool(gomock.Any(), "data.fetch").Return(target, nil)
+	te.Backend.EXPECT().CallTool(gomock.Any(), target, "data.fetch", map[string]any{"source": "test-source"}).
+		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (map[string]any, error) {
+			time.Sleep(10 * time.Millisecond)
+			return map[string]any{"result": "raw-data"}, nil
+		})
+
+	te.Router.EXPECT().RouteTool(gomock.Any(), "data.process").Return(target, nil)
+	te.Backend.EXPECT().CallTool(gomock.Any(), target, "data.process", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any) (map[string]any, error) {
+			time.Sleep(10 * time.Millisecond)
+			return map[string]any{"value": "processed-data"}, nil
+		})
+
+	// Execute workflow
+	startTime := time.Now()
+	result, err := execute(t, te.Engine, workflow, map[string]any{"source": "test-source"})
+	executionTime := time.Since(startTime)
+
+	// Verify execution success
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+	assert.Len(t, result.Steps, 2)
+
+	// Verify output structure
+	require.NotNil(t, result.Output)
+	require.Contains(t, result.Output, "summary")
+	require.Contains(t, result.Output, "data_result")
+
+	// Verify data result
+	assert.Equal(t, "processed-data", result.Output["data_result"])
+
+	// Verify workflow metadata in output
+	summary, ok := result.Output["summary"].(map[string]any)
+	require.True(t, ok, "summary should be a map")
+
+	// Check workflow_id
+	workflowID, ok := summary["workflow_id"].(string)
+	require.True(t, ok, "workflow_id should be a string")
+	assert.NotEmpty(t, workflowID)
+	assert.Equal(t, result.WorkflowID, workflowID)
+
+	// Check duration_ms
+	durationMs, ok := summary["duration_ms"].(int64)
+	require.True(t, ok, "duration_ms should be an int64")
+	// With 20ms of artificial delays (10ms per step), duration should be at least a few ms
+	assert.Greater(t, durationMs, int64(0), "duration should be positive")
+	// Duration should be reasonable (less than total execution time in ms + buffer)
+	assert.Less(t, durationMs, executionTime.Milliseconds()+100, "duration should be less than total execution time")
+
+	// Check step_count
+	stepCount, ok := summary["step_count"].(int64)
+	require.True(t, ok, "step_count should be an int64")
+	assert.Equal(t, int64(2), stepCount, "should have 2 completed steps")
+
+	// Check status
+	status, ok := summary["status"].(string)
+	require.True(t, ok, "status should be a string")
+	assert.Equal(t, "completed", status)
+
+	// Check start_time (RFC3339 format)
+	startTimeStr, ok := summary["start_time"].(string)
+	require.True(t, ok, "start_time should be a string")
+	assert.NotEmpty(t, startTimeStr)
+	// Verify it's valid RFC3339 format
+	parsedTime, err := time.Parse(time.RFC3339, startTimeStr)
+	require.NoError(t, err, "start_time should be valid RFC3339 format")
+	assert.WithinDuration(t, startTime, parsedTime, 5*time.Second, "start_time should be close to actual start")
+}
+
+func TestWorkflowEngine_WorkflowMetadataAvailableInTemplates(t *testing.T) {
+	t.Parallel()
+
+	te := newTestEngine(t)
+
+	// Workflow that uses workflow metadata in step arguments
+	// Note: workflow.id and workflow.start_time are available, but workflow.step_count and
+	// workflow.duration_ms are only updated before output construction, not during step execution.
+	workflow := &WorkflowDefinition{
+		Name: "metadata_in_args",
+		Steps: []WorkflowStep{
+			toolStep("first", "tool.first", nil),
+			toolStepWithDeps("second", "tool.second", map[string]any{
+				"workflow_id": "{{.workflow.id}}",
+				"status":      "{{.workflow.status}}",
+			}, []string{"first"}),
+		},
+	}
+
+	// Setup expectations
+	te.expectToolCall("tool.first", nil, map[string]any{"ok": true})
+
+	// For the second tool, verify it receives basic workflow metadata
+	target := &vmcp.BackendTarget{
+		WorkloadID:   "test-backend",
+		WorkloadName: "test",
+		BaseURL:      "http://test:8080",
+	}
+	te.Router.EXPECT().RouteTool(gomock.Any(), "tool.second").Return(target, nil)
+	te.Backend.EXPECT().CallTool(gomock.Any(), target, "tool.second", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, args map[string]any) (map[string]any, error) {
+			// Verify workflow metadata was expanded in arguments
+			workflowID, ok := args["workflow_id"].(string)
+			assert.True(t, ok, "workflow_id should be a string")
+			assert.NotEmpty(t, workflowID, "workflow_id should not be empty")
+
+			// Status should be available (though not yet "completed" since workflow is still running)
+			status, ok := args["status"].(string)
+			assert.True(t, ok, "status should be a string")
+			assert.Contains(t, []string{"pending", "running"}, status, "status should be pending or running during execution")
+
+			return map[string]any{"done": true}, nil
+		})
+
+	// Execute workflow
+	result, err := execute(t, te.Engine, workflow, nil)
+
+	// Verify
+	require.NoError(t, err)
+	assert.Equal(t, WorkflowStatusCompleted, result.Status)
+	assert.Len(t, result.Steps, 2)
 }

@@ -39,6 +39,10 @@ func TestContainerMonitor_StartMonitoring_WhenRunningStarts(t *testing.T) {
 
 	// StartMonitoring should verify running exactly once on first call.
 	mockRT.EXPECT().IsWorkloadRunning(ctx, "workload-1").Return(true, nil).Times(1)
+	// StartMonitoring now gets the container start time
+	mockRT.EXPECT().GetWorkloadInfo(ctx, "workload-1").Return(rt.ContainerInfo{
+		StartedAt: time.Now(),
+	}, nil).Times(1)
 
 	m := NewMonitor(mockRT, "workload-1")
 	ch, err := m.StartMonitoring(ctx)
@@ -145,6 +149,10 @@ func TestContainerMonitor_StartStop_TerminatesQuickly(t *testing.T) {
 	defer cancel()
 
 	mockRT.EXPECT().IsWorkloadRunning(ctx, "workload-5").Return(true, nil).Times(1)
+	// StartMonitoring now gets the container start time
+	mockRT.EXPECT().GetWorkloadInfo(ctx, "workload-5").Return(rt.ContainerInfo{
+		StartedAt: time.Now(),
+	}, nil).Times(1)
 
 	m := NewMonitor(mockRT, "workload-5")
 	ch, err := m.StartMonitoring(ctx)

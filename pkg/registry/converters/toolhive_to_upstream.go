@@ -16,12 +16,12 @@ import (
 	upstream "github.com/modelcontextprotocol/registry/pkg/api/v0"
 	"github.com/modelcontextprotocol/registry/pkg/model"
 
-	"github.com/stacklok/toolhive/pkg/registry/types"
+	"github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // ImageMetadataToServerJSON converts toolhive ImageMetadata to an upstream ServerJSON
 // The name parameter is deprecated and should match imageMetadata.Name. It's kept for backward compatibility.
-func ImageMetadataToServerJSON(name string, imageMetadata *types.ImageMetadata) (*upstream.ServerJSON, error) {
+func ImageMetadataToServerJSON(name string, imageMetadata *registry.ImageMetadata) (*upstream.ServerJSON, error) {
 	if imageMetadata == nil {
 		return nil, fmt.Errorf("imageMetadata cannot be nil")
 	}
@@ -65,7 +65,7 @@ func ImageMetadataToServerJSON(name string, imageMetadata *types.ImageMetadata) 
 
 // RemoteServerMetadataToServerJSON converts toolhive RemoteServerMetadata to an upstream ServerJSON
 // The name parameter is deprecated and should match remoteMetadata.Name. It's kept for backward compatibility.
-func RemoteServerMetadataToServerJSON(name string, remoteMetadata *types.RemoteServerMetadata) (*upstream.ServerJSON, error) {
+func RemoteServerMetadataToServerJSON(name string, remoteMetadata *registry.RemoteServerMetadata) (*upstream.ServerJSON, error) {
 	if remoteMetadata == nil {
 		return nil, fmt.Errorf("remoteMetadata cannot be nil")
 	}
@@ -108,7 +108,7 @@ func RemoteServerMetadataToServerJSON(name string, remoteMetadata *types.RemoteS
 }
 
 // createPackagesFromImageMetadata creates OCI Package entries from ImageMetadata
-func createPackagesFromImageMetadata(imageMetadata *types.ImageMetadata) []model.Package {
+func createPackagesFromImageMetadata(imageMetadata *registry.ImageMetadata) []model.Package {
 	// Convert environment variables
 	var envVars []model.KeyValueInput
 	for _, envVar := range imageMetadata.EnvVars {
@@ -158,7 +158,7 @@ func createPackagesFromImageMetadata(imageMetadata *types.ImageMetadata) []model
 }
 
 // createRemotesFromRemoteMetadata creates Transport entries from RemoteServerMetadata
-func createRemotesFromRemoteMetadata(remoteMetadata *types.RemoteServerMetadata) []model.Transport {
+func createRemotesFromRemoteMetadata(remoteMetadata *registry.RemoteServerMetadata) []model.Transport {
 	// Convert headers
 	var headers []model.KeyValueInput
 	for _, header := range remoteMetadata.Headers {
@@ -182,7 +182,7 @@ func createRemotesFromRemoteMetadata(remoteMetadata *types.RemoteServerMetadata)
 }
 
 // createImageExtensions creates publisher extensions map from ImageMetadata
-func createImageExtensions(imageMetadata *types.ImageMetadata) map[string]interface{} {
+func createImageExtensions(imageMetadata *registry.ImageMetadata) map[string]interface{} {
 	extensions := make(map[string]interface{})
 
 	// Always include status
@@ -246,7 +246,7 @@ func createImageExtensions(imageMetadata *types.ImageMetadata) map[string]interf
 }
 
 // createRemoteExtensions creates publisher extensions map from RemoteServerMetadata
-func createRemoteExtensions(remoteMetadata *types.RemoteServerMetadata) map[string]interface{} {
+func createRemoteExtensions(remoteMetadata *registry.RemoteServerMetadata) map[string]interface{} {
 	extensions := make(map[string]interface{})
 
 	// Always include status

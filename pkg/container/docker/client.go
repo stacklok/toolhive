@@ -556,14 +556,21 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadName string) (runt
 		created = time.Time{} // Use zero time if parsing fails
 	}
 
+	// Convert start time
+	startedAt, err := time.Parse(time.RFC3339Nano, info.State.StartedAt)
+	if err != nil {
+		startedAt = time.Time{} // Use zero time if parsing fails
+	}
+
 	return runtime.ContainerInfo{
-		Name:    strings.TrimPrefix(info.Name, "/"),
-		Image:   info.Config.Image,
-		Status:  info.State.Status,
-		State:   dockerToDomainStatus(info.State.Status),
-		Created: created,
-		Labels:  info.Config.Labels,
-		Ports:   ports,
+		Name:      strings.TrimPrefix(info.Name, "/"),
+		Image:     info.Config.Image,
+		Status:    info.State.Status,
+		State:     dockerToDomainStatus(info.State.Status),
+		Created:   created,
+		StartedAt: startedAt,
+		Labels:    info.Config.Labels,
+		Ports:     ports,
 	}, nil
 }
 

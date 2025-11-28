@@ -38,6 +38,8 @@ const (
 	DockerDesktopMacSocketPath = ".docker/run/docker.sock"
 	// RancherDesktopMacSocketPath is the Docker socket path for Rancher Desktop on macOS
 	RancherDesktopMacSocketPath = ".rd/docker.sock"
+	// OrbStackMacSocketPath is the Docker socket path for OrbStack on macOS
+	OrbStackMacSocketPath = ".orbstack/run/docker.sock"
 	// ColimaDesktopMacSocketPath is the Docker socket path for Colima on macOS
 	ColimaDesktopMacSocketPath = ".colima/default/docker.sock"
 )

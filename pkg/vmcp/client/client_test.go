@@ -271,14 +271,14 @@ func TestAuthRoundTripper_RoundTrip(t *testing.T) {
 			name: "successful authentication adds headers and forwards request",
 			target: &vmcp.BackendTarget{
 				WorkloadID:   "backend-1",
-				AuthStrategy: "pass_through",
+				AuthStrategy: "header_injection",
 				AuthMetadata: map[string]any{"key": "value"},
 			},
 			setupStrategy: func(ctrl *gomock.Controller) auth.Strategy {
 				mockStrategy := authmocks.NewMockStrategy(ctrl)
 				mockStrategy.EXPECT().
 					Name().
-					Return("pass_through").
+					Return("header_injection").
 					AnyTimes()
 				mockStrategy.EXPECT().
 					Authenticate(
@@ -351,14 +351,14 @@ func TestAuthRoundTripper_RoundTrip(t *testing.T) {
 			name: "authentication failure returns error without calling base transport",
 			target: &vmcp.BackendTarget{
 				WorkloadID:   "backend-1",
-				AuthStrategy: "pass_through",
+				AuthStrategy: "header_injection",
 				AuthMetadata: map[string]any{"key": "value"},
 			},
 			setupStrategy: func(ctrl *gomock.Controller) auth.Strategy {
 				mockStrategy := authmocks.NewMockStrategy(ctrl)
 				mockStrategy.EXPECT().
 					Name().
-					Return("pass_through").
+					Return("header_injection").
 					AnyTimes()
 				mockStrategy.EXPECT().
 					Authenticate(
@@ -382,14 +382,14 @@ func TestAuthRoundTripper_RoundTrip(t *testing.T) {
 			name: "base transport error propagates after successful auth",
 			target: &vmcp.BackendTarget{
 				WorkloadID:   "backend-1",
-				AuthStrategy: "pass_through",
+				AuthStrategy: "header_injection",
 				AuthMetadata: map[string]any{"key": "value"},
 			},
 			setupStrategy: func(ctrl *gomock.Controller) auth.Strategy {
 				mockStrategy := authmocks.NewMockStrategy(ctrl)
 				mockStrategy.EXPECT().
 					Name().
-					Return("pass_through").
+					Return("header_injection").
 					AnyTimes()
 				mockStrategy.EXPECT().
 					Authenticate(
@@ -413,14 +413,14 @@ func TestAuthRoundTripper_RoundTrip(t *testing.T) {
 			name: "request immutability - original request unchanged",
 			target: &vmcp.BackendTarget{
 				WorkloadID:   "backend-1",
-				AuthStrategy: "pass_through",
+				AuthStrategy: "header_injection",
 				AuthMetadata: map[string]any{"key": "value"},
 			},
 			setupStrategy: func(ctrl *gomock.Controller) auth.Strategy {
 				mockStrategy := authmocks.NewMockStrategy(ctrl)
 				mockStrategy.EXPECT().
 					Name().
-					Return("pass_through").
+					Return("header_injection").
 					AnyTimes()
 				mockStrategy.EXPECT().
 					Authenticate(

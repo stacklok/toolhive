@@ -76,6 +76,15 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 			Transport:       "stdio",
 			ProxyPort:       8080,
 			PodTemplateSpec: podTemplateSpecToRawExtension(t, podTemplateSpec),
+			ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
+				ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
+					PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+						Labels: map[string]string{
+							"podspec-testlabel": "true",
+						},
+					},
+				},
+			},
 		},
 	}
 
@@ -92,6 +101,10 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 	ctx := context.Background()
 	deployment := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
 	require.NotNil(t, deployment, "Deployment should not be nil")
+
+	// Check that the pod template metadata overrides labels are merged with Spec.Template.Labels
+	proxyLabels := deployment.Spec.Template.Labels
+	assert.Equal(t, "true", proxyLabels["podspec-testlabel"], "podTemplateMetadataOverrides labels should be merged with Spec.Template.Labels")
 
 	// Check if the pod template patch is included in the args
 	podTemplatePatchFound := false

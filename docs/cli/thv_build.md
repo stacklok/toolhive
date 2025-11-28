@@ -29,6 +29,14 @@ using either uvx (Python with uv package manager), npx (Node.js),
 or go (Golang). For Go, you can also specify local paths starting
 with './' or '../' to build local Go projects.
 
+Build-time arguments can be baked into the container's ENTRYPOINT:
+
+	$ thv build npx://@launchdarkly/mcp-server -- start
+	$ thv build uvx://package -- --transport stdio
+
+These arguments become part of the container image and will always run,
+with runtime arguments (from 'thv run -- <args>') appending after them.
+
 The container will be built and tagged locally, ready to be used with 'thv run'
 or other container tools. The built image name will be displayed upon successful completion.
 
@@ -36,9 +44,10 @@ Examples:
 	$ thv build uvx://mcp-server-git
 	$ thv build --tag my-custom-name:latest npx://@modelcontextprotocol/server-filesystem
 	$ thv build go://./my-local-server
+	$ thv build npx://@launchdarkly/mcp-server -- start
 
 ```
-thv build [flags] PROTOCOL
+thv build [flags] PROTOCOL [-- ARGS...]
 ```
 
 ### Options

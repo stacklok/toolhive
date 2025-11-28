@@ -55,7 +55,6 @@ type rawConfig struct {
 	IncomingAuth rawIncomingAuth `yaml:"incoming_auth"`
 	OutgoingAuth rawOutgoingAuth `yaml:"outgoing_auth"`
 	Aggregation  rawAggregation  `yaml:"aggregation"`
-	TokenCache   *rawTokenCache  `yaml:"token_cache"`
 	Operational  *rawOperational `yaml:"operational"`
 
 	CompositeTools []*rawCompositeTool `yaml:"composite_tools"`
@@ -64,12 +63,14 @@ type rawConfig struct {
 type rawIncomingAuth struct {
 	Type string `yaml:"type"`
 	OIDC *struct {
-		Issuer          string   `yaml:"issuer"`
-		ClientID        string   `yaml:"client_id"`
-		ClientSecretEnv string   `yaml:"client_secret_env"` // Environment variable name containing the client secret
-		Audience        string   `yaml:"audience"`
-		Resource        string   `yaml:"resource"`
-		Scopes          []string `yaml:"scopes"`
+		Issuer                          string   `yaml:"issuer"`
+		ClientID                        string   `yaml:"client_id"`
+		ClientSecretEnv                 string   `yaml:"client_secret_env"` // Environment variable name containing the client secret
+		Audience                        string   `yaml:"audience"`
+		Resource                        string   `yaml:"resource"`
+		Scopes                          []string `yaml:"scopes"`
+		ProtectedResourceAllowPrivateIP bool     `yaml:"protected_resource_allow_private_ip"`
+		InsecureAllowHTTP               bool     `yaml:"insecure_allow_http"`
 	} `yaml:"oidc"`
 	Authz *struct {
 		Type     string   `yaml:"type"`
@@ -126,18 +127,6 @@ type rawToolOverride struct {
 	Description string `yaml:"description"`
 }
 
-type rawTokenCache struct {
-	Provider string `yaml:"provider"`
-	Config   struct {
-		MaxEntries int    `yaml:"max_entries"`
-		TTLOffset  string `yaml:"ttl_offset"`
-		Address    string `yaml:"address"`
-		DB         int    `yaml:"db"`
-		KeyPrefix  string `yaml:"key_prefix"`
-		Password   string `yaml:"password"`
-	} `yaml:"config"`
-}
-
 type rawOperational struct {
 	Timeouts struct {
 		Default     string            `yaml:"default"`
@@ -156,11 +145,12 @@ type rawOperational struct {
 }
 
 type rawCompositeTool struct {
-	Name        string                    `yaml:"name"`
-	Description string                    `yaml:"description"`
-	Parameters  map[string]map[string]any `yaml:"parameters"`
-	Timeout     string                    `yaml:"timeout"`
-	Steps       []*rawWorkflowStep        `yaml:"steps"`
+	Name        string             `yaml:"name"`
+	Description string             `yaml:"description"`
+	Parameters  map[string]any     `yaml:"parameters"` // Full JSON Schema format
+	Timeout     string             `yaml:"timeout"`
+	Steps       []*rawWorkflowStep `yaml:"steps"`
+	Output      *rawOutputConfig   `yaml:"output"`
 }
 
 type rawWorkflowStep struct {
@@ -186,6 +176,19 @@ type rawStepErrorHandling struct {
 
 type rawElicitationResponse struct {
 	Action string `yaml:"action"`
+}
+
+type rawOutputConfig struct {
+	Properties map[string]rawOutputProperty `yaml:"properties"`
+	Required   []string                     `yaml:"required"`
+}
+
+type rawOutputProperty struct {
+	Type        string                       `yaml:"type"`
+	Description string                       `yaml:"description"`
+	Value       string                       `yaml:"value"`
+	Properties  map[string]rawOutputProperty `yaml:"properties"`
+	Default     any                          `yaml:"default"`
 }
 
 // transformToConfig converts the raw YAML structure to the unified Config model.
@@ -216,15 +219,6 @@ func (l *YAMLLoader) transformToConfig(raw *rawConfig) (*Config, error) {
 	}
 	cfg.Aggregation = aggregation
 
-	// Transform token cache
-	if raw.TokenCache != nil {
-		tokenCache, err := l.transformTokenCache(raw.TokenCache)
-		if err != nil {
-			return nil, fmt.Errorf("token_cache: %w", err)
-		}
-		cfg.TokenCache = tokenCache
-	}
-
 	// Transform operational
 	if raw.Operational != nil {
 		operational, err := l.transformOperational(raw.Operational)
@@ -254,12 +248,14 @@ func (*YAMLLoader) transformIncomingAuth(raw *rawIncomingAuth) (*IncomingAuthCon
 
 	if raw.OIDC != nil {
 		cfg.OIDC = &OIDCConfig{
-			Issuer:          raw.OIDC.Issuer,
-			ClientID:        raw.OIDC.ClientID,
-			ClientSecretEnv: raw.OIDC.ClientSecretEnv,
-			Audience:        raw.OIDC.Audience,
-			Resource:        raw.OIDC.Resource,
-			Scopes:          raw.OIDC.Scopes,
+			Issuer:                          raw.OIDC.Issuer,
+			ClientID:                        raw.OIDC.ClientID,
+			ClientSecretEnv:                 raw.OIDC.ClientSecretEnv,
+			Audience:                        raw.OIDC.Audience,
+			Resource:                        raw.OIDC.Resource,
+			Scopes:                          raw.OIDC.Scopes,
+			ProtectedResourceAllowPrivateIP: raw.OIDC.ProtectedResourceAllowPrivateIP,
+			InsecureAllowHTTP:               raw.OIDC.InsecureAllowHTTP,
 		}
 	}
 
@@ -403,41 +399,6 @@ func (*YAMLLoader) transformAggregation(raw *rawAggregation) (*AggregationConfig
 	return cfg, nil
 }
 
-func (*YAMLLoader) transformTokenCache(raw *rawTokenCache) (*TokenCacheConfig, error) {
-	cfg := &TokenCacheConfig{
-		Provider: raw.Provider,
-	}
-
-	switch raw.Provider {
-	case CacheProviderMemory:
-		ttlOffset, err := time.ParseDuration(raw.Config.TTLOffset)
-		if err != nil {
-			return nil, fmt.Errorf("invalid ttl_offset: %w", err)
-		}
-
-		cfg.Memory = &MemoryCacheConfig{
-			MaxEntries: raw.Config.MaxEntries,
-			TTLOffset:  Duration(ttlOffset),
-		}
-
-	case CacheProviderRedis:
-		ttlOffset, err := time.ParseDuration(raw.Config.TTLOffset)
-		if err != nil {
-			return nil, fmt.Errorf("invalid ttl_offset: %w", err)
-		}
-
-		cfg.Redis = &RedisCacheConfig{
-			Address:   raw.Config.Address,
-			DB:        raw.Config.DB,
-			KeyPrefix: raw.Config.KeyPrefix,
-			Password:  raw.Config.Password,
-			TTLOffset: Duration(ttlOffset),
-		}
-	}
-
-	return cfg, nil
-}
-
 func (*YAMLLoader) transformOperational(raw *rawOperational) (*OperationalConfig, error) {
 	cfg := &OperationalConfig{}
 
@@ -508,27 +469,15 @@ func (l *YAMLLoader) transformCompositeTools(raw []*rawCompositeTool) ([]*Compos
 		tool := &CompositeToolConfig{
 			Name:        rawTool.Name,
 			Description: rawTool.Description,
-			Parameters:  make(map[string]ParameterSchema),
+			Parameters:  rawTool.Parameters, // Pass through JSON Schema directly
 			Timeout:     Duration(timeout),
 		}
 
-		// Transform parameters
-		for name, paramMap := range rawTool.Parameters {
-			typeVal, ok := paramMap["type"]
-			if !ok {
-				return nil, fmt.Errorf("tool %s, parameter %s: missing 'type' field", rawTool.Name, name)
+		// Validate parameters is valid JSON Schema if present
+		if len(rawTool.Parameters) > 0 {
+			if err := validateParametersJSONSchema(rawTool.Parameters, rawTool.Name); err != nil {
+				return nil, err
 			}
-			typeStr, ok := typeVal.(string)
-			if !ok {
-				return nil, fmt.Errorf("tool %s, parameter %s: 'type' field must be a string", rawTool.Name, name)
-			}
-			param := ParameterSchema{
-				Type: typeStr,
-			}
-			if def, ok := paramMap["default"]; ok {
-				param.Default = def
-			}
-			tool.Parameters[name] = param
 		}
 
 		// Transform steps
@@ -538,6 +487,15 @@ func (l *YAMLLoader) transformCompositeTools(raw []*rawCompositeTool) ([]*Compos
 				return nil, fmt.Errorf("tool %s, step %s: %w", rawTool.Name, rawStep.ID, err)
 			}
 			tool.Steps = append(tool.Steps, step)
+		}
+
+		// Transform output config
+		if rawTool.Output != nil {
+			outputCfg, err := l.transformOutputConfig(rawTool.Output)
+			if err != nil {
+				return nil, fmt.Errorf("tool %s, output: %w", rawTool.Name, err)
+			}
+			tool.Output = outputCfg
 		}
 
 		tools = append(tools, tool)
@@ -601,4 +559,97 @@ func (*YAMLLoader) transformWorkflowStep(raw *rawWorkflowStep) (*WorkflowStepCon
 	}
 
 	return step, nil
+}
+
+func (*YAMLLoader) transformOutputConfig(raw *rawOutputConfig) (*OutputConfig, error) {
+	if raw == nil {
+		return nil, nil
+	}
+
+	cfg := &OutputConfig{
+		Properties: make(map[string]OutputProperty),
+		Required:   raw.Required,
+	}
+
+	for name, rawProp := range raw.Properties {
+		prop, err := transformOutputProperty(&rawProp)
+		if err != nil {
+			return nil, fmt.Errorf("property %s: %w", name, err)
+		}
+		cfg.Properties[name] = prop
+	}
+
+	return cfg, nil
+}
+
+func transformOutputProperty(raw *rawOutputProperty) (OutputProperty, error) {
+	prop := OutputProperty{
+		Type:        raw.Type,
+		Description: raw.Description,
+		Value:       raw.Value,
+		Default:     raw.Default,
+	}
+
+	// Transform nested properties for object types
+	if len(raw.Properties) > 0 {
+		prop.Properties = make(map[string]OutputProperty)
+		for name, rawNestedProp := range raw.Properties {
+			nestedProp, err := transformOutputProperty(&rawNestedProp)
+			if err != nil {
+				return OutputProperty{}, fmt.Errorf("nested property %s: %w", name, err)
+			}
+			prop.Properties[name] = nestedProp
+		}
+	}
+
+	return prop, nil
+}
+
+// validateParametersJSONSchema validates that parameters follows JSON Schema format.
+// Per MCP specification, parameters should be a JSON Schema object with type "object".
+//
+// We enforce type="object" because MCP tools use named parameters (inputSchema.properties),
+// and non-object types (e.g., type="string") would mean a tool takes a single unnamed value,
+// which doesn't align with how MCP tool arguments work. The MCP SDK and specification
+// expect tools to have named parameters accessible via inputSchema.properties.
+func validateParametersJSONSchema(params map[string]any, toolName string) error {
+	if len(params) == 0 {
+		return nil
+	}
+
+	// Check if it has "type" field
+	typeVal, hasType := params["type"]
+	if !hasType {
+		return fmt.Errorf("tool %s: parameters must have 'type' field (should be 'object' for JSON Schema)", toolName)
+	}
+
+	// Type must be a string
+	typeStr, ok := typeVal.(string)
+	if !ok {
+		return fmt.Errorf("tool %s: parameters 'type' field must be a string", toolName)
+	}
+
+	// Type should be "object" for parameter schemas
+	if typeStr != "object" {
+		return fmt.Errorf("tool %s: parameters 'type' must be 'object' (got '%s')", toolName, typeStr)
+	}
+
+	// If properties exist, validate it's a map
+	if properties, hasProps := params["properties"]; hasProps {
+		if _, ok := properties.(map[string]any); !ok {
+			return fmt.Errorf("tool %s: parameters 'properties' must be an object", toolName)
+		}
+	}
+
+	// If required exists, validate it's an array
+	if required, hasRequired := params["required"]; hasRequired {
+		if _, ok := required.([]any); !ok {
+			// Also accept []string which may come from YAML
+			if _, ok := required.([]string); !ok {
+				return fmt.Errorf("tool %s: parameters 'required' must be an array", toolName)
+			}
+		}
+	}
+
+	return nil
 }

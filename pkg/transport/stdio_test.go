@@ -16,6 +16,7 @@ import (
 	"go.uber.org/mock/gomock"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/container/docker"
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/logger"
 )
@@ -1012,4 +1013,45 @@ func TestStdinRaceCondition(t *testing.T) {
 
 	// Clean up
 	cancel()
+}
+
+// TestStdioTransport_ShouldRestart tests the ShouldRestart logic
+func TestStdioTransport_ShouldRestart(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		exitError      error
+		expectedResult bool
+	}{
+		{
+			name:           "container exited - should restart",
+			exitError:      fmt.Errorf("container exited unexpectedly"),
+			expectedResult: true,
+		},
+		{
+			name:           "container removed - should not restart",
+			exitError:      docker.NewContainerError(docker.ErrContainerRemoved, "test", "Container removed"),
+			expectedResult: false,
+		},
+		{
+			name:           "no error - should not restart",
+			exitError:      nil,
+			expectedResult: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			transport := &StdioTransport{
+				containerName:    "test-container",
+				containerExitErr: tt.exitError,
+			}
+
+			result := transport.ShouldRestart()
+			assert.Equal(t, tt.expectedResult, result)
+		})
+	}
 }

@@ -15,22 +15,13 @@ import (
 // and applies them in a single batch update at the end.
 // It implements the StatusManager interface.
 type StatusCollector struct {
-	mcpRegistry *mcpv1alpha1.MCPRegistry
-	hasChanges  bool
-	phase       *mcpv1alpha1.MCPRegistryPhase
-	message     *string
-	syncStatus  *mcpv1alpha1.SyncStatus
-	apiStatus   *mcpv1alpha1.APIStatus
-	conditions  map[string]metav1.Condition
-
-	// Component collectors
-	syncCollector *syncStatusCollector
-	apiCollector  *apiStatusCollector
-}
-
-// syncStatusCollector implements SyncStatusCollector
-type syncStatusCollector struct {
-	parent *StatusCollector
+	mcpRegistry  *mcpv1alpha1.MCPRegistry
+	hasChanges   bool
+	phase        *mcpv1alpha1.MCPRegistryPhase
+	message      *string
+	apiStatus    *mcpv1alpha1.APIStatus
+	conditions   map[string]metav1.Condition
+	apiCollector *apiStatusCollector
 }
 
 // apiStatusCollector implements APIStatusCollector
@@ -49,7 +40,6 @@ func newStatusCollector(mcpRegistry *mcpv1alpha1.MCPRegistry) *StatusCollector {
 		mcpRegistry: mcpRegistry,
 		conditions:  make(map[string]metav1.Condition),
 	}
-	collector.syncCollector = &syncStatusCollector{parent: collector}
 	collector.apiCollector = &apiStatusCollector{parent: collector}
 	return collector
 }
@@ -80,23 +70,6 @@ func (s *StatusCollector) SetCondition(conditionType, reason, message string, st
 // SetAPIReadyCondition adds or updates the API ready condition.
 func (s *StatusCollector) SetAPIReadyCondition(reason, message string, status metav1.ConditionStatus) {
 	s.SetCondition(mcpv1alpha1.ConditionAPIReady, reason, message, status)
-}
-
-// SetSyncStatus sets the detailed sync status.
-func (s *StatusCollector) SetSyncStatus(
-	phase mcpv1alpha1.SyncPhase, message string, attemptCount int,
-	lastSyncTime *metav1.Time, lastSyncHash string, serverCount int) {
-	now := metav1.Now()
-	s.syncStatus = &mcpv1alpha1.SyncStatus{
-		Phase:        phase,
-		Message:      message,
-		LastAttempt:  &now,
-		AttemptCount: attemptCount,
-		LastSyncTime: lastSyncTime,
-		LastSyncHash: lastSyncHash,
-		ServerCount:  serverCount,
-	}
-	s.hasChanges = true
 }
 
 // SetAPIStatus sets the detailed API status.
@@ -137,11 +110,6 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, mcpRegistryStatus *m
 			mcpRegistryStatus.Message = *s.message
 		}
 
-		// Apply sync status change
-		if s.syncStatus != nil {
-			mcpRegistryStatus.SyncStatus = s.syncStatus
-		}
-
 		// Apply API status change
 		if s.apiStatus != nil {
 			mcpRegistryStatus.APIStatus = s.apiStatus
@@ -164,11 +132,6 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, mcpRegistryStatus *m
 
 // StatusManager interface methods
 
-// Sync returns the sync status collector
-func (s *StatusCollector) Sync() SyncStatusCollector {
-	return s.syncCollector
-}
-
 // API returns the API status collector
 func (s *StatusCollector) API() APIStatusCollector {
 	return s.apiCollector
@@ -178,25 +141,6 @@ func (s *StatusCollector) API() APIStatusCollector {
 func (s *StatusCollector) SetOverallStatus(phase mcpv1alpha1.MCPRegistryPhase, message string) {
 	s.SetPhase(phase)
 	s.SetMessage(message)
-}
-
-// SyncStatusCollector implementation
-
-// Status returns the sync status
-func (sc *syncStatusCollector) Status() *mcpv1alpha1.SyncStatus {
-	return sc.parent.syncStatus
-}
-
-// SetSyncCondition sets a sync-related condition
-func (sc *syncStatusCollector) SetSyncCondition(condition metav1.Condition) {
-	sc.parent.conditions[condition.Type] = condition
-	sc.parent.hasChanges = true
-}
-
-// SetSyncStatus delegates to the parent's SetSyncStatus method
-func (sc *syncStatusCollector) SetSyncStatus(phase mcpv1alpha1.SyncPhase, message string, attemptCount int,
-	lastSyncTime *metav1.Time, lastSyncHash string, serverCount int) {
-	sc.parent.SetSyncStatus(phase, message, attemptCount, lastSyncTime, lastSyncHash, serverCount)
 }
 
 // APIStatusCollector implementation

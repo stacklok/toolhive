@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,9 +11,10 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/container/docker"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/transport/errors"
+	transporterrors "github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -58,6 +60,10 @@ type HTTPTransport struct {
 	// Container monitor
 	monitor rt.Monitor
 	errorCh <-chan error
+
+	// Container exit error (for determining if restart is needed)
+	containerExitErr error
+	exitErrMutex     sync.Mutex
 }
 
 // NewHTTPTransport creates a new HTTP transport.
@@ -165,7 +171,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 			t.proxyPort, targetURI)
 	} else {
 		if t.containerName == "" {
-			return errors.ErrContainerNameNotSet
+			return transporterrors.ErrContainerNameNotSet
 		}
 
 		// For local containers, use the configured target URI
@@ -273,12 +279,39 @@ func (t *HTTPTransport) handleContainerExit(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	case err := <-t.errorCh:
-		logger.Infof("Container %s exited: %v", t.containerName, err)
-		// Stop the transport when the container exits
+		// Store the exit error so runner can check if restart is needed
+		t.exitErrMutex.Lock()
+		t.containerExitErr = err
+		t.exitErrMutex.Unlock()
+
+		logger.Warnf("Container %s exited: %v", t.containerName, err)
+
+		// Check if container was removed (not just exited) using typed error
+		if errors.Is(err, docker.ErrContainerRemoved) {
+			logger.Infof("Container %s was removed. Stopping proxy and cleaning up.", t.containerName)
+		} else {
+			logger.Infof("Container %s exited. Will attempt automatic restart.", t.containerName)
+		}
+
+		// Stop the transport when the container exits/removed
 		if stopErr := t.Stop(ctx); stopErr != nil {
 			logger.Errorf("Error stopping transport after container exit: %v", stopErr)
 		}
 	}
+}
+
+// ShouldRestart returns true if the container exited and should be restarted.
+// Returns false if the container was removed (intentionally deleted).
+func (t *HTTPTransport) ShouldRestart() bool {
+	t.exitErrMutex.Lock()
+	defer t.exitErrMutex.Unlock()
+
+	if t.containerExitErr == nil {
+		return false // No exit error, normal shutdown
+	}
+
+	// Don't restart if container was removed (use typed error check)
+	return !errors.Is(t.containerExitErr, docker.ErrContainerRemoved)
 }
 
 // IsRunning checks if the transport is currently running.

@@ -1,57 +1,8 @@
 package aggregator
 
 import (
-	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/core"
-	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
-
-// Test fixture builders to reduce verbosity in tests
-
-func newTestWorkload(name string, opts ...func(*core.Workload)) core.Workload {
-	w := core.Workload{
-		Name:          name,
-		Status:        runtime.WorkloadStatusRunning,
-		URL:           "http://localhost:8080/mcp",
-		TransportType: types.TransportTypeStreamableHTTP,
-		Group:         testGroupName,
-	}
-	for _, opt := range opts {
-		opt(&w)
-	}
-	return w
-}
-
-func withStatus(status runtime.WorkloadStatus) func(*core.Workload) {
-	return func(w *core.Workload) {
-		w.Status = status
-	}
-}
-
-func withURL(url string) func(*core.Workload) {
-	return func(w *core.Workload) {
-		w.URL = url
-	}
-}
-
-func withTransport(transport types.TransportType) func(*core.Workload) {
-	return func(w *core.Workload) {
-		w.TransportType = transport
-	}
-}
-
-func withToolType(toolType string) func(*core.Workload) {
-	return func(w *core.Workload) {
-		w.ToolType = toolType
-	}
-}
-
-func withLabels(labels map[string]string) func(*core.Workload) {
-	return func(w *core.Workload) {
-		w.Labels = labels
-	}
-}
 
 func newTestBackend(id string, opts ...func(*vmcp.Backend)) vmcp.Backend {
 	b := vmcp.Backend{

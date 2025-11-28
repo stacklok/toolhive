@@ -33,11 +33,11 @@ type DynamicClientRegistrationRequest struct {
 	RedirectURIs []string `json:"redirect_uris"`
 
 	// Essential fields for OAuth flow
-	ClientName              string   `json:"client_name,omitempty"`
-	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
-	GrantTypes              []string `json:"grant_types,omitempty"`
-	ResponseTypes           []string `json:"response_types,omitempty"`
-	Scopes                  []string `json:"scope,omitempty"`
+	ClientName              string    `json:"client_name,omitempty"`
+	TokenEndpointAuthMethod string    `json:"token_endpoint_auth_method,omitempty"`
+	GrantTypes              []string  `json:"grant_types,omitempty"`
+	ResponseTypes           []string  `json:"response_types,omitempty"`
+	Scopes                  ScopeList `json:"scope,omitempty"`
 }
 
 // NewDynamicClientRegistrationRequest creates a new dynamic client registration request
@@ -57,17 +57,42 @@ func NewDynamicClientRegistrationRequest(scopes []string, callbackPort int) *Dyn
 	return registrationRequest
 }
 
-// ScopeList represents the "scope" field in a dynamic client registration response.
-// Some servers return this as a space-delimited string per RFC 7591, while others
-// return it as a JSON array of strings. This type normalizes both into a []string.
+// ScopeList represents the "scope" field in both dynamic client registration requests and responses.
 //
-// Examples of supported inputs:
+// Marshaling (requests): Per RFC 7591 Section 2, scopes are serialized as a space-delimited string.
+// Examples:
+//   - []string{"openid", "profile", "email"} → "openid profile email"
+//   - []string{"openid"}                     → "openid"
+//   - nil or []string{}                      → omitted (via omitempty)
 //
-//	"openid profile email"        → []string{"openid", "profile", "email"}
-//	["openid","profile","email"]  → []string{"openid", "profile", "email"}
-//	null                          → nil
-//	"" or ["", "  "]              → nil
+// Unmarshaling (responses): Some servers return scopes as a space-delimited string per RFC 7591,
+// while others return a JSON array. This type normalizes both formats into []string.
+// Examples:
+//   - "openid profile email"       → []string{"openid", "profile", "email"}
+//   - ["openid","profile","email"] → []string{"openid", "profile", "email"}
+//   - null                         → nil
+//   - "" or ["", "  "]             → nil
 type ScopeList []string
+
+// MarshalJSON implements custom encoding for ScopeList. It converts the slice
+// of scopes into a space-delimited string as required by RFC 7591 Section 2.
+//
+// Important: This method does NOT handle empty slices. Go's encoding/json package
+// evaluates omitempty by checking if the Go value is "empty" (len(slice) == 0)
+// BEFORE calling MarshalJSON. Empty slices are omitted at the struct level, so this
+// method is never invoked for empty slices. This means we don't need to return null
+// or handle the empty case - omitempty does it for us automatically.
+//
+// See: https://pkg.go.dev/encoding/json (omitempty checks zero values before marshaling)
+func (s ScopeList) MarshalJSON() ([]byte, error) {
+	// Join scopes with spaces and marshal as a string (RFC 7591 Section 2)
+	scopeString := strings.Join(s, " ")
+	result, err := json.Marshal(scopeString)
+	if err == nil {
+		logger.Debugf("RFC 7591: Marshaled ScopeList %v -> %q (space-delimited string)", []string(s), scopeString)
+	}
+	return result, err
+}
 
 // UnmarshalJSON implements custom decoding for ScopeList. It supports both
 // string and array encodings of the "scope" field, trimming whitespace and
@@ -165,6 +190,14 @@ func validateAndSetDefaults(request *DynamicClientRegistrationRequest) error {
 		return fmt.Errorf("at least one redirect URI is required")
 	}
 
+	// Validate that individual scope values don't contain spaces (RFC 6749 Section 3.3)
+	// Scopes must be space-separated tokens, so spaces within a scope value are invalid
+	for _, scope := range request.Scopes {
+		if strings.Contains(scope, " ") {
+			return fmt.Errorf("invalid scope value %q: scope values cannot contain spaces (RFC 6749)", scope)
+		}
+	}
+
 	// Set default values if not provided
 	if request.ClientName == "" {
 		request.ClientName = ToolHiveMCPClientName
@@ -231,6 +264,21 @@ func handleHTTPResponse(resp *http.Response) (*DynamicClientRegistrationResponse
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		// Try to read error response
 		errorBody, _ := io.ReadAll(resp.Body)
+
+		// Detect if DCR is not supported by the provider
+		// Common HTTP status codes when DCR is unsupported:
+		// - 404 Not Found: endpoint doesn't exist
+		// - 405 Method Not Allowed: endpoint exists but POST not allowed
+		// - 501 Not Implemented: DCR feature not implemented
+		if resp.StatusCode == http.StatusNotFound ||
+			resp.StatusCode == http.StatusMethodNotAllowed ||
+			resp.StatusCode == http.StatusNotImplemented {
+			return nil, fmt.Errorf("this provider does not support Dynamic Client Registration (DCR) - HTTP %d. "+
+				"Please configure OAuth client credentials using --remote-auth-client-id and --remote-auth-client-secret flags, "+
+				"or register a client manually with the provider. Error details: %s",
+				resp.StatusCode, string(errorBody))
+		}
+
 		return nil, fmt.Errorf("dynamic client registration failed with status %d: %s", resp.StatusCode, string(errorBody))
 	}
 

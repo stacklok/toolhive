@@ -38,6 +38,9 @@ type StatusManager interface {
 	// SetAuthConfiguredCondition sets the AuthConfigured condition
 	SetAuthConfiguredCondition(reason, message string, status metav1.ConditionStatus)
 
+	// SetDiscoveredBackends sets the discovered backends list
+	SetDiscoveredBackends(backends []mcpv1alpha1.DiscoveredBackend)
+
 	// UpdateStatus applies all collected status changes in a single batch update.
 	// Returns true if updates were applied, false if no changes were collected.
 	UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alpha1.VirtualMCPServerStatus) bool

@@ -53,7 +53,7 @@ incoming_auth:
 outgoing_auth:
   source: inline
   default:
-    type: pass_through
+    type: unauthenticated
 
 aggregation:
   conflict_resolution: prefix
@@ -100,7 +100,7 @@ incoming_auth:
 outgoing_auth:
   source: inline
   default:
-    type: pass_through
+    type: unauthenticated
 
 aggregation:
   conflict_resolution: prefix
@@ -128,51 +128,6 @@ aggregation:
 			wantErr: false,
 		},
 		{
-			name: "valid configuration with token cache",
-			yaml: `
-name: test-vmcp
-group: test-group
-
-incoming_auth:
-  type: anonymous
-
-outgoing_auth:
-  source: inline
-  default:
-    type: pass_through
-
-aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
-
-token_cache:
-  provider: memory
-  config:
-    max_entries: 1000
-    ttl_offset: 5m
-`,
-			want: func(t *testing.T, cfg *Config) {
-				t.Helper()
-				if cfg.TokenCache == nil {
-					t.Fatal("TokenCache is nil")
-				}
-				if cfg.TokenCache.Provider != CacheProviderMemory {
-					t.Errorf("TokenCache.Provider = %v, want memory", cfg.TokenCache.Provider)
-				}
-				if cfg.TokenCache.Memory == nil {
-					t.Fatal("TokenCache.Memory is nil")
-				}
-				if cfg.TokenCache.Memory.MaxEntries != 1000 {
-					t.Errorf("Memory.MaxEntries = %v, want 1000", cfg.TokenCache.Memory.MaxEntries)
-				}
-				if cfg.TokenCache.Memory.TTLOffset != Duration(5*time.Minute) {
-					t.Errorf("Memory.TTLOffset = %v, want 5m", cfg.TokenCache.Memory.TTLOffset)
-				}
-			},
-			wantErr: false,
-		},
-		{
 			name: "valid configuration with composite tools",
 			yaml: `
 name: test-vmcp
@@ -184,7 +139,7 @@ incoming_auth:
 outgoing_auth:
   source: inline
   default:
-    type: pass_through
+    type: unauthenticated
 
 aggregation:
   conflict_resolution: prefix
@@ -195,8 +150,10 @@ composite_tools:
   - name: deploy_workflow
     description: Deploy and notify
     parameters:
-      pr_number:
-        type: integer
+      type: object
+      properties:
+        pr_number:
+          type: integer
     timeout: 30m
     steps:
       - id: merge
@@ -258,7 +215,7 @@ incoming_auth:
 outgoing_auth:
   source: inline
   default:
-    type: pass_through
+    type: unauthenticated
 
 aggregation:
   conflict_resolution: prefix
@@ -278,34 +235,6 @@ aggregation:
 			wantErr: false,
 		},
 		{
-			name: "invalid duration format",
-			yaml: `
-name: test-vmcp
-group: test-group
-
-incoming_auth:
-  type: anonymous
-
-outgoing_auth:
-  source: inline
-  default:
-    type: pass_through
-
-aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
-
-token_cache:
-  provider: memory
-  config:
-    max_entries: 1000
-    ttl_offset: invalid-duration
-`,
-			wantErr: true,
-			errMsg:  "invalid ttl_offset",
-		},
-		{
 			name: "composite tool with missing parameter type",
 			yaml: `
 name: test-vmcp
@@ -317,7 +246,7 @@ incoming_auth:
 outgoing_auth:
   source: inline
   default:
-    type: pass_through
+    type: unauthenticated
 
 aggregation:
   conflict_resolution: prefix
@@ -329,15 +258,17 @@ composite_tools:
     description: Test tool
     timeout: 5m
     parameters:
-      param1:
-        default: "value"
+      properties:
+        param1:
+          type: string
+          default: "value"
     steps:
       - id: step1
         type: tool
         tool: some.tool
 `,
 			wantErr: true,
-			errMsg:  "missing 'type' field",
+			errMsg:  "parameters must have 'type' field",
 		},
 		{
 			name: "header_injection with header_value_env resolves environment variable",

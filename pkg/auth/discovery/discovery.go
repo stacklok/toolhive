@@ -677,6 +677,13 @@ func registerDynamicClient(
 	discoveredDoc *oauth.OIDCDiscoveryDocument,
 ) (*oauth.DynamicClientRegistrationResponse, error) {
 
+	// Check if the provider supports Dynamic Client Registration
+	if discoveredDoc.RegistrationEndpoint == "" {
+		return nil, fmt.Errorf("this provider does not support Dynamic Client Registration (DCR). " +
+			"Please configure OAuth client credentials using --remote-auth-client-id and --remote-auth-client-secret flags, " +
+			"or register a client manually with the provider")
+	}
+
 	// Use default client name if not provided
 	registrationRequest := oauth.NewDynamicClientRegistrationRequest(config.Scopes, config.CallbackPort)
 

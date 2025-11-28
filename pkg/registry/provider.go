@@ -1,6 +1,6 @@
 package registry
 
-import "github.com/stacklok/toolhive/pkg/registry/types"
+import types "github.com/stacklok/toolhive/pkg/registry/registry"
 
 //go:generate mockgen -destination=mocks/mock_provider.go -package=mocks -source=provider.go Provider
 

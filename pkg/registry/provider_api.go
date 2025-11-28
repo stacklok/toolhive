@@ -9,7 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/registry/api"
 	"github.com/stacklok/toolhive/pkg/registry/converters"
-	"github.com/stacklok/toolhive/pkg/registry/types"
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // APIRegistryProvider provides registry data from an MCP Registry API endpoint

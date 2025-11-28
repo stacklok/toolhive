@@ -27,11 +27,21 @@ func (m *workflowContextManager) CreateContext(params map[string]any) *WorkflowC
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	workflowID := uuid.New().String()
+	startTime := time.Now().UTC()
+
 	ctx := &WorkflowContext{
-		WorkflowID: uuid.New().String(),
+		WorkflowID: workflowID,
 		Params:     params,
 		Steps:      make(map[string]*StepResult),
 		Variables:  make(map[string]any),
+		Workflow: &WorkflowMetadata{
+			ID:         workflowID,
+			StartTime:  startTime,
+			StepCount:  0,
+			Status:     WorkflowStatusPending,
+			DurationMs: 0,
+		},
 	}
 
 	m.contexts[ctx.WorkflowID] = ctx
@@ -177,6 +187,17 @@ func (ctx *WorkflowContext) Clone() *WorkflowContext {
 		Params:     cloneMap(ctx.Params),
 		Steps:      make(map[string]*StepResult, len(ctx.Steps)),
 		Variables:  cloneMap(ctx.Variables),
+	}
+
+	// Clone workflow metadata
+	if ctx.Workflow != nil {
+		clone.Workflow = &WorkflowMetadata{
+			ID:         ctx.Workflow.ID,
+			StartTime:  ctx.Workflow.StartTime,
+			StepCount:  ctx.Workflow.StepCount,
+			Status:     ctx.Workflow.Status,
+			DurationMs: ctx.Workflow.DurationMs,
+		}
 	}
 
 	// Clone step results

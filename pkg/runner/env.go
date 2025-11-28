@@ -10,7 +10,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
+	"github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -23,7 +23,7 @@ type EnvVarValidator interface {
 	// and returns the processed environment variables to be set.
 	Validate(
 		ctx context.Context,
-		metadata *regtypes.ImageMetadata,
+		metadata *registry.ImageMetadata,
 		runConfig *RunConfig,
 		suppliedEnvVars map[string]string,
 	) (map[string]string, error)
@@ -38,7 +38,7 @@ type DetachedEnvVarValidator struct{}
 // and returns the processed environment variables to be set.
 func (*DetachedEnvVarValidator) Validate(
 	_ context.Context,
-	metadata *regtypes.ImageMetadata,
+	metadata *registry.ImageMetadata,
 	runConfig *RunConfig,
 	suppliedEnvVars map[string]string,
 ) (map[string]string, error) {
@@ -80,7 +80,7 @@ func NewCLIEnvVarValidator(configProvider config.Provider) *CLIEnvVarValidator {
 // and returns the processed environment variables to be set.
 func (v *CLIEnvVarValidator) Validate(
 	ctx context.Context,
-	metadata *regtypes.ImageMetadata,
+	metadata *registry.ImageMetadata,
 	runConfig *RunConfig,
 	suppliedEnvVars map[string]string,
 ) (map[string]string, error) {
@@ -152,7 +152,7 @@ func (v *CLIEnvVarValidator) Validate(
 }
 
 // promptForEnvironmentVariable prompts the user for an environment variable value
-func promptForEnvironmentVariable(envVar *regtypes.EnvVar) (string, error) {
+func promptForEnvironmentVariable(envVar *registry.EnvVar) (string, error) {
 	var byteValue []byte
 	var err error
 	if envVar.Secret {
@@ -182,7 +182,7 @@ func promptForEnvironmentVariable(envVar *regtypes.EnvVar) (string, error) {
 // addNewVariable adds an environment variable or secret to the appropriate list
 func addNewVariable(
 	ctx context.Context,
-	envVar *regtypes.EnvVar,
+	envVar *registry.EnvVar,
 	value string,
 	secretsManager secrets.Provider,
 	envVars *map[string]string,
@@ -198,7 +198,7 @@ func addNewVariable(
 // addAsSecret stores the value as a secret and adds a secret reference
 func addAsSecret(
 	ctx context.Context,
-	envVar *regtypes.EnvVar,
+	envVar *registry.EnvVar,
 	value string,
 	secretsManager secrets.Provider,
 	secretsList *[]string,
@@ -229,7 +229,7 @@ func addAsSecret(
 }
 
 // initializeSecretsManagerIfNeeded initializes the secrets manager if there are secret environment variables
-func (v *CLIEnvVarValidator) initializeSecretsManagerIfNeeded(registryEnvVars []*regtypes.EnvVar) secrets.Provider {
+func (v *CLIEnvVarValidator) initializeSecretsManagerIfNeeded(registryEnvVars []*registry.EnvVar) secrets.Provider {
 	// Check if we have any secret environment variables
 	hasSecrets := false
 	for _, envVar := range registryEnvVars {
@@ -319,7 +319,7 @@ func isSecretReferenceEnvVar(secret, envVarName string) bool {
 
 // addAsEnvironmentVariable adds the value as a regular environment variable
 func addAsEnvironmentVariable(
-	envVar *regtypes.EnvVar,
+	envVar *registry.EnvVar,
 	value string,
 	envVars *map[string]string,
 ) {

@@ -55,6 +55,8 @@ type ContainerInfo struct {
 	State WorkloadStatus
 	// Created is the container creation timestamp
 	Created time.Time
+	// StartedAt is when the container was last started (changes on restart)
+	StartedAt time.Time
 	// Labels is the container labels
 	Labels map[string]string
 	// Ports is the container port mappings

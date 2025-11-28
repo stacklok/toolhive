@@ -144,14 +144,16 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Production-Ready MCP Servers"
-  source:
-    type: configmap
-    configmap:
-      name: minimal-registry-data
-  filter:
-    tags:
-      include:
-        - "production"
-      exclude:
-        - "experimental"
-        - "deprecated"
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: minimal-registry-data
+        key: registry.json
+      filter:
+        tags:
+          include:
+            - "production"
+          exclude:
+            - "experimental"
+            - "deprecated"

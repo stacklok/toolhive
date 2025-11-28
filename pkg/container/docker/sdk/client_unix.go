@@ -191,6 +191,19 @@ func findDockerSocket() (string, error) {
 		logger.Debugf("Failed to check Rancher Desktop socket at %s: %v", rancherDesktopPath, err)
 	}
 
+	// Try OrbStack socket path on macOS
+	if home := os.Getenv("HOME"); home != "" {
+		orbStackPath := filepath.Join(home, OrbStackMacSocketPath)
+		_, err := os.Stat(orbStackPath)
+
+		if err == nil {
+			logger.Debugf("Found OrbStack socket at %s", orbStackPath)
+			return orbStackPath, nil
+		}
+
+		logger.Debugf("Failed to check OrbStack socket at %s: %v", orbStackPath, err)
+	}
+
 	return "", fmt.Errorf("docker socket not found in standard locations")
 }
 

@@ -12,7 +12,7 @@ import (
 )
 
 var buildCmd = &cobra.Command{
-	Use:   "build [flags] PROTOCOL",
+	Use:   "build [flags] PROTOCOL [-- ARGS...]",
 	Short: "Build a container for an MCP server without running it",
 	Long: `Build a container for an MCP server using a protocol scheme without running it.
 
@@ -28,15 +28,28 @@ using either uvx (Python with uv package manager), npx (Node.js),
 or go (Golang). For Go, you can also specify local paths starting
 with './' or '../' to build local Go projects.
 
+Build-time arguments can be baked into the container's ENTRYPOINT:
+
+	$ thv build npx://@launchdarkly/mcp-server -- start
+	$ thv build uvx://package -- --transport stdio
+
+These arguments become part of the container image and will always run,
+with runtime arguments (from 'thv run -- <args>') appending after them.
+
 The container will be built and tagged locally, ready to be used with 'thv run'
 or other container tools. The built image name will be displayed upon successful completion.
 
 Examples:
 	$ thv build uvx://mcp-server-git
 	$ thv build --tag my-custom-name:latest npx://@modelcontextprotocol/server-filesystem
-	$ thv build go://./my-local-server`,
-	Args: cobra.ExactArgs(1),
+	$ thv build go://./my-local-server
+	$ thv build npx://@launchdarkly/mcp-server -- start`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: buildCmdFunc,
+	// Ignore unknown flags to allow passing args after --
+	FParseErrWhitelist: cobra.FParseErrWhitelist{
+		UnknownFlags: true,
+	},
 }
 
 var buildFlags BuildFlags
@@ -69,12 +82,17 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid protocol scheme: %s. Supported schemes are: uvx://, npx://, go://", protocolScheme)
 	}
 
+	// Parse build arguments using os.Args to find everything after --
+	buildArgs := parseCommandArguments(os.Args)
+	logger.Debugf("Build args: %v", buildArgs)
+
 	// Create image manager (even for dry-run, we pass it but it won't be used)
 	imageManager := images.NewImageManager(ctx)
 
 	// If dry-run or output is specified, just generate the Dockerfile
 	if buildFlags.DryRun || buildFlags.Output != "" {
-		dockerfileContent, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag, true)
+		dockerfileContent, err := runner.BuildFromProtocolSchemeWithName(
+			ctx, imageManager, protocolScheme, "", buildFlags.Tag, buildArgs, true)
 		if err != nil {
 			return fmt.Errorf("failed to generate Dockerfile for %s: %v", protocolScheme, err)
 		}
@@ -96,7 +114,7 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 	logger.Infof("Building container for protocol scheme: %s", protocolScheme)
 
 	// Build the image using the new protocol handler with custom name
-	imageName, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag, false)
+	imageName, err := runner.BuildFromProtocolSchemeWithName(ctx, imageManager, protocolScheme, "", buildFlags.Tag, buildArgs, false)
 	if err != nil {
 		return fmt.Errorf("failed to build container for %s: %v", protocolScheme, err)
 	}

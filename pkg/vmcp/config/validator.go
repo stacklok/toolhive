@@ -44,11 +44,6 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 		errors = append(errors, err.Error())
 	}
 
-	// Validate token cache configuration
-	if err := v.validateTokenCache(cfg.TokenCache); err != nil {
-		errors = append(errors, err.Error())
-	}
-
 	// Validate operational configuration
 	if err := v.validateOperational(cfg.Operational); err != nil {
 		errors = append(errors, err.Error())
@@ -279,43 +274,6 @@ func (*DefaultValidator) validateToolOverrides(overrides map[string]*ToolOverrid
 			return fmt.Errorf("tools[%d].overrides.%s: at least one of name or description must be specified", toolIndex, toolName)
 		}
 	}
-	return nil
-}
-
-func (*DefaultValidator) validateTokenCache(cache *TokenCacheConfig) error {
-	if cache == nil {
-		return nil // Token cache is optional
-	}
-
-	validProviders := []string{CacheProviderMemory, CacheProviderRedis}
-	if !contains(validProviders, cache.Provider) {
-		return fmt.Errorf("token_cache.provider must be one of: %s", strings.Join(validProviders, ", "))
-	}
-
-	switch cache.Provider {
-	case CacheProviderMemory:
-		if cache.Memory == nil {
-			return fmt.Errorf("token_cache.memory is required when provider is 'memory'")
-		}
-		if cache.Memory.MaxEntries <= 0 {
-			return fmt.Errorf("token_cache.memory.max_entries must be positive")
-		}
-		if cache.Memory.TTLOffset < 0 {
-			return fmt.Errorf("token_cache.memory.ttl_offset cannot be negative")
-		}
-
-	case CacheProviderRedis:
-		if cache.Redis == nil {
-			return fmt.Errorf("token_cache.redis is required when provider is 'redis'")
-		}
-		if cache.Redis.Address == "" {
-			return fmt.Errorf("token_cache.redis.address is required")
-		}
-		if cache.Redis.TTLOffset < 0 {
-			return fmt.Errorf("token_cache.redis.ttl_offset cannot be negative")
-		}
-	}
-
 	return nil
 }
 

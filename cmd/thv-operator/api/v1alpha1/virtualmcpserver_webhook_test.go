@@ -508,7 +508,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 									ID:   "step1",
 									Tool: "backend.tool1",
 									OnError: &ErrorHandling{
-										Action:     "retry",
+										Action:     ErrorActionRetry,
 										MaxRetries: 3,
 									},
 								},
@@ -533,7 +533,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 									ID:   "step1",
 									Tool: "backend.tool1",
 									OnError: &ErrorHandling{
-										Action:     "retry",
+										Action:     ErrorActionRetry,
 										MaxRetries: 0,
 									},
 								},
@@ -544,6 +544,85 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "spec.compositeTools[0].steps[0].onError.maxRetries must be at least 1 when action is retry",
+		},
+		{
+			name: "valid error handling with retryDelay",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:   "step1",
+									Tool: "backend.tool1",
+									OnError: &ErrorHandling{
+										Action:     ErrorActionRetry,
+										MaxRetries: 3,
+										RetryDelay: "5s",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid error handling with complex retryDelay",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:   "step1",
+									Tool: "backend.tool1",
+									OnError: &ErrorHandling{
+										Action:     ErrorActionRetry,
+										MaxRetries: 3,
+										RetryDelay: "1m30s",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid error handling - invalid retryDelay format",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:   "step1",
+									Tool: "backend.tool1",
+									OnError: &ErrorHandling{
+										Action:     ErrorActionRetry,
+										MaxRetries: 3,
+										RetryDelay: "invalid",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.compositeTools[0].steps[0].onError.retryDelay: invalid duration format \"invalid\", expected format like '30s', '5m', '1h', '1h30m'",
 		},
 	}
 

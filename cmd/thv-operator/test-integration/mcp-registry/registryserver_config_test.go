@@ -11,7 +11,9 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -475,6 +477,189 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			}).Should(BeTrue())
 		})
 	})
+
+	Describe("PodTemplateSpec Customization", func() {
+		It("should apply custom service account from PodTemplateSpec", func() {
+			By("creating a ConfigMap source")
+			configMap := configMapHelper.CreateSampleToolHiveRegistry("podspec-sa-test")
+
+			By("creating MCPRegistry with custom service account in PodTemplateSpec")
+			registry := &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "podspec-sa-test",
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPRegistrySpec{
+					Registries: []mcpv1alpha1.MCPRegistryConfig{
+						{
+							Name:   "default",
+							Format: mcpv1alpha1.RegistryFormatToolHive,
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: configMap.Name,
+								},
+								Key: "registry.json",
+							},
+							SyncPolicy: &mcpv1alpha1.SyncPolicy{
+								Interval: "1h",
+							},
+						},
+					},
+					PodTemplateSpec: &runtime.RawExtension{
+						Raw: []byte(`{"spec":{"serviceAccountName":"custom-integration-test-sa"}}`),
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, registry)).Should(Succeed())
+
+			By("waiting for deployment to be created")
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, client.ObjectKey{
+					Name:      fmt.Sprintf("%s-api", registry.Name),
+					Namespace: testNamespace,
+				}, deployment)
+			}, MediumTimeout, DefaultPollingInterval).Should(Succeed())
+
+			By("verifying deployment uses custom service account")
+			Expect(deployment.Spec.Template.Spec.ServiceAccountName).To(Equal("custom-integration-test-sa"),
+				"Deployment should use the custom service account from PodTemplateSpec")
+
+			By("verifying PodTemplateValid condition is set to True")
+			testHelpers.verifyPodTemplateValidCondition("podspec-sa-test", true)
+
+			By("cleaning up")
+			Expect(k8sClient.Delete(ctx, registry)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, configMap)).Should(Succeed())
+			timingHelper.WaitForControllerReconciliation(func() interface{} {
+				_, err := registryHelper.GetRegistry("podspec-sa-test")
+				return errors.IsNotFound(err)
+			}).Should(BeTrue())
+		})
+
+		It("should merge user tolerations from PodTemplateSpec", func() {
+			By("creating a ConfigMap source")
+			configMap := configMapHelper.CreateSampleToolHiveRegistry("podspec-tolerations-test")
+
+			By("creating MCPRegistry with custom tolerations in PodTemplateSpec")
+			registry := &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "podspec-tolerations-test",
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPRegistrySpec{
+					Registries: []mcpv1alpha1.MCPRegistryConfig{
+						{
+							Name:   "default",
+							Format: mcpv1alpha1.RegistryFormatToolHive,
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: configMap.Name,
+								},
+								Key: "registry.json",
+							},
+							SyncPolicy: &mcpv1alpha1.SyncPolicy{
+								Interval: "1h",
+							},
+						},
+					},
+					PodTemplateSpec: &runtime.RawExtension{
+						Raw: []byte(`{"spec":{"tolerations":[{"key":"special-node","operator":"Equal","value":"true","effect":"NoSchedule"}]}}`),
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, registry)).Should(Succeed())
+
+			By("waiting for deployment to be created")
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, client.ObjectKey{
+					Name:      fmt.Sprintf("%s-api", registry.Name),
+					Namespace: testNamespace,
+				}, deployment)
+			}, MediumTimeout, DefaultPollingInterval).Should(Succeed())
+
+			By("verifying deployment has custom tolerations")
+			Expect(deployment.Spec.Template.Spec.Tolerations).NotTo(BeEmpty(),
+				"Deployment should have tolerations from PodTemplateSpec")
+			Expect(deployment.Spec.Template.Spec.Tolerations).To(HaveLen(1))
+
+			toleration := deployment.Spec.Template.Spec.Tolerations[0]
+			Expect(toleration.Key).To(Equal("special-node"))
+			Expect(toleration.Operator).To(Equal(corev1.TolerationOpEqual))
+			Expect(toleration.Value).To(Equal("true"))
+			Expect(toleration.Effect).To(Equal(corev1.TaintEffectNoSchedule))
+
+			By("verifying PodTemplateValid condition is set to True")
+			testHelpers.verifyPodTemplateValidCondition("podspec-tolerations-test", true)
+
+			By("cleaning up")
+			Expect(k8sClient.Delete(ctx, registry)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, configMap)).Should(Succeed())
+			timingHelper.WaitForControllerReconciliation(func() interface{} {
+				_, err := registryHelper.GetRegistry("podspec-tolerations-test")
+				return errors.IsNotFound(err)
+			}).Should(BeTrue())
+		})
+
+		It("should fail with invalid PodTemplateSpec and not create deployment", func() {
+			By("creating a ConfigMap source")
+			configMap := configMapHelper.CreateSampleToolHiveRegistry("podspec-invalid-test")
+
+			By("creating MCPRegistry with invalid JSON in PodTemplateSpec")
+			registry := &mcpv1alpha1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "podspec-invalid-test",
+					Namespace: testNamespace,
+				},
+				Spec: mcpv1alpha1.MCPRegistrySpec{
+					Registries: []mcpv1alpha1.MCPRegistryConfig{
+						{
+							Name:   "default",
+							Format: mcpv1alpha1.RegistryFormatToolHive,
+							ConfigMapRef: &corev1.ConfigMapKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: configMap.Name,
+								},
+								Key: "registry.json",
+							},
+							SyncPolicy: &mcpv1alpha1.SyncPolicy{
+								Interval: "1h",
+							},
+						},
+					},
+					PodTemplateSpec: &runtime.RawExtension{
+						Raw: []byte(`{"spec": "invalid"}`),
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, registry)).Should(Succeed())
+
+			By("waiting for registry status to be updated with failure")
+			testHelpers.verifyRegistryFailedWithInvalidPodTemplate("podspec-invalid-test")
+
+			By("verifying PodTemplateValid condition is set to False")
+			testHelpers.verifyPodTemplateValidCondition("podspec-invalid-test", false)
+
+			By("verifying deployment was NOT created")
+			deployment := &appsv1.Deployment{}
+			Consistently(func() bool {
+				err := k8sClient.Get(ctx, client.ObjectKey{
+					Name:      fmt.Sprintf("%s-api", registry.Name),
+					Namespace: testNamespace,
+				}, deployment)
+				return errors.IsNotFound(err)
+			}, QuickTimeout, DefaultPollingInterval).Should(BeTrue(), "Deployment should NOT be created when PodTemplateSpec is invalid")
+
+			By("cleaning up")
+			Expect(k8sClient.Delete(ctx, registry)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, configMap)).Should(Succeed())
+			timingHelper.WaitForControllerReconciliation(func() interface{} {
+				_, err := registryHelper.GetRegistry("podspec-invalid-test")
+				return errors.IsNotFound(err)
+			}).Should(BeTrue())
+		})
+	})
 })
 
 // Shared helper functions (extracted from duplication)
@@ -646,4 +831,39 @@ func (*serverConfigTestHelpers) verifyConfigMapContent(configYAML string, regist
 	for key, value := range expectedContent {
 		Expect(configYAML).To(ContainSubstring(fmt.Sprintf("%s: %s", key, value)))
 	}
+}
+
+// verifyPodTemplateValidCondition waits for and verifies the PodTemplateValid condition is set correctly
+func (h *serverConfigTestHelpers) verifyPodTemplateValidCondition(registryName string, expectedValid bool) {
+	Eventually(func() bool {
+		updatedRegistry, err := h.registryHelper.GetRegistry(registryName)
+		if err != nil {
+			return false
+		}
+		condition := meta.FindStatusCondition(updatedRegistry.Status.Conditions, mcpv1alpha1.ConditionRegistryPodTemplateValid)
+		if condition == nil {
+			return false
+		}
+
+		if expectedValid {
+			return condition.Status == metav1.ConditionTrue &&
+				condition.Reason == mcpv1alpha1.ConditionReasonRegistryPodTemplateValid
+		}
+		return condition.Status == metav1.ConditionFalse &&
+			condition.Reason == mcpv1alpha1.ConditionReasonRegistryPodTemplateInvalid
+	}, MediumTimeout, DefaultPollingInterval).Should(BeTrue(),
+		fmt.Sprintf("PodTemplateValid condition should be %v", expectedValid))
+}
+
+// verifyRegistryFailedWithInvalidPodTemplate waits for and verifies the registry is in Failed phase with "Invalid PodTemplateSpec" in the message
+func (h *serverConfigTestHelpers) verifyRegistryFailedWithInvalidPodTemplate(registryName string) {
+	Eventually(func() bool {
+		updatedRegistry, err := h.registryHelper.GetRegistry(registryName)
+		if err != nil {
+			return false
+		}
+		return updatedRegistry.Status.Phase == mcpv1alpha1.MCPRegistryPhaseFailed &&
+			strings.Contains(updatedRegistry.Status.Message, "Invalid PodTemplateSpec")
+	}, MediumTimeout, DefaultPollingInterval).Should(BeTrue(),
+		"MCPRegistry should be in Failed phase with Invalid PodTemplateSpec message")
 }

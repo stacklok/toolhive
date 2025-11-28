@@ -304,10 +304,21 @@ func (*Converter) convertCompositeTools(
 
 			// Convert error handling
 			if crdStep.OnError != nil {
-				step.OnError = &vmcpconfig.StepErrorHandling{
+				stepError := &vmcpconfig.StepErrorHandling{
 					Action:     crdStep.OnError.Action,
 					RetryCount: crdStep.OnError.MaxRetries,
 				}
+				if crdStep.OnError.RetryDelay != "" {
+					if duration, err := time.ParseDuration(crdStep.OnError.RetryDelay); err != nil {
+						// Log warning but continue - validation should have caught this at admission time
+						ctxLogger := log.FromContext(ctx)
+						ctxLogger.Error(err, "failed to parse retry delay",
+							"step", crdStep.ID, "retryDelay", crdStep.OnError.RetryDelay)
+					} else {
+						stepError.RetryDelay = vmcpconfig.Duration(duration)
+					}
+				}
+				step.OnError = stepError
 			}
 
 			tool.Steps = append(tool.Steps, step)

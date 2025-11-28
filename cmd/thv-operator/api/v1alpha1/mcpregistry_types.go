@@ -5,6 +5,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 const (
@@ -43,6 +44,16 @@ type MCPRegistrySpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	EnforceServers bool `json:"enforceServers,omitempty"`
+
+	// PodTemplateSpec defines the pod template to use for the registry API server
+	// This allows for customizing the pod configuration beyond what is provided by the other fields.
+	// Note that to modify the specific container the registry API server runs in, you must specify
+	// the `registry-api` container name in the PodTemplateSpec.
+	// This field accepts a PodTemplateSpec object as JSON/YAML.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
 }
 
 // MCPRegistryConfig defines the configuration for a registry data source
@@ -350,6 +361,18 @@ const (
 
 	// ConditionAPIReady indicates whether the registry API is ready
 	ConditionAPIReady = "APIReady"
+
+	// ConditionRegistryPodTemplateValid indicates whether the PodTemplateSpec is valid
+	ConditionRegistryPodTemplateValid = "PodTemplateValid"
+)
+
+// Condition reasons for MCPRegistry PodTemplateSpec validation
+const (
+	// ConditionReasonRegistryPodTemplateValid indicates PodTemplateSpec validation succeeded
+	ConditionReasonRegistryPodTemplateValid = "ValidPodTemplateSpec"
+
+	// ConditionReasonRegistryPodTemplateInvalid indicates PodTemplateSpec validation failed
+	ConditionReasonRegistryPodTemplateInvalid = "InvalidPodTemplateSpec"
 )
 
 //+kubebuilder:object:root=true
@@ -436,4 +459,14 @@ func (r *MCPRegistry) DeriveOverallPhase() MCPRegistryPhase {
 
 func init() {
 	SchemeBuilder.Register(&MCPRegistry{}, &MCPRegistryList{})
+}
+
+// HasPodTemplateSpec returns true if the MCPRegistry has a PodTemplateSpec
+func (r *MCPRegistry) HasPodTemplateSpec() bool {
+	return r.Spec.PodTemplateSpec != nil
+}
+
+// GetPodTemplateSpecRaw returns the raw PodTemplateSpec
+func (r *MCPRegistry) GetPodTemplateSpecRaw() *runtime.RawExtension {
+	return r.Spec.PodTemplateSpec
 }

@@ -72,6 +72,15 @@ spec:
                   MCPServers with images not found in any registry will be rejected.
                   When false (default), MCPServers can be deployed regardless of registry presence.
                 type: boolean
+              podTemplateSpec:
+                description: |-
+                  PodTemplateSpec defines the pod template to use for the registry API server
+                  This allows for customizing the pod configuration beyond what is provided by the other fields.
+                  Note that to modify the specific container the registry API server runs in, you must specify
+                  the `registry-api` container name in the PodTemplateSpec.
+                  This field accepts a PodTemplateSpec object as JSON/YAML.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               registries:
                 description: Registries defines the configuration for the registry
                   data sources

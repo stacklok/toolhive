@@ -275,6 +275,12 @@ type ErrorHandling struct {
 	// Only used when Action is "retry"
 	// +optional
 	MaxRetries int `json:"maxRetries,omitempty"`
+
+	// RetryDelay is the delay between retry attempts
+	// Only used when Action is "retry"
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m))+$`
+	// +optional
+	RetryDelay string `json:"retryDelay,omitempty"`
 }
 
 // TokenCacheConfig configures token caching behavior
@@ -533,6 +539,18 @@ const (
 
 	// WorkflowStepTypeElicitation requests user input
 	WorkflowStepTypeElicitation = "elicitation"
+)
+
+// Error handling actions
+const (
+	// ErrorActionAbort aborts the workflow on error
+	ErrorActionAbort = "abort"
+
+	// ErrorActionContinue continues the workflow on error
+	ErrorActionContinue = "continue"
+
+	// ErrorActionRetry retries the step on error
+	ErrorActionRetry = "retry"
 )
 
 //+kubebuilder:object:root=true

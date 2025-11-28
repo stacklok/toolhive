@@ -77,7 +77,7 @@ func (m *manager) ensureDeployment(
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 
 	// Build the desired deployment configuration
-	deployment := m.buildRegistryAPIDeployment(mcpRegistry, configManager)
+	deployment := m.buildRegistryAPIDeployment(ctx, mcpRegistry, configManager)
 	deploymentName := deployment.Name
 
 	// Set owner reference for automatic garbage collection
@@ -119,18 +119,30 @@ func (m *manager) ensureDeployment(
 // This function handles all deployment configuration including labels, container specs, probes,
 // and storage manager integration. It returns a fully configured deployment ready for Kubernetes API operations.
 func (*manager) buildRegistryAPIDeployment(
+	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
 	configManager config.ConfigManager,
 ) *appsv1.Deployment {
+	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 	// Generate deployment name using the established pattern
 	deploymentName := mcpRegistry.GetAPIResourceName()
 
 	// Define labels using common function
 	labels := labelsForRegistryAPI(mcpRegistry, deploymentName)
 
-	// Build the PodTemplateSpec using the functional options pattern
-	// This includes all mount configurations via the builder pattern
-	builder := NewPodTemplateSpecBuilder()
+	// Parse user-provided PodTemplateSpec if present
+	var userPTS *corev1.PodTemplateSpec
+	if mcpRegistry.HasPodTemplateSpec() {
+		var err error
+		userPTS, err = ParsePodTemplateSpec(mcpRegistry.GetPodTemplateSpecRaw())
+		if err != nil {
+			ctxLogger.Error(err, "Failed to parse PodTemplateSpec")
+			return nil
+		}
+	}
+
+	// Build PodTemplateSpec with defaults and user customizations merged
+	builder := NewPodTemplateSpecBuilderFrom(userPTS)
 	podTemplateSpec := builder.Apply(
 		WithLabels(labels),
 		WithAnnotations(map[string]string{

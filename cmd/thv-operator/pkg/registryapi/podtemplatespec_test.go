@@ -1,321 +1,313 @@
 package registryapi
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 )
 
-func TestNewPodTemplateSpecBuilder(t *testing.T) {
+func TestPodTemplateSpecOptions(t *testing.T) {
 	t.Parallel()
 
-	builder := NewPodTemplateSpecBuilder()
-
-	assert.NotNil(t, builder)
-	assert.NotNil(t, builder.podTemplateSpec)
-}
-
-func TestPodTemplateSpecBuilder_Apply_And_Build(t *testing.T) {
-	t.Parallel()
-
-	builder := NewPodTemplateSpecBuilder()
-	pts := builder.Apply(
-		WithLabels(map[string]string{"app": "test"}),
-		WithServiceAccountName("test-sa"),
-	).Build()
-
-	assert.Equal(t, "test", pts.Labels["app"])
-	assert.Equal(t, "test-sa", pts.Spec.ServiceAccountName)
-}
-
-func TestWithLabels(t *testing.T) {
-	t.Parallel()
-
-	builder := NewPodTemplateSpecBuilder()
-	pts := builder.Apply(
-		WithLabels(map[string]string{"key1": "value1", "key2": "value2"}),
-	).Build()
-
-	assert.Equal(t, "value1", pts.Labels["key1"])
-	assert.Equal(t, "value2", pts.Labels["key2"])
-}
-
-func TestWithAnnotations(t *testing.T) {
-	t.Parallel()
-
-	builder := NewPodTemplateSpecBuilder()
-	pts := builder.Apply(
-		WithAnnotations(map[string]string{"anno1": "val1"}),
-	).Build()
-
-	assert.Equal(t, "val1", pts.Annotations["anno1"])
-}
-
-func TestWithServiceAccountName(t *testing.T) {
-	t.Parallel()
-
-	builder := NewPodTemplateSpecBuilder()
-	pts := builder.Apply(
-		WithServiceAccountName("my-service-account"),
-	).Build()
-
-	assert.Equal(t, "my-service-account", pts.Spec.ServiceAccountName)
-}
-
-func TestWithContainer(t *testing.T) {
-	t.Parallel()
-
-	container := corev1.Container{
-		Name:  "test-container",
-		Image: "test-image:latest",
+	tests := []struct {
+		name       string
+		options    func() []PodTemplateSpecOption
+		assertions func(t *testing.T, pts corev1.PodTemplateSpec)
+	}{
+		// Simple options
+		{
+			name: "WithLabels sets labels",
+			options: func() []PodTemplateSpecOption {
+				return []PodTemplateSpecOption{WithLabels(map[string]string{"key1": "value1", "key2": "value2"})}
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				assert.Equal(t, "value1", pts.Labels["key1"])
+				assert.Equal(t, "value2", pts.Labels["key2"])
+			},
+		},
+		{
+			name: "WithAnnotations sets annotations",
+			options: func() []PodTemplateSpecOption {
+				return []PodTemplateSpecOption{WithAnnotations(map[string]string{"anno1": "val1"})}
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				assert.Equal(t, "val1", pts.Annotations["anno1"])
+			},
+		},
+		{
+			name: "WithServiceAccountName sets service account",
+			options: func() []PodTemplateSpecOption {
+				return []PodTemplateSpecOption{WithServiceAccountName("my-service-account")}
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				assert.Equal(t, "my-service-account", pts.Spec.ServiceAccountName)
+			},
+		},
+		{
+			name: "WithContainer adds container",
+			options: func() []PodTemplateSpecOption {
+				return []PodTemplateSpecOption{WithContainer(corev1.Container{Name: "test-container", Image: "test-image:latest"})}
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				require.Len(t, pts.Spec.Containers, 1)
+				assert.Equal(t, "test-container", pts.Spec.Containers[0].Name)
+				assert.Equal(t, "test-image:latest", pts.Spec.Containers[0].Image)
+			},
+		},
+		// WithVolume tests
+		{
+			name: "WithVolume adds volume",
+			options: func() []PodTemplateSpecOption {
+				return []PodTemplateSpecOption{
+					WithVolume(corev1.Volume{
+						Name:         "test-volume",
+						VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+					}),
+				}
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				require.Len(t, pts.Spec.Volumes, 1)
+				assert.Equal(t, "test-volume", pts.Spec.Volumes[0].Name)
+			},
+		},
+		{
+			name: "WithVolume is idempotent",
+			options: func() []PodTemplateSpecOption {
+				volume := corev1.Volume{
+					Name:         "test-volume",
+					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+				}
+				return []PodTemplateSpecOption{WithVolume(volume), WithVolume(volume)}
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				assert.Len(t, pts.Spec.Volumes, 1)
+			},
+		},
+		// WithVolumeMount tests
+		{
+			name: "WithVolumeMount adds mount to existing container",
+			options: func() []PodTemplateSpecOption {
+				return []PodTemplateSpecOption{
+					WithContainer(corev1.Container{Name: "my-container"}),
+					WithVolumeMount("my-container", corev1.VolumeMount{Name: "my-mount", MountPath: "/data"}),
+				}
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				require.Len(t, pts.Spec.Containers, 1)
+				require.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
+				assert.Equal(t, "my-mount", pts.Spec.Containers[0].VolumeMounts[0].Name)
+			},
+		},
+		{
+			name: "WithVolumeMount does nothing if container not found",
+			options: func() []PodTemplateSpecOption {
+				return []PodTemplateSpecOption{
+					WithVolumeMount("nonexistent", corev1.VolumeMount{Name: "my-mount", MountPath: "/data"}),
+				}
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				assert.Empty(t, pts.Spec.Containers)
+			},
+		},
+		{
+			name: "WithVolumeMount is idempotent",
+			options: func() []PodTemplateSpecOption {
+				mount := corev1.VolumeMount{Name: "my-mount", MountPath: "/data"}
+				return []PodTemplateSpecOption{
+					WithContainer(corev1.Container{Name: "my-container"}),
+					WithVolumeMount("my-container", mount),
+					WithVolumeMount("my-container", mount),
+				}
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				require.Len(t, pts.Spec.Containers, 1)
+				assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
+			},
+		},
+		// WithContainerArgs tests
+		{
+			name: "WithContainerArgs sets args on existing container",
+			options: func() []PodTemplateSpecOption {
+				return []PodTemplateSpecOption{
+					WithContainer(corev1.Container{Name: "my-container"}),
+					WithContainerArgs("my-container", []string{"--flag", "value"}),
+				}
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				require.Len(t, pts.Spec.Containers, 1)
+				assert.Equal(t, []string{"--flag", "value"}, pts.Spec.Containers[0].Args)
+			},
+		},
+		{
+			name: "WithContainerArgs does nothing if container not found",
+			options: func() []PodTemplateSpecOption {
+				return []PodTemplateSpecOption{
+					WithContainerArgs("nonexistent", []string{"--flag"}),
+				}
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				assert.Empty(t, pts.Spec.Containers)
+			},
+		},
 	}
 
-	builder := NewPodTemplateSpecBuilder()
-	pts := builder.Apply(
-		WithContainer(container),
-	).Build()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.Len(t, pts.Spec.Containers, 1)
-	assert.Equal(t, "test-container", pts.Spec.Containers[0].Name)
-	assert.Equal(t, "test-image:latest", pts.Spec.Containers[0].Image)
+			builder := NewPodTemplateSpecBuilderFrom(nil)
+			pts := builder.Apply(tt.options()...).Build()
+
+			tt.assertions(t, pts)
+		})
+	}
 }
 
-func TestWithVolume(t *testing.T) {
+func TestRegistryMountOptions(t *testing.T) {
 	t.Parallel()
 
-	t.Run("adds volume", func(t *testing.T) {
-		t.Parallel()
+	tests := []struct {
+		name       string
+		options    func() []PodTemplateSpecOption
+		assertions func(t *testing.T, pts corev1.PodTemplateSpec)
+	}{
 
-		volume := corev1.Volume{
-			Name: "test-volume",
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
+		{
+			name: "WithRegistryServerConfigMount sets container args with serve command, adds ConfigMap volume and volume mount",
+			options: func() []PodTemplateSpecOption {
+				return []PodTemplateSpecOption{
+					WithContainer(corev1.Container{Name: "registry-api"}),
+					WithRegistryServerConfigMount("registry-api", "my-configmap"),
+				}
 			},
-		}
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				require.Len(t, pts.Spec.Containers, 1)
+				require.Len(t, pts.Spec.Containers[0].Args, 2)
+				assert.Contains(t, pts.Spec.Containers[0].Args[0], ServeCommand)
+				assert.Contains(t, pts.Spec.Containers[0].Args[1], "--config=")
 
-		builder := NewPodTemplateSpecBuilder()
-		pts := builder.Apply(
-			WithVolume(volume),
-		).Build()
+				require.Len(t, pts.Spec.Volumes, 1)
+				assert.Equal(t, RegistryServerConfigVolumeName, pts.Spec.Volumes[0].Name)
+				assert.Equal(t, "my-configmap", pts.Spec.Volumes[0].ConfigMap.Name)
 
-		require.Len(t, pts.Spec.Volumes, 1)
-		assert.Equal(t, "test-volume", pts.Spec.Volumes[0].Name)
-	})
-
-	t.Run("idempotent - does not add duplicate volume", func(t *testing.T) {
-		t.Parallel()
-
-		volume := corev1.Volume{
-			Name: "test-volume",
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
+				require.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
+				assert.Equal(t, RegistryServerConfigVolumeName, pts.Spec.Containers[0].VolumeMounts[0].Name)
+				assert.Equal(t, config.RegistryServerConfigFilePath, pts.Spec.Containers[0].VolumeMounts[0].MountPath)
 			},
-		}
+		},
+		// WithRegistryStorageMount tests
+		{
+			name: "WithRegistryStorageMount adds emptyDir volume and volume mount",
+			options: func() []PodTemplateSpecOption {
+				return []PodTemplateSpecOption{
+					WithContainer(corev1.Container{Name: "registry-api"}),
+					WithRegistryStorageMount("registry-api"),
+				}
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				require.Len(t, pts.Spec.Volumes, 1)
+				assert.Equal(t, "storage-data", pts.Spec.Volumes[0].Name)
+				assert.NotNil(t, pts.Spec.Volumes[0].EmptyDir)
 
-		builder := NewPodTemplateSpecBuilder()
-		pts := builder.Apply(
-			WithVolume(volume),
-			WithVolume(volume),
-		).Build()
-
-		assert.Len(t, pts.Spec.Volumes, 1)
-	})
-}
-
-func TestWithVolumeMount(t *testing.T) {
-	t.Parallel()
-
-	t.Run("adds volume mount to existing container", func(t *testing.T) {
-		t.Parallel()
-
-		container := corev1.Container{Name: "my-container"}
-		mount := corev1.VolumeMount{Name: "my-mount", MountPath: "/data"}
-
-		builder := NewPodTemplateSpecBuilder()
-		pts := builder.Apply(
-			WithContainer(container),
-			WithVolumeMount("my-container", mount),
-		).Build()
-
-		require.Len(t, pts.Spec.Containers, 1)
-		require.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
-		assert.Equal(t, "my-mount", pts.Spec.Containers[0].VolumeMounts[0].Name)
-	})
-
-	t.Run("does nothing if container not found", func(t *testing.T) {
-		t.Parallel()
-
-		mount := corev1.VolumeMount{Name: "my-mount", MountPath: "/data"}
-
-		builder := NewPodTemplateSpecBuilder()
-		pts := builder.Apply(
-			WithVolumeMount("nonexistent", mount),
-		).Build()
-
-		assert.Empty(t, pts.Spec.Containers)
-	})
-
-	t.Run("idempotent - does not add duplicate mount", func(t *testing.T) {
-		t.Parallel()
-
-		container := corev1.Container{Name: "my-container"}
-		mount := corev1.VolumeMount{Name: "my-mount", MountPath: "/data"}
-
-		builder := NewPodTemplateSpecBuilder()
-		pts := builder.Apply(
-			WithContainer(container),
-			WithVolumeMount("my-container", mount),
-			WithVolumeMount("my-container", mount),
-		).Build()
-
-		assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
-	})
-}
-
-func TestWithContainerArgs(t *testing.T) {
-	t.Parallel()
-
-	t.Run("sets args on existing container", func(t *testing.T) {
-		t.Parallel()
-
-		container := corev1.Container{Name: "my-container"}
-
-		builder := NewPodTemplateSpecBuilder()
-		pts := builder.Apply(
-			WithContainer(container),
-			WithContainerArgs("my-container", []string{"--flag", "value"}),
-		).Build()
-
-		assert.Equal(t, []string{"--flag", "value"}, pts.Spec.Containers[0].Args)
-	})
-
-	t.Run("does nothing if container not found", func(t *testing.T) {
-		t.Parallel()
-
-		builder := NewPodTemplateSpecBuilder()
-		pts := builder.Apply(
-			WithContainerArgs("nonexistent", []string{"--flag"}),
-		).Build()
-
-		assert.Empty(t, pts.Spec.Containers)
-	})
-}
-
-func TestWithRegistryServerConfigMount(t *testing.T) {
-	t.Parallel()
-
-	container := corev1.Container{Name: "registry-api"}
-
-	builder := NewPodTemplateSpecBuilder()
-	pts := builder.Apply(
-		WithContainer(container),
-		WithRegistryServerConfigMount("registry-api", "my-configmap"),
-	).Build()
-
-	// Check args were set
-	require.Len(t, pts.Spec.Containers, 1)
-	assert.Contains(t, pts.Spec.Containers[0].Args[0], ServeCommand)
-	assert.Contains(t, pts.Spec.Containers[0].Args[1], "--config=")
-
-	// Check volume was added
-	require.Len(t, pts.Spec.Volumes, 1)
-	assert.Equal(t, RegistryServerConfigVolumeName, pts.Spec.Volumes[0].Name)
-	assert.Equal(t, "my-configmap", pts.Spec.Volumes[0].ConfigMap.Name)
-
-	// Check volume mount was added
-	require.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
-	assert.Equal(t, RegistryServerConfigVolumeName, pts.Spec.Containers[0].VolumeMounts[0].Name)
-	assert.Equal(t, config.RegistryServerConfigFilePath, pts.Spec.Containers[0].VolumeMounts[0].MountPath)
-}
-
-func TestWithRegistryStorageMount(t *testing.T) {
-	t.Parallel()
-
-	container := corev1.Container{Name: "registry-api"}
-
-	builder := NewPodTemplateSpecBuilder()
-	pts := builder.Apply(
-		WithContainer(container),
-		WithRegistryStorageMount("registry-api"),
-	).Build()
-
-	// Check volume was added
-	require.Len(t, pts.Spec.Volumes, 1)
-	assert.Equal(t, "storage-data", pts.Spec.Volumes[0].Name)
-	assert.NotNil(t, pts.Spec.Volumes[0].EmptyDir)
-
-	// Check volume mount was added
-	require.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
-	assert.Equal(t, "storage-data", pts.Spec.Containers[0].VolumeMounts[0].Name)
-	assert.Equal(t, "/data", pts.Spec.Containers[0].VolumeMounts[0].MountPath)
-}
-
-func TestWithRegistrySourceMounts(t *testing.T) {
-	t.Parallel()
-
-	t.Run("adds mounts for registries with ConfigMapRef", func(t *testing.T) {
-		t.Parallel()
-
-		container := corev1.Container{Name: "registry-api"}
-		registries := []mcpv1alpha1.MCPRegistryConfig{
-			{
-				Name: "reg1",
-				ConfigMapRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "configmap1",
+				require.Len(t, pts.Spec.Containers, 1)
+				require.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
+				assert.Equal(t, "storage-data", pts.Spec.Containers[0].VolumeMounts[0].Name)
+				assert.Equal(t, "/data", pts.Spec.Containers[0].VolumeMounts[0].MountPath)
+			},
+		},
+		// WithRegistrySourceMounts tests
+		{
+			name: "WithRegistrySourceMounts adds mounts for registries with ConfigMapRef",
+			options: func() []PodTemplateSpecOption {
+				registries := []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name: "reg1",
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "configmap1",
+							},
+							Key: "data.json",
+						},
 					},
-					Key: "data.json",
-				},
-			},
-			{
-				Name: "reg2",
-				ConfigMapRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: "configmap2",
+					{
+						Name: "reg2",
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "configmap2",
+							},
+							Key: "registry.json",
+						},
 					},
-					Key: "registry.json",
-				},
+				}
+				return []PodTemplateSpecOption{
+					WithContainer(corev1.Container{Name: "registry-api"}),
+					WithRegistrySourceMounts("registry-api", registries),
+				}
 			},
-		}
-
-		builder := NewPodTemplateSpecBuilder()
-		pts := builder.Apply(
-			WithContainer(container),
-			WithRegistrySourceMounts("registry-api", registries),
-		).Build()
-
-		// Check volumes were added
-		assert.Len(t, pts.Spec.Volumes, 2)
-
-		// Check volume mounts were added
-		assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 2)
-	})
-
-	t.Run("skips registries without ConfigMapRef", func(t *testing.T) {
-		t.Parallel()
-
-		container := corev1.Container{Name: "registry-api"}
-		registries := []mcpv1alpha1.MCPRegistryConfig{
-			{
-				Name:         "reg1",
-				ConfigMapRef: nil, // No ConfigMapRef
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				assert.Len(t, pts.Spec.Volumes, 2)
+				require.Len(t, pts.Spec.Containers, 1)
+				assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 2)
+				assert.Equal(t, "registry-data-source-reg1", pts.Spec.Containers[0].VolumeMounts[0].Name)
+				assert.Equal(t, "registry-data-source-reg2", pts.Spec.Containers[0].VolumeMounts[1].Name)
+				assert.Equal(t, filepath.Join(config.RegistryJSONFilePath, "reg1"), pts.Spec.Containers[0].VolumeMounts[0].MountPath)
+				assert.Equal(t, filepath.Join(config.RegistryJSONFilePath, "reg2"), pts.Spec.Containers[0].VolumeMounts[1].MountPath)
 			},
-		}
+		},
+		{
+			name: "WithRegistrySourceMounts skips registries without ConfigMapRef",
+			options: func() []PodTemplateSpecOption {
+				registries := []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:         "reg1",
+						ConfigMapRef: nil,
+					},
+				}
+				return []PodTemplateSpecOption{
+					WithContainer(corev1.Container{Name: "registry-api"}),
+					WithRegistrySourceMounts("registry-api", registries),
+				}
+			},
+			assertions: func(t *testing.T, pts corev1.PodTemplateSpec) {
+				t.Helper()
+				assert.Empty(t, pts.Spec.Volumes)
+				require.Len(t, pts.Spec.Containers, 1)
+				assert.Empty(t, pts.Spec.Containers[0].VolumeMounts)
+			},
+		},
+	}
 
-		builder := NewPodTemplateSpecBuilder()
-		pts := builder.Apply(
-			WithContainer(container),
-			WithRegistrySourceMounts("registry-api", registries),
-		).Build()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-		assert.Empty(t, pts.Spec.Volumes)
-		assert.Empty(t, pts.Spec.Containers[0].VolumeMounts)
-	})
+			builder := NewPodTemplateSpecBuilderFrom(nil)
+			pts := builder.Apply(tt.options()...).Build()
+
+			tt.assertions(t, pts)
+		})
+	}
 }
 
 func TestBuildRegistryAPIContainer(t *testing.T) {
@@ -341,28 +333,6 @@ func TestBuildRegistryAPIContainer(t *testing.T) {
 	assert.NotNil(t, container.ReadinessProbe)
 	assert.Equal(t, HealthCheckPath, container.LivenessProbe.HTTPGet.Path)
 	assert.Equal(t, ReadinessCheckPath, container.ReadinessProbe.HTTPGet.Path)
-}
-
-func TestDefaultRegistryAPIPodTemplateSpec(t *testing.T) {
-	t.Parallel()
-
-	labels := map[string]string{"app": "registry"}
-	configHash := "abc123"
-
-	pts := DefaultRegistryAPIPodTemplateSpec(labels, configHash)
-
-	// Check labels
-	assert.Equal(t, "registry", pts.Labels["app"])
-
-	// Check annotations
-	assert.Equal(t, configHash, pts.Annotations["toolhive.stacklok.dev/config-hash"])
-
-	// Check service account
-	assert.Equal(t, DefaultServiceAccountName, pts.Spec.ServiceAccountName)
-
-	// Check container
-	require.Len(t, pts.Spec.Containers, 1)
-	assert.Equal(t, registryAPIContainerName, pts.Spec.Containers[0].Name)
 }
 
 func TestMergePodTemplateSpecs(t *testing.T) {
@@ -671,5 +641,168 @@ func TestMergeContainer(t *testing.T) {
 
 		require.NotNil(t, result.LivenessProbe)
 		assert.Equal(t, int32(10), result.LivenessProbe.InitialDelaySeconds)
+	})
+}
+
+func TestParsePodTemplateSpec(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil raw extension returns nil", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := ParsePodTemplateSpec(nil)
+
+		assert.NoError(t, err)
+		assert.Nil(t, result)
+	})
+
+	t.Run("empty raw extension returns nil", func(t *testing.T) {
+		t.Parallel()
+
+		raw := &runtime.RawExtension{}
+
+		result, err := ParsePodTemplateSpec(raw)
+
+		assert.NoError(t, err)
+		assert.Nil(t, result)
+	})
+
+	t.Run("valid PodTemplateSpec JSON parses successfully", func(t *testing.T) {
+		t.Parallel()
+
+		raw := &runtime.RawExtension{
+			Raw: []byte(`{"spec":{"serviceAccountName":"test-sa","containers":[{"name":"test","image":"test:v1"}]}}`),
+		}
+
+		result, err := ParsePodTemplateSpec(raw)
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, "test-sa", result.Spec.ServiceAccountName)
+		require.Len(t, result.Spec.Containers, 1)
+		assert.Equal(t, "test", result.Spec.Containers[0].Name)
+		assert.Equal(t, "test:v1", result.Spec.Containers[0].Image)
+	})
+
+	t.Run("invalid JSON returns error", func(t *testing.T) {
+		t.Parallel()
+
+		raw := &runtime.RawExtension{
+			Raw: []byte(`{invalid json}`),
+		}
+
+		result, err := ParsePodTemplateSpec(raw)
+
+		assert.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "failed to unmarshal PodTemplateSpec")
+	})
+}
+
+func TestValidatePodTemplateSpec(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil raw extension is valid", func(t *testing.T) {
+		t.Parallel()
+
+		err := ValidatePodTemplateSpec(nil)
+
+		assert.NoError(t, err)
+	})
+
+	t.Run("valid PodTemplateSpec is valid", func(t *testing.T) {
+		t.Parallel()
+
+		raw := &runtime.RawExtension{
+			Raw: []byte(`{"spec":{"serviceAccountName":"test-sa"}}`),
+		}
+
+		err := ValidatePodTemplateSpec(raw)
+
+		assert.NoError(t, err)
+	})
+
+	t.Run("invalid JSON returns error", func(t *testing.T) {
+		t.Parallel()
+
+		raw := &runtime.RawExtension{
+			Raw: []byte(`not valid json`),
+		}
+
+		err := ValidatePodTemplateSpec(raw)
+
+		assert.Error(t, err)
+	})
+}
+
+func TestNewPodTemplateSpecBuilderFrom_NilHandling(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil template returns empty builder", func(t *testing.T) {
+		t.Parallel()
+
+		builder := NewPodTemplateSpecBuilderFrom(nil)
+
+		assert.NotNil(t, builder)
+		assert.NotNil(t, builder.defaultSpec)
+		assert.Nil(t, builder.userTemplate)
+	})
+
+	t.Run("valid template is deep copied", func(t *testing.T) {
+		t.Parallel()
+
+		original := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				ServiceAccountName: "original-sa",
+			},
+		}
+
+		builder := NewPodTemplateSpecBuilderFrom(original)
+
+		// Modify the builder's user template
+		builder.userTemplate.Spec.ServiceAccountName = "modified-sa"
+
+		// Original should be unchanged
+		assert.Equal(t, "original-sa", original.Spec.ServiceAccountName)
+		assert.Equal(t, "modified-sa", builder.userTemplate.Spec.ServiceAccountName)
+	})
+}
+
+func TestNewPodTemplateSpecBuilderFrom_MergeOnBuild(t *testing.T) {
+	t.Parallel()
+
+	t.Run("user values take precedence over defaults", func(t *testing.T) {
+		t.Parallel()
+
+		userTemplate := &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				ServiceAccountName: "user-sa",
+			},
+		}
+
+		builder := NewPodTemplateSpecBuilderFrom(userTemplate)
+		result := builder.Apply(
+			WithServiceAccountName("default-sa"),
+			WithLabels(map[string]string{"default-label": "default-value"}),
+		).Build()
+
+		// User-specified service account takes precedence
+		assert.Equal(t, "user-sa", result.Spec.ServiceAccountName)
+		// Default labels are merged in
+		assert.Equal(t, "default-value", result.Labels["default-label"])
+	})
+
+	t.Run("nil user template behaves like NewPodTemplateSpecBuilder", func(t *testing.T) {
+		t.Parallel()
+
+		builder := NewPodTemplateSpecBuilderFrom(nil)
+		result := builder.Apply(
+			WithServiceAccountName("default-sa"),
+			WithLabels(map[string]string{"app": "test"}),
+		).Build()
+
+		// Should just have the defaults
+		assert.Equal(t, "default-sa", result.Spec.ServiceAccountName)
+		assert.Equal(t, "test", result.Labels["app"])
 	})
 }

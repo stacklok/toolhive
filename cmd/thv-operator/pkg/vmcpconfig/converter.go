@@ -9,6 +9,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -157,7 +158,7 @@ func (c *Converter) convertOutgoingAuth(
 ) *vmcpconfig.OutgoingAuthConfig {
 	outgoing := &vmcpconfig.OutgoingAuthConfig{
 		Source:   vmcp.Spec.OutgoingAuth.Source,
-		Backends: make(map[string]*vmcpconfig.BackendAuthStrategy),
+		Backends: make(map[string]*authtypes.BackendAuthStrategy),
 	}
 
 	// Convert Default
@@ -174,20 +175,21 @@ func (c *Converter) convertOutgoingAuth(
 }
 
 // convertBackendAuthConfig converts BackendAuthConfig from CRD to vmcp config
+//
+// Note: The CRD's BackendAuthConfig only contains type and reference information.
+// For type="external_auth_config_ref", the actual auth config (HeaderInjection or
+// TokenExchange) is stored in a separate MCPExternalAuthConfig resource and resolved
+// at runtime by the discovery mechanism, not in this static converter.
 func (*Converter) convertBackendAuthConfig(
 	crdConfig *mcpv1alpha1.BackendAuthConfig,
-) *vmcpconfig.BackendAuthStrategy {
-	strategy := &vmcpconfig.BackendAuthStrategy{
-		Type:     crdConfig.Type,
-		Metadata: make(map[string]any),
+) *authtypes.BackendAuthStrategy {
+	return &authtypes.BackendAuthStrategy{
+		Type: crdConfig.Type,
+		// HeaderInjection and TokenExchange are nil here because the CRD's
+		// BackendAuthConfig references external configuration via ExternalAuthConfigRef.
+		// The actual auth strategy details are resolved at runtime from the
+		// referenced MCPExternalAuthConfig resource.
 	}
-
-	// Convert type-specific configuration to metadata
-	if crdConfig.ExternalAuthConfigRef != nil {
-		strategy.Metadata["externalAuthConfigRef"] = crdConfig.ExternalAuthConfigRef.Name
-	}
-
-	return strategy
 }
 
 // convertAggregation converts AggregationConfig from CRD to vmcp config

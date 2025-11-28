@@ -54,19 +54,6 @@ type BackendTarget struct {
 	// This is opaque to the router and interpreted by the authenticator.
 	AuthMetadata map[string]any
 
-	// IncomingOIDCConfig contains the backend's OIDC authentication requirements.
-	//
-	// When a backend MCPServer has OIDCConfig configured, it means clients (including vMCP)
-	// must present OIDC tokens to access that backend.
-	//
-	// Discovery Mode: When vMCP's outgoing auth mode is "discovered", vMCP will use the
-	// authentication configuration defined in the backend MCPServer. This field stores the
-	// discovered OIDC config from the backend's OIDCConfig spec, which vMCP uses to
-	// authenticate when accessing OIDC-protected backends.
-	//
-	// See pkg/vmcp/workloads/k8s.go:discoverIncomingOIDCConfig for discovery implementation.
-	IncomingOIDCConfig map[string]interface{}
-
 	// SessionAffinity indicates if requests from the same session
 	// must be routed to this specific backend instance.
 	SessionAffinity bool
@@ -146,19 +133,6 @@ type Backend struct {
 
 	// AuthMetadata contains strategy-specific auth configuration.
 	AuthMetadata map[string]any
-
-	// IncomingOIDCConfig contains the backend's OIDC authentication requirements.
-	//
-	// When a backend MCPServer has OIDCConfig configured, it means clients (including vMCP)
-	// must present OIDC tokens to access that backend.
-	//
-	// Discovery Mode: When vMCP's outgoing auth mode is "discovered", vMCP will use the
-	// authentication configuration defined in the backend MCPServer. This field stores the
-	// discovered OIDC config from the backend's OIDCConfig spec, which vMCP uses to
-	// authenticate when accessing OIDC-protected backends.
-	//
-	// See pkg/vmcp/workloads/k8s.go:discoverIncomingOIDCConfig for discovery implementation.
-	IncomingOIDCConfig map[string]interface{}
 
 	// Metadata stores additional backend information.
 	Metadata map[string]string

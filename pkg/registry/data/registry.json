@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-27T00:17:56Z",
+  "last_updated": "2025-11-28T00:18:02Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -800,9 +800,9 @@
         "workbooks"
       ],
       "metadata": {
-        "stars": 1170,
+        "stars": 1186,
         "pulls": 1809,
-        "last_updated": "2025-11-02T02:34:09Z"
+        "last_updated": "2025-11-27T02:32:51Z"
       },
       "repository_url": "https://github.com/Azure/azure-mcp",
       "tags": [
@@ -1462,9 +1462,9 @@
         "set_during_runtime"
       ],
       "metadata": {
-        "stars": 11251,
+        "stars": 11566,
         "pulls": 2408,
-        "last_updated": "2025-11-02T02:34:09Z"
+        "last_updated": "2025-11-27T02:32:51Z"
       },
       "repository_url": "https://github.com/googleapis/genai-toolbox",
       "tags": [
@@ -3634,9 +3634,9 @@
         "install_server"
       ],
       "metadata": {
-        "stars": 3,
+        "stars": 4,
         "pulls": 0,
-        "last_updated": "2025-11-01T02:32:39Z"
+        "last_updated": "2025-11-27T02:32:51Z"
       },
       "repository_url": "https://github.com/StacklokLabs/mcp-optimizer",
       "tags": [
@@ -3891,9 +3891,9 @@
         "provision_neon_auth"
       ],
       "metadata": {
-        "stars": 500,
+        "stars": 522,
         "pulls": 55,
-        "last_updated": "2025-11-01T02:32:39Z"
+        "last_updated": "2025-11-27T02:32:51Z"
       },
       "repository_url": "https://github.com/neondatabase-labs/mcp-server-neon",
       "tags": [
@@ -5472,6 +5472,11 @@
         "query_docs",
         "get_chunk"
       ],
+      "metadata": {
+        "stars": 0,
+        "pulls": 0,
+        "last_updated": "2025-11-27T02:32:50Z"
+      },
       "repository_url": "https://github.com/stacklok/toolhive-doc-mcp",
       "tags": [
         "documentation",

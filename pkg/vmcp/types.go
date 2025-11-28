@@ -54,9 +54,17 @@ type BackendTarget struct {
 	// This is opaque to the router and interpreted by the authenticator.
 	AuthMetadata map[string]any
 
-	// IncomingOIDCConfig contains the discovered OIDC configuration for vMCP→backend authentication.
-	// When a backend MCPServer has OIDCConfig configured, vMCP must authenticate to that backend
-	// using OIDC. This field stores the discovered OIDC configuration.
+	// IncomingOIDCConfig contains the backend's OIDC authentication requirements.
+	//
+	// When a backend MCPServer has OIDCConfig configured, it means clients (including vMCP)
+	// must present OIDC tokens to access that backend.
+	//
+	// Discovery Mode: When vMCP's outgoing auth mode is "discovered", vMCP will use the
+	// authentication configuration defined in the backend MCPServer. This field stores the
+	// discovered OIDC config from the backend's OIDCConfig spec, which vMCP uses to
+	// authenticate when accessing OIDC-protected backends.
+	//
+	// See pkg/vmcp/workloads/k8s.go:discoverIncomingOIDCConfig for discovery implementation.
 	IncomingOIDCConfig map[string]interface{}
 
 	// SessionAffinity indicates if requests from the same session
@@ -139,9 +147,17 @@ type Backend struct {
 	// AuthMetadata contains strategy-specific auth configuration.
 	AuthMetadata map[string]any
 
-	// IncomingOIDCConfig contains the discovered OIDC configuration for vMCP→backend authentication.
-	// When a backend MCPServer has OIDCConfig configured, vMCP must authenticate to that backend
-	// using OIDC. This field stores the discovered OIDC configuration.
+	// IncomingOIDCConfig contains the backend's OIDC authentication requirements.
+	//
+	// When a backend MCPServer has OIDCConfig configured, it means clients (including vMCP)
+	// must present OIDC tokens to access that backend.
+	//
+	// Discovery Mode: When vMCP's outgoing auth mode is "discovered", vMCP will use the
+	// authentication configuration defined in the backend MCPServer. This field stores the
+	// discovered OIDC config from the backend's OIDCConfig spec, which vMCP uses to
+	// authenticate when accessing OIDC-protected backends.
+	//
+	// See pkg/vmcp/workloads/k8s.go:discoverIncomingOIDCConfig for discovery implementation.
 	IncomingOIDCConfig map[string]interface{}
 
 	// Metadata stores additional backend information.

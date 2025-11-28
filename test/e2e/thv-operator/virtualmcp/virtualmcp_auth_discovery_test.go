@@ -28,19 +28,20 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 	)
 
 	var (
-		testNamespace   = "default"
-		mcpGroupName    = "test-auth-discovery-group"
-		vmcpServerName  = "test-vmcp-auth-discovery"
-		backend1Name    = "backend-with-token-exchange"
-		backend2Name    = "backend-with-header-injection"
-		backend3Name    = "backend-no-auth"
-		authConfig1Name = "test-token-exchange-auth"
-		authConfig2Name = "test-header-injection-auth"
-		authSecret1Name = "test-token-exchange-secret"
-		authSecret2Name = "test-header-injection-secret"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
-		mockServer      *httptest.Server
+		testNamespace        = "default"
+		mcpGroupName         = "test-auth-discovery-group"
+		vmcpServerName       = "test-vmcp-auth-discovery"
+		backend1Name         = "backend-with-token-exchange"
+		backend2Name         = "backend-with-header-injection"
+		backend3Name         = "backend-no-auth"
+		authConfig1Name      = "test-token-exchange-auth"
+		authConfig2Name      = "test-header-injection-auth"
+		authSecret1Name      = "test-token-exchange-secret"
+		authSecret2Name      = "test-header-injection-secret"
+		oidcClientSecretName = "test-oidc-client-secret"
+		timeout              = 5 * time.Minute
+		pollingInterval      = 5 * time.Second
+		mockServer           *httptest.Server
 	)
 
 	BeforeAll(func() {
@@ -198,6 +199,8 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
             post_data = self.rfile.read(content_length)
             params = urllib.parse.parse_qs(post_data.decode('utf-8'))
 
+            # NOTE: Logging sensitive information (client_secret) is intentional for debugging E2E test failures.
+            # This is test-only code and should NEVER be done in production environments.
             print(f"[{datetime.now()}] Token exchange request received:", flush=True)
             print(f"  client_id: {params.get('client_id', [''])[0]}", flush=True)
             print(f"  client_secret: {params.get('client_secret', [''])[0]}", flush=True)
@@ -580,6 +583,18 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		}
 		Expect(k8sClient.Create(ctx, secret2)).To(Succeed())
 
+		// Secret for OIDC client secret
+		oidcClientSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      oidcClientSecretName,
+				Namespace: testNamespace,
+			},
+			Data: map[string][]byte{
+				"client-secret": []byte("vmcp-secret"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, oidcClientSecret)).To(Succeed())
+
 		By("Creating MCPExternalAuthConfig for token exchange")
 		// Use the Kubernetes service URL for our mock auth server
 		tokenURL := fmt.Sprintf("http://mock-auth-server.%s.svc.cluster.local/token", testNamespace)
@@ -662,14 +677,17 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,
-				// OIDC incoming auth - clients must authenticate with OIDC token
+				// OIDC incoming auth - clients (including vMCP) must authenticate with OIDC token
 				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
 					Type: "inline",
 					Inline: &mcpv1alpha1.InlineOIDCConfig{
-						Issuer:                          fmt.Sprintf("http://mock-oidc-server.%s.svc.cluster.local", testNamespace),
-						Audience:                        "test-audience",
-						ClientID:                        "vmcp-client",
-						ClientSecret:                    "vmcp-secret", // For testing only - use ClientSecretRef in production
+						Issuer:   fmt.Sprintf("http://mock-oidc-server.%s.svc.cluster.local", testNamespace),
+						Audience: "test-audience",
+						ClientID: "vmcp-client",
+						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+							Name: oidcClientSecretName,
+							Key:  "client-secret",
+						},
 						InsecureAllowHTTP:               true,
 						JWKSAllowPrivateIP:              true,
 						ProtectedResourceAllowPrivateIP: true,
@@ -797,17 +815,35 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		By("Waiting for VirtualMCPServer to be ready")
 		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
 
-		// Give vMCP a moment to initialize and perform initial token exchange
-		By("Waiting for vMCP to perform initial token exchange")
-		time.Sleep(5 * time.Second)
+		// Wait for vMCP pods to be fully running and ready
+		By("Waiting for vMCP pods to be running and ready")
+		vmcpLabels := map[string]string{
+			"app.kubernetes.io/name":     "virtualmcpserver",
+			"app.kubernetes.io/instance": vmcpServerName,
+		}
+		WaitForPodsReady(ctx, k8sClient, testNamespace, vmcpLabels, timeout)
 	})
 
 	AfterAll(func() {
-		By("Shutting down mock HTTP server")
-		// mockServer is now a Kubernetes service, no need to close
-		// if mockServer != nil {
-		// 	mockServer.Close()
-		// }
+		By("Cleaning up mock HTTP server")
+		_ = k8sClient.Delete(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-http-server",
+				Namespace: testNamespace,
+			},
+		})
+		_ = k8sClient.Delete(ctx, &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-http-server",
+				Namespace: testNamespace,
+			},
+		})
+		_ = k8sClient.Delete(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-http-server-code",
+				Namespace: testNamespace,
+			},
+		})
 
 		By("Cleaning up mock auth server")
 		_ = k8sClient.Delete(ctx, &corev1.Pod{
@@ -1295,23 +1331,31 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 
 			Expect(calledTokenExchangeTool).To(BeTrue(), "Should have called at least one tool from token exchange backend")
 
-			// Give the auth server a moment to receive requests
-			// Token exchange may happen during vMCP startup or initialization, not necessarily during tool calls
-			time.Sleep(5 * time.Second)
-
 			By("Checking mock auth server logs for token exchange requests")
 			authServerPodName := "mock-auth-server"
 
-			// Get logs from the mock auth server
-			logs, err := GetPodLogs(ctx, k8sClient, authServerPodName, testNamespace, "auth-server")
-			Expect(err).ToNot(HaveOccurred(), "Should be able to get logs from mock auth server")
+			// Wait for auth server to receive and log token exchange requests
+			// Token exchange may happen during vMCP startup or initialization, not necessarily during tool calls
+			var logs string
+			Eventually(func() bool {
+				var err error
+				logs, err = GetPodLogs(ctx, authServerPodName, testNamespace, "auth-server")
+				if err != nil {
+					GinkgoWriter.Printf("Unable to get auth server logs: %v\n", err)
+					return false
+				}
+				// Check if logs contain evidence of token exchange
+				return strings.Contains(logs, "Token exchange") || strings.Contains(logs, "token") || len(logs) > 100
+			}, 30*time.Second, 2*time.Second).Should(BeTrue(), "Auth server should have received requests")
+
+			Expect(logs).ToNot(BeEmpty(), "Should have logs from mock auth server")
 
 			GinkgoWriter.Printf("\n=== Mock Auth Server Logs ===\n%s\n", logs)
 
 			// Also check vMCP logs to see if it's attempting token exchange
 			By("Checking vMCP logs for token exchange activity")
 			vmcpPodName := fmt.Sprintf("vmcp-%s-0", vmcpServerName)
-			vmcpLogs, vmcpErr := GetPodLogs(ctx, k8sClient, vmcpPodName, testNamespace, "vmcp")
+			vmcpLogs, vmcpErr := GetPodLogs(ctx, vmcpPodName, testNamespace, "vmcp")
 			if vmcpErr == nil {
 				GinkgoWriter.Printf("\n=== vMCP Logs (last 2000 chars) ===\n")
 				if len(vmcpLogs) > 2000 {
@@ -1431,7 +1475,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 
 			By("Checking vMCP logs for authentication activity")
 			vmcpPodName := fmt.Sprintf("vmcp-%s-0", vmcpServerName)
-			vmcpLogs, err := GetPodLogs(ctx, k8sClient, vmcpPodName, testNamespace, "vmcp")
+			vmcpLogs, err := GetPodLogs(ctx, vmcpPodName, testNamespace, "vmcp")
 			Expect(err).ToNot(HaveOccurred(), "Should be able to get vMCP logs")
 
 			// Check for authentication-related log messages
@@ -1457,7 +1501,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			// Also check auth server logs to verify token exchange happened
 			By("Verifying token exchange with auth server")
 			authServerPodName := mockAuthServerName
-			authLogs, err := GetPodLogs(ctx, k8sClient, authServerPodName, testNamespace, "auth-server")
+			authLogs, err := GetPodLogs(ctx, authServerPodName, testNamespace, "auth-server")
 			if err == nil {
 				hasTokenRequest := strings.Contains(authLogs, "Token exchange request received")
 				GinkgoWriter.Printf("Token exchange requests to auth server: %v\n", hasTokenRequest)

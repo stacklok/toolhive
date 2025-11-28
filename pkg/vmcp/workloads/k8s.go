@@ -242,15 +242,23 @@ func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1
 	return nil
 }
 
-// discoverIncomingOIDCConfig discovers and populates incoming OIDC configuration from the MCPServer's OIDCConfig.
-// When a backend MCPServer has OIDCConfig configured, it means clients (including vMCP) must authenticate
-// using OIDC to access that backend. This method discovers and converts the OIDC configuration so vMCP
-// can authenticate to the backend.
+// discoverIncomingOIDCConfig discovers and stores the backend's OIDC authentication requirements.
+//
+// When a backend MCPServer has OIDCConfig configured, it means clients (including vMCP) must present
+// OIDC tokens to access that backend. This method discovers the backend's OIDC configuration and
+// stores it in backend.IncomingOIDCConfig.
+//
+// Authentication Flow:
+//   - When vMCP's outgoing auth mode is "discovered", vMCP will use the authentication configuration
+//     defined in the backend MCPServer (via ExternalAuthConfigRef for token exchange/header injection,
+//     or via OIDCConfig for OIDC-protected backends)
+//   - The discovered OIDC config is stored in Backend.IncomingOIDCConfig (see pkg/vmcp/types.go)
+//   - This config is used by vMCP to authenticate to backends that require OIDC tokens
 //
 // Return behavior:
 //   - Returns nil error if OIDCConfig is nil (no OIDC required) - this is expected behavior
 //   - Returns nil error if OIDC config is discovered and successfully populated into backend
-//   - Returns error if OIDC config exists but discovery/resolution fails
+//   - Returns error if OIDC config exists but discovery/resolution fails (e.g., secret not found)
 func (d *k8sDiscoverer) discoverIncomingOIDCConfig(
 	ctx context.Context, mcpServer *mcpv1alpha1.MCPServer, backend *vmcp.Backend,
 ) error {

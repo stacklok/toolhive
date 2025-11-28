@@ -508,7 +508,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 									ID:   "step1",
 									Tool: "backend.tool1",
 									OnError: &ErrorHandling{
-										Action:     "retry",
+										Action:     ErrorActionRetry,
 										MaxRetries: 3,
 									},
 								},
@@ -533,7 +533,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 									ID:   "step1",
 									Tool: "backend.tool1",
 									OnError: &ErrorHandling{
-										Action:     "retry",
+										Action:     ErrorActionRetry,
 										MaxRetries: 0,
 									},
 								},
@@ -559,7 +559,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 									ID:   "step1",
 									Tool: "backend.tool1",
 									OnError: &ErrorHandling{
-										Action:     "retry",
+										Action:     ErrorActionRetry,
 										MaxRetries: 3,
 										RetryDelay: "5s",
 									},
@@ -585,7 +585,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 									ID:   "step1",
 									Tool: "backend.tool1",
 									OnError: &ErrorHandling{
-										Action:     "retry",
+										Action:     ErrorActionRetry,
 										MaxRetries: 3,
 										RetryDelay: "1m30s",
 									},
@@ -611,7 +611,7 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 									ID:   "step1",
 									Tool: "backend.tool1",
 									OnError: &ErrorHandling{
-										Action:     "retry",
+										Action:     ErrorActionRetry,
 										MaxRetries: 3,
 										RetryDelay: "invalid",
 									},

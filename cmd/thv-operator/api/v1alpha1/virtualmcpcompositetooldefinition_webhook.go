@@ -84,8 +84,8 @@ func (r *VirtualMCPCompositeToolDefinition) Validate() error {
 	// Validate failure mode
 	if r.Spec.FailureMode != "" {
 		validModes := map[string]bool{
-			"abort":    true,
-			"continue": true,
+			ErrorActionAbort:    true,
+			ErrorActionContinue: true,
 		}
 		if !validModes[r.Spec.FailureMode] {
 			errors = append(errors, "spec.failureMode must be one of: abort, continue")
@@ -270,19 +270,19 @@ func (*VirtualMCPCompositeToolDefinition) validateStepDependencies(index int, st
 // validateErrorHandling validates error handling configuration
 func (*VirtualMCPCompositeToolDefinition) validateErrorHandling(stepIndex int, errorHandling *ErrorHandling) error {
 	if errorHandling.Action == "" {
-		return nil // Action is optional, defaults to "abort"
+		return nil // Action is optional, defaults to ErrorActionAbort
 	}
 
 	validActions := map[string]bool{
-		"abort":    true,
-		"continue": true,
-		"retry":    true,
+		ErrorActionAbort:    true,
+		ErrorActionContinue: true,
+		ErrorActionRetry:    true,
 	}
 	if !validActions[errorHandling.Action] {
 		return fmt.Errorf("spec.steps[%d].onError.action must be one of: abort, continue, retry", stepIndex)
 	}
 
-	if errorHandling.Action == "retry" {
+	if errorHandling.Action == ErrorActionRetry {
 		if errorHandling.MaxRetries < 1 {
 			return fmt.Errorf("spec.steps[%d].onError.maxRetries must be at least 1 when action is retry", stepIndex)
 		}

@@ -160,10 +160,6 @@ This command checks:
 				cfg.OutgoingAuth.Source)
 			logger.Infof("  Conflict Resolution: %s", cfg.Aggregation.ConflictResolution)
 
-			if cfg.TokenCache != nil {
-				logger.Infof("  Token Cache: %s", cfg.TokenCache.Provider)
-			}
-
 			if len(cfg.CompositeTools) > 0 {
 				logger.Infof("  Composite Tools: %d defined", len(cfg.CompositeTools))
 			}

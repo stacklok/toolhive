@@ -435,7 +435,7 @@ func GetPodLogsForDeployment(ctx context.Context, c client.Client, namespace, de
 }
 
 // GetPodLogs returns logs from a specific pod and container
-func GetPodLogs(ctx context.Context, _ client.Client, podName, namespace, containerName string) (string, error) {
+func GetPodLogs(ctx context.Context, podName, namespace, containerName string) (string, error) {
 	logs, err := getPodLogs(ctx, namespace, podName, containerName, false)
 	if err != nil {
 		return "", fmt.Errorf("failed to get logs for pod %s container %s: %w", podName, containerName, err)

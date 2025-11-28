@@ -9,7 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
+	mcpclient "github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -18,9 +19,23 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
+
+// authRoundTripper is an HTTP RoundTripper that adds Bearer token authentication
+type authRoundTripper struct {
+	token     string
+	transport http.RoundTripper
+}
+
+func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Clone the request to avoid modifying the original
+	clonedReq := req.Clone(req.Context())
+	clonedReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.token))
+	return a.transport.RoundTrip(clonedReq)
+}
 
 var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 	const (
@@ -214,6 +229,10 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
                 "token_type": "Bearer",
                 "expires_in": 3600
             }
+            print(f"[{datetime.now()}] Returning token exchange response:", flush=True)
+            print(f"  access_token: {response['access_token']}", flush=True)
+            print(f"  token_type: {response['token_type']}", flush=True)
+            print(f"  expires_in: {response['expires_in']}", flush=True)
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -320,8 +339,20 @@ with socketserver.TCPServer(("", PORT), AuthHandler) as httpd:
 			if err != nil {
 				return false
 			}
-			return pod.Status.Phase == corev1.PodRunning
-		}, 2*time.Minute, 2*time.Second).Should(BeTrue(), "Mock auth server pod should be running")
+
+			// Check pod is running
+			if pod.Status.Phase != corev1.PodRunning {
+				return false
+			}
+
+			// Check containers are ready
+			for _, condition := range pod.Status.Conditions {
+				if condition.Type == corev1.ContainersReady && condition.Status == corev1.ConditionTrue {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Minute, 2*time.Second).Should(BeTrue(), "Mock auth server pod should be running and ready")
 
 		GinkgoWriter.Printf("Mock auth server deployed in Kubernetes at: http://%s.%s.svc.cluster.local/token\n",
 			authServerServiceName, testNamespace)
@@ -424,7 +455,7 @@ class OIDCHandler(http.server.BaseHTTPRequestHandler):
             payload = {
                 "sub": "test-user",
                 "iss": "http://mock-oidc-server.default.svc.cluster.local",
-                "aud": "test-audience",
+                "aud": "vmcp-audience",
                 "exp": int(time.time()) + 3600,
                 "iat": int(time.time())
             }
@@ -521,13 +552,14 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		}
 		Expect(k8sClient.Create(ctx, oidcServerPod)).To(Succeed())
 
-		// Create a service for the OIDC server
+		// Create a service for the OIDC server with NodePort for test client access
 		oidcServerService := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      oidcServerServiceName,
 				Namespace: testNamespace,
 			},
 			Spec: corev1.ServiceSpec{
+				Type: corev1.ServiceTypeNodePort,
 				Selector: map[string]string{
 					"app": "mock-oidc-server",
 				},
@@ -536,13 +568,14 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 						Port:       80,
 						TargetPort: intstr.FromInt(8080),
 						Protocol:   corev1.ProtocolTCP,
+						NodePort:   30010, // Fixed NodePort for test client access
 					},
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, oidcServerService)).To(Succeed())
 
-		// Wait for the OIDC server pod to be ready
+		// Wait for the OIDC server pod to be ready (both Running and ContainersReady)
 		Eventually(func() bool {
 			pod := &corev1.Pod{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
@@ -552,8 +585,20 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			if err != nil {
 				return false
 			}
-			return pod.Status.Phase == corev1.PodRunning
-		}, 2*time.Minute, 2*time.Second).Should(BeTrue(), "Mock OIDC server pod should be running")
+
+			// Check pod is running
+			if pod.Status.Phase != corev1.PodRunning {
+				return false
+			}
+
+			// Check containers are ready
+			for _, condition := range pod.Status.Conditions {
+				if condition.Type == corev1.ContainersReady && condition.Status == corev1.ConditionTrue {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Minute, 2*time.Second).Should(BeTrue(), "Mock OIDC server pod should be running and ready")
 
 		GinkgoWriter.Printf("Mock OIDC server deployed in Kubernetes at: http://%s.%s.svc.cluster.local\n",
 			oidcServerServiceName, testNamespace)
@@ -665,7 +710,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			return mcpGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
 		}, timeout, pollingInterval).Should(BeTrue())
 
-		By("Creating backend MCPServer with OIDC incoming auth and token exchange outgoing auth")
+		By("Creating backend MCPServer with token exchange outgoing auth")
 		backend1 := &mcpv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backend1Name,
@@ -677,23 +722,8 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,
-				// OIDC incoming auth - clients (including vMCP) must authenticate with OIDC token
-				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
-					Type: "inline",
-					Inline: &mcpv1alpha1.InlineOIDCConfig{
-						Issuer:   fmt.Sprintf("http://mock-oidc-server.%s.svc.cluster.local", testNamespace),
-						Audience: "test-audience",
-						ClientID: "vmcp-client",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-							Name: oidcClientSecretName,
-							Key:  "client-secret",
-						},
-						InsecureAllowHTTP:               true,
-						JWKSAllowPrivateIP:              true,
-						ProtectedResourceAllowPrivateIP: true,
-					},
-				},
 				// Token exchange for outgoing auth (backend→external services)
+				// vMCP will discover this and use token exchange when calling this backend
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: authConfig1Name,
 				},
@@ -756,6 +786,15 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			}, timeout, pollingInterval).Should(Succeed(), fmt.Sprintf("%s should be ready", backendName))
 		}
 
+		// Wait for backend pods to be ready
+		for _, backendName := range []string{backend1Name, backend2Name, backend3Name} {
+			backendLabels := map[string]string{
+				"app.kubernetes.io/name":     "mcpserver",
+				"app.kubernetes.io/instance": backendName,
+			}
+			WaitForPodsReady(ctx, k8sClient, testNamespace, backendLabels, timeout)
+		}
+
 		By("Creating VirtualMCPServer with discovered auth mode and short token cache TTL")
 		// Create PodTemplateSpec with debug environment variables
 		podTemplateSpec := corev1.PodTemplateSpec{
@@ -790,12 +829,28 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				GroupRef: mcpv1alpha1.GroupRef{
 					Name: mcpGroupName,
 				},
-				// DISCOVERED MODE: vMCP will discover incoming auth from backend MCPServers
-				// Backend MCPServer has OIDC configured, vMCP will discover and use it
+				// OIDC incoming auth - clients must present valid OIDC tokens
+				// vMCP will validate tokens and then exchange them for backend-specific tokens
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "anonymous", // Will be overridden by discovered OIDC from backend
+					Type: "oidc",
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: "inline",
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   fmt.Sprintf("http://mock-oidc-server.%s.svc.cluster.local", testNamespace),
+							ClientID: "vmcp-client",
+							Audience: "vmcp-audience",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: oidcClientSecretName,
+								Key:  "client-secret",
+							},
+							InsecureAllowHTTP:               true,
+							JWKSAllowPrivateIP:              true,
+							ProtectedResourceAllowPrivateIP: true,
+						},
+					},
 				},
 				// DISCOVERED MODE: vMCP will discover outgoing auth from backend MCPServers
+				// Backend has token exchange configured, vMCP will discover and use it
 				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 					Source: "discovered",
 				},
@@ -917,7 +972,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		}
 
 		By("Cleaning up secrets")
-		for _, secretName := range []string{authSecret1Name, authSecret2Name} {
+		for _, secretName := range []string{authSecret1Name, authSecret2Name, oidcClientSecretName} {
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      secretName,
@@ -1148,10 +1203,54 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
+		// Helper function to get OIDC token from mock server via client credentials flow
+		getOIDCToken := func() string {
+			tokenURL := "http://localhost:30010/token"
+
+			// Make token request with client credentials
+			resp, err := http.PostForm(tokenURL, nil)
+			Expect(err).ToNot(HaveOccurred())
+			defer resp.Body.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusOK), "Token request should succeed")
+
+			var tokenResp struct {
+				AccessToken string `json:"access_token"`
+				TokenType   string `json:"token_type"`
+				ExpiresIn   int    `json:"expires_in"`
+			}
+
+			err = json.NewDecoder(resp.Body).Decode(&tokenResp)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tokenResp.AccessToken).ToNot(BeEmpty(), "Token should not be empty")
+
+			GinkgoWriter.Printf("✓ Got OIDC token from mock server (first 20 chars): %s...\n",
+				tokenResp.AccessToken[:20])
+			return tokenResp.AccessToken
+		}
+
+		// Helper function to create authenticated HTTP client
+		createAuthenticatedHTTPClient := func(token string) *http.Client {
+			return &http.Client{
+				Transport: &authRoundTripper{
+					token:     token,
+					transport: http.DefaultTransport,
+				},
+				Timeout: 30 * time.Second,
+			}
+		}
+
 		It("should aggregate tools from all backends with discovered auth", func() {
-			By("Creating MCP client for VirtualMCPServer")
+			By("Getting OIDC token from mock OIDC server")
+			oidcToken := getOIDCToken()
+			Expect(oidcToken).ToNot(BeEmpty(), "Should get valid OIDC token")
+
+			By("Creating authenticated HTTP client with OIDC token")
+			authenticatedHTTPClient := createAuthenticatedHTTPClient(oidcToken)
+
+			By("Creating MCP client for VirtualMCPServer with authentication")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			mcpClient, err := mcpclient.NewStreamableHttpClient(serverURL, transport.WithHTTPBasicClient(authenticatedHTTPClient))
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
@@ -1189,9 +1288,16 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		})
 
 		It("should successfully call tools through VirtualMCPServer with discovered auth", func() {
-			By("Creating MCP client for VirtualMCPServer")
+			By("Getting OIDC token from mock OIDC server")
+			oidcToken := getOIDCToken()
+			Expect(oidcToken).ToNot(BeEmpty(), "Should get valid OIDC token")
+
+			By("Creating authenticated HTTP client with OIDC token")
+			authenticatedHTTPClient := createAuthenticatedHTTPClient(oidcToken)
+
+			By("Creating MCP client for VirtualMCPServer with authentication")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			mcpClient, err := mcpclient.NewStreamableHttpClient(serverURL, transport.WithHTTPBasicClient(authenticatedHTTPClient))
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
@@ -1238,9 +1344,15 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 					}
 				}
 
+				// Fail the test if expected tool is not found
 				if !toolFound {
-					GinkgoWriter.Printf("Warning: tool %s not found, skipping\n", targetToolName)
-					continue
+					availableTools := []string{}
+					for _, tool := range tools.Tools {
+						availableTools = append(availableTools, tool.Name)
+					}
+					Expect(toolFound).To(BeTrue(),
+						fmt.Sprintf("Expected tool %s to be found in vMCP tools list but it was missing.\nAvailable tools: %v",
+							targetToolName, availableTools))
 				}
 
 				GinkgoWriter.Printf("Testing tool call: %s\n", targetToolName)
@@ -1269,10 +1381,17 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		It("should send auth tokens to configured auth servers", func() {
 			By("Calling tools to trigger token exchange")
 
-			// Create MCP client and call tools to generate traffic
-			By("Creating MCP client for VirtualMCPServer")
+			By("Getting OIDC token for test client authentication")
+			token := getOIDCToken()
+
+			// Create authenticated MCP client and call tools to generate traffic
+			By("Creating authenticated MCP client for VirtualMCPServer")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			httpClient := createAuthenticatedHTTPClient(token)
+			mcpClient, err := mcpclient.NewStreamableHttpClient(
+				serverURL,
+				transport.WithHTTPBasicClient(httpClient),
+			)
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
@@ -1284,7 +1403,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			Expect(err).ToNot(HaveOccurred())
 
 			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcpProtocolVersion
+			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 			initRequest.Params.ClientInfo = mcp.Implementation{
 				Name:    "toolhive-auth-test",
 				Version: "1.0.0",
@@ -1350,78 +1469,75 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 
 			Expect(logs).ToNot(BeEmpty(), "Should have logs from mock auth server")
 
-			GinkgoWriter.Printf("\n=== Mock Auth Server Logs ===\n%s\n", logs)
-
 			// Also check vMCP logs to see if it's attempting token exchange
 			By("Checking vMCP logs for token exchange activity")
-			vmcpPodName := fmt.Sprintf("vmcp-%s-0", vmcpServerName)
+			// Dynamically discover vMCP pod name (Deployment uses random suffix, not StatefulSet-style -0)
+			vmcpPodList := &corev1.PodList{}
+			err = k8sClient.List(ctx, vmcpPodList,
+				client.InNamespace(testNamespace),
+				client.MatchingLabels{
+					"app.kubernetes.io/name":     "virtualmcpserver",
+					"app.kubernetes.io/instance": vmcpServerName,
+				})
+			Expect(err).ToNot(HaveOccurred(), "Should be able to list vMCP pods")
+			Expect(vmcpPodList.Items).ToNot(BeEmpty(), "Should have at least one vMCP pod")
+			vmcpPodName := vmcpPodList.Items[0].Name
 			vmcpLogs, vmcpErr := GetPodLogs(ctx, vmcpPodName, testNamespace, "vmcp")
 			if vmcpErr == nil {
-				GinkgoWriter.Printf("\n=== vMCP Logs (last 2000 chars) ===\n")
-				if len(vmcpLogs) > 2000 {
-					GinkgoWriter.Printf("%s\n", vmcpLogs[len(vmcpLogs)-2000:])
-				} else {
-					GinkgoWriter.Printf("%s\n", vmcpLogs)
-				}
+				GinkgoWriter.Printf("\n=== vMCP Logs (full) ===\n")
+				GinkgoWriter.Printf("%s\n", vmcpLogs)
 			} else {
 				GinkgoWriter.Printf("Warning: Could not get vMCP logs: %v\n", vmcpErr)
 			}
 
-			// Check if the logs contain token exchange requests
+			// Check if the logs contain token exchange requests - THIS MUST HAPPEN
 			hasTokenExchange := strings.Contains(logs, "Token exchange request received")
+			Expect(hasTokenExchange).To(BeTrue(),
+				"Mock auth server should have received token exchange requests from vMCP.\n"+
+					"This indicates that vMCP is properly propagating identity context to authentication strategies.\n"+
+					"Auth server logs:\n%s", logs)
 
-			if hasTokenExchange {
-				// Verify the auth parameters are in the logs
-				// Note: client_id and client_secret are sent in Authorization header (Basic auth),
-				// so we check for the header presence instead of POST body params
-				Expect(logs).To(ContainSubstring("'Authorization': 'Basic"),
-					"Token request should include Basic auth header with client credentials")
+			// Verify the auth parameters are in the logs
+			// Note: client_id and client_secret are sent in Authorization header (Basic auth),
+			// so we check for the header presence instead of POST body params
+			Expect(logs).To(ContainSubstring("'Authorization': 'Basic"),
+				"Token request should include Basic auth header with client credentials")
 
-				Expect(logs).To(ContainSubstring("audience: https://api.example.com"),
-					"Token request should include audience")
+			Expect(logs).To(ContainSubstring("audience: https://api.example.com"),
+				"Token request should include audience")
 
-				Expect(logs).To(ContainSubstring("grant_type: urn:ietf:params:oauth:grant-type:token-exchange"),
-					"Token request should use token exchange grant type")
+			Expect(logs).To(ContainSubstring("grant_type: urn:ietf:params:oauth:grant-type:token-exchange"),
+				"Token request should use token exchange grant type")
 
-				GinkgoWriter.Printf("✓ Found Authorization header with client credentials in token request\n")
-				GinkgoWriter.Printf("✓ Found audience in token request\n")
-				GinkgoWriter.Printf("✓ Found token exchange grant type in token request\n")
+			// Verify token exchange succeeded (returned an access_token)
+			Expect(logs).To(ContainSubstring("access_token"),
+				"Token exchange response should include access_token")
 
-				GinkgoWriter.Printf("\n✓ Authentication verification complete:\n")
-				GinkgoWriter.Printf("  - vMCP discovered token exchange auth from backend ExternalAuthConfigRef\n")
-				GinkgoWriter.Printf("  - vMCP successfully exchanged tokens with mock auth server\n")
-				GinkgoWriter.Printf("  - Auth server received client credentials (Basic auth), audience, and grant type\n")
-				GinkgoWriter.Printf("  - Tool calls succeeded proving end-to-end auth flow works\n")
-			} else {
-				GinkgoWriter.Printf("\n⚠ Token exchange requests not captured in mock server logs\n")
-				GinkgoWriter.Printf("This could be due to:\n")
-				GinkgoWriter.Printf("  - Token caching (token already obtained in previous initialization)\n")
-				GinkgoWriter.Printf("  - Token exchange happening before test started capturing logs\n")
-				GinkgoWriter.Printf("  - Network connectivity issues between vMCP and mock auth server\n")
-				GinkgoWriter.Printf("\nHowever, the test still validates:\n")
-				GinkgoWriter.Printf("  ✓ vMCP discovered auth configs from backend ExternalAuthConfigRef\n")
-				GinkgoWriter.Printf("  ✓ vMCP is configured with correct token exchange URL\n")
-				GinkgoWriter.Printf("  ✓ Tool calls succeeded (proving vMCP can communicate with backends)\n")
-				GinkgoWriter.Printf("  ✓ Auth discovery mechanism works correctly\n")
+			GinkgoWriter.Printf("✓ Found Authorization header with client credentials in token request\n")
+			GinkgoWriter.Printf("✓ Found audience in token request\n")
+			GinkgoWriter.Printf("✓ Found token exchange grant type in token request\n")
+			GinkgoWriter.Printf("✓ Token exchange succeeded (access_token returned)\n")
 
-				// Don't fail the test - the important part is that discovery works and tool calls succeed
-				GinkgoWriter.Printf("\nNote: For full token capture verification, consider:\n")
-				GinkgoWriter.Printf("  - Deploying mock server before vMCP initialization\n")
-				GinkgoWriter.Printf("  - Disabling token caching\n")
-				GinkgoWriter.Printf("  - Using debug/trace logging in vMCP\n")
-			}
+			GinkgoWriter.Printf("\n✓ Token exchange verification complete:\n")
+			GinkgoWriter.Printf("  - vMCP discovered token exchange auth from backend ExternalAuthConfigRef\n")
+			GinkgoWriter.Printf("  - vMCP successfully propagated identity context to auth strategies\n")
+			GinkgoWriter.Printf("  - vMCP exchanged client's OIDC token for backend-specific token\n")
+			GinkgoWriter.Printf("  - Auth server received client credentials (Basic auth), audience, and grant type\n")
+			GinkgoWriter.Printf("  - Tool calls succeeded proving end-to-end auth flow works\n")
 		})
 
 		It("should send Bearer token to backend MCP server with OIDC incoming auth", func() {
-			By("Checking that vMCP applies authentication when sending requests to backends")
-
 			// The VirtualMCPServer is already configured with discovered auth mode
 			// and has backends with ExternalAuthConfigRef (token exchange)
 			// This test verifies that vMCP applies authentication when communicating with backends
 
-			By("Calling tools to trigger backend communication")
+			token := getOIDCToken()
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			httpClient := createAuthenticatedHTTPClient(token)
+			mcpClient, err := mcpclient.NewStreamableHttpClient(
+				serverURL,
+				transport.WithHTTPBasicClient(httpClient),
+			)
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
@@ -1432,7 +1548,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			Expect(err).ToNot(HaveOccurred())
 
 			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcpProtocolVersion
+			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 			initRequest.Params.ClientInfo = mcp.Implementation{
 				Name:    "bearer-token-test",
 				Version: "1.0.0",
@@ -1451,7 +1567,6 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			var toolCalled bool
 			for _, tool := range tools.Tools {
 				if strings.Contains(tool.Name, backend1Name) && strings.Contains(tool.Name, "fetch") {
-					GinkgoWriter.Printf("Calling tool with auth: %s\n", tool.Name)
 					callCtx, callCancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer callCancel()
 
@@ -1464,61 +1579,11 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 					_, err := mcpClient.CallTool(callCtx, callRequest)
 					if err == nil {
 						toolCalled = true
-						GinkgoWriter.Printf("✓ Tool call succeeded: %s\n", tool.Name)
-					} else {
-						GinkgoWriter.Printf("Tool call error: %v\n", err)
 					}
 					break
 				}
 			}
 			Expect(toolCalled).To(BeTrue(), "Should successfully call at least one tool with authentication")
-
-			By("Checking vMCP logs for authentication activity")
-			vmcpPodName := fmt.Sprintf("vmcp-%s-0", vmcpServerName)
-			vmcpLogs, err := GetPodLogs(ctx, vmcpPodName, testNamespace, "vmcp")
-			Expect(err).ToNot(HaveOccurred(), "Should be able to get vMCP logs")
-
-			// Check for authentication-related log messages
-			hasAuthDiscovery := strings.Contains(vmcpLogs, "Discovered auth config")
-			hasAuthStrategy := strings.Contains(vmcpLogs, "Applied authentication strategy") ||
-				strings.Contains(vmcpLogs, "using discovered auth strategy")
-			hasTokenExchange := strings.Contains(vmcpLogs, "token exchange") ||
-				strings.Contains(vmcpLogs, "Token exchange")
-
-			GinkgoWriter.Printf("\n=== vMCP Authentication Activity ===\n")
-			GinkgoWriter.Printf("Auth discovery in logs: %v\n", hasAuthDiscovery)
-			GinkgoWriter.Printf("Auth strategy application in logs: %v\n", hasAuthStrategy)
-			GinkgoWriter.Printf("Token exchange in logs: %v\n", hasTokenExchange)
-
-			if hasAuthDiscovery || hasAuthStrategy {
-				GinkgoWriter.Printf("\n✓ Authentication verification successful:\n")
-				GinkgoWriter.Printf("  - vMCP discovered authentication config from backend\n")
-				GinkgoWriter.Printf("  - vMCP applied authentication strategy to requests\n")
-				GinkgoWriter.Printf("  - Tool calls succeeded (proving end-to-end auth works)\n")
-				GinkgoWriter.Printf("  - This validates vMCP→backend Bearer token flow\n")
-			}
-
-			// Also check auth server logs to verify token exchange happened
-			By("Verifying token exchange with auth server")
-			authServerPodName := mockAuthServerName
-			authLogs, err := GetPodLogs(ctx, authServerPodName, testNamespace, "auth-server")
-			if err == nil {
-				hasTokenRequest := strings.Contains(authLogs, "Token exchange request received")
-				GinkgoWriter.Printf("Token exchange requests to auth server: %v\n", hasTokenRequest)
-
-				if hasTokenRequest {
-					GinkgoWriter.Printf("✓ Confirmed: vMCP exchanged tokens with auth server\n")
-					// Verify the exchanged tokens are sent to backends
-					Expect(toolCalled).To(BeTrue(),
-						"Tool calls should succeed when vMCP sends Bearer tokens to backends")
-				}
-			}
-
-			GinkgoWriter.Printf("\n✓ Bearer token flow validated:\n")
-			GinkgoWriter.Printf("  1. vMCP discovers backend auth requirements\n")
-			GinkgoWriter.Printf("  2. vMCP exchanges tokens with auth server\n")
-			GinkgoWriter.Printf("  3. vMCP sends Bearer tokens in requests to backends\n")
-			GinkgoWriter.Printf("  4. Backends accept requests (tool calls succeed)\n")
 		})
 
 	})

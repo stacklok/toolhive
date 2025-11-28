@@ -17,7 +17,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth"
+	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 )
 
 const (
@@ -48,7 +48,7 @@ type httpBackendClient struct {
 
 	// registry manages authentication strategies for outgoing requests to backend MCP servers.
 	// Must not be nil - use UnauthenticatedStrategy for no authentication.
-	registry auth.OutgoingAuthRegistry
+	registry vmcpauth.OutgoingAuthRegistry
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
@@ -59,7 +59,7 @@ type httpBackendClient struct {
 // "unauthenticated" strategy.
 //
 // Returns an error if registry is nil.
-func NewHTTPBackendClient(registry auth.OutgoingAuthRegistry) (vmcp.BackendClient, error) {
+func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendClient, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("registry cannot be nil; use UnauthenticatedStrategy for no authentication")
 	}
@@ -79,12 +79,29 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+// contextPropagatingRoundTripper propagates the original request context to HTTP requests.
+// This ensures that identity information from the vMCP handler is available for authentication.
+type contextPropagatingRoundTripper struct {
+	base    http.RoundTripper
+	origCtx context.Context
+}
+
+// RoundTrip implements http.RoundTripper by propagating the original context to the request.
+func (c *contextPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Clone the request with the original context that contains the identity
+	reqWithCtx := req.Clone(c.origCtx)
+	// Copy headers from the original request
+	reqWithCtx.Header = req.Header
+
+	return c.base.RoundTrip(reqWithCtx)
+}
+
 // authRoundTripper is an http.RoundTripper that adds authentication to backend requests.
 // The authentication strategy and metadata are pre-resolved and validated at client creation time,
 // eliminating per-request lookups and validation overhead.
 type authRoundTripper struct {
 	base         http.RoundTripper
-	authStrategy auth.Strategy
+	authStrategy vmcpauth.Strategy
 	authMetadata map[string]any
 	target       *vmcp.BackendTarget
 }
@@ -110,7 +127,7 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 // It handles defaulting to "unauthenticated" when no strategy is specified.
 // This method should be called once at client creation time to enable fail-fast
 // behavior for invalid authentication configurations.
-func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (auth.Strategy, error) {
+func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (vmcpauth.Strategy, error) {
 	strategyName := target.AuthStrategy
 
 	// Default to unauthenticated if not specified
@@ -129,7 +146,7 @@ func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (aut
 
 // defaultClientFactory creates mark3labs MCP clients for different transport types.
 func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
-	// Build transport chain: size limit → authentication → HTTP
+	// Build transport chain: size limit → context propagation → authentication → HTTP
 	var baseTransport = http.DefaultTransport
 
 	// Resolve authentication strategy ONCE at client creation time
@@ -151,6 +168,14 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		authStrategy: authStrategy,
 		authMetadata: target.AuthMetadata,
 		target:       target,
+	}
+
+	// Add context propagation layer to ensure identity is available for authentication
+	// This wraps the authentication layer (is called before it in the RoundTripper chain)
+	// to propagate the original context containing identity information to downstream layers
+	baseTransport = &contextPropagatingRoundTripper{
+		base:    baseTransport,
+		origCtx: ctx,
 	}
 
 	// Add size limit layer for DoS protection

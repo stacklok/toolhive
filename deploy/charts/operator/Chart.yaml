@@ -3,4 +3,4 @@ name: toolhive-operator
 description: A Helm chart for deploying the ToolHive Operator into Kubernetes.
 type: application
 version: 0.5.4
-appVersion: "v0.6.8"
+appVersion: "v0.6.9"

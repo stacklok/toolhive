@@ -16,8 +16,8 @@ if [[ ! -f "$PROJECT_ROOT/go.mod" ]]; then
     echo "Error: Could not find project root (no go.mod found)"
     exit 1
 fi
-SOURCE_CRD_DIR="${PROJECT_ROOT}/deploy/charts/operator/files/crds"
-TARGET_CRD_DIR="${PROJECT_ROOT}/deploy/charts/operator/templates/definitions"
+SOURCE_CRD_DIR="${PROJECT_ROOT}/deploy/charts/operator-crds/files/crds"
+TARGET_CRD_DIR="${PROJECT_ROOT}/deploy/charts/operator-crds/templates"
 
 # Ensure target directory exists
 mkdir -p "${TARGET_CRD_DIR}"
@@ -40,10 +40,22 @@ wrap_crd() {
 
     echo -e "${YELLOW}Processing: ${filename}${NC}"
 
+    # Extract the CRD name from the file (e.g., mcpservers.toolhive.stacklok.dev)
+    local crd_name
+    crd_name=$(grep -m1 "^  name:" "${source_file}" | awk '{print $2}')
+    if [ -z "$crd_name" ]; then
+        echo -e "${RED}Warning: Could not extract CRD name from ${filename}${NC}"
+        crd_name="unknown"
+    fi
+
+    echo -e "  CRD name: ${crd_name}"
+
     # Create the wrapped CRD file
     {
-        # Add header from template
-        sed "s/__CRD_FILENAME__/${filename}/" "${SCRIPT_DIR}/crd-header.tpl"
+        # Add header from template with filename and CRD name substitutions
+        sed -e "s/__CRD_FILENAME__/${filename}/" \
+            -e "s/__CRD_NAME__/${crd_name}/" \
+            "${SCRIPT_DIR}/crd-header.tpl"
         echo  # Add a newline after the header
 
         # Add the actual CRD content (skip the first line if it's just '---')

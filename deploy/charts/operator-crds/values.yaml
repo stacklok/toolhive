@@ -1,1 +1,9 @@
-# empty values file as we do not need any values for the CRDs at the moment
+# -- CRD installation configuration
+crds:
+  # -- Whether to install CRDs as part of the Helm release
+  install: true
+  # -- List of CRD names to skip during installation (useful for upgrades)
+  # Example: ["mcpservers.toolhive.stacklok.dev"]
+  skip:
+  - virtualmcpcompositetooldefinitions.toolhive.stacklok.dev
+  - mcpremoteproxies.toolhive.stacklok.dev

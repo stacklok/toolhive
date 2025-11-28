@@ -1,4 +1,7 @@
----
+{{- if .Values.crds.install }}
+{{- if not (has "virtualmcpservers.toolhive.stacklok.dev" .Values.crds.skip) }}
+# Source: {{ $.Chart.Name }}/templates/toolhive.stacklok.dev_virtualmcpservers.yaml
+
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -26,6 +29,10 @@ spec:
       jsonPath: .status.url
       name: URL
       type: string
+    - description: Discovered backends count
+      jsonPath: .status.backendCount
+      name: Backends
+      type: integer
     - description: Age
       jsonPath: .metadata.creationTimestamp
       name: Age
@@ -180,30 +187,21 @@ spec:
                       description: Name is the name of the composite tool
                       type: string
                     parameters:
-                      additionalProperties:
-                        description: ParameterSpec defines a parameter for a composite
-                          tool
-                        properties:
-                          default:
-                            description: Default is the default value for the parameter
-                            type: string
-                          description:
-                            description: Description describes the parameter
-                            type: string
-                          required:
-                            default: false
-                            description: Required indicates if the parameter is required
-                            type: boolean
-                          type:
-                            description: Type is the parameter type (string, integer,
-                              boolean, etc.)
-                            type: string
-                        required:
-                        - type
-                        type: object
-                      description: Parameters defines the input parameters for the
-                        composite tool
+                      description: |-
+                        Parameters defines the input parameter schema in JSON Schema format.
+                        Should be a JSON Schema object with "type": "object" and "properties".
+                        Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
+                        Example:
+                          {
+                            "type": "object",
+                            "properties": {
+                              "param1": {"type": "string", "default": "value"},
+                              "param2": {"type": "integer"}
+                            },
+                            "required": ["param2"]
+                          }
                       type: object
+                      x-kubernetes-preserve-unknown-fields: true
                     steps:
                       description: Steps defines the workflow steps
                       items:
@@ -252,6 +250,12 @@ spec:
                                   MaxRetries is the maximum number of retries
                                   Only used when Action is "retry"
                                 type: integer
+                              retryDelay:
+                                description: |-
+                                  RetryDelay is the delay between retry attempts
+                                  Only used when Action is "retry"
+                                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m))+$
+                                type: string
                             type: object
                           schema:
                             description: Schema defines the expected response schema
@@ -265,14 +269,14 @@ spec:
                           tool:
                             description: |-
                               Tool is the tool to call (format: "workload.tool_name")
-                              Only used when Type is "tool_call"
+                              Only used when Type is "tool"
                             type: string
                           type:
-                            default: tool_call
-                            description: Type is the step type (tool_call, elicitation,
+                            default: tool
+                            description: Type is the step type (tool, elicitation,
                               etc.)
                             enum:
-                            - tool_call
+                            - tool
                             - elicitation
                             type: string
                         required:
@@ -438,6 +442,12 @@ spec:
                           jwksUrl:
                             description: JWKSURL is the URL to fetch the JWKS from
                             type: string
+                          protectedResourceAllowPrivateIP:
+                            default: false
+                            description: |-
+                              ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
+                              Use with caution - only enable for trusted internal IDPs or testing
+                            type: boolean
                           thvCABundlePath:
                             description: |-
                               ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests
@@ -505,11 +515,10 @@ spec:
                     - type
                     type: object
                   type:
-                    description: 'Type defines the authentication type: anonymous,
-                      local, or oidc'
+                    description: 'Type defines the authentication type: anonymous
+                      or oidc'
                     enum:
                     - anonymous
-                    - local
                     - oidc
                     type: string
                 type: object
@@ -599,7 +608,6 @@ spec:
                           description: Type defines the authentication type
                           enum:
                           - discovered
-                          - pass_through
                           - external_auth_config_ref
                           type: string
                       required:
@@ -629,7 +637,6 @@ spec:
                         description: Type defines the authentication type
                         enum:
                         - discovered
-                        - pass_through
                         - external_auth_config_ref
                         type: string
                     required:
@@ -666,75 +673,15 @@ spec:
                 - NodePort
                 - LoadBalancer
                 type: string
-              tokenCache:
-                description: TokenCache configures token caching behavior
-                properties:
-                  memory:
-                    description: |-
-                      Memory configures in-memory token caching
-                      Only used when Provider is "memory"
-                    properties:
-                      maxEntries:
-                        default: 1000
-                        description: MaxEntries is the maximum number of cache entries
-                        type: integer
-                      ttlOffset:
-                        default: 5m
-                        description: TTLOffset is the duration before token expiry
-                          to refresh
-                        type: string
-                    type: object
-                  provider:
-                    default: memory
-                    description: Provider defines the cache provider type
-                    enum:
-                    - memory
-                    - redis
-                    type: string
-                  redis:
-                    description: |-
-                      Redis configures Redis token caching
-                      Only used when Provider is "redis"
-                    properties:
-                      address:
-                        description: Address is the Redis server address
-                        type: string
-                      db:
-                        default: 0
-                        description: DB is the Redis database number
-                        type: integer
-                      keyPrefix:
-                        default: 'vmcp:tokens:'
-                        description: KeyPrefix is the prefix for cache keys
-                        type: string
-                      passwordRef:
-                        description: PasswordRef references a secret containing the
-                          Redis password
-                        properties:
-                          key:
-                            description: Key is the key within the secret
-                            type: string
-                          name:
-                            description: Name is the name of the secret
-                            type: string
-                        required:
-                        - key
-                        - name
-                        type: object
-                      tls:
-                        default: false
-                        description: TLS enables TLS for Redis connections
-                        type: boolean
-                    required:
-                    - address
-                    type: object
-                type: object
             required:
             - groupRef
             type: object
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
+              backendCount:
+                description: BackendCount is the number of discovered backends
+                type: integer
               conditions:
                 description: Conditions represent the latest available observations
                   of the VirtualMCPServer's state
@@ -793,6 +740,39 @@ spec:
                   - type
                   type: object
                 type: array
+              discoveredBackends:
+                description: DiscoveredBackends lists discovered backend configurations
+                  from the MCPGroup
+                items:
+                  description: DiscoveredBackend represents a discovered backend MCPServer
+                    in the MCPGroup
+                  properties:
+                    authConfigRef:
+                      description: AuthConfigRef is the name of the discovered MCPExternalAuthConfig
+                        (if any)
+                      type: string
+                    authType:
+                      description: AuthType is the type of authentication configured
+                      type: string
+                    lastHealthCheck:
+                      description: LastHealthCheck is the timestamp of the last health
+                        check
+                      format: date-time
+                      type: string
+                    name:
+                      description: Name is the name of the backend MCPServer
+                      type: string
+                    status:
+                      description: Status is the current status of the backend (ready,
+                        degraded, unavailable)
+                      type: string
+                    url:
+                      description: URL is the URL of the backend MCPServer
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
               message:
                 description: Message provides additional information about the current
                   phase
@@ -820,3 +800,5 @@ spec:
     storage: true
     subresources:
       status: {}
+{{- end }}
+{{- end }}

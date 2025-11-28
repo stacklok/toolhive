@@ -3,14 +3,6 @@ nameOverride: ""
 # -- Provide a fully-qualified name override for resources
 fullnameOverride: "toolhive-operator"
 
-# -- CRD installation configuration
-crds:
-  # -- Whether to install CRDs as part of the Helm release
-  install: false
-  # -- List of CRD names to skip during installation (useful for upgrades)
-  # Example: ["mcpservers.toolhive.stacklok.dev"]
-  skip: []
-
 # -- All values for the operator deployment and associated resources
 operator:
   # Whether to enable experimental features

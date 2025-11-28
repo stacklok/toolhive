@@ -223,7 +223,7 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcpProtocolVersion
+			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 			initRequest.Params.ClientInfo = mcp.Implementation{
 				Name:    "toolhive-filtering-test",
 				Version: "1.0.0",
@@ -283,7 +283,7 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcpProtocolVersion
+			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 			initRequest.Params.ClientInfo = mcp.Implementation{
 				Name:    "toolhive-filtering-test",
 				Version: "1.0.0",

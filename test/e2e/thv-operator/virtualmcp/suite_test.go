@@ -28,8 +28,6 @@ import (
 const (
 	// fetchToolName is the name of the fetch tool used in tests
 	fetchToolName = "fetch"
-	// mcpProtocolVersion is the MCP protocol version used in tests
-	mcpProtocolVersion = "2024-11-05"
 )
 
 var (

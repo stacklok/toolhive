@@ -173,7 +173,7 @@ var _ = Describe("VirtualMCPServer Inline Auth with Anonymous Incoming", Ordered
 			Expect(err).ToNot(HaveOccurred())
 
 			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcpProtocolVersion
+			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 			initRequest.Params.ClientInfo = mcp.Implementation{
 				Name:    "toolhive-e2e-test",
 				Version: "1.0.0",
@@ -430,7 +430,7 @@ var _ = Describe("VirtualMCPServer Inline Auth with OIDC Incoming", Ordered, fun
 			err = mcpClient.Start(ctx)
 			if err == nil {
 				initRequest := mcp.InitializeRequest{}
-				initRequest.Params.ProtocolVersion = mcpProtocolVersion
+				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 				initRequest.Params.ClientInfo = mcp.Implementation{
 					Name:    "toolhive-e2e-test",
 					Version: "1.0.0",

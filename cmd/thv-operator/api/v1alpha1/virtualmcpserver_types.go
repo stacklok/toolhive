@@ -68,8 +68,8 @@ type GroupRef struct {
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
 type IncomingAuthConfig struct {
-	// Type defines the authentication type: anonymous, local, or oidc
-	// +kubebuilder:validation:Enum=anonymous;local;oidc
+	// Type defines the authentication type: anonymous or oidc
+	// +kubebuilder:validation:Enum=anonymous;oidc
 	// +optional
 	Type string `json:"type,omitempty"`
 
@@ -108,7 +108,7 @@ type OutgoingAuthConfig struct {
 // BackendAuthConfig defines authentication configuration for a backend MCPServer
 type BackendAuthConfig struct {
 	// Type defines the authentication type
-	// +kubebuilder:validation:Enum=discovered;pass_through;external_auth_config_ref
+	// +kubebuilder:validation:Enum=discovered;external_auth_config_ref
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
@@ -185,9 +185,22 @@ type CompositeToolSpec struct {
 	// +kubebuilder:validation:Required
 	Description string `json:"description"`
 
-	// Parameters defines the input parameters for the composite tool
+	// Parameters defines the input parameter schema in JSON Schema format.
+	// Should be a JSON Schema object with "type": "object" and "properties".
+	// Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
+	// Example:
+	//   {
+	//     "type": "object",
+	//     "properties": {
+	//       "param1": {"type": "string", "default": "value"},
+	//       "param2": {"type": "integer"}
+	//     },
+	//     "required": ["param2"]
+	//   }
 	// +optional
-	Parameters map[string]ParameterSpec `json:"parameters,omitempty"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	Parameters *runtime.RawExtension `json:"parameters,omitempty"`
 
 	// Steps defines the workflow steps
 	// +kubebuilder:validation:Required
@@ -198,26 +211,6 @@ type CompositeToolSpec struct {
 	// +kubebuilder:default="30m"
 	// +optional
 	Timeout string `json:"timeout,omitempty"`
-}
-
-// ParameterSpec defines a parameter for a composite tool
-type ParameterSpec struct {
-	// Type is the parameter type (string, integer, boolean, etc.)
-	// +kubebuilder:validation:Required
-	Type string `json:"type"`
-
-	// Description describes the parameter
-	// +optional
-	Description string `json:"description,omitempty"`
-
-	// Default is the default value for the parameter
-	// +optional
-	Default string `json:"default,omitempty"`
-
-	// Required indicates if the parameter is required
-	// +kubebuilder:default=false
-	// +optional
-	Required bool `json:"required,omitempty"`
 }
 
 // WorkflowStep defines a step in a composite tool workflow
@@ -516,9 +509,6 @@ const (
 const (
 	// BackendAuthTypeDiscovered automatically discovers from backend's externalAuthConfigRef
 	BackendAuthTypeDiscovered = "discovered"
-
-	// BackendAuthTypePassThrough forwards client token unchanged
-	BackendAuthTypePassThrough = "pass_through"
 
 	// BackendAuthTypeExternalAuthConfigRef references an MCPExternalAuthConfig resource
 	BackendAuthTypeExternalAuthConfigRef = "external_auth_config_ref"

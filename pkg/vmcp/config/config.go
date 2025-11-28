@@ -171,8 +171,7 @@ type OutgoingAuthConfig struct {
 
 // BackendAuthStrategy defines how to authenticate to a specific backend.
 type BackendAuthStrategy struct {
-	// Type is the auth strategy: "pass_through", "token_exchange", "client_credentials",
-	// "service_account", "header_injection", "oauth_proxy"
+	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange"
 	Type string `json:"type" yaml:"type"`
 
 	// Metadata contains strategy-specific configuration.
@@ -339,8 +338,24 @@ type CompositeToolConfig struct {
 	// Description describes what the workflow does.
 	Description string `json:"description,omitempty"`
 
-	// Parameters defines input parameter schema.
-	Parameters map[string]ParameterSchema `json:"parameters,omitempty"`
+	// Parameters defines input parameter schema in JSON Schema format.
+	// Should be a JSON Schema object with "type": "object" and "properties".
+	// Example:
+	//   {
+	//     "type": "object",
+	//     "properties": {
+	//       "param1": {"type": "string", "default": "value"},
+	//       "param2": {"type": "integer"}
+	//     },
+	//     "required": ["param2"]
+	//   }
+	//
+	// We use map[string]any rather than a typed struct because JSON Schema is highly
+	// flexible with many optional fields (default, enum, minimum, maximum, pattern,
+	// items, additionalProperties, oneOf, anyOf, allOf, etc.). Using map[string]any
+	// allows full JSON Schema compatibility without needing to define every possible
+	// field, and matches how the MCP SDK handles inputSchema.
+	Parameters map[string]any `json:"parameters,omitempty"`
 
 	// Timeout is the maximum workflow execution time.
 	Timeout Duration `json:"timeout,omitempty"`
@@ -352,15 +367,6 @@ type CompositeToolConfig struct {
 	// If not specified, the workflow returns the last step's output (backward compatible).
 	// +optional
 	Output *OutputConfig `json:"output,omitempty" yaml:"output,omitempty"`
-}
-
-// ParameterSchema defines a workflow parameter.
-type ParameterSchema struct {
-	// Type is the parameter type (e.g., "string", "integer").
-	Type string `json:"type"`
-
-	// Default is the default value (optional).
-	Default any `json:"default,omitempty"`
 }
 
 // WorkflowStepConfig defines a single workflow step.

@@ -3,7 +3,10 @@ package vmcpconfig
 
 import (
 	"context"
+	"encoding/json"
 	"time"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -248,7 +251,7 @@ func (*Converter) convertAggregation(
 
 // convertCompositeTools converts CompositeToolSpec from CRD to vmcp config
 func (*Converter) convertCompositeTools(
-	_ context.Context,
+	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) []*vmcpconfig.CompositeToolConfig {
 	compositeTools := make([]*vmcpconfig.CompositeToolConfig, 0, len(vmcp.Spec.CompositeTools))
@@ -257,7 +260,6 @@ func (*Converter) convertCompositeTools(
 		tool := &vmcpconfig.CompositeToolConfig{
 			Name:        crdTool.Name,
 			Description: crdTool.Description,
-			Parameters:  make(map[string]vmcpconfig.ParameterSchema),
 			Steps:       make([]*vmcpconfig.WorkflowStepConfig, 0, len(crdTool.Steps)),
 		}
 
@@ -268,11 +270,16 @@ func (*Converter) convertCompositeTools(
 			}
 		}
 
-		// Convert parameters
-		for paramName, paramSpec := range crdTool.Parameters {
-			tool.Parameters[paramName] = vmcpconfig.ParameterSchema{
-				Type:    paramSpec.Type,
-				Default: paramSpec.Default,
+		// Convert parameters from runtime.RawExtension to map[string]any
+		if crdTool.Parameters != nil && len(crdTool.Parameters.Raw) > 0 {
+			var params map[string]any
+			if err := json.Unmarshal(crdTool.Parameters.Raw, &params); err != nil {
+				// Log warning but continue - validation should have caught this at admission time
+				ctxLogger := log.FromContext(ctx)
+				ctxLogger.Error(err, "failed to unmarshal composite tool parameters",
+					"tool", crdTool.Name, "raw", string(crdTool.Parameters.Raw))
+			} else {
+				tool.Parameters = params
 			}
 		}
 

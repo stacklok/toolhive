@@ -105,17 +105,22 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
 					Name:        "deploy_app",
 					Description: "Deploy application with parameters",
-					Parameters: map[string]ParameterSpec{
-						"environment": {
-							Type:        "string",
-							Description: "Target environment",
-							Required:    true,
-						},
-						"replicas": {
-							Type:        "integer",
-							Description: "Number of replicas",
-							Default:     "3",
-						},
+					Parameters: &runtime.RawExtension{
+						Raw: []byte(`{
+							"type": "object",
+							"properties": {
+								"environment": {
+									"type": "string",
+									"description": "Target environment"
+								},
+								"replicas": {
+									"type": "integer",
+									"description": "Number of replicas",
+									"default": 3
+								}
+							},
+							"required": ["environment"]
+						}`),
 					},
 					Steps: []WorkflowStep{
 						{
@@ -137,10 +142,15 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 				Spec: VirtualMCPCompositeToolDefinitionSpec{
 					Name:        "deploy_app",
 					Description: "Deploy application",
-					Parameters: map[string]ParameterSpec{
-						"environment": {
-							Type: "invalid_type",
-						},
+					Parameters: &runtime.RawExtension{
+						Raw: []byte(`{
+							"type": "invalid_type_not_object",
+							"properties": {
+								"environment": {
+									"type": "string"
+								}
+							}
+						}`),
 					},
 					Steps: []WorkflowStep{
 						{
@@ -151,7 +161,7 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.parameters: invalid JSON Schema",
+			errMsg:  "spec.parameters: 'type' must be 'object'",
 		},
 		{
 			name: "missing step ID",

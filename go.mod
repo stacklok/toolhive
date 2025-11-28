@@ -4,7 +4,7 @@ go 1.25.3
 
 require (
 	github.com/1password/onepassword-sdk-go v0.3.1
-	github.com/cedar-policy/cedar-go v1.3.0
+	github.com/cedar-policy/cedar-go v1.3.1
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -46,7 +46,7 @@ require (
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.27.1
 	golang.ngrok.com/ngrok/v2 v2.1.0
-	golang.org/x/exp/jsonrpc2 v0.0.0-20251113190631-e25ba8c21ef6
+	golang.org/x/exp/jsonrpc2 v0.0.0-20251125195548-87e1e737ad39
 	golang.org/x/mod v0.30.0
 	golang.org/x/net v0.47.0
 	golang.org/x/oauth2 v0.33.0

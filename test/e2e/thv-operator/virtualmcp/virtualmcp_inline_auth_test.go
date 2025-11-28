@@ -17,12 +17,12 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
-var _ = Describe("VirtualMCPServer Inline Auth with Local Incoming", Ordered, func() {
+var _ = Describe("VirtualMCPServer Inline Auth with Anonymous Incoming", Ordered, func() {
 	var (
 		testNamespace   = "default"
-		mcpGroupName    = "test-inline-auth-local-group"
-		vmcpServerName  = "test-vmcp-inline-auth-local"
-		backend1Name    = "backend-fetch-inline-local"
+		mcpGroupName    = "test-inline-auth-anon-group"
+		vmcpServerName  = "test-vmcp-inline-auth-anon"
+		backend1Name    = "backend-fetch-inline-anon"
 		timeout         = 5 * time.Minute
 		pollingInterval = 5 * time.Second
 		vmcpNodePort    int32
@@ -40,7 +40,7 @@ var _ = Describe("VirtualMCPServer Inline Auth with Local Incoming", Ordered, fu
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1alpha1.MCPGroupSpec{
-				Description: "Test MCP Group for VirtualMCP inline auth with local incoming",
+				Description: "Test MCP Group for VirtualMCP inline auth with anonymous incoming",
 			},
 		}
 		Expect(k8sClient.Create(ctx, mcpGroup)).To(Succeed())
@@ -89,7 +89,7 @@ var _ = Describe("VirtualMCPServer Inline Auth with Local Incoming", Ordered, fu
 			return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
 		}, timeout, pollingInterval).Should(Succeed())
 
-		By("Creating VirtualMCPServer with local incoming and inline outgoing auth")
+		By("Creating VirtualMCPServer with anonymous incoming and inline outgoing auth")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
@@ -100,7 +100,7 @@ var _ = Describe("VirtualMCPServer Inline Auth with Local Incoming", Ordered, fu
 					Name: mcpGroupName,
 				},
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "local",
+					Type: "anonymous",
 				},
 				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 					Source: "inline",
@@ -146,8 +146,8 @@ var _ = Describe("VirtualMCPServer Inline Auth with Local Incoming", Ordered, fu
 		})
 	})
 
-	Context("when using local incoming with inline outgoing auth", func() {
-		It("should configure inline outgoing auth with local incoming", func() {
+	Context("when using anonymous incoming with inline outgoing auth", func() {
+		It("should configure inline outgoing auth with anonymous incoming", func() {
 			By("Verifying VirtualMCPServer has inline auth configuration")
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
@@ -155,12 +155,12 @@ var _ = Describe("VirtualMCPServer Inline Auth with Local Incoming", Ordered, fu
 				Namespace: testNamespace,
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(vmcpServer.Spec.IncomingAuth.Type).To(Equal("local"))
+			Expect(vmcpServer.Spec.IncomingAuth.Type).To(Equal("anonymous"))
 			Expect(vmcpServer.Spec.OutgoingAuth.Source).To(Equal("inline"))
 		})
 
 		It("should proxy tool calls with inline auth configuration", func() {
-			By("Creating MCP client with local auth")
+			By("Creating MCP client with anonymous auth")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
 			mcpClient, err := client.NewStreamableHttpClient(serverURL)
 			Expect(err).ToNot(HaveOccurred())
@@ -196,7 +196,7 @@ var _ = Describe("VirtualMCPServer Inline Auth with Local Incoming", Ordered, fu
 			}
 			Expect(targetToolName).ToNot(BeEmpty())
 
-			GinkgoWriter.Printf("Calling tool '%s' with local incoming and inline outgoing auth\n", targetToolName)
+			GinkgoWriter.Printf("Calling tool '%s' with anonymous incoming and inline outgoing auth\n", targetToolName)
 
 			callRequest := mcp.CallToolRequest{}
 			callRequest.Params.Name = targetToolName
@@ -209,7 +209,7 @@ var _ = Describe("VirtualMCPServer Inline Auth with Local Incoming", Ordered, fu
 			Expect(result).ToNot(BeNil())
 			Expect(result.Content).ToNot(BeEmpty())
 
-			GinkgoWriter.Printf("Local auth with inline outgoing: tool call succeeded\n")
+			GinkgoWriter.Printf("Anonymous auth with inline outgoing: tool call succeeded\n")
 		})
 	})
 })

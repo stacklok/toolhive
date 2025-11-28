@@ -134,8 +134,7 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 			manager := &manager{}
 
 			configManager := config.NewConfigManagerForTesting(tt.mcpRegistry)
-			deployment, err := manager.buildRegistryAPIDeployment(tt.mcpRegistry, configManager)
-			require.NoError(t, err)
+			deployment := manager.buildRegistryAPIDeployment(tt.mcpRegistry, configManager)
 			tt.validateResult(t, deployment)
 		})
 	}

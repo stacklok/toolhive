@@ -47,25 +47,8 @@ func ConvertConfigToWorkflowDefinitions(
 			return nil, fmt.Errorf("failed to convert steps for composite tool %s: %w", ct.Name, err)
 		}
 
-		// Convert parameters to JSON Schema
-		params := make(map[string]any)
-		if len(ct.Parameters) > 0 {
-			// Build JSON Schema object schema
-			properties := make(map[string]any)
-			for name, param := range ct.Parameters {
-				property := map[string]any{
-					"type": param.Type,
-				}
-				if param.Default != nil {
-					property["default"] = param.Default
-				}
-				properties[name] = property
-			}
-			params = map[string]any{
-				"type":       "object",
-				"properties": properties,
-			}
-		}
+		// Parameters are already in JSON Schema format, pass through directly
+		params := ct.Parameters
 
 		// Convert timeout
 		var timeout time.Duration

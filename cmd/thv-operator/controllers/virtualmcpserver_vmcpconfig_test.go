@@ -101,7 +101,7 @@ func TestConvertOutgoingAuth(t *testing.T) {
 			outgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 				Source: "inline",
 				Default: &mcpv1alpha1.BackendAuthConfig{
-					Type: mcpv1alpha1.BackendAuthTypePassThrough,
+					Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 				},
 			},
 			expectedSource: "inline",
@@ -114,7 +114,7 @@ func TestConvertOutgoingAuth(t *testing.T) {
 				Source: "mixed",
 				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 					"backend-1": {
-						Type: mcpv1alpha1.BackendAuthTypePassThrough,
+						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 					},
 				},
 			},
@@ -165,11 +165,11 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 		hasMetadata  bool
 	}{
 		{
-			name: "pass through",
+			name: "discovered",
 			authConfig: &mcpv1alpha1.BackendAuthConfig{
-				Type: mcpv1alpha1.BackendAuthTypePassThrough,
+				Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 			},
-			expectedType: mcpv1alpha1.BackendAuthTypePassThrough,
+			expectedType: mcpv1alpha1.BackendAuthTypeDiscovered,
 			hasMetadata:  false,
 		},
 		{
@@ -520,7 +520,7 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 					},
 					"backend-alpha": {
-						Type: mcpv1alpha1.BackendAuthTypePassThrough,
+						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 					},
 					"backend-middle": {
 						Type: mcpv1alpha1.BackendAuthTypeDiscovered,

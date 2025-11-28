@@ -30,7 +30,7 @@ func TestNewImmutableRegistry(t *testing.T) {
 					BaseURL:       "http://localhost:8080",
 					TransportType: "streamable-http",
 					HealthStatus:  BackendHealthy,
-					AuthStrategy:  "pass_through",
+					AuthStrategy:  "unauthenticated",
 					AuthMetadata:  map[string]any{"key": "value"},
 					Metadata:      map[string]string{"env": "production"},
 				},

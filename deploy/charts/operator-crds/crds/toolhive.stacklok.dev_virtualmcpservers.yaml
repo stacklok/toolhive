@@ -612,7 +612,7 @@ spec:
                       type: object
                     description: |-
                       Backends defines per-backend authentication overrides
-                      Works in all modes (discovered, inline, mixed)
+                      Works in all modes (discovered, inline)
                     type: object
                   default:
                     description: Default defines default behavior for backends without
@@ -645,11 +645,9 @@ spec:
                       Source defines how backend authentication configurations are determined
                       - discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef
                       - inline: Explicit per-backend configuration in VirtualMCPServer
-                      - mixed: Discover most, override specific backends
                     enum:
                     - discovered
                     - inline
-                    - mixed
                     type: string
                 type: object
               podTemplateSpec:

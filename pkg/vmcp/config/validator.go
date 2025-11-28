@@ -137,7 +137,7 @@ func (v *DefaultValidator) validateOutgoingAuth(auth *OutgoingAuthConfig) error 
 	}
 
 	// Validate source
-	validSources := []string{"inline", "discovered", "mixed"}
+	validSources := []string{"inline", "discovered"}
 	if !contains(validSources, auth.Source) {
 		return fmt.Errorf("outgoing_auth.source must be one of: %s", strings.Join(validSources, ", "))
 	}

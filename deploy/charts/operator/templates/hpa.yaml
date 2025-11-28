@@ -1,4 +1,4 @@
-{{- if and (not .Values.operator.testMode) .Values.operator.autoscaling.enabled }}
+{{- if and (not (default false .Values.operator.testMode)) .Values.operator.autoscaling.enabled }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

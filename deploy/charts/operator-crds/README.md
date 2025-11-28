@@ -107,4 +107,4 @@ This is useful for deployments that don't require Virtual MCP aggregation featur
 |-----|-------------|------|---------|
 | crds.install.registry | bool | `true` | Install registry CRD (MCPRegistry). Users who only need server management without registry features can set this to false to skip installing the registry CRD. |
 | crds.install.server | bool | `true` | Install server-related CRDs (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, and ToolConfig). Users who only need registry or aggregation features can set this to false to skip installing server management CRDs. |
-| crds.install.virtualMCP | bool | `true` | Install Virtual MCP CRDs (VirtualMCPServer and VirtualMCPCompositeToolDefinition). Users who only need core MCP server management can set this to false to skip installing Virtual MCP aggregation features. |
+| crds.install.virtualMCP | bool | `true` | Install Virtual MCP CRDs (VirtualMCPServer, VirtualMCPCompositeToolDefinition and MCPGroup). Users who only need core MCP server management can set this to false to skip installing Virtual MCP aggregation features. |

@@ -1,4 +1,4 @@
-{{- if not .Values.operator.testMode }}
+{{- if not (default false .Values.operator.testMode) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

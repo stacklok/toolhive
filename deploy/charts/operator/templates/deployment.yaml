@@ -58,6 +58,8 @@ spec:
             value: "true"
           - name: ENABLE_EXPERIMENTAL_FEATURES
             value: {{ .Values.operator.features.experimental | quote }}
+          - name: ENABLE_REGISTRY_EXPORT
+            value: {{ .Values.operator.features.registryExport | quote }}
           {{- if eq .Values.operator.rbac.scope "namespace" }}
           - name: WATCH_NAMESPACE
             value: "{{ .Values.operator.rbac.allowedNamespaces | join "," }}"

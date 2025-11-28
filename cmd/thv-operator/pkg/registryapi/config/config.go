@@ -420,7 +420,7 @@ func buildDatabaseConfig(dbConfig *mcpv1alpha1.MCPRegistryDatabaseConfig) *Datab
 		User:            "db_app",
 		MigrationUser:   "db_migrator",
 		Database:        "registry",
-		SSLMode:         "disable",
+		SSLMode:         "prefer",
 		MaxOpenConns:    10,
 		MaxIdleConns:    2,
 		ConnMaxLifetime: "30m",

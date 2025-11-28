@@ -69,7 +69,7 @@ spec:
                     - User: "db_app"
                     - MigrationUser: "db_migrator"
                     - Database: "registry"
-                    - SSLMode: "disable"
+                    - SSLMode: "prefer"
                     - MaxOpenConns: 10
                     - MaxIdleConns: 2
                     - ConnMaxLifetime: "30m"
@@ -115,7 +115,7 @@ spec:
                     minimum: 1
                     type: integer
                   sslMode:
-                    default: disable
+                    default: prefer
                     description: |-
                       SSLMode is the SSL mode for the connection
                       Valid values: disable, allow, prefer, require, verify-ca, verify-full

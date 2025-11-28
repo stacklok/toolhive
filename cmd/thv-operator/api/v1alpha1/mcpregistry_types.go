@@ -62,7 +62,7 @@ type MCPRegistrySpec struct {
 	//   - User: "db_app"
 	//   - MigrationUser: "db_migrator"
 	//   - Database: "registry"
-	//   - SSLMode: "disable"
+	//   - SSLMode: "prefer"
 	//   - MaxOpenConns: 10
 	//   - MaxIdleConns: 2
 	//   - ConnMaxLifetime: "30m"
@@ -237,7 +237,7 @@ type MCPRegistryDatabaseConfig struct {
 	// SSLMode is the SSL mode for the connection
 	// Valid values: disable, allow, prefer, require, verify-ca, verify-full
 	// +kubebuilder:validation:Enum=disable;allow;prefer;require;verify-ca;verify-full
-	// +kubebuilder:default="disable"
+	// +kubebuilder:default="prefer"
 	// +optional
 	SSLMode string `json:"sslMode,omitempty"`
 

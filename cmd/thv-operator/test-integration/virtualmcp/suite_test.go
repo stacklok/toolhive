@@ -61,7 +61,9 @@ var _ = BeforeSuite(func() {
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "..", "..", "deploy", "charts", "operator-crds", "crds")},
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "..", "..", "deploy", "charts", "operator-crds", "crd-files"),
+		},
 		ErrorIfCRDPathMissing: true,
 	}
 
@@ -123,6 +125,14 @@ var _ = BeforeSuite(func() {
 		Scheme:           k8sManager.GetScheme(),
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}).SetupWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
+	// Set up VirtualMCPServer webhook
+	err = (&mcpv1alpha1.VirtualMCPServer{}).SetupWebhookWithManager(k8sManager)
+	Expect(err).ToNot(HaveOccurred())
+
+	// Set up VirtualMCPCompositeToolDefinition webhook
+	err = (&mcpv1alpha1.VirtualMCPCompositeToolDefinition{}).SetupWebhookWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
 	// Start the manager in a goroutine

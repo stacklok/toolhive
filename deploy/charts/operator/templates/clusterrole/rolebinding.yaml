@@ -1,3 +1,5 @@
+{{- if not (default false .Values.operator.testMode) }}
+
 {{- if eq .Values.operator.rbac.scope "cluster" }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -36,3 +38,5 @@ roleRef:
   name: toolhive-operator-manager-role
 {{- end }}
 {{- end }}
+
+{{- end }} 

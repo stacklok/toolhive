@@ -348,6 +348,36 @@ func TestRegisterClientDynamically(t *testing.T) {
 			expectedError:  true,
 		},
 		{
+			name: "DCR not supported - 404 Not Found",
+			request: &DynamicClientRegistrationRequest{
+				ClientName:   "Test Client",
+				RedirectURIs: []string{"http://localhost:8080/callback"},
+			},
+			response:       `{"error": "not_found"}`,
+			responseStatus: http.StatusNotFound,
+			expectedError:  true,
+		},
+		{
+			name: "DCR not supported - 405 Method Not Allowed",
+			request: &DynamicClientRegistrationRequest{
+				ClientName:   "Test Client",
+				RedirectURIs: []string{"http://localhost:8080/callback"},
+			},
+			response:       `{"error": "method_not_allowed"}`,
+			responseStatus: http.StatusMethodNotAllowed,
+			expectedError:  true,
+		},
+		{
+			name: "DCR not supported - 501 Not Implemented",
+			request: &DynamicClientRegistrationRequest{
+				ClientName:   "Test Client",
+				RedirectURIs: []string{"http://localhost:8080/callback"},
+			},
+			response:       `{"error": "not_implemented", "error_description": "Dynamic Client Registration is not supported"}`,
+			responseStatus: http.StatusNotImplemented,
+			expectedError:  true,
+		},
+		{
 			name: "invalid request - no redirect URIs",
 			request: &DynamicClientRegistrationRequest{
 				ClientName: "Test Client",

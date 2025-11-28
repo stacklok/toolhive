@@ -1,12 +1,10 @@
 package virtualmcp
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -209,32 +207,14 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 
 	Context("when tool filtering is configured", func() {
 		It("should only expose filtered tools from backend1", func() {
-			By("Creating MCP client for VirtualMCPServer")
-			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			By("Creating and initializing MCP client for VirtualMCPServer")
+			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-filtering-test", 30*time.Second)
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
-			By("Starting transport and initializing connection")
-			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			err = mcpClient.Start(testCtx)
-			Expect(err).ToNot(HaveOccurred())
-
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-filtering-test",
-				Version: "1.0.0",
-			}
-
-			_, err = mcpClient.Initialize(testCtx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
-
 			By("Listing tools from VirtualMCPServer")
 			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(testCtx, listRequest)
+			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
 			Expect(err).ToNot(HaveOccurred())
 
 			By(fmt.Sprintf("VirtualMCPServer exposes %d tools after filtering", len(tools.Tools)))
@@ -269,32 +249,14 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 		})
 
 		It("should still allow calling filtered tools", func() {
-			By("Creating MCP client for VirtualMCPServer")
-			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			By("Creating and initializing MCP client for VirtualMCPServer")
+			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-filtering-test", 30*time.Second)
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
-			By("Starting transport and initializing connection")
-			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			err = mcpClient.Start(testCtx)
-			Expect(err).ToNot(HaveOccurred())
-
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-filtering-test",
-				Version: "1.0.0",
-			}
-
-			_, err = mcpClient.Initialize(testCtx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
-
 			By("Listing available tools")
 			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(testCtx, listRequest)
+			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
 			Expect(err).ToNot(HaveOccurred())
 
 			// Find the backend1 echo tool
@@ -308,9 +270,6 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 			Expect(targetToolName).ToNot(BeEmpty(), "Should find echo tool from backend1")
 
 			By(fmt.Sprintf("Calling filtered echo tool: %s", targetToolName))
-			toolCallCtx, toolCallCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer toolCallCancel()
-
 			testInput := "filtered123"
 			callRequest := mcp.CallToolRequest{}
 			callRequest.Params.Name = targetToolName
@@ -318,7 +277,7 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 				"input": testInput,
 			}
 
-			result, err := mcpClient.CallTool(toolCallCtx, callRequest)
+			result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
 			Expect(err).ToNot(HaveOccurred(), "Should be able to call filtered tool")
 			Expect(result).ToNot(BeNil())
 			Expect(result.Content).ToNot(BeEmpty(), "Should have content in response")

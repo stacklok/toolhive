@@ -8,6 +8,8 @@ import (
 	"os"
 	"time"
 
+	mcpclient "github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -43,6 +45,62 @@ func WaitForVirtualMCPServerReady(ctx context.Context, c client.Client, name, na
 		}
 		return fmt.Errorf("ready condition not found")
 	}, timeout, 5*time.Second).Should(gomega.Succeed())
+}
+
+// InitializedMCPClient holds an initialized MCP client with its associated context
+type InitializedMCPClient struct {
+	Client *mcpclient.Client
+	Ctx    context.Context
+	Cancel context.CancelFunc
+}
+
+// Close cleans up the MCP client resources
+func (c *InitializedMCPClient) Close() {
+	if c.Cancel != nil {
+		c.Cancel()
+	}
+	if c.Client != nil {
+		_ = c.Client.Close()
+	}
+}
+
+// CreateInitializedMCPClient creates an MCP client, starts the transport, and initializes
+// the connection with the given client name. Returns an InitializedMCPClient that should
+// be closed when done using defer client.Close().
+func CreateInitializedMCPClient(nodePort int32, clientName string, timeout time.Duration) (*InitializedMCPClient, error) {
+	serverURL := fmt.Sprintf("http://localhost:%d/mcp", nodePort)
+	mcpClient, err := mcpclient.NewStreamableHttpClient(serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create MCP client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+
+	if err := mcpClient.Start(ctx); err != nil {
+		cancel()
+		_ = mcpClient.Close()
+		return nil, fmt.Errorf("failed to start MCP client: %w", err)
+	}
+
+	initRequest := mcp.InitializeRequest{}
+	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initRequest.Params.Capabilities = mcp.ClientCapabilities{}
+	initRequest.Params.ClientInfo = mcp.Implementation{
+		Name:    clientName,
+		Version: "1.0.0",
+	}
+
+	if _, err := mcpClient.Initialize(ctx, initRequest); err != nil {
+		cancel()
+		_ = mcpClient.Close()
+		return nil, fmt.Errorf("failed to initialize MCP client: %w", err)
+	}
+
+	return &InitializedMCPClient{
+		Client: mcpClient,
+		Ctx:    ctx,
+		Cancel: cancel,
+	}, nil
 }
 
 // getPodLogs retrieves logs from a specific pod container

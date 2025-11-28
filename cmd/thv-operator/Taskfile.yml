@@ -142,15 +142,20 @@ tasks:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1
       TOOLHIVE_IMAGE:
         sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-proxyrunner | tail -n 1
+      VMCP_IMAGE:
+        sh: KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/vmcp | tail -n 1
     cmds:
       - echo "Loading toolhive operator image {{.OPERATOR_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.OPERATOR_IMAGE}}
       - echo "Loading toolhive image {{.TOOLHIVE_IMAGE}} into kind..."
       - kind load docker-image --name toolhive {{.TOOLHIVE_IMAGE}}
+      - echo "Loading vmcp image {{.VMCP_IMAGE}} into kind..."
+      - kind load docker-image --name toolhive {{.VMCP_IMAGE}}
       - |
         helm upgrade --install toolhive-operator deploy/charts/operator \
         --set operator.image={{.OPERATOR_IMAGE}} \
         --set operator.toolhiveRunnerImage={{.TOOLHIVE_IMAGE}} \
+        --set operator.vmcpImage={{.VMCP_IMAGE}} \
         --set operator.features.experimental={{.ENABLE_EXPERIMENTAL_FEATURES}} \
         --set registryAPI.image={{.REGISTRY_API_IMAGE}} \
         --namespace toolhive-system \

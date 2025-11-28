@@ -7,7 +7,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -33,8 +32,12 @@ type k8sDiscoverer struct {
 func NewK8SDiscoverer(namespace ...string) (Discoverer, error) {
 	// Create a scheme for controller-runtime client
 	scheme := runtime.NewScheme()
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(mcpv1alpha1.AddToScheme(scheme))
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add client-go scheme: %w", err)
+	}
+	if err := mcpv1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add MCP v1alpha1 scheme: %w", err)
+	}
 
 	// Create controller-runtime client
 	k8sClient, err := k8s.NewControllerRuntimeClient(scheme)

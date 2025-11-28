@@ -5,7 +5,6 @@ fullnameOverride: "toolhive-operator"
 
 # -- All values for the operator deployment and associated resources
 operator:
-  enabled: true
   # Feature flags to enable/disable controller groups
   features:
     # -- Enable experimental features
@@ -125,7 +124,6 @@ operator:
     # Only used if scope is set to "namespace".
     allowedNamespaces: []
 
-    create: true
   # -- Service account configuration for the operator
   serviceAccount:
     # -- Specifies whether a service account should be created

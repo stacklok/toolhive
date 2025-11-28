@@ -14,12 +14,12 @@ operator:
   # -- List of image pull secrets to use
   imagePullSecrets: []
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.6.6
+  image: ghcr.io/stacklok/toolhive/operator:v0.6.9
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.6.6
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.6.9
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0
@@ -191,7 +191,7 @@ operator:
 # -- All values for the registry API deployment and associated resources
 registryAPI:
   # -- Container image for the registry API
-  image: "ghcr.io/stacklok/thv-registry-api:v0.2.0"
+  image: "ghcr.io/stacklok/thv-registry-api:v0.3.1"
   # -- Service account configuration for the registry API
   serviceAccount:
     # -- Automatically mount a ServiceAccount's API credentials

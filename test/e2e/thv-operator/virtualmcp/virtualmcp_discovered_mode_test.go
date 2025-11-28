@@ -258,7 +258,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = "2024-11-05"
+			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 			initRequest.Params.ClientInfo = mcp.Implementation{
 				Name:    "toolhive-e2e-test",
 				Version: "1.0.0",
@@ -307,7 +307,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = "2024-11-05"
+			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 			initRequest.Params.ClientInfo = mcp.Implementation{
 				Name:    "toolhive-e2e-test",
 				Version: "1.0.0",

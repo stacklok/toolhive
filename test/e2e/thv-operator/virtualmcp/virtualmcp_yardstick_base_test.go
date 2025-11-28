@@ -231,7 +231,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcpProtocolVersion
+			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 			initRequest.Params.ClientInfo = mcp.Implementation{
 				Name:    "toolhive-yardstick-test",
 				Version: "1.0.0",
@@ -293,7 +293,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			Expect(err).ToNot(HaveOccurred())
 
 			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcpProtocolVersion
+			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 			initRequest.Params.ClientInfo = mcp.Implementation{
 				Name:    "toolhive-yardstick-test",
 				Version: "1.0.0",

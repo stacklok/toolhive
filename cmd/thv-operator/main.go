@@ -199,6 +199,13 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 	if err := (&mcpv1alpha1.VirtualMCPCompositeToolDefinition{}).SetupWebhookWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create webhook VirtualMCPCompositeToolDefinition: %w", err)
 	}
+
+	// Set up RegistryExport controller if enabled
+	if controllers.IsRegistryExportEnabled() {
+		if err := controllers.NewRegistryExportReconciler(mgr.GetClient()).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("unable to create controller RegistryExport: %w", err)
+		}
+	}
 	//+kubebuilder:scaffold:builder
 
 	return nil

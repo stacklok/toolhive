@@ -77,6 +77,9 @@ func (c *Converter) Convert(
 		config.Operational = c.convertOperational(ctx, vmcp)
 	}
 
+	// Apply operational defaults (fills missing values)
+	config.EnsureOperationalDefaults()
+
 	return config, nil
 }
 

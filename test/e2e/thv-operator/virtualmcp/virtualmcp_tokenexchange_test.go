@@ -1,12 +1,9 @@
 package virtualmcp
 
 import (
-	"context"
 	"fmt"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -28,13 +25,8 @@ var _ = Describe("VirtualMCPServer Token Exchange Auth", Ordered, func() {
 		instrumentedBackend = "instrumented-backend-tokenexchange"
 		timeout             = 5 * time.Minute
 		pollingInterval     = 5 * time.Second
-		vmcpNodePort        int32
 		mockOIDCIssuerURL   string
 	)
-
-	vmcpServiceName := func() string {
-		return fmt.Sprintf("vmcp-%s", vmcpServerName)
-	}
 
 	BeforeAll(func() {
 		By("Deploying mock OIDC server for token exchange")
@@ -161,23 +153,6 @@ var _ = Describe("VirtualMCPServer Token Exchange Auth", Ordered, func() {
 		By("Waiting for VirtualMCPServer to be ready")
 		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
 
-		By("Getting NodePort for VirtualMCPServer")
-		Eventually(func() error {
-			service := &corev1.Service{}
-			serviceName := vmcpServiceName()
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      serviceName,
-				Namespace: testNamespace,
-			}, service)
-			if err != nil {
-				return err
-			}
-			if len(service.Spec.Ports) == 0 || service.Spec.Ports[0].NodePort == 0 {
-				return fmt.Errorf("nodePort not assigned for vmcp")
-			}
-			vmcpNodePort = service.Spec.Ports[0].NodePort
-			return nil
-		}, timeout, pollingInterval).Should(Succeed())
 	})
 
 	AfterAll(func() {
@@ -264,69 +239,6 @@ var _ = Describe("VirtualMCPServer Token Exchange Auth", Ordered, func() {
 			Expect(hasReadyCondition).To(BeTrue(), "VirtualMCPServer should have Ready condition")
 
 			GinkgoWriter.Printf("VirtualMCPServer is ready with discovered token exchange auth\n")
-		})
-
-		It("should exchange tokens and inject Bearer token in backend requests", func() {
-			// TODO: This test requires full discovered mode auth integration to be implemented.
-			// The ResolveSecrets implementation for token exchange is complete and tested,
-			// but it needs to be integrated into the backend discovery flow in pkg/vmcp/workloads/k8s.go
-			// to fetch and resolve MCPExternalAuthConfig CRDs when backends are discovered.
-			// See: pkg/vmcp/auth/converters/token_exchange.go for the working implementation.
-			Skip("Discovered mode auth integration pending - ResolveSecrets implemented but not yet integrated into discovery flow")
-
-			By("Making a request through vMCP to trigger token exchange")
-			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
-			Expect(err).ToNot(HaveOccurred())
-			defer mcpClient.Close()
-
-			testCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-
-			err = mcpClient.Start(testCtx)
-			Expect(err).ToNot(HaveOccurred())
-
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-e2e-test",
-				Version: "1.0.0",
-			}
-			_, err = mcpClient.Initialize(testCtx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
-
-			// List tools to trigger backend request with token exchange
-			listRequest := mcp.ListToolsRequest{}
-			_, err = mcpClient.ListTools(testCtx, listRequest)
-			Expect(err).ToNot(HaveOccurred())
-
-			By("Checking mock OIDC server received token exchange request")
-			Eventually(func() bool {
-				stats, err := GetMockOIDCStats(ctx, k8sClient, testNamespace, mockOIDCServerName)
-				if err != nil {
-					GinkgoWriter.Printf("Failed to get OIDC stats: %v\n", err)
-					return false
-				}
-				GinkgoWriter.Printf("Mock OIDC stats: %+v\n", stats)
-				// Check if token_requests is present and > 0
-				count, ok := stats["token_requests"]
-				return ok && count > 0
-			}, 2*time.Minute, 10*time.Second).Should(BeTrue(),
-				"OIDC server should receive token exchange requests")
-
-			By("Checking instrumented backend received Bearer token")
-			Eventually(func() bool {
-				stats, err := GetInstrumentedBackendStats(ctx, k8sClient, testNamespace, instrumentedBackend)
-				if err != nil {
-					GinkgoWriter.Printf("Failed to get backend stats: %v\n", err)
-					return false
-				}
-				GinkgoWriter.Printf("Instrumented backend stats: %+v\n", stats)
-				// Check if bearer_token_requests is present and > 0
-				count, ok := stats["bearer_token_requests"]
-				return ok && count > 0
-			}, 2*time.Minute, 10*time.Second).Should(BeTrue(),
-				"Backend should receive Bearer token in requests")
 		})
 	})
 })

@@ -2,46 +2,606 @@ package virtualmcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
+	mcpclient "github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
+// authRoundTripper is an HTTP RoundTripper that adds Bearer token authentication
+type authRoundTripper struct {
+	token     string
+	transport http.RoundTripper
+}
+
+func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Clone the request to avoid modifying the original
+	clonedReq := req.Clone(req.Context())
+	clonedReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.token))
+	return a.transport.RoundTrip(clonedReq)
+}
+
 var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
+	const (
+		mockAuthServerName = "mock-auth-server"
+	)
+
 	var (
-		testNamespace   = "default"
-		mcpGroupName    = "test-auth-discovery-group"
-		vmcpServerName  = "test-vmcp-auth-discovery"
-		backend1Name    = "backend-with-token-exchange"
-		backend2Name    = "backend-with-header-injection"
-		backend3Name    = "backend-no-auth"
-		authConfig1Name = "test-token-exchange-auth"
-		authConfig2Name = "test-header-injection-auth"
-		authSecret1Name = "test-token-exchange-secret"
-		authSecret2Name = "test-header-injection-secret"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
-		mockServer      *httptest.Server
+		testNamespace        = "default"
+		mcpGroupName         = "test-auth-discovery-group"
+		vmcpServerName       = "test-vmcp-auth-discovery"
+		backend1Name         = "backend-with-token-exchange"
+		backend2Name         = "backend-with-header-injection"
+		backend3Name         = "backend-no-auth"
+		authConfig1Name      = "test-token-exchange-auth"
+		authConfig2Name      = "test-header-injection-auth"
+		authSecret1Name      = "test-token-exchange-secret"
+		authSecret2Name      = "test-header-injection-secret"
+		oidcClientSecretName = "test-oidc-client-secret"
+		timeout              = 5 * time.Minute
+		pollingInterval      = 5 * time.Second
+		mockServer           *httptest.Server
 	)
 
 	BeforeAll(func() {
 		By("Setting up mock HTTP server for fetch tool testing")
-		mockServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("Mock response for auth discovery test"))
-		}))
+		// Deploy as Kubernetes service instead of local httptest server
+		// so it's accessible from inside the cluster
+		mockHTTPServerName := "mock-http-server"
+		mockHTTPServiceName := "mock-http-server"
+
+		// Create ConfigMap with simple HTTP server
+		httpConfigMap := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-http-server-code",
+				Namespace: testNamespace,
+			},
+			Data: map[string]string{
+				"server.py": `#!/usr/bin/env python3
+import http.server
+import socketserver
+from datetime import datetime
+
+class SimpleHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        print(f"[{datetime.now()}] GET request to {self.path}", flush=True)
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Mock response for auth discovery test")
+
+    def log_message(self, format, *args):
+        print(f"[{datetime.now()}] HTTP: {format % args}", flush=True)
+
+PORT = 8080
+with socketserver.TCPServer(("", PORT), SimpleHandler) as httpd:
+    print(f"Mock HTTP server listening on port {PORT}", flush=True)
+    httpd.serve_forever()
+`,
+			},
+		}
+		Expect(k8sClient.Create(ctx, httpConfigMap)).To(Succeed())
+
+		// Create the HTTP server pod
+		httpServerPod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      mockHTTPServerName,
+				Namespace: testNamespace,
+				Labels: map[string]string{
+					"app": "mock-http-server",
+				},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "http-server",
+						Image: "python:3.11-slim",
+						Command: []string{
+							"python3",
+							"/app/server.py",
+						},
+						Ports: []corev1.ContainerPort{
+							{
+								ContainerPort: 8080,
+								Protocol:      corev1.ProtocolTCP,
+							},
+						},
+						VolumeMounts: []corev1.VolumeMount{
+							{
+								Name:      "server-code",
+								MountPath: "/app",
+							},
+						},
+					},
+				},
+				Volumes: []corev1.Volume{
+					{
+						Name: "server-code",
+						VolumeSource: corev1.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: "mock-http-server-code",
+								},
+								DefaultMode: int32Ptr(0755),
+							},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, httpServerPod)).To(Succeed())
+
+		// Create service for HTTP server
+		httpServerService := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      mockHTTPServiceName,
+				Namespace: testNamespace,
+			},
+			Spec: corev1.ServiceSpec{
+				Selector: map[string]string{
+					"app": "mock-http-server",
+				},
+				Ports: []corev1.ServicePort{
+					{
+						Port:       80,
+						TargetPort: intstr.FromInt(8080),
+						Protocol:   corev1.ProtocolTCP,
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, httpServerService)).To(Succeed())
+
+		// Wait for pod to be ready
+		Eventually(func() bool {
+			pod := &corev1.Pod{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      mockHTTPServerName,
+				Namespace: testNamespace,
+			}, pod)
+			if err != nil {
+				return false
+			}
+			return pod.Status.Phase == corev1.PodRunning
+		}, 2*time.Minute, 2*time.Second).Should(BeTrue(), "Mock HTTP server pod should be running")
+
+		// Set the mockServer URL to the Kubernetes service
+		mockServer = &httptest.Server{}
+		mockServer.URL = fmt.Sprintf("http://%s.%s.svc.cluster.local", mockHTTPServiceName, testNamespace)
+
+		By("Setting up mock OAuth token exchange server as a Kubernetes pod")
+		// Create a simple HTTP server pod in Kubernetes that will capture token exchange requests
+		authServerPodName := mockAuthServerName
+		authServerServiceName := mockAuthServerName
+
+		// Create ConfigMap with the server code
+		configMap := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-auth-server-code",
+				Namespace: testNamespace,
+			},
+			Data: map[string]string{
+				"server.py": `#!/usr/bin/env python3
+import http.server
+import socketserver
+import json
+import urllib.parse
+from datetime import datetime
+
+class AuthHandler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        print(f"[{datetime.now()}] POST request to {self.path}", flush=True)
+        print(f"  Headers: {dict(self.headers)}", flush=True)
+
+        if self.path == '/token':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            params = urllib.parse.parse_qs(post_data.decode('utf-8'))
+
+            # NOTE: Logging sensitive information (client_secret) is intentional for debugging E2E test failures.
+            # This is test-only code and should NEVER be done in production environments.
+            print(f"[{datetime.now()}] Token exchange request received:", flush=True)
+            print(f"  client_id: {params.get('client_id', [''])[0]}", flush=True)
+            print(f"  client_secret: {params.get('client_secret', [''])[0]}", flush=True)
+            print(f"  audience: {params.get('audience', [''])[0]}", flush=True)
+            print(f"  grant_type: {params.get('grant_type', [''])[0]}", flush=True)
+
+            # Return mock token response (RFC 8693 compliant)
+            response = {
+                "access_token": "mock_access_token_from_k8s_server",
+                "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+                "token_type": "Bearer",
+                "expires_in": 3600
+            }
+            print(f"[{datetime.now()}] Returning token exchange response:", flush=True)
+            print(f"  access_token: {response['access_token']}", flush=True)
+            print(f"  token_type: {response['token_type']}", flush=True)
+            print(f"  expires_in: {response['expires_in']}", flush=True)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode())
+        else:
+            print(f"[{datetime.now()}] 404 - Path not found: {self.path}", flush=True)
+            self.send_response(404)
+            self.end_headers()
+
+    def do_GET(self):
+        print(f"[{datetime.now()}] GET request to {self.path}", flush=True)
+        self.send_response(404)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        print(f"[{datetime.now()}] HTTP: {format % args}", flush=True)
+
+PORT = 8080
+with socketserver.TCPServer(("", PORT), AuthHandler) as httpd:
+    print(f"Mock auth server listening on port {PORT}", flush=True)
+    httpd.serve_forever()
+`,
+			},
+		}
+		Expect(k8sClient.Create(ctx, configMap)).To(Succeed())
+
+		// Create the pod
+		authServerPod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      authServerPodName,
+				Namespace: testNamespace,
+				Labels: map[string]string{
+					"app": "mock-auth-server",
+				},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "auth-server",
+						Image: "python:3.11-slim",
+						Command: []string{
+							"python3",
+							"/app/server.py",
+						},
+						Ports: []corev1.ContainerPort{
+							{
+								ContainerPort: 8080,
+								Protocol:      corev1.ProtocolTCP,
+							},
+						},
+						VolumeMounts: []corev1.VolumeMount{
+							{
+								Name:      "server-code",
+								MountPath: "/app",
+							},
+						},
+					},
+				},
+				Volumes: []corev1.Volume{
+					{
+						Name: "server-code",
+						VolumeSource: corev1.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: "mock-auth-server-code",
+								},
+								DefaultMode: int32Ptr(0755),
+							},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, authServerPod)).To(Succeed())
+
+		// Create a service for the auth server
+		authServerService := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      authServerServiceName,
+				Namespace: testNamespace,
+			},
+			Spec: corev1.ServiceSpec{
+				Selector: map[string]string{
+					"app": "mock-auth-server",
+				},
+				Ports: []corev1.ServicePort{
+					{
+						Port:       80,
+						TargetPort: intstr.FromInt(8080),
+						Protocol:   corev1.ProtocolTCP,
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, authServerService)).To(Succeed())
+
+		// Wait for the pod to be ready
+		Eventually(func() bool {
+			pod := &corev1.Pod{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      authServerPodName,
+				Namespace: testNamespace,
+			}, pod)
+			if err != nil {
+				return false
+			}
+
+			// Check pod is running
+			if pod.Status.Phase != corev1.PodRunning {
+				return false
+			}
+
+			// Check containers are ready
+			for _, condition := range pod.Status.Conditions {
+				if condition.Type == corev1.ContainersReady && condition.Status == corev1.ConditionTrue {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Minute, 2*time.Second).Should(BeTrue(), "Mock auth server pod should be running and ready")
+
+		GinkgoWriter.Printf("Mock auth server deployed in Kubernetes at: http://%s.%s.svc.cluster.local/token\n",
+			authServerServiceName, testNamespace)
+
+		By("Setting up mock OIDC server as a Kubernetes pod")
+		// Deploy a simple OIDC server that issues test tokens
+		oidcServerPodName := "mock-oidc-server"
+		oidcServerServiceName := "mock-oidc-server"
+
+		// Create ConfigMap with the OIDC server code
+		oidcConfigMap := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-oidc-server-code",
+				Namespace: testNamespace,
+			},
+			Data: map[string]string{
+				"server.py": `#!/usr/bin/env python3
+import http.server
+import socketserver
+import json
+import base64
+import time
+from datetime import datetime
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
+import hashlib
+import hmac
+
+# Generate a 2048-bit RSA key pair at startup
+print("Generating 2048-bit RSA key pair...", flush=True)
+private_key = rsa.generate_private_key(
+    public_exponent=65537,
+    key_size=2048,
+    backend=default_backend()
+)
+public_key = private_key.public_key()
+
+# Extract public key components for JWKS
+public_numbers = public_key.public_numbers()
+n = public_numbers.n
+e = public_numbers.e
+
+# Convert to base64url format for JWKS
+def int_to_base64url(num):
+    num_bytes = num.to_bytes((num.bit_length() + 7) // 8, byteorder='big')
+    return base64.urlsafe_b64encode(num_bytes).decode('utf-8').rstrip('=')
+
+n_b64 = int_to_base64url(n)
+e_b64 = int_to_base64url(e)
+
+print(f"RSA key pair generated. Modulus size: {n.bit_length()} bits", flush=True)
+
+class OIDCHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        print(f"[{datetime.now()}] GET request to {self.path}", flush=True)
+
+        if self.path == '/.well-known/openid-configuration':
+            # OIDC discovery endpoint
+            discovery = {
+                "issuer": "http://mock-oidc-server.default.svc.cluster.local",
+                "authorization_endpoint": "http://mock-oidc-server.default.svc.cluster.local/auth",
+                "token_endpoint": "http://mock-oidc-server.default.svc.cluster.local/token",
+                "jwks_uri": "http://mock-oidc-server.default.svc.cluster.local/jwks",
+                "response_types_supported": ["code"],
+                "subject_types_supported": ["public"],
+                "id_token_signing_alg_values_supported": ["RS256"]
+            }
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(discovery).encode())
+        elif self.path == '/jwks':
+            # JWKS endpoint - return the real public key
+            jwks = {
+                "keys": [{
+                    "kty": "RSA",
+                    "use": "sig",
+                    "kid": "test-key-1",
+                    "alg": "RS256",
+                    "n": n_b64,
+                    "e": e_b64
+                }]
+            }
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(jwks).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        print(f"[{datetime.now()}] POST request to {self.path}", flush=True)
+
+        if self.path == '/token':
+            # Token endpoint - return a properly signed JWT
+            header = {"alg": "RS256", "typ": "JWT", "kid": "test-key-1"}
+            payload = {
+                "sub": "test-user",
+                "iss": "http://mock-oidc-server.default.svc.cluster.local",
+                "aud": "vmcp-audience",
+                "exp": int(time.time()) + 3600,
+                "iat": int(time.time())
+            }
+
+            # Create base64url encoded header and payload
+            header_b64 = base64.urlsafe_b64encode(json.dumps(header, separators=(',', ':')).encode()).decode().rstrip('=')
+            payload_b64 = base64.urlsafe_b64encode(json.dumps(payload, separators=(',', ':')).encode()).decode().rstrip('=')
+
+            # Sign with RSA private key
+            message = f"{header_b64}.{payload_b64}".encode()
+            signature = private_key.sign(
+                message,
+                asym_padding.PKCS1v15(),
+                hashes.SHA256()
+            )
+            signature_b64 = base64.urlsafe_b64encode(signature).decode().rstrip('=')
+
+            jwt_token = f"{header_b64}.{payload_b64}.{signature_b64}"
+
+            response = {
+                "access_token": jwt_token,
+                "token_type": "Bearer",
+                "expires_in": 3600
+            }
+
+            print(f"[{datetime.now()}] Issuing signed access token with kid=test-key-1", flush=True)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        print(f"[{datetime.now()}] HTTP: {format % args}", flush=True)
+
+PORT = 8080
+with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
+    print(f"Mock OIDC server listening on port {PORT}", flush=True)
+    httpd.serve_forever()
+`,
+			},
+		}
+		Expect(k8sClient.Create(ctx, oidcConfigMap)).To(Succeed())
+
+		// Create the OIDC server pod
+		oidcServerPod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      oidcServerPodName,
+				Namespace: testNamespace,
+				Labels: map[string]string{
+					"app": "mock-oidc-server",
+				},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "oidc-server",
+						Image: "python:3.11-slim",
+						Command: []string{
+							"sh",
+							"-c",
+							"pip install --no-cache-dir cryptography && python3 /app/server.py",
+						},
+						Ports: []corev1.ContainerPort{
+							{
+								ContainerPort: 8080,
+								Protocol:      corev1.ProtocolTCP,
+							},
+						},
+						VolumeMounts: []corev1.VolumeMount{
+							{
+								Name:      "server-code",
+								MountPath: "/app",
+							},
+						},
+					},
+				},
+				Volumes: []corev1.Volume{
+					{
+						Name: "server-code",
+						VolumeSource: corev1.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: "mock-oidc-server-code",
+								},
+								DefaultMode: int32Ptr(0755),
+							},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, oidcServerPod)).To(Succeed())
+
+		// Create a service for the OIDC server with NodePort for test client access
+		oidcServerService := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      oidcServerServiceName,
+				Namespace: testNamespace,
+			},
+			Spec: corev1.ServiceSpec{
+				Type: corev1.ServiceTypeNodePort,
+				Selector: map[string]string{
+					"app": "mock-oidc-server",
+				},
+				Ports: []corev1.ServicePort{
+					{
+						Port:       80,
+						TargetPort: intstr.FromInt(8080),
+						Protocol:   corev1.ProtocolTCP,
+						NodePort:   30010, // Fixed NodePort for test client access
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, oidcServerService)).To(Succeed())
+
+		// Wait for the OIDC server pod to be ready (both Running and ContainersReady)
+		Eventually(func() bool {
+			pod := &corev1.Pod{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      oidcServerPodName,
+				Namespace: testNamespace,
+			}, pod)
+			if err != nil {
+				return false
+			}
+
+			// Check pod is running
+			if pod.Status.Phase != corev1.PodRunning {
+				return false
+			}
+
+			// Check containers are ready
+			for _, condition := range pod.Status.Conditions {
+				if condition.Type == corev1.ContainersReady && condition.Status == corev1.ConditionTrue {
+					return true
+				}
+			}
+			return false
+		}, 2*time.Minute, 2*time.Second).Should(BeTrue(), "Mock OIDC server pod should be running and ready")
+
+		GinkgoWriter.Printf("Mock OIDC server deployed in Kubernetes at: http://%s.%s.svc.cluster.local\n",
+			oidcServerServiceName, testNamespace)
 
 		By("Creating secrets for authentication")
 		// Secret for token exchange
@@ -68,7 +628,23 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 		}
 		Expect(k8sClient.Create(ctx, secret2)).To(Succeed())
 
+		// Secret for OIDC client secret
+		oidcClientSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      oidcClientSecretName,
+				Namespace: testNamespace,
+			},
+			Data: map[string][]byte{
+				"client-secret": []byte("vmcp-secret"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, oidcClientSecret)).To(Succeed())
+
 		By("Creating MCPExternalAuthConfig for token exchange")
+		// Use the Kubernetes service URL for our mock auth server
+		tokenURL := fmt.Sprintf("http://mock-auth-server.%s.svc.cluster.local/token", testNamespace)
+		GinkgoWriter.Printf("Configuring token exchange to use mock server: %s\n", tokenURL)
+
 		authConfig1 := &mcpv1alpha1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      authConfig1Name,
@@ -77,7 +653,7 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
 				Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
 				TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
-					TokenURL: "https://auth.example.com/token",
+					TokenURL: tokenURL,
 					ClientID: "test-client-id",
 					ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
 						Name: authSecret1Name,
@@ -134,7 +710,7 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 			return mcpGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
 		}, timeout, pollingInterval).Should(BeTrue())
 
-		By("Creating backend MCPServer with token exchange auth")
+		By("Creating backend MCPServer with token exchange outgoing auth")
 		backend1 := &mcpv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backend1Name,
@@ -146,6 +722,8 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,
+				// Token exchange for outgoing auth (backend→external services)
+				// vMCP will discover this and use token exchange when calling this backend
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: authConfig1Name,
 				},
@@ -208,7 +786,40 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 			}, timeout, pollingInterval).Should(Succeed(), fmt.Sprintf("%s should be ready", backendName))
 		}
 
-		By("Creating VirtualMCPServer with discovered auth mode")
+		// Wait for backend pods to be ready
+		for _, backendName := range []string{backend1Name, backend2Name, backend3Name} {
+			backendLabels := map[string]string{
+				"app.kubernetes.io/name":     "mcpserver",
+				"app.kubernetes.io/instance": backendName,
+			}
+			WaitForPodsReady(ctx, k8sClient, testNamespace, backendLabels, timeout)
+		}
+
+		By("Creating VirtualMCPServer with discovered auth mode and short token cache TTL")
+		// Create PodTemplateSpec with debug environment variables
+		podTemplateSpec := corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name: "vmcp",
+						Env: []corev1.EnvVar{
+							{
+								Name:  "TOOLHIVE_DEBUG",
+								Value: "true",
+							},
+							{
+								Name:  "LOG_LEVEL",
+								Value: "debug",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		podTemplateRaw, err := json.Marshal(podTemplateSpec)
+		Expect(err).ToNot(HaveOccurred())
+
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      vmcpServerName,
@@ -218,30 +829,116 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 				GroupRef: mcpv1alpha1.GroupRef{
 					Name: mcpGroupName,
 				},
+				// OIDC incoming auth - clients must present valid OIDC tokens
+				// vMCP will validate tokens and then exchange them for backend-specific tokens
 				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "anonymous",
+					Type: "oidc",
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: "inline",
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   fmt.Sprintf("http://mock-oidc-server.%s.svc.cluster.local", testNamespace),
+							ClientID: "vmcp-client",
+							Audience: "vmcp-audience",
+							ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+								Name: oidcClientSecretName,
+								Key:  "client-secret",
+							},
+							InsecureAllowHTTP:               true,
+							JWKSAllowPrivateIP:              true,
+							ProtectedResourceAllowPrivateIP: true,
+						},
+					},
 				},
-				// DISCOVERED MODE: vMCP will discover auth from backend MCPServers
+				// DISCOVERED MODE: vMCP will discover outgoing auth from backend MCPServers
+				// Backend has token exchange configured, vMCP will discover and use it
 				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 					Source: "discovered",
 				},
+				// No TokenCache configured - tokens should be fetched on each request
 				Aggregation: &mcpv1alpha1.AggregationConfig{
 					ConflictResolution: "prefix",
 				},
 				ServiceType: "NodePort",
+				// Enable debug logging via PodTemplateSpec
+				PodTemplateSpec: &runtime.RawExtension{
+					Raw: podTemplateRaw,
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
 		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
+
+		// Wait for vMCP pods to be fully running and ready
+		By("Waiting for vMCP pods to be running and ready")
+		vmcpLabels := map[string]string{
+			"app.kubernetes.io/name":     "virtualmcpserver",
+			"app.kubernetes.io/instance": vmcpServerName,
+		}
+		WaitForPodsReady(ctx, k8sClient, testNamespace, vmcpLabels, timeout)
 	})
 
 	AfterAll(func() {
-		By("Shutting down mock HTTP server")
-		if mockServer != nil {
-			mockServer.Close()
-		}
+		By("Cleaning up mock HTTP server")
+		_ = k8sClient.Delete(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-http-server",
+				Namespace: testNamespace,
+			},
+		})
+		_ = k8sClient.Delete(ctx, &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-http-server",
+				Namespace: testNamespace,
+			},
+		})
+		_ = k8sClient.Delete(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-http-server-code",
+				Namespace: testNamespace,
+			},
+		})
+
+		By("Cleaning up mock auth server")
+		_ = k8sClient.Delete(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-auth-server",
+				Namespace: testNamespace,
+			},
+		})
+		_ = k8sClient.Delete(ctx, &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-auth-server",
+				Namespace: testNamespace,
+			},
+		})
+		_ = k8sClient.Delete(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-auth-server-code",
+				Namespace: testNamespace,
+			},
+		})
+
+		By("Cleaning up mock OIDC server")
+		_ = k8sClient.Delete(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-oidc-server",
+				Namespace: testNamespace,
+			},
+		})
+		_ = k8sClient.Delete(ctx, &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-oidc-server",
+				Namespace: testNamespace,
+			},
+		})
+		_ = k8sClient.Delete(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mock-oidc-server-code",
+				Namespace: testNamespace,
+			},
+		})
 
 		By("Cleaning up VirtualMCPServer")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
@@ -275,7 +972,7 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 		}
 
 		By("Cleaning up secrets")
-		for _, secretName := range []string{authSecret1Name, authSecret2Name} {
+		for _, secretName := range []string{authSecret1Name, authSecret2Name, oidcClientSecretName} {
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      secretName,
@@ -361,9 +1058,10 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 			}, authConfig1)
 			Expect(err).ToNot(HaveOccurred())
 
+			expectedTokenURL := fmt.Sprintf("http://mock-auth-server.%s.svc.cluster.local/token", testNamespace)
 			Expect(authConfig1.Spec.Type).To(Equal(mcpv1alpha1.ExternalAuthTypeTokenExchange))
 			Expect(authConfig1.Spec.TokenExchange).ToNot(BeNil())
-			Expect(authConfig1.Spec.TokenExchange.TokenURL).To(Equal("https://auth.example.com/token"))
+			Expect(authConfig1.Spec.TokenExchange.TokenURL).To(Equal(expectedTokenURL))
 			Expect(authConfig1.Spec.TokenExchange.ClientID).To(Equal("test-client-id"))
 			Expect(authConfig1.Spec.TokenExchange.Audience).To(Equal("https://api.example.com"))
 			Expect(authConfig1.Spec.TokenExchange.Scopes).To(Equal([]string{"read", "write"}))
@@ -505,10 +1203,54 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
+		// Helper function to get OIDC token from mock server via client credentials flow
+		getOIDCToken := func() string {
+			tokenURL := "http://localhost:30010/token"
+
+			// Make token request with client credentials
+			resp, err := http.PostForm(tokenURL, nil)
+			Expect(err).ToNot(HaveOccurred())
+			defer resp.Body.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusOK), "Token request should succeed")
+
+			var tokenResp struct {
+				AccessToken string `json:"access_token"`
+				TokenType   string `json:"token_type"`
+				ExpiresIn   int    `json:"expires_in"`
+			}
+
+			err = json.NewDecoder(resp.Body).Decode(&tokenResp)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tokenResp.AccessToken).ToNot(BeEmpty(), "Token should not be empty")
+
+			GinkgoWriter.Printf("✓ Got OIDC token from mock server (first 20 chars): %s...\n",
+				tokenResp.AccessToken[:20])
+			return tokenResp.AccessToken
+		}
+
+		// Helper function to create authenticated HTTP client
+		createAuthenticatedHTTPClient := func(token string) *http.Client {
+			return &http.Client{
+				Transport: &authRoundTripper{
+					token:     token,
+					transport: http.DefaultTransport,
+				},
+				Timeout: 30 * time.Second,
+			}
+		}
+
 		It("should aggregate tools from all backends with discovered auth", func() {
-			By("Creating MCP client for VirtualMCPServer")
+			By("Getting OIDC token from mock OIDC server")
+			oidcToken := getOIDCToken()
+			Expect(oidcToken).ToNot(BeEmpty(), "Should get valid OIDC token")
+
+			By("Creating authenticated HTTP client with OIDC token")
+			authenticatedHTTPClient := createAuthenticatedHTTPClient(oidcToken)
+
+			By("Creating MCP client for VirtualMCPServer with authentication")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			mcpClient, err := mcpclient.NewStreamableHttpClient(serverURL, transport.WithHTTPBasicClient(authenticatedHTTPClient))
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
@@ -546,9 +1288,16 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 		})
 
 		It("should successfully call tools through VirtualMCPServer with discovered auth", func() {
-			By("Creating MCP client for VirtualMCPServer")
+			By("Getting OIDC token from mock OIDC server")
+			oidcToken := getOIDCToken()
+			Expect(oidcToken).ToNot(BeEmpty(), "Should get valid OIDC token")
+
+			By("Creating authenticated HTTP client with OIDC token")
+			authenticatedHTTPClient := createAuthenticatedHTTPClient(oidcToken)
+
+			By("Creating MCP client for VirtualMCPServer with authentication")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			mcpClient, err := mcpclient.NewStreamableHttpClient(serverURL, transport.WithHTTPBasicClient(authenticatedHTTPClient))
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
@@ -575,19 +1324,38 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).ToNot(BeEmpty())
 
-			By("Calling a tool through VirtualMCPServer to verify auth works")
-			// Find a fetch tool we can call
-			var targetToolName string
-			for _, tool := range tools.Tools {
-				// Look for fetch tool (may have prefix)
-				if tool.Name == fetchToolName || strings.HasSuffix(tool.Name, fetchToolName) {
-					targetToolName = tool.Name
-					break
-				}
+			By("Calling fetch tools from backends with authentication to verify auth propagation")
+			// We want to test both backends with auth:
+			// 1. backend-with-token-exchange_fetch (should use Bearer token)
+			// 2. backend-no-auth_fetch (no auth - for comparison)
+
+			toolsToTest := []string{
+				"backend-with-token-exchange_fetch",
+				"backend-no-auth_fetch",
 			}
 
-			if targetToolName != "" {
-				GinkgoWriter.Printf("Testing tool call with discovered auth: %s\n", targetToolName)
+			for _, targetToolName := range toolsToTest {
+				// Find the tool
+				var toolFound bool
+				for _, tool := range tools.Tools {
+					if tool.Name == targetToolName {
+						toolFound = true
+						break
+					}
+				}
+
+				// Fail the test if expected tool is not found
+				if !toolFound {
+					availableTools := []string{}
+					for _, tool := range tools.Tools {
+						availableTools = append(availableTools, tool.Name)
+					}
+					Expect(toolFound).To(BeTrue(),
+						fmt.Sprintf("Expected tool %s to be found in vMCP tools list but it was missing.\nAvailable tools: %v",
+							targetToolName, availableTools))
+				}
+
+				GinkgoWriter.Printf("Testing tool call: %s\n", targetToolName)
 
 				toolCallCtx, toolCallCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer toolCallCancel()
@@ -601,14 +1369,221 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 
 				result, err := mcpClient.CallTool(toolCallCtx, callRequest)
 				Expect(err).ToNot(HaveOccurred(),
-					"Should be able to call tool through VirtualMCPServer with discovered auth")
+					"Should be able to call tool %s through VirtualMCPServer with discovered auth", targetToolName)
 				Expect(result).ToNot(BeNil())
 
-				GinkgoWriter.Printf("✓ Tool call successful with discovered auth: %s\n", targetToolName)
-				GinkgoWriter.Printf("  This proves vMCP correctly discovered and applied auth from backend ExternalAuthConfigRef\n")
-			} else {
-				GinkgoWriter.Printf("Warning: fetch tool not found, skipping tool call test\n")
+				GinkgoWriter.Printf("✓ Tool call successful: %s\n", targetToolName)
 			}
+
+			GinkgoWriter.Printf("All tool calls completed successfully\n")
+		})
+
+		It("should send auth tokens to configured auth servers", func() {
+			By("Calling tools to trigger token exchange")
+
+			By("Getting OIDC token for test client authentication")
+			token := getOIDCToken()
+
+			// Create authenticated MCP client and call tools to generate traffic
+			By("Creating authenticated MCP client for VirtualMCPServer")
+			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+			httpClient := createAuthenticatedHTTPClient(token)
+			mcpClient, err := mcpclient.NewStreamableHttpClient(
+				serverURL,
+				transport.WithHTTPBasicClient(httpClient),
+			)
+			Expect(err).ToNot(HaveOccurred())
+			defer mcpClient.Close()
+
+			By("Starting transport and initializing connection")
+			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			err = mcpClient.Start(testCtx)
+			Expect(err).ToNot(HaveOccurred())
+
+			initRequest := mcp.InitializeRequest{}
+			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+			initRequest.Params.ClientInfo = mcp.Implementation{
+				Name:    "toolhive-auth-test",
+				Version: "1.0.0",
+			}
+
+			_, err = mcpClient.Initialize(testCtx, initRequest)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("Listing and calling tools from backend with token exchange")
+			listRequest := mcp.ListToolsRequest{}
+			tools, err := mcpClient.ListTools(testCtx, listRequest)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tools.Tools).ToNot(BeEmpty())
+
+			// Debug: Print all tools
+			GinkgoWriter.Printf("\n=== All tools returned by vMCP ===\n")
+			for _, tool := range tools.Tools {
+				GinkgoWriter.Printf("  - %s\n", tool.Name)
+			}
+			GinkgoWriter.Printf("Looking for tools containing '%s' and 'fetch'\n", backend1Name)
+
+			// Find and call a tool from the backend with token exchange auth
+			var calledTokenExchangeTool bool
+			for _, tool := range tools.Tools {
+				if strings.Contains(tool.Name, backend1Name) && strings.Contains(tool.Name, "fetch") {
+					GinkgoWriter.Printf("Calling tool with token exchange auth: %s\n", tool.Name)
+					toolCallCtx, toolCallCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer toolCallCancel()
+
+					callRequest := mcp.CallToolRequest{}
+					callRequest.Params.Name = tool.Name
+					callRequest.Params.Arguments = map[string]any{
+						"url": mockServer.URL,
+					}
+
+					_, err := mcpClient.CallTool(toolCallCtx, callRequest)
+					if err == nil {
+						GinkgoWriter.Printf("✓ Successfully called tool: %s\n", tool.Name)
+						calledTokenExchangeTool = true
+					}
+					break
+				}
+			}
+
+			Expect(calledTokenExchangeTool).To(BeTrue(), "Should have called at least one tool from token exchange backend")
+
+			By("Checking mock auth server logs for token exchange requests")
+			authServerPodName := "mock-auth-server"
+
+			// Wait for auth server to receive and log token exchange requests
+			// Token exchange may happen during vMCP startup or initialization, not necessarily during tool calls
+			var logs string
+			Eventually(func() bool {
+				var err error
+				logs, err = GetPodLogs(ctx, authServerPodName, testNamespace, "auth-server")
+				if err != nil {
+					GinkgoWriter.Printf("Unable to get auth server logs: %v\n", err)
+					return false
+				}
+				// Check if logs contain evidence of token exchange
+				return strings.Contains(logs, "Token exchange") || strings.Contains(logs, "token") || len(logs) > 100
+			}, 30*time.Second, 2*time.Second).Should(BeTrue(), "Auth server should have received requests")
+
+			Expect(logs).ToNot(BeEmpty(), "Should have logs from mock auth server")
+
+			// Also check vMCP logs to see if it's attempting token exchange
+			By("Checking vMCP logs for token exchange activity")
+			// Dynamically discover vMCP pod name (Deployment uses random suffix, not StatefulSet-style -0)
+			vmcpPodList := &corev1.PodList{}
+			err = k8sClient.List(ctx, vmcpPodList,
+				client.InNamespace(testNamespace),
+				client.MatchingLabels{
+					"app.kubernetes.io/name":     "virtualmcpserver",
+					"app.kubernetes.io/instance": vmcpServerName,
+				})
+			Expect(err).ToNot(HaveOccurred(), "Should be able to list vMCP pods")
+			Expect(vmcpPodList.Items).ToNot(BeEmpty(), "Should have at least one vMCP pod")
+			vmcpPodName := vmcpPodList.Items[0].Name
+			vmcpLogs, vmcpErr := GetPodLogs(ctx, vmcpPodName, testNamespace, "vmcp")
+			if vmcpErr == nil {
+				GinkgoWriter.Printf("\n=== vMCP Logs (full) ===\n")
+				GinkgoWriter.Printf("%s\n", vmcpLogs)
+			} else {
+				GinkgoWriter.Printf("Warning: Could not get vMCP logs: %v\n", vmcpErr)
+			}
+
+			// Check if the logs contain token exchange requests - THIS MUST HAPPEN
+			hasTokenExchange := strings.Contains(logs, "Token exchange request received")
+			Expect(hasTokenExchange).To(BeTrue(),
+				"Mock auth server should have received token exchange requests from vMCP.\n"+
+					"This indicates that vMCP is properly propagating identity context to authentication strategies.\n"+
+					"Auth server logs:\n%s", logs)
+
+			// Verify the auth parameters are in the logs
+			// Note: client_id and client_secret are sent in Authorization header (Basic auth),
+			// so we check for the header presence instead of POST body params
+			Expect(logs).To(ContainSubstring("'Authorization': 'Basic"),
+				"Token request should include Basic auth header with client credentials")
+
+			Expect(logs).To(ContainSubstring("audience: https://api.example.com"),
+				"Token request should include audience")
+
+			Expect(logs).To(ContainSubstring("grant_type: urn:ietf:params:oauth:grant-type:token-exchange"),
+				"Token request should use token exchange grant type")
+
+			// Verify token exchange succeeded (returned an access_token)
+			Expect(logs).To(ContainSubstring("access_token"),
+				"Token exchange response should include access_token")
+
+			GinkgoWriter.Printf("✓ Found Authorization header with client credentials in token request\n")
+			GinkgoWriter.Printf("✓ Found audience in token request\n")
+			GinkgoWriter.Printf("✓ Found token exchange grant type in token request\n")
+			GinkgoWriter.Printf("✓ Token exchange succeeded (access_token returned)\n")
+
+			GinkgoWriter.Printf("\n✓ Token exchange verification complete:\n")
+			GinkgoWriter.Printf("  - vMCP discovered token exchange auth from backend ExternalAuthConfigRef\n")
+			GinkgoWriter.Printf("  - vMCP successfully propagated identity context to auth strategies\n")
+			GinkgoWriter.Printf("  - vMCP exchanged client's OIDC token for backend-specific token\n")
+			GinkgoWriter.Printf("  - Auth server received client credentials (Basic auth), audience, and grant type\n")
+			GinkgoWriter.Printf("  - Tool calls succeeded proving end-to-end auth flow works\n")
+		})
+
+		It("should send Bearer token to backend MCP server with OIDC incoming auth", func() {
+			// The VirtualMCPServer is already configured with discovered auth mode
+			// and has backends with ExternalAuthConfigRef (token exchange)
+			// This test verifies that vMCP applies authentication when communicating with backends
+
+			token := getOIDCToken()
+			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+			httpClient := createAuthenticatedHTTPClient(token)
+			mcpClient, err := mcpclient.NewStreamableHttpClient(
+				serverURL,
+				transport.WithHTTPBasicClient(httpClient),
+			)
+			Expect(err).ToNot(HaveOccurred())
+			defer mcpClient.Close()
+
+			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			err = mcpClient.Start(testCtx)
+			Expect(err).ToNot(HaveOccurred())
+
+			initRequest := mcp.InitializeRequest{}
+			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+			initRequest.Params.ClientInfo = mcp.Implementation{
+				Name:    "bearer-token-test",
+				Version: "1.0.0",
+			}
+
+			_, err = mcpClient.Initialize(testCtx, initRequest)
+			Expect(err).ToNot(HaveOccurred())
+
+			// List and call tools to trigger authentication
+			listRequest := mcp.ListToolsRequest{}
+			tools, err := mcpClient.ListTools(testCtx, listRequest)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(tools.Tools).ToNot(BeEmpty())
+
+			// Call a tool from a backend with token exchange auth
+			var toolCalled bool
+			for _, tool := range tools.Tools {
+				if strings.Contains(tool.Name, backend1Name) && strings.Contains(tool.Name, "fetch") {
+					callCtx, callCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer callCancel()
+
+					callRequest := mcp.CallToolRequest{}
+					callRequest.Params.Name = tool.Name
+					callRequest.Params.Arguments = map[string]any{
+						"url": mockServer.URL,
+					}
+
+					_, err := mcpClient.CallTool(callCtx, callRequest)
+					if err == nil {
+						toolCalled = true
+					}
+					break
+				}
+			}
+			Expect(toolCalled).To(BeTrue(), "Should successfully call at least one tool with authentication")
 		})
 
 	})

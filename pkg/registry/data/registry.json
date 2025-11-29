@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-28T00:18:02Z",
+  "last_updated": "2025-11-29T00:17:47Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1942,9 +1942,9 @@
         "set_during_runtime"
       ],
       "metadata": {
-        "stars": 11251,
+        "stars": 11575,
         "pulls": 2408,
-        "last_updated": "2025-11-02T02:34:09Z"
+        "last_updated": "2025-11-28T02:32:20Z"
       },
       "repository_url": "https://github.com/googleapis/genai-toolbox",
       "tags": [
@@ -2724,9 +2724,9 @@
         "pg_upgrade"
       ],
       "metadata": {
-        "stars": 71,
+        "stars": 72,
         "pulls": 104,
-        "last_updated": "2025-11-03T02:34:25Z"
+        "last_updated": "2025-11-28T02:32:22Z"
       },
       "repository_url": "https://github.com/heroku/heroku-mcp-server",
       "tags": [
@@ -3740,9 +3740,9 @@
         "box_metadata_template_create_tool"
       ],
       "metadata": {
-        "stars": 82,
+        "stars": 83,
         "pulls": 52,
-        "last_updated": "2025-11-02T02:34:09Z"
+        "last_updated": "2025-11-28T02:32:21Z"
       },
       "repository_url": "https://github.com/box-community/mcp-server-box",
       "tags": [
@@ -4015,9 +4015,9 @@
         "update-many"
       ],
       "metadata": {
-        "stars": 783,
+        "stars": 833,
         "pulls": 5060,
-        "last_updated": "2025-11-03T02:34:25Z"
+        "last_updated": "2025-11-28T02:32:22Z"
       },
       "repository_url": "https://github.com/mongodb-js/mongodb-mcp-server",
       "tags": [
@@ -5276,9 +5276,9 @@
         "tavily-map"
       ],
       "metadata": {
-        "stars": 880,
+        "stars": 957,
         "pulls": 80,
-        "last_updated": "2025-11-02T02:34:09Z"
+        "last_updated": "2025-11-28T02:32:21Z"
       },
       "repository_url": "https://github.com/tavily-ai/tavily-mcp",
       "tags": [

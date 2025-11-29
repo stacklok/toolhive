@@ -102,8 +102,7 @@ jobs:
         helm upgrade --install toolhive-operator deploy/charts/operator \
           --set operator.image=${OPERATOR_IMAGE} \
           --set operator.toolhiveRunnerImage=${TOOLHIVE_IMAGE} \
-          --set-string 'operator.env[0].name=VMCP_IMAGE' \
-          --set-string "operator.env[0].value=${{ env.VMCP_IMAGE }}" \
+          --set operator.vmcpImage=${{ env.VMCP_IMAGE }} \
           --namespace toolhive-system \
           --create-namespace \
           --kubeconfig kconfig.yaml

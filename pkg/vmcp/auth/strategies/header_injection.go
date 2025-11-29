@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/validation"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // HeaderInjectionStrategy injects a static header value into request headers.
@@ -39,7 +40,7 @@ func NewHeaderInjectionStrategy() *HeaderInjectionStrategy {
 
 // Name returns the strategy identifier.
 func (*HeaderInjectionStrategy) Name() string {
-	return StrategyTypeHeaderInjection
+	return authtypes.StrategyTypeHeaderInjection
 }
 
 // Authenticate injects the header value from metadata into the request header.

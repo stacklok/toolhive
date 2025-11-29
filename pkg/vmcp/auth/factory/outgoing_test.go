@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/env"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 func TestNewOutgoingAuthRegistry(t *testing.T) {
@@ -25,13 +25,13 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		require.NotNil(t, registry)
 
 		// Verify all three strategies are registered
-		strategies := []string{
-			strategies.StrategyTypeUnauthenticated,
-			strategies.StrategyTypeHeaderInjection,
-			strategies.StrategyTypeTokenExchange,
+		strategyTypes := []string{
+			authtypes.StrategyTypeUnauthenticated,
+			authtypes.StrategyTypeHeaderInjection,
+			authtypes.StrategyTypeTokenExchange,
 		}
 
-		for _, strategyType := range strategies {
+		for _, strategyType := range strategyTypes {
 			strategy, err := registry.GetStrategy(strategyType)
 			require.NoError(t, err, "strategy %s should be registered", strategyType)
 			assert.NotNil(t, strategy, "strategy %s should not be nil", strategyType)
@@ -65,12 +65,12 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		require.NotNil(t, registry)
 
 		// Get header injection strategy
-		strategy, err := registry.GetStrategy(strategies.StrategyTypeHeaderInjection)
+		strategy, err := registry.GetStrategy(authtypes.StrategyTypeHeaderInjection)
 		require.NoError(t, err)
 		require.NotNil(t, strategy)
 
 		// Verify it's the correct type
-		assert.Equal(t, strategies.StrategyTypeHeaderInjection, strategy.Name())
+		assert.Equal(t, authtypes.StrategyTypeHeaderInjection, strategy.Name())
 
 		// Verify it can validate metadata
 		validMetadata := map[string]any{
@@ -101,12 +101,12 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		require.NotNil(t, registry)
 
 		// Get token exchange strategy
-		strategy, err := registry.GetStrategy(strategies.StrategyTypeTokenExchange)
+		strategy, err := registry.GetStrategy(authtypes.StrategyTypeTokenExchange)
 		require.NoError(t, err)
 		require.NotNil(t, strategy)
 
 		// Verify it's the correct type
-		assert.Equal(t, strategies.StrategyTypeTokenExchange, strategy.Name())
+		assert.Equal(t, authtypes.StrategyTypeTokenExchange, strategy.Name())
 	})
 
 	t.Run("unauthenticated strategy can be retrieved and used", func(t *testing.T) {
@@ -120,12 +120,12 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		require.NotNil(t, registry)
 
 		// Get unauthenticated strategy
-		strategy, err := registry.GetStrategy(strategies.StrategyTypeUnauthenticated)
+		strategy, err := registry.GetStrategy(authtypes.StrategyTypeUnauthenticated)
 		require.NoError(t, err)
 		require.NotNil(t, strategy)
 
 		// Verify it's the correct type
-		assert.Equal(t, strategies.StrategyTypeUnauthenticated, strategy.Name())
+		assert.Equal(t, authtypes.StrategyTypeUnauthenticated, strategy.Name())
 
 		// Verify it validates any metadata (no-op validation)
 		err = strategy.Validate(nil)
@@ -150,9 +150,9 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 			strategyType string
 			expectedName string
 		}{
-			{strategies.StrategyTypeUnauthenticated, "unauthenticated"},
-			{strategies.StrategyTypeHeaderInjection, "header_injection"},
-			{strategies.StrategyTypeTokenExchange, "token_exchange"},
+			{authtypes.StrategyTypeUnauthenticated, "unauthenticated"},
+			{authtypes.StrategyTypeHeaderInjection, "header_injection"},
+			{authtypes.StrategyTypeTokenExchange, "token_exchange"},
 		}
 
 		for _, tc := range testCases {

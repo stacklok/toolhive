@@ -11,6 +11,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/env"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 const (
@@ -62,7 +63,7 @@ func NewTokenExchangeStrategy(envReader env.Reader) *TokenExchangeStrategy {
 
 // Name returns the strategy identifier.
 func (*TokenExchangeStrategy) Name() string {
-	return "token_exchange"
+	return authtypes.StrategyTypeTokenExchange
 }
 
 // Authenticate exchanges the client's token for a backend token and injects it.

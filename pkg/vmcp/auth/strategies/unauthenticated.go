@@ -3,6 +3,8 @@ package strategies
 import (
 	"context"
 	"net/http"
+
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // UnauthenticatedStrategy is a no-op authentication strategy that performs no authentication.
@@ -38,7 +40,7 @@ func NewUnauthenticatedStrategy() *UnauthenticatedStrategy {
 
 // Name returns the strategy identifier.
 func (*UnauthenticatedStrategy) Name() string {
-	return StrategyTypeUnauthenticated
+	return authtypes.StrategyTypeUnauthenticated
 }
 
 // Authenticate performs no authentication and returns immediately.

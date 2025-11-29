@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
@@ -151,20 +152,10 @@ type OutgoingAuthConfig struct {
 	Source string `json:"source" yaml:"source"`
 
 	// Default is the default auth strategy for backends without explicit config.
-	Default *BackendAuthStrategy `json:"default,omitempty" yaml:"default,omitempty"`
+	Default *authtypes.BackendAuthStrategy `json:"default,omitempty" yaml:"default,omitempty"`
 
 	// Backends contains per-backend auth configuration.
-	Backends map[string]*BackendAuthStrategy `json:"backends,omitempty" yaml:"backends,omitempty"`
-}
-
-// BackendAuthStrategy defines how to authenticate to a specific backend.
-type BackendAuthStrategy struct {
-	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange"
-	Type string `json:"type" yaml:"type"`
-
-	// Metadata contains strategy-specific configuration.
-	// This is opaque and interpreted by the auth strategy implementation.
-	Metadata map[string]any `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+	Backends map[string]*authtypes.BackendAuthStrategy `json:"backends,omitempty" yaml:"backends,omitempty"`
 }
 
 // ResolveForBackend returns the auth strategy and metadata for a given backend ID.

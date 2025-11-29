@@ -6,6 +6,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // DefaultValidator implements comprehensive configuration validation.
@@ -159,15 +160,15 @@ func (v *DefaultValidator) validateOutgoingAuth(auth *OutgoingAuthConfig) error 
 	return nil
 }
 
-func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *BackendAuthStrategy) error {
+func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtypes.BackendAuthStrategy) error {
 	if strategy == nil {
 		return fmt.Errorf("strategy is nil")
 	}
 
 	validTypes := []string{
-		strategies.StrategyTypeUnauthenticated,
-		strategies.StrategyTypeHeaderInjection,
-		strategies.StrategyTypeTokenExchange,
+		authtypes.StrategyTypeUnauthenticated,
+		authtypes.StrategyTypeHeaderInjection,
+		authtypes.StrategyTypeTokenExchange,
 		// TODO: Add more as strategies are implemented:
 		// "pass_through", "client_credentials", "oauth_proxy",
 	}
@@ -177,13 +178,13 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *Backend
 
 	// Validate type-specific requirements
 	switch strategy.Type {
-	case strategies.StrategyTypeTokenExchange:
+	case authtypes.StrategyTypeTokenExchange:
 		// Token exchange requires token_url (other fields are optional)
 		if _, ok := strategy.Metadata["token_url"]; !ok {
 			return fmt.Errorf("token_exchange requires metadata field: token_url")
 		}
 
-	case strategies.StrategyTypeHeaderInjection:
+	case authtypes.StrategyTypeHeaderInjection:
 		// Header injection requires header name and value
 		if _, ok := strategy.Metadata[strategies.MetadataHeaderName]; !ok {
 			return fmt.Errorf("header_injection requires metadata field: %s", strategies.MetadataHeaderName)

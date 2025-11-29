@@ -10,6 +10,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // YAMLLoader loads configuration from a YAML file.
@@ -252,7 +253,7 @@ func (*YAMLLoader) transformIncomingAuth(raw *rawIncomingAuth) (*IncomingAuthCon
 func (l *YAMLLoader) transformOutgoingAuth(raw *rawOutgoingAuth) (*OutgoingAuthConfig, error) {
 	cfg := &OutgoingAuthConfig{
 		Source:   raw.Source,
-		Backends: make(map[string]*BackendAuthStrategy),
+		Backends: make(map[string]*authtypes.BackendAuthStrategy),
 	}
 
 	if raw.Default != nil {
@@ -275,14 +276,14 @@ func (l *YAMLLoader) transformOutgoingAuth(raw *rawOutgoingAuth) (*OutgoingAuthC
 }
 
 //nolint:gocyclo // We should split this into multiple functions per strategy type.
-func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*BackendAuthStrategy, error) {
-	strategy := &BackendAuthStrategy{
+func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*authtypes.BackendAuthStrategy, error) {
+	strategy := &authtypes.BackendAuthStrategy{
 		Type:     raw.Type,
 		Metadata: make(map[string]any),
 	}
 
 	switch raw.Type {
-	case strategies.StrategyTypeHeaderInjection:
+	case authtypes.StrategyTypeHeaderInjection:
 		if raw.HeaderInjection == nil {
 			return nil, fmt.Errorf("header_injection configuration is required")
 		}
@@ -314,7 +315,7 @@ func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (
 			strategies.MetadataHeaderValue: headerValue,
 		}
 
-	case strategies.StrategyTypeUnauthenticated:
+	case authtypes.StrategyTypeUnauthenticated:
 		// No metadata required for unauthenticated strategy
 
 	case "token_exchange":

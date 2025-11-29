@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
@@ -28,11 +30,11 @@ func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
 		{
 			name: "backend-specific config takes precedence",
 			config: &OutgoingAuthConfig{
-				Default: &BackendAuthStrategy{
+				Default: &authtypes.BackendAuthStrategy{
 					Type:     "default-strategy",
 					Metadata: map[string]any{"key": "default-value"},
 				},
-				Backends: map[string]*BackendAuthStrategy{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"backend1": {
 						Type:     "backend-specific-strategy",
 						Metadata: map[string]any{"key": "backend-value"},
@@ -47,11 +49,11 @@ func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
 		{
 			name: "falls back to default when backend not configured",
 			config: &OutgoingAuthConfig{
-				Default: &BackendAuthStrategy{
+				Default: &authtypes.BackendAuthStrategy{
 					Type:     "default-strategy",
 					Metadata: map[string]any{"key": "default-value"},
 				},
-				Backends: map[string]*BackendAuthStrategy{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"backend1": {
 						Type:     "backend-specific-strategy",
 						Metadata: map[string]any{"key": "backend-value"},
@@ -66,7 +68,7 @@ func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
 		{
 			name: "returns empty when no default and backend not configured",
 			config: &OutgoingAuthConfig{
-				Backends: map[string]*BackendAuthStrategy{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"backend1": {
 						Type:     "backend-specific-strategy",
 						Metadata: map[string]any{"key": "backend-value"},
@@ -81,11 +83,11 @@ func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
 		{
 			name: "handles nil backend strategy in map",
 			config: &OutgoingAuthConfig{
-				Default: &BackendAuthStrategy{
+				Default: &authtypes.BackendAuthStrategy{
 					Type:     "default-strategy",
 					Metadata: map[string]any{"key": "default-value"},
 				},
-				Backends: map[string]*BackendAuthStrategy{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"backend1": nil,
 				},
 			},
@@ -98,7 +100,7 @@ func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
 			name: "returns empty when only default is nil",
 			config: &OutgoingAuthConfig{
 				Default:  nil,
-				Backends: map[string]*BackendAuthStrategy{},
+				Backends: map[string]*authtypes.BackendAuthStrategy{},
 			},
 			backendID:    "backend1",
 			wantStrategy: "",
@@ -108,7 +110,7 @@ func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
 		{
 			name: "handles strategy with nil metadata",
 			config: &OutgoingAuthConfig{
-				Default: &BackendAuthStrategy{
+				Default: &authtypes.BackendAuthStrategy{
 					Type:     "default-strategy",
 					Metadata: nil,
 				},
@@ -121,7 +123,7 @@ func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
 		{
 			name: "handles strategy with empty metadata",
 			config: &OutgoingAuthConfig{
-				Default: &BackendAuthStrategy{
+				Default: &authtypes.BackendAuthStrategy{
 					Type:     "default-strategy",
 					Metadata: map[string]any{},
 				},

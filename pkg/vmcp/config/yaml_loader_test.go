@@ -128,6 +128,54 @@ aggregation:
 			wantErr: false,
 		},
 		{
+			name: "partial operational config gets defaults for missing fields",
+			yaml: `
+name: test-vmcp
+group: test-group
+
+incoming_auth:
+  type: anonymous
+
+outgoing_auth:
+  source: inline
+  default:
+    type: unauthenticated
+
+aggregation:
+  conflict_resolution: prefix
+  conflict_resolution_config:
+    prefix_format: "{workload}_"
+
+operational:
+  timeouts:
+    default: 45s
+`,
+			want: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				if cfg.Operational == nil {
+					t.Fatal("Operational should not be nil")
+				}
+				// Custom timeout should be preserved
+				if cfg.Operational.Timeouts.Default != Duration(45*time.Second) {
+					t.Errorf("Timeouts.Default = %v, want 45s", cfg.Operational.Timeouts.Default)
+				}
+				// FailureHandling should be created with defaults
+				if cfg.Operational.FailureHandling == nil {
+					t.Fatal("FailureHandling should not be nil")
+				}
+				if cfg.Operational.FailureHandling.HealthCheckInterval != Duration(30*time.Second) {
+					t.Errorf("HealthCheckInterval = %v, want 30s (default)", cfg.Operational.FailureHandling.HealthCheckInterval)
+				}
+				if cfg.Operational.FailureHandling.UnhealthyThreshold != 3 {
+					t.Errorf("UnhealthyThreshold = %v, want 3 (default)", cfg.Operational.FailureHandling.UnhealthyThreshold)
+				}
+				if cfg.Operational.FailureHandling.CircuitBreaker == nil {
+					t.Fatal("CircuitBreaker should not be nil (should get defaults)")
+				}
+			},
+			wantErr: false,
+		},
+		{
 			name: "valid configuration with composite tools",
 			yaml: `
 name: test-vmcp

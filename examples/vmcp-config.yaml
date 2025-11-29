@@ -91,14 +91,6 @@ outgoing_auth:
     #     audience: "jira-api"  # Token audience for Jira API
     #     scopes: ["read:jira-work", "write:jira-work"]
 
-# ===== TOKEN CACHING =====
-# Token cache configuration
-token_cache:
-  provider: memory  # Options: memory | redis | custom
-  config:
-    max_entries: 1000
-    ttl_offset: "5m"  # Refresh tokens 5 minutes before expiry
-
 # ===== TOOL AGGREGATION =====
 aggregation:
   # Conflict resolution strategy

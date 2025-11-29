@@ -9,7 +9,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/env/mocks"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // TestYAMLLoader_transformBackendAuthStrategy tests the critical auth strategy transformation logic
@@ -21,28 +21,29 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		name    string
 		raw     *rawBackendAuthStrategy
 		envVars map[string]string
-		verify  func(t *testing.T, strategy *BackendAuthStrategy)
+		verify  func(t *testing.T, strategy *authtypes.BackendAuthStrategy)
 		wantErr bool
 		errMsg  string
 	}{
 		{
 			name: "header_injection with literal value",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+				Type: authtypes.StrategyTypeHeaderInjection,
 				HeaderInjection: &rawHeaderInjectionAuth{
 					HeaderName:  "Authorization",
 					HeaderValue: "Bearer token123",
 				},
 			},
-			verify: func(t *testing.T, strategy *BackendAuthStrategy) {
+			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
-				assert.Equal(t, "Bearer token123", strategy.Metadata[strategies.MetadataHeaderValue])
+				require.NotNil(t, strategy.HeaderInjection)
+				assert.Equal(t, "Bearer token123", strategy.HeaderInjection.HeaderValue)
 			},
 		},
 		{
 			name: "header_injection resolves env var correctly",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+				Type: authtypes.StrategyTypeHeaderInjection,
 				HeaderInjection: &rawHeaderInjectionAuth{
 					HeaderName:     "X-API-Key",
 					HeaderValueEnv: "API_KEY",
@@ -51,15 +52,16 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 			envVars: map[string]string{
 				"API_KEY": "secret-key-value",
 			},
-			verify: func(t *testing.T, strategy *BackendAuthStrategy) {
+			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
-				assert.Equal(t, "secret-key-value", strategy.Metadata[strategies.MetadataHeaderValue])
+				require.NotNil(t, strategy.HeaderInjection)
+				assert.Equal(t, "secret-key-value", strategy.HeaderInjection.HeaderValue)
 			},
 		},
 		{
 			name: "header_injection fails when both value and env set (mutual exclusivity)",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+				Type: authtypes.StrategyTypeHeaderInjection,
 				HeaderInjection: &rawHeaderInjectionAuth{
 					HeaderName:     "Authorization",
 					HeaderValue:    "literal",
@@ -72,7 +74,7 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		{
 			name: "header_injection fails when neither value nor env set",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+				Type: authtypes.StrategyTypeHeaderInjection,
 				HeaderInjection: &rawHeaderInjectionAuth{
 					HeaderName: "Authorization",
 				},
@@ -83,7 +85,7 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		{
 			name: "header_injection fails when env var not set",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+				Type: authtypes.StrategyTypeHeaderInjection,
 				HeaderInjection: &rawHeaderInjectionAuth{
 					HeaderName:     "Authorization",
 					HeaderValueEnv: "MISSING_VAR",
@@ -95,7 +97,7 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		{
 			name: "header_injection fails when env var is empty string",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+				Type: authtypes.StrategyTypeHeaderInjection,
 				HeaderInjection: &rawHeaderInjectionAuth{
 					HeaderName:     "Authorization",
 					HeaderValueEnv: "EMPTY_VAR",
@@ -110,7 +112,7 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		{
 			name: "header_injection fails when config block missing",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+				Type: authtypes.StrategyTypeHeaderInjection,
 			},
 			wantErr: true,
 			errMsg:  "header_injection configuration is required",
@@ -118,7 +120,7 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		{
 			name: "token_exchange validates env var is set",
 			raw: &rawBackendAuthStrategy{
-				Type: "token_exchange",
+				Type: authtypes.StrategyTypeTokenExchange,
 				TokenExchange: &rawTokenExchangeAuth{
 					TokenURL:        "https://auth.example.com/token",
 					ClientID:        "client-123",
@@ -128,16 +130,17 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 			envVars: map[string]string{
 				"CLIENT_SECRET": "secret-value",
 			},
-			verify: func(t *testing.T, strategy *BackendAuthStrategy) {
+			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
+				require.NotNil(t, strategy.TokenExchange)
 				// Verify env var name is stored (not resolved) for lazy evaluation
-				assert.Equal(t, "CLIENT_SECRET", strategy.Metadata["client_secret_env"])
+				assert.Equal(t, "CLIENT_SECRET", strategy.TokenExchange.ClientSecretEnv)
 			},
 		},
 		{
 			name: "token_exchange fails when env var not set",
 			raw: &rawBackendAuthStrategy{
-				Type: "token_exchange",
+				Type: authtypes.StrategyTypeTokenExchange,
 				TokenExchange: &rawTokenExchangeAuth{
 					TokenURL:        "https://auth.example.com/token",
 					ClientID:        "client-123",
@@ -150,7 +153,7 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		{
 			name: "token_exchange fails when config block missing",
 			raw: &rawBackendAuthStrategy{
-				Type: "token_exchange",
+				Type: authtypes.StrategyTypeTokenExchange,
 			},
 			wantErr: true,
 			errMsg:  "token_exchange configuration is required",
@@ -158,11 +161,13 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		{
 			name: "unauthenticated strategy requires no extra config",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeUnauthenticated,
+				Type: authtypes.StrategyTypeUnauthenticated,
 			},
-			verify: func(t *testing.T, strategy *BackendAuthStrategy) {
+			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
-				assert.Empty(t, strategy.Metadata)
+				assert.Equal(t, authtypes.StrategyTypeUnauthenticated, strategy.Type)
+				assert.Nil(t, strategy.HeaderInjection)
+				assert.Nil(t, strategy.TokenExchange)
 			},
 		},
 	}

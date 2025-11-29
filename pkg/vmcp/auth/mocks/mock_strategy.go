@@ -14,6 +14,7 @@ import (
 	http "net/http"
 	reflect "reflect"
 
+	types "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -42,17 +43,17 @@ func (m *MockStrategy) EXPECT() *MockStrategyMockRecorder {
 }
 
 // Authenticate mocks base method.
-func (m *MockStrategy) Authenticate(ctx context.Context, req *http.Request, metadata map[string]any) error {
+func (m *MockStrategy) Authenticate(ctx context.Context, req *http.Request, strategy *types.BackendAuthStrategy) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Authenticate", ctx, req, metadata)
+	ret := m.ctrl.Call(m, "Authenticate", ctx, req, strategy)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Authenticate indicates an expected call of Authenticate.
-func (mr *MockStrategyMockRecorder) Authenticate(ctx, req, metadata any) *gomock.Call {
+func (mr *MockStrategyMockRecorder) Authenticate(ctx, req, strategy any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Authenticate", reflect.TypeOf((*MockStrategy)(nil).Authenticate), ctx, req, metadata)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Authenticate", reflect.TypeOf((*MockStrategy)(nil).Authenticate), ctx, req, strategy)
 }
 
 // Name mocks base method.
@@ -70,15 +71,15 @@ func (mr *MockStrategyMockRecorder) Name() *gomock.Call {
 }
 
 // Validate mocks base method.
-func (m *MockStrategy) Validate(metadata map[string]any) error {
+func (m *MockStrategy) Validate(strategy *types.BackendAuthStrategy) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Validate", metadata)
+	ret := m.ctrl.Call(m, "Validate", strategy)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Validate indicates an expected call of Validate.
-func (mr *MockStrategyMockRecorder) Validate(metadata any) *gomock.Call {
+func (mr *MockStrategyMockRecorder) Validate(strategy any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Validate", reflect.TypeOf((*MockStrategy)(nil).Validate), metadata)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Validate", reflect.TypeOf((*MockStrategy)(nil).Validate), strategy)
 }

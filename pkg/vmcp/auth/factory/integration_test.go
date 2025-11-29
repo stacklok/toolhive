@@ -16,11 +16,12 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // TestHeaderInjectionIntegration validates the complete flow of:
 // 1. Creating a registry with header injection strategy
-// 2. Converting MCPExternalAuthConfig to metadata
+// 2. Converting MCPExternalAuthConfig to a typed BackendAuthStrategy
 // 3. Resolving secrets
 // 4. Using the strategy to authenticate a request
 func TestHeaderInjectionIntegration(t *testing.T) {
@@ -75,35 +76,35 @@ func TestHeaderInjectionIntegration(t *testing.T) {
 			},
 		}
 
-		// Step 4: Convert to metadata using the converter
+		// Step 4: Convert to typed BackendAuthStrategy using the converter
 		converter := &converters.HeaderInjectionConverter{}
-		metadata, err := converter.ConvertToMetadata(authConfig)
-		require.NoError(t, err)
-		require.NotNil(t, metadata)
-
-		assert.Equal(t, "X-API-Key", metadata["header_name"])
-
-		// Step 5: Resolve secrets
-		resolvedMetadata, err := converter.ResolveSecrets(ctx, authConfig, fakeClient, "default", metadata)
-		require.NoError(t, err)
-		require.NotNil(t, resolvedMetadata)
-
-		// Verify secret was resolved
-		assert.Equal(t, "X-API-Key", resolvedMetadata["header_name"])
-		assert.Equal(t, "secret-api-key-12345", resolvedMetadata["header_value"])
-
-		// Step 6: Get the header injection strategy from registry
-		strategy, err := registry.GetStrategy("header_injection")
+		strategy, err := converter.Convert(authConfig)
 		require.NoError(t, err)
 		require.NotNil(t, strategy)
 
-		// Step 7: Validate the metadata
-		err = strategy.Validate(resolvedMetadata)
+		assert.Equal(t, "X-API-Key", strategy.HeaderInjection.HeaderName)
+
+		// Step 5: Resolve secrets
+		resolvedStrategy, err := converter.ResolveSecrets(ctx, authConfig, fakeClient, "default", strategy)
+		require.NoError(t, err)
+		require.NotNil(t, resolvedStrategy)
+
+		// Verify secret was resolved
+		assert.Equal(t, "X-API-Key", resolvedStrategy.HeaderInjection.HeaderName)
+		assert.Equal(t, "secret-api-key-12345", resolvedStrategy.HeaderInjection.HeaderValue)
+
+		// Step 6: Get the header injection strategy from registry
+		authStrategy, err := registry.GetStrategy(authtypes.StrategyTypeHeaderInjection)
+		require.NoError(t, err)
+		require.NotNil(t, authStrategy)
+
+		// Step 7: Validate the typed BackendAuthStrategy
+		err = authStrategy.Validate(resolvedStrategy)
 		require.NoError(t, err)
 
 		// Step 8: Use the strategy to authenticate a request
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
-		err = strategy.Authenticate(ctx, req, resolvedMetadata)
+		err = authStrategy.Authenticate(ctx, req, resolvedStrategy)
 		require.NoError(t, err)
 
 		// Step 9: Verify the header was injected
@@ -160,18 +161,18 @@ func TestHeaderInjectionIntegration(t *testing.T) {
 
 		// Convert and resolve
 		converter := &converters.HeaderInjectionConverter{}
-		metadata, err := converter.ConvertToMetadata(authConfig)
+		strategy, err := converter.Convert(authConfig)
 		require.NoError(t, err)
 
-		resolvedMetadata, err := converter.ResolveSecrets(ctx, authConfig, fakeClient, "default", metadata)
+		resolvedStrategy, err := converter.ResolveSecrets(ctx, authConfig, fakeClient, "default", strategy)
 		require.NoError(t, err)
 
-		// Get strategy and authenticate
-		strategy, err := registry.GetStrategy("header_injection")
+		// Get auth strategy and authenticate
+		authStrategy, err := registry.GetStrategy(authtypes.StrategyTypeHeaderInjection)
 		require.NoError(t, err)
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
-		err = strategy.Authenticate(ctx, req, resolvedMetadata)
+		err = authStrategy.Authenticate(ctx, req, resolvedStrategy)
 		require.NoError(t, err)
 
 		// Verify custom header was injected
@@ -213,16 +214,16 @@ func TestHeaderInjectionIntegration(t *testing.T) {
 
 		// Convert should succeed (doesn't fetch secret yet)
 		converter := &converters.HeaderInjectionConverter{}
-		metadata, err := converter.ConvertToMetadata(authConfig)
+		strategy, err := converter.Convert(authConfig)
 		require.NoError(t, err)
 
 		// Resolve secrets should fail
-		_, err = converter.ResolveSecrets(ctx, authConfig, fakeClient, "default", metadata)
+		_, err = converter.ResolveSecrets(ctx, authConfig, fakeClient, "default", strategy)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to get secret")
 	})
 
-	t.Run("header injection validates metadata before authentication", func(t *testing.T) {
+	t.Run("header injection validates typed strategy before authentication", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
@@ -233,23 +234,26 @@ func TestHeaderInjectionIntegration(t *testing.T) {
 		require.NoError(t, err)
 
 		// Get strategy
-		strategy, err := registry.GetStrategy("header_injection")
+		authStrategy, err := registry.GetStrategy(authtypes.StrategyTypeHeaderInjection)
 		require.NoError(t, err)
 
-		// Test with invalid metadata (missing header_value)
-		invalidMetadata := map[string]any{
-			"header_name": "X-API-Key",
-			// missing header_value
+		// Test with invalid typed strategy (missing header_value)
+		invalidStrategy := &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeHeaderInjection,
+			HeaderInjection: &authtypes.HeaderInjectionConfig{
+				HeaderName: "X-API-Key",
+				// missing HeaderValue
+			},
 		}
 
 		// Validate should fail
-		err = strategy.Validate(invalidMetadata)
+		err = authStrategy.Validate(invalidStrategy)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "header_value")
 
 		// Authenticate should also fail
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
-		err = strategy.Authenticate(ctx, req, invalidMetadata)
+		err = authStrategy.Authenticate(ctx, req, invalidStrategy)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "header_value")
 	})

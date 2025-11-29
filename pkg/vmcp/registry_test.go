@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 const (
@@ -30,9 +32,10 @@ func TestNewImmutableRegistry(t *testing.T) {
 					BaseURL:       "http://localhost:8080",
 					TransportType: "streamable-http",
 					HealthStatus:  BackendHealthy,
-					AuthStrategy:  "unauthenticated",
-					AuthMetadata:  map[string]any{"key": "value"},
-					Metadata:      map[string]string{"env": "production"},
+					AuthConfig: &authtypes.BackendAuthStrategy{
+						Type: authtypes.StrategyTypeUnauthenticated,
+					},
+					Metadata: map[string]string{"env": "production"},
 				},
 			},
 			expectedCount: 1,
@@ -79,9 +82,9 @@ func TestNewImmutableRegistry(t *testing.T) {
 			name: "nil metadata maps",
 			backends: []Backend{
 				{
-					ID:           "backend-1",
-					AuthMetadata: nil,
-					Metadata:     nil,
+					ID:         "backend-1",
+					AuthConfig: nil,
+					Metadata:   nil,
 				},
 			},
 			expectedCount: 1,
@@ -130,7 +133,7 @@ func TestNewImmutableRegistry(t *testing.T) {
 			if tt.name == "nil metadata maps" {
 				backend := registry.Get(ctx, "backend-1")
 				require.NotNil(t, backend)
-				assert.Nil(t, backend.AuthMetadata)
+				assert.Nil(t, backend.AuthConfig)
 				assert.Nil(t, backend.Metadata)
 			}
 
@@ -156,9 +159,13 @@ func TestBackendRegistry_Get(t *testing.T) {
 			BaseURL:       "http://localhost:8080",
 			TransportType: "streamable-http",
 			HealthStatus:  BackendHealthy,
-			AuthStrategy:  "token_exchange",
-			AuthMetadata:  map[string]any{"audience": "github-api"},
-			Metadata:      map[string]string{"env": "production"},
+			AuthConfig: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					Audience: "github-api",
+				},
+			},
+			Metadata: map[string]string{"env": "production"},
 		},
 		{
 			ID:           "jira-mcp",
@@ -185,8 +192,10 @@ func TestBackendRegistry_Get(t *testing.T) {
 				assert.Equal(t, "http://localhost:8080", b.BaseURL)
 				assert.Equal(t, "streamable-http", b.TransportType)
 				assert.Equal(t, BackendHealthy, b.HealthStatus)
-				assert.Equal(t, "token_exchange", b.AuthStrategy)
-				assert.Equal(t, "github-api", b.AuthMetadata["audience"])
+				require.NotNil(t, b.AuthConfig)
+				assert.Equal(t, authtypes.StrategyTypeTokenExchange, b.AuthConfig.Type)
+				require.NotNil(t, b.AuthConfig.TokenExchange)
+				assert.Equal(t, "github-api", b.AuthConfig.TokenExchange.Audience)
 				assert.Equal(t, "production", b.Metadata["env"])
 			},
 		},
@@ -309,8 +318,13 @@ func TestBackendRegistry_List(t *testing.T) {
 				ID:            "github-mcp",
 				Name:          "GitHub MCP",
 				TransportType: "streamable-http",
-				AuthMetadata:  map[string]any{"audience": "github-api"},
-				Metadata:      map[string]string{"env": "production"},
+				AuthConfig: &authtypes.BackendAuthStrategy{
+					Type: authtypes.StrategyTypeTokenExchange,
+					TokenExchange: &authtypes.TokenExchangeConfig{
+						Audience: "github-api",
+					},
+				},
+				Metadata: map[string]string{"env": "production"},
 			},
 		}
 		registry := NewImmutableRegistry(backends)
@@ -319,7 +333,9 @@ func TestBackendRegistry_List(t *testing.T) {
 
 		require.Len(t, result, 1)
 		assert.Equal(t, "github-mcp", result[0].ID)
-		assert.Equal(t, "github-api", result[0].AuthMetadata["audience"])
+		require.NotNil(t, result[0].AuthConfig)
+		require.NotNil(t, result[0].AuthConfig.TokenExchange)
+		assert.Equal(t, "github-api", result[0].AuthConfig.TokenExchange.Audience)
 		assert.Equal(t, "production", result[0].Metadata["env"])
 	})
 
@@ -444,9 +460,14 @@ func TestBackendToTarget(t *testing.T) {
 				BaseURL:       "http://localhost:8080",
 				TransportType: "streamable-http",
 				HealthStatus:  BackendHealthy,
-				AuthStrategy:  "token_exchange",
-				AuthMetadata:  map[string]any{"audience": "github-api", "scopes": []string{"repo"}},
-				Metadata:      map[string]string{"env": "production"},
+				AuthConfig: &authtypes.BackendAuthStrategy{
+					Type: authtypes.StrategyTypeTokenExchange,
+					TokenExchange: &authtypes.TokenExchangeConfig{
+						Audience: "github-api",
+						Scopes:   []string{"repo"},
+					},
+				},
+				Metadata: map[string]string{"env": "production"},
 			},
 			wantNil: false,
 			validate: func(t *testing.T, target *BackendTarget) {
@@ -456,8 +477,10 @@ func TestBackendToTarget(t *testing.T) {
 				assert.Equal(t, "http://localhost:8080", target.BaseURL)
 				assert.Equal(t, "streamable-http", target.TransportType)
 				assert.Equal(t, BackendHealthy, target.HealthStatus)
-				assert.Equal(t, "token_exchange", target.AuthStrategy)
-				assert.Equal(t, "github-api", target.AuthMetadata["audience"])
+				require.NotNil(t, target.AuthConfig)
+				assert.Equal(t, authtypes.StrategyTypeTokenExchange, target.AuthConfig.Type)
+				require.NotNil(t, target.AuthConfig.TokenExchange)
+				assert.Equal(t, "github-api", target.AuthConfig.TokenExchange.Audience)
 				assert.Equal(t, "production", target.Metadata["env"])
 				assert.False(t, target.SessionAffinity)
 			},
@@ -465,16 +488,23 @@ func TestBackendToTarget(t *testing.T) {
 		{
 			name: "preserves metadata",
 			backend: &Backend{
-				ID:           "test",
-				AuthMetadata: map[string]any{"token": "secret", "timeout": 30, "retries": 3},
-				Metadata:     map[string]string{"env": "staging", "region": "us-west-2", "version": "2.0.0"},
+				ID: "test",
+				AuthConfig: &authtypes.BackendAuthStrategy{
+					Type: authtypes.StrategyTypeHeaderInjection,
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "Authorization",
+						HeaderValue: "Bearer secret",
+					},
+				},
+				Metadata: map[string]string{"env": "staging", "region": "us-west-2", "version": "2.0.0"},
 			},
 			wantNil: false,
 			validate: func(t *testing.T, target *BackendTarget) {
 				t.Helper()
-				assert.Equal(t, "secret", target.AuthMetadata["token"])
-				assert.Equal(t, 30, target.AuthMetadata["timeout"])
-				assert.Equal(t, 3, target.AuthMetadata["retries"])
+				require.NotNil(t, target.AuthConfig)
+				assert.Equal(t, authtypes.StrategyTypeHeaderInjection, target.AuthConfig.Type)
+				require.NotNil(t, target.AuthConfig.HeaderInjection)
+				assert.Equal(t, "Bearer secret", target.AuthConfig.HeaderInjection.HeaderValue)
 				assert.Equal(t, "staging", target.Metadata["env"])
 				assert.Equal(t, "us-west-2", target.Metadata["region"])
 				assert.Equal(t, "2.0.0", target.Metadata["version"])
@@ -493,8 +523,7 @@ func TestBackendToTarget(t *testing.T) {
 				assert.Empty(t, target.BaseURL)
 				assert.Empty(t, target.TransportType)
 				assert.Equal(t, BackendHealthStatus(""), target.HealthStatus)
-				assert.Empty(t, target.AuthStrategy)
-				assert.Nil(t, target.AuthMetadata)
+				assert.Nil(t, target.AuthConfig)
 				assert.Nil(t, target.Metadata)
 			},
 		},

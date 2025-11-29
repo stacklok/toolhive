@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 const (
@@ -80,12 +81,12 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // authRoundTripper is an http.RoundTripper that adds authentication to backend requests.
-// The authentication strategy and metadata are pre-resolved and validated at client creation time,
+// The authentication strategy and config are pre-resolved and validated at client creation time,
 // eliminating per-request lookups and validation overhead.
 type authRoundTripper struct {
 	base         http.RoundTripper
 	authStrategy auth.Strategy
-	authMetadata map[string]any
+	authConfig   *authtypes.BackendAuthStrategy
 	target       *vmcp.BackendTarget
 }
 
@@ -97,7 +98,7 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	reqClone := req.Clone(req.Context())
 
 	// Apply pre-resolved authentication strategy
-	if err := a.authStrategy.Authenticate(reqClone.Context(), reqClone, a.authMetadata); err != nil {
+	if err := a.authStrategy.Authenticate(reqClone.Context(), reqClone, a.authConfig); err != nil {
 		return nil, fmt.Errorf("authentication failed for backend %s: %w", a.target.WorkloadID, err)
 	}
 
@@ -111,11 +112,14 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 // This method should be called once at client creation time to enable fail-fast
 // behavior for invalid authentication configurations.
 func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (auth.Strategy, error) {
-	strategyName := target.AuthStrategy
+	var strategyName string
+	if target.AuthConfig != nil {
+		strategyName = target.AuthConfig.Type
+	}
 
 	// Default to unauthenticated if not specified
 	if strategyName == "" {
-		strategyName = "unauthenticated"
+		strategyName = authtypes.StrategyTypeUnauthenticated
 	}
 
 	// Resolve strategy from registry
@@ -139,8 +143,8 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 			target.WorkloadID, err)
 	}
 
-	// Validate metadata ONCE at client creation time
-	if err := authStrategy.Validate(target.AuthMetadata); err != nil {
+	// Validate auth config ONCE at client creation time
+	if err := authStrategy.Validate(target.AuthConfig); err != nil {
 		return nil, fmt.Errorf("invalid authentication configuration for backend %s: %w",
 			target.WorkloadID, err)
 	}
@@ -149,7 +153,7 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	baseTransport = &authRoundTripper{
 		base:         baseTransport,
 		authStrategy: authStrategy,
-		authMetadata: target.AuthMetadata,
+		authConfig:   target.AuthConfig,
 		target:       target,
 	}
 

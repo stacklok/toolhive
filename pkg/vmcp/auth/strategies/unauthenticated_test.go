@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 func TestUnauthenticatedStrategy_Name(t *testing.T) {
@@ -22,13 +24,13 @@ func TestUnauthenticatedStrategy_Authenticate(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		metadata     map[string]any
+		strategy     *authtypes.BackendAuthStrategy
 		setupRequest func() *http.Request
 		checkRequest func(t *testing.T, req *http.Request)
 	}{
 		{
-			name:     "does not modify request with no metadata",
-			metadata: nil,
+			name:     "does not modify request with nil strategy",
+			strategy: nil,
 			setupRequest: func() *http.Request {
 				req := httptest.NewRequest(http.MethodGet, "http://backend.example.com/test", nil)
 				req.Header.Set("X-Custom-Header", "original-value")
@@ -43,10 +45,9 @@ func TestUnauthenticatedStrategy_Authenticate(t *testing.T) {
 			},
 		},
 		{
-			name: "does not modify request with metadata present",
-			metadata: map[string]any{
-				"some_key": "some_value",
-				"count":    42,
+			name: "does not modify request with unauthenticated strategy",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeUnauthenticated,
 			},
 			setupRequest: func() *http.Request {
 				req := httptest.NewRequest(http.MethodGet, "http://backend.example.com/test", nil)
@@ -63,7 +64,7 @@ func TestUnauthenticatedStrategy_Authenticate(t *testing.T) {
 		},
 		{
 			name:     "preserves existing Authorization header",
-			metadata: nil,
+			strategy: nil,
 			setupRequest: func() *http.Request {
 				req := httptest.NewRequest(http.MethodGet, "http://backend.example.com/test", nil)
 				req.Header.Set("Authorization", "Bearer existing-token")
@@ -77,7 +78,7 @@ func TestUnauthenticatedStrategy_Authenticate(t *testing.T) {
 		},
 		{
 			name:     "works with empty request",
-			metadata: nil,
+			strategy: nil,
 			setupRequest: func() *http.Request {
 				return httptest.NewRequest(http.MethodGet, "http://backend.example.com/test", nil)
 			},
@@ -99,7 +100,7 @@ func TestUnauthenticatedStrategy_Authenticate(t *testing.T) {
 			req := tt.setupRequest()
 			ctx := context.Background()
 
-			err := strategy.Authenticate(ctx, req, tt.metadata)
+			err := strategy.Authenticate(ctx, req, tt.strategy)
 
 			require.NoError(t, err)
 			tt.checkRequest(t, req)
@@ -112,31 +113,16 @@ func TestUnauthenticatedStrategy_Validate(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		metadata map[string]any
+		strategy *authtypes.BackendAuthStrategy
 	}{
 		{
-			name:     "accepts nil metadata",
-			metadata: nil,
+			name:     "accepts nil strategy",
+			strategy: nil,
 		},
 		{
-			name:     "accepts empty metadata",
-			metadata: map[string]any{},
-		},
-		{
-			name: "accepts arbitrary metadata",
-			metadata: map[string]any{
-				"key1":   "value1",
-				"key2":   42,
-				"key3":   []string{"a", "b", "c"},
-				"nested": map[string]any{"inner": "value"},
-			},
-		},
-		{
-			name: "accepts metadata with typical auth fields",
-			metadata: map[string]any{
-				"token_url":   "https://example.com/token",
-				"client_id":   "client-123",
-				"header_name": "X-API-Key",
+			name: "accepts unauthenticated strategy",
+			strategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeUnauthenticated,
 			},
 		},
 	}
@@ -146,7 +132,7 @@ func TestUnauthenticatedStrategy_Validate(t *testing.T) {
 			t.Parallel()
 
 			strategy := NewUnauthenticatedStrategy()
-			err := strategy.Validate(tt.metadata)
+			err := strategy.Validate(tt.strategy)
 
 			require.NoError(t, err)
 		})

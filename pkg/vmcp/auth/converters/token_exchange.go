@@ -10,45 +10,47 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
-// TokenExchangeConverter converts MCPExternalAuthConfig TokenExchange to vMCP token_exchange strategy metadata.
+// TokenExchangeConverter converts MCPExternalAuthConfig TokenExchange to vMCP token_exchange strategy.
 type TokenExchangeConverter struct{}
 
 // StrategyType returns the vMCP strategy type for token exchange.
 func (*TokenExchangeConverter) StrategyType() string {
-	return "token_exchange"
+	return authtypes.StrategyTypeTokenExchange
 }
 
-// ConvertToMetadata converts TokenExchangeConfig to token_exchange strategy metadata (without secrets resolved).
+// Convert converts TokenExchangeConfig to a typed BackendAuthStrategy (without secrets resolved).
 // Secret references are represented as environment variable names that will be resolved at runtime.
-func (*TokenExchangeConverter) ConvertToMetadata(
+func (*TokenExchangeConverter) Convert(
 	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
-) (map[string]any, error) {
+) (*authtypes.BackendAuthStrategy, error) {
 	tokenExchange := externalAuth.Spec.TokenExchange
 	if tokenExchange == nil {
 		return nil, fmt.Errorf("token exchange config is nil")
 	}
 
-	metadata := make(map[string]any)
-	metadata["token_url"] = tokenExchange.TokenURL
+	tokenConfig := &authtypes.TokenExchangeConfig{
+		TokenURL: tokenExchange.TokenURL,
+	}
 
 	// Add optional fields if present
 	if tokenExchange.ClientID != "" {
-		metadata["client_id"] = tokenExchange.ClientID
+		tokenConfig.ClientID = tokenExchange.ClientID
 	}
 
 	if tokenExchange.ClientSecretRef != nil {
 		// Reference to environment variable that will be mounted from secret
-		metadata["client_secret_env"] = "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET"
+		tokenConfig.ClientSecretEnv = "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET"
 	}
 
 	if tokenExchange.Audience != "" {
-		metadata["audience"] = tokenExchange.Audience
+		tokenConfig.Audience = tokenExchange.Audience
 	}
 
 	if len(tokenExchange.Scopes) > 0 {
-		metadata["scopes"] = tokenExchange.Scopes
+		tokenConfig.Scopes = tokenExchange.Scopes
 	}
 
 	if tokenExchange.SubjectTokenType != "" {
@@ -62,14 +64,13 @@ func (*TokenExchangeConverter) ConvertToMetadata(
 		case "jwt":
 			subjectTokenType = "urn:ietf:params:oauth:token-type:jwt" // #nosec G101 - not a credential
 		}
-		metadata["subject_token_type"] = subjectTokenType
+		tokenConfig.SubjectTokenType = subjectTokenType
 	}
 
-	if tokenExchange.ExternalTokenHeaderName != "" {
-		metadata["external_token_header_name"] = tokenExchange.ExternalTokenHeaderName
-	}
-
-	return metadata, nil
+	return &authtypes.BackendAuthStrategy{
+		Type:          authtypes.StrategyTypeTokenExchange,
+		TokenExchange: tokenConfig,
+	}, nil
 }
 
 // ResolveSecrets fetches the client secret from Kubernetes and replaces the env var reference
@@ -78,26 +79,26 @@ func (*TokenExchangeConverter) ConvertToMetadata(
 // because the vMCP pod doesn't know about backend auth configs at pod creation time.
 //
 // This method:
-//  1. Checks if client_secret_env is present in metadata
+//  1. Checks if ClientSecretEnv is present in the strategy
 //  2. Fetches the referenced Kubernetes secret
-//  3. Replaces client_secret_env with client_secret containing the actual value
+//  3. Replaces ClientSecretEnv with ClientSecret containing the actual value
 //
-// If client_secret_env is not present (or client_secret is already set), metadata is returned unchanged.
+// If ClientSecretEnv is not present (or ClientSecret is already set), strategy is returned unchanged.
 func (*TokenExchangeConverter) ResolveSecrets(
 	ctx context.Context,
 	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
 	k8sClient client.Client,
 	namespace string,
-	metadata map[string]any,
-) (map[string]any, error) {
+	strategy *authtypes.BackendAuthStrategy,
+) (*authtypes.BackendAuthStrategy, error) {
 	tokenExchange := externalAuth.Spec.TokenExchange
 	if tokenExchange == nil {
 		return nil, fmt.Errorf("token exchange config is nil")
 	}
 
-	// If no client_secret_env is present, nothing to resolve
-	if _, hasEnvRef := metadata["client_secret_env"]; !hasEnvRef {
-		return metadata, nil
+	// If no ClientSecretEnv is present, nothing to resolve
+	if strategy.TokenExchange == nil || strategy.TokenExchange.ClientSecretEnv == "" {
+		return strategy, nil
 	}
 
 	// If ClientSecretRef is not configured, we cannot resolve
@@ -124,8 +125,8 @@ func (*TokenExchangeConverter) ResolveSecrets(
 	}
 
 	// Replace the env var reference with actual secret value
-	delete(metadata, "client_secret_env")
-	metadata["client_secret"] = string(secretValue)
+	strategy.TokenExchange.ClientSecretEnv = ""
+	strategy.TokenExchange.ClientSecret = string(secretValue)
 
-	return metadata, nil
+	return strategy, nil
 }

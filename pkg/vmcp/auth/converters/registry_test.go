@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 func TestDefaultRegistry(t *testing.T) {
@@ -71,13 +72,13 @@ func TestDefaultRegistry(t *testing.T) {
 		tokenExchangeConverter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeTokenExchange)
 		require.NoError(t, err)
 		require.NotNil(t, tokenExchangeConverter)
-		assert.Equal(t, "token_exchange", tokenExchangeConverter.StrategyType())
+		assert.Equal(t, authtypes.StrategyTypeTokenExchange, tokenExchangeConverter.StrategyType())
 
 		// Test header injection converter
 		headerInjectionConverter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeHeaderInjection)
 		require.NoError(t, err)
 		require.NotNil(t, headerInjectionConverter)
-		assert.Equal(t, "header_injection", headerInjectionConverter.StrategyType())
+		assert.Equal(t, authtypes.StrategyTypeHeaderInjection, headerInjectionConverter.StrategyType())
 	})
 }
 
@@ -121,8 +122,8 @@ func TestNewRegistry(t *testing.T) {
 			authType     mcpv1alpha1.ExternalAuthType
 			expectedType string
 		}{
-			{mcpv1alpha1.ExternalAuthTypeTokenExchange, "token_exchange"},
-			{mcpv1alpha1.ExternalAuthTypeHeaderInjection, "header_injection"},
+			{mcpv1alpha1.ExternalAuthTypeTokenExchange, authtypes.StrategyTypeTokenExchange},
+			{mcpv1alpha1.ExternalAuthTypeHeaderInjection, authtypes.StrategyTypeHeaderInjection},
 		}
 
 		for _, tc := range testCases {
@@ -166,7 +167,7 @@ func TestRegistry_Register(t *testing.T) {
 		// Verify first converter is registered
 		retrieved, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeHeaderInjection)
 		require.NoError(t, err)
-		assert.Equal(t, "header_injection", retrieved.StrategyType())
+		assert.Equal(t, authtypes.StrategyTypeHeaderInjection, retrieved.StrategyType())
 
 		// Register a TokenExchangeConverter with same auth type (should overwrite)
 		converter2 := &TokenExchangeConverter{}
@@ -175,7 +176,7 @@ func TestRegistry_Register(t *testing.T) {
 		// Verify second converter overwrote the first
 		retrieved, err = registry.GetConverter(mcpv1alpha1.ExternalAuthTypeHeaderInjection)
 		require.NoError(t, err)
-		assert.Equal(t, "token_exchange", retrieved.StrategyType(), "should return second converter with different strategy type")
+		assert.Equal(t, authtypes.StrategyTypeTokenExchange, retrieved.StrategyType(), "should return second converter with different strategy type")
 	})
 
 	t.Run("is thread-safe", func(t *testing.T) {
@@ -252,7 +253,7 @@ func TestRegistry_GetConverter(t *testing.T) {
 					errs <- err
 					return
 				}
-				if converter.StrategyType() != "header_injection" {
+				if converter.StrategyType() != authtypes.StrategyTypeHeaderInjection {
 					errs <- assert.AnError
 				}
 			}()
@@ -268,7 +269,7 @@ func TestRegistry_GetConverter(t *testing.T) {
 	})
 }
 
-func TestConvertToStrategyMetadata(t *testing.T) {
+func TestConvertToBackendAuthStrategy(t *testing.T) {
 	t.Parallel()
 
 	t.Run("converts header injection config", func(t *testing.T) {
@@ -291,11 +292,12 @@ func TestConvertToStrategyMetadata(t *testing.T) {
 			},
 		}
 
-		strategyType, metadata, err := ConvertToStrategyMetadata(authConfig)
+		strategy, err := ConvertToBackendAuthStrategy(authConfig)
 		require.NoError(t, err)
-		assert.Equal(t, "header_injection", strategyType)
-		assert.NotNil(t, metadata)
-		assert.Equal(t, "X-API-Key", metadata["header_name"])
+		assert.NotNil(t, strategy)
+		assert.Equal(t, authtypes.StrategyTypeHeaderInjection, strategy.Type)
+		require.NotNil(t, strategy.HeaderInjection)
+		assert.Equal(t, "X-API-Key", strategy.HeaderInjection.HeaderName)
 	})
 
 	t.Run("converts token exchange config", func(t *testing.T) {
@@ -321,21 +323,20 @@ func TestConvertToStrategyMetadata(t *testing.T) {
 			},
 		}
 
-		strategyType, metadata, err := ConvertToStrategyMetadata(authConfig)
+		strategy, err := ConvertToBackendAuthStrategy(authConfig)
 		require.NoError(t, err)
-		assert.Equal(t, "token_exchange", strategyType)
-		assert.NotNil(t, metadata)
-		// Token exchange metadata contains URLs and config
-		assert.NotEmpty(t, metadata)
+		assert.NotNil(t, strategy)
+		assert.Equal(t, authtypes.StrategyTypeTokenExchange, strategy.Type)
+		require.NotNil(t, strategy.TokenExchange)
+		assert.Equal(t, "https://auth.example.com/token", strategy.TokenExchange.TokenURL)
 	})
 
 	t.Run("returns error for nil config", func(t *testing.T) {
 		t.Parallel()
 
-		strategyType, metadata, err := ConvertToStrategyMetadata(nil)
+		strategy, err := ConvertToBackendAuthStrategy(nil)
 		assert.Error(t, err)
-		assert.Empty(t, strategyType)
-		assert.Nil(t, metadata)
+		assert.Nil(t, strategy)
 		assert.Contains(t, err.Error(), "external auth config is nil")
 	})
 
@@ -352,10 +353,9 @@ func TestConvertToStrategyMetadata(t *testing.T) {
 			},
 		}
 
-		strategyType, metadata, err := ConvertToStrategyMetadata(authConfig)
+		strategy, err := ConvertToBackendAuthStrategy(authConfig)
 		assert.Error(t, err)
-		assert.Empty(t, strategyType)
-		assert.Nil(t, metadata)
+		assert.Nil(t, strategy)
 		assert.Contains(t, err.Error(), "unsupported auth type")
 	})
 
@@ -373,10 +373,9 @@ func TestConvertToStrategyMetadata(t *testing.T) {
 			},
 		}
 
-		strategyType, metadata, err := ConvertToStrategyMetadata(authConfig)
+		strategy, err := ConvertToBackendAuthStrategy(authConfig)
 		assert.Error(t, err)
-		assert.Empty(t, strategyType)
-		assert.Nil(t, metadata)
+		assert.Nil(t, strategy)
 		assert.Contains(t, err.Error(), "nil")
 	})
 }
@@ -426,16 +425,18 @@ func TestResolveSecretsForStrategy(t *testing.T) {
 			},
 		}
 
-		initialMetadata := map[string]any{
-			"header_name":      "X-API-Key",
-			"header_value_env": "TOOLHIVE_HEADER_INJECTION_VALUE",
+		initialStrategy := &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeHeaderInjection,
+			HeaderInjection: &authtypes.HeaderInjectionConfig{
+				HeaderName: "X-API-Key",
+			},
 		}
 
-		resolvedMetadata, err := ResolveSecretsForStrategy(ctx, authConfig, k8sClient, "default", initialMetadata)
+		resolvedStrategy, err := ResolveSecretsForStrategy(ctx, authConfig, k8sClient, "default", initialStrategy)
 		require.NoError(t, err)
-		assert.NotNil(t, resolvedMetadata)
-		assert.Equal(t, "X-API-Key", resolvedMetadata["header_name"])
-		assert.Equal(t, "secret-value-123", resolvedMetadata["header_value"])
+		assert.NotNil(t, resolvedStrategy)
+		assert.Equal(t, "X-API-Key", resolvedStrategy.HeaderInjection.HeaderName)
+		assert.Equal(t, "secret-value-123", resolvedStrategy.HeaderInjection.HeaderValue)
 	})
 
 	t.Run("returns error for nil config", func(t *testing.T) {
@@ -448,10 +449,10 @@ func TestResolveSecretsForStrategy(t *testing.T) {
 			WithScheme(scheme).
 			Build()
 
-		inputMetadata := map[string]any{}
-		metadata, err := ResolveSecretsForStrategy(ctx, nil, k8sClient, "default", inputMetadata)
+		inputStrategy := &authtypes.BackendAuthStrategy{}
+		strategy, err := ResolveSecretsForStrategy(ctx, nil, k8sClient, "default", inputStrategy)
 		assert.Error(t, err)
-		assert.Nil(t, metadata, "should return nil on error")
+		assert.Nil(t, strategy, "should return nil on error")
 		assert.Contains(t, err.Error(), "external auth config is nil")
 	})
 
@@ -475,10 +476,10 @@ func TestResolveSecretsForStrategy(t *testing.T) {
 			},
 		}
 
-		inputMetadata := map[string]any{}
-		metadata, err := ResolveSecretsForStrategy(ctx, authConfig, k8sClient, "default", inputMetadata)
+		inputStrategy := &authtypes.BackendAuthStrategy{}
+		strategy, err := ResolveSecretsForStrategy(ctx, authConfig, k8sClient, "default", inputStrategy)
 		assert.Error(t, err)
-		assert.Nil(t, metadata, "should return nil on error")
+		assert.Nil(t, strategy, "should return nil on error")
 		assert.Contains(t, err.Error(), "unsupported auth type")
 	})
 
@@ -513,14 +514,16 @@ func TestResolveSecretsForStrategy(t *testing.T) {
 			},
 		}
 
-		initialMetadata := map[string]any{
-			"header_name":      "X-API-Key",
-			"header_value_env": "TOOLHIVE_HEADER_INJECTION_VALUE",
+		initialStrategy := &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeHeaderInjection,
+			HeaderInjection: &authtypes.HeaderInjectionConfig{
+				HeaderName: "X-API-Key",
+			},
 		}
 
-		metadata, err := ResolveSecretsForStrategy(ctx, authConfig, k8sClient, "default", initialMetadata)
+		strategy, err := ResolveSecretsForStrategy(ctx, authConfig, k8sClient, "default", initialStrategy)
 		assert.Error(t, err)
-		assert.Nil(t, metadata, "should return nil on error")
+		assert.Nil(t, strategy, "should return nil on error")
 		assert.Contains(t, err.Error(), "failed to get secret")
 	})
 }

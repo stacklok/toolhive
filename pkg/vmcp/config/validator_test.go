@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 func TestValidator_ValidateBasicFields(t *testing.T) {
@@ -202,8 +203,8 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			name: "valid inline source with unauthenticated default",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
-				Default: &BackendAuthStrategy{
-					Type: "unauthenticated",
+				Default: &authtypes.BackendAuthStrategy{
+					Type: authtypes.StrategyTypeUnauthenticated,
 				},
 			},
 			wantErr: false,
@@ -212,12 +213,12 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			name: "valid header_injection backend",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
-				Backends: map[string]*BackendAuthStrategy{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"github": {
-						Type: "header_injection",
-						Metadata: map[string]any{
-							"header_name":  "Authorization",
-							"header_value": "secret-token",
+						Type: authtypes.StrategyTypeHeaderInjection,
+						HeaderInjection: &authtypes.HeaderInjectionConfig{
+							HeaderName:  "Authorization",
+							HeaderValue: "secret-token",
 						},
 					},
 				},
@@ -254,7 +255,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			name: "invalid backend auth type",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
-				Backends: map[string]*BackendAuthStrategy{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"test": {
 						Type: "invalid",
 					},

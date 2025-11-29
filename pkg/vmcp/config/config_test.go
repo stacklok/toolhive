@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
@@ -13,123 +15,132 @@ func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
 		name         string
 		config       *OutgoingAuthConfig
 		backendID    string
-		wantStrategy string
-		wantMetadata map[string]any
+		wantStrategy *authtypes.BackendAuthStrategy
 		description  string
 	}{
 		{
-			name:         "nil config returns empty",
+			name:         "nil config returns nil",
 			config:       nil,
 			backendID:    "backend1",
-			wantStrategy: "",
-			wantMetadata: nil,
-			description:  "When config is nil, should return empty values",
+			wantStrategy: nil,
+			description:  "When config is nil, should return nil",
 		},
 		{
 			name: "backend-specific config takes precedence",
 			config: &OutgoingAuthConfig{
-				Default: &BackendAuthStrategy{
-					Type:     "default-strategy",
-					Metadata: map[string]any{"key": "default-value"},
+				Default: &authtypes.BackendAuthStrategy{
+					Type: "default-strategy",
 				},
-				Backends: map[string]*BackendAuthStrategy{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"backend1": {
-						Type:     "backend-specific-strategy",
-						Metadata: map[string]any{"key": "backend-value"},
+						Type: "backend-specific-strategy",
 					},
 				},
 			},
-			backendID:    "backend1",
-			wantStrategy: "backend-specific-strategy",
-			wantMetadata: map[string]any{"key": "backend-value"},
-			description:  "Backend-specific config should override default",
+			backendID: "backend1",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: "backend-specific-strategy",
+			},
+			description: "Backend-specific config should override default",
 		},
 		{
 			name: "falls back to default when backend not configured",
 			config: &OutgoingAuthConfig{
-				Default: &BackendAuthStrategy{
-					Type:     "default-strategy",
-					Metadata: map[string]any{"key": "default-value"},
+				Default: &authtypes.BackendAuthStrategy{
+					Type: "default-strategy",
 				},
-				Backends: map[string]*BackendAuthStrategy{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"backend1": {
-						Type:     "backend-specific-strategy",
-						Metadata: map[string]any{"key": "backend-value"},
+						Type: "backend-specific-strategy",
 					},
 				},
 			},
-			backendID:    "backend2",
-			wantStrategy: "default-strategy",
-			wantMetadata: map[string]any{"key": "default-value"},
-			description:  "Should use default when specific backend not configured",
+			backendID: "backend2",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: "default-strategy",
+			},
+			description: "Should use default when specific backend not configured",
 		},
 		{
-			name: "returns empty when no default and backend not configured",
+			name: "returns nil when no default and backend not configured",
 			config: &OutgoingAuthConfig{
-				Backends: map[string]*BackendAuthStrategy{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"backend1": {
-						Type:     "backend-specific-strategy",
-						Metadata: map[string]any{"key": "backend-value"},
+						Type: "backend-specific-strategy",
 					},
 				},
 			},
 			backendID:    "backend2",
-			wantStrategy: "",
-			wantMetadata: nil,
-			description:  "Should return empty when no default and backend not in map",
+			wantStrategy: nil,
+			description:  "Should return nil when no default and backend not in map",
 		},
 		{
 			name: "handles nil backend strategy in map",
 			config: &OutgoingAuthConfig{
-				Default: &BackendAuthStrategy{
-					Type:     "default-strategy",
-					Metadata: map[string]any{"key": "default-value"},
+				Default: &authtypes.BackendAuthStrategy{
+					Type: "default-strategy",
 				},
-				Backends: map[string]*BackendAuthStrategy{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"backend1": nil,
 				},
 			},
-			backendID:    "backend1",
-			wantStrategy: "default-strategy",
-			wantMetadata: map[string]any{"key": "default-value"},
-			description:  "Should fall back to default when backend strategy is nil",
+			backendID: "backend1",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: "default-strategy",
+			},
+			description: "Should fall back to default when backend strategy is nil",
 		},
 		{
-			name: "returns empty when only default is nil",
+			name: "returns nil when only default is nil",
 			config: &OutgoingAuthConfig{
 				Default:  nil,
-				Backends: map[string]*BackendAuthStrategy{},
+				Backends: map[string]*authtypes.BackendAuthStrategy{},
 			},
 			backendID:    "backend1",
-			wantStrategy: "",
-			wantMetadata: nil,
-			description:  "Should return empty when default is nil and backend not found",
+			wantStrategy: nil,
+			description:  "Should return nil when default is nil and backend not found",
 		},
 		{
-			name: "handles strategy with nil metadata",
+			name: "handles header injection strategy",
 			config: &OutgoingAuthConfig{
-				Default: &BackendAuthStrategy{
-					Type:     "default-strategy",
-					Metadata: nil,
+				Default: &authtypes.BackendAuthStrategy{
+					Type: authtypes.StrategyTypeHeaderInjection,
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "X-API-Key",
+						HeaderValue: "test-value",
+					},
 				},
 			},
-			backendID:    "backend1",
-			wantStrategy: "default-strategy",
-			wantMetadata: nil,
-			description:  "Should handle nil metadata correctly",
+			backendID: "backend1",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-API-Key",
+					HeaderValue: "test-value",
+				},
+			},
+			description: "Should return full header injection strategy",
 		},
 		{
-			name: "handles strategy with empty metadata",
+			name: "handles token exchange strategy",
 			config: &OutgoingAuthConfig{
-				Default: &BackendAuthStrategy{
-					Type:     "default-strategy",
-					Metadata: map[string]any{},
+				Default: &authtypes.BackendAuthStrategy{
+					Type: authtypes.StrategyTypeTokenExchange,
+					TokenExchange: &authtypes.TokenExchangeConfig{
+						TokenURL: "https://example.com/token",
+						ClientID: "client-id",
+					},
 				},
 			},
-			backendID:    "backend1",
-			wantStrategy: "default-strategy",
-			wantMetadata: map[string]any{},
-			description:  "Should return empty map when metadata is empty",
+			backendID: "backend1",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://example.com/token",
+					ClientID: "client-id",
+				},
+			},
+			description: "Should return full token exchange strategy",
 		},
 	}
 
@@ -137,10 +148,9 @@ func TestOutgoingAuthConfig_ResolveForBackend(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			gotStrategy, gotMetadata := tt.config.ResolveForBackend(tt.backendID)
+			gotStrategy := tt.config.ResolveForBackend(tt.backendID)
 
 			assert.Equal(t, tt.wantStrategy, gotStrategy, "Strategy mismatch: %s", tt.description)
-			assert.Equal(t, tt.wantMetadata, gotMetadata, "Metadata mismatch: %s", tt.description)
 		})
 	}
 }

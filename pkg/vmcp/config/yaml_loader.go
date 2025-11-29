@@ -9,7 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // YAMLLoader loads configuration from a YAML file.
@@ -272,7 +272,7 @@ func (*YAMLLoader) transformIncomingAuth(raw *rawIncomingAuth) (*IncomingAuthCon
 func (l *YAMLLoader) transformOutgoingAuth(raw *rawOutgoingAuth) (*OutgoingAuthConfig, error) {
 	cfg := &OutgoingAuthConfig{
 		Source:   raw.Source,
-		Backends: make(map[string]*BackendAuthStrategy),
+		Backends: make(map[string]*authtypes.BackendAuthStrategy),
 	}
 
 	if raw.Default != nil {
@@ -294,22 +294,20 @@ func (l *YAMLLoader) transformOutgoingAuth(raw *rawOutgoingAuth) (*OutgoingAuthC
 	return cfg, nil
 }
 
-//nolint:gocyclo // We should split this into multiple functions per strategy type.
-func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*BackendAuthStrategy, error) {
-	strategy := &BackendAuthStrategy{
-		Type:     raw.Type,
-		Metadata: make(map[string]any),
+func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (*authtypes.BackendAuthStrategy, error) {
+	strategy := &authtypes.BackendAuthStrategy{
+		Type: raw.Type,
 	}
 
 	switch raw.Type {
-	case strategies.StrategyTypeHeaderInjection:
+	case authtypes.StrategyTypeHeaderInjection:
 		if raw.HeaderInjection == nil {
 			return nil, fmt.Errorf("header_injection configuration is required")
 		}
 
 		// Validate that exactly one of header_value or header_value_env is set
-		// to make the life of the strategy easier, we read the value here in set preference
-		// order and pass it in metadata in a single value regardless of how it was set.
+		// to make the life of the strategy easier, we read the value here and resolve
+		// environment variables, storing the resolved value in HeaderValue.
 		hasValue := raw.HeaderInjection.HeaderValue != ""
 		hasValueEnv := raw.HeaderInjection.HeaderValueEnv != ""
 
@@ -329,15 +327,15 @@ func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (
 			}
 		}
 
-		strategy.Metadata = map[string]any{
-			strategies.MetadataHeaderName:  raw.HeaderInjection.HeaderName,
-			strategies.MetadataHeaderValue: headerValue,
+		strategy.HeaderInjection = &authtypes.HeaderInjectionConfig{
+			HeaderName:  raw.HeaderInjection.HeaderName,
+			HeaderValue: headerValue,
 		}
 
-	case strategies.StrategyTypeUnauthenticated:
-		// No metadata required for unauthenticated strategy
+	case authtypes.StrategyTypeUnauthenticated:
+		// No configuration required for unauthenticated strategy
 
-	case "token_exchange":
+	case authtypes.StrategyTypeTokenExchange:
 		if raw.TokenExchange == nil {
 			return nil, fmt.Errorf("token_exchange configuration is required")
 		}
@@ -349,13 +347,13 @@ func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (
 			}
 		}
 
-		strategy.Metadata = map[string]any{
-			"token_url":          raw.TokenExchange.TokenURL,
-			"client_id":          raw.TokenExchange.ClientID,
-			"client_secret_env":  raw.TokenExchange.ClientSecretEnv,
-			"audience":           raw.TokenExchange.Audience,
-			"scopes":             raw.TokenExchange.Scopes,
-			"subject_token_type": raw.TokenExchange.SubjectTokenType,
+		strategy.TokenExchange = &authtypes.TokenExchangeConfig{
+			TokenURL:         raw.TokenExchange.TokenURL,
+			ClientID:         raw.TokenExchange.ClientID,
+			ClientSecretEnv:  raw.TokenExchange.ClientSecretEnv,
+			Audience:         raw.TokenExchange.Audience,
+			Scopes:           raw.TokenExchange.Scopes,
+			SubjectTokenType: raw.TokenExchange.SubjectTokenType,
 		}
 	}
 

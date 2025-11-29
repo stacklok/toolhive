@@ -7,20 +7,21 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/validation"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // HeaderInjectionStrategy injects a static header value into request headers.
 // This is a general-purpose strategy that can inject any header with any value,
 // commonly used for API keys, bearer tokens, or custom authentication headers.
 //
-// The strategy extracts the header name and value from the metadata
-// configuration and injects them into the backend request headers.
+// The strategy uses the typed HeaderInjectionConfig from BackendAuthStrategy
+// and injects the configured header into the backend request.
 //
-// Required metadata fields:
-//   - header_name: The HTTP header name to use (e.g., "X-API-Key", "Authorization")
-//   - header_value: The header value to inject (can be an API key, token, or any value)
+// Required configuration (in BackendAuthStrategy.HeaderInjection):
+//   - HeaderName: The HTTP header name to use (e.g., "X-API-Key", "Authorization")
+//   - HeaderValue: The header value to inject (can be an API key, token, or any value)
 //     Note: In YAML configuration, use either header_value (literal) or header_value_env (from environment).
-//     The value is resolved at config load time and passed here as header_value.
+//     The value is resolved at config load time and stored in HeaderValue.
 //
 // This strategy is appropriate when:
 //   - The backend requires a static header value for authentication
@@ -42,63 +43,71 @@ func (*HeaderInjectionStrategy) Name() string {
 	return StrategyTypeHeaderInjection
 }
 
-// Authenticate injects the header value from metadata into the request header.
+// Authenticate injects the header value from the typed config into the request header.
 //
 // This method:
-//  1. Validates that header_name and header_value are present in metadata
+//  1. Validates that HeaderInjection config is present with HeaderName and HeaderValue
 //  2. Sets the specified header with the provided value
 //
 // Parameters:
 //   - ctx: Request context (currently unused, reserved for future secret resolution)
 //   - req: The HTTP request to authenticate
-//   - metadata: Strategy-specific configuration containing header_name and header_value
+//   - strategy: The typed BackendAuthStrategy containing HeaderInjection configuration
 //
 // Returns an error if:
-//   - header_name is missing or empty
-//   - header_value is missing or empty
-func (*HeaderInjectionStrategy) Authenticate(_ context.Context, req *http.Request, metadata map[string]any) error {
-	headerName, ok := metadata[MetadataHeaderName].(string)
-	if !ok || headerName == "" {
-		return fmt.Errorf("header_name required in metadata")
+//   - strategy or HeaderInjection config is nil
+//   - HeaderName is missing or empty
+//   - HeaderValue is missing or empty
+func (*HeaderInjectionStrategy) Authenticate(_ context.Context, req *http.Request, strategy *authtypes.BackendAuthStrategy) error {
+	if strategy == nil || strategy.HeaderInjection == nil {
+		return fmt.Errorf("header_injection configuration required")
 	}
 
-	headerValue, ok := metadata[MetadataHeaderValue].(string)
-	if !ok || headerValue == "" {
-		return fmt.Errorf("header_value required in metadata")
+	cfg := strategy.HeaderInjection
+	if cfg.HeaderName == "" {
+		return fmt.Errorf("header_name required in header_injection configuration")
 	}
 
-	req.Header.Set(headerName, headerValue)
+	if cfg.HeaderValue == "" {
+		return fmt.Errorf("header_value required in header_injection configuration")
+	}
+
+	req.Header.Set(cfg.HeaderName, cfg.HeaderValue)
 	return nil
 }
 
-// Validate checks if the required metadata fields are present and valid.
+// Validate checks if the required configuration fields are present and valid.
 //
 // This method verifies that:
-//   - header_name is present and non-empty
-//   - header_value is present and non-empty
-//   - header_name is a valid HTTP header name (prevents CRLF injection)
-//   - header_value is a valid HTTP header value (prevents CRLF injection)
+//   - strategy and HeaderInjection config are not nil
+//   - HeaderName is present and non-empty
+//   - HeaderValue is present and non-empty
+//   - HeaderName is a valid HTTP header name (prevents CRLF injection)
+//   - HeaderValue is a valid HTTP header value (prevents CRLF injection)
 //
 // This validation is typically called during configuration parsing to fail fast
 // if the strategy is misconfigured.
-func (*HeaderInjectionStrategy) Validate(metadata map[string]any) error {
-	headerName, ok := metadata[MetadataHeaderName].(string)
-	if !ok || headerName == "" {
-		return fmt.Errorf("header_name required in metadata")
+func (*HeaderInjectionStrategy) Validate(strategy *authtypes.BackendAuthStrategy) error {
+	if strategy == nil || strategy.HeaderInjection == nil {
+		return fmt.Errorf("header_injection configuration required")
 	}
 
-	headerValue, ok := metadata[MetadataHeaderValue].(string)
-	if !ok || headerValue == "" {
-		return fmt.Errorf("header_value required in metadata")
+	cfg := strategy.HeaderInjection
+	if cfg.HeaderName == "" {
+		return fmt.Errorf("header_name required in header_injection configuration")
+	}
+
+	if cfg.HeaderValue == "" {
+		return fmt.Errorf("header_value required in header_injection configuration")
 	}
 
 	// Validate header name to prevent injection attacks
-	if err := validation.ValidateHTTPHeaderName(headerName); err != nil {
+	if err := validation.ValidateHTTPHeaderName(cfg.HeaderName); err != nil {
 		return fmt.Errorf("invalid header_name: %w", err)
 	}
 
 	// Validate header value to prevent injection attacks
-	if err := validation.ValidateHTTPHeaderValue(headerValue); err != nil {
+	if err := validation.ValidateHTTPHeaderValue(cfg.HeaderValue); err != nil {
 		return fmt.Errorf("invalid header_value: %w", err)
 	}
 

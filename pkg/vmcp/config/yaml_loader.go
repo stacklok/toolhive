@@ -237,6 +237,9 @@ func (l *YAMLLoader) transformToConfig(raw *rawConfig) (*Config, error) {
 		cfg.CompositeTools = compositeTools
 	}
 
+	// Apply operational defaults (fills missing values)
+	cfg.EnsureOperationalDefaults()
+
 	return cfg, nil
 }
 

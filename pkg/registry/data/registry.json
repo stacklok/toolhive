@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-29T00:17:47Z",
+  "last_updated": "2025-11-30T00:20:47Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -348,9 +348,9 @@
         "jira_batch_create_versions"
       ],
       "metadata": {
-        "stars": 3502,
+        "stars": 3677,
         "pulls": 12849,
-        "last_updated": "2025-11-04T02:32:44Z"
+        "last_updated": "2025-11-29T02:32:19Z"
       },
       "repository_url": "https://github.com/sooperset/mcp-atlassian",
       "tags": [
@@ -484,7 +484,7 @@
         "api",
         "devops"
       ],
-      "image": "public.ecr.aws/awslabs-mcp/awslabs/aws-api-mcp-server:1.1.7",
+      "image": "public.ecr.aws/awslabs-mcp/awslabs/aws-api-mcp-server:1.1.8",
       "permissions": {
         "network": {
           "outbound": {
@@ -691,9 +691,9 @@
         "get_price_list_urls"
       ],
       "metadata": {
-        "stars": 6915,
+        "stars": 7490,
         "pulls": 8179,
-        "last_updated": "2025-11-04T02:32:44Z"
+        "last_updated": "2025-11-29T02:32:19Z"
       },
       "repository_url": "https://github.com/awslabs/mcp",
       "tags": [
@@ -4910,9 +4910,9 @@
         "whoami"
       ],
       "metadata": {
-        "stars": 411,
+        "stars": 448,
         "pulls": 127,
-        "last_updated": "2025-11-03T02:34:26Z"
+        "last_updated": "2025-11-29T02:32:17Z"
       },
       "repository_url": "https://github.com/getsentry/sentry-mcp",
       "tags": [
@@ -5104,7 +5104,7 @@
       "metadata": {
         "stars": 12,
         "pulls": 4212,
-        "last_updated": "2025-11-03T02:34:26Z"
+        "last_updated": "2025-11-29T02:32:18Z"
       },
       "repository_url": "https://github.com/StacklokLabs/sqlite-mcp",
       "tags": [
@@ -5222,9 +5222,9 @@
         "search_docs"
       ],
       "metadata": {
-        "stars": 2238,
+        "stars": 2292,
         "pulls": 102,
-        "last_updated": "2025-11-03T02:34:27Z"
+        "last_updated": "2025-11-29T02:32:18Z"
       },
       "repository_url": "https://github.com/supabase-community/supabase-mcp",
       "tags": [
@@ -5486,7 +5486,7 @@
         "toolhive",
         "vector-embeddings"
       ],
-      "image": "ghcr.io/stackloklabs/toolhive-doc-mcp:v0.0.5",
+      "image": "ghcr.io/stackloklabs/toolhive-doc-mcp:0.0.6",
       "target_port": 8080,
       "env_vars": [
         {

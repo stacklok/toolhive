@@ -295,9 +295,10 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		authConfig := &config.OutgoingAuthConfig{
 			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"workload1": {
-					Type: "bearer",
-					Metadata: map[string]any{
-						"token": "test-token",
+					Type: "header_injection",
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "Authorization",
+						HeaderValue: "test-token",
 					},
 				},
 			},
@@ -313,8 +314,8 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 
 		require.NoError(t, err)
 		require.Len(t, backends, 1)
-		assert.Equal(t, "bearer", backends[0].AuthStrategy)
-		assert.Equal(t, "test-token", backends[0].AuthMetadata["token"])
+		assert.Equal(t, "header_injection", backends[0].AuthConfig.Type)
+		assert.Equal(t, "test-token", backends[0].AuthConfig.HeaderInjection.HeaderValue)
 	})
 }
 
@@ -425,9 +426,10 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			Source: "discovered",
 			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"backend1": {
-					Type: "bearer",
-					Metadata: map[string]any{
-						"token": "config-token",
+					Type: "header_injection",
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "Authorization",
+						HeaderValue: "config-token",
 					},
 				},
 			},
@@ -440,19 +442,21 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		}
 
 		backend := &vmcp.Backend{
-			ID:           "backend1",
-			Name:         "backend1",
-			AuthStrategy: "token_exchange",
-			AuthMetadata: map[string]any{
-				"token_endpoint": "https://auth.example.com/token",
+			ID:   "backend1",
+			Name: "backend1",
+			AuthConfig: &authtypes.BackendAuthStrategy{
+				Type: "token_exchange",
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+				},
 			},
 		}
 
 		discoverer.applyAuthConfigToBackend(backend, "backend1")
 
 		// In discovered mode, discovered auth should be preserved
-		assert.Equal(t, "token_exchange", backend.AuthStrategy)
-		assert.Equal(t, "https://auth.example.com/token", backend.AuthMetadata["token_endpoint"])
+		assert.Equal(t, "token_exchange", backend.AuthConfig.Type)
+		assert.Equal(t, "https://auth.example.com/token", backend.AuthConfig.TokenExchange.TokenURL)
 	})
 
 	t.Run("discovered mode without discovered auth falls back to config", func(t *testing.T) {
@@ -467,9 +471,10 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			Source: "discovered",
 			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"backend1": {
-					Type: "bearer",
-					Metadata: map[string]any{
-						"token": "config-token",
+					Type: "header_injection",
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "Authorization",
+						HeaderValue: "config-token",
 					},
 				},
 			},
@@ -490,8 +495,8 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		discoverer.applyAuthConfigToBackend(backend, "backend1")
 
 		// Should fall back to config-based auth
-		assert.Equal(t, "bearer", backend.AuthStrategy)
-		assert.Equal(t, "config-token", backend.AuthMetadata["token"])
+		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
+		assert.Equal(t, "config-token", backend.AuthConfig.HeaderInjection.HeaderValue)
 	})
 
 	t.Run("inline mode ignores discovered auth", func(t *testing.T) {
@@ -506,9 +511,10 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			Source: "inline",
 			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"backend1": {
-					Type: "bearer",
-					Metadata: map[string]any{
-						"token": "inline-token",
+					Type: "header_injection",
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "Authorization",
+						HeaderValue: "inline-token",
 					},
 				},
 			},
@@ -521,19 +527,21 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		}
 
 		backend := &vmcp.Backend{
-			ID:           "backend1",
-			Name:         "backend1",
-			AuthStrategy: "token_exchange",
-			AuthMetadata: map[string]any{
-				"token_endpoint": "https://auth.example.com/token",
+			ID:   "backend1",
+			Name: "backend1",
+			AuthConfig: &authtypes.BackendAuthStrategy{
+				Type: "token_exchange",
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+				},
 			},
 		}
 
 		discoverer.applyAuthConfigToBackend(backend, "backend1")
 
 		// In inline mode, config-based auth should replace discovered auth
-		assert.Equal(t, "bearer", backend.AuthStrategy)
-		assert.Equal(t, "inline-token", backend.AuthMetadata["token"])
+		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
+		assert.Equal(t, "inline-token", backend.AuthConfig.HeaderInjection.HeaderValue)
 	})
 
 	t.Run("empty source mode ignores discovered auth", func(t *testing.T) {
@@ -548,9 +556,10 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			Source: "", // Empty source
 			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"backend1": {
-					Type: "bearer",
-					Metadata: map[string]any{
-						"token": "config-token",
+					Type: "header_injection",
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "Authorization",
+						HeaderValue: "config-token",
 					},
 				},
 			},
@@ -563,19 +572,21 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		}
 
 		backend := &vmcp.Backend{
-			ID:           "backend1",
-			Name:         "backend1",
-			AuthStrategy: "token_exchange",
-			AuthMetadata: map[string]any{
-				"token_endpoint": "https://auth.example.com/token",
+			ID:   "backend1",
+			Name: "backend1",
+			AuthConfig: &authtypes.BackendAuthStrategy{
+				Type: "token_exchange",
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+				},
 			},
 		}
 
 		discoverer.applyAuthConfigToBackend(backend, "backend1")
 
 		// Empty source should behave like inline mode
-		assert.Equal(t, "bearer", backend.AuthStrategy)
-		assert.Equal(t, "config-token", backend.AuthMetadata["token"])
+		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
+		assert.Equal(t, "config-token", backend.AuthConfig.HeaderInjection.HeaderValue)
 	})
 
 	t.Run("unknown source mode defaults to config-based auth", func(t *testing.T) {
@@ -590,9 +601,10 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			Source: "unknown-mode",
 			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"backend1": {
-					Type: "bearer",
-					Metadata: map[string]any{
-						"token": "fallback-token",
+					Type: "header_injection",
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "Authorization",
+						HeaderValue: "fallback-token",
 					},
 				},
 			},
@@ -605,19 +617,21 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		}
 
 		backend := &vmcp.Backend{
-			ID:           "backend1",
-			Name:         "backend1",
-			AuthStrategy: "token_exchange",
-			AuthMetadata: map[string]any{
-				"token_endpoint": "https://auth.example.com/token",
+			ID:   "backend1",
+			Name: "backend1",
+			AuthConfig: &authtypes.BackendAuthStrategy{
+				Type: "token_exchange",
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+				},
 			},
 		}
 
 		discoverer.applyAuthConfigToBackend(backend, "backend1")
 
 		// Unknown source should fall back to config-based auth for safety
-		assert.Equal(t, "bearer", backend.AuthStrategy)
-		assert.Equal(t, "fallback-token", backend.AuthMetadata["token"])
+		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
+		assert.Equal(t, "fallback-token", backend.AuthConfig.HeaderInjection.HeaderValue)
 	})
 
 	t.Run("nil auth config does nothing", func(t *testing.T) {
@@ -635,19 +649,21 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		}
 
 		backend := &vmcp.Backend{
-			ID:           "backend1",
-			Name:         "backend1",
-			AuthStrategy: "token_exchange",
-			AuthMetadata: map[string]any{
-				"token_endpoint": "https://auth.example.com/token",
+			ID:   "backend1",
+			Name: "backend1",
+			AuthConfig: &authtypes.BackendAuthStrategy{
+				Type: "token_exchange",
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+				},
 			},
 		}
 
 		discoverer.applyAuthConfigToBackend(backend, "backend1")
 
 		// With nil auth config, backend should remain unchanged
-		assert.Equal(t, "token_exchange", backend.AuthStrategy)
-		assert.Equal(t, "https://auth.example.com/token", backend.AuthMetadata["token_endpoint"])
+		assert.Equal(t, "token_exchange", backend.AuthConfig.Type)
+		assert.Equal(t, "https://auth.example.com/token", backend.AuthConfig.TokenExchange.TokenURL)
 	})
 
 	t.Run("no config for backend in inline mode leaves backend unchanged", func(t *testing.T) {
@@ -662,9 +678,10 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			Source: "inline",
 			Backends: map[string]*authtypes.BackendAuthStrategy{
 				"other-backend": {
-					Type: "bearer",
-					Metadata: map[string]any{
-						"token": "other-token",
+					Type: "header_injection",
+					HeaderInjection: &authtypes.HeaderInjectionConfig{
+						HeaderName:  "Authorization",
+						HeaderValue: "other-token",
 					},
 				},
 			},
@@ -677,11 +694,13 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		}
 
 		backend := &vmcp.Backend{
-			ID:           "backend1",
-			Name:         "backend1",
-			AuthStrategy: "token_exchange",
-			AuthMetadata: map[string]any{
-				"token_endpoint": "https://auth.example.com/token",
+			ID:   "backend1",
+			Name: "backend1",
+			AuthConfig: &authtypes.BackendAuthStrategy{
+				Type: "token_exchange",
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					TokenURL: "https://auth.example.com/token",
+				},
 			},
 		}
 
@@ -689,8 +708,8 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 
 		// In inline mode with no config for this backend, discovered auth is cleared
 		// but no new auth is applied (ResolveForBackend returns empty)
-		assert.Equal(t, "token_exchange", backend.AuthStrategy)
-		assert.Equal(t, "https://auth.example.com/token", backend.AuthMetadata["token_endpoint"])
+		assert.Equal(t, "token_exchange", backend.AuthConfig.Type)
+		assert.Equal(t, "https://auth.example.com/token", backend.AuthConfig.TokenExchange.TokenURL)
 	})
 
 	t.Run("discovered mode with header injection auth", func(t *testing.T) {
@@ -713,21 +732,23 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		}
 
 		backend := &vmcp.Backend{
-			ID:           "backend1",
-			Name:         "backend1",
-			AuthStrategy: "header_injection",
-			AuthMetadata: map[string]any{
-				"header_name": "X-API-Key",
-				"api_key":     "secret-key-123",
+			ID:   "backend1",
+			Name: "backend1",
+			AuthConfig: &authtypes.BackendAuthStrategy{
+				Type: "header_injection",
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-API-Key",
+					HeaderValue: "secret-key-123",
+				},
 			},
 		}
 
 		discoverer.applyAuthConfigToBackend(backend, "backend1")
 
 		// In discovered mode, header injection auth should be preserved
-		assert.Equal(t, "header_injection", backend.AuthStrategy)
-		assert.Equal(t, "X-API-Key", backend.AuthMetadata["header_name"])
-		assert.Equal(t, "secret-key-123", backend.AuthMetadata["api_key"])
+		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
+		assert.Equal(t, "X-API-Key", backend.AuthConfig.HeaderInjection.HeaderName)
+		assert.Equal(t, "secret-key-123", backend.AuthConfig.HeaderInjection.HeaderValue)
 	})
 
 	t.Run("discovered mode falls back to default config when no auth discovered", func(t *testing.T) {
@@ -741,9 +762,10 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		authConfig := &config.OutgoingAuthConfig{
 			Source: "discovered",
 			Default: &authtypes.BackendAuthStrategy{
-				Type: "bearer",
-				Metadata: map[string]any{
-					"token": "default-fallback-token",
+				Type: "header_injection",
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "Authorization",
+					HeaderValue: "default-fallback-token",
 				},
 			},
 		}
@@ -763,7 +785,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		discoverer.applyAuthConfigToBackend(backend, "backend1")
 
 		// In discovered mode with no discovered auth, should fall back to default config
-		assert.Equal(t, "bearer", backend.AuthStrategy)
-		assert.Equal(t, "default-fallback-token", backend.AuthMetadata["token"])
+		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
+		assert.Equal(t, "default-fallback-token", backend.AuthConfig.HeaderInjection.HeaderValue)
 	})
 }

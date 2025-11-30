@@ -10,34 +10,38 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
-// HeaderInjectionConverter converts MCPExternalAuthConfig HeaderInjection to vMCP header_injection strategy metadata.
+// HeaderInjectionConverter converts MCPExternalAuthConfig HeaderInjection to vMCP header_injection strategy.
 type HeaderInjectionConverter struct{}
 
 // StrategyType returns the vMCP strategy type for header injection.
 func (*HeaderInjectionConverter) StrategyType() string {
-	return "header_injection"
+	return authtypes.StrategyTypeHeaderInjection
 }
 
-// ConvertToMetadata converts HeaderInjectionConfig to header_injection strategy metadata (without secrets resolved).
-// The secret value will be added by ResolveSecrets.
-func (*HeaderInjectionConverter) ConvertToMetadata(
+// ConvertToStrategy converts HeaderInjectionConfig to a BackendAuthStrategy with typed fields.
+// The header value will be added by ResolveSecrets when using discovered mode.
+func (*HeaderInjectionConverter) ConvertToStrategy(
 	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
-) (map[string]any, error) {
+) (*authtypes.BackendAuthStrategy, error) {
 	headerInjection := externalAuth.Spec.HeaderInjection
 	if headerInjection == nil {
 		return nil, fmt.Errorf("header injection config is nil")
 	}
 
-	metadata := make(map[string]any)
-	metadata[strategies.MetadataHeaderName] = headerInjection.HeaderName
+	strategy := &authtypes.BackendAuthStrategy{
+		Type: authtypes.StrategyTypeHeaderInjection,
+		HeaderInjection: &authtypes.HeaderInjectionConfig{
+			HeaderName: headerInjection.HeaderName,
+		},
+	}
 
-	return metadata, nil
+	return strategy, nil
 }
 
-// ResolveSecrets fetches the header value secret from Kubernetes and adds it to the metadata.
+// ResolveSecrets fetches the header value secret from Kubernetes and sets it in the strategy.
 // Unlike token exchange which can use environment variables in non-discovered mode, header
 // injection always requires dynamic secret resolution because backends can be added or modified
 // at runtime, even in non-discovered mode. The vMCP pod cannot know all backend auth configs
@@ -47,8 +51,12 @@ func (*HeaderInjectionConverter) ResolveSecrets(
 	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
 	k8sClient client.Client,
 	namespace string,
-	metadata map[string]any,
-) (map[string]any, error) {
+	strategy *authtypes.BackendAuthStrategy,
+) (*authtypes.BackendAuthStrategy, error) {
+	if strategy == nil || strategy.HeaderInjection == nil {
+		return nil, fmt.Errorf("header injection strategy is nil")
+	}
+
 	headerInjection := externalAuth.Spec.HeaderInjection
 	if headerInjection == nil {
 		return nil, fmt.Errorf("header injection config is nil")
@@ -76,8 +84,8 @@ func (*HeaderInjectionConverter) ResolveSecrets(
 			namespace, headerInjection.ValueSecretRef.Name, headerInjection.ValueSecretRef.Key)
 	}
 
-	// Add the resolved secret value to metadata
-	metadata[strategies.MetadataHeaderValue] = string(secretValue)
+	// Set the resolved secret value in the strategy
+	strategy.HeaderInjection.HeaderValue = string(secretValue)
 
-	return metadata, nil
+	return strategy, nil
 }

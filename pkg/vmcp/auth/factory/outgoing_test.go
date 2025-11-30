@@ -72,21 +72,27 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		// Verify it's the correct type
 		assert.Equal(t, authtypes.StrategyTypeHeaderInjection, strategy.Name())
 
-		// Verify it can validate metadata
-		validMetadata := map[string]any{
-			"header_name":  "X-API-Key",
-			"header_value": "test-key",
+		// Verify it can validate strategy
+		validStrategy := &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeHeaderInjection,
+			HeaderInjection: &authtypes.HeaderInjectionConfig{
+				HeaderName:  "X-API-Key",
+				HeaderValue: "test-key",
+			},
 		}
-		err = strategy.Validate(validMetadata)
-		assert.NoError(t, err, "valid metadata should pass validation")
+		err = strategy.Validate(validStrategy)
+		assert.NoError(t, err, "valid strategy should pass validation")
 
-		// Verify it rejects invalid metadata
-		invalidMetadata := map[string]any{
-			"header_name": "X-API-Key",
-			// missing header_value
+		// Verify it rejects invalid strategy
+		invalidStrategy := &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeHeaderInjection,
+			HeaderInjection: &authtypes.HeaderInjectionConfig{
+				HeaderName: "X-API-Key",
+				// missing header_value
+			},
 		}
-		err = strategy.Validate(invalidMetadata)
-		assert.Error(t, err, "invalid metadata should fail validation")
+		err = strategy.Validate(invalidStrategy)
+		assert.Error(t, err, "invalid strategy should fail validation")
 		assert.Contains(t, err.Error(), "header_value")
 	})
 
@@ -127,12 +133,12 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		// Verify it's the correct type
 		assert.Equal(t, authtypes.StrategyTypeUnauthenticated, strategy.Name())
 
-		// Verify it validates any metadata (no-op validation)
+		// Verify it validates any strategy (no-op validation)
 		err = strategy.Validate(nil)
-		assert.NoError(t, err, "unauthenticated strategy should accept nil metadata")
+		assert.NoError(t, err, "unauthenticated strategy should accept nil strategy")
 
-		err = strategy.Validate(map[string]any{})
-		assert.NoError(t, err, "unauthenticated strategy should accept empty metadata")
+		err = strategy.Validate(&authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeUnauthenticated})
+		assert.NoError(t, err, "unauthenticated strategy should accept empty strategy")
 	})
 
 	t.Run("all strategies have correct names", func(t *testing.T) {

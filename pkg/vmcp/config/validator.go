@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -179,18 +178,24 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 	// Validate type-specific requirements
 	switch strategy.Type {
 	case authtypes.StrategyTypeTokenExchange:
-		// Token exchange requires token_url (other fields are optional)
-		if _, ok := strategy.Metadata["token_url"]; !ok {
-			return fmt.Errorf("token_exchange requires metadata field: token_url")
+		// Token exchange requires TokenExchange config with token_url
+		if strategy.TokenExchange == nil {
+			return fmt.Errorf("token_exchange requires TokenExchange configuration")
+		}
+		if strategy.TokenExchange.TokenURL == "" {
+			return fmt.Errorf("token_exchange requires token_url field")
 		}
 
 	case authtypes.StrategyTypeHeaderInjection:
-		// Header injection requires header name and value
-		if _, ok := strategy.Metadata[strategies.MetadataHeaderName]; !ok {
-			return fmt.Errorf("header_injection requires metadata field: %s", strategies.MetadataHeaderName)
+		// Header injection requires HeaderInjection config with header name and value
+		if strategy.HeaderInjection == nil {
+			return fmt.Errorf("header_injection requires HeaderInjection configuration")
 		}
-		if _, ok := strategy.Metadata[strategies.MetadataHeaderValue]; !ok {
-			return fmt.Errorf("header_injection requires metadata field: %s", strategies.MetadataHeaderValue)
+		if strategy.HeaderInjection.HeaderName == "" {
+			return fmt.Errorf("header_injection requires header_name field")
+		}
+		if strategy.HeaderInjection.HeaderValue == "" {
+			return fmt.Errorf("header_injection requires header_value field")
 		}
 	}
 

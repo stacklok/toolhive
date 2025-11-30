@@ -216,9 +216,9 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"github": {
 						Type: "header_injection",
-						Metadata: map[string]any{
-							"header_name":  "Authorization",
-							"header_value": "secret-token",
+						HeaderInjection: &authtypes.HeaderInjectionConfig{
+							HeaderName:  "Authorization",
+							HeaderValue: "secret-token",
 						},
 					},
 				},

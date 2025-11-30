@@ -125,8 +125,7 @@ func BackendToTarget(backend *Backend) *BackendTarget {
 		WorkloadName:    backend.Name,
 		BaseURL:         backend.BaseURL,
 		TransportType:   backend.TransportType,
-		AuthStrategy:    backend.AuthStrategy,
-		AuthMetadata:    backend.AuthMetadata,
+		AuthConfig:      backend.AuthConfig,
 		SessionAffinity: false, // TODO: Add session affinity support in future phases
 		HealthStatus:    backend.HealthStatus,
 		Metadata:        backend.Metadata,

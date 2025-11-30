@@ -13,6 +13,7 @@ import (
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
@@ -29,7 +30,6 @@ func NewBackend(id string, opts ...func(*vmcptypes.Backend)) vmcptypes.Backend {
 		TransportType: "streamable-http",
 		HealthStatus:  vmcptypes.BackendHealthy,
 		Metadata:      make(map[string]string),
-		AuthMetadata:  make(map[string]any),
 	}
 	for _, opt := range opts {
 		opt(&b)
@@ -44,11 +44,10 @@ func WithURL(url string) func(*vmcptypes.Backend) {
 	}
 }
 
-// WithAuth configures authentication.
-func WithAuth(strategy string, metadata map[string]any) func(*vmcptypes.Backend) {
+// WithAuth configures authentication with a typed auth strategy.
+func WithAuth(authConfig *authtypes.BackendAuthStrategy) func(*vmcptypes.Backend) {
 	return func(b *vmcptypes.Backend) {
-		b.AuthStrategy = strategy
-		b.AuthMetadata = metadata
+		b.AuthConfig = authConfig
 	}
 }
 

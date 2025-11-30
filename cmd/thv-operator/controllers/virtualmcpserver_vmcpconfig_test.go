@@ -213,7 +213,13 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 			assert.Equal(t, tt.expectedType, strategy.Type)
 
 			if tt.hasMetadata {
-				assert.NotEmpty(t, strategy.Metadata)
+				// For external auth config refs, check that the strategy type is set
+				// The actual typed fields (HeaderInjection/TokenExchange) are resolved at runtime
+				assert.Equal(t, mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef, strategy.Type)
+			} else {
+				// For discovered auth, there should be no typed fields populated
+				assert.Nil(t, strategy.HeaderInjection)
+				assert.Nil(t, strategy.TokenExchange)
 			}
 		})
 	}

@@ -9,7 +9,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/env/mocks"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -37,7 +36,8 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 			},
 			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
-				assert.Equal(t, "Bearer token123", strategy.Metadata[strategies.MetadataHeaderValue])
+				require.NotNil(t, strategy.HeaderInjection)
+				assert.Equal(t, "Bearer token123", strategy.HeaderInjection.HeaderValue)
 			},
 		},
 		{
@@ -54,7 +54,8 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 			},
 			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
-				assert.Equal(t, "secret-key-value", strategy.Metadata[strategies.MetadataHeaderValue])
+				require.NotNil(t, strategy.HeaderInjection)
+				assert.Equal(t, "secret-key-value", strategy.HeaderInjection.HeaderValue)
 			},
 		},
 		{
@@ -132,7 +133,8 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
 				// Verify env var name is stored (not resolved) for lazy evaluation
-				assert.Equal(t, "CLIENT_SECRET", strategy.Metadata["client_secret_env"])
+				require.NotNil(t, strategy.TokenExchange)
+				assert.Equal(t, "CLIENT_SECRET", strategy.TokenExchange.ClientSecretEnv)
 			},
 		},
 		{
@@ -163,7 +165,9 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 			},
 			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
-				assert.Empty(t, strategy.Metadata)
+				// Unauthenticated strategy has no additional config
+				assert.Nil(t, strategy.HeaderInjection)
+				assert.Nil(t, strategy.TokenExchange)
 			},
 		},
 	}

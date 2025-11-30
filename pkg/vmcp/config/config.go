@@ -158,26 +158,26 @@ type OutgoingAuthConfig struct {
 	Backends map[string]*authtypes.BackendAuthStrategy `json:"backends,omitempty" yaml:"backends,omitempty"`
 }
 
-// ResolveForBackend returns the auth strategy and metadata for a given backend ID.
+// ResolveForBackend returns the auth strategy for a given backend ID.
 // It checks for backend-specific config first, then falls back to default.
-// Returns empty string and nil if no authentication is configured.
-func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) (string, map[string]any) {
+// Returns nil if no authentication is configured.
+func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.BackendAuthStrategy {
 	if c == nil {
-		return "", nil
+		return nil
 	}
 
 	// Check for backend-specific configuration
 	if strategy, exists := c.Backends[backendID]; exists && strategy != nil {
-		return strategy.Type, strategy.Metadata
+		return strategy
 	}
 
 	// Fall back to default configuration
 	if c.Default != nil {
-		return c.Default.Type, c.Default.Metadata
+		return c.Default
 	}
 
 	// No authentication configured
-	return "", nil
+	return nil
 }
 
 // AggregationConfig configures capability aggregation.

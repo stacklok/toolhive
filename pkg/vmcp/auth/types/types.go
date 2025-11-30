@@ -42,11 +42,6 @@ type BackendAuthStrategy struct {
 	// TokenExchange contains configuration for token exchange auth strategy.
 	// Used when Type = "token_exchange".
 	TokenExchange *TokenExchangeConfig `json:"token_exchange,omitempty" yaml:"token_exchange,omitempty"`
-
-	// Metadata contains strategy-specific configuration.
-	// This is opaque and interpreted by the auth strategy implementation.
-	// Deprecated: Use HeaderInjection or TokenExchange typed fields instead.
-	Metadata map[string]any `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
 // HeaderInjectionConfig configures the header injection auth strategy.

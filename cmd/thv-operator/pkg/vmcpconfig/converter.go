@@ -177,14 +177,14 @@ func (*Converter) convertBackendAuthConfig(
 	crdConfig *mcpv1alpha1.BackendAuthConfig,
 ) *authtypes.BackendAuthStrategy {
 	strategy := &authtypes.BackendAuthStrategy{
-		Type:     crdConfig.Type,
-		Metadata: make(map[string]any),
+		Type: crdConfig.Type,
 	}
 
-	// Convert type-specific configuration to metadata
-	if crdConfig.ExternalAuthConfigRef != nil {
-		strategy.Metadata["externalAuthConfigRef"] = crdConfig.ExternalAuthConfigRef.Name
-	}
+	// Note: When Type is "external_auth_config_ref", the actual MCPExternalAuthConfig
+	// resource should be resolved at runtime and its configuration (TokenExchange or
+	// HeaderInjection) should be populated into the corresponding typed fields.
+	// This conversion happens during server initialization when the referenced
+	// MCPExternalAuthConfig can be looked up.
 
 	return strategy
 }

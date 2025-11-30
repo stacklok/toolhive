@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
 // authRoundTripper is an HTTP RoundTripper that adds Bearer token authentication
@@ -718,7 +719,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
-				Image:     "ghcr.io/stackloklabs/gofetch/server:1.0.1",
+				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,
@@ -739,7 +740,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
-				Image:     "ghcr.io/stackloklabs/osv-mcp/server:0.0.7",
+				Image:     images.OSVMCPServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,
@@ -758,7 +759,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
-				Image:     "ghcr.io/stackloklabs/gofetch/server:1.0.1",
+				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,

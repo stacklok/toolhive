@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
 // WaitForVirtualMCPServerReady waits for a VirtualMCPServer to reach Ready status
@@ -294,7 +295,7 @@ func DeployMockOIDCServerHTTP(ctx context.Context, c client.Client, namespace, s
 					Containers: []corev1.Container{
 						{
 							Name:    "mock-oidc",
-							Image:   "python:3.9-slim",
+							Image:   images.PythonImage,
 							Command: []string{"sh", "-c"},
 							Args:    []string{MockOIDCServerHTTPScript},
 							Ports: []corev1.ContainerPort{
@@ -353,7 +354,7 @@ func DeployInstrumentedBackendServer(ctx context.Context, c client.Client, names
 					Containers: []corev1.Container{
 						{
 							Name:    "instrumented-backend",
-							Image:   "python:3.9-slim",
+							Image:   images.PythonImage,
 							Command: []string{"sh", "-c"},
 							Args:    []string{InstrumentedBackendScript},
 							Ports: []corev1.ContainerPort{
@@ -461,7 +462,7 @@ func GetServiceStats(ctx context.Context, c client.Client, namespace, serviceNam
 			Containers: []corev1.Container{
 				{
 					Name:    "curl",
-					Image:   "curlimages/curl:latest",
+					Image:   images.CurlImage,
 					Command: []string{"curl", "-s", fmt.Sprintf("http://%s.%s.svc.cluster.local:%d/stats", serviceName, namespace, port)},
 				},
 			},

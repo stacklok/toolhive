@@ -102,10 +102,9 @@ func (r *VirtualMCPServer) validateOutgoingAuth() error {
 	validSources := map[string]bool{
 		"discovered": true,
 		"inline":     true,
-		"mixed":      true,
 	}
 	if auth.Source != "" && !validSources[auth.Source] {
-		return fmt.Errorf("spec.outgoingAuth.source must be one of: discovered, inline, mixed")
+		return fmt.Errorf("spec.outgoingAuth.source must be one of: discovered, inline")
 	}
 
 	// Validate backend configurations

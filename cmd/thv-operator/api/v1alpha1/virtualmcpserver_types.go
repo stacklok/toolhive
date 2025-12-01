@@ -85,8 +85,7 @@ type OutgoingAuthConfig struct {
 	// Source defines how backend authentication configurations are determined
 	// - discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef
 	// - inline: Explicit per-backend configuration in VirtualMCPServer
-	// - mixed: Discover most, override specific backends
-	// +kubebuilder:validation:Enum=discovered;inline;mixed
+	// +kubebuilder:validation:Enum=discovered;inline
 	// +kubebuilder:default=discovered
 	// +optional
 	Source string `json:"source,omitempty"`
@@ -96,7 +95,7 @@ type OutgoingAuthConfig struct {
 	Default *BackendAuthConfig `json:"default,omitempty"`
 
 	// Backends defines per-backend authentication overrides
-	// Works in all modes (discovered, inline, mixed)
+	// Works in all modes (discovered, inline)
 	// +optional
 	Backends map[string]BackendAuthConfig `json:"backends,omitempty"`
 }

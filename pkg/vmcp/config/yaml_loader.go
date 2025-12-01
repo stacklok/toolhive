@@ -52,10 +52,10 @@ type rawConfig struct {
 	Name  string `yaml:"name"`
 	Group string `yaml:"group"`
 
-	IncomingAuth rawIncomingAuth `yaml:"incoming_auth"`
-	OutgoingAuth rawOutgoingAuth `yaml:"outgoing_auth"`
-	Aggregation  rawAggregation  `yaml:"aggregation"`
-	Operational  *rawOperational `yaml:"operational"`
+	IncomingAuth rawIncomingAuth    `yaml:"incoming_auth"`
+	OutgoingAuth rawOutgoingAuth    `yaml:"outgoing_auth"`
+	Aggregation  rawAggregation     `yaml:"aggregation"`
+	Operational  *OperationalConfig `yaml:"operational"`
 
 	CompositeTools []*rawCompositeTool `yaml:"composite_tools"`
 }
@@ -125,23 +125,6 @@ type rawWorkloadToolConfig struct {
 type rawToolOverride struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
-}
-
-type rawOperational struct {
-	Timeouts struct {
-		Default     string            `yaml:"default"`
-		PerWorkload map[string]string `yaml:"per_workload"`
-	} `yaml:"timeouts"`
-	FailureHandling struct {
-		HealthCheckInterval string `yaml:"health_check_interval"`
-		UnhealthyThreshold  int    `yaml:"unhealthy_threshold"`
-		PartialFailureMode  string `yaml:"partial_failure_mode"`
-		CircuitBreaker      struct {
-			Enabled          bool   `yaml:"enabled"`
-			FailureThreshold int    `yaml:"failure_threshold"`
-			Timeout          string `yaml:"timeout"`
-		} `yaml:"circuit_breaker"`
-	} `yaml:"failure_handling"`
 }
 
 type rawCompositeTool struct {
@@ -219,14 +202,8 @@ func (l *YAMLLoader) transformToConfig(raw *rawConfig) (*Config, error) {
 	}
 	cfg.Aggregation = aggregation
 
-	// Transform operational
-	if raw.Operational != nil {
-		operational, err := l.transformOperational(raw.Operational)
-		if err != nil {
-			return nil, fmt.Errorf("operational: %w", err)
-		}
-		cfg.Operational = operational
-	}
+	// Copy operational config directly (Duration.UnmarshalYAML handles parsing)
+	cfg.Operational = raw.Operational
 
 	// Transform composite tools
 	if len(raw.CompositeTools) > 0 {
@@ -236,6 +213,9 @@ func (l *YAMLLoader) transformToConfig(raw *rawConfig) (*Config, error) {
 		}
 		cfg.CompositeTools = compositeTools
 	}
+
+	// Apply operational defaults (fills missing values)
+	cfg.EnsureOperationalDefaults()
 
 	return cfg, nil
 }
@@ -394,59 +374,6 @@ func (*YAMLLoader) transformAggregation(raw *rawAggregation) (*AggregationConfig
 		}
 
 		cfg.Tools = append(cfg.Tools, tool)
-	}
-
-	return cfg, nil
-}
-
-func (*YAMLLoader) transformOperational(raw *rawOperational) (*OperationalConfig, error) {
-	cfg := &OperationalConfig{}
-
-	// Transform timeouts
-	if raw.Timeouts.Default != "" {
-		defaultTimeout, err := time.ParseDuration(raw.Timeouts.Default)
-		if err != nil {
-			return nil, fmt.Errorf("invalid default timeout: %w", err)
-		}
-
-		cfg.Timeouts = &TimeoutConfig{
-			Default:     Duration(defaultTimeout),
-			PerWorkload: make(map[string]Duration),
-		}
-
-		for workload, timeoutStr := range raw.Timeouts.PerWorkload {
-			timeout, err := time.ParseDuration(timeoutStr)
-			if err != nil {
-				return nil, fmt.Errorf("invalid timeout for workload %s: %w", workload, err)
-			}
-			cfg.Timeouts.PerWorkload[workload] = Duration(timeout)
-		}
-	}
-
-	// Transform failure handling
-	healthCheckInterval, err := time.ParseDuration(raw.FailureHandling.HealthCheckInterval)
-	if err != nil {
-		return nil, fmt.Errorf("invalid health_check_interval: %w", err)
-	}
-
-	cfg.FailureHandling = &FailureHandlingConfig{
-		HealthCheckInterval: Duration(healthCheckInterval),
-		UnhealthyThreshold:  raw.FailureHandling.UnhealthyThreshold,
-		PartialFailureMode:  raw.FailureHandling.PartialFailureMode,
-	}
-
-	// Transform circuit breaker
-	if raw.FailureHandling.CircuitBreaker.Enabled {
-		cbTimeout, err := time.ParseDuration(raw.FailureHandling.CircuitBreaker.Timeout)
-		if err != nil {
-			return nil, fmt.Errorf("invalid circuit_breaker timeout: %w", err)
-		}
-
-		cfg.FailureHandling.CircuitBreaker = &CircuitBreakerConfig{
-			Enabled:          true,
-			FailureThreshold: raw.FailureHandling.CircuitBreaker.FailureThreshold,
-			Timeout:          Duration(cbTimeout),
-		}
 	}
 
 	return cfg, nil

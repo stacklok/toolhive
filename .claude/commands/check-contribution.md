@@ -38,7 +38,7 @@ If changes are made to the chart, verify:
 - For operator changes:
     - Chart version is bumped in [deploy/charts/operator/Chart.yaml](deploy/charts/operator/Chart.yaml)
     - Chart badge is updated in [deploy/charts/operator/README.md](deploy/charts/operator/README.md)
-- For operator CRD cahnges:
+- For operator CRD changes:
     - Chart version is bumped in [deploy/charts/operator-crds/Chart.yaml](deploy/charts/operator-crds/Chart.yaml)
     - Chart badge is updated in [deploy/charts/operator-crds/README.md](deploy/charts/operator-crds/README.md)
 - Version changes are appropriate for the type of change (major/minor/patch)

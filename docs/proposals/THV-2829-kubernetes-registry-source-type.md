@@ -56,8 +56,8 @@ Add a `kubernetes` source type to the registry server that directly queries Kube
 │  │                                                                │  │
 │  │  Merge results → Build UpstreamRegistry → Return FetchResult   │  │
 │  └────────────────────────────────────────────────────────────────┘  │
-│                              │                                        │
-│                              ▼                                        │
+│                              │                                       │
+│                              ▼                                       │
 │  ┌────────────────────────────────────────────────────────────────┐  │
 │  │     SyncManager + StorageManager (existing infrastructure)     │  │
 │  └────────────────────────────────────────────────────────────────┘  │
@@ -71,7 +71,7 @@ registryName: "toolhive-cluster"
 
 registries:
   - name: "cluster-mcp-servers"
-    format: upstream
+    # format is optional for kubernetes source - always produces upstream format
     kubernetes:
       # Namespace filtering (empty = all namespaces)
       namespaces: []
@@ -86,6 +86,8 @@ auth:
   mode: oauth
   # ... standard auth config
 ```
+
+**Note on format:** The `format` field is optional for the kubernetes source type. Since the handler builds registry entries dynamically from MCP resources (rather than parsing files), it always produces entries in upstream MCP Registry format.
 
 ### Registry Export Methods
 
@@ -176,6 +178,13 @@ spec:
         - path:
             type: PathPrefix
             value: /servers/my-mcp-server
+      filters:
+        # Rewrite the path so the backend receives "/" instead of "/servers/my-mcp-server"
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
       backendRefs:
         - name: my-mcp-server
           port: 8080
@@ -246,10 +255,11 @@ rules:
   - apiGroups: ["toolhive.stacklok.dev"]
     resources: ["mcpservers", "mcpremoteproxies", "virtualmcpservers"]
     verbs: ["get", "list", "watch"]
-  # Services (for HTTPRoute → Service → MCP resource traversal)
+  # Services (to look up ownerReferences and find the MCP resource that created the service)
+  # Note: Only the proxy Service has ownerRef to MCPServer; headless services don't
   - apiGroups: [""]
     resources: ["services"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get"]
   # Gateway API resources (for HTTPRoute annotation method)
   - apiGroups: ["gateway.networking.k8s.io"]
     resources: ["httproutes", "gateways"]

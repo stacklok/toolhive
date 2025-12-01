@@ -350,6 +350,65 @@ kubernetes:
 
 This can be implemented as a backward-compatible enhancement - existing poll-based configs continue to work, watch mode is opt-in.
 
+## Future Work: Leader Election for High Availability
+
+When deploying multiple registry server replicas for high availability, leader election ensures only one replica actively syncs from Kubernetes resources. Without coordination, multiple replicas would:
+
+- All poll/watch the same Kubernetes resources (redundant API server load)
+- Race to write to the shared database
+- Potentially cause inconsistent state during concurrent writes
+
+### Recommended Approach: Lease-based Leader Election
+
+Kubernetes [Leases](https://kubernetes.io/docs/concepts/architecture/leases/) are the recommended mechanism for leader election:
+
+- **Purpose-built**: Lighter than ConfigMaps, designed specifically for coordination
+- **Well-tested**: GA since Kubernetes 1.17
+- **Native support**: `controller-runtime` uses Leases by default
+
+### Configuration
+
+Since the registry server uses `controller-runtime`, leader election is straightforward:
+
+```go
+mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+    LeaderElection:          true,
+    LeaderElectionID:        "toolhive-registry-kubernetes-source",
+    LeaderElectionNamespace: "toolhive-system",
+    // Defaults are typically appropriate:
+    // LeaseDuration: 15s - how long the lease is valid
+    // RenewDeadline: 10s - how long leader retries renewal
+    // RetryPeriod:   2s  - how often non-leaders check
+})
+```
+
+### Behavior with Multiple Replicas
+
+| Replica Role | Kubernetes Sync | Database Reads | Database Writes |
+|--------------|-----------------|----------------|-----------------|
+| Leader | Active | Yes | Yes |
+| Non-leader | Inactive (standby) | Yes | No |
+
+- **Leader**: Actively syncs from Kubernetes, writes to database
+- **Non-leaders**: Serve read traffic from the shared database, wait for leadership
+- **Failover**: If leader fails, another replica acquires the lease within ~15-20 seconds
+
+### Best Practices
+
+1. **Health checks**: Integrate leader election status with `/healthz` endpoints
+2. **Unique election ID**: Include component name to avoid collisions with other controllers
+3. **Monitor transitions**: Track leadership changes; frequent transitions may indicate configuration issues
+4. **Clock synchronization**: Ensure NTP or similar is configured across nodes
+
+### Future: Coordinated Leader Election
+
+Kubernetes 1.31+ introduced [Coordinated Leader Election](https://kubernetes.io/docs/concepts/cluster-administration/coordinated-leader-election/) which provides smoother leadership handoff during rolling updates. As of Kubernetes 1.34, this feature is still beta and disabled by default.
+
+Once Coordinated Leader Election reaches GA, the registry server could adopt it for:
+- New pod becoming leader *before* old pod terminates
+- Reduced sync gaps during deployments
+- Version-aware leader selection via `LeaseCandidate` resources
+
 ## Implementation Plan
 
 1. Add `KubernetesConfig` to `internal/config/config.go`

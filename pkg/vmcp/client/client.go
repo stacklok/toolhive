@@ -15,6 +15,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -79,21 +80,22 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-// contextPropagatingRoundTripper propagates the original request context to HTTP requests.
-// This ensures that identity information from the vMCP handler is available for authentication.
-type contextPropagatingRoundTripper struct {
-	base    http.RoundTripper
-	origCtx context.Context
+// identityPropagatingRoundTripper propagates identity to backend HTTP requests.
+// This ensures that identity information from the vMCP handler is available for authentication
+// strategies that need it (e.g., token exchange).
+type identityPropagatingRoundTripper struct {
+	base     http.RoundTripper
+	identity *auth.Identity
 }
 
-// RoundTrip implements http.RoundTripper by propagating the original context to the request.
-func (c *contextPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Clone the request with the original context that contains the identity
-	reqWithCtx := req.Clone(c.origCtx)
-	// Copy headers from the original request
-	reqWithCtx.Header = req.Header
-
-	return c.base.RoundTrip(reqWithCtx)
+// RoundTrip implements http.RoundTripper by adding identity to the request context.
+func (i *identityPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if i.identity != nil {
+		// Add identity to the request's context
+		ctx := auth.WithIdentity(req.Context(), i.identity)
+		req = req.Clone(ctx)
+	}
+	return i.base.RoundTrip(req)
 }
 
 // authRoundTripper is an http.RoundTripper that adds authentication to backend requests.
@@ -170,12 +172,12 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		target:       target,
 	}
 
-	// Add context propagation layer to ensure identity is available for authentication
-	// This wraps the authentication layer (is called before it in the RoundTripper chain)
-	// to propagate the original context containing identity information to downstream layers
-	baseTransport = &contextPropagatingRoundTripper{
-		base:    baseTransport,
-		origCtx: ctx,
+	// Extract identity from context and propagate it to backend requests
+	// This ensures authentication strategies (e.g., token exchange) can access identity
+	identity, _ := auth.IdentityFromContext(ctx)
+	baseTransport = &identityPropagatingRoundTripper{
+		base:     baseTransport,
+		identity: identity,
 	}
 
 	// Add size limit layer for DoS protection

@@ -8,17 +8,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-const (
-	// RegistrySourceTypeConfigMap is the type for registry data stored in ConfigMaps
-	RegistrySourceTypeConfigMap = "configmap"
-
-	// RegistrySourceTypeGit is the type for registry data stored in Git repositories
-	RegistrySourceTypeGit = "git"
-
-	// RegistrySourceTypeAPI is the type for registry data fetched from API endpoints
-	RegistrySourceTypeAPI = "api"
-)
-
 // Registry formats
 const (
 	// RegistryFormatToolHive is the native ToolHive registry format
@@ -83,19 +72,24 @@ type MCPRegistryConfig struct {
 	Format string `json:"format,omitempty"`
 
 	// ConfigMapRef defines the ConfigMap source configuration
-	// Mutually exclusive with Git and API
+	// Mutually exclusive with Git, API, and PVCRef
 	// +optional
 	ConfigMapRef *corev1.ConfigMapKeySelector `json:"configMapRef,omitempty"`
 
 	// Git defines the Git repository source configuration
-	// Mutually exclusive with ConfigMapRef and API
+	// Mutually exclusive with ConfigMapRef, API, and PVCRef
 	// +optional
 	Git *GitSource `json:"git,omitempty"`
 
 	// API defines the API source configuration
-	// Mutually exclusive with ConfigMapRef and Git
+	// Mutually exclusive with ConfigMapRef, Git, and PVCRef
 	// +optional
 	API *APISource `json:"api,omitempty"`
+
+	// PVCRef defines the PersistentVolumeClaim source configuration
+	// Mutually exclusive with ConfigMapRef, Git, and API
+	// +optional
+	PVCRef *PVCSource `json:"pvcRef,omitempty"`
 
 	// SyncPolicy defines the automatic synchronization behavior for this registry.
 	// If specified, enables automatic synchronization at the given interval.
@@ -154,6 +148,43 @@ type APISource struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:Pattern="^https?://.*"
 	Endpoint string `json:"endpoint"`
+}
+
+// PVCSource defines PersistentVolumeClaim source configuration
+type PVCSource struct {
+	// ClaimName is the name of the PersistentVolumeClaim
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ClaimName string `json:"claimName"`
+
+	// Path is the relative path to the registry file within the PVC.
+	// The PVC is mounted at /config/registry/{registryName}/.
+	// The full file path becomes: /config/registry/{registryName}/{path}
+	//
+	// This design:
+	// - Each registry gets its own mount point (consistent with ConfigMap sources)
+	// - Multiple registries can share the same PVC by mounting it at different paths
+	// - Users control PVC organization freely via the path field
+	//
+	// Examples:
+	//   Registry "production" using PVC "shared-data" with path "prod/registry.json":
+	//     PVC contains /prod/registry.json → accessed at /config/registry/production/prod/registry.json
+	//
+	//   Registry "development" using SAME PVC "shared-data" with path "dev/registry.json":
+	//     PVC contains /dev/registry.json → accessed at /config/registry/development/dev/registry.json
+	//     (Same PVC, different mount path)
+	//
+	//   Registry "staging" using DIFFERENT PVC "other-pvc" with path "registry.json":
+	//     PVC contains /registry.json → accessed at /config/registry/staging/registry.json
+	//     (Different PVC, independent mount)
+	//
+	//   Registry "team-a" with path "v1/servers.json":
+	//     PVC contains /v1/servers.json → accessed at /config/registry/team-a/v1/servers.json
+	//     (Subdirectories allowed in path)
+	// +kubebuilder:validation:Pattern=^.*\.json$
+	// +kubebuilder:default=registry.json
+	// +optional
+	Path string `json:"path,omitempty"`
 }
 
 // SyncPolicy defines automatic synchronization behavior.

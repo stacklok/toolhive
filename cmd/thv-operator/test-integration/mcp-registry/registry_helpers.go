@@ -103,6 +103,16 @@ func (rb *RegistryBuilder) WithAPISource(endpoint string) *RegistryBuilder {
 	return rb
 }
 
+// WithPVCSource configures the registry with a PVC source
+func (rb *RegistryBuilder) WithPVCSource(claimName, path string) *RegistryBuilder {
+	registryConfig := rb.getCurrentRegistryConfig()
+	registryConfig.PVCRef = &mcpv1alpha1.PVCSource{
+		ClaimName: claimName,
+		Path:      path,
+	}
+	return rb
+}
+
 // WithRegistryName sets the name for the current registry config
 func (rb *RegistryBuilder) WithRegistryName(name string) *RegistryBuilder {
 	registryConfig := rb.getCurrentRegistryConfig()

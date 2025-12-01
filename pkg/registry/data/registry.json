@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-11-30T00:20:47Z",
+  "last_updated": "2025-12-01T00:21:55Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1818,9 +1818,9 @@
         "list_allowed_directories"
       ],
       "metadata": {
-        "stars": 71855,
+        "stars": 73543,
         "pulls": 20619,
-        "last_updated": "2025-11-04T02:32:45Z"
+        "last_updated": "2025-11-30T02:39:09Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -1859,9 +1859,9 @@
         "firecrawl_search"
       ],
       "metadata": {
-        "stars": 4844,
+        "stars": 5003,
         "pulls": 12644,
-        "last_updated": "2025-11-04T02:32:46Z"
+        "last_updated": "2025-11-30T02:39:10Z"
       },
       "repository_url": "https://github.com/firecrawl/firecrawl-mcp-server",
       "tags": [
@@ -1992,9 +1992,9 @@
         "git_init"
       ],
       "metadata": {
-        "stars": 72000,
+        "stars": 73543,
         "pulls": 10404,
-        "last_updated": "2025-11-06T02:33:24Z"
+        "last_updated": "2025-11-30T02:39:10Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -3954,9 +3954,9 @@
         "open_nodes"
       ],
       "metadata": {
-        "stars": 71855,
+        "stars": 73543,
         "pulls": 15854,
-        "last_updated": "2025-11-04T02:32:46Z"
+        "last_updated": "2025-11-30T02:39:10Z"
       },
       "repository_url": "https://github.com/modelcontextprotocol/servers",
       "tags": [
@@ -4548,9 +4548,9 @@
         "browser_wait_for"
       ],
       "metadata": {
-        "stars": 22839,
+        "stars": 23762,
         "pulls": 23622,
-        "last_updated": "2025-11-05T21:23:31Z"
+        "last_updated": "2025-11-30T02:39:10Z"
       },
       "repository_url": "https://github.com/microsoft/playwright-mcp",
       "tags": [

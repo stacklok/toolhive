@@ -35,8 +35,12 @@ Verify each of the following practices is completed:
 ### 5. Chart Version Bump
 If changes are made to the chart, verify:
 - Chart version follows [SemVer](https://semver.org/)
-- Chart version is bumped in [deploy/charts/operator/Chart.yaml](deploy/charts/operator/Chart.yaml)
-- Chart badge is updated in [deploy/charts/operator/README.md](deploy/charts/operator/README.md)
+- For operator changes:
+    - Chart version is bumped in [deploy/charts/operator/Chart.yaml](deploy/charts/operator/Chart.yaml)
+    - Chart badge is updated in [deploy/charts/operator/README.md](deploy/charts/operator/README.md)
+- For operator CRD cahnges:
+    - Chart version is bumped in [deploy/charts/operator-crds/Chart.yaml](deploy/charts/operator-crds/Chart.yaml)
+    - Chart badge is updated in [deploy/charts/operator-crds/README.md](deploy/charts/operator-crds/README.md)
 - Version changes are appropriate for the type of change (major/minor/patch)
 
 ## Execution Steps

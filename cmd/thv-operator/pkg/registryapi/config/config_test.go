@@ -175,7 +175,7 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "configmap-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						ConfigMapRef: &corev1.ConfigMapKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{
@@ -197,13 +197,18 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		require.Len(t, config.Registries, 1)
-		assert.Equal(t, "default", config.Registries[0].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[0].Format)
-		require.NotNil(t, config.Registries[0].File)
-		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "default", RegistryJSONFileName), config.Registries[0].File.Path)
-		require.NotNil(t, config.Registries[0].SyncPolicy)
-		assert.Equal(t, "1h", config.Registries[0].SyncPolicy.Interval)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Second registry should be the user-specified one
+		assert.Equal(t, "configmap-registry", config.Registries[1].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[1].Format)
+		require.NotNil(t, config.Registries[1].File)
+		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "configmap-registry", RegistryJSONFileName), config.Registries[1].File.Path)
+		require.NotNil(t, config.Registries[1].SyncPolicy)
+		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
 	})
 
 }
@@ -301,7 +306,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "git-branch-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						Git: &mcpv1alpha1.GitSource{
 							Repository: "https://github.com/example/repo.git",
@@ -321,16 +326,21 @@ func TestBuildConfig_GitSource(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		require.Len(t, config.Registries, 1)
-		assert.Equal(t, "default", config.Registries[0].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[0].Format)
-		require.NotNil(t, config.Registries[0].Git)
-		assert.Equal(t, "https://github.com/example/repo.git", config.Registries[0].Git.Repository)
-		assert.Equal(t, "main", config.Registries[0].Git.Branch)
-		assert.Empty(t, config.Registries[0].Git.Tag)
-		assert.Empty(t, config.Registries[0].Git.Commit)
-		require.NotNil(t, config.Registries[0].SyncPolicy)
-		assert.Equal(t, "1h", config.Registries[0].SyncPolicy.Interval)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Second registry should be the user-specified git registry
+		assert.Equal(t, "git-branch-registry", config.Registries[1].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[1].Format)
+		require.NotNil(t, config.Registries[1].Git)
+		assert.Equal(t, "https://github.com/example/repo.git", config.Registries[1].Git.Repository)
+		assert.Equal(t, "main", config.Registries[1].Git.Branch)
+		assert.Empty(t, config.Registries[1].Git.Tag)
+		assert.Empty(t, config.Registries[1].Git.Commit)
+		require.NotNil(t, config.Registries[1].SyncPolicy)
+		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
 	})
 
 	t.Run("valid git source with tag", func(t *testing.T) {
@@ -342,7 +352,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "git-tag-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						Git: &mcpv1alpha1.GitSource{
 							Repository: "git@github.com:example/repo.git",
@@ -362,16 +372,21 @@ func TestBuildConfig_GitSource(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		require.Len(t, config.Registries, 1)
-		assert.Equal(t, "default", config.Registries[0].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[0].Format)
-		require.NotNil(t, config.Registries[0].Git)
-		assert.Equal(t, "git@github.com:example/repo.git", config.Registries[0].Git.Repository)
-		assert.Empty(t, config.Registries[0].Git.Branch)
-		assert.Equal(t, "v1.2.3", config.Registries[0].Git.Tag)
-		assert.Empty(t, config.Registries[0].Git.Commit)
-		require.NotNil(t, config.Registries[0].SyncPolicy)
-		assert.Equal(t, "1h", config.Registries[0].SyncPolicy.Interval)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Second registry should be the user-specified git registry
+		assert.Equal(t, "git-tag-registry", config.Registries[1].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[1].Format)
+		require.NotNil(t, config.Registries[1].Git)
+		assert.Equal(t, "git@github.com:example/repo.git", config.Registries[1].Git.Repository)
+		assert.Empty(t, config.Registries[1].Git.Branch)
+		assert.Equal(t, "v1.2.3", config.Registries[1].Git.Tag)
+		assert.Empty(t, config.Registries[1].Git.Commit)
+		require.NotNil(t, config.Registries[1].SyncPolicy)
+		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
 	})
 
 	t.Run("valid git source with commit", func(t *testing.T) {
@@ -383,7 +398,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "git-commit-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						Git: &mcpv1alpha1.GitSource{
 							Repository: "https://github.com/example/repo.git",
@@ -403,16 +418,21 @@ func TestBuildConfig_GitSource(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		require.Len(t, config.Registries, 1)
-		assert.Equal(t, "default", config.Registries[0].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[0].Format)
-		require.NotNil(t, config.Registries[0].Git)
-		assert.Equal(t, "https://github.com/example/repo.git", config.Registries[0].Git.Repository)
-		assert.Empty(t, config.Registries[0].Git.Branch)
-		assert.Empty(t, config.Registries[0].Git.Tag)
-		assert.Equal(t, "abc123def456", config.Registries[0].Git.Commit)
-		require.NotNil(t, config.Registries[0].SyncPolicy)
-		assert.Equal(t, "1h", config.Registries[0].SyncPolicy.Interval)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Second registry should be the user-specified git registry
+		assert.Equal(t, "git-commit-registry", config.Registries[1].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[1].Format)
+		require.NotNil(t, config.Registries[1].Git)
+		assert.Equal(t, "https://github.com/example/repo.git", config.Registries[1].Git.Repository)
+		assert.Empty(t, config.Registries[1].Git.Branch)
+		assert.Empty(t, config.Registries[1].Git.Tag)
+		assert.Equal(t, "abc123def456", config.Registries[1].Git.Commit)
+		require.NotNil(t, config.Registries[1].SyncPolicy)
+		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
 	})
 }
 
@@ -481,7 +501,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "api-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						API: &mcpv1alpha1.APISource{
 							Endpoint: "https://api.example.com/registry",
@@ -500,16 +520,21 @@ func TestBuildConfig_APISource(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		require.Len(t, config.Registries, 1)
-		assert.Equal(t, "default", config.Registries[0].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[0].Format)
-		require.NotNil(t, config.Registries[0].API)
-		assert.Equal(t, "https://api.example.com/registry", config.Registries[0].API.Endpoint)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Second registry should be the user-specified API registry
+		assert.Equal(t, "api-registry", config.Registries[1].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[1].Format)
+		require.NotNil(t, config.Registries[1].API)
+		assert.Equal(t, "https://api.example.com/registry", config.Registries[1].API.Endpoint)
 		// Verify that other source types are nil
-		assert.Nil(t, config.Registries[0].File)
-		assert.Nil(t, config.Registries[0].Git)
-		require.NotNil(t, config.Registries[0].SyncPolicy)
-		assert.Equal(t, "1h", config.Registries[0].SyncPolicy.Interval)
+		assert.Nil(t, config.Registries[1].File)
+		assert.Nil(t, config.Registries[1].Git)
+		require.NotNil(t, config.Registries[1].SyncPolicy)
+		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
 	})
 }
 
@@ -527,7 +552,7 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "sync-policy-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						ConfigMapRef: &corev1.ConfigMapKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{
@@ -547,8 +572,13 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		require.Len(t, config.Registries, 1)
-		assert.Nil(t, config.Registries[0].SyncPolicy)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Second registry should be the user-specified one
+		assert.Nil(t, config.Registries[1].SyncPolicy)
 	})
 
 	t.Run("empty interval", func(t *testing.T) {
@@ -593,7 +623,7 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "sync-policy-valid-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						ConfigMapRef: &corev1.ConfigMapKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{
@@ -615,9 +645,14 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		require.Len(t, config.Registries, 1)
-		require.NotNil(t, config.Registries[0].SyncPolicy)
-		assert.Equal(t, "30m", config.Registries[0].SyncPolicy.Interval)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Second registry should be the user-specified one
+		require.NotNil(t, config.Registries[1].SyncPolicy)
+		assert.Equal(t, "30m", config.Registries[1].SyncPolicy.Interval)
 	})
 }
 
@@ -635,7 +670,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "filter-nil-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						ConfigMapRef: &corev1.ConfigMapKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{
@@ -658,9 +693,13 @@ func TestBuildConfig_Filter(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		require.Len(t, config.Registries, 1)
-		// Filter should be nil when not provided
-		assert.Nil(t, config.Registries[0].Filter)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Filter should be nil when not provided for the user-specified registry
+		assert.Nil(t, config.Registries[1].Filter)
 	})
 
 	t.Run("filter with name filters", func(t *testing.T) {
@@ -672,7 +711,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "filter-names-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						ConfigMapRef: &corev1.ConfigMapKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{
@@ -699,13 +738,18 @@ func TestBuildConfig_Filter(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		require.Len(t, config.Registries, 1)
-		require.NotNil(t, config.Registries[0].Filter)
-		require.NotNil(t, config.Registries[0].Filter.Names)
-		assert.Equal(t, []string{"server-*", "tool-*"}, config.Registries[0].Filter.Names.Include)
-		assert.Equal(t, []string{"*-deprecated", "*-test"}, config.Registries[0].Filter.Names.Exclude)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Second registry should have the filter
+		require.NotNil(t, config.Registries[1].Filter)
+		require.NotNil(t, config.Registries[1].Filter.Names)
+		assert.Equal(t, []string{"server-*", "tool-*"}, config.Registries[1].Filter.Names.Include)
+		assert.Equal(t, []string{"*-deprecated", "*-test"}, config.Registries[1].Filter.Names.Exclude)
 		// Tags should be nil when not provided
-		assert.Nil(t, config.Registries[0].Filter.Tags)
+		assert.Nil(t, config.Registries[1].Filter.Tags)
 	})
 
 	t.Run("filter with tags", func(t *testing.T) {
@@ -717,7 +761,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "filter-tags-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						Git: &mcpv1alpha1.GitSource{
 							Repository: "https://github.com/example/repo.git",
@@ -742,13 +786,18 @@ func TestBuildConfig_Filter(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		require.Len(t, config.Registries, 1)
-		require.NotNil(t, config.Registries[0].Filter)
-		require.NotNil(t, config.Registries[0].Filter.Tags)
-		assert.Equal(t, []string{"stable", "production", "v1.*"}, config.Registries[0].Filter.Tags.Include)
-		assert.Equal(t, []string{"beta", "alpha", "experimental"}, config.Registries[0].Filter.Tags.Exclude)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Second registry should have the filter
+		require.NotNil(t, config.Registries[1].Filter)
+		require.NotNil(t, config.Registries[1].Filter.Tags)
+		assert.Equal(t, []string{"stable", "production", "v1.*"}, config.Registries[1].Filter.Tags.Include)
+		assert.Equal(t, []string{"beta", "alpha", "experimental"}, config.Registries[1].Filter.Tags.Exclude)
 		// Names should be nil when not provided
-		assert.Nil(t, config.Registries[0].Filter.Names)
+		assert.Nil(t, config.Registries[1].Filter.Names)
 	})
 
 	t.Run("filter with both name filters and tags", func(t *testing.T) {
@@ -760,7 +809,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "filter-both-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						API: &mcpv1alpha1.APISource{
 							Endpoint: "https://api.example.com/registry",
@@ -788,15 +837,20 @@ func TestBuildConfig_Filter(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		require.Len(t, config.Registries, 1)
-		require.NotNil(t, config.Registries[0].Filter)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Second registry should have the filter
+		require.NotNil(t, config.Registries[1].Filter)
 		// Both name filters and tags should be present
-		require.NotNil(t, config.Registries[0].Filter.Names)
-		assert.Equal(t, []string{"mcp-*"}, config.Registries[0].Filter.Names.Include)
-		assert.Equal(t, []string{"*-internal"}, config.Registries[0].Filter.Names.Exclude)
-		require.NotNil(t, config.Registries[0].Filter.Tags)
-		assert.Equal(t, []string{"latest", "stable"}, config.Registries[0].Filter.Tags.Include)
-		assert.Equal(t, []string{"dev", "test"}, config.Registries[0].Filter.Tags.Exclude)
+		require.NotNil(t, config.Registries[1].Filter.Names)
+		assert.Equal(t, []string{"mcp-*"}, config.Registries[1].Filter.Names.Include)
+		assert.Equal(t, []string{"*-internal"}, config.Registries[1].Filter.Names.Exclude)
+		require.NotNil(t, config.Registries[1].Filter.Tags)
+		assert.Equal(t, []string{"latest", "stable"}, config.Registries[1].Filter.Tags.Include)
+		assert.Equal(t, []string{"dev", "test"}, config.Registries[1].Filter.Tags.Exclude)
 	})
 
 	t.Run("filter with empty include and exclude lists", func(t *testing.T) {
@@ -808,7 +862,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "filter-empty-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						ConfigMapRef: &corev1.ConfigMapKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{
@@ -839,15 +893,20 @@ func TestBuildConfig_Filter(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		require.Len(t, config.Registries, 1)
-		require.NotNil(t, config.Registries[0].Filter)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Second registry should have the filter
+		require.NotNil(t, config.Registries[1].Filter)
 		// Empty lists should still be set
-		require.NotNil(t, config.Registries[0].Filter.Names)
-		assert.Empty(t, config.Registries[0].Filter.Names.Include)
-		assert.Empty(t, config.Registries[0].Filter.Names.Exclude)
-		require.NotNil(t, config.Registries[0].Filter.Tags)
-		assert.Empty(t, config.Registries[0].Filter.Tags.Include)
-		assert.Empty(t, config.Registries[0].Filter.Tags.Exclude)
+		require.NotNil(t, config.Registries[1].Filter.Names)
+		assert.Empty(t, config.Registries[1].Filter.Names.Include)
+		assert.Empty(t, config.Registries[1].Filter.Names.Exclude)
+		require.NotNil(t, config.Registries[1].Filter.Tags)
+		assert.Empty(t, config.Registries[1].Filter.Tags.Include)
+		assert.Empty(t, config.Registries[1].Filter.Tags.Exclude)
 	})
 }
 
@@ -980,25 +1039,30 @@ func TestBuildConfig_MultipleRegistries(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, config)
 	assert.Equal(t, "test-registry", config.RegistryName)
-	require.Len(t, config.Registries, 2)
+	// Should have 3 registries: default kubernetes + 2 user-specified
+	require.Len(t, config.Registries, 3)
 
-	// Verify first registry
-	assert.Equal(t, "registry1", config.Registries[0].Name)
-	require.NotNil(t, config.Registries[0].File)
-	assert.Equal(t, filepath.Join(RegistryJSONFilePath, "registry1", RegistryJSONFileName), config.Registries[0].File.Path)
-	require.NotNil(t, config.Registries[0].SyncPolicy)
-	assert.Equal(t, "1h", config.Registries[0].SyncPolicy.Interval)
-	assert.Nil(t, config.Registries[0].Filter)
+	// First registry should be the default kubernetes registry
+	assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+	require.NotNil(t, config.Registries[0].Kubernetes)
 
-	// Verify second registry
-	assert.Equal(t, "registry2", config.Registries[1].Name)
-	require.NotNil(t, config.Registries[1].Git)
-	assert.Equal(t, "https://github.com/example/repo.git", config.Registries[1].Git.Repository)
+	// Verify second registry (first user-specified)
+	assert.Equal(t, "registry1", config.Registries[1].Name)
+	require.NotNil(t, config.Registries[1].File)
+	assert.Equal(t, filepath.Join(RegistryJSONFilePath, "registry1", RegistryJSONFileName), config.Registries[1].File.Path)
 	require.NotNil(t, config.Registries[1].SyncPolicy)
-	assert.Equal(t, "30m", config.Registries[1].SyncPolicy.Interval)
-	require.NotNil(t, config.Registries[1].Filter)
-	require.NotNil(t, config.Registries[1].Filter.Names)
-	assert.Equal(t, []string{"server-*"}, config.Registries[1].Filter.Names.Include)
+	assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
+	assert.Nil(t, config.Registries[1].Filter)
+
+	// Verify third registry (second user-specified)
+	assert.Equal(t, "registry2", config.Registries[2].Name)
+	require.NotNil(t, config.Registries[2].Git)
+	assert.Equal(t, "https://github.com/example/repo.git", config.Registries[2].Git.Repository)
+	require.NotNil(t, config.Registries[2].SyncPolicy)
+	assert.Equal(t, "30m", config.Registries[2].SyncPolicy.Interval)
+	require.NotNil(t, config.Registries[2].Filter)
+	require.NotNil(t, config.Registries[2].Filter.Names)
+	assert.Equal(t, []string{"server-*"}, config.Registries[2].Filter.Names.Include)
 }
 
 func TestBuildConfig_PVCSource(t *testing.T) {
@@ -1032,12 +1096,17 @@ func TestBuildConfig_PVCSource(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		assert.Equal(t, "test-registry", config.RegistryName)
-		require.Len(t, config.Registries, 1)
-		assert.Equal(t, "pvc-registry", config.Registries[0].Name)
-		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[0].Format)
-		require.NotNil(t, config.Registries[0].File)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Second registry should be the user-specified PVC registry
+		assert.Equal(t, "pvc-registry", config.Registries[1].Name)
+		assert.Equal(t, mcpv1alpha1.RegistryFormatToolHive, config.Registries[1].Format)
+		require.NotNil(t, config.Registries[1].File)
 		// Path: /config/registry/{registryName}/{pvcRef.path}
-		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "pvc-registry", RegistryJSONFileName), config.Registries[0].File.Path)
+		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "pvc-registry", RegistryJSONFileName), config.Registries[1].File.Path)
 	})
 
 	t.Run("valid pvc source with subdirectory path", func(t *testing.T) {
@@ -1068,11 +1137,16 @@ func TestBuildConfig_PVCSource(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		require.Len(t, config.Registries, 1)
-		assert.Equal(t, "production-registry", config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].File)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Second registry should be the user-specified PVC registry
+		assert.Equal(t, "production-registry", config.Registries[1].Name)
+		require.NotNil(t, config.Registries[1].File)
 		// Path: /config/registry/{registryName}/{pvcRef.path}
-		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "production-registry", "production/v1/servers.json"), config.Registries[0].File.Path)
+		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "production-registry", "production/v1/servers.json"), config.Registries[1].File.Path)
 	})
 
 	t.Run("valid pvc source with filter", func(t *testing.T) {
@@ -1111,15 +1185,20 @@ func TestBuildConfig_PVCSource(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, config)
-		require.Len(t, config.Registries, 1)
-		assert.Equal(t, "filtered-pvc", config.Registries[0].Name)
-		require.NotNil(t, config.Registries[0].File)
+		// Should have 2 registries: default kubernetes + user-specified
+		require.Len(t, config.Registries, 2)
+		// First registry should be the default kubernetes registry
+		assert.Equal(t, DefaultRegistryName, config.Registries[0].Name)
+		require.NotNil(t, config.Registries[0].Kubernetes)
+		// Second registry should be the user-specified PVC registry
+		assert.Equal(t, "filtered-pvc", config.Registries[1].Name)
+		require.NotNil(t, config.Registries[1].File)
 		// Verify filter is preserved
-		require.NotNil(t, config.Registries[0].Filter)
-		require.NotNil(t, config.Registries[0].Filter.Names)
-		assert.Equal(t, []string{"prod-*"}, config.Registries[0].Filter.Names.Include)
-		require.NotNil(t, config.Registries[0].Filter.Tags)
-		assert.Equal(t, []string{"production"}, config.Registries[0].Filter.Tags.Include)
+		require.NotNil(t, config.Registries[1].Filter)
+		require.NotNil(t, config.Registries[1].Filter.Names)
+		assert.Equal(t, []string{"prod-*"}, config.Registries[1].Filter.Names.Include)
+		require.NotNil(t, config.Registries[1].Filter.Tags)
+		assert.Equal(t, []string{"production"}, config.Registries[1].Filter.Tags.Include)
 	})
 }
 func TestBuildConfig_DatabaseConfig(t *testing.T) {
@@ -1134,7 +1213,7 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "db-nil-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						ConfigMapRef: &corev1.ConfigMapKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{
@@ -1176,7 +1255,7 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "db-custom-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						ConfigMapRef: &corev1.ConfigMapKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{
@@ -1228,7 +1307,7 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 			Spec: mcpv1alpha1.MCPRegistrySpec{
 				Registries: []mcpv1alpha1.MCPRegistryConfig{
 					{
-						Name:   "default",
+						Name:   "db-partial-registry",
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						ConfigMapRef: &corev1.ConfigMapKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{

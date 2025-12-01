@@ -148,8 +148,15 @@ type RegistryConfig struct {
 	Git        *GitConfig        `yaml:"git,omitempty"`
 	API        *APIConfig        `yaml:"api,omitempty"`
 	File       *FileConfig       `yaml:"file,omitempty"`
+	Kubernetes *KubernetesConfig `yaml:"kubernetes,omitempty"`
 	SyncPolicy *SyncPolicyConfig `yaml:"syncPolicy,omitempty"`
 	Filter     *FilterConfig     `yaml:"filter,omitempty"`
+}
+
+// KubernetesConfig defines a Kubernetes-based registry source where data is discovered
+// from MCPServer resources in the cluster. This is the default type for the built-in "default" registry.
+type KubernetesConfig struct {
+	// Empty struct - presence indicates this is a Kubernetes registry
 }
 
 // GitConfig defines Git source settings
@@ -233,6 +240,9 @@ func (c *Config) ToConfigMapWithContentChecksum(mcpRegistry *mcpv1alpha1.MCPRegi
 	return configMap, nil
 }
 
+// DefaultRegistryName is the name of the default managed registry
+const DefaultRegistryName = "default"
+
 func (cm *configManager) BuildConfig() (*Config, error) {
 	config := Config{}
 
@@ -253,15 +263,22 @@ func (cm *configManager) BuildConfig() (*Config, error) {
 		return nil, fmt.Errorf("invalid registry configuration: %w", err)
 	}
 
-	// Build registry configs
-	config.Registries = make([]RegistryConfig, 0, len(mcpRegistry.Spec.Registries))
+	// Build registry configs from user-specified registries
+	userRegistries := make([]RegistryConfig, 0, len(mcpRegistry.Spec.Registries))
 	for _, registrySpec := range mcpRegistry.Spec.Registries {
 		registryConfig, err := buildRegistryConfig(&registrySpec)
 		if err != nil {
 			return nil, fmt.Errorf("failed to build registry configuration for %q: %w", registrySpec.Name, err)
 		}
-		config.Registries = append(config.Registries, *registryConfig)
+		userRegistries = append(userRegistries, *registryConfig)
 	}
+
+	// Prepend the default kubernetes registry as the first entry
+	defaultRegistry := RegistryConfig{
+		Name:       DefaultRegistryName,
+		Kubernetes: &KubernetesConfig{},
+	}
+	config.Registries = append([]RegistryConfig{defaultRegistry}, userRegistries...)
 
 	// Build database configuration from CRD spec or use defaults
 	config.Database = buildDatabaseConfig(mcpRegistry.Spec.DatabaseConfig)

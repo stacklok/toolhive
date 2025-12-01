@@ -368,24 +368,6 @@ var _ = Describe("VirtualMCPServer Inline Auth with OIDC Incoming", Ordered, fun
 	})
 
 	AfterAll(func() {
-		// Dump vmcp pod logs before cleanup
-		By("Capturing vmcp pod logs before cleanup")
-		podList, err := GetVirtualMCPServerPods(ctx, k8sClient, vmcpServerName, testNamespace)
-		if err == nil && len(podList.Items) > 0 {
-			for _, pod := range podList.Items {
-				fmt.Printf("=== Capturing logs for pod %s before cleanup ===\n", pod.Name)
-				for _, containerStatus := range pod.Status.ContainerStatuses {
-					previous := containerStatus.RestartCount > 0
-					logs, logErr := getPodLogs(ctx, testNamespace, pod.Name, containerStatus.Name, previous)
-					if logErr != nil {
-						fmt.Printf("Failed to get logs for container %s: %v\n", containerStatus.Name, logErr)
-					} else if logs != "" {
-						fmt.Printf("Container %s logs:\n%s\n", containerStatus.Name, logs)
-					}
-				}
-			}
-		}
-
 		By("Cleaning up test resources")
 		k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},

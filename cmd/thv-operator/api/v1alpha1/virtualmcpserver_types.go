@@ -245,6 +245,8 @@ type OutputPropertySpec struct {
 
 	// Properties defines nested properties for object types
 	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
 	Properties map[string]OutputPropertySpec `json:"properties,omitempty"`
 
 	// Default is the fallback value if template expansion fails

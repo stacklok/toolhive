@@ -204,10 +204,9 @@ spec:
                                   exposed to clients and models
                                 type: string
                               properties:
-                                additionalProperties: {}
                                 description: Properties defines nested properties
                                   for object types
-                                type: object
+                                x-kubernetes-preserve-unknown-fields: true
                               type:
                                 description: 'Type is the JSON Schema type: "string",
                                   "integer", "number", "boolean", "object", "array"'

@@ -197,7 +197,6 @@ spec:
                               default:
                                 description: Default is the fallback value if template
                                   expansion fails
-                                type: object
                                 x-kubernetes-preserve-unknown-fields: true
                               description:
                                 description: Description is a human-readable description

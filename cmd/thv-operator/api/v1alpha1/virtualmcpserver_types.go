@@ -252,7 +252,7 @@ type OutputPropertySpec struct {
 	// Default is the fallback value if template expansion fails
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
-	// +kubebuilder:validation:Type=object
+	// +kubebuilder:validation:Schemaless
 	Default *runtime.RawExtension `json:"default,omitempty"`
 }
 

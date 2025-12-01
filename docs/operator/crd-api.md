@@ -1353,7 +1353,7 @@ _Appears in:_
 | `description` _string_ | Description is a human-readable description exposed to clients and models |  |  |
 | `value` _string_ | Value is a template string for constructing the runtime value<br />Supports template syntax: \{\{.steps.step_id.output.field\}\}, \{\{.params.param_name\}\}<br />For object types, this can be a JSON string that will be deserialized |  |  |
 | `properties` _object (keys:string, values:[OutputPropertySpec](#outputpropertyspec))_ | Properties defines nested properties for object types |  | Schemaless: \{\} <br /> |
-| `default` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Default is the fallback value if template expansion fails |  | Type: object <br /> |
+| `default` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Default is the fallback value if template expansion fails |  | Schemaless: \{\} <br /> |
 
 
 #### OutputSpec

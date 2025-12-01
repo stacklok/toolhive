@@ -183,6 +183,62 @@ spec:
                     name:
                       description: Name is the name of the composite tool
                       type: string
+                    output:
+                      description: |-
+                        Output defines the structured output schema for the composite tool.
+                        Specifies how to construct the final output from workflow step results.
+                        If not specified, the workflow returns the last step's output (backward compatible).
+                      properties:
+                        properties:
+                          additionalProperties:
+                            description: OutputPropertySpec defines a single output
+                              property
+                            properties:
+                              default:
+                                description: Default is the fallback value if template
+                                  expansion fails
+                                type: object
+                                x-kubernetes-preserve-unknown-fields: true
+                              description:
+                                description: Description is a human-readable description
+                                  exposed to clients and models
+                                type: string
+                              properties:
+                                additionalProperties: {}
+                                description: Properties defines nested properties
+                                  for object types
+                                type: object
+                              type:
+                                description: 'Type is the JSON Schema type: "string",
+                                  "integer", "number", "boolean", "object", "array"'
+                                enum:
+                                - string
+                                - integer
+                                - number
+                                - boolean
+                                - object
+                                - array
+                                type: string
+                              value:
+                                description: |-
+                                  Value is a template string for constructing the runtime value
+                                  Supports template syntax: {{.steps.step_id.output.field}}, {{.params.param_name}}
+                                  For object types, this can be a JSON string that will be deserialized
+                                type: string
+                            required:
+                            - type
+                            type: object
+                          description: |-
+                            Properties defines the output properties
+                            Map key is the property name, value is the property definition
+                          type: object
+                        required:
+                          description: Required lists property names that must be
+                            present in the output
+                          items:
+                            type: string
+                          type: array
+                      type: object
                     parameters:
                       description: |-
                         Parameters defines the input parameter schema in JSON Schema format.

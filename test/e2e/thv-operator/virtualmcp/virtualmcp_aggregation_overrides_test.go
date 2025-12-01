@@ -114,10 +114,12 @@ var _ = Describe("VirtualMCPServer Tool Overrides", Ordered, func() {
 				Aggregation: &mcpv1alpha1.AggregationConfig{
 					ConflictResolution: "prefix",
 					// Tool overrides: rename echo to custom_echo_tool with new description
+					// Note: Filter uses the user-facing name (after override), so we filter by
+					// the renamed tool name, not the original name.
 					Tools: []mcpv1alpha1.WorkloadToolConfig{
 						{
 							Workload: backendName,
-							Filter:   []string{originalToolName}, // Only expose echo
+							Filter:   []string{renamedToolName}, // Filter by user-facing name (after override)
 							Overrides: map[string]mcpv1alpha1.ToolOverride{
 								originalToolName: {
 									Name:        renamedToolName,
@@ -279,6 +281,10 @@ var _ = Describe("VirtualMCPServer Tool Overrides", Ordered, func() {
 			backendConfig := vmcpServer.Spec.Aggregation.Tools[0]
 			Expect(backendConfig.Workload).To(Equal(backendName))
 			Expect(backendConfig.Overrides).To(HaveLen(1))
+
+			// Filter should contain the user-facing name (after override)
+			Expect(backendConfig.Filter).To(ContainElement(renamedToolName),
+				"Filter should contain the renamed tool name (user-facing name)")
 
 			override, exists := backendConfig.Overrides[originalToolName]
 			Expect(exists).To(BeTrue(), "Should have override for original tool name")

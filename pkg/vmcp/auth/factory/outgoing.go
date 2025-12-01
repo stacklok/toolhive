@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // NewOutgoingAuthRegistry creates an OutgoingAuthRegistry with all available strategies.
@@ -49,19 +50,19 @@ func NewOutgoingAuthRegistry(
 
 	// Always register all strategies - they're cheap and stateless
 	if err := registry.RegisterStrategy(
-		strategies.StrategyTypeUnauthenticated,
+		authtypes.StrategyTypeUnauthenticated,
 		strategies.NewUnauthenticatedStrategy(),
 	); err != nil {
 		return nil, err
 	}
 	if err := registry.RegisterStrategy(
-		strategies.StrategyTypeHeaderInjection,
+		authtypes.StrategyTypeHeaderInjection,
 		strategies.NewHeaderInjectionStrategy(),
 	); err != nil {
 		return nil, err
 	}
 	if err := registry.RegisterStrategy(
-		strategies.StrategyTypeTokenExchange,
+		authtypes.StrategyTypeTokenExchange,
 		strategies.NewTokenExchangeStrategy(envReader),
 	); err != nil {
 		return nil, err

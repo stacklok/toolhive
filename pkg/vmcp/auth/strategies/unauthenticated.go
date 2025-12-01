@@ -3,6 +3,8 @@ package strategies
 import (
 	"context"
 	"net/http"
+
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // UnauthenticatedStrategy is a no-op authentication strategy that performs no authentication.
@@ -38,7 +40,7 @@ func NewUnauthenticatedStrategy() *UnauthenticatedStrategy {
 
 // Name returns the strategy identifier.
 func (*UnauthenticatedStrategy) Name() string {
-	return StrategyTypeUnauthenticated
+	return authtypes.StrategyTypeUnauthenticated
 }
 
 // Authenticate performs no authentication and returns immediately.
@@ -50,23 +52,23 @@ func (*UnauthenticatedStrategy) Name() string {
 // Parameters:
 //   - ctx: Request context (unused)
 //   - req: The HTTP request (not modified)
-//   - metadata: Strategy-specific configuration (ignored)
+//   - config: Strategy configuration (ignored)
 //
 // Returns nil (always succeeds).
-func (*UnauthenticatedStrategy) Authenticate(_ context.Context, _ *http.Request, _ map[string]any) error {
+func (*UnauthenticatedStrategy) Authenticate(_ context.Context, _ *http.Request, _ *authtypes.BackendAuthStrategy) error {
 	// No-op: intentionally does nothing
 	return nil
 }
 
 // Validate checks if the strategy configuration is valid.
 //
-// UnauthenticatedStrategy accepts any metadata (including nil or empty),
+// UnauthenticatedStrategy accepts any configuration (including nil or empty),
 // so this always returns nil.
 //
 // This permissive validation allows the strategy to be used without
 // configuration or with arbitrary configuration that may be present
 // for documentation purposes.
-func (*UnauthenticatedStrategy) Validate(_ map[string]any) error {
-	// No-op: accepts any metadata
+func (*UnauthenticatedStrategy) Validate(_ *authtypes.BackendAuthStrategy) error {
+	// No-op: accepts any configuration
 	return nil
 }

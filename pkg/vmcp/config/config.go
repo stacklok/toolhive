@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
@@ -151,42 +152,32 @@ type OutgoingAuthConfig struct {
 	Source string `json:"source" yaml:"source"`
 
 	// Default is the default auth strategy for backends without explicit config.
-	Default *BackendAuthStrategy `json:"default,omitempty" yaml:"default,omitempty"`
+	Default *authtypes.BackendAuthStrategy `json:"default,omitempty" yaml:"default,omitempty"`
 
 	// Backends contains per-backend auth configuration.
-	Backends map[string]*BackendAuthStrategy `json:"backends,omitempty" yaml:"backends,omitempty"`
+	Backends map[string]*authtypes.BackendAuthStrategy `json:"backends,omitempty" yaml:"backends,omitempty"`
 }
 
-// BackendAuthStrategy defines how to authenticate to a specific backend.
-type BackendAuthStrategy struct {
-	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange"
-	Type string `json:"type" yaml:"type"`
-
-	// Metadata contains strategy-specific configuration.
-	// This is opaque and interpreted by the auth strategy implementation.
-	Metadata map[string]any `json:"metadata,omitempty" yaml:"metadata,omitempty"`
-}
-
-// ResolveForBackend returns the auth strategy and metadata for a given backend ID.
+// ResolveForBackend returns the auth strategy for a given backend ID.
 // It checks for backend-specific config first, then falls back to default.
-// Returns empty string and nil if no authentication is configured.
-func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) (string, map[string]any) {
+// Returns nil if no authentication is configured.
+func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.BackendAuthStrategy {
 	if c == nil {
-		return "", nil
+		return nil
 	}
 
 	// Check for backend-specific configuration
 	if strategy, exists := c.Backends[backendID]; exists && strategy != nil {
-		return strategy.Type, strategy.Metadata
+		return strategy
 	}
 
 	// Fall back to default configuration
 	if c.Default != nil {
-		return c.Default.Type, c.Default.Metadata
+		return c.Default
 	}
 
 	// No authentication configured
-	return "", nil
+	return nil
 }
 
 // AggregationConfig configures capability aggregation.

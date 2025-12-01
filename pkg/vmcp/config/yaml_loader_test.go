@@ -353,13 +353,12 @@ aggregation:
 				if backend.Type != "header_injection" {
 					t.Errorf("Backend.Type = %v, want header_injection", backend.Type)
 				}
-				// Verify the resolved value is in metadata
-				headerValue, ok := backend.Metadata["header_value"].(string)
-				if !ok {
-					t.Fatal("header_value not found in metadata")
+				// Verify the resolved value is in HeaderInjection config
+				if backend.HeaderInjection == nil {
+					t.Fatal("HeaderInjection is nil")
 				}
-				if headerValue != "secret-token-123" {
-					t.Errorf("header_value = %v, want secret-token-123", headerValue)
+				if backend.HeaderInjection.HeaderValue != "secret-token-123" {
+					t.Errorf("HeaderInjection.HeaderValue = %v, want secret-token-123", backend.HeaderInjection.HeaderValue)
 				}
 			},
 			wantErr: false,
@@ -393,12 +392,11 @@ aggregation:
 				if !ok {
 					t.Fatal("api-service backend not found")
 				}
-				headerValue, ok := backend.Metadata["header_value"].(string)
-				if !ok {
-					t.Fatal("header_value not found in metadata")
+				if backend.HeaderInjection == nil {
+					t.Fatal("HeaderInjection is nil")
 				}
-				if headerValue != "v1" {
-					t.Errorf("header_value = %v, want v1", headerValue)
+				if backend.HeaderInjection.HeaderValue != "v1" {
+					t.Errorf("HeaderInjection.HeaderValue = %v, want v1", backend.HeaderInjection.HeaderValue)
 				}
 			},
 			wantErr: false,

@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/test/integration/vmcp/helpers"
 )
 
@@ -170,16 +171,22 @@ func TestVMCPServer_TwoBoundaryAuth_HeaderInjection(t *testing.T) {
 	backends := []vmcp.Backend{
 		helpers.NewBackend("gitlab",
 			helpers.WithURL(gitlabServer.URL+"/mcp"),
-			helpers.WithAuth("header_injection", map[string]any{
-				"header_name":  "X-GitLab-Token",
-				"header_value": "secret-123",
+			helpers.WithAuth(&authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-GitLab-Token",
+					HeaderValue: "secret-123",
+				},
 			}),
 		),
 		helpers.NewBackend("github",
 			helpers.WithURL(githubServer.URL+"/mcp"),
-			helpers.WithAuth("header_injection", map[string]any{
-				"header_name":  "Authorization",
-				"header_value": "Bearer token-456",
+			helpers.WithAuth(&authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "Authorization",
+					HeaderValue: "Bearer token-456",
+				},
 			}),
 		),
 	}

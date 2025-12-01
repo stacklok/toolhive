@@ -1272,6 +1272,9 @@ func checkContainerError(containerStatus corev1.ContainerStatus) (bool, string) 
 
 // areAllContainersReady checks if all containers in the pod are ready.
 func areAllContainersReady(containerStatuses []corev1.ContainerStatus) bool {
+	if len(containerStatuses) == 0 {
+		return false
+	}
 	for _, containerStatus := range containerStatuses {
 		if !containerStatus.Ready {
 			return false

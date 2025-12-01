@@ -269,6 +269,19 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				backend.Spec.Image = "non-existent-image:invalid"
 				return k8sClient.Update(ctx, backend)
 			}, timeout, pollingInterval).Should(Succeed())
+			By("Waiting for MCPServer to transition to Failed state")
+			Eventually(func() mcpv1alpha1.MCPServerPhase {
+				backend := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      backend1Name,
+					Namespace: testNamespace,
+				}, backend)
+				if err != nil {
+					return ""
+				}
+				return backend.Status.Phase
+			}, timeout, pollingInterval).Should(Equal(mcpv1alpha1.MCPServerPhaseFailed),
+				"MCPServer should transition to Failed when image is invalid")
 
 			By("Waiting for VirtualMCPServer to transition to Degraded phase")
 			Eventually(func() mcpv1alpha1.VirtualMCPServerPhase {

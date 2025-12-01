@@ -392,6 +392,14 @@ type CircuitBreakerConfig struct {
 	Timeout string `json:"timeout,omitempty"`
 }
 
+// Backend status constants for DiscoveredBackend.Status
+const (
+	BackendStatusReady       = "ready"
+	BackendStatusUnavailable = "unavailable"
+	BackendStatusDegraded    = "degraded"
+	BackendStatusUnknown     = "unknown"
+)
+
 // DiscoveredBackend represents a discovered backend MCPServer in the MCPGroup
 type DiscoveredBackend struct {
 	// Name is the name of the backend MCPServer

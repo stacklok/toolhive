@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -118,6 +120,16 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 				},
 			},
 		},
+	}
+
+	// Apply user-provided PodTemplateSpec customizations if present
+	if vmcp.Spec.PodTemplateSpec != nil && vmcp.Spec.PodTemplateSpec.Raw != nil {
+		if err := r.applyPodTemplateSpecToDeployment(ctx, vmcp, dep); err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to apply PodTemplateSpec to Deployment")
+			// Return nil to block deployment creation until PodTemplateSpec is fixed
+			return nil
+		}
 	}
 
 	if err := controllerutil.SetControllerReference(vmcp, dep, r.Scheme); err != nil {
@@ -478,8 +490,6 @@ func (*VirtualMCPServerReconciler) buildPodTemplateMetadata(
 	// Use the standard checksum package helper for consistency
 	templateAnnotations := checksum.AddRunConfigChecksumToPodTemplate(nil, vmcpConfigChecksum)
 
-	// TODO: Add support for PodTemplateSpec overrides from spec
-
 	return templateLabels, templateAnnotations
 }
 
@@ -665,6 +675,65 @@ func (r *VirtualMCPServerReconciler) validateSecretKeyRef(
 		return fmt.Errorf("%s secret %s/%s is missing key %q",
 			secretDesc, namespace, secretRef.Name, secretRef.Key)
 	}
+
+	return nil
+}
+
+// applyPodTemplateSpecToDeployment applies user-provided PodTemplateSpec customizations to the deployment
+// using strategic merge patch. This allows users to customize pod-level settings like node selectors,
+// tolerations, affinity rules, security contexts, and additional containers.
+//
+// The merge strategy:
+// - User-provided fields override controller-generated defaults
+// - Arrays are merged based on strategic merge patch rules (e.g., containers merged by name)
+// - The "vmcp" container is preserved from the controller-generated spec
+func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	deployment *appsv1.Deployment,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// Build user-provided PodTemplateSpec
+	builder, err := NewVirtualMCPServerPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec)
+	if err != nil {
+		return fmt.Errorf("failed to build PodTemplateSpec: %w", err)
+	}
+
+	userPodTemplateSpec := builder.Build()
+	if userPodTemplateSpec == nil {
+		// No customizations to apply
+		return nil
+	}
+
+	// Marshal both the original and user-provided PodTemplateSpec
+	originalJSON, err := json.Marshal(deployment.Spec.Template)
+	if err != nil {
+		return fmt.Errorf("failed to marshal original PodTemplateSpec: %w", err)
+	}
+
+	userJSON, err := json.Marshal(userPodTemplateSpec)
+	if err != nil {
+		return fmt.Errorf("failed to marshal user PodTemplateSpec: %w", err)
+	}
+
+	// Apply strategic merge patch to combine controller defaults with user customizations
+	patchedJSON, err := strategicpatch.StrategicMergePatch(originalJSON, userJSON, corev1.PodTemplateSpec{})
+	if err != nil {
+		return fmt.Errorf("failed to apply strategic merge patch: %w", err)
+	}
+
+	// Unmarshal the patched result back into the deployment
+	var patchedPodTemplateSpec corev1.PodTemplateSpec
+	if err := json.Unmarshal(patchedJSON, &patchedPodTemplateSpec); err != nil {
+		return fmt.Errorf("failed to unmarshal patched PodTemplateSpec: %w", err)
+	}
+
+	deployment.Spec.Template = patchedPodTemplateSpec
+
+	ctxLogger.V(1).Info("Applied PodTemplateSpec customizations to deployment",
+		"virtualmcpserver", vmcp.Name,
+		"namespace", vmcp.Namespace)
 
 	return nil
 }

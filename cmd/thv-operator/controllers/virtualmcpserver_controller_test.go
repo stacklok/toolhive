@@ -40,6 +40,7 @@ import (
 
 const (
 	testChecksumValue = "test-checksum-123"
+	testVmcpName      = "test-vmcp"
 )
 
 // TestVirtualMCPServerValidateGroupRef tests the GroupRef validation
@@ -59,18 +60,18 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 			name: "valid group ref with ready group",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
+					Name:      testVmcpName,
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
+						Name: testGroupName,
 					},
 				},
 			},
 			mcpGroup: &mcpv1alpha1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-group",
+					Name:      testGroupName,
 					Namespace: "default",
 				},
 				Status: mcpv1alpha1.MCPGroupStatus{
@@ -107,7 +108,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 			name: "group ref not found",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
+					Name:      testVmcpName,
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
@@ -124,7 +125,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 			name: "group ref not ready",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
+					Name:      testVmcpName,
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
@@ -219,12 +220,12 @@ func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 		},
 	}
@@ -285,20 +286,31 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
+		},
+	}
+
+	// Create MCPGroup that the VirtualMCPServer references
+	mcpGroup := &mcpv1alpha1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testGroupName,
+			Namespace: "default",
+		},
+		Status: mcpv1alpha1.MCPGroupStatus{
+			Phase: mcpv1alpha1.MCPGroupPhaseReady,
 		},
 	}
 
 	// Create ConfigMap with checksum
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp-vmcp-config",
+			Name:      vmcpConfigMapName(vmcp.Name),
 			Namespace: "default",
 			Annotations: map[string]string{
 				"toolhive.stacklok.dev/content-checksum": "test-checksum-123",
@@ -316,7 +328,7 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(vmcp, configMap).
+		WithObjects(vmcp, mcpGroup, configMap).
 		Build()
 
 	r := &VirtualMCPServerReconciler{
@@ -359,12 +371,12 @@ func TestVirtualMCPServerEnsureService(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 		},
 	}
@@ -440,12 +452,12 @@ func TestVirtualMCPServerServiceType(t *testing.T) {
 
 			vmcp := &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
+					Name:      testVmcpName,
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
+						Name: testGroupName,
 					},
 					ServiceType: tt.serviceType,
 				},
@@ -473,12 +485,12 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 
 	baseVmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 			ServiceType: "ClusterIP",
 		},
@@ -567,16 +579,16 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 			name: "running pods",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
+					Name:      testVmcpName,
 					Namespace: "default",
 				},
 			},
 			pods: []corev1.Pod{
 				{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-vmcp-pod-1",
+						Name:      "testVmcpName-pod-1",
 						Namespace: "default",
-						Labels:    labelsForVirtualMCPServer("test-vmcp"),
+						Labels:    labelsForVirtualMCPServer(testVmcpName),
 					},
 					Status: corev1.PodStatus{
 						Phase: corev1.PodRunning,
@@ -589,16 +601,16 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 			name: "pending pods",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
+					Name:      testVmcpName,
 					Namespace: "default",
 				},
 			},
 			pods: []corev1.Pod{
 				{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-vmcp-pod-1",
+						Name:      "testVmcpName-pod-1",
 						Namespace: "default",
-						Labels:    labelsForVirtualMCPServer("test-vmcp"),
+						Labels:    labelsForVirtualMCPServer(testVmcpName),
 					},
 					Status: corev1.PodStatus{
 						Phase: corev1.PodPending,
@@ -611,16 +623,16 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 			name: "failed pods",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
+					Name:      testVmcpName,
 					Namespace: "default",
 				},
 			},
 			pods: []corev1.Pod{
 				{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-vmcp-pod-1",
+						Name:      "testVmcpName-pod-1",
 						Namespace: "default",
-						Labels:    labelsForVirtualMCPServer("test-vmcp"),
+						Labels:    labelsForVirtualMCPServer(testVmcpName),
 					},
 					Status: corev1.PodStatus{
 						Phase: corev1.PodFailed,
@@ -670,7 +682,7 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 func TestVirtualMCPServerLabels(t *testing.T) {
 	t.Parallel()
 
-	name := "test-vmcp"
+	name := testVmcpName
 	labels := labelsForVirtualMCPServer(name)
 
 	assert.Equal(t, "virtualmcpserver", labels["app"])
@@ -725,12 +737,12 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			name: "valid auth with no secrets required (anonymous)",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
+					Name:      testVmcpName,
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
+						Name: testGroupName,
 					},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "anonymous",
@@ -747,12 +759,12 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			name: "OIDC with missing client secret",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
+					Name:      testVmcpName,
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
+						Name: testGroupName,
 					},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
@@ -780,12 +792,12 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			name: "OIDC with valid client secret",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
+					Name:      testVmcpName,
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
+						Name: testGroupName,
 					},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
@@ -823,12 +835,12 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 			name: "OIDC secret exists but missing required key",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
+					Name:      testVmcpName,
 					Namespace: "default",
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
+						Name: testGroupName,
 					},
 					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
 						Type: "oidc",
@@ -959,13 +971,13 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 			setupVMCP: func() *mcpv1alpha1.VirtualMCPServer {
 				return &mcpv1alpha1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:       "test-vmcp",
+						Name:       testVmcpName,
 						Namespace:  "default",
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
 						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "test-group",
+							Name: testGroupName,
 						},
 					},
 				}
@@ -984,13 +996,13 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 			setupVMCP: func() *mcpv1alpha1.VirtualMCPServer {
 				return &mcpv1alpha1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:       "test-vmcp",
+						Name:       testVmcpName,
 						Namespace:  "default",
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
 						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "test-group",
+							Name: testGroupName,
 						},
 					},
 				}
@@ -1006,13 +1018,13 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 			setupVMCP: func() *mcpv1alpha1.VirtualMCPServer {
 				return &mcpv1alpha1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:       "test-vmcp",
+						Name:       testVmcpName,
 						Namespace:  "default",
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
 						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "test-group",
+							Name: testGroupName,
 						},
 					},
 				}
@@ -1092,13 +1104,13 @@ func TestVirtualMCPServerApplyStatusUpdates_ResourceNotFound(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:       "test-vmcp",
+			Name:       testVmcpName,
 			Namespace:  "default",
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 		},
 	}
@@ -1136,13 +1148,13 @@ func TestVirtualMCPServerEnsureAllResources_Errors(t *testing.T) {
 			setupVMCP: func() *mcpv1alpha1.VirtualMCPServer {
 				return &mcpv1alpha1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:       "test-vmcp",
+						Name:       testVmcpName,
 						Namespace:  "default",
 						Generation: 1,
 					},
 					Spec: mcpv1alpha1.VirtualMCPServerSpec{
 						GroupRef: mcpv1alpha1.GroupRef{
-							Name: "test-group",
+							Name: testGroupName,
 						},
 					},
 				}
@@ -1156,7 +1168,7 @@ func TestVirtualMCPServerEnsureAllResources_Errors(t *testing.T) {
 
 				mcpGroup := &mcpv1alpha1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-group",
+						Name:      testGroupName,
 						Namespace: "default",
 					},
 					Status: mcpv1alpha1.MCPGroupStatus{
@@ -1212,12 +1224,12 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 		},
 	}
@@ -1408,7 +1420,7 @@ func TestVirtualMCPServerDeploymentMetadataNeedsUpdate(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 	}
@@ -1429,7 +1441,7 @@ func TestVirtualMCPServerDeploymentMetadataNeedsUpdate(t *testing.T) {
 			name: "nil vmcp needs update",
 			deployment: &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: labelsForVirtualMCPServer("test-vmcp"),
+					Labels: labelsForVirtualMCPServer(testVmcpName),
 				},
 			},
 			vmcp:           nil,
@@ -1496,7 +1508,7 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 	}
@@ -1632,12 +1644,12 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 		},
 	}
@@ -1803,20 +1815,20 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:       "test-vmcp",
+			Name:       testVmcpName,
 			Namespace:  "default",
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 		},
 	}
 
 	mcpGroup := &mcpv1alpha1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-group",
+			Name:      testGroupName,
 			Namespace: "default",
 		},
 		Status: mcpv1alpha1.MCPGroupStatus{
@@ -1828,7 +1840,7 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 	replicas := int32(1)
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 			Labels:    labelsForVirtualMCPServer(vmcp.Name),
 		},
@@ -1877,7 +1889,7 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 	// Create pod for status update
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp-pod",
+			Name:      "testVmcpName-pod",
 			Namespace: "default",
 			Labels:    labelsForVirtualMCPServer(vmcp.Name),
 		},
@@ -1938,7 +1950,7 @@ func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:       "test-vmcp",
+			Name:       testVmcpName,
 			Namespace:  "default",
 			Generation: 1,
 		},
@@ -1996,20 +2008,20 @@ func TestVirtualMCPServerReconcile_GroupNotReady(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:       "test-vmcp",
+			Name:       testVmcpName,
 			Namespace:  "default",
 			Generation: 1,
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 		},
 	}
 
 	mcpGroup := &mcpv1alpha1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-group",
+			Name:      testGroupName,
 			Namespace: "default",
 		},
 		Status: mcpv1alpha1.MCPGroupStatus{
@@ -2071,7 +2083,7 @@ func TestVirtualMCPServerReconcile_GetError(t *testing.T) {
 
 	req := ctrl.Request{
 		NamespacedName: types.NamespacedName{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 	}
@@ -2093,12 +2105,12 @@ func TestVirtualMCPServerEnsureDeployment_ConfigMapNotFound(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 		},
 	}
@@ -2131,12 +2143,12 @@ func TestVirtualMCPServerEnsureDeployment_CreateDeployment(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 		},
 	}
@@ -2190,12 +2202,12 @@ func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 		},
 	}
@@ -2216,7 +2228,7 @@ func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
 	// Create existing deployment with old image
 	oldDeployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 			Labels:    labelsForVirtualMCPServer(vmcp.Name),
 		},
@@ -2275,12 +2287,12 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 		},
 	}
@@ -2310,7 +2322,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 
 	correctDeployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "test-vmcp",
+			Name:        testVmcpName,
 			Namespace:   "default",
 			Labels:      labelsForVirtualMCPServer(vmcp.Name),
 			Annotations: make(map[string]string),
@@ -2363,12 +2375,12 @@ func TestVirtualMCPServerEnsureService_CreateService(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 		},
 	}
@@ -2407,12 +2419,12 @@ func TestVirtualMCPServerEnsureService_UpdateService(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 			ServiceType: "LoadBalancer",
 		},
@@ -2471,12 +2483,12 @@ func TestVirtualMCPServerEnsureService_NoUpdateNeeded(t *testing.T) {
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
+			Name:      testVmcpName,
 			Namespace: "default",
 		},
 		Spec: mcpv1alpha1.VirtualMCPServerSpec{
 			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
+				Name: testGroupName,
 			},
 		},
 	}

@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
 // Compile-time check to ensure corev1 is used (for Service type)
@@ -67,7 +68,7 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
-				Image:     YardstickImage,
+				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,
@@ -86,7 +87,7 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
-				Image:     YardstickImage,
+				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,

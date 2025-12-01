@@ -14,13 +14,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
 // Compile-time check to ensure corev1 is used (for Service type)
 var _ = corev1.ServiceSpec{}
-
-// YardstickImage is the container image for the yardstick MCP server
-const YardstickImage = "ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2"
 
 var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 	var (
@@ -71,7 +69,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
-				Image:     YardstickImage,
+				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,
@@ -90,7 +88,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
-				Image:     YardstickImage,
+				Image:     images.YardstickServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,

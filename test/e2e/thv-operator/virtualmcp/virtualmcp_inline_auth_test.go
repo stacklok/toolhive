@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
 var _ = Describe("VirtualMCPServer Inline Auth with Anonymous Incoming", Ordered, func() {
@@ -65,7 +66,7 @@ var _ = Describe("VirtualMCPServer Inline Auth with Anonymous Incoming", Ordered
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
-				Image:     "ghcr.io/stackloklabs/gofetch/server:1.0.1",
+				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,
@@ -285,7 +286,7 @@ var _ = Describe("VirtualMCPServer Inline Auth with OIDC Incoming", Ordered, fun
 			},
 			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
-				Image:     "ghcr.io/stackloklabs/gofetch/server:1.0.1",
+				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
 				McpPort:   8080,

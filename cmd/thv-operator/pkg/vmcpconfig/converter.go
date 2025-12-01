@@ -323,6 +323,11 @@ func (*Converter) convertCompositeTools(
 			tool.Steps = append(tool.Steps, step)
 		}
 
+		// Convert output configuration
+		if crdTool.Output != nil {
+			tool.Output = convertOutputSpec(ctx, crdTool.Output)
+		}
+
 		compositeTools = append(compositeTools, tool)
 	}
 
@@ -336,6 +341,65 @@ func convertArguments(args map[string]string) map[string]any {
 		result[k] = v
 	}
 	return result
+}
+
+// convertOutputSpec converts OutputSpec from CRD to vmcp config OutputConfig
+func convertOutputSpec(ctx context.Context, crdOutput *mcpv1alpha1.OutputSpec) *vmcpconfig.OutputConfig {
+	if crdOutput == nil {
+		return nil
+	}
+
+	output := &vmcpconfig.OutputConfig{
+		Properties: make(map[string]vmcpconfig.OutputProperty, len(crdOutput.Properties)),
+		Required:   crdOutput.Required,
+	}
+
+	// Convert properties
+	for propName, propSpec := range crdOutput.Properties {
+		output.Properties[propName] = convertOutputProperty(ctx, propName, propSpec)
+	}
+
+	return output
+}
+
+// convertOutputProperty converts OutputPropertySpec from CRD to vmcp config OutputProperty
+func convertOutputProperty(
+	ctx context.Context, propName string, crdProp mcpv1alpha1.OutputPropertySpec,
+) vmcpconfig.OutputProperty {
+	prop := vmcpconfig.OutputProperty{
+		Type:        crdProp.Type,
+		Description: crdProp.Description,
+		Value:       crdProp.Value,
+	}
+
+	// Convert nested properties for object types
+	if len(crdProp.Properties) > 0 {
+		prop.Properties = make(map[string]vmcpconfig.OutputProperty, len(crdProp.Properties))
+		for nestedName, nestedSpec := range crdProp.Properties {
+			prop.Properties[nestedName] = convertOutputProperty(ctx, propName+"."+nestedName, nestedSpec)
+		}
+	}
+
+	// Convert default value from runtime.RawExtension to any
+	// RawExtension.Raw contains JSON bytes. json.Unmarshal correctly handles:
+	// - JSON strings: "hello" -> Go string "hello"
+	// - JSON numbers: 42 -> Go float64(42)
+	// - JSON booleans: true -> Go bool true
+	// - JSON objects: {"key":"value"} -> Go map[string]any
+	// - JSON arrays: [1,2,3] -> Go []any
+	if crdProp.Default != nil && len(crdProp.Default.Raw) > 0 {
+		var defaultVal any
+		if err := json.Unmarshal(crdProp.Default.Raw, &defaultVal); err != nil {
+			// Log warning but continue - invalid defaults will be caught at runtime
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "failed to unmarshal output property default value",
+				"property", propName, "raw", string(crdProp.Default.Raw))
+		} else {
+			prop.Default = defaultVal
+		}
+	}
+
+	return prop
 }
 
 // convertOperational converts OperationalConfig from CRD to vmcp config

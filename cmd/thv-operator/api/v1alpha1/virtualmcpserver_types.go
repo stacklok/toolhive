@@ -206,6 +206,54 @@ type CompositeToolSpec struct {
 	// +kubebuilder:default="30m"
 	// +optional
 	Timeout string `json:"timeout,omitempty"`
+
+	// Output defines the structured output schema for the composite tool.
+	// Specifies how to construct the final output from workflow step results.
+	// If not specified, the workflow returns the last step's output (backward compatible).
+	// +optional
+	Output *OutputSpec `json:"output,omitempty"`
+}
+
+// OutputSpec defines the structured output schema for a composite tool workflow
+type OutputSpec struct {
+	// Properties defines the output properties
+	// Map key is the property name, value is the property definition
+	// +optional
+	Properties map[string]OutputPropertySpec `json:"properties,omitempty"`
+
+	// Required lists property names that must be present in the output
+	// +optional
+	Required []string `json:"required,omitempty"`
+}
+
+// OutputPropertySpec defines a single output property
+type OutputPropertySpec struct {
+	// Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array"
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=string;integer;number;boolean;object;array
+	Type string `json:"type"`
+
+	// Description is a human-readable description exposed to clients and models
+	// +optional
+	Description string `json:"description,omitempty"`
+
+	// Value is a template string for constructing the runtime value
+	// Supports template syntax: {{.steps.step_id.output.field}}, {{.params.param_name}}
+	// For object types, this can be a JSON string that will be deserialized
+	// +optional
+	Value string `json:"value,omitempty"`
+
+	// Properties defines nested properties for object types
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
+	Properties map[string]OutputPropertySpec `json:"properties,omitempty"`
+
+	// Default is the fallback value if template expansion fails
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
+	Default *runtime.RawExtension `json:"default,omitempty"`
 }
 
 // WorkflowStep defines a step in a composite tool workflow

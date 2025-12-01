@@ -47,6 +47,8 @@ type OIDCConfigurable interface {
 	GetProxyPort() int32
 }
 
+//go:generate mockgen -destination=mocks/mock_resolver.go -package=mocks -source=resolver.go Resolver
+
 // Resolver is the interface for resolving OIDC configuration from various sources
 type Resolver interface {
 	// Resolve takes any resource implementing OIDCConfigurable and resolves its OIDC config

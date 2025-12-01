@@ -20,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,9 +29,28 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
+
+// newNoOpMockResolver creates a mock resolver that returns (nil, nil) for all calls.
+// Use this in tests that don't care about OIDC configuration.
+func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	mockResolver := oidcmocks.NewMockResolver(ctrl)
+	mockResolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	return mockResolver
+}
+
+// newTestConverter creates a Converter with the given resolver, failing the test if creation fails.
+func newTestConverter(t *testing.T, resolver *oidcmocks.MockResolver) *vmcpconfig.Converter {
+	t.Helper()
+	converter, err := vmcpconfig.NewConverter(resolver)
+	require.NoError(t, err)
+	return converter
+}
 
 // TestCreateVmcpConfigFromVirtualMCPServer tests vmcp config generation
 func TestCreateVmcpConfigFromVirtualMCPServer(t *testing.T) {
@@ -65,7 +85,7 @@ func TestCreateVmcpConfigFromVirtualMCPServer(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			converter := vmcpconfig.NewConverter()
+			converter := newTestConverter(t, newNoOpMockResolver(t))
 			config, err := converter.Convert(context.Background(), tt.vmcp)
 
 			require.NoError(t, err)
@@ -138,7 +158,7 @@ func TestConvertOutgoingAuth(t *testing.T) {
 				},
 			}
 
-			converter := vmcpconfig.NewConverter()
+			converter := newTestConverter(t, newNoOpMockResolver(t))
 			config, err := converter.Convert(context.Background(), vmcpServer)
 			require.NoError(t, err)
 
@@ -198,7 +218,7 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 				},
 			}
 
-			converter := vmcpconfig.NewConverter()
+			converter := newTestConverter(t, newNoOpMockResolver(t))
 			config, err := converter.Convert(context.Background(), vmcpServer)
 			require.NoError(t, err)
 
@@ -292,7 +312,7 @@ func TestConvertAggregation(t *testing.T) {
 				},
 			}
 
-			converter := vmcpconfig.NewConverter()
+			converter := newTestConverter(t, newNoOpMockResolver(t))
 			config, err := converter.Convert(context.Background(), vmcpServer)
 			require.NoError(t, err)
 
@@ -385,7 +405,7 @@ func TestConvertCompositeTools(t *testing.T) {
 				},
 			}
 
-			converter := vmcpconfig.NewConverter()
+			converter := newTestConverter(t, newNoOpMockResolver(t))
 			config, err := converter.Convert(context.Background(), vmcpServer)
 			require.NoError(t, err)
 
@@ -564,7 +584,7 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 		},
 	}
 
-	converter := vmcpconfig.NewConverter()
+	converter := newTestConverter(t, newNoOpMockResolver(t))
 
 	// Marshal the config 10 times to ensure deterministic output
 	const iterations = 10

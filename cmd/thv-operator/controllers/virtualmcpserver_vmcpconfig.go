@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
@@ -25,8 +26,14 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
-	// Convert CRD to vmcp config using converter
-	converter := vmcpconfig.NewConverter()
+	// Create OIDC resolver to handle all OIDC types (kubernetes, configMap, inline)
+	oidcResolver := oidc.NewResolver(r.Client)
+
+	// Convert CRD to vmcp config using converter with OIDC resolver
+	converter, err := vmcpconfig.NewConverter(oidcResolver)
+	if err != nil {
+		return fmt.Errorf("failed to create vmcp converter: %w", err)
+	}
 	config, err := converter.Convert(ctx, vmcp)
 	if err != nil {
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)

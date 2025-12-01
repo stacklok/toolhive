@@ -1253,9 +1253,65 @@ func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1a
 	return svc
 }
 
+// checkContainerError checks if a container is in an error state and returns the error reason.
+func checkContainerError(containerStatus corev1.ContainerStatus) (bool, string) {
+	if containerStatus.State.Waiting != nil {
+		reason := containerStatus.State.Waiting.Reason
+		// These reasons indicate the pod is not healthy
+		if reason == "ImagePullBackOff" || reason == "ErrImagePull" ||
+			reason == "CrashLoopBackOff" || reason == "CreateContainerError" ||
+			reason == "InvalidImageName" {
+			return true, reason
+		}
+	}
+	if containerStatus.State.Terminated != nil && containerStatus.State.Terminated.ExitCode != 0 {
+		return true, "ContainerTerminated"
+	}
+	return false, ""
+}
+
+// areAllContainersReady checks if all containers in the pod are ready.
+func areAllContainersReady(containerStatuses []corev1.ContainerStatus) bool {
+	for _, containerStatus := range containerStatuses {
+		if !containerStatus.Ready {
+			return false
+		}
+	}
+	return true
+}
+
+// categorizePodStatus categorizes a pod into running, pending, or failed and returns the failure reason.
+func categorizePodStatus(pod corev1.Pod) (running, pending, failed int, failureReason string) {
+	// Check container statuses for failures (ImagePullBackOff, CrashLoopBackOff, etc.)
+	for _, containerStatus := range pod.Status.ContainerStatuses {
+		if hasError, reason := checkContainerError(containerStatus); hasError {
+			return 0, 0, 1, reason
+		}
+	}
+
+	// Check pod phase if containers are not in error state
+	switch pod.Status.Phase {
+	case corev1.PodRunning:
+		if areAllContainersReady(pod.Status.ContainerStatuses) {
+			return 1, 0, 0, ""
+		}
+		return 0, 1, 0, ""
+	case corev1.PodPending:
+		return 0, 1, 0, ""
+	case corev1.PodFailed:
+		return 0, 0, 1, "PodFailed"
+	case corev1.PodSucceeded:
+		return 1, 0, 0, ""
+	case corev1.PodUnknown:
+		return 0, 1, 0, ""
+	}
+	return 0, 0, 0, ""
+}
+
 // updateMCPServerStatus updates the status of the MCPServer
 func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
-	// List the pods for this MCPServer's deployment
+	// List pods for the StatefulSet only (not proxy pods)
+	// The StatefulSet pods are labeled with "app": "mcpserver"
 	podList := &corev1.PodList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(m.Namespace),
@@ -1265,38 +1321,44 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 		return err
 	}
 
-	// Update the status based on the pod status
+	if len(podList.Items) == 0 {
+		// No StatefulSet pods found yet
+		m.Status.Phase = mcpv1alpha1.MCPServerPhasePending
+		m.Status.Message = "MCP server is being created"
+		return r.Status().Update(ctx, m)
+	}
+
+	// Check pod and container statuses
 	var running, pending, failed int
+	var failureReason string
+
 	for _, pod := range podList.Items {
-		switch pod.Status.Phase {
-		case corev1.PodRunning:
-			running++
-		case corev1.PodPending:
-			pending++
-		case corev1.PodFailed:
-			failed++
-		case corev1.PodSucceeded:
-			// Treat succeeded pods as running for status purposes
-			running++
-		case corev1.PodUnknown:
-			// Treat unknown pods as pending for status purposes
-			pending++
+		r, p, f, reason := categorizePodStatus(pod)
+		running += r
+		pending += p
+		failed += f
+		if reason != "" && failureReason == "" {
+			failureReason = reason
 		}
 	}
 
-	// Update the status
+	// Update the status based on pod health
 	if running > 0 {
 		m.Status.Phase = mcpv1alpha1.MCPServerPhaseRunning
 		m.Status.Message = "MCP server is running"
+	} else if failed > 0 {
+		m.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+		if failureReason != "" {
+			m.Status.Message = fmt.Sprintf("MCP server pod failed: %s", failureReason)
+		} else {
+			m.Status.Message = "MCP server pod failed"
+		}
 	} else if pending > 0 {
 		m.Status.Phase = mcpv1alpha1.MCPServerPhasePending
 		m.Status.Message = "MCP server is starting"
-	} else if failed > 0 {
-		m.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
-		m.Status.Message = "MCP server failed to start"
 	} else {
 		m.Status.Phase = mcpv1alpha1.MCPServerPhasePending
-		m.Status.Message = "No pods found for MCP server"
+		m.Status.Message = "No healthy pods found"
 	}
 
 	// Update the status

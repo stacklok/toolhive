@@ -123,7 +123,14 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 		// Apply discovered backends change
 		if s.discoveredBackends != nil {
 			vmcpStatus.DiscoveredBackends = s.discoveredBackends
-			vmcpStatus.BackendCount = len(s.discoveredBackends)
+			// Count only ready backends for BackendCount
+			readyCount := 0
+			for _, backend := range s.discoveredBackends {
+				if backend.Status == "ready" {
+					readyCount++
+				}
+			}
+			vmcpStatus.BackendCount = readyCount
 		}
 
 		ctxLogger.V(1).Info("Batched status update applied",

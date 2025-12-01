@@ -94,13 +94,14 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 			return fmt.Errorf("incoming_auth.oidc.issuer is required")
 		}
 
-		if auth.OIDC.ClientID == "" {
-			return fmt.Errorf("incoming_auth.oidc.client_id is required")
-		}
-
 		if auth.OIDC.Audience == "" {
 			return fmt.Errorf("incoming_auth.oidc.audience is required")
 		}
+
+		// ClientID is optional - only required for specific flows:
+		// - Token introspection with client credentials
+		// - Some OAuth flows requiring client identification
+		// Not required for standard JWT validation using JWKS
 
 		// ClientSecretEnv is optional - some OIDC flows don't require client secrets:
 		// - PKCE flows (public clients)

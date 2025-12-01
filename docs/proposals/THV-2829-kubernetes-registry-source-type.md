@@ -8,6 +8,8 @@
 
 Add a native `kubernetes` source type to the ToolHive Registry Server that directly watches Kubernetes resources (MCPServer, MCPRemoteProxy, VirtualMCPServer) and builds registry entries from annotated resources. This eliminates the need for an intermediate ConfigMap-based approach.
 
+This functionality is **optional** and must be explicitly enabled by the system administrator through configuration. The registry server can operate without Kubernetes integration, using only git, api, or file sources. Administrators choose which source types to configure based on their deployment environment.
+
 ## Motivation
 
 ### Problem Statement

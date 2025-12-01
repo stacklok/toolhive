@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed** - Supercedes [toolhive#2591](https://github.com/stacklok/toolhive/pull/2591)
+**Proposed** - Supersedes [toolhive#2591](https://github.com/stacklok/toolhive/pull/2591)
 
 ## Summary
 

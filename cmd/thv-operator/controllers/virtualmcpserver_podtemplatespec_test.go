@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
 func TestVirtualMCPServerPodTemplateSpecBuilder(t *testing.T) {
@@ -27,7 +29,7 @@ func TestVirtualMCPServerPodTemplateSpecBuilder(t *testing.T) {
 				Raw: []byte(`{}`),
 			},
 			expectError: false,
-			expectNil:   false, // Empty template is still returned since user provided it
+			expectNil:   true, // Empty template has no customizations, so returns nil
 		},
 		{
 			name: "template with node selector",
@@ -50,7 +52,7 @@ func TestVirtualMCPServerPodTemplateSpecBuilder(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			builder, err := NewVirtualMCPServerPodTemplateSpecBuilder(tt.rawTemplate)
+			builder, err := ctrlutil.NewPodTemplateSpecBuilder(tt.rawTemplate, "vmcp")
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -105,7 +107,7 @@ func TestVirtualMCPServerPodTemplateSpecValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			// Test using the builder directly to avoid needing a full reconciler setup
-			_, err := NewVirtualMCPServerPodTemplateSpecBuilder(tt.podTemplateSpec)
+			_, err := ctrlutil.NewPodTemplateSpecBuilder(tt.podTemplateSpec, "vmcp")
 
 			if tt.expectValidation {
 				assert.NoError(t, err)

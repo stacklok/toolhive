@@ -277,7 +277,7 @@ func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 		return true
 	}
 
-	_, err := NewVirtualMCPServerPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec)
+	_, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp")
 	if err != nil {
 		// Record event for invalid PodTemplateSpec
 		if r.Recorder != nil {

@@ -586,7 +586,7 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 			pods: []corev1.Pod{
 				{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "testVmcpName-pod-1",
+						Name:      testVmcpName + "-pod-1",
 						Namespace: "default",
 						Labels:    labelsForVirtualMCPServer(testVmcpName),
 					},
@@ -608,7 +608,7 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 			pods: []corev1.Pod{
 				{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "testVmcpName-pod-1",
+						Name:      testVmcpName + "-pod-1",
 						Namespace: "default",
 						Labels:    labelsForVirtualMCPServer(testVmcpName),
 					},
@@ -630,7 +630,7 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 			pods: []corev1.Pod{
 				{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "testVmcpName-pod-1",
+						Name:      testVmcpName + "-pod-1",
 						Namespace: "default",
 						Labels:    labelsForVirtualMCPServer(testVmcpName),
 					},
@@ -1889,7 +1889,7 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 	// Create pod for status update
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "testVmcpName-pod",
+			Name:      vmcp.Name + "-pod",
 			Namespace: "default",
 			Labels:    labelsForVirtualMCPServer(vmcp.Name),
 		},

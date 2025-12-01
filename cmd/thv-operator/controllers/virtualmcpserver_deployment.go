@@ -695,7 +695,7 @@ func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 	ctxLogger := log.FromContext(ctx)
 
 	// Build user-provided PodTemplateSpec
-	builder, err := NewVirtualMCPServerPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec)
+	builder, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp")
 	if err != nil {
 		return fmt.Errorf("failed to build PodTemplateSpec: %w", err)
 	}

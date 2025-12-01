@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
 // TestVirtualMCPServerReconcile_WithPodTemplateSpec tests are complex and require envtest
@@ -202,7 +203,7 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 					Name:      vmcpConfigMapName(vmcpName),
 					Namespace: namespace,
 					Annotations: map[string]string{
-						"toolhive.stacklok.dev/runconfig-checksum": "test-checksum",
+						checksum.ContentChecksumAnnotation: "test-checksum",
 					},
 				},
 			}

@@ -34,23 +34,32 @@ Add a `kubernetes` source type to the registry server that directly queries Kube
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Registry API Server                          │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │                 KubernetesRegistryHandler                 │  │
-│  │                                                           │  │
-│  │  1. List MCPServer, MCPRemoteProxy, VirtualMCPServer     │  │
-│  │  2. Filter by namespace/labels + require annotations     │  │
-│  │  3. Build UpstreamRegistry entries from annotations      │  │
-│  │  4. Return FetchResult (same as git/api/file handlers)   │  │
-│  │                                                           │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                              │                                   │
-│                              ▼                                   │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │  SyncManager + StorageManager (existing infrastructure)  │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                       Registry API Server                            │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │                  KubernetesRegistryHandler                     │  │
+│  │                                                                │  │
+│  │  Method 1: Direct MCP Resource Annotation                      │  │
+│  │  ┌──────────────────────────────────────────────────────────┐  │  │
+│  │  │ List MCP resources with registry-export: "true"          │  │  │
+│  │  │ Read registry-url annotation → endpoint URL              │  │  │
+│  │  └──────────────────────────────────────────────────────────┘  │  │
+│  │                                                                │  │
+│  │  Method 2: HTTPRoute Annotation (Gateway API)                  │  │
+│  │  ┌──────────────────────────────────────────────────────────┐  │  │
+│  │  │ List HTTPRoutes with registry-export: "true"             │  │  │
+│  │  │ Traverse: HTTPRoute → Service → MCP resource (metadata)  │  │  │
+│  │  │ Traverse: HTTPRoute → Gateway (endpoint URL)             │  │  │
+│  │  └──────────────────────────────────────────────────────────┘  │  │
+│  │                                                                │  │
+│  │  Merge results → Build UpstreamRegistry → Return FetchResult   │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│                              │                                        │
+│                              ▼                                        │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │     SyncManager + StorageManager (existing infrastructure)     │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Configuration
@@ -76,9 +85,13 @@ auth:
   # ... standard auth config
 ```
 
-### Annotations
+### Registry Export Methods
 
-MCP resources use annotations under the `toolhive.stacklok.dev` prefix to control registry export. A resource is only included in the registry if it has the required annotations.
+There are two ways to export MCP resources to the registry:
+
+#### Method 1: Direct MCP Resource Annotation
+
+Annotate the MCPServer, MCPRemoteProxy, or VirtualMCPServer directly with all required information.
 
 | Annotation | Required | Description |
 |------------|----------|-------------|
@@ -87,9 +100,7 @@ MCP resources use annotations under the `toolhive.stacklok.dev` prefix to contro
 | `toolhive.stacklok.dev/registry-description` | No | Override the description in registry |
 | `toolhive.stacklok.dev/registry-tier` | No | Server tier classification |
 
-Resources without `registry-export: "true"` are ignored. Resources with `registry-export: "true"` but missing `registry-url` are logged as warnings and skipped.
-
-### Example MCPServer
+**Example:**
 
 ```yaml
 apiVersion: toolhive.stacklok.dev/v1alpha1
@@ -105,6 +116,88 @@ spec:
   # ... MCP server spec
 ```
 
+This method is straightforward and requires no Gateway API. Use it when:
+- You don't use Gateway API
+- You want explicit control over the endpoint URL
+- The endpoint URL can't be derived automatically
+
+#### Method 2: HTTPRoute Annotation (Gateway API)
+
+Annotate an HTTPRoute that routes to the MCP resource. The handler automatically discovers the endpoint URL and MCP resource metadata through object traversal.
+
+| Annotation | Required | Description |
+|------------|----------|-------------|
+| `toolhive.stacklok.dev/registry-export` | Yes | Must be `"true"` on the HTTPRoute |
+
+The handler performs the following traversal:
+
+```
+HTTPRoute (annotated)
+    │
+    ├──→ backendRefs → Service → MCP resource (owner)
+    │                              └─→ metadata for registry entry
+    │
+    └──→ parentRefs → Gateway
+                        └─→ listener address + HTTPRoute hostname/path
+                              └─→ endpoint URL
+```
+
+**Example:**
+
+```yaml
+# MCPServer - no annotations needed
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: my-mcp-server
+  namespace: production
+spec:
+  # ... creates a Service named my-mcp-server
+
+---
+# HTTPRoute - only needs registry-export annotation
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: my-mcp-server-route
+  namespace: production
+  annotations:
+    toolhive.stacklok.dev/registry-export: "true"
+spec:
+  parentRefs:
+    - name: main-gateway
+      namespace: gateway-system
+  hostnames:
+    - "mcp.example.com"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /servers/my-mcp-server
+      backendRefs:
+        - name: my-mcp-server
+          port: 8080
+
+---
+# Gateway - provides the external address
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: main-gateway
+  namespace: gateway-system
+status:
+  addresses:
+    - type: Hostname
+      value: "mcp.example.com"
+```
+
+The handler discovers endpoint: `https://mcp.example.com/servers/my-mcp-server`
+
+This method requires Gateway API but minimizes annotation burden. Use it when:
+- You use Gateway API for ingress
+- You want automatic endpoint URL discovery
+- You prefer annotating routing resources rather than MCP resources
+
 ### Handler Implementation
 
 The `KubernetesRegistryHandler` implements the existing `RegistryHandler` interface:
@@ -119,8 +212,12 @@ type RegistryHandler interface {
 
 Implementation:
 
-1. **FetchRegistry**: Lists MCP resources, filters to those with `registry-export: "true"`, builds `UpstreamRegistry` entries from annotations
-2. **CurrentHash**: Same list/filter, computes hash for change detection
+1. **FetchRegistry**:
+   - List MCP resources (MCPServer, MCPRemoteProxy, VirtualMCPServer) with `registry-export: "true"` annotation and `registry-url` set → build entries directly
+   - List HTTPRoutes with `registry-export: "true"` annotation → traverse to MCP resource and Gateway → build entries
+   - Merge results, deduplicating by MCP resource (direct annotation takes precedence)
+   - Return `UpstreamRegistry` with all discovered servers
+2. **CurrentHash**: Same discovery logic, computes hash for change detection
 3. **Validate**: Validates kubernetes config (label selector syntax, etc.)
 
 ### Sync Behavior
@@ -135,7 +232,7 @@ This is identical to how git, api, and file sources work today.
 
 ### RBAC Requirements
 
-The registry server's ServiceAccount needs read access to MCP resources:
+The registry server's ServiceAccount needs read access to MCP resources, Services, and Gateway API resources:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -143,8 +240,17 @@ kind: ClusterRole
 metadata:
   name: toolhive-registry-reader
 rules:
+  # MCP resources (for direct annotation method and metadata lookup)
   - apiGroups: ["toolhive.stacklok.dev"]
     resources: ["mcpservers", "mcpremoteproxies", "virtualmcpservers"]
+    verbs: ["get", "list", "watch"]
+  # Services (for HTTPRoute → Service → MCP resource traversal)
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+  # Gateway API resources (for HTTPRoute annotation method)
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes", "gateways"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -161,7 +267,7 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 ```
 
-For namespace-scoped deployments, use Role/RoleBinding instead.
+For namespace-scoped deployments, use Role/RoleBinding instead. Note that Gateway API permissions are only needed if using the HTTPRoute annotation method.
 
 ## Alternatives Considered
 

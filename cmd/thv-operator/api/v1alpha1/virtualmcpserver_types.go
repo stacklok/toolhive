@@ -566,6 +566,23 @@ type VirtualMCPServerList struct {
 	Items           []VirtualMCPServer `json:"items"`
 }
 
+// GetOIDCConfig returns the OIDC configuration reference for incoming auth.
+// This implements the OIDCConfigurable interface to allow the OIDC resolver
+// to resolve Kubernetes and ConfigMap OIDC configurations.
+func (v *VirtualMCPServer) GetOIDCConfig() *OIDCConfigRef {
+	if v.Spec.IncomingAuth == nil {
+		return nil
+	}
+	return v.Spec.IncomingAuth.OIDCConfig
+}
+
+// GetProxyPort returns the proxy port for the VirtualMCPServer.
+// This implements the OIDCConfigurable interface.
+// vMCP uses port 4483 by default.
+func (*VirtualMCPServer) GetProxyPort() int32 {
+	return 4483
+}
+
 func init() {
 	SchemeBuilder.Register(&VirtualMCPServer{}, &VirtualMCPServerList{})
 }

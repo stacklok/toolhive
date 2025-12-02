@@ -273,6 +273,7 @@ func BuildRunnerConfig(
 	}
 
 	if runFlags.RemoteURL != "" {
+		logger.Debugf("Attempting to run remote MCP server: %s", runFlags.RemoteURL)
 		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, nil,
 			nil, envVarValidator, oidcConfig, telemetryConfig)
 	}

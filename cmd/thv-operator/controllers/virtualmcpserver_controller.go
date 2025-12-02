@@ -1005,6 +1005,10 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 ) {
 	ctxLogger := log.FromContext(ctx)
 
+	// TODO: Optimize this by doing a List operation with a label selector or field selector
+	// to fetch all MCPServers in the namespace at once, then filter by names, rather than
+	// doing N Get calls. This would reduce API calls and improve performance for groups
+	// with many workloads.
 	for _, workloadName := range workloadNames {
 		mcpServer := &mcpv1alpha1.MCPServer{}
 		if err := r.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: vmcp.Namespace}, mcpServer); err != nil {

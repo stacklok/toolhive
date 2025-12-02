@@ -16,6 +16,8 @@ package controllers
 
 import (
 	"context"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -900,4 +902,119 @@ func TestDiscoverBackendsWithExternalAuthConfigIntegration(t *testing.T) {
 		}
 	}
 	assert.True(t, backend2Found, "backend-2 should be discovered")
+}
+
+// TestGenerateUniqueTokenExchangeEnvVarName tests the generateUniqueTokenExchangeEnvVarName function
+func TestGenerateUniqueTokenExchangeEnvVarName(t *testing.T) {
+	t.Parallel()
+
+	expectedPrefix := "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET"
+	tests := []struct {
+		name       string
+		configName string
+
+		expectedSuffix string
+	}{
+		{
+			name:           "simple config name",
+			configName:     "test-auth",
+			expectedSuffix: "TEST_AUTH",
+		},
+		{
+			name:           "config name with hyphens",
+			configName:     "my-oauth-config",
+			expectedSuffix: "MY_OAUTH_CONFIG",
+		},
+		{
+			name:           "config name with special characters",
+			configName:     "test@auth#config",
+			expectedSuffix: "TEST_AUTH_CONFIG",
+		},
+		{
+			name:           "config name with numbers",
+			configName:     "auth-config-123",
+			expectedSuffix: "AUTH_CONFIG_123",
+		},
+		{
+			name:           "config name with mixed case",
+			configName:     "MyOAuthConfig",
+			expectedSuffix: "MYOAUTHCONFIG",
+		},
+		{
+			name:           "single character",
+			configName:     "a",
+			expectedSuffix: "A",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := generateUniqueTokenExchangeEnvVarName(tt.configName)
+			assert.Contains(t, result, expectedPrefix)
+			assert.Contains(t, result, tt.expectedSuffix)
+			// Verify format: PREFIX_SUFFIX
+			assert.Contains(t, result, "_")
+			// Verify all characters are valid for env vars (uppercase, alphanumeric, underscore)
+			envVarPattern := regexp.MustCompile(`^[A-Z0-9_]+$`)
+			assert.Regexp(t, envVarPattern, result, "Result should be a valid environment variable name")
+		})
+	}
+}
+
+// TestGenerateUniqueHeaderInjectionEnvVarName tests the generateUniqueHeaderInjectionEnvVarName function
+func TestGenerateUniqueHeaderInjectionEnvVarName(t *testing.T) {
+	t.Parallel()
+
+	expectedPrefix := "TOOLHIVE_HEADER_INJECTION_VALUE"
+	tests := []struct {
+		name           string
+		configName     string
+		expectedSuffix string
+	}{
+		{
+			name:           "simple config name",
+			configName:     "header-auth",
+			expectedSuffix: "HEADER_AUTH",
+		},
+		{
+			name:           "config name with hyphens",
+			configName:     "my-api-key-config",
+			expectedSuffix: "MY_API_KEY_CONFIG",
+		},
+		{
+			name:           "config name with special characters",
+			configName:     "test@header#config",
+			expectedSuffix: "TEST_HEADER_CONFIG",
+		},
+		{
+			name:           "config name with numbers",
+			configName:     "header-config-456",
+			expectedSuffix: "HEADER_CONFIG_456",
+		},
+		{
+			name:           "config name with mixed case",
+			configName:     "MyHeaderConfig",
+			expectedSuffix: "MYHEADERCONFIG",
+		},
+		{
+			name:           "single character",
+			configName:     "x",
+			expectedSuffix: "X",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := generateUniqueHeaderInjectionEnvVarName(tt.configName)
+			assert.True(t, strings.HasPrefix(result, expectedPrefix+"_"), "Result should start with prefix")
+			assert.True(t, strings.HasSuffix(result, tt.expectedSuffix), "Result should end with suffix")
+			// Verify format: PREFIX_SUFFIX
+			assert.Contains(t, result, "_")
+			// Verify all characters are valid for env vars (uppercase, alphanumeric, underscore)
+			envVarPattern := regexp.MustCompile(`^[A-Z0-9_]+$`)
+			assert.Regexp(t, envVarPattern, result, "Result should be a valid environment variable name")
+		})
+	}
 }

@@ -19,6 +19,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 )
 
+// Compile-time interface check
+var _ Discoverer = (*k8sDiscoverer)(nil)
+
 // k8sDiscoverer is a direct implementation of Discoverer for Kubernetes workloads.
 // It uses the Kubernetes client directly to query MCPServer CRDs instead of going through k8s.Manager.
 type k8sDiscoverer struct {

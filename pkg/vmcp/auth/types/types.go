@@ -24,6 +24,11 @@ const (
 	// This strategy exchanges an incoming token for a new token to use
 	// when authenticating to the backend service.
 	StrategyTypeTokenExchange = "token_exchange"
+
+	// StrategyTypeExternalAuthConfigRef identifies an auth strategy that references
+	// an external MCPExternalAuthConfig resource. This type is used in configuration
+	// and must be resolved at runtime to a concrete strategy (token_exchange or header_injection).
+	StrategyTypeExternalAuthConfigRef = "external_auth_config_ref"
 )
 
 // BackendAuthStrategy defines how to authenticate to a specific backend.
@@ -31,7 +36,7 @@ const (
 // This struct provides type-safe configuration for different authentication strategies
 // using HeaderInjection or TokenExchange fields based on the Type field.
 type BackendAuthStrategy struct {
-	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange"
+	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", or "external_auth_config_ref"
 	Type string `json:"type" yaml:"type"`
 
 	// HeaderInjection contains configuration for header injection auth strategy.
@@ -41,6 +46,10 @@ type BackendAuthStrategy struct {
 	// TokenExchange contains configuration for token exchange auth strategy.
 	// Used when Type = "token_exchange".
 	TokenExchange *TokenExchangeConfig `json:"token_exchange,omitempty" yaml:"token_exchange,omitempty"`
+
+	// ExternalAuthConfigRefName stores the MCPExternalAuthConfig name when Type is "external_auth_config_ref".
+	// This is resolved at runtime by the auth resolver to a concrete strategy.
+	ExternalAuthConfigRefName string `json:"external_auth_config_ref_name,omitempty" yaml:"external_auth_config_ref_name,omitempty"`
 }
 
 // HeaderInjectionConfig configures the header injection auth strategy.

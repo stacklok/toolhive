@@ -247,11 +247,12 @@ func (*Converter) convertBackendAuthConfig(
 		Type: crdConfig.Type,
 	}
 
-	// Note: When Type is "external_auth_config_ref", the actual MCPExternalAuthConfig
-	// resource should be resolved at runtime and its configuration (TokenExchange or
-	// HeaderInjection) should be populated into the corresponding typed fields.
-	// This conversion happens during server initialization when the referenced
-	// MCPExternalAuthConfig can be looked up.
+	// When Type is "external_auth_config_ref", store the reference name for runtime resolution.
+	// The vMCP runtime will look up the MCPExternalAuthConfig and resolve it to a concrete
+	// strategy (token_exchange or header_injection) using the auth resolver.
+	if crdConfig.Type == "external_auth_config_ref" && crdConfig.ExternalAuthConfigRef != nil {
+		strategy.ExternalAuthConfigRefName = crdConfig.ExternalAuthConfigRef.Name
+	}
 
 	return strategy
 }

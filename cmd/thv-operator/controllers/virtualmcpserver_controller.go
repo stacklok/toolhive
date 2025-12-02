@@ -1477,8 +1477,9 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 		}
 	}
 
-	// Use the aggregator's unified backend discoverer to reuse discovery logic
-	backendDiscoverer := aggregator.NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig)
+	// Use the aggregator's K8S backend discoverer with the controller's client
+	// This ensures authResolver is properly initialized for external_auth_config_ref resolution
+	backendDiscoverer := aggregator.NewK8SBackendDiscovererWithClient(r.Client, vmcp.Namespace, groupsManager, authConfig)
 
 	// Discover backends using the aggregator
 	backends, err := backendDiscoverer.Discover(ctx, vmcp.Spec.GroupRef.Name)

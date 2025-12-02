@@ -169,6 +169,7 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		authtypes.StrategyTypeUnauthenticated,
 		authtypes.StrategyTypeHeaderInjection,
 		authtypes.StrategyTypeTokenExchange,
+		authtypes.StrategyTypeExternalAuthConfigRef,
 		// TODO: Add more as strategies are implemented:
 		// "pass_through", "client_credentials", "oauth_proxy",
 	}
@@ -197,6 +198,12 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		}
 		if strategy.HeaderInjection.HeaderValue == "" {
 			return fmt.Errorf("header_injection requires header_value field")
+		}
+
+	case authtypes.StrategyTypeExternalAuthConfigRef:
+		// External auth config ref requires the reference name to be set
+		if strategy.ExternalAuthConfigRefName == "" {
+			return fmt.Errorf("external_auth_config_ref requires external_auth_config_ref_name field")
 		}
 	}
 

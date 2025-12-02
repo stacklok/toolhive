@@ -3,17 +3,24 @@ package aggregator
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
+	"github.com/adrg/xdg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	resolvermocks "github.com/stacklok/toolhive/pkg/vmcp/auth/resolver/mocks"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
-	discoverermocks "github.com/stacklok/toolhive/pkg/vmcp/workloads/mocks"
+	workloadsmocks "github.com/stacklok/toolhive/pkg/vmcp/workloads/mocks"
 )
 
 const testGroupName = "test-group"
@@ -26,7 +33,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		backend1 := &vmcp.Backend{
@@ -78,7 +85,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		healthyBackend := &vmcp.Backend{
@@ -121,7 +128,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		backendWithURL := &vmcp.Backend{
@@ -153,7 +160,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
@@ -174,7 +181,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		mockGroups.EXPECT().Exists(gomock.Any(), "nonexistent-group").Return(false, nil)
@@ -192,7 +199,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(false, errors.New("database error"))
@@ -210,7 +217,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		mockGroups.EXPECT().Exists(gomock.Any(), "empty-group").Return(true, nil)
@@ -228,7 +235,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		goodBackend := &vmcp.Backend{
@@ -260,7 +267,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
@@ -280,7 +287,7 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		backend := &vmcp.Backend{
@@ -329,7 +336,7 @@ func TestCLIWorkloadDiscoverer(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockManager := discoverermocks.NewMockDiscoverer(ctrl)
+		mockManager := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		backend := &vmcp.Backend{
@@ -362,7 +369,7 @@ func TestCLIWorkloadDiscoverer(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		runningBackend := &vmcp.Backend{
@@ -419,7 +426,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		authConfig := &config.OutgoingAuthConfig{
@@ -452,7 +459,8 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			},
 		}
 
-		discoverer.applyAuthConfigToBackend(backend, "backend1")
+		err := discoverer.applyAuthConfigToBackend(context.Background(), backend, "backend1")
+		require.NoError(t, err)
 
 		// In discovered mode, discovered auth should be preserved
 		assert.Equal(t, "token_exchange", backend.AuthConfig.Type)
@@ -464,7 +472,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		authConfig := &config.OutgoingAuthConfig{
@@ -492,7 +500,8 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			// No AuthStrategy set - no discovered auth
 		}
 
-		discoverer.applyAuthConfigToBackend(backend, "backend1")
+		err := discoverer.applyAuthConfigToBackend(context.Background(), backend, "backend1")
+		require.NoError(t, err)
 
 		// Should fall back to config-based auth
 		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
@@ -504,7 +513,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		authConfig := &config.OutgoingAuthConfig{
@@ -537,7 +546,8 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			},
 		}
 
-		discoverer.applyAuthConfigToBackend(backend, "backend1")
+		err := discoverer.applyAuthConfigToBackend(context.Background(), backend, "backend1")
+		require.NoError(t, err)
 
 		// In inline mode, config-based auth should replace discovered auth
 		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
@@ -549,7 +559,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		authConfig := &config.OutgoingAuthConfig{
@@ -582,7 +592,8 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			},
 		}
 
-		discoverer.applyAuthConfigToBackend(backend, "backend1")
+		err := discoverer.applyAuthConfigToBackend(context.Background(), backend, "backend1")
+		require.NoError(t, err)
 
 		// Empty source should behave like inline mode
 		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
@@ -594,7 +605,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		authConfig := &config.OutgoingAuthConfig{
@@ -627,7 +638,8 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			},
 		}
 
-		discoverer.applyAuthConfigToBackend(backend, "backend1")
+		err := discoverer.applyAuthConfigToBackend(context.Background(), backend, "backend1")
+		require.NoError(t, err)
 
 		// Unknown source should fall back to config-based auth for safety
 		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
@@ -639,7 +651,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		discoverer := &backendDiscoverer{
@@ -659,7 +671,8 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			},
 		}
 
-		discoverer.applyAuthConfigToBackend(backend, "backend1")
+		err := discoverer.applyAuthConfigToBackend(context.Background(), backend, "backend1")
+		require.NoError(t, err)
 
 		// With nil auth config, backend should remain unchanged
 		assert.Equal(t, "token_exchange", backend.AuthConfig.Type)
@@ -671,7 +684,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		authConfig := &config.OutgoingAuthConfig{
@@ -704,7 +717,8 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			},
 		}
 
-		discoverer.applyAuthConfigToBackend(backend, "backend1")
+		err := discoverer.applyAuthConfigToBackend(context.Background(), backend, "backend1")
+		require.NoError(t, err)
 
 		// In inline mode with no config for this backend, discovered auth is cleared
 		// but no new auth is applied (ResolveForBackend returns empty)
@@ -717,7 +731,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		authConfig := &config.OutgoingAuthConfig{
@@ -743,7 +757,8 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			},
 		}
 
-		discoverer.applyAuthConfigToBackend(backend, "backend1")
+		err := discoverer.applyAuthConfigToBackend(context.Background(), backend, "backend1")
+		require.NoError(t, err)
 
 		// In discovered mode, header injection auth should be preserved
 		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
@@ -756,7 +771,7 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		t.Cleanup(ctrl.Finish)
 
-		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockWorkloadDiscoverer := workloadsmocks.NewMockDiscoverer(ctrl)
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		authConfig := &config.OutgoingAuthConfig{
@@ -782,10 +797,305 @@ func TestBackendDiscoverer_applyAuthConfigToBackend(t *testing.T) {
 			// No discovered auth (AuthStrategy is empty)
 		}
 
-		discoverer.applyAuthConfigToBackend(backend, "backend1")
+		err := discoverer.applyAuthConfigToBackend(context.Background(), backend, "backend1")
+		require.NoError(t, err)
 
 		// In discovered mode with no discovered auth, should fall back to default config
 		assert.Equal(t, "header_injection", backend.AuthConfig.Type)
 		assert.Equal(t, "default-fallback-token", backend.AuthConfig.HeaderInjection.HeaderValue)
+	})
+}
+
+func TestBackendDiscoverer_resolveExternalAuthConfigRef(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		authConfig     *authtypes.BackendAuthStrategy
+		setupResolver  func(*resolvermocks.MockAuthResolver)
+		hasResolver    bool
+		wantErr        bool
+		errContains    string
+		validateResult func(*testing.T, *authtypes.BackendAuthStrategy)
+	}{
+		{
+			name:       "nil auth config returns nil",
+			authConfig: nil,
+			wantErr:    false,
+			validateResult: func(t *testing.T, result *authtypes.BackendAuthStrategy) {
+				t.Helper()
+				assert.Nil(t, result)
+			},
+		},
+		{
+			name: "non-external_auth_config_ref passes through",
+			authConfig: &authtypes.BackendAuthStrategy{
+				Type: "header_injection",
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "Authorization",
+					HeaderValue: "Bearer token",
+				},
+			},
+			wantErr: false,
+			validateResult: func(t *testing.T, result *authtypes.BackendAuthStrategy) {
+				t.Helper()
+				assert.Equal(t, "header_injection", result.Type)
+			},
+		},
+		{
+			name: "external_auth_config_ref without resolver returns error",
+			authConfig: &authtypes.BackendAuthStrategy{
+				Type:                      authtypes.StrategyTypeExternalAuthConfigRef,
+				ExternalAuthConfigRefName: "my-config",
+			},
+			hasResolver: false,
+			wantErr:     true,
+			errContains: "auth resolver not initialized",
+		},
+		{
+			name: "external_auth_config_ref resolution success",
+			authConfig: &authtypes.BackendAuthStrategy{
+				Type:                      authtypes.StrategyTypeExternalAuthConfigRef,
+				ExternalAuthConfigRefName: "my-config",
+			},
+			hasResolver: true,
+			setupResolver: func(m *resolvermocks.MockAuthResolver) {
+				m.EXPECT().ResolveExternalAuthConfig(gomock.Any(), "my-config").
+					Return(&authtypes.BackendAuthStrategy{
+						Type: "token_exchange",
+						TokenExchange: &authtypes.TokenExchangeConfig{
+							TokenURL: "https://auth.example.com/token",
+						},
+					}, nil)
+			},
+			wantErr: false,
+			validateResult: func(t *testing.T, result *authtypes.BackendAuthStrategy) {
+				t.Helper()
+				assert.Equal(t, "token_exchange", result.Type)
+				assert.Equal(t, "https://auth.example.com/token", result.TokenExchange.TokenURL)
+			},
+		},
+		{
+			name: "external_auth_config_ref resolution failure returns error",
+			authConfig: &authtypes.BackendAuthStrategy{
+				Type:                      authtypes.StrategyTypeExternalAuthConfigRef,
+				ExternalAuthConfigRefName: "missing-config",
+			},
+			hasResolver: true,
+			setupResolver: func(m *resolvermocks.MockAuthResolver) {
+				m.EXPECT().ResolveExternalAuthConfig(gomock.Any(), "missing-config").
+					Return(nil, errors.New("not found"))
+			},
+			wantErr:     true,
+			errContains: "failed to resolve external auth config",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			t.Cleanup(ctrl.Finish)
+
+			discoverer := &backendDiscoverer{
+				workloadsManager: workloadsmocks.NewMockDiscoverer(ctrl),
+				groupsManager:    mocks.NewMockManager(ctrl),
+			}
+
+			if tt.hasResolver {
+				mockResolver := resolvermocks.NewMockAuthResolver(ctrl)
+				if tt.setupResolver != nil {
+					tt.setupResolver(mockResolver)
+				}
+				discoverer.authResolver = mockResolver
+			}
+
+			result, err := discoverer.resolveExternalAuthConfigRef(context.Background(), tt.authConfig, "backend1")
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			if tt.validateResult != nil {
+				tt.validateResult(t, result)
+			}
+		})
+	}
+}
+
+func TestNewK8SBackendDiscovererWithClient(t *testing.T) {
+	t.Parallel()
+
+	t.Run("creates discoverer with workload discoverer and auth resolver", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		// Create a fake K8s client with proper scheme
+		scheme := runtime.NewScheme()
+		require.NoError(t, clientgoscheme.AddToScheme(scheme))
+		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+		mockGroups := mocks.NewMockManager(ctrl)
+		authConfig := &config.OutgoingAuthConfig{
+			Default: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "Authorization",
+					HeaderValue: "Bearer test",
+				},
+			},
+		}
+
+		discoverer := NewK8SBackendDiscovererWithClient(
+			fakeClient,
+			"test-namespace",
+			mockGroups,
+			authConfig,
+		)
+
+		require.NotNil(t, discoverer)
+
+		// Verify internal composition
+		bd, ok := discoverer.(*backendDiscoverer)
+		require.True(t, ok, "discoverer should be *backendDiscoverer")
+		assert.NotNil(t, bd.workloadsManager, "workloadsManager should be set")
+		assert.NotNil(t, bd.authResolver, "authResolver should be set")
+		assert.Equal(t, mockGroups, bd.groupsManager, "groupsManager should match")
+		assert.Equal(t, authConfig, bd.authConfig, "authConfig should match")
+	})
+
+	t.Run("creates discoverer without auth config", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		scheme := runtime.NewScheme()
+		require.NoError(t, clientgoscheme.AddToScheme(scheme))
+		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+		mockGroups := mocks.NewMockManager(ctrl)
+
+		discoverer := NewK8SBackendDiscovererWithClient(
+			fakeClient,
+			"test-namespace",
+			mockGroups,
+			nil, // No auth config
+		)
+
+		require.NotNil(t, discoverer)
+
+		bd, ok := discoverer.(*backendDiscoverer)
+		require.True(t, ok)
+		assert.Nil(t, bd.authConfig)
+		// Auth resolver should still be set even without auth config
+		assert.NotNil(t, bd.authResolver)
+	})
+}
+
+func TestWithAuthResolver(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sets auth resolver on discoverer", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		mockResolver := resolvermocks.NewMockAuthResolver(ctrl)
+		mockWorkloads := workloadsmocks.NewMockDiscoverer(ctrl)
+		mockGroups := mocks.NewMockManager(ctrl)
+
+		discoverer := NewUnifiedBackendDiscoverer(
+			mockWorkloads,
+			mockGroups,
+			nil,
+			WithAuthResolver(mockResolver),
+		)
+
+		bd, ok := discoverer.(*backendDiscoverer)
+		require.True(t, ok)
+		assert.Equal(t, mockResolver, bd.authResolver)
+	})
+
+	t.Run("without option leaves auth resolver nil", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		mockWorkloads := workloadsmocks.NewMockDiscoverer(ctrl)
+		mockGroups := mocks.NewMockManager(ctrl)
+
+		discoverer := NewUnifiedBackendDiscoverer(
+			mockWorkloads,
+			mockGroups,
+			nil,
+		)
+
+		bd, ok := discoverer.(*backendDiscoverer)
+		require.True(t, ok)
+		assert.Nil(t, bd.authResolver)
+	})
+}
+
+// mockEnvReader is a test implementation of env.Reader
+type mockEnvReader struct {
+	values map[string]string
+}
+
+func (m *mockEnvReader) Getenv(key string) string {
+	if m.values == nil {
+		return ""
+	}
+	return m.values[key]
+}
+
+func TestGetCLIAuthConfigDir(t *testing.T) {
+	t.Parallel()
+
+	t.Run("uses environment variable when set", func(t *testing.T) {
+		t.Parallel()
+		envReader := &mockEnvReader{values: map[string]string{
+			CLIAuthConfigDirEnv: "/custom/auth/dir",
+		}}
+
+		dir := getCLIAuthConfigDir(envReader)
+		assert.Equal(t, "/custom/auth/dir", dir)
+	})
+
+	t.Run("falls back to XDG default when env var not set", func(t *testing.T) {
+		t.Parallel()
+		envReader := &mockEnvReader{values: map[string]string{}}
+
+		dir := getCLIAuthConfigDir(envReader)
+		expected := filepath.Join(xdg.ConfigHome, "toolhive", "vmcp", "auth-configs")
+		assert.Equal(t, expected, dir)
+	})
+
+	t.Run("trims whitespace from env var", func(t *testing.T) {
+		t.Parallel()
+		envReader := &mockEnvReader{values: map[string]string{
+			CLIAuthConfigDirEnv: "  /custom/path  ",
+		}}
+
+		dir := getCLIAuthConfigDir(envReader)
+		assert.Equal(t, "/custom/path", dir)
+	})
+
+	t.Run("whitespace-only env var uses default", func(t *testing.T) {
+		t.Parallel()
+		envReader := &mockEnvReader{values: map[string]string{
+			CLIAuthConfigDirEnv: "   ",
+		}}
+
+		dir := getCLIAuthConfigDir(envReader)
+		expected := filepath.Join(xdg.ConfigHome, "toolhive", "vmcp", "auth-configs")
+		assert.Equal(t, expected, dir)
 	})
 }

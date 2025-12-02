@@ -85,9 +85,10 @@ type rawOutgoingAuth struct {
 }
 
 type rawBackendAuthStrategy struct {
-	Type            string                  `yaml:"type"`
-	HeaderInjection *rawHeaderInjectionAuth `yaml:"header_injection"`
-	TokenExchange   *rawTokenExchangeAuth   `yaml:"token_exchange"`
+	Type                      string                  `yaml:"type"`
+	HeaderInjection           *rawHeaderInjectionAuth `yaml:"header_injection"`
+	TokenExchange             *rawTokenExchangeAuth   `yaml:"token_exchange"`
+	ExternalAuthConfigRefName string                  `yaml:"external_auth_config_ref_name"`
 }
 
 type rawHeaderInjectionAuth struct {
@@ -339,6 +340,11 @@ func (l *YAMLLoader) transformBackendAuthStrategy(raw *rawBackendAuthStrategy) (
 			Scopes:           raw.TokenExchange.Scopes,
 			SubjectTokenType: raw.TokenExchange.SubjectTokenType,
 		}
+
+	case authtypes.StrategyTypeExternalAuthConfigRef:
+		// External auth config ref - just copy the reference name
+		// This will be resolved at runtime by the auth resolver
+		strategy.ExternalAuthConfigRefName = raw.ExternalAuthConfigRefName
 	}
 
 	return strategy, nil

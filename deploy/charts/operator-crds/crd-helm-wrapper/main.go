@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // crd-helm-wrapper is a tool that wraps Kubernetes CRD YAML files with Helm
-// template conditionals for conditional installation, skip functionality,
+// template conditionals for conditional installation, feature flags,
 // and resource policy annotations.
 package main
 
@@ -44,11 +44,9 @@ type Templates struct {
 
 // CRDMetadata represents the minimal structure needed to extract CRD name
 type CRDMetadata struct {
-	APIVersion string `yaml:"apiVersion"`
-	Kind       string `yaml:"kind"`
-	Metadata   struct {
-		Name        string            `yaml:"name"`
-		Annotations map[string]string `yaml:"annotations"`
+	Kind     string `yaml:"kind"`
+	Metadata struct {
+		Name string `yaml:"name"`
 	} `yaml:"metadata"`
 }
 
@@ -269,7 +267,6 @@ func wrapContent(content []byte, crdName, filename string, templates *Templates,
 
 	// Process the YAML content line by line to inject the keep annotation
 	scanner := bufio.NewScanner(bytes.NewReader(content))
-	inAnnotations := false
 	annotationsWritten := false
 
 	// Check if first line is just "---"
@@ -285,19 +282,12 @@ func wrapContent(content []byte, crdName, filename string, templates *Templates,
 			continue
 		}
 
-		// Detect when we enter the annotations block
+		// Detect the annotations block and inject the keep annotation
 		if strings.TrimSpace(line) == "annotations:" && !annotationsWritten {
 			buf.WriteString(line + "\n")
-			// Inject the keep annotation conditional from template
 			buf.WriteString(templates.KeepAnnotation)
-			inAnnotations = true
 			annotationsWritten = true
 			continue
-		}
-
-		// If we're past annotations (hit a non-indented line), reset flag
-		if inAnnotations && !strings.HasPrefix(line, "    ") && strings.TrimSpace(line) != "" {
-			inAnnotations = false
 		}
 
 		// Escape any Go template-like syntax in CRD descriptions to prevent Helm from interpreting them

@@ -52,10 +52,8 @@ func (*TokenExchangeConverter) ConvertToStrategy(
 		SubjectTokenType: subjectTokenType,
 	}
 
-	// Set ClientSecretEnv as a placeholder for discovered mode (will be resolved by ResolveSecrets)
-	if tokenExchange.ClientSecretRef != nil {
-		tokenExchangeConfig.ClientSecretEnv = "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET"
-	}
+	// Note: ClientSecretEnv is set by the controller when used in operator-managed ConfigMaps.
+	// For runtime discovery, secrets are resolved via ResolveSecrets instead.
 
 	strategy := &authtypes.BackendAuthStrategy{
 		Type:          authtypes.StrategyTypeTokenExchange,
@@ -92,14 +90,9 @@ func (*TokenExchangeConverter) ResolveSecrets(
 		return nil, fmt.Errorf("token exchange config is nil")
 	}
 
-	// If no ClientSecretEnv is present, nothing to resolve
-	if strategy.TokenExchange.ClientSecretEnv == "" {
-		return strategy, nil
-	}
-
-	// If ClientSecretRef is not configured, we cannot resolve
+	// If ClientSecretRef is not configured, nothing to resolve
 	if tokenExchange.ClientSecretRef == nil {
-		return nil, fmt.Errorf("clientSecretRef is nil")
+		return strategy, nil
 	}
 
 	// Fetch and resolve the secret

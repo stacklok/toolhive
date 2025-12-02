@@ -295,7 +295,7 @@ func (*workflowEngine) coerceDefaultValue(defaultVal any, targetType string) (an
 			return v, nil
 		case string:
 			switch v {
-			case "true", "True", "TRUE", "1":
+			case "true", "True", "TRUE", "1": //nolint:goconst // Boolean literals are clearer than constants
 				return true, nil
 			case "false", "False", "FALSE", "0":
 				return false, nil

@@ -162,7 +162,6 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 		name         string
 		authConfig   *mcpv1alpha1.BackendAuthConfig
 		expectedType string
-		hasMetadata  bool
 	}{
 		{
 			name: "discovered",
@@ -170,7 +169,6 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 				Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 			},
 			expectedType: mcpv1alpha1.BackendAuthTypeDiscovered,
-			hasMetadata:  false,
 		},
 		{
 			name: "external auth config ref",
@@ -181,7 +179,6 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 				},
 			},
 			expectedType: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
-			hasMetadata:  true,
 		},
 	}
 
@@ -212,15 +209,12 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 			require.NotNil(t, strategy)
 			assert.Equal(t, tt.expectedType, strategy.Type)
 
-			if tt.hasMetadata {
-				// For external auth config refs, check that the strategy type is set
-				// The actual typed fields (HeaderInjection/TokenExchange) are resolved at runtime
-				assert.Equal(t, mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef, strategy.Type)
-			} else {
-				// For discovered auth, there should be no typed fields populated
-				assert.Nil(t, strategy.HeaderInjection)
-				assert.Nil(t, strategy.TokenExchange)
-			}
+			// Note: HeaderInjection and TokenExchange are nil because the CRD's
+			// BackendAuthConfig only stores type and reference information.
+			// For external_auth_config_ref, the actual auth config is resolved
+			// at runtime from the referenced MCPExternalAuthConfig resource.
+			assert.Nil(t, strategy.HeaderInjection)
+			assert.Nil(t, strategy.TokenExchange)
 		})
 	}
 }

@@ -22,7 +22,8 @@ func (*HeaderInjectionConverter) StrategyType() string {
 }
 
 // ConvertToStrategy converts HeaderInjectionConfig to a BackendAuthStrategy with typed fields.
-// The header value will be added by ResolveSecrets when using discovered mode.
+// Sets HeaderValueEnv when ValueSecretRef is present, similar to token exchange.
+// Secrets are mounted as environment variables, not resolved into ConfigMap.
 func (*HeaderInjectionConverter) ConvertToStrategy(
 	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
@@ -42,10 +43,10 @@ func (*HeaderInjectionConverter) ConvertToStrategy(
 }
 
 // ResolveSecrets fetches the header value secret from Kubernetes and sets it in the strategy.
-// Unlike token exchange which can use environment variables in non-discovered mode, header
-// injection always requires dynamic secret resolution because backends can be added or modified
-// at runtime, even in non-discovered mode. The vMCP pod cannot know all backend auth configs
-// at pod creation time.
+// This is used for runtime discovery in the vmcp binary where secrets cannot be mounted as
+// environment variables because backends are discovered dynamically at runtime.
+// For operator-managed ConfigMaps (inline mode), secrets are mounted as env vars instead
+// (see ConvertToStrategy).
 func (*HeaderInjectionConverter) ResolveSecrets(
 	ctx context.Context,
 	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,

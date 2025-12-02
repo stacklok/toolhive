@@ -16,6 +16,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/test/e2e"
+	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
 var _ = Describe("Telemetry Metrics Validation E2E", Label("telemetry", "metrics", "validation", "e2e"), Serial, func() {
@@ -88,7 +89,7 @@ var _ = Describe("Telemetry Metrics Validation E2E", Label("telemetry", "metrics
 				"--transport", types.TransportTypeSSE.String(),
 				"--otel-enable-prometheus-metrics-path",
 				"--name", inferredName, // Still need explicit name for cleanup
-				"ghcr.io/stackloklabs/osv-mcp/server:0.0.7",
+				images.OSVMCPServerImage,
 			).ExpectSuccess()
 
 			// Update workloadName for cleanup

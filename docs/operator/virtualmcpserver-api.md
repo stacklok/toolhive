@@ -80,7 +80,6 @@ Configures authentication from Virtual MCP to backend MCPServers.
 - `source` (string, optional): How backend authentication configurations are determined
   - `discovered` (default): Automatically discover from backend's `MCPServer.spec.externalAuthConfigRef`
   - `inline`: Explicit per-backend configuration in VirtualMCPServer
-  - `mixed`: Discover most, override specific backends
 - `default` (BackendAuthConfig, optional): Default behavior for backends without explicit auth config
 - `backends` (map[string]BackendAuthConfig, optional): Per-backend authentication overrides
 
@@ -111,27 +110,6 @@ spec:
             key: token
           headerName: Authorization
           headerFormat: "Bearer {token}"
-```
-
-**Example (mixed mode)**:
-```yaml
-spec:
-  outgoingAuth:
-    source: mixed
-    default:
-      type: discovered
-    backends:
-      # Override specific backends while others use discovery
-      slack:
-        type: service_account
-        serviceAccount:
-          credentialsRef:
-            name: slack-bot-override
-            key: token
-          headerName: Authorization
-          headerFormat: "Bearer {token}"
-      # Other backends (github, jira, etc.) will automatically
-      # discover auth config from their MCPServer.spec.externalAuthConfigRef
 ```
 
 #### BackendAuthConfig
@@ -247,40 +225,6 @@ spec:
           arguments:
             pr: "{{.params.pr_number}}"
           dependsOn: ["confirm_deploy"]
-```
-
-### `.spec.tokenCache` (optional)
-
-Configures token caching behavior.
-
-**Type**: `TokenCacheConfig`
-
-**Fields**:
-- `provider` (string, optional, default: "memory"): Cache provider type (`memory` or `redis`)
-- `memory` (MemoryCacheConfig, optional): In-memory cache configuration
-- `redis` (RedisCacheConfig, optional): Redis cache configuration
-
-**Example (memory)**:
-```yaml
-spec:
-  tokenCache:
-    provider: memory
-    memory:
-      maxEntries: 1000
-      ttlOffset: 5m
-```
-
-**Example (redis)**:
-```yaml
-spec:
-  tokenCache:
-    provider: redis
-    redis:
-      address: redis:6379
-      db: 0
-      passwordRef:
-        name: redis-secret
-        key: password
 ```
 
 ### `.spec.operational` (optional)
@@ -477,13 +421,6 @@ spec:
             title: "Incident {{.params.incident_id}} Analysis"
             description: "{{.steps.fetch_logs.output}}"
           dependsOn: ["fetch_logs"]
-
-  # Token caching
-  tokenCache:
-    provider: memory
-    memory:
-      maxEntries: 1000
-      ttlOffset: 5m
 
   # Operational settings
   operational:

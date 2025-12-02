@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 func TestDefaultRegistry(t *testing.T) {
@@ -268,7 +269,7 @@ func TestRegistry_GetConverter(t *testing.T) {
 	})
 }
 
-func TestConvertToStrategyMetadata(t *testing.T) {
+func TestConvertToStrategy(t *testing.T) {
 	t.Parallel()
 
 	t.Run("converts header injection config", func(t *testing.T) {
@@ -291,11 +292,12 @@ func TestConvertToStrategyMetadata(t *testing.T) {
 			},
 		}
 
-		strategyType, metadata, err := ConvertToStrategyMetadata(authConfig)
+		strategy, err := ConvertToStrategy(authConfig)
 		require.NoError(t, err)
-		assert.Equal(t, "header_injection", strategyType)
-		assert.NotNil(t, metadata)
-		assert.Equal(t, "X-API-Key", metadata["header_name"])
+		assert.NotNil(t, strategy)
+		assert.Equal(t, authtypes.StrategyTypeHeaderInjection, strategy.Type)
+		assert.NotNil(t, strategy.HeaderInjection)
+		assert.Equal(t, "X-API-Key", strategy.HeaderInjection.HeaderName)
 	})
 
 	t.Run("converts token exchange config", func(t *testing.T) {
@@ -321,21 +323,21 @@ func TestConvertToStrategyMetadata(t *testing.T) {
 			},
 		}
 
-		strategyType, metadata, err := ConvertToStrategyMetadata(authConfig)
+		strategy, err := ConvertToStrategy(authConfig)
 		require.NoError(t, err)
-		assert.Equal(t, "token_exchange", strategyType)
-		assert.NotNil(t, metadata)
-		// Token exchange metadata contains URLs and config
-		assert.NotEmpty(t, metadata)
+		assert.NotNil(t, strategy)
+		assert.Equal(t, authtypes.StrategyTypeTokenExchange, strategy.Type)
+		assert.NotNil(t, strategy.TokenExchange)
+		assert.Equal(t, "https://auth.example.com/token", strategy.TokenExchange.TokenURL)
+		assert.Equal(t, "test-client", strategy.TokenExchange.ClientID)
 	})
 
 	t.Run("returns error for nil config", func(t *testing.T) {
 		t.Parallel()
 
-		strategyType, metadata, err := ConvertToStrategyMetadata(nil)
+		strategy, err := ConvertToStrategy(nil)
 		assert.Error(t, err)
-		assert.Empty(t, strategyType)
-		assert.Nil(t, metadata)
+		assert.Nil(t, strategy)
 		assert.Contains(t, err.Error(), "external auth config is nil")
 	})
 
@@ -352,10 +354,9 @@ func TestConvertToStrategyMetadata(t *testing.T) {
 			},
 		}
 
-		strategyType, metadata, err := ConvertToStrategyMetadata(authConfig)
+		strategy, err := ConvertToStrategy(authConfig)
 		assert.Error(t, err)
-		assert.Empty(t, strategyType)
-		assert.Nil(t, metadata)
+		assert.Nil(t, strategy)
 		assert.Contains(t, err.Error(), "unsupported auth type")
 	})
 
@@ -373,15 +374,14 @@ func TestConvertToStrategyMetadata(t *testing.T) {
 			},
 		}
 
-		strategyType, metadata, err := ConvertToStrategyMetadata(authConfig)
+		strategy, err := ConvertToStrategy(authConfig)
 		assert.Error(t, err)
-		assert.Empty(t, strategyType)
-		assert.Nil(t, metadata)
+		assert.Nil(t, strategy)
 		assert.Contains(t, err.Error(), "nil")
 	})
 }
 
-func TestResolveSecretsForStrategy(t *testing.T) {
+func TestResolveSecretsForStrategyFunc(t *testing.T) {
 	t.Parallel()
 
 	t.Run("resolves header injection secrets", func(t *testing.T) {
@@ -426,16 +426,18 @@ func TestResolveSecretsForStrategy(t *testing.T) {
 			},
 		}
 
-		initialMetadata := map[string]any{
-			"header_name":      "X-API-Key",
-			"header_value_env": "TOOLHIVE_HEADER_INJECTION_VALUE",
+		inputStrategy := &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeHeaderInjection,
+			HeaderInjection: &authtypes.HeaderInjectionConfig{
+				HeaderName: "X-API-Key",
+			},
 		}
 
-		resolvedMetadata, err := ResolveSecretsForStrategy(ctx, authConfig, k8sClient, "default", initialMetadata)
+		resolvedStrategy, err := ResolveSecretsForStrategy(ctx, authConfig, k8sClient, "default", inputStrategy)
 		require.NoError(t, err)
-		assert.NotNil(t, resolvedMetadata)
-		assert.Equal(t, "X-API-Key", resolvedMetadata["header_name"])
-		assert.Equal(t, "secret-value-123", resolvedMetadata["header_value"])
+		assert.NotNil(t, resolvedStrategy)
+		assert.Equal(t, "X-API-Key", resolvedStrategy.HeaderInjection.HeaderName)
+		assert.Equal(t, "secret-value-123", resolvedStrategy.HeaderInjection.HeaderValue)
 	})
 
 	t.Run("returns error for nil config", func(t *testing.T) {
@@ -448,10 +450,10 @@ func TestResolveSecretsForStrategy(t *testing.T) {
 			WithScheme(scheme).
 			Build()
 
-		inputMetadata := map[string]any{}
-		metadata, err := ResolveSecretsForStrategy(ctx, nil, k8sClient, "default", inputMetadata)
+		inputStrategy := &authtypes.BackendAuthStrategy{}
+		strategy, err := ResolveSecretsForStrategy(ctx, nil, k8sClient, "default", inputStrategy)
 		assert.Error(t, err)
-		assert.Nil(t, metadata, "should return nil on error")
+		assert.Nil(t, strategy, "should return nil on error")
 		assert.Contains(t, err.Error(), "external auth config is nil")
 	})
 
@@ -475,10 +477,10 @@ func TestResolveSecretsForStrategy(t *testing.T) {
 			},
 		}
 
-		inputMetadata := map[string]any{}
-		metadata, err := ResolveSecretsForStrategy(ctx, authConfig, k8sClient, "default", inputMetadata)
+		inputStrategy := &authtypes.BackendAuthStrategy{}
+		strategy, err := ResolveSecretsForStrategy(ctx, authConfig, k8sClient, "default", inputStrategy)
 		assert.Error(t, err)
-		assert.Nil(t, metadata, "should return nil on error")
+		assert.Nil(t, strategy, "should return nil on error")
 		assert.Contains(t, err.Error(), "unsupported auth type")
 	})
 
@@ -513,14 +515,16 @@ func TestResolveSecretsForStrategy(t *testing.T) {
 			},
 		}
 
-		initialMetadata := map[string]any{
-			"header_name":      "X-API-Key",
-			"header_value_env": "TOOLHIVE_HEADER_INJECTION_VALUE",
+		inputStrategy := &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeHeaderInjection,
+			HeaderInjection: &authtypes.HeaderInjectionConfig{
+				HeaderName: "X-API-Key",
+			},
 		}
 
-		metadata, err := ResolveSecretsForStrategy(ctx, authConfig, k8sClient, "default", initialMetadata)
+		strategy, err := ResolveSecretsForStrategy(ctx, authConfig, k8sClient, "default", inputStrategy)
 		assert.Error(t, err)
-		assert.Nil(t, metadata, "should return nil on error")
+		assert.Nil(t, strategy, "should return nil on error")
 		assert.Contains(t, err.Error(), "failed to get secret")
 	})
 }

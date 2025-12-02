@@ -1,6 +1,10 @@
 package vmcp
 
-import "context"
+import (
+	"context"
+
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+)
 
 // This file contains shared domain types used across multiple vmcp subpackages.
 // Following DDD principles, these are core domain concepts that cross bounded contexts.
@@ -45,14 +49,10 @@ type BackendTarget struct {
 	//   client.CallTool(ctx, target, target.GetBackendCapabilityName(toolName), args)
 	OriginalCapabilityName string
 
-	// AuthStrategy identifies the authentication strategy for this backend.
+	// AuthConfig contains the typed authentication configuration for this backend.
 	// The actual authentication is handled by OutgoingAuthRegistry interface.
-	// Examples: "unauthenticated", "header_injection", "token_exchange"
-	AuthStrategy string
-
-	// AuthMetadata contains strategy-specific authentication metadata.
-	// This is opaque to the router and interpreted by the authenticator.
-	AuthMetadata map[string]any
+	// If nil, the backend requires no authentication.
+	AuthConfig *authtypes.BackendAuthStrategy
 
 	// SessionAffinity indicates if requests from the same session
 	// must be routed to this specific backend instance.
@@ -128,11 +128,10 @@ type Backend struct {
 	// HealthStatus is the current health state.
 	HealthStatus BackendHealthStatus
 
-	// AuthStrategy identifies how to authenticate to this backend.
-	AuthStrategy string
-
-	// AuthMetadata contains strategy-specific auth configuration.
-	AuthMetadata map[string]any
+	// AuthConfig contains the typed authentication configuration for this backend.
+	// The actual authentication is handled by OutgoingAuthRegistry interface.
+	// If nil, the backend requires no authentication.
+	AuthConfig *authtypes.BackendAuthStrategy
 
 	// Metadata stores additional backend information.
 	Metadata map[string]string

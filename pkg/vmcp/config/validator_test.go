@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 func TestValidator_ValidateBasicFields(t *testing.T) {
@@ -128,6 +129,29 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid OIDC auth without client secret (public client)",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:   "https://example.com",
+					ClientID: "public-client",
+					Audience: "vmcp",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid OIDC auth without client_id (JWT validation only)",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:   "https://example.com",
+					Audience: "vmcp",
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "invalid auth type",
 			auth: &IncomingAuthConfig{
 				Type: "invalid",
@@ -190,7 +214,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			name: "valid inline source with unauthenticated default",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
-				Default: &BackendAuthStrategy{
+				Default: &authtypes.BackendAuthStrategy{
 					Type: "unauthenticated",
 				},
 			},
@@ -200,12 +224,12 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			name: "valid header_injection backend",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
-				Backends: map[string]*BackendAuthStrategy{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"github": {
 						Type: "header_injection",
-						Metadata: map[string]any{
-							"header_name":  "Authorization",
-							"header_value": "secret-token",
+						HeaderInjection: &authtypes.HeaderInjectionConfig{
+							HeaderName:  "Authorization",
+							HeaderValue: "secret-token",
 						},
 					},
 				},
@@ -217,7 +241,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 		// 	name: "valid token_exchange backend",
 		// 	auth: &OutgoingAuthConfig{
 		// 		Source: "inline",
-		// 		Backends: map[string]*BackendAuthStrategy{
+		// 		Backends: map[string]*authtypes.BackendAuthStrategy{
 		// 			"github": {
 		// 				Type: "token_exchange",
 		// 				Metadata: map[string]any{
@@ -242,7 +266,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			name: "invalid backend auth type",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
-				Backends: map[string]*BackendAuthStrategy{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"test": {
 						Type: "invalid",
 					},
@@ -256,7 +280,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 		// 	name: "token_exchange missing required metadata",
 		// 	auth: &OutgoingAuthConfig{
 		// 		Source: "inline",
-		// 		Backends: map[string]*BackendAuthStrategy{
+		// 		Backends: map[string]*authtypes.BackendAuthStrategy{
 		// 			"github": {
 		// 				Type: "token_exchange",
 		// 				Metadata: map[string]any{

@@ -158,6 +158,10 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			configYAML := serverConfigMap.Data["config.yaml"]
 			testHelpers.verifyConfigMapContent(configYAML, registry.Name, expectedConfigContent)
 
+			// Default kubernetes registry should be present
+			Expect(configYAML).To(ContainSubstring(fmt.Sprintf("name: %s", config.DefaultRegistryName)))
+			Expect(configYAML).To(ContainSubstring("kubernetes: {}"))
+
 			// Verify the appropriate source type field is present (file, git, or api)
 			// This is determined by which source is configured in the registry
 			if registry.Spec.Registries[0].ConfigMapRef != nil {

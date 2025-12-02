@@ -210,7 +210,7 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 //   - Returns error if auth config exists but discovery/resolution fails (e.g., missing secret, invalid config)
 func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer, backend *vmcp.Backend) error {
 	// Discover and resolve auth using the converters package
-	strategyType, metadata, err := converters.DiscoverAndResolveAuth(
+	strategy, err := converters.DiscoverAndResolveAuth(
 		ctx,
 		mcpServer.Spec.ExternalAuthConfigRef,
 		mcpServer.Namespace,
@@ -221,16 +221,15 @@ func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1
 	}
 
 	// If no auth was discovered, nothing to populate
-	if strategyType == "" {
+	if strategy == nil {
 		logger.Debugf("MCPServer %s has no ExternalAuthConfigRef, no auth config to discover", mcpServer.Name)
 		return nil
 	}
 
-	// Populate backend auth fields
-	backend.AuthStrategy = strategyType
-	backend.AuthMetadata = metadata
+	// Populate backend auth fields with typed strategy
+	backend.AuthConfig = strategy
 
-	logger.Debugf("Discovered auth config for MCPServer %s: strategy=%s", mcpServer.Name, backend.AuthStrategy)
+	logger.Debugf("Discovered auth config for MCPServer %s: strategy=%s", mcpServer.Name, strategy.Type)
 	return nil
 }
 

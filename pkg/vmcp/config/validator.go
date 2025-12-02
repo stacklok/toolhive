@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // DefaultValidator implements comprehensive configuration validation.
@@ -94,18 +94,19 @@ func (v *DefaultValidator) validateIncomingAuth(auth *IncomingAuthConfig) error 
 			return fmt.Errorf("incoming_auth.oidc.issuer is required")
 		}
 
-		if auth.OIDC.ClientID == "" {
-			return fmt.Errorf("incoming_auth.oidc.client_id is required")
-		}
-
 		if auth.OIDC.Audience == "" {
 			return fmt.Errorf("incoming_auth.oidc.audience is required")
 		}
 
-		// Client secret env var should be set (references a Kubernetes Secret mounted as env var)
-		if auth.OIDC.ClientSecretEnv == "" {
-			return fmt.Errorf("incoming_auth.oidc.client_secret_env is required")
-		}
+		// ClientID is optional - only required for specific flows:
+		// - Token introspection with client credentials
+		// - Some OAuth flows requiring client identification
+		// Not required for standard JWT validation using JWKS
+
+		// ClientSecretEnv is optional - some OIDC flows don't require client secrets:
+		// - PKCE flows (public clients)
+		// - Token validation without introspection
+		// - Kubernetes service account token validation
 	}
 
 	// Validate authorization configuration
@@ -137,7 +138,7 @@ func (v *DefaultValidator) validateOutgoingAuth(auth *OutgoingAuthConfig) error 
 	}
 
 	// Validate source
-	validSources := []string{"inline", "discovered", "mixed"}
+	validSources := []string{"inline", "discovered"}
 	if !contains(validSources, auth.Source) {
 		return fmt.Errorf("outgoing_auth.source must be one of: %s", strings.Join(validSources, ", "))
 	}
@@ -159,15 +160,15 @@ func (v *DefaultValidator) validateOutgoingAuth(auth *OutgoingAuthConfig) error 
 	return nil
 }
 
-func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *BackendAuthStrategy) error {
+func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtypes.BackendAuthStrategy) error {
 	if strategy == nil {
 		return fmt.Errorf("strategy is nil")
 	}
 
 	validTypes := []string{
-		strategies.StrategyTypeUnauthenticated,
-		strategies.StrategyTypeHeaderInjection,
-		strategies.StrategyTypeTokenExchange,
+		authtypes.StrategyTypeUnauthenticated,
+		authtypes.StrategyTypeHeaderInjection,
+		authtypes.StrategyTypeTokenExchange,
 		// TODO: Add more as strategies are implemented:
 		// "pass_through", "client_credentials", "oauth_proxy",
 	}
@@ -177,19 +178,25 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *Backend
 
 	// Validate type-specific requirements
 	switch strategy.Type {
-	case strategies.StrategyTypeTokenExchange:
-		// Token exchange requires token_url (other fields are optional)
-		if _, ok := strategy.Metadata["token_url"]; !ok {
-			return fmt.Errorf("token_exchange requires metadata field: token_url")
+	case authtypes.StrategyTypeTokenExchange:
+		// Token exchange requires TokenExchange config with token_url
+		if strategy.TokenExchange == nil {
+			return fmt.Errorf("token_exchange requires TokenExchange configuration")
+		}
+		if strategy.TokenExchange.TokenURL == "" {
+			return fmt.Errorf("token_exchange requires token_url field")
 		}
 
-	case strategies.StrategyTypeHeaderInjection:
-		// Header injection requires header name and value
-		if _, ok := strategy.Metadata[strategies.MetadataHeaderName]; !ok {
-			return fmt.Errorf("header_injection requires metadata field: %s", strategies.MetadataHeaderName)
+	case authtypes.StrategyTypeHeaderInjection:
+		// Header injection requires HeaderInjection config with header name and value
+		if strategy.HeaderInjection == nil {
+			return fmt.Errorf("header_injection requires HeaderInjection configuration")
 		}
-		if _, ok := strategy.Metadata[strategies.MetadataHeaderValue]; !ok {
-			return fmt.Errorf("header_injection requires metadata field: %s", strategies.MetadataHeaderValue)
+		if strategy.HeaderInjection.HeaderName == "" {
+			return fmt.Errorf("header_injection requires header_name field")
+		}
+		if strategy.HeaderInjection.HeaderValue == "" {
+			return fmt.Errorf("header_injection requires header_value field")
 		}
 	}
 

@@ -15,6 +15,7 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // OutgoingAuthRegistry manages authentication strategies for outgoing requests to backend MCP servers.
@@ -60,11 +61,11 @@ type Strategy interface {
 	Name() string
 
 	// Authenticate performs authentication and modifies the request.
-	// The metadata contains strategy-specific configuration.
-	Authenticate(ctx context.Context, req *http.Request, metadata map[string]any) error
+	// The strategy parameter contains strategy-specific configuration.
+	Authenticate(ctx context.Context, req *http.Request, strategy *authtypes.BackendAuthStrategy) error
 
 	// Validate checks if the strategy configuration is valid.
-	Validate(metadata map[string]any) error
+	Validate(strategy *authtypes.BackendAuthStrategy) error
 }
 
 // Authorizer handles authorization decisions.

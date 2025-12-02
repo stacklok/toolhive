@@ -57,6 +57,12 @@ type VirtualMCPCompositeToolDefinitionSpec struct {
 	// +kubebuilder:default=abort
 	// +optional
 	FailureMode string `json:"failureMode,omitempty"`
+
+	// Output defines the structured output schema for the composite tool.
+	// Specifies how to construct the final output from workflow step results.
+	// If not specified, the workflow returns the last step's output (backward compatible).
+	// +optional
+	Output *OutputSpec `json:"output,omitempty"`
 }
 
 // VirtualMCPCompositeToolDefinitionStatus defines the observed state of VirtualMCPCompositeToolDefinition

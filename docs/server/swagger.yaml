@@ -135,6 +135,7 @@ components:
       - OpenCode
       - Kiro
       - Antigravity
+      - Zed
     client.MCPClientStatus:
       properties:
         client_type:
@@ -161,6 +162,7 @@ components:
           - OpenCode
           - Kiro
           - Antigravity
+          - Zed
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -1126,6 +1128,7 @@ components:
             - OpenCode
             - Kiro
             - Antigravity
+            - Zed
           type: array
           uniqueItems: false
       type: object
@@ -1181,6 +1184,7 @@ components:
           - OpenCode
           - Kiro
           - Antigravity
+          - Zed
       type: object
     v1.createClientResponse:
       properties:
@@ -1214,6 +1218,7 @@ components:
           - OpenCode
           - Kiro
           - Antigravity
+          - Zed
       type: object
     v1.createGroupRequest:
       properties:

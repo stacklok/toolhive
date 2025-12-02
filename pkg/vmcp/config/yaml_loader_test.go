@@ -128,6 +128,54 @@ aggregation:
 			wantErr: false,
 		},
 		{
+			name: "partial operational config gets defaults for missing fields",
+			yaml: `
+name: test-vmcp
+group: test-group
+
+incoming_auth:
+  type: anonymous
+
+outgoing_auth:
+  source: inline
+  default:
+    type: unauthenticated
+
+aggregation:
+  conflict_resolution: prefix
+  conflict_resolution_config:
+    prefix_format: "{workload}_"
+
+operational:
+  timeouts:
+    default: 45s
+`,
+			want: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				if cfg.Operational == nil {
+					t.Fatal("Operational should not be nil")
+				}
+				// Custom timeout should be preserved
+				if cfg.Operational.Timeouts.Default != Duration(45*time.Second) {
+					t.Errorf("Timeouts.Default = %v, want 45s", cfg.Operational.Timeouts.Default)
+				}
+				// FailureHandling should be created with defaults
+				if cfg.Operational.FailureHandling == nil {
+					t.Fatal("FailureHandling should not be nil")
+				}
+				if cfg.Operational.FailureHandling.HealthCheckInterval != Duration(30*time.Second) {
+					t.Errorf("HealthCheckInterval = %v, want 30s (default)", cfg.Operational.FailureHandling.HealthCheckInterval)
+				}
+				if cfg.Operational.FailureHandling.UnhealthyThreshold != 3 {
+					t.Errorf("UnhealthyThreshold = %v, want 3 (default)", cfg.Operational.FailureHandling.UnhealthyThreshold)
+				}
+				if cfg.Operational.FailureHandling.CircuitBreaker == nil {
+					t.Fatal("CircuitBreaker should not be nil (should get defaults)")
+				}
+			},
+			wantErr: false,
+		},
+		{
 			name: "valid configuration with composite tools",
 			yaml: `
 name: test-vmcp
@@ -305,13 +353,12 @@ aggregation:
 				if backend.Type != "header_injection" {
 					t.Errorf("Backend.Type = %v, want header_injection", backend.Type)
 				}
-				// Verify the resolved value is in metadata
-				headerValue, ok := backend.Metadata["header_value"].(string)
-				if !ok {
-					t.Fatal("header_value not found in metadata")
+				// Verify the resolved value is in HeaderInjection config
+				if backend.HeaderInjection == nil {
+					t.Fatal("HeaderInjection is nil")
 				}
-				if headerValue != "secret-token-123" {
-					t.Errorf("header_value = %v, want secret-token-123", headerValue)
+				if backend.HeaderInjection.HeaderValue != "secret-token-123" {
+					t.Errorf("HeaderInjection.HeaderValue = %v, want secret-token-123", backend.HeaderInjection.HeaderValue)
 				}
 			},
 			wantErr: false,
@@ -345,12 +392,11 @@ aggregation:
 				if !ok {
 					t.Fatal("api-service backend not found")
 				}
-				headerValue, ok := backend.Metadata["header_value"].(string)
-				if !ok {
-					t.Fatal("header_value not found in metadata")
+				if backend.HeaderInjection == nil {
+					t.Fatal("HeaderInjection is nil")
 				}
-				if headerValue != "v1" {
-					t.Errorf("header_value = %v, want v1", headerValue)
+				if backend.HeaderInjection.HeaderValue != "v1" {
+					t.Errorf("HeaderInjection.HeaderValue = %v, want v1", backend.HeaderInjection.HeaderValue)
 				}
 			},
 			wantErr: false,

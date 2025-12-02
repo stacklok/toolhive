@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 func TestHeaderInjectionConverter_StrategyType(t *testing.T) {
@@ -21,18 +22,18 @@ func TestHeaderInjectionConverter_StrategyType(t *testing.T) {
 	assert.Equal(t, "header_injection", converter.StrategyType())
 }
 
-func TestHeaderInjectionConverter_ConvertToMetadata(t *testing.T) {
+func TestHeaderInjectionConverter_ConvertToStrategy(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name         string
 		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
-		wantMetadata map[string]any
+		wantStrategy *authtypes.BackendAuthStrategy
 		wantErr      bool
 		errContains  string
 	}{
 		{
-			name: "secret reference",
+			name: "converts header injection config to strategy",
 			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
@@ -49,8 +50,11 @@ func TestHeaderInjectionConverter_ConvertToMetadata(t *testing.T) {
 					},
 				},
 			},
-			wantMetadata: map[string]any{
-				"header_name": "X-API-Key",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName: "X-API-Key",
+				},
 			},
 			wantErr: false,
 		},
@@ -76,7 +80,7 @@ func TestHeaderInjectionConverter_ConvertToMetadata(t *testing.T) {
 			t.Parallel()
 
 			converter := &HeaderInjectionConverter{}
-			metadata, err := converter.ConvertToMetadata(tt.externalAuth)
+			strategy, err := converter.ConvertToStrategy(tt.externalAuth)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -87,7 +91,7 @@ func TestHeaderInjectionConverter_ConvertToMetadata(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantMetadata, metadata)
+			assert.Equal(t, tt.wantStrategy, strategy)
 		})
 	}
 }
@@ -96,13 +100,13 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name         string
-		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
-		secret       *corev1.Secret
-		inputMeta    map[string]any
-		wantMetadata map[string]any
-		wantErr      bool
-		errContains  string
+		name          string
+		externalAuth  *mcpv1alpha1.MCPExternalAuthConfig
+		secret        *corev1.Secret
+		inputStrategy *authtypes.BackendAuthStrategy
+		wantStrategy  *authtypes.BackendAuthStrategy
+		wantErr       bool
+		errContains   string
 	}{
 		{
 			name: "successful secret resolution",
@@ -131,12 +135,18 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 					"key": []byte("secret-value-123"),
 				},
 			},
-			inputMeta: map[string]any{
-				"header_name": "X-API-Key",
+			inputStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName: "X-API-Key",
+				},
 			},
-			wantMetadata: map[string]any{
-				"header_name":  "X-API-Key",
-				"header_value": "secret-value-123",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName:  "X-API-Key",
+					HeaderValue: "secret-value-123",
+				},
 			},
 			wantErr: false,
 		},
@@ -158,8 +168,11 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 					},
 				},
 			},
-			inputMeta: map[string]any{
-				"header_name": "X-API-Key",
+			inputStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName: "X-API-Key",
+				},
 			},
 			wantErr:     true,
 			errContains: "failed to get secret",
@@ -191,11 +204,30 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 					"key": []byte("secret-value"),
 				},
 			},
-			inputMeta: map[string]any{
-				"header_name": "X-API-Key",
+			inputStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName: "X-API-Key",
+				},
 			},
 			wantErr:     true,
 			errContains: "does not contain key",
+		},
+		{
+			name: "nil strategy",
+			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-auth",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+					Type:            mcpv1alpha1.ExternalAuthTypeHeaderInjection,
+					HeaderInjection: nil,
+				},
+			},
+			inputStrategy: nil,
+			wantErr:       true,
+			errContains:   "header injection strategy is nil",
 		},
 		{
 			name: "nil header injection config",
@@ -209,9 +241,12 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 					HeaderInjection: nil,
 				},
 			},
-			inputMeta:   map[string]any{},
+			inputStrategy: &authtypes.BackendAuthStrategy{
+				Type:            authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: nil,
+			},
 			wantErr:     true,
-			errContains: "header injection config is nil",
+			errContains: "header injection strategy is nil",
 		},
 		{
 			name: "nil valueSecretRef",
@@ -228,7 +263,12 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 					},
 				},
 			},
-			inputMeta:   map[string]any{},
+			inputStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeHeaderInjection,
+				HeaderInjection: &authtypes.HeaderInjectionConfig{
+					HeaderName: "X-API-Key",
+				},
+			},
 			wantErr:     true,
 			errContains: "valueSecretRef is nil",
 		},
@@ -255,12 +295,12 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 				Build()
 
 			converter := &HeaderInjectionConverter{}
-			metadata, err := converter.ResolveSecrets(
+			strategy, err := converter.ResolveSecrets(
 				context.Background(),
 				tt.externalAuth,
 				fakeClient,
 				tt.externalAuth.Namespace,
-				tt.inputMeta,
+				tt.inputStrategy,
 			)
 
 			if tt.wantErr {
@@ -272,7 +312,7 @@ func TestHeaderInjectionConverter_ResolveSecrets(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantMetadata, metadata)
+			assert.Equal(t, tt.wantStrategy, strategy)
 		})
 	}
 }

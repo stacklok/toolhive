@@ -38,6 +38,7 @@ Valid clients:
   - vscode-insider: Visual Studio Code Insiders edition
   - windsurf: Windsurf IDE
   - windsurf-jetbrains: Windsurf for JetBrains IDEs
+  - zed: Zed editor
 
 ```
 thv client register [client] [flags]

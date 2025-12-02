@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -98,7 +99,7 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 		})
 
 		It("Should trigger VirtualMCPServer reconciliation when composite tool definition is created", func() {
-			// Create the VirtualMCPCompositeToolDefinition
+			// Create the VirtualMCPCompositeToolDefinition with Output spec
 			compositeToolDef = &mcpv1alpha1.VirtualMCPCompositeToolDefinition{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      compositeToolDefName,
@@ -112,6 +113,22 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 							ID:   "step1",
 							Tool: "tool1",
 						},
+					},
+					Output: &mcpv1alpha1.OutputSpec{
+						Properties: map[string]mcpv1alpha1.OutputPropertySpec{
+							"result": {
+								Type:        "string",
+								Description: "The workflow result",
+								Value:       "{{.steps.step1.output.data}}",
+							},
+							"status": {
+								Type:        "string",
+								Description: "Status of operation",
+								Value:       "{{.steps.step1.output.status}}",
+								Default:     &runtime.RawExtension{Raw: []byte(`"success"`)},
+							},
+						},
+						Required: []string{"result"},
 					},
 				},
 			}

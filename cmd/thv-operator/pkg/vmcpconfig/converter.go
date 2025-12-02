@@ -9,6 +9,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -76,6 +77,9 @@ func (c *Converter) Convert(
 	if vmcp.Spec.Operational != nil {
 		config.Operational = c.convertOperational(ctx, vmcp)
 	}
+
+	// Apply operational defaults (fills missing values)
+	config.EnsureOperationalDefaults()
 
 	return config, nil
 }
@@ -152,7 +156,7 @@ func (c *Converter) convertOutgoingAuth(
 ) *vmcpconfig.OutgoingAuthConfig {
 	outgoing := &vmcpconfig.OutgoingAuthConfig{
 		Source:   vmcp.Spec.OutgoingAuth.Source,
-		Backends: make(map[string]*vmcpconfig.BackendAuthStrategy),
+		Backends: make(map[string]*authtypes.BackendAuthStrategy),
 	}
 
 	// Convert Default
@@ -171,16 +175,16 @@ func (c *Converter) convertOutgoingAuth(
 // convertBackendAuthConfig converts BackendAuthConfig from CRD to vmcp config
 func (*Converter) convertBackendAuthConfig(
 	crdConfig *mcpv1alpha1.BackendAuthConfig,
-) *vmcpconfig.BackendAuthStrategy {
-	strategy := &vmcpconfig.BackendAuthStrategy{
-		Type:     crdConfig.Type,
-		Metadata: make(map[string]any),
+) *authtypes.BackendAuthStrategy {
+	strategy := &authtypes.BackendAuthStrategy{
+		Type: crdConfig.Type,
 	}
 
-	// Convert type-specific configuration to metadata
-	if crdConfig.ExternalAuthConfigRef != nil {
-		strategy.Metadata["externalAuthConfigRef"] = crdConfig.ExternalAuthConfigRef.Name
-	}
+	// Note: When Type is "external_auth_config_ref", the actual MCPExternalAuthConfig
+	// resource should be resolved at runtime and its configuration (TokenExchange or
+	// HeaderInjection) should be populated into the corresponding typed fields.
+	// This conversion happens during server initialization when the referenced
+	// MCPExternalAuthConfig can be looked up.
 
 	return strategy
 }
@@ -319,6 +323,11 @@ func (*Converter) convertCompositeTools(
 			tool.Steps = append(tool.Steps, step)
 		}
 
+		// Convert output configuration
+		if crdTool.Output != nil {
+			tool.Output = convertOutputSpec(ctx, crdTool.Output)
+		}
+
 		compositeTools = append(compositeTools, tool)
 	}
 
@@ -332,6 +341,65 @@ func convertArguments(args map[string]string) map[string]any {
 		result[k] = v
 	}
 	return result
+}
+
+// convertOutputSpec converts OutputSpec from CRD to vmcp config OutputConfig
+func convertOutputSpec(ctx context.Context, crdOutput *mcpv1alpha1.OutputSpec) *vmcpconfig.OutputConfig {
+	if crdOutput == nil {
+		return nil
+	}
+
+	output := &vmcpconfig.OutputConfig{
+		Properties: make(map[string]vmcpconfig.OutputProperty, len(crdOutput.Properties)),
+		Required:   crdOutput.Required,
+	}
+
+	// Convert properties
+	for propName, propSpec := range crdOutput.Properties {
+		output.Properties[propName] = convertOutputProperty(ctx, propName, propSpec)
+	}
+
+	return output
+}
+
+// convertOutputProperty converts OutputPropertySpec from CRD to vmcp config OutputProperty
+func convertOutputProperty(
+	ctx context.Context, propName string, crdProp mcpv1alpha1.OutputPropertySpec,
+) vmcpconfig.OutputProperty {
+	prop := vmcpconfig.OutputProperty{
+		Type:        crdProp.Type,
+		Description: crdProp.Description,
+		Value:       crdProp.Value,
+	}
+
+	// Convert nested properties for object types
+	if len(crdProp.Properties) > 0 {
+		prop.Properties = make(map[string]vmcpconfig.OutputProperty, len(crdProp.Properties))
+		for nestedName, nestedSpec := range crdProp.Properties {
+			prop.Properties[nestedName] = convertOutputProperty(ctx, propName+"."+nestedName, nestedSpec)
+		}
+	}
+
+	// Convert default value from runtime.RawExtension to any
+	// RawExtension.Raw contains JSON bytes. json.Unmarshal correctly handles:
+	// - JSON strings: "hello" -> Go string "hello"
+	// - JSON numbers: 42 -> Go float64(42)
+	// - JSON booleans: true -> Go bool true
+	// - JSON objects: {"key":"value"} -> Go map[string]any
+	// - JSON arrays: [1,2,3] -> Go []any
+	if crdProp.Default != nil && len(crdProp.Default.Raw) > 0 {
+		var defaultVal any
+		if err := json.Unmarshal(crdProp.Default.Raw, &defaultVal); err != nil {
+			// Log warning but continue - invalid defaults will be caught at runtime
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "failed to unmarshal output property default value",
+				"property", propName, "raw", string(crdProp.Default.Raw))
+		} else {
+			prop.Default = defaultVal
+		}
+	}
+
+	return prop
 }
 
 // convertOperational converts OperationalConfig from CRD to vmcp config

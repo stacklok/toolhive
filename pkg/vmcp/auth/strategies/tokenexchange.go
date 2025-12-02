@@ -11,6 +11,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/env"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 const (
@@ -62,14 +63,14 @@ func NewTokenExchangeStrategy(envReader env.Reader) *TokenExchangeStrategy {
 
 // Name returns the strategy identifier.
 func (*TokenExchangeStrategy) Name() string {
-	return "token_exchange"
+	return authtypes.StrategyTypeTokenExchange
 }
 
 // Authenticate exchanges the client's token for a backend token and injects it.
 //
 // This method:
 //  1. Retrieves the client's identity and token from the context
-//  2. Parses and validates the token exchange configuration from metadata
+//  2. Parses and validates the token exchange configuration from strategy
 //  3. Gets or creates a cached ExchangeConfig for this backend configuration
 //  4. Creates a TokenSource with the current identity token
 //  5. Obtains an access token by performing the exchange
@@ -81,14 +82,16 @@ func (*TokenExchangeStrategy) Name() string {
 // Parameters:
 //   - ctx: Request context containing the authenticated identity
 //   - req: The HTTP request to authenticate
-//   - metadata: Strategy-specific configuration for token exchange
+//   - strategy: Backend auth strategy containing token exchange configuration
 //
 // Returns an error if:
 //   - No identity is found in the context
 //   - The identity has no token
-//   - Metadata is invalid or incomplete
+//   - Strategy configuration is invalid or incomplete
 //   - Token exchange fails
-func (s *TokenExchangeStrategy) Authenticate(ctx context.Context, req *http.Request, metadata map[string]any) error {
+func (s *TokenExchangeStrategy) Authenticate(
+	ctx context.Context, req *http.Request, strategy *authtypes.BackendAuthStrategy,
+) error {
 	identity, ok := auth.IdentityFromContext(ctx)
 	if !ok {
 		return fmt.Errorf("no identity found in context")
@@ -98,9 +101,9 @@ func (s *TokenExchangeStrategy) Authenticate(ctx context.Context, req *http.Requ
 		return fmt.Errorf("identity has no token")
 	}
 
-	config, err := parseTokenExchangeMetadata(metadata, s.envReader)
+	config, err := s.parseTokenExchangeConfig(strategy)
 	if err != nil {
-		return fmt.Errorf("invalid metadata: %w", err)
+		return fmt.Errorf("invalid strategy configuration: %w", err)
 	}
 
 	// Get user-specific exchange config. This creates a fresh config instance
@@ -118,17 +121,17 @@ func (s *TokenExchangeStrategy) Authenticate(ctx context.Context, req *http.Requ
 	return nil
 }
 
-// Validate checks if the required metadata fields are present and valid.
+// Validate checks if the required configuration fields are present and valid.
 //
 // This method verifies that:
-//   - token_url is present and valid
+//   - TokenURL is present and valid
 //   - Optional fields (if present) have correct types and values
-//   - client_secret is only provided when client_id is present
+//   - ClientSecret is only provided when ClientID is present
 //
 // This validation is typically called during configuration parsing to fail fast
 // if the strategy is misconfigured.
-func (s *TokenExchangeStrategy) Validate(metadata map[string]any) error {
-	_, err := parseTokenExchangeMetadata(metadata, s.envReader)
+func (s *TokenExchangeStrategy) Validate(strategy *authtypes.BackendAuthStrategy) error {
+	_, err := s.parseTokenExchangeConfig(strategy)
 	return err
 }
 
@@ -142,26 +145,26 @@ type tokenExchangeConfig struct {
 	SubjectTokenType string
 }
 
-// parseClientSecret parses and validates client_secret or client_secret_env from metadata.
+// parseClientSecret parses and validates ClientSecret or ClientSecretEnv from TokenExchangeConfig.
 // Returns the resolved client secret, or an error if validation fails.
-func parseClientSecret(metadata map[string]any, clientID string, envReader env.Reader) (string, error) {
-	// Check for client_secret first (takes precedence)
-	if clientSecret, ok := metadata["client_secret"].(string); ok {
+func (s *TokenExchangeStrategy) parseClientSecret(config *authtypes.TokenExchangeConfig, clientID string) (string, error) {
+	// Check for ClientSecret first (takes precedence)
+	if config.ClientSecret != "" {
 		if clientID == "" {
-			return "", fmt.Errorf("client_secret cannot be provided without client_id")
+			return "", fmt.Errorf("ClientSecret cannot be provided without ClientID")
 		}
-		return clientSecret, nil
+		return config.ClientSecret, nil
 	}
 
-	// Check for client_secret_env
-	if clientSecretEnv, ok := metadata["client_secret_env"].(string); ok && clientSecretEnv != "" {
+	// Check for ClientSecretEnv
+	if config.ClientSecretEnv != "" {
 		if clientID == "" {
-			return "", fmt.Errorf("client_secret_env cannot be provided without client_id")
+			return "", fmt.Errorf("ClientSecretEnv cannot be provided without ClientID")
 		}
 		// Resolve the environment variable
-		secret := envReader.Getenv(clientSecretEnv)
+		secret := s.envReader.Getenv(config.ClientSecretEnv)
 		if secret == "" {
-			return "", fmt.Errorf("environment variable %s not set or empty", clientSecretEnv)
+			return "", fmt.Errorf("environment variable %s not set or empty", config.ClientSecretEnv)
 		}
 		return secret, nil
 	}
@@ -170,64 +173,45 @@ func parseClientSecret(metadata map[string]any, clientID string, envReader env.R
 	return "", nil
 }
 
-// parseTokenExchangeMetadata parses and validates token exchange metadata.
-func parseTokenExchangeMetadata(metadata map[string]any, envReader env.Reader) (*tokenExchangeConfig, error) {
+// parseTokenExchangeConfig parses and validates token exchange configuration from BackendAuthStrategy.
+func (s *TokenExchangeStrategy) parseTokenExchangeConfig(strategy *authtypes.BackendAuthStrategy) (*tokenExchangeConfig, error) {
+	if strategy == nil || strategy.TokenExchange == nil {
+		return nil, fmt.Errorf("TokenExchange configuration is required")
+	}
+
 	config := &tokenExchangeConfig{}
+	tokenExchangeCfg := strategy.TokenExchange
 
-	// Required: token_url
-	tokenURL, ok := metadata["token_url"].(string)
-	if !ok || tokenURL == "" {
-		return nil, fmt.Errorf("token_url required in metadata")
+	// Required: TokenURL
+	if tokenExchangeCfg.TokenURL == "" {
+		return nil, fmt.Errorf("TokenURL is required in token_exchange configuration")
 	}
-	config.TokenURL = tokenURL
+	config.TokenURL = tokenExchangeCfg.TokenURL
 
-	// Optional: client_id
-	if clientID, ok := metadata["client_id"].(string); ok {
-		config.ClientID = clientID
-	}
+	// Optional: ClientID
+	config.ClientID = tokenExchangeCfg.ClientID
 
-	// Optional: client_secret or client_secret_env
-	clientSecret, err := parseClientSecret(metadata, config.ClientID, envReader)
+	// Optional: ClientSecret or ClientSecretEnv
+	clientSecret, err := s.parseClientSecret(tokenExchangeCfg, config.ClientID)
 	if err != nil {
 		return nil, err
 	}
 	config.ClientSecret = clientSecret
 
-	// Optional: audience
-	if audience, ok := metadata["audience"].(string); ok {
-		config.Audience = audience
+	// Optional: Audience
+	config.Audience = tokenExchangeCfg.Audience
+
+	// Optional: Scopes (already parsed as []string from the typed config)
+	if len(tokenExchangeCfg.Scopes) > 0 {
+		config.Scopes = tokenExchangeCfg.Scopes
 	}
 
-	// Optional: scopes (can be string array or single string)
-	if scopesRaw, ok := metadata["scopes"]; ok {
-		switch v := scopesRaw.(type) {
-		case []string:
-			config.Scopes = v
-		case []any:
-			// Handle case where JSON unmarshaling gives []any
-			scopes := make([]string, 0, len(v))
-			for i, s := range v {
-				str, ok := s.(string)
-				if !ok {
-					return nil, fmt.Errorf("scopes[%d] must be a string", i)
-				}
-				scopes = append(scopes, str)
-			}
-			config.Scopes = scopes
-		case string:
-			// Single scope as string
-			config.Scopes = []string{v}
-		default:
-			return nil, fmt.Errorf("scopes must be a string or array of strings")
-		}
-	}
-
-	// Optional: subject_token_type
-	if subjectTokenType, ok := metadata["subject_token_type"].(string); ok {
+	// Optional: SubjectTokenType
+	if tokenExchangeCfg.SubjectTokenType != "" {
 		// Validate if provided
-		normalized, err := tokenexchange.NormalizeTokenType(subjectTokenType)
+		normalized, err := tokenexchange.NormalizeTokenType(tokenExchangeCfg.SubjectTokenType)
 		if err != nil {
-			return nil, fmt.Errorf("invalid subject_token_type: %w", err)
+			return nil, fmt.Errorf("invalid SubjectTokenType: %w", err)
 		}
 		config.SubjectTokenType = normalized
 	}

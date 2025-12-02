@@ -28,6 +28,11 @@ type PodTemplateSpecBuilder struct {
 	defaultSpec *corev1.PodTemplateSpec
 }
 
+// NewPodTemplateSpecBuilder creates a new PodTemplateSpecBuilder with an empty template.
+func NewPodTemplateSpecBuilder() *PodTemplateSpecBuilder {
+	return NewPodTemplateSpecBuilderFrom(nil)
+}
+
 // NewPodTemplateSpecBuilderFrom creates a new PodTemplateSpecBuilder with a user-provided template.
 // The user template is deep-copied to avoid mutating the original.
 // Options applied via Apply() act as defaults - Build() will merge them with user values,
@@ -187,13 +192,15 @@ func WithRegistryStorageMount(containerName string) PodTemplateSpecOption {
 	}
 }
 
-// WithRegistrySourceMounts creates volumes and mounts for all registry source ConfigMaps.
-// This iterates through the registry sources and creates a volume and mount for each ConfigMapRef.
+// WithRegistrySourceMounts creates volumes and mounts for all registry sources (ConfigMap and PVC).
+// Each registry source (ConfigMap or PVC) gets its own volume and mount point
+// at /config/registry/{registryName}/. Multiple registries can share the same PVC
+// by mounting it at different paths.
 func WithRegistrySourceMounts(containerName string, registries []mcpv1alpha1.MCPRegistryConfig) PodTemplateSpecOption {
 	return func(pts *corev1.PodTemplateSpec) {
 		for _, registry := range registries {
 			if registry.ConfigMapRef != nil {
-				// Create unique volume name for each ConfigMap source
+				// ConfigMap: Create unique volume per registry
 				volumeName := fmt.Sprintf("registry-data-source-%s", registry.Name)
 
 				// Add the ConfigMap volume
@@ -215,8 +222,32 @@ func WithRegistrySourceMounts(containerName string, registries []mcpv1alpha1.MCP
 					},
 				})(pts)
 
-				// Add the volume mount
-				// Mount path follows the pattern /config/registry/{registryName}/
+				// Add the volume mount at registry-specific subdirectory
+				mountPath := filepath.Join(config.RegistryJSONFilePath, registry.Name)
+				WithVolumeMount(containerName, corev1.VolumeMount{
+					Name:      volumeName,
+					MountPath: mountPath,
+					ReadOnly:  true,
+				})(pts)
+			}
+
+			if registry.PVCRef != nil {
+				// PVC: Create unique volume per registry (same PVC can be mounted multiple times)
+				// Mount at /config/registry/{registryName}/ for consistent path structure
+				volumeName := fmt.Sprintf("registry-data-source-%s", registry.Name)
+
+				// Add the PVC volume
+				WithVolume(corev1.Volume{
+					Name: volumeName,
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: registry.PVCRef.ClaimName,
+							ReadOnly:  true,
+						},
+					},
+				})(pts)
+
+				// Mount at registry-specific subdirectory
 				mountPath := filepath.Join(config.RegistryJSONFilePath, registry.Name)
 				WithVolumeMount(containerName, corev1.VolumeMount{
 					Name:      volumeName,

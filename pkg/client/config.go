@@ -65,6 +65,8 @@ const (
 	Kiro MCPClient = "kiro"
 	// Antigravity represents the Google Antigravity IDE.
 	Antigravity MCPClient = "antigravity"
+	// Zed represents the Zed editor.
+	Zed MCPClient = "zed"
 )
 
 // Extension is extension of the client config file.
@@ -473,6 +475,21 @@ var supportedClientIntegrations = []mcpClientConfig{
 		Extension:                     JSON,
 		IsTransportTypeFieldSupported: false,
 		MCPServersUrlLabel:            "serverUrl",
+	},
+	{
+		ClientType:           Zed,
+		Description:          "Zed editor",
+		SettingsFile:         "settings.json",
+		MCPServersPathPrefix: "/context_servers",
+		RelPath:              []string{"zed"},
+		PlatformPrefix: map[string][]string{
+			"linux":   {".config"},
+			"darwin":  {".config"},
+			"windows": {"AppData", "Roaming"},
+		},
+		Extension:                     JSON,
+		IsTransportTypeFieldSupported: false,
+		MCPServersUrlLabel:            "url",
 	},
 }
 

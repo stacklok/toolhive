@@ -308,6 +308,84 @@ func TestRegistryMountOptions(t *testing.T) {
 			tt.assertions(t, pts)
 		})
 	}
+
+	// PVC source tests
+	t.Run("adds PVC volume and mount", func(t *testing.T) {
+		t.Parallel()
+
+		options := []PodTemplateSpecOption{
+			WithContainer(corev1.Container{Name: "registry-api"}),
+			WithRegistrySourceMounts("registry-api", []mcpv1alpha1.MCPRegistryConfig{
+				{
+					Name:   "pvc-source",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					PVCRef: &mcpv1alpha1.PVCSource{
+						ClaimName: "registry-data-pvc",
+						Path:      "data/registry.json",
+					},
+				},
+			}),
+		}
+
+		builder := NewPodTemplateSpecBuilderFrom(nil)
+		pts := builder.Apply(options...).Build()
+
+		// Verify PVC volume was added
+		require.Len(t, pts.Spec.Volumes, 1)
+		volume := pts.Spec.Volumes[0]
+		assert.Equal(t, "registry-data-source-pvc-source", volume.Name)
+		require.NotNil(t, volume.PersistentVolumeClaim)
+		assert.Equal(t, "registry-data-pvc", volume.PersistentVolumeClaim.ClaimName)
+		assert.True(t, volume.PersistentVolumeClaim.ReadOnly)
+
+		// Verify volume mount at registry name subdirectory
+		require.Len(t, pts.Spec.Containers[0].VolumeMounts, 1)
+		volumeMount := pts.Spec.Containers[0].VolumeMounts[0]
+		assert.Equal(t, "registry-data-source-pvc-source", volumeMount.Name)
+		assert.Equal(t, "/config/registry/pvc-source", volumeMount.MountPath)
+		assert.True(t, volumeMount.ReadOnly)
+	})
+
+	t.Run("allows multiple registries to share same PVC at different mount paths", func(t *testing.T) {
+		t.Parallel()
+
+		options := []PodTemplateSpecOption{
+			WithContainer(corev1.Container{Name: "registry-api"}),
+			WithRegistrySourceMounts("registry-api", []mcpv1alpha1.MCPRegistryConfig{
+				{
+					Name:   "production",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					PVCRef: &mcpv1alpha1.PVCSource{
+						ClaimName: "shared-pvc",
+						Path:      "production/registry.json",
+					},
+				},
+				{
+					Name:   "development",
+					Format: mcpv1alpha1.RegistryFormatToolHive,
+					PVCRef: &mcpv1alpha1.PVCSource{
+						ClaimName: "shared-pvc",
+						Path:      "development/registry.json",
+					},
+				},
+			}),
+		}
+
+		builder := NewPodTemplateSpecBuilderFrom(nil)
+		pts := builder.Apply(options...).Build()
+
+		// Verify TWO PVC volumes (one per registry, even though same PVC)
+		assert.Len(t, pts.Spec.Volumes, 2)
+		assert.Equal(t, "registry-data-source-production", pts.Spec.Volumes[0].Name)
+		assert.Equal(t, "shared-pvc", pts.Spec.Volumes[0].PersistentVolumeClaim.ClaimName)
+		assert.Equal(t, "registry-data-source-development", pts.Spec.Volumes[1].Name)
+		assert.Equal(t, "shared-pvc", pts.Spec.Volumes[1].PersistentVolumeClaim.ClaimName)
+
+		// Verify TWO volume mounts at different paths (per registry name)
+		assert.Len(t, pts.Spec.Containers[0].VolumeMounts, 2)
+		assert.Equal(t, "/config/registry/production", pts.Spec.Containers[0].VolumeMounts[0].MountPath)
+		assert.Equal(t, "/config/registry/development", pts.Spec.Containers[0].VolumeMounts[1].MountPath)
+	})
 }
 
 func TestBuildRegistryAPIContainer(t *testing.T) {

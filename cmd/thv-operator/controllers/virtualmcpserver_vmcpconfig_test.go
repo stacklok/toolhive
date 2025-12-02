@@ -111,14 +111,14 @@ func TestConvertOutgoingAuth(t *testing.T) {
 		{
 			name: "with per-backend auth",
 			outgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-				Source: "mixed",
+				Source: "discovered",
 				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 					"backend-1": {
 						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 					},
 				},
 			},
-			expectedSource: "mixed",
+			expectedSource: "discovered",
 			hasDefault:     false,
 			backendCount:   1,
 		},
@@ -213,7 +213,13 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 			assert.Equal(t, tt.expectedType, strategy.Type)
 
 			if tt.hasMetadata {
-				assert.NotEmpty(t, strategy.Metadata)
+				// For external auth config refs, check that the strategy type is set
+				// The actual typed fields (HeaderInjection/TokenExchange) are resolved at runtime
+				assert.Equal(t, mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef, strategy.Type)
+			} else {
+				// For discovered auth, there should be no typed fields populated
+				assert.Nil(t, strategy.HeaderInjection)
+				assert.Nil(t, strategy.TokenExchange)
 			}
 		})
 	}
@@ -514,7 +520,7 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 			},
 			// OutgoingAuth with Backends map
 			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-				Source: "mixed",
+				Source: "discovered",
 				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 					"backend-zebra": {
 						Type: mcpv1alpha1.BackendAuthTypeDiscovered,

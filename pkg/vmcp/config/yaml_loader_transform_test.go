@@ -9,7 +9,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/env/mocks"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // TestYAMLLoader_transformBackendAuthStrategy tests the critical auth strategy transformation logic
@@ -21,28 +21,29 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		name    string
 		raw     *rawBackendAuthStrategy
 		envVars map[string]string
-		verify  func(t *testing.T, strategy *BackendAuthStrategy)
+		verify  func(t *testing.T, strategy *authtypes.BackendAuthStrategy)
 		wantErr bool
 		errMsg  string
 	}{
 		{
 			name: "header_injection with literal value",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+				Type: authtypes.StrategyTypeHeaderInjection,
 				HeaderInjection: &rawHeaderInjectionAuth{
 					HeaderName:  "Authorization",
 					HeaderValue: "Bearer token123",
 				},
 			},
-			verify: func(t *testing.T, strategy *BackendAuthStrategy) {
+			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
-				assert.Equal(t, "Bearer token123", strategy.Metadata[strategies.MetadataHeaderValue])
+				require.NotNil(t, strategy.HeaderInjection)
+				assert.Equal(t, "Bearer token123", strategy.HeaderInjection.HeaderValue)
 			},
 		},
 		{
 			name: "header_injection resolves env var correctly",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+				Type: authtypes.StrategyTypeHeaderInjection,
 				HeaderInjection: &rawHeaderInjectionAuth{
 					HeaderName:     "X-API-Key",
 					HeaderValueEnv: "API_KEY",
@@ -51,15 +52,16 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 			envVars: map[string]string{
 				"API_KEY": "secret-key-value",
 			},
-			verify: func(t *testing.T, strategy *BackendAuthStrategy) {
+			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
-				assert.Equal(t, "secret-key-value", strategy.Metadata[strategies.MetadataHeaderValue])
+				require.NotNil(t, strategy.HeaderInjection)
+				assert.Equal(t, "secret-key-value", strategy.HeaderInjection.HeaderValue)
 			},
 		},
 		{
 			name: "header_injection fails when both value and env set (mutual exclusivity)",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+				Type: authtypes.StrategyTypeHeaderInjection,
 				HeaderInjection: &rawHeaderInjectionAuth{
 					HeaderName:     "Authorization",
 					HeaderValue:    "literal",
@@ -72,7 +74,7 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		{
 			name: "header_injection fails when neither value nor env set",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+				Type: authtypes.StrategyTypeHeaderInjection,
 				HeaderInjection: &rawHeaderInjectionAuth{
 					HeaderName: "Authorization",
 				},
@@ -83,7 +85,7 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		{
 			name: "header_injection fails when env var not set",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+				Type: authtypes.StrategyTypeHeaderInjection,
 				HeaderInjection: &rawHeaderInjectionAuth{
 					HeaderName:     "Authorization",
 					HeaderValueEnv: "MISSING_VAR",
@@ -95,7 +97,7 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		{
 			name: "header_injection fails when env var is empty string",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+				Type: authtypes.StrategyTypeHeaderInjection,
 				HeaderInjection: &rawHeaderInjectionAuth{
 					HeaderName:     "Authorization",
 					HeaderValueEnv: "EMPTY_VAR",
@@ -110,7 +112,7 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		{
 			name: "header_injection fails when config block missing",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeHeaderInjection,
+				Type: authtypes.StrategyTypeHeaderInjection,
 			},
 			wantErr: true,
 			errMsg:  "header_injection configuration is required",
@@ -128,10 +130,11 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 			envVars: map[string]string{
 				"CLIENT_SECRET": "secret-value",
 			},
-			verify: func(t *testing.T, strategy *BackendAuthStrategy) {
+			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
 				// Verify env var name is stored (not resolved) for lazy evaluation
-				assert.Equal(t, "CLIENT_SECRET", strategy.Metadata["client_secret_env"])
+				require.NotNil(t, strategy.TokenExchange)
+				assert.Equal(t, "CLIENT_SECRET", strategy.TokenExchange.ClientSecretEnv)
 			},
 		},
 		{
@@ -158,11 +161,13 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 		{
 			name: "unauthenticated strategy requires no extra config",
 			raw: &rawBackendAuthStrategy{
-				Type: strategies.StrategyTypeUnauthenticated,
+				Type: authtypes.StrategyTypeUnauthenticated,
 			},
-			verify: func(t *testing.T, strategy *BackendAuthStrategy) {
+			verify: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
 				t.Helper()
-				assert.Empty(t, strategy.Metadata)
+				// Unauthenticated strategy has no additional config
+				assert.Nil(t, strategy.HeaderInjection)
+				assert.Nil(t, strategy.TokenExchange)
 			},
 		},
 	}
@@ -192,197 +197,6 @@ func TestYAMLLoader_transformBackendAuthStrategy(t *testing.T) {
 				if tt.verify != nil {
 					tt.verify(t, strategy)
 				}
-			}
-		})
-	}
-}
-
-// TestYAMLLoader_transformOperational tests duration parsing in multiple fields.
-func TestYAMLLoader_transformOperational(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		raw     *rawOperational
-		wantErr bool
-		errMsg  string
-	}{
-		{
-			name: "parses all duration fields correctly",
-			raw: &rawOperational{
-				Timeouts: struct {
-					Default     string            `yaml:"default"`
-					PerWorkload map[string]string `yaml:"per_workload"`
-				}{
-					Default: "30s",
-					PerWorkload: map[string]string{
-						"slow-backend": "1m",
-						"fast-backend": "10s",
-					},
-				},
-				FailureHandling: struct {
-					HealthCheckInterval string `yaml:"health_check_interval"`
-					UnhealthyThreshold  int    `yaml:"unhealthy_threshold"`
-					PartialFailureMode  string `yaml:"partial_failure_mode"`
-					CircuitBreaker      struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					} `yaml:"circuit_breaker"`
-				}{
-					HealthCheckInterval: "5s",
-					CircuitBreaker: struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					}{
-						Enabled: true,
-						Timeout: "30s",
-					},
-				},
-			},
-		},
-		{
-			name: "invalid default timeout returns error",
-			raw: &rawOperational{
-				Timeouts: struct {
-					Default     string            `yaml:"default"`
-					PerWorkload map[string]string `yaml:"per_workload"`
-				}{
-					Default: "invalid",
-				},
-				FailureHandling: struct {
-					HealthCheckInterval string `yaml:"health_check_interval"`
-					UnhealthyThreshold  int    `yaml:"unhealthy_threshold"`
-					PartialFailureMode  string `yaml:"partial_failure_mode"`
-					CircuitBreaker      struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					} `yaml:"circuit_breaker"`
-				}{
-					HealthCheckInterval: "10s",
-				},
-			},
-			wantErr: true,
-			errMsg:  "invalid default timeout",
-		},
-		{
-			name: "invalid per-workload timeout returns error with workload name",
-			raw: &rawOperational{
-				Timeouts: struct {
-					Default     string            `yaml:"default"`
-					PerWorkload map[string]string `yaml:"per_workload"`
-				}{
-					Default: "30s",
-					PerWorkload: map[string]string{
-						"bad-backend": "invalid-duration",
-					},
-				},
-				FailureHandling: struct {
-					HealthCheckInterval string `yaml:"health_check_interval"`
-					UnhealthyThreshold  int    `yaml:"unhealthy_threshold"`
-					PartialFailureMode  string `yaml:"partial_failure_mode"`
-					CircuitBreaker      struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					} `yaml:"circuit_breaker"`
-				}{
-					HealthCheckInterval: "10s",
-				},
-			},
-			wantErr: true,
-			errMsg:  "invalid timeout for workload bad-backend",
-		},
-		{
-			name: "invalid health check interval returns error",
-			raw: &rawOperational{
-				FailureHandling: struct {
-					HealthCheckInterval string `yaml:"health_check_interval"`
-					UnhealthyThreshold  int    `yaml:"unhealthy_threshold"`
-					PartialFailureMode  string `yaml:"partial_failure_mode"`
-					CircuitBreaker      struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					} `yaml:"circuit_breaker"`
-				}{
-					HealthCheckInterval: "not-a-duration",
-				},
-			},
-			wantErr: true,
-			errMsg:  "invalid health_check_interval",
-		},
-		{
-			name: "invalid circuit breaker timeout returns error",
-			raw: &rawOperational{
-				FailureHandling: struct {
-					HealthCheckInterval string `yaml:"health_check_interval"`
-					UnhealthyThreshold  int    `yaml:"unhealthy_threshold"`
-					PartialFailureMode  string `yaml:"partial_failure_mode"`
-					CircuitBreaker      struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					} `yaml:"circuit_breaker"`
-				}{
-					HealthCheckInterval: "10s",
-					CircuitBreaker: struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					}{
-						Enabled: true,
-						Timeout: "bad-duration",
-					},
-				},
-			},
-			wantErr: true,
-			errMsg:  "invalid circuit_breaker timeout",
-		},
-		{
-			name: "circuit breaker disabled skips timeout parsing",
-			raw: &rawOperational{
-				FailureHandling: struct {
-					HealthCheckInterval string `yaml:"health_check_interval"`
-					UnhealthyThreshold  int    `yaml:"unhealthy_threshold"`
-					PartialFailureMode  string `yaml:"partial_failure_mode"`
-					CircuitBreaker      struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					} `yaml:"circuit_breaker"`
-				}{
-					HealthCheckInterval: "10s",
-					CircuitBreaker: struct {
-						Enabled          bool   `yaml:"enabled"`
-						FailureThreshold int    `yaml:"failure_threshold"`
-						Timeout          string `yaml:"timeout"`
-					}{
-						Enabled: false,
-						// Even with bad timeout, should not error since disabled
-						Timeout: "invalid",
-					},
-				},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			loader := &YAMLLoader{}
-			cfg, err := loader.transformOperational(tt.raw)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errMsg != "" {
-					assert.Contains(t, err.Error(), tt.errMsg)
-				}
-			} else {
-				require.NoError(t, err)
-				require.NotNil(t, cfg)
 			}
 		})
 	}

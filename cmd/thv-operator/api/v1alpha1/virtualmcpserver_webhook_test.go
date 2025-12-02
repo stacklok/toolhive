@@ -58,7 +58,7 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.outgoingAuth.source must be one of: discovered, inline, mixed",
+			errMsg:  "spec.outgoingAuth.source must be one of: discovered, inline",
 		},
 		{
 			name: "valid backend external auth config ref",

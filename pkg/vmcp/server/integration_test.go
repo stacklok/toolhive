@@ -396,16 +396,17 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 	require.True(t, ok, "Session should be VMCPSession type, got: %T", sess)
 
 	routingTable := vmcpSess.GetRoutingTable()
+	require.NotNil(t, routingTable, "Routing table should be stored")
 	if routingTable == nil {
 		// Debug: Check session data
 		t.Logf("Session ID: %s", vmcpSess.ID())
 		t.Logf("Session Type: %v", vmcpSess.Type())
 		t.Logf("Session Data: %v", vmcpSess.GetData())
 		t.Fatal("REPRODUCER: Routing table is nil after initialization - this is the bug!")
+		return
 	}
 
 	t.Logf("Routing table has %d tools", len(routingTable.Tools))
-	require.NotNil(t, routingTable, "Routing table should be stored")
 	// Note: Tool name is prefixed with backend ID due to conflict resolution
 	require.Contains(t, routingTable.Tools, "test-backend_test_tool", "Routing table should have prefixed test_tool")
 

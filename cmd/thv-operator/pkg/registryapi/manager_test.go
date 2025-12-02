@@ -11,6 +11,7 @@ import (
 	"go.uber.org/mock/gomock"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -66,6 +67,7 @@ func TestReconcileAPIService(t *testing.T) {
 		_ = mcpv1alpha1.AddToScheme(scheme)
 		_ = appsv1.AddToScheme(scheme)
 		_ = corev1.AddToScheme(scheme)
+		_ = rbacv1.AddToScheme(scheme)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -143,6 +145,7 @@ func TestReconcileAPIService(t *testing.T) {
 		_ = mcpv1alpha1.AddToScheme(scheme)
 		_ = appsv1.AddToScheme(scheme)
 		_ = corev1.AddToScheme(scheme)
+		_ = rbacv1.AddToScheme(scheme)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).

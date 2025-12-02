@@ -64,6 +64,18 @@ func (m *manager) ReconcileAPIService(
 		}
 	}
 
+	// Ensure RBAC resources (ServiceAccount, Role, RoleBinding) before deployment
+	err = m.ensureRBACResources(ctx, mcpRegistry)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to ensure RBAC resources")
+		return &mcpregistrystatus.Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to ensure RBAC resources: %v", err),
+			ConditionType:   mcpv1alpha1.ConditionAPIReady,
+			ConditionReason: "RBACFailed",
+		}
+	}
+
 	// Step 1: Ensure deployment exists and is configured correctly
 	deployment, err := m.ensureDeployment(ctx, mcpRegistry, configManager)
 	if err != nil {

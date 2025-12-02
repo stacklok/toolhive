@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"regexp"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -909,7 +911,7 @@ func createVmcpServiceURL(vmcpName, namespace string, port int32) string {
 // convertExternalAuthConfigToStrategy converts an MCPExternalAuthConfig to a BackendAuthStrategy.
 // This uses the converter registry to support all auth types (token exchange, header injection, etc.).
 // For ConfigMap mode (inline), secrets are referenced as environment variables that will be
-// mounted in the deployment.
+// mounted in the deployment. Each ExternalAuthConfig gets a unique env var name to avoid conflicts.
 func (r *VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 	ctx context.Context,
 	namespace string,
@@ -928,15 +930,40 @@ func (r *VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 		return nil, fmt.Errorf("failed to convert external auth config to strategy: %w", err)
 	}
 
-	// For header injection, resolve secrets from Kubernetes
-	if externalAuthConfig.Spec.Type == mcpv1alpha1.ExternalAuthTypeHeaderInjection {
-		strategy, err = converter.ResolveSecrets(ctx, externalAuthConfig, r.Client, namespace, strategy)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve secrets for header injection: %w", err)
-		}
+	// Set unique env var names per ExternalAuthConfig to avoid conflicts
+	// when multiple configs of the same type reference different secrets
+	if strategy.TokenExchange != nil &&
+		externalAuthConfig.Spec.TokenExchange != nil &&
+		externalAuthConfig.Spec.TokenExchange.ClientSecretRef != nil {
+		strategy.TokenExchange.ClientSecretEnv = generateUniqueTokenExchangeEnvVarName(externalAuthConfig.Name)
+	}
+	if strategy.HeaderInjection != nil &&
+		externalAuthConfig.Spec.HeaderInjection != nil &&
+		externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
+		strategy.HeaderInjection.HeaderValueEnv = generateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
 	}
 
 	return strategy, nil
+}
+
+// generateUniqueTokenExchangeEnvVarName generates a unique environment variable name for token exchange
+// client secrets, incorporating the ExternalAuthConfig name to ensure uniqueness.
+func generateUniqueTokenExchangeEnvVarName(configName string) string {
+	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
+	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
+	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
+	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
+	return fmt.Sprintf("TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_%s", sanitized)
+}
+
+// generateUniqueHeaderInjectionEnvVarName generates a unique environment variable name for header injection
+// values, incorporating the ExternalAuthConfig name to ensure uniqueness.
+func generateUniqueHeaderInjectionEnvVarName(configName string) string {
+	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
+	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
+	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
+	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
+	return fmt.Sprintf("TOOLHIVE_HEADER_INJECTION_VALUE_%s", sanitized)
 }
 
 // convertBackendAuthConfigToVMCP converts a BackendAuthConfig from CRD to vmcp config.

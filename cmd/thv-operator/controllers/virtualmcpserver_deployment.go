@@ -318,6 +318,10 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 	}
 
 	// Discover ExternalAuthConfigs from MCPServers
+	// TODO: Optimize this by doing a List operation with a label selector or field selector
+	// to fetch all MCPServers in the namespace at once, then filter by names, rather than
+	// doing N Get calls. This would reduce API calls and improve performance for groups
+	// with many workloads.
 	for _, workloadName := range workloadNames {
 		mcpServer := &mcpv1alpha1.MCPServer{}
 		if err := r.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: vmcp.Namespace}, mcpServer); err != nil {
@@ -392,9 +396,10 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 	return envVars
 }
 
-// getExternalAuthConfigSecretEnvVar returns an environment variable for the client secret
-// from an ExternalAuthConfig, if it's a token exchange with a ClientSecretRef.
-// Uses the standard env var name from the converter: TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET
+// getExternalAuthConfigSecretEnvVar returns an environment variable for secrets
+// from an ExternalAuthConfig (token exchange client secrets or header injection values).
+// Generates unique env var names per ExternalAuthConfig to avoid conflicts when multiple
+// configs of the same type reference different secrets.
 func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 	ctx context.Context,
 	namespace string,
@@ -407,31 +412,42 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", externalAuthConfigName, err)
 	}
 
-	// Only handle token exchange with ClientSecretRef
-	// Header injection secrets are resolved directly into ConfigMap, not mounted as env vars
-	if externalAuthConfig.Spec.Type != mcpv1alpha1.ExternalAuthTypeTokenExchange {
-		return nil, nil // Not an error, just not applicable
-	}
+	var envVarName string
+	var secretRef *mcpv1alpha1.SecretKeyRef
 
-	if externalAuthConfig.Spec.TokenExchange == nil {
-		return nil, nil
-	}
+	switch externalAuthConfig.Spec.Type {
+	case mcpv1alpha1.ExternalAuthTypeTokenExchange:
+		if externalAuthConfig.Spec.TokenExchange == nil {
+			return nil, nil
+		}
+		if externalAuthConfig.Spec.TokenExchange.ClientSecretRef == nil {
+			return nil, nil // No secret to mount
+		}
+		envVarName = generateUniqueTokenExchangeEnvVarName(externalAuthConfigName)
+		secretRef = externalAuthConfig.Spec.TokenExchange.ClientSecretRef
 
-	if externalAuthConfig.Spec.TokenExchange.ClientSecretRef == nil {
-		return nil, nil // No secret to mount
-	}
+	case mcpv1alpha1.ExternalAuthTypeHeaderInjection:
+		if externalAuthConfig.Spec.HeaderInjection == nil {
+			return nil, nil
+		}
+		if externalAuthConfig.Spec.HeaderInjection.ValueSecretRef == nil {
+			return nil, nil // No secret to mount
+		}
+		envVarName = generateUniqueHeaderInjectionEnvVarName(externalAuthConfigName)
+		secretRef = externalAuthConfig.Spec.HeaderInjection.ValueSecretRef
 
-	// Use the standard env var name from the converter
-	envVarName := "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET"
+	default:
+		return nil, nil // Not applicable
+	}
 
 	return &corev1.EnvVar{
 		Name: envVarName,
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{
-					Name: externalAuthConfig.Spec.TokenExchange.ClientSecretRef.Name,
+					Name: secretRef.Name,
 				},
-				Key: externalAuthConfig.Spec.TokenExchange.ClientSecretRef.Key,
+				Key: secretRef.Key,
 			},
 		},
 	}, nil

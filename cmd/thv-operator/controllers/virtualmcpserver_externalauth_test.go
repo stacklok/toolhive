@@ -69,7 +69,8 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 				assert.NotNil(t, strategy.TokenExchange)
 				assert.Equal(t, "https://oauth.example.com/token", strategy.TokenExchange.TokenURL)
 				assert.Equal(t, "test-client-id", strategy.TokenExchange.ClientID)
-				assert.Equal(t, "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET", strategy.TokenExchange.ClientSecretEnv)
+				// Env var name is unique per ExternalAuthConfig to avoid conflicts
+				assert.Equal(t, "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_TEST_AUTH_CONFIG", strategy.TokenExchange.ClientSecretEnv)
 				assert.Equal(t, "backend-service", strategy.TokenExchange.Audience)
 				assert.Equal(t, []string{"read", "write"}, strategy.TokenExchange.Scopes)
 				assert.Equal(t, "urn:ietf:params:oauth:token-type:access_token", strategy.TokenExchange.SubjectTokenType)
@@ -165,8 +166,10 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 				assert.Equal(t, "header_injection", strategy.Type)
 				assert.NotNil(t, strategy.HeaderInjection)
 				assert.Equal(t, "X-API-Key", strategy.HeaderInjection.HeaderName)
-				// header_value is resolved by ResolveSecrets and embedded in the ConfigMap
-				assert.Equal(t, "test-api-key-value", strategy.HeaderInjection.HeaderValue)
+				// Secrets are mounted as env vars, not resolved into ConfigMap
+				// Env var name is unique per ExternalAuthConfig to avoid conflicts
+				assert.Equal(t, "TOOLHIVE_HEADER_INJECTION_VALUE_HEADER_AUTH", strategy.HeaderInjection.HeaderValueEnv)
+				assert.Empty(t, strategy.HeaderInjection.HeaderValue, "HeaderValue should not be set (secrets via env vars)")
 			},
 		},
 		{
@@ -192,25 +195,8 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 			_ = mcpv1alpha1.AddToScheme(scheme)
 			_ = corev1.AddToScheme(scheme)
 
-			// Set up fake client with secrets for header injection test
-			clientBuilder := fake.NewClientBuilder().WithScheme(scheme)
-			if tt.externalAuthConfig != nil && tt.externalAuthConfig.Spec.Type == mcpv1alpha1.ExternalAuthTypeHeaderInjection &&
-				tt.externalAuthConfig.Spec.HeaderInjection != nil &&
-				tt.externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
-				// Add the secret that header injection needs
-				secret := &corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      tt.externalAuthConfig.Spec.HeaderInjection.ValueSecretRef.Name,
-						Namespace: "default",
-					},
-					Data: map[string][]byte{
-						tt.externalAuthConfig.Spec.HeaderInjection.ValueSecretRef.Key: []byte("test-api-key-value"),
-					},
-				}
-				clientBuilder = clientBuilder.WithObjects(secret)
-			}
-
-			fakeClient := clientBuilder.Build()
+			// Set up fake client (no secrets needed - secrets are mounted as env vars, not resolved)
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 			r := &VirtualMCPServerReconciler{
 				Client:           fakeClient,

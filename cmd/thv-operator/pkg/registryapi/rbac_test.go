@@ -201,9 +201,9 @@ func TestEnsureRBACResources(t *testing.T) {
 func TestRegistryAPIRBACRules(t *testing.T) {
 	t.Parallel()
 
-	require.Len(t, registryAPIRBACRules, 3)
+	require.Len(t, registryAPIRBACRules, 6)
 
-	// ToolHive resources
+	// ToolHive resources (MCP discovery)
 	assert.ElementsMatch(t, []string{"toolhive.stacklok.dev"}, registryAPIRBACRules[0].APIGroups)
 	assert.ElementsMatch(t, []string{"mcpservers", "mcpremoteproxies", "virtualmcpservers"}, registryAPIRBACRules[0].Resources)
 	assert.ElementsMatch(t, []string{"get", "list", "watch"}, registryAPIRBACRules[0].Verbs)
@@ -211,8 +211,25 @@ func TestRegistryAPIRBACRules(t *testing.T) {
 	// Core services
 	assert.ElementsMatch(t, []string{""}, registryAPIRBACRules[1].APIGroups)
 	assert.ElementsMatch(t, []string{"services"}, registryAPIRBACRules[1].Resources)
+	assert.ElementsMatch(t, []string{"get", "list", "watch"}, registryAPIRBACRules[1].Verbs)
 
 	// Gateway API
 	assert.ElementsMatch(t, []string{"gateway.networking.k8s.io"}, registryAPIRBACRules[2].APIGroups)
 	assert.ElementsMatch(t, []string{"httproutes", "gateways"}, registryAPIRBACRules[2].Resources)
+	assert.ElementsMatch(t, []string{"get", "list", "watch"}, registryAPIRBACRules[2].Verbs)
+
+	// Leader election - ConfigMaps
+	assert.ElementsMatch(t, []string{""}, registryAPIRBACRules[3].APIGroups)
+	assert.ElementsMatch(t, []string{"configmaps"}, registryAPIRBACRules[3].Resources)
+	assert.ElementsMatch(t, []string{"get", "list", "watch", "create", "update", "patch", "delete"}, registryAPIRBACRules[3].Verbs)
+
+	// Leader election - Leases
+	assert.ElementsMatch(t, []string{"coordination.k8s.io"}, registryAPIRBACRules[4].APIGroups)
+	assert.ElementsMatch(t, []string{"leases"}, registryAPIRBACRules[4].Resources)
+	assert.ElementsMatch(t, []string{"get", "list", "watch", "create", "update", "patch", "delete"}, registryAPIRBACRules[4].Verbs)
+
+	// Leader election - Events
+	assert.ElementsMatch(t, []string{""}, registryAPIRBACRules[5].APIGroups)
+	assert.ElementsMatch(t, []string{"events"}, registryAPIRBACRules[5].Resources)
+	assert.ElementsMatch(t, []string{"create", "patch"}, registryAPIRBACRules[5].Verbs)
 }

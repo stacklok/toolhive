@@ -912,9 +912,7 @@ func createVmcpServiceURL(vmcpName, namespace string, port int32) string {
 // This uses the converter registry to support all auth types (token exchange, header injection, etc.).
 // For ConfigMap mode (inline), secrets are referenced as environment variables that will be
 // mounted in the deployment. Each ExternalAuthConfig gets a unique env var name to avoid conflicts.
-func (r *VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
-	ctx context.Context,
-	namespace string,
+func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
 	// Use the converter registry to convert to typed strategy
@@ -989,7 +987,7 @@ func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
 		}
 
 		// Convert the external auth config to strategy
-		return r.convertExternalAuthConfigToStrategy(ctx, namespace, externalAuthConfig)
+		return r.convertExternalAuthConfigToStrategy(externalAuthConfig)
 	}
 
 	// Fallback: return minimal strategy
@@ -1031,7 +1029,7 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 		}
 
 		// Convert MCPExternalAuthConfig to BackendAuthStrategy
-		strategy, err := r.convertExternalAuthConfigToStrategy(ctx, vmcp.Namespace, externalAuthConfig)
+		strategy, err := r.convertExternalAuthConfigToStrategy(externalAuthConfig)
 		if err != nil {
 			ctxLogger.V(1).Info("Failed to convert MCPExternalAuthConfig to strategy, skipping",
 				"backend", workloadName,

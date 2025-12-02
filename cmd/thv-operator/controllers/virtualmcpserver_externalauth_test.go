@@ -204,8 +204,7 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 			}
 
-			ctx := context.Background()
-			strategy, err := r.convertExternalAuthConfigToStrategy(ctx, "default", tt.externalAuthConfig)
+			strategy, err := r.convertExternalAuthConfigToStrategy(tt.externalAuthConfig)
 
 			if tt.expectError {
 				require.Error(t, err)

@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 // Protocol schemes
@@ -125,19 +126,96 @@ func createTemplateData(
 	}
 
 	// Load build environment variables from configuration
-	addBuildEnvToTemplate(&templateData)
+	if err := addBuildEnvToTemplate(&templateData); err != nil {
+		return templateData, err
+	}
 
 	return templateData, nil
 }
 
 // addBuildEnvToTemplate loads build environment variables from config and adds them to template data.
-func addBuildEnvToTemplate(templateData *templates.TemplateData) {
+// It resolves values from three sources:
+// 1. Literal values stored in BuildEnv
+// 2. Values from ToolHive secrets (BuildEnvFromSecrets)
+// 3. Values from the current shell environment (BuildEnvFromShell)
+func addBuildEnvToTemplate(templateData *templates.TemplateData) error {
 	provider := config.NewProvider()
-	buildEnv := provider.GetAllBuildEnv()
-	if len(buildEnv) > 0 {
-		templateData.BuildEnv = buildEnv
-		logger.Debugf("Loaded %d build environment variable(s) from configuration", len(buildEnv))
+	resolvedEnv := make(map[string]string)
+
+	// 1. Add literal values
+	literalEnv := provider.GetAllBuildEnv()
+	for k, v := range literalEnv {
+		resolvedEnv[k] = v
 	}
+
+	// 2. Resolve values from secrets
+	secretRefs := provider.GetAllBuildEnvFromSecrets()
+	if len(secretRefs) > 0 {
+		secretValues, err := resolveSecretsForBuildEnv(secretRefs)
+		if err != nil {
+			return fmt.Errorf("failed to resolve secrets for build env: %w", err)
+		}
+		for k, v := range secretValues {
+			resolvedEnv[k] = v
+		}
+	}
+
+	// 3. Resolve values from shell environment
+	shellRefs := provider.GetAllBuildEnvFromShell()
+	for _, key := range shellRefs {
+		value := os.Getenv(key)
+		if value == "" {
+			logger.Warnf("Build env variable %s configured to read from shell, but not set in environment", key)
+			continue
+		}
+		resolvedEnv[key] = value
+	}
+
+	if len(resolvedEnv) > 0 {
+		templateData.BuildEnv = resolvedEnv
+		logger.Debugf("Loaded %d build environment variable(s) (redacted for security)", len(resolvedEnv))
+	}
+
+	return nil
+}
+
+// resolveSecretsForBuildEnv resolves secret references to their actual values.
+func resolveSecretsForBuildEnv(secretRefs map[string]string) (map[string]string, error) {
+	ctx := context.Background()
+	configProvider := config.NewProvider()
+	cfg := configProvider.GetConfig()
+
+	// Check if secrets are set up
+	if !cfg.Secrets.SetupCompleted {
+		return nil, secrets.ErrSecretsNotSetup
+	}
+
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
+	}
+
+	manager, err := secrets.CreateSecretProvider(providerType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
+	}
+
+	resolved := make(map[string]string, len(secretRefs))
+	for key, secretName := range secretRefs {
+		value, err := manager.GetSecret(ctx, secretName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get secret '%s' for build env variable %s: %w", secretName, key, err)
+		}
+
+		// Validate the secret value doesn't contain dangerous characters
+		if err := config.ValidateBuildEnvValue(value); err != nil {
+			return nil, fmt.Errorf("secret '%s' contains invalid value for build env variable %s: %w", secretName, key, err)
+		}
+
+		resolved[key] = value
+	}
+
+	return resolved, nil
 }
 
 // addCACertToTemplate reads and validates a CA certificate, adding it to the template data.

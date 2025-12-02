@@ -148,7 +148,7 @@ func (*manager) buildRegistryAPIDeployment(
 		WithAnnotations(map[string]string{
 			"toolhive.stacklok.dev/config-hash": "hash-dummy-value",
 		}),
-		WithServiceAccountName(DefaultServiceAccountName),
+		WithServiceAccountName(GetServiceAccountName(mcpRegistry)),
 		WithContainer(BuildRegistryAPIContainer(getRegistryAPIImage())),
 		WithRegistryServerConfigMount(registryAPIContainerName, configManager.GetRegistryServerConfigMapName()),
 		WithRegistrySourceMounts(registryAPIContainerName, mcpRegistry.Spec.Registries),

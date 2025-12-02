@@ -28,40 +28,34 @@ vars:
 
 tasks:
   kind-setup:
-    desc: Setup a local Kind cluster
+    desc: Setup a local Kind cluster with DNS configured to use public DNS servers via extraMounts
     cmds:
-      - kind create cluster --name toolhive
-      - kind get kubeconfig --name toolhive > kconfig.yaml
+      - cmd: cd {{.ROOT_DIR}}/cmd/thv-operator && kind create cluster --name toolhive --config kind-config.yaml
 
   kind-setup-e2e:
-    desc: Setup a local Kind cluster with port mappings for e2e testing (allows accessing NodePort services on localhost)
+    desc: Setup a local Kind cluster with port mappings for e2e testing (allows accessing NodePort services on localhost). DNS is configured to use public DNS servers via extraMounts.
     cmds:
-      - kind create cluster --name toolhive --config {{.ROOT_DIR}}/test/e2e/thv-operator/kind-config.yaml
-      - kind get kubeconfig --name toolhive > kconfig.yaml
+      - cmd: cd {{.ROOT_DIR}}/test/e2e/thv-operator && kind create cluster --name toolhive --config kind-config.yaml
 
   kind-destroy:
     desc: Destroy a local Kind cluster
     cmds:
       - kind delete cluster --name toolhive
-      - cmd: rm kconfig.yaml
-        platforms: [linux, darwin]
-      - cmd: cmd.exe /c "del kconfig.yaml"
-        platforms: [windows]
 
   kind-ingress-setup:
     desc: Setup Nginx Ingress Controller in a local Kind cluster
     cmds:
       - echo "Applying Kubernetes Ingress manifest..."
-      - kubectl apply -f https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.yaml --kubeconfig kconfig.yaml
+      - kubectl apply -f https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.yaml
       - echo "Waiting for Ingress Nginx Controller to be created and ready..."
       - cmd: |
-          while ! kubectl wait --namespace=ingress-nginx --for=condition=Ready pod --selector=app.kubernetes.io/instance=ingress-nginx,app.kubernetes.io/component=controller --timeout=120s --kubeconfig kconfig.yaml &>/dev/null; do sleep 2; done
+          while ! kubectl wait --namespace=ingress-nginx --for=condition=Ready pod --selector=app.kubernetes.io/instance=ingress-nginx,app.kubernetes.io/component=controller --timeout=120s &>/dev/null; do sleep 2; done
         ignore_error: true
       # We do the below commands because of some inconsistency between the secret and webhook caBundle. ref: https://github.com/kubernetes/ingress-nginx/issues/5968#issuecomment-849772666
       - echo "Patching Ingress Nginx Admission Webhook CA Bundle..."
       - |
-        CA=$(kubectl -n ingress-nginx get secret ingress-nginx-admission -ojsonpath='{.data.ca}' --kubeconfig kconfig.yaml)
-        kubectl patch validatingwebhookconfigurations ingress-nginx-admission --type='json' --patch='[{"op":"add","path":"/webhooks/0/clientConfig/caBundle","value":"'$CA'"}]' --kubeconfig kconfig.yaml
+        CA=$(kubectl -n ingress-nginx get secret ingress-nginx-admission -ojsonpath='{.data.ca}')
+        kubectl patch validatingwebhookconfigurations ingress-nginx-admission --type='json' --patch='[{"op":"add","path":"/webhooks/0/clientConfig/caBundle","value":"'$CA'"}]'
 
   kind-with-toolhive-operator*:
     desc: |
@@ -69,6 +63,7 @@ tasks:
       To deploy a locally built Operator image, run `task kind-with-toolhive-operator-local`.
       To deploy the latest Operator image from Github, run `task kind-with-toolhive-operator-latest`.
       By default, you can run `task kind-with-toolhive-operator` to deploy the latest Operator image from Github.
+      DNS is automatically configured to use public DNS servers (8.8.8.8, 8.8.4.4, 1.1.1.1) to fix resolution issues.
     vars:
       OPERATOR_DEPLOYMENT: '{{index .MATCH 0 | trimPrefix "-" | default "latest"}}'
     cmds:
@@ -116,17 +111,17 @@ tasks:
   operator-install-crds:
     desc: Install CRDs into the K8s cluster
     cmds:
-      - helm upgrade --install toolhive-operator-crds deploy/charts/operator-crds --kubeconfig kconfig.yaml
+      - helm upgrade --install toolhive-operator-crds deploy/charts/operator-crds
 
   operator-uninstall-crds:
     desc: Uninstall CRDs from the K8s cluster
     cmds:
-      - helm uninstall toolhive-operator-crds --kubeconfig kconfig.yaml
+      - helm uninstall toolhive-operator-crds
 
   operator-deploy-latest:
     desc: Deploy latest built Operator image from Github to the K8s cluster
     cmds:
-      - helm upgrade --install toolhive-operator deploy/charts/operator --namespace toolhive-system --create-namespace --kubeconfig kconfig.yaml
+      - helm upgrade --install toolhive-operator deploy/charts/operator --namespace toolhive-system --create-namespace
 
   operator-deploy-local:
     desc: |
@@ -160,13 +155,12 @@ tasks:
         --set registryAPI.image={{.REGISTRY_API_IMAGE}} \
         --namespace toolhive-system \
         --create-namespace \
-        --kubeconfig kconfig.yaml \
         {{ .CLI_ARGS }}
 
   operator-undeploy:
     desc: Undeploy operator from the K8s cluster
     cmds:
-      - helm uninstall toolhive-operator --kubeconfig kconfig.yaml --namespace toolhive-system
+      - helm uninstall toolhive-operator --namespace toolhive-system
 
   # Kubebuilder tasks
   operator-generate:
@@ -253,14 +247,13 @@ tasks:
       - A Kind cluster named 'toolhive' exists
       - CRDs are installed
       - Operator is deployed
-      - kconfig.yaml exists in project root
       Use this to re-run tests without recreating the cluster.
     platforms: [linux, darwin]
     cmds:
       - echo "Running Ginkgo E2E tests..."
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
       - |
-        KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v \
+        $(go env GOPATH)/bin/ginkgo -v \
           {{.ROOT_DIR}}/test/e2e/thv-operator/...
 
   operator-run:
@@ -356,27 +349,27 @@ tasks:
     desc: Install Keycloak Operator using official manifests (v{{.KEYCLOAK_VERSION}})
     cmds:
       - echo "Creating keycloak namespace..."
-      - kubectl create namespace keycloak --dry-run=client -o yaml --kubeconfig kconfig.yaml | kubectl apply -f - --kubeconfig kconfig.yaml
+      - kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
       - echo "Installing Keycloak CRDs and Operator (version {{.KEYCLOAK_VERSION}})..."
-      - kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/{{.KEYCLOAK_VERSION}}/kubernetes/keycloaks.k8s.keycloak.org-v1.yml --kubeconfig kconfig.yaml
-      - kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/{{.KEYCLOAK_VERSION}}/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml --kubeconfig kconfig.yaml
-      - kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/{{.KEYCLOAK_VERSION}}/kubernetes/kubernetes.yml -n keycloak --kubeconfig kconfig.yaml
+      - kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/{{.KEYCLOAK_VERSION}}/kubernetes/keycloaks.k8s.keycloak.org-v1.yml
+      - kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/{{.KEYCLOAK_VERSION}}/kubernetes/keycloakrealmimports.k8s.keycloak.org-v1.yml
+      - kubectl apply -f https://raw.githubusercontent.com/keycloak/keycloak-k8s-resources/{{.KEYCLOAK_VERSION}}/kubernetes/kubernetes.yml -n keycloak
       - echo "Waiting for Keycloak Operator to be ready..."
-      - kubectl wait --for=condition=ready --timeout=300s pod -l app.kubernetes.io/name=keycloak-operator -n keycloak --kubeconfig kconfig.yaml
+      - kubectl wait --for=condition=ready --timeout=300s pod -l app.kubernetes.io/name=keycloak-operator -n keycloak
 
   keycloak:deploy-dev:
     desc: Deploy Keycloak for development and setup ToolHive realm
     deps: [keycloak:install-operator]
     cmds:
       - echo "Deploying Keycloak for development..."
-      - kubectl apply -f deploy/keycloak/keycloak-dev.yaml --kubeconfig kconfig.yaml
+      - kubectl apply -f deploy/keycloak/keycloak-dev.yaml
       - echo "Waiting for Keycloak to be ready..."
-      - kubectl wait --for=condition=Ready --timeout=600s keycloaks.k8s.keycloak.org/keycloak-dev -n keycloak --kubeconfig kconfig.yaml
+      - kubectl wait --for=condition=Ready --timeout=600s keycloaks.k8s.keycloak.org/keycloak-dev -n keycloak
       # Using REST API instead of KeycloakRealmImport because with embedded H2 database,
       # KeycloakRealmImport creates a separate temporary database that doesn't persist
       # to the main running Keycloak instance
       - echo "Starting port-forward for realm setup..."
-      - kubectl port-forward service/keycloak-dev-service -n keycloak 8080:8080 --kubeconfig kconfig.yaml &
+      - kubectl port-forward service/keycloak-dev-service -n keycloak 8080:8080 &
       - sleep 5  # Wait for port-forward to be ready
       - echo "Setting up ToolHive realm via REST API..."
       - deploy/keycloak/setup-realm.sh
@@ -387,15 +380,15 @@ tasks:
   keycloak:get-admin-creds:
     desc: Get Keycloak admin credentials
     cmds:
-      - echo "Username:" && kubectl get secret keycloak-dev-initial-admin -n keycloak -o jsonpath='{.data.username}' --kubeconfig kconfig.yaml | base64 --decode
-      - echo "Password:" && kubectl get secret keycloak-dev-initial-admin -n keycloak -o jsonpath='{.data.password}' --kubeconfig kconfig.yaml | base64 --decode
+      - echo "Username:" && kubectl get secret keycloak-dev-initial-admin -n keycloak -o jsonpath='{.data.username}' | base64 --decode
+      - echo "Password:" && kubectl get secret keycloak-dev-initial-admin -n keycloak -o jsonpath='{.data.password}' | base64 --decode
 
   keycloak:port-forward:
     desc: Port forward to Keycloak service (http://localhost:8080)
     cmds:
       - echo "Keycloak will be available at http://localhost:8080"
       - echo "Use 'task keycloak:get-admin-creds' to get login credentials"
-      - kubectl port-forward service/keycloak-dev-service -n keycloak 8080:8080 --kubeconfig kconfig.yaml
+      - kubectl port-forward service/keycloak-dev-service -n keycloak 8080:8080
 
   build-operator-image-ubi:
     desc: Build the operator image

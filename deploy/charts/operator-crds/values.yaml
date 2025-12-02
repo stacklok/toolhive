@@ -5,6 +5,9 @@ crds:
   # -- Whether to add the "helm.sh/resource-policy: keep" annotation to CRDs
   # When true, CRDs will not be deleted when the Helm release is uninstalled
   keep: true
-  # -- List of CRD names to skip during installation (useful for upgrades)
-  # Example: ["mcpservers.toolhive.stacklok.dev"]
-  skip: []
+  # -- Whether to install Server CRDs (mcpservers, mcpexternalauthconfigs, mcpremoteproxies, mcptoolconfigs, mcpgroups)
+  enableServer: true
+  # -- Whether to install Registry CRDs (mcpregistries)
+  enableRegistry: true
+  # -- Whether to install VirtualMCP CRDs (virtualmcpservers, virtualmcpcompositetooldefinitions)
+  enableVirtualMcp: true

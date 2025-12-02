@@ -37,6 +37,8 @@ var templateFS embed.FS
 type Templates struct {
 	Header         string
 	Footer         string
+	HeaderFeature  string
+	FooterFeature  string
 	KeepAnnotation string
 }
 
@@ -55,6 +57,22 @@ type Config struct {
 	SourceDir string
 	TargetDir string
 	Verbose   bool
+}
+
+// CRD feature flag groups
+// Maps CRD name prefixes to their corresponding Helm values flag
+var crdFeatureFlags = map[string]string{
+	// Server group: mcpservers, mcpexternalauthconfigs, mcpremoteproxies, mcptoolconfigs, mcpgroups
+	"mcpservers":             "enableServer",
+	"mcpexternalauthconfigs": "enableServer",
+	"mcpremoteproxies":       "enableServer",
+	"mcptoolconfigs":         "enableServer",
+	"mcpgroups":              "enableServer",
+	// Registry group: mcpregistries
+	"mcpregistries": "enableRegistry",
+	// VirtualMCP group: virtualmcpservers, virtualmcpcompositetooldefinitions
+	"virtualmcpservers":                  "enableVirtualMcp",
+	"virtualmcpcompositetooldefinitions": "enableVirtualMcp",
 }
 
 func main() {
@@ -88,6 +106,16 @@ func loadTemplates() (*Templates, error) {
 		return nil, fmt.Errorf("failed to load footer template: %w", err)
 	}
 
+	headerFeature, err := templateFS.ReadFile("templates/header-feature.tpl")
+	if err != nil {
+		return nil, fmt.Errorf("failed to load header-feature template: %w", err)
+	}
+
+	footerFeature, err := templateFS.ReadFile("templates/footer-feature.tpl")
+	if err != nil {
+		return nil, fmt.Errorf("failed to load footer-feature template: %w", err)
+	}
+
 	keepAnnotation, err := templateFS.ReadFile("templates/keep-annotation.tpl")
 	if err != nil {
 		return nil, fmt.Errorf("failed to load keep-annotation template: %w", err)
@@ -96,6 +124,8 @@ func loadTemplates() (*Templates, error) {
 	return &Templates{
 		Header:         string(header),
 		Footer:         string(footer),
+		HeaderFeature:  string(headerFeature),
+		FooterFeature:  string(footerFeature),
 		KeepAnnotation: string(keepAnnotation),
 	}, nil
 }
@@ -107,8 +137,8 @@ func run(cfg Config) error {
 		return err
 	}
 
-	// Ensure target directory exists
-	if err := os.MkdirAll(cfg.TargetDir, 0755); err != nil {
+	// Ensure target directory exists with secure permissions
+	if err := os.MkdirAll(cfg.TargetDir, 0750); err != nil {
 		return fmt.Errorf("failed to create target directory: %w", err)
 	}
 
@@ -140,8 +170,14 @@ func wrapCRDFile(sourcePath string, cfg Config, templates *Templates) error {
 
 	fmt.Printf("Processing: %s\n", filename)
 
+	// Sanitize source path - ensure it's within the expected source directory
+	cleanSourcePath := filepath.Clean(sourcePath)
+	if !strings.HasPrefix(cleanSourcePath, filepath.Clean(cfg.SourceDir)) {
+		return fmt.Errorf("source path escapes source directory: %s", sourcePath)
+	}
+
 	// Read the source file
-	content, err := os.ReadFile(sourcePath)
+	content, err := os.ReadFile(cleanSourcePath) // #nosec G304 - path is sanitized above
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
 	}
@@ -156,8 +192,14 @@ func wrapCRDFile(sourcePath string, cfg Config, templates *Templates) error {
 		fmt.Printf("  CRD name: %s\n", crdName)
 	}
 
+	// Get the feature flag for this CRD (if any)
+	featureFlag := getFeatureFlag(crdName)
+	if cfg.Verbose && featureFlag != "" {
+		fmt.Printf("  Feature flag: crds.%s\n", featureFlag)
+	}
+
 	// Wrap the content with Helm template conditionals
-	wrapped, err := wrapContent(content, crdName, filename, templates)
+	wrapped, err := wrapContent(content, crdName, filename, templates, featureFlag)
 	if err != nil {
 		return fmt.Errorf("failed to wrap content: %w", err)
 	}
@@ -188,11 +230,40 @@ func extractCRDName(content []byte) (string, error) {
 	return crd.Metadata.Name, nil
 }
 
-func wrapContent(content []byte, crdName, filename string, templates *Templates) ([]byte, error) {
+// getFeatureFlag returns the Helm values feature flag for a given CRD name.
+// Returns empty string if no feature flag is needed (CRD is always installed).
+func getFeatureFlag(crdName string) string {
+	// CRD names are in format: plural.group (e.g., mcpservers.toolhive.stacklok.dev)
+	// Extract the plural name (before the first dot)
+	parts := strings.SplitN(crdName, ".", 2)
+	if len(parts) == 0 {
+		return ""
+	}
+	plural := parts[0]
+
+	// Look up the feature flag for this CRD type
+	if featureFlag, ok := crdFeatureFlags[plural]; ok {
+		return featureFlag
+	}
+
+	return ""
+}
+
+func wrapContent(content []byte, crdName, filename string, templates *Templates, featureFlag string) ([]byte, error) {
 	var buf bytes.Buffer
 
+	// Select appropriate header/footer based on whether CRD has a feature flag
+	header := templates.Header
+	footer := templates.Footer
+	if featureFlag != "" {
+		header = templates.HeaderFeature
+		footer = templates.FooterFeature
+		// Replace the feature flag placeholder
+		header = strings.ReplaceAll(header, "__FEATURE_FLAG__", featureFlag)
+	}
+
 	// Write header with conditionals (replace placeholders)
-	header := strings.ReplaceAll(templates.Header, "__CRD_NAME__", crdName)
+	header = strings.ReplaceAll(header, "__CRD_NAME__", crdName)
 	header = strings.ReplaceAll(header, "__FILENAME__", filename)
 	buf.WriteString(header)
 
@@ -200,12 +271,9 @@ func wrapContent(content []byte, crdName, filename string, templates *Templates)
 	scanner := bufio.NewScanner(bytes.NewReader(content))
 	inAnnotations := false
 	annotationsWritten := false
-	skipFirstLine := false
 
 	// Check if first line is just "---"
-	if bytes.HasPrefix(content, []byte("---\n")) || bytes.HasPrefix(content, []byte("---\r\n")) {
-		skipFirstLine = true
-	}
+	skipFirstLine := bytes.HasPrefix(content, []byte("---\n")) || bytes.HasPrefix(content, []byte("---\r\n"))
 
 	lineNum := 0
 	for scanner.Scan() {
@@ -232,6 +300,9 @@ func wrapContent(content []byte, crdName, filename string, templates *Templates)
 			inAnnotations = false
 		}
 
+		// Escape any Go template-like syntax in CRD descriptions to prevent Helm from interpreting them
+		line = escapeTemplateDelimiters(line)
+
 		buf.WriteString(line + "\n")
 	}
 
@@ -240,7 +311,35 @@ func wrapContent(content []byte, crdName, filename string, templates *Templates)
 	}
 
 	// Write footer from template
-	buf.WriteString(templates.Footer)
+	buf.WriteString(footer)
 
 	return buf.Bytes(), nil
+}
+
+// escapeTemplateDelimiters escapes Go/Helm template delimiters in CRD content
+// to prevent Helm from interpreting documentation examples as template directives.
+// Uses Helm's built-in escaping: {{ "{{" }} renders as {{ in output.
+func escapeTemplateDelimiters(line string) string {
+	// Only escape if line contains template-like syntax that isn't our intentional Helm directives
+	// Look for patterns like {{.something}} which are documentation examples
+	if !strings.Contains(line, "{{") {
+		return line
+	}
+
+	// Skip lines that are our intentional Helm template directives (start with {{-)
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "{{-") || strings.HasPrefix(trimmed, "{{") && strings.Contains(trimmed, ".Values") {
+		return line
+	}
+
+	// Use placeholders to avoid nested replacement issues
+	// First replace complete patterns {{...}} with a placeholder
+	line = strings.ReplaceAll(line, "{{", "\x00OPEN\x00")
+	line = strings.ReplaceAll(line, "}}", "\x00CLOSE\x00")
+
+	// Now replace placeholders with Helm-escaped versions
+	line = strings.ReplaceAll(line, "\x00OPEN\x00", `{{ "{{" }}`)
+	line = strings.ReplaceAll(line, "\x00CLOSE\x00", `{{ "}}" }}`)
+
+	return line
 }

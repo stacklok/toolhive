@@ -325,7 +325,7 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	result, err := r.ensureDeployment(context.Background(), vmcp)
+	result, err := r.ensureDeployment(context.Background(), vmcp, []string{})
 	require.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
 
@@ -1280,7 +1280,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1304,7 +1304,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 8080},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1354,7 +1354,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
 								},
 							},
 							ServiceAccountName: "wrong-service-account",
@@ -1378,7 +1378,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1395,7 +1395,7 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			needsUpdate := reconciler.containerNeedsUpdate(context.Background(), tt.deployment, tt.vmcp)
+			needsUpdate := reconciler.containerNeedsUpdate(context.Background(), tt.deployment, tt.vmcp, []string{})
 			assert.Equal(t, tt.expectedUpdate, needsUpdate)
 		})
 	}
@@ -1675,7 +1675,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1708,7 +1708,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1739,7 +1739,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1770,7 +1770,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1786,7 +1786,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			needsUpdate := reconciler.deploymentNeedsUpdate(context.Background(), tt.deployment, vmcp, vmcpConfigChecksum)
+			needsUpdate := reconciler.deploymentNeedsUpdate(context.Background(), tt.deployment, vmcp, vmcpConfigChecksum, []string{})
 			assert.Equal(t, tt.expectedUpdate, needsUpdate)
 		})
 	}
@@ -2114,7 +2114,7 @@ func TestVirtualMCPServerEnsureDeployment_ConfigMapNotFound(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	result, err := reconciler.ensureDeployment(context.Background(), vmcp)
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []string{})
 
 	// Should requeue after 5 seconds when ConfigMap not found
 	assert.NoError(t, err)
@@ -2165,7 +2165,7 @@ func TestVirtualMCPServerEnsureDeployment_CreateDeployment(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	result, err := reconciler.ensureDeployment(context.Background(), vmcp)
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []string{})
 
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -2250,7 +2250,7 @@ func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	result, err := reconciler.ensureDeployment(context.Background(), vmcp)
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []string{})
 
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)
@@ -2332,7 +2332,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 							Ports: []corev1.ContainerPort{
 								{ContainerPort: 4483},
 							},
-							Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp),
+							Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
 						},
 					},
 					ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -2348,7 +2348,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 
 	reconciler.Client = k8sClient
 
-	result, err := reconciler.ensureDeployment(context.Background(), vmcp)
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp, []string{})
 
 	assert.NoError(t, err)
 	assert.Equal(t, ctrl.Result{}, result)

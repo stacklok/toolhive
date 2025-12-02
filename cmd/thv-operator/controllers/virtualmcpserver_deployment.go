@@ -19,7 +19,6 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
-	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
 const (
@@ -64,6 +63,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	workloadNames []string,
 ) *appsv1.Deployment {
 	ls := labelsForVirtualMCPServer(vmcp.Name)
 	replicas := int32(1)
@@ -71,7 +71,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	// Build deployment components using helper functions
 	args := r.buildContainerArgsForVmcp()
 	volumeMounts, volumes := r.buildVolumesForVmcp(vmcp)
-	env := r.buildEnvVarsForVmcp(ctx, vmcp)
+	env := r.buildEnvVarsForVmcp(ctx, vmcp, workloadNames)
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContextsForVmcp(ctx, vmcp)
@@ -173,6 +173,7 @@ func (*VirtualMCPServerReconciler) buildVolumesForVmcp(
 func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	workloadNames []string,
 ) []corev1.EnvVar {
 	env := []corev1.EnvVar{}
 
@@ -197,7 +198,7 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	env = append(env, r.buildOIDCEnvVars(vmcp)...)
 
 	// Mount outgoing auth secrets
-	env = append(env, r.buildOutgoingAuthEnvVars(ctx, vmcp)...)
+	env = append(env, r.buildOutgoingAuthEnvVars(ctx, vmcp, workloadNames)...)
 
 	// Note: Other secrets (Redis passwords, service account credentials) may be added here in the future
 	// following the same pattern of mounting from Kubernetes Secrets as environment variables.
@@ -259,6 +260,7 @@ func (*VirtualMCPServerReconciler) buildOIDCEnvVars(vmcp *mcpv1alpha1.VirtualMCP
 func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	workloadNames []string,
 ) []corev1.EnvVar {
 	var env []corev1.EnvVar
 
@@ -268,14 +270,8 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 
 	// Mount secrets from discovered ExternalAuthConfigs (discovered mode)
 	if vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceDiscovered {
-		discoveredSecrets, err := r.discoverExternalAuthConfigSecrets(ctx, vmcp)
-		if err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.V(1).Info("Failed to discover ExternalAuthConfig secrets, continuing without them",
-				"error", err)
-		} else {
-			env = append(env, discoveredSecrets...)
-		}
+		discoveredSecrets := r.discoverExternalAuthConfigSecrets(ctx, vmcp, workloadNames)
+		env = append(env, discoveredSecrets...)
 	}
 
 	// Mount secrets from inline ExternalAuthConfigRefs
@@ -305,17 +301,11 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) ([]corev1.EnvVar, error) {
+	workloadNames []string,
+) []corev1.EnvVar {
 	ctxLogger := log.FromContext(ctx)
 	var envVars []corev1.EnvVar
 	seenConfigs := make(map[string]bool) // Track which ExternalAuthConfigs we've already processed
-
-	// Get workload names from the group
-	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(r.Client, vmcp.Namespace)
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.Spec.GroupRef.Name)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list workloads in group: %w", err)
-	}
 
 	// Discover ExternalAuthConfigs from MCPServers
 	// TODO: Optimize this by doing a List operation with a label selector or field selector
@@ -354,7 +344,7 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 		}
 	}
 
-	return envVars, nil
+	return envVars
 }
 
 // discoverInlineExternalAuthConfigSecrets discovers ExternalAuthConfigs referenced in inline Backends

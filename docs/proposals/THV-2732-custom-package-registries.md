@@ -24,7 +24,6 @@ Beyond package mirrors, there are other build-time configurations that organizat
 
 ## Non-Goals
 
-- Authentication to private mirrors via username/password during builds (may be addressed in future work)
 - Validation that configured mirrors are reachable or functional
 - Runtime environment variable injection (this is build-time only)
 - Per-MCP-server build environment configuration (global configuration only)
@@ -50,7 +49,7 @@ secrets:
   setup_completed: true
 ca_certificate_path: /path/to/ca-cert.pem
 build_env:
-  # Package mirror configuration
+  # Package mirror configuration (non-sensitive URLs without credentials)
   NPM_CONFIG_REGISTRY: "https://npm.corp.example.com"
   PIP_INDEX_URL: "https://pypi.corp.example.com/simple"
   UV_DEFAULT_INDEX: "https://pypi.corp.example.com/simple"
@@ -58,6 +57,16 @@ build_env:
   # Other build-time configurations
   GOPRIVATE: "github.com/myorg/*"
   NODE_OPTIONS: "--max-old-space-size=4096"
+
+# For authenticated registries: reference secrets by name (values never stored here)
+build_env_from_secrets:
+  NPM_CONFIG_REGISTRY: "npm-registry-url"  # secret contains https://:token@registry
+  PIP_INDEX_URL: "pip-index-url"           # secret contains https://user:pass@pypi/simple
+
+# For CI/CD: read from shell environment at build time (names only, no values stored)
+build_env_from_shell:
+  - GITHUB_TOKEN
+  - ARTIFACTORY_API_KEY
 ```
 
 ### CLI Commands
@@ -77,6 +86,12 @@ thv config unset build-env <KEY>
 
 # Remove all build environment variables
 thv config unset build-env --all
+
+# Set from a ToolHive secret (validates secret exists, stores reference only)
+thv config set-build-env --from-secret <KEY> <secret-name>
+
+# Set to read from shell environment at build time (stores name only)
+thv config set-build-env --from-env <KEY>
 ```
 
 ### Template Data Extension
@@ -194,9 +209,26 @@ To prevent shell escape vulnerabilities:
 - The template rendering should use proper escaping mechanisms to prevent injection attacks
 - Consider restricting characters to alphanumeric, hyphens, underscores, forward slashes, colons, and dots for URL-like values
 
-### No Credential Storage
+### Secure Credential Handling
 
-This proposal does not include credential storage. If a mirror requires authentication, users should use URL-embedded credentials (not recommended) or configure credentials through other mechanisms. Future work may address secure credential injection.
+For authenticated registries, use `--from-secret` or `--from-env` to avoid storing credentials in the configuration file:
+
+- **`--from-secret`**: References a ToolHive secret by name. The secret value (e.g., `https://:token@registry`) is retrieved at build time.
+- **`--from-env`**: Reads from the user's shell environment at build time. Useful for CI/CD where secrets are injected via environment.
+
+URL-embedded credentials (e.g., `https://:token@registry`) are supported by npm, pip, uv, and Go.
+
+### Multi-Stage Build Isolation
+
+All protocol build templates use multi-stage Docker builds. The `BuildEnv` variables are only set in the builder stage and are not inherited by the final image:
+
+| Template | Final Stage Copies Only |
+|----------|------------------------|
+| npx.tmpl | `node_modules`, `package.json`, `package-lock.json` |
+| uvx.tmpl | `/opt/uv-tools` |
+| go.tmpl | `/app/mcp-server` binary |
+
+Each `FROM` instruction starts a fresh image—ENV variables from previous stages are not inherited. Credentials used during the build phase do not appear in the final container image.
 
 ### Audit Trail
 
@@ -212,8 +244,12 @@ Configured build environment variables are logged during builds (with values red
 
 ## Implementation Plan
 
-1. **Configuration Model**: Add `BuildEnv map[string]string` to `pkg/config/config.go` with validation functions
-2. **CLI Commands**: Add `build-env` subcommands to `thv config set/get/unset`
-3. **Template Changes**: Extend `TemplateData` and add environment variable injection block to all templates
-4. **Protocol Handler Integration**: Modify `createTemplateData` to read build environment configuration
-5. **Documentation**: Update user documentation with configuration guide and common examples
+1. **Configuration Model**: Add to `pkg/config/config.go`:
+   - `BuildEnv map[string]string` for literal values
+   - `BuildEnvFromSecrets map[string]string` for secret references
+   - `BuildEnvFromShell []string` for shell variable names
+2. **CLI Commands**: Add `build-env` subcommands with `--from-secret` and `--from-env` flags
+3. **Secret Validation**: When using `--from-secret`, validate the secret exists
+4. **Template Changes**: Extend `TemplateData` and add environment variable injection block to all templates
+5. **Protocol Handler Integration**: Modify `addBuildEnvToTemplate` to resolve values from all three sources
+6. **Documentation**: Update user documentation with configuration guide and common examples

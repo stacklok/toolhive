@@ -2,8 +2,10 @@
 package controllers
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -27,6 +29,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 		interval                       = time.Millisecond * 250
 		defaultNamespace               = "default"
 		conditionTypeGroupRefValidated = "GroupRefValidated"
+		conditionTypePodTemplateValid  = "PodTemplateValid"
 		runconfigVolumeName            = "runconfig"
 	)
 
@@ -428,7 +431,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 				// Check for PodTemplateValid condition
 				for _, cond := range updatedMCPServer.Status.Conditions {
-					if cond.Type == "PodTemplateValid" {
+					if cond.Type == conditionTypePodTemplateValid {
 						return cond.Status == metav1.ConditionFalse &&
 							cond.Reason == "InvalidPodTemplateSpec"
 					}
@@ -445,7 +448,7 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 
 			var foundCondition *metav1.Condition
 			for i, cond := range updatedMCPServer.Status.Conditions {
-				if cond.Type == "PodTemplateValid" {
+				if cond.Type == conditionTypePodTemplateValid {
 					foundCondition = &updatedMCPServer.Status.Conditions[i]
 					break
 				}
@@ -482,6 +485,448 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			Expect(updatedMCPServer.Status.Message).To(ContainSubstring("Invalid PodTemplateSpec"))
+		})
+	})
+
+	Context("When creating an MCPServer with PodTemplateSpec resource limits", Ordered, func() {
+		var (
+			namespace        string
+			mcpServerName    string
+			mcpServer        *mcpv1alpha1.MCPServer
+			createdMCPServer *mcpv1alpha1.MCPServer
+		)
+
+		BeforeAll(func() {
+			namespace = defaultNamespace
+			mcpServerName = "test-podtemplate-resources"
+
+			// Create namespace if it doesn't exist
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			// Define the MCPServer resource with PodTemplateSpec resource limits
+			mcpServer = &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
+					Transport: "stdio",
+					Port:      8080,
+					PodTemplateSpec: &runtime.RawExtension{
+						Raw: []byte(`{"spec":{"containers":[{"name":"mcp","resources":{"limits":{"cpu":"2","memory":"2Gi"},"requests":{"cpu":"500m","memory":"512Mi"}}}]}}`),
+					},
+				},
+			}
+
+			// Create the MCPServer
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+
+			createdMCPServer = &mcpv1alpha1.MCPServer{}
+			k8sClient.Get(ctx, types.NamespacedName{
+				Name:      mcpServerName,
+				Namespace: namespace,
+			}, createdMCPServer)
+		})
+
+		AfterAll(func() {
+			// Clean up the MCPServer
+			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
+		})
+
+		It("Should create a Deployment with --k8s-pod-patch argument containing resource limits", func() {
+			// Wait for Deployment to be created
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, deployment)
+			}, timeout, interval).Should(Succeed())
+
+			// Verify owner reference is set correctly
+			verifyOwnerReference(deployment.OwnerReferences, createdMCPServer, "Deployment")
+
+			// Find the --k8s-pod-patch argument
+			container := deployment.Spec.Template.Spec.Containers[0]
+			var podPatchJSON string
+			for _, arg := range container.Args {
+				if strings.HasPrefix(arg, "--k8s-pod-patch=") {
+					podPatchJSON = strings.TrimPrefix(arg, "--k8s-pod-patch=")
+					break
+				}
+			}
+			Expect(podPatchJSON).NotTo(BeEmpty(), "Deployment should have --k8s-pod-patch argument")
+
+			// Parse and verify the patch contains resource limits
+			var patch map[string]interface{}
+			Expect(json.Unmarshal([]byte(podPatchJSON), &patch)).Should(Succeed())
+
+			spec, ok := patch["spec"].(map[string]interface{})
+			Expect(ok).To(BeTrue(), "patch should have spec")
+
+			containers, ok := spec["containers"].([]interface{})
+			Expect(ok).To(BeTrue(), "spec should have containers")
+			Expect(containers).NotTo(BeEmpty())
+
+			mcpContainer := containers[0].(map[string]interface{})
+			Expect(mcpContainer["name"]).To(Equal("mcp"))
+
+			resources, ok := mcpContainer["resources"].(map[string]interface{})
+			Expect(ok).To(BeTrue(), "container should have resources")
+
+			limits, ok := resources["limits"].(map[string]interface{})
+			Expect(ok).To(BeTrue(), "resources should have limits")
+			Expect(limits["cpu"]).To(Equal("2"))
+			Expect(limits["memory"]).To(Equal("2Gi"))
+
+			requests, ok := resources["requests"].(map[string]interface{})
+			Expect(ok).To(BeTrue(), "resources should have requests")
+			Expect(requests["cpu"]).To(Equal("500m"))
+			Expect(requests["memory"]).To(Equal("512Mi"))
+		})
+
+		It("Should have PodTemplateValid condition set to True", func() {
+			Eventually(func() bool {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+
+				for _, cond := range updatedMCPServer.Status.Conditions {
+					if cond.Type == conditionTypePodTemplateValid {
+						return cond.Status == metav1.ConditionTrue
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+		})
+	})
+
+	Context("When creating an MCPServer with PodTemplateSpec securityContext", Ordered, func() {
+		var (
+			namespace        string
+			mcpServerName    string
+			mcpServer        *mcpv1alpha1.MCPServer
+			createdMCPServer *mcpv1alpha1.MCPServer
+		)
+
+		BeforeAll(func() {
+			namespace = defaultNamespace
+			mcpServerName = "test-podtemplate-security"
+
+			// Create namespace if it doesn't exist
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			// Define the MCPServer resource with PodTemplateSpec securityContext
+			mcpServer = &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
+					Transport: "stdio",
+					Port:      8080,
+					PodTemplateSpec: &runtime.RawExtension{
+						Raw: []byte(`{"spec":{"securityContext":{"runAsUser":1000,"runAsGroup":1000,"fsGroup":1000}}}`),
+					},
+				},
+			}
+
+			// Create the MCPServer
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+
+			createdMCPServer = &mcpv1alpha1.MCPServer{}
+			k8sClient.Get(ctx, types.NamespacedName{
+				Name:      mcpServerName,
+				Namespace: namespace,
+			}, createdMCPServer)
+		})
+
+		AfterAll(func() {
+			// Clean up the MCPServer
+			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
+		})
+
+		It("Should create a Deployment with --k8s-pod-patch argument containing securityContext", func() {
+			// Wait for Deployment to be created
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, deployment)
+			}, timeout, interval).Should(Succeed())
+
+			// Verify owner reference is set correctly
+			verifyOwnerReference(deployment.OwnerReferences, createdMCPServer, "Deployment")
+
+			// Find the --k8s-pod-patch argument
+			container := deployment.Spec.Template.Spec.Containers[0]
+			var podPatchJSON string
+			for _, arg := range container.Args {
+				if strings.HasPrefix(arg, "--k8s-pod-patch=") {
+					podPatchJSON = strings.TrimPrefix(arg, "--k8s-pod-patch=")
+					break
+				}
+			}
+			Expect(podPatchJSON).NotTo(BeEmpty(), "Deployment should have --k8s-pod-patch argument")
+
+			// Parse and verify the patch contains securityContext
+			var patch map[string]interface{}
+			Expect(json.Unmarshal([]byte(podPatchJSON), &patch)).Should(Succeed())
+
+			spec, ok := patch["spec"].(map[string]interface{})
+			Expect(ok).To(BeTrue(), "patch should have spec")
+
+			securityContext, ok := spec["securityContext"].(map[string]interface{})
+			Expect(ok).To(BeTrue(), "spec should have securityContext")
+
+			// JSON numbers are decoded as float64
+			Expect(securityContext["runAsUser"]).To(BeNumerically("==", 1000))
+			Expect(securityContext["runAsGroup"]).To(BeNumerically("==", 1000))
+			Expect(securityContext["fsGroup"]).To(BeNumerically("==", 1000))
+		})
+
+		It("Should have PodTemplateValid condition set to True", func() {
+			Eventually(func() bool {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+
+				for _, cond := range updatedMCPServer.Status.Conditions {
+					if cond.Type == conditionTypePodTemplateValid {
+						return cond.Status == metav1.ConditionTrue
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+		})
+	})
+
+	Context("When updating MCPServer PodTemplateSpec", Ordered, func() {
+		var (
+			namespace     string
+			mcpServerName string
+			mcpServer     *mcpv1alpha1.MCPServer
+		)
+
+		BeforeAll(func() {
+			namespace = defaultNamespace
+			mcpServerName = "test-podtemplate-update"
+
+			// Create namespace if it doesn't exist
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			// Define the MCPServer resource WITHOUT PodTemplateSpec initially
+			mcpServer = &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
+					Transport: "stdio",
+					Port:      8080,
+				},
+			}
+
+			// Create the MCPServer
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+		})
+
+		AfterAll(func() {
+			// Clean up the MCPServer
+			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
+		})
+
+		It("Should initially create a Deployment without nodeSelector in --k8s-pod-patch", func() {
+			// Wait for Deployment to be created
+			deployment := &appsv1.Deployment{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, deployment)
+			}, timeout, interval).Should(Succeed())
+
+			// Verify no nodeSelector in --k8s-pod-patch initially
+			// Note: The patch may still exist with serviceAccountName, but should not contain nodeSelector
+			container := deployment.Spec.Template.Spec.Containers[0]
+			hasNodeSelector := false
+			for _, arg := range container.Args {
+				if strings.HasPrefix(arg, "--k8s-pod-patch=") {
+					podPatchJSON := strings.TrimPrefix(arg, "--k8s-pod-patch=")
+					var patch map[string]interface{}
+					if err := json.Unmarshal([]byte(podPatchJSON), &patch); err == nil {
+						if spec, ok := patch["spec"].(map[string]interface{}); ok {
+							if _, ok := spec["nodeSelector"]; ok {
+								hasNodeSelector = true
+							}
+						}
+					}
+					break
+				}
+			}
+			Expect(hasNodeSelector).To(BeFalse(), "Deployment should not have nodeSelector in --k8s-pod-patch initially")
+		})
+
+		It("Should update Deployment with --k8s-pod-patch when PodTemplateSpec is added", func() {
+			// Update the MCPServer to add PodTemplateSpec with nodeSelector
+			Eventually(func() error {
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, mcpServer); err != nil {
+					return err
+				}
+				mcpServer.Spec.PodTemplateSpec = &runtime.RawExtension{
+					Raw: []byte(`{"spec":{"nodeSelector":{"disktype":"ssd"}}}`),
+				}
+				return k8sClient.Update(ctx, mcpServer)
+			}, timeout, interval).Should(Succeed())
+
+			// Wait for Deployment to be updated with --k8s-pod-patch
+			Eventually(func() bool {
+				deployment := &appsv1.Deployment{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, deployment); err != nil {
+					return false
+				}
+
+				container := deployment.Spec.Template.Spec.Containers[0]
+				for _, arg := range container.Args {
+					if strings.HasPrefix(arg, "--k8s-pod-patch=") {
+						podPatchJSON := strings.TrimPrefix(arg, "--k8s-pod-patch=")
+						var patch map[string]interface{}
+						if err := json.Unmarshal([]byte(podPatchJSON), &patch); err != nil {
+							return false
+						}
+						spec, ok := patch["spec"].(map[string]interface{})
+						if !ok {
+							return false
+						}
+						nodeSelector, ok := spec["nodeSelector"].(map[string]interface{})
+						if !ok {
+							return false
+						}
+						return nodeSelector["disktype"] == "ssd"
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+		})
+	})
+
+	Context("When creating an MCPServer with valid PodTemplateSpec", Ordered, func() {
+		var (
+			namespace     string
+			mcpServerName string
+			mcpServer     *mcpv1alpha1.MCPServer
+		)
+
+		BeforeAll(func() {
+			namespace = defaultNamespace
+			mcpServerName = "test-podtemplate-valid"
+
+			// Create namespace if it doesn't exist
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			// Define the MCPServer resource with a simple valid PodTemplateSpec
+			mcpServer = &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
+					Transport: "stdio",
+					Port:      8080,
+					PodTemplateSpec: &runtime.RawExtension{
+						Raw: []byte(`{"spec":{"serviceAccountName":"custom-sa"}}`),
+					},
+				},
+			}
+
+			// Create the MCPServer
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+		})
+
+		AfterAll(func() {
+			// Clean up the MCPServer
+			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
+		})
+
+		It("Should set PodTemplateValid condition to True with reason ValidPodTemplateSpec", func() {
+			Eventually(func() bool {
+				updatedMCPServer := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+
+				for _, cond := range updatedMCPServer.Status.Conditions {
+					if cond.Type == conditionTypePodTemplateValid {
+						return cond.Status == metav1.ConditionTrue &&
+							cond.Reason == "ValidPodTemplateSpec"
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue())
+
+			// Verify the condition details
+			updatedMCPServer := &mcpv1alpha1.MCPServer{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      mcpServerName,
+				Namespace: namespace,
+			}, updatedMCPServer)).Should(Succeed())
+
+			var foundCondition *metav1.Condition
+			for i, cond := range updatedMCPServer.Status.Conditions {
+				if cond.Type == conditionTypePodTemplateValid {
+					foundCondition = &updatedMCPServer.Status.Conditions[i]
+					break
+				}
+			}
+
+			Expect(foundCondition).NotTo(BeNil())
+			Expect(foundCondition.Status).To(Equal(metav1.ConditionTrue))
+			Expect(foundCondition.Reason).To(Equal("ValidPodTemplateSpec"))
 		})
 	})
 

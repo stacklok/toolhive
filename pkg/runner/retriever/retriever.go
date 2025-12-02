@@ -59,7 +59,7 @@ func GetMCPServer(
 			return "", nil, err
 		}
 	} else {
-		logger.Debugf("No protocol scheme detected, attempting to retrieve remote server or registry server: %s", serverOrImage)
+		logger.Debugf("No protocol scheme detected, attempting to retrieve image or registry server: %s", serverOrImage)
 
 		// If group name is provided, look up server in the group first
 		if groupName != "" {

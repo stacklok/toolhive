@@ -284,10 +284,6 @@ func BuildRunnerConfig(
 		return nil, err
 	}
 
-	if serverMetadata != nil && serverMetadata.IsRemote() {
-		logger.Debugf("Attemtpting to run remote MCP server: %s", serverMetadata.GetName())
-	}
-
 	// Validate and setup proxy mode
 	if err := validateAndSetupProxyMode(runFlags); err != nil {
 		return nil, err

@@ -330,6 +330,12 @@ type ErrorHandling struct {
 
 // OperationalConfig defines operational settings
 type OperationalConfig struct {
+	// LogLevel sets the logging level for the Virtual MCP server.
+	// Set to "debug" to enable debug logging. When not set, defaults to info level.
+	// +kubebuilder:validation:Enum=debug
+	// +optional
+	LogLevel string `json:"logLevel,omitempty"`
+
 	// Timeouts configures timeout settings
 	// +optional
 	Timeouts *TimeoutConfig `json:"timeouts,omitempty"`

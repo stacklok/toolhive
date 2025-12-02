@@ -24,6 +24,9 @@ import (
 )
 
 const (
+	// Log level configuration
+	logLevelDebug = "debug" // Debug log level value
+
 	// Network configuration
 	vmcpDefaultPort = int32(4483) // Default port for VirtualMCPServer service (matches vmcp server port)
 
@@ -71,7 +74,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	replicas := int32(1)
 
 	// Build deployment components using helper functions
-	args := r.buildContainerArgsForVmcp()
+	args := r.buildContainerArgsForVmcp(vmcp)
 	volumeMounts, volumes := r.buildVolumesForVmcp(vmcp)
 	env := r.buildEnvVarsForVmcp(ctx, vmcp, workloadNames)
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
@@ -141,13 +144,24 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 }
 
 // buildContainerArgsForVmcp builds the container arguments for vmcp
-func (*VirtualMCPServerReconciler) buildContainerArgsForVmcp() []string {
-	return []string{
+func (*VirtualMCPServerReconciler) buildContainerArgsForVmcp(
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) []string {
+	args := []string{
 		"serve",
 		"--config=/etc/vmcp-config/config.yaml",
 		"--host=0.0.0.0", // Listen on all interfaces for Kubernetes service routing
 		"--port=4483",    // Standard vmcp port
 	}
+
+	// Add --debug flag if log level is set to debug
+	// Note: vmcp binary currently only supports --debug flag, not other log levels
+	// The flag must be passed at startup because logger.Initialize() runs before config is loaded
+	if vmcp.Spec.Operational != nil && vmcp.Spec.Operational.LogLevel == logLevelDebug {
+		args = append(args, "--debug")
+	}
+
+	return args
 }
 
 // buildVolumesForVmcp builds volumes and volume mounts for vmcp
@@ -199,12 +213,6 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 		Name:  "VMCP_NAMESPACE",
 		Value: vmcp.Namespace,
 	})
-
-	// TODO: Add log level from operational config when Operational is not nil
-	//nolint:staticcheck // Empty branch reserved for future log level configuration
-	if vmcp.Spec.Operational != nil {
-		// Log level env var will be added here
-	}
 
 	// Mount OIDC client secret
 	env = append(env, r.buildOIDCEnvVars(vmcp)...)

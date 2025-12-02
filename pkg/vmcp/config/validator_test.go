@@ -141,6 +141,17 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid OIDC auth without client_id (JWT validation only)",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:   "https://example.com",
+					Audience: "vmcp",
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "invalid auth type",
 			auth: &IncomingAuthConfig{
 				Type: "invalid",

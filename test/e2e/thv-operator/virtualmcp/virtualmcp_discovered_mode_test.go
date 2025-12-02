@@ -11,7 +11,6 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -31,34 +30,10 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 		vmcpNodePort    int32
 	)
 
-	vmcpServiceName := func() string {
-		return fmt.Sprintf("vmcp-%s", vmcpServerName)
-	}
-
 	BeforeAll(func() {
 		By("Creating MCPGroup")
-		mcpGroup := &mcpv1alpha1.MCPGroup{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      mcpGroupName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.MCPGroupSpec{
-				Description: "Test MCP Group for VirtualMCP discovered mode E2E tests",
-			},
-		}
-		Expect(k8sClient.Create(ctx, mcpGroup)).To(Succeed())
-
-		By("Waiting for MCPGroup to be ready")
-		Eventually(func() bool {
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      mcpGroupName,
-				Namespace: testNamespace,
-			}, mcpGroup)
-			if err != nil {
-				return false
-			}
-			return mcpGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
-		}, timeout, pollingInterval).Should(BeTrue())
+		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, testNamespace,
+			"Test MCP Group for VirtualMCP discovered mode E2E tests", timeout, pollingInterval)
 
 		By("Creating first backend MCPServer - fetch (streamable-http)")
 		backend1 := &mcpv1alpha1.MCPServer{
@@ -157,22 +132,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
 
 		By("Getting NodePort for VirtualMCPServer")
-		Eventually(func() error {
-			service := &corev1.Service{}
-			serviceName := vmcpServiceName()
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      serviceName,
-				Namespace: testNamespace,
-			}, service)
-			if err != nil {
-				return err
-			}
-			if len(service.Spec.Ports) == 0 || service.Spec.Ports[0].NodePort == 0 {
-				return fmt.Errorf("nodePort not assigned for vmcp")
-			}
-			vmcpNodePort = service.Spec.Ports[0].NodePort
-			return nil
-		}, timeout, pollingInterval).Should(Succeed())
+		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 
 		By(fmt.Sprintf("VirtualMCPServer accessible at http://localhost:%d", vmcpNodePort))
 		By("Backend servers use ClusterIP and are accessed through VirtualMCPServer")

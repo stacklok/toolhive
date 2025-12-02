@@ -273,6 +273,7 @@ func BuildRunnerConfig(
 	}
 
 	if runFlags.RemoteURL != "" {
+		logger.Debugf("Attempting to run remote MCP server: %s", runFlags.RemoteURL)
 		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, nil,
 			nil, envVarValidator, oidcConfig, telemetryConfig)
 	}
@@ -281,6 +282,10 @@ func BuildRunnerConfig(
 	imageURL, serverMetadata, err := handleImageRetrieval(ctx, serverOrImage, runFlags, groupName)
 	if err != nil {
 		return nil, err
+	}
+
+	if serverMetadata != nil && serverMetadata.IsRemote() {
+		logger.Debugf("Attemtpting to run remote MCP server: %s", serverMetadata.GetName())
 	}
 
 	// Validate and setup proxy mode

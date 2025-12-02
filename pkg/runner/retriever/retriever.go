@@ -52,13 +52,14 @@ func GetMCPServer(
 	imageManager := images.NewImageManager(ctx)
 	// Check if the serverOrImage is a protocol scheme, e.g., uvx://, npx://, or go://
 	if runner.IsImageProtocolScheme(serverOrImage) {
+		logger.Debugf("Attempting to retrieve MCP server from protocol scheme: %s", serverOrImage)
 		var err error
 		imageToUse, imageMetadata, err = handleProtocolScheme(ctx, serverOrImage, rawCACertPath, imageManager)
 		if err != nil {
 			return "", nil, err
 		}
 	} else {
-		logger.Debugf("No protocol scheme detected, using image: %s", serverOrImage)
+		logger.Debugf("No protocol scheme detected, attempting to retrieve remote server or registry server: %s", serverOrImage)
 
 		// If group name is provided, look up server in the group first
 		if groupName != "" {

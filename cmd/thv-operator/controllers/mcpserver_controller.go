@@ -504,7 +504,7 @@ func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Con
 		return true
 	}
 
-	_, err := NewMCPServerPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec)
+	_, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
 	if err != nil {
 		// Record event for invalid PodTemplateSpec
 		if r.Recorder != nil {
@@ -914,7 +914,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Using ConfigMap mode for all configuration
 	// Pod template patch for secrets and service account
-	builder, err := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec)
+	builder, err := ctrlutil.NewPodTemplateSpecBuilder(m.Spec.PodTemplateSpec, mcpContainerName)
 	if err != nil {
 		// NOTE: This should be unreachable - early validation in Reconcile() blocks invalid specs
 		// This is defense-in-depth: if somehow reached, log and continue without pod customizations
@@ -1454,7 +1454,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			serviceAccount = &defaultSA
 		}
 
-		builder, err := NewMCPServerPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec)
+		builder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
 		if err != nil {
 			// If we can't parse the PodTemplateSpec, consider it as needing update
 			return true

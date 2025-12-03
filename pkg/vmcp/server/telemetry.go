@@ -16,9 +16,9 @@ const (
 	instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
 )
 
-// MonitorBackends decorate the backend client so it records telemetry on each method call.
+// monitorBackends decorates the backend client so it records telemetry on each method call.
 // It also emits a gauge for the number of backends discovered once, since the number of backends is static.
-func MonitorBackends(ctx context.Context, meterProvider metric.MeterProvider, backends []vmcp.Backend, backendClient vmcp.BackendClient) (vmcp.BackendClient, error) {
+func monitorBackends(ctx context.Context, meterProvider metric.MeterProvider, backends []vmcp.Backend, backendClient vmcp.BackendClient) (vmcp.BackendClient, error) {
 	meter := meterProvider.Meter(instrumentationName)
 
 	backendCount, err := meter.Int64Gauge(
@@ -104,9 +104,9 @@ func (t telemetryBackendClient) ListCapabilities(ctx context.Context, target *vm
 	return t.backendClient.ListCapabilities(ctx, target)
 }
 
-// MonitorWorkflowExecutors decorates workflow executors with telemetry recording.
+// monitorWorkflowExecutors decorates workflow executors with telemetry recording.
 // It wraps each executor to emit metrics for execution count, duration, and errors.
-func MonitorWorkflowExecutors(
+func monitorWorkflowExecutors(
 	meterProvider metric.MeterProvider,
 	executors map[string]adapter.WorkflowExecutor,
 ) (map[string]adapter.WorkflowExecutor, error) {

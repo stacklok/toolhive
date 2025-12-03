@@ -359,8 +359,9 @@ spec:
                 - name
                 type: object
               incomingAuth:
-                description: IncomingAuth configures authentication for clients connecting
-                  to the Virtual MCP server
+                description: |-
+                  IncomingAuth configures authentication for clients connecting to the Virtual MCP server
+                  Must be explicitly set - use "anonymous" type when no authentication is required
                 properties:
                   authzConfig:
                     description: |-
@@ -727,6 +728,7 @@ spec:
                 type: string
             required:
             - groupRef
+            - incomingAuth
             type: object
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer

@@ -1019,7 +1019,22 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 				},
 			}
 
-			converter := newTestConverter(t, newNoOpMockResolver(t))
+			// Set up mock resolver based on test expectations
+			ctrl := gomock.NewController(t)
+			mockResolver := oidcmocks.NewMockResolver(ctrl)
+
+			// Configure mock to return expected OIDC config
+			if tt.expectedOIDCConfig != nil {
+				mockResolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(&oidc.OIDCConfig{
+					Issuer:   tt.expectedOIDCConfig.Issuer,
+					ClientID: tt.expectedOIDCConfig.ClientID,
+					Audience: tt.expectedOIDCConfig.Audience,
+				}, nil)
+			} else {
+				mockResolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+			}
+
+			converter := newTestConverter(t, mockResolver)
 			ctx := log.IntoContext(context.Background(), logr.Discard())
 			config, err := converter.Convert(ctx, vmcpServer)
 

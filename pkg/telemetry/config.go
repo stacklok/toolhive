@@ -200,7 +200,7 @@ func setGlobalProvidersAndReturn(telemetryProviders *providers.CompositeProvider
 
 // Middleware returns an HTTP middleware that instruments requests with OpenTelemetry.
 // serverName is the name of the MCP server (e.g., "github", "fetch")
-// transport is the backend transport type ("stdio" or "sse")
+// transport is the backend transport type ("stdio", "sse", or "streamable-http").
 func (p *Provider) Middleware(serverName, transport string) types.MiddlewareFunction {
 	return NewHTTPMiddleware(p.config, p.tracerProvider, p.meterProvider, serverName, transport)
 }

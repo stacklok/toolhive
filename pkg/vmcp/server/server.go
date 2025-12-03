@@ -19,6 +19,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -83,9 +84,9 @@ type Config struct {
 	// Exposes OIDC discovery information about the protected resource.
 	AuthInfoHandler http.Handler
 
-	// TelemetryMiddleware is the optional telemetry middleware to apply to MCP routes.
+	// TelemetryProvider is the optional telemetry provider.
 	// If nil, no telemetry is recorded.
-	TelemetryMiddleware func(http.Handler) http.Handler
+	TelemetryProvider *telemetry.Provider
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -348,8 +349,8 @@ func (s *Server) Start(ctx context.Context) error {
 	// MCP endpoint - apply middleware chain: auth → discovery
 	var mcpHandler http.Handler = streamableServer
 
-	if s.config.TelemetryMiddleware != nil {
-		mcpHandler = s.config.TelemetryMiddleware(mcpHandler)
+	if s.config.TelemetryProvider != nil {
+		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)
 		logger.Info("Telemetry middleware enabled for MCP endpoints")
 	}
 

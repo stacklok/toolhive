@@ -287,6 +287,16 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 		metav1.ConditionTrue,
 	)
 
+	// List workloads once and pass to functions that need them
+	// This ensures consistency - all functions use the same workload list
+	// rather than listing at different times which could yield different results
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(r.Client, vmcp.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.Spec.GroupRef.Name)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list workloads in group")
+		return fmt.Errorf("failed to list workloads in group: %w", err)
+	}
+
 	// Ensure RBAC resources
 	if err := r.ensureRBACResources(ctx, vmcp); err != nil {
 		ctxLogger.Error(err, "Failed to ensure RBAC resources")
@@ -294,13 +304,13 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	}
 
 	// Ensure vmcp Config ConfigMap
-	if err := r.ensureVmcpConfigConfigMap(ctx, vmcp); err != nil {
+	if err := r.ensureVmcpConfigConfigMap(ctx, vmcp, workloadNames); err != nil {
 		ctxLogger.Error(err, "Failed to ensure vmcp Config ConfigMap")
 		return err
 	}
 
 	// Ensure Deployment
-	if result, err := r.ensureDeployment(ctx, vmcp); err != nil {
+	if result, err := r.ensureDeployment(ctx, vmcp, workloadNames); err != nil {
 		return err
 	} else if result.RequeueAfter > 0 {
 		return nil
@@ -422,6 +432,7 @@ func (r *VirtualMCPServerReconciler) getVmcpConfigChecksum(
 func (r *VirtualMCPServerReconciler) ensureDeployment(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	workloadNames []string,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -441,7 +452,7 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 	err = r.Get(ctx, types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}, deployment)
 
 	if errors.IsNotFound(err) {
-		dep := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum)
+		dep := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, workloadNames)
 		if dep == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create Deployment object")
 		}
@@ -470,8 +481,8 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 
 	// Deployment exists - check if it needs to be updated
 	// deploymentNeedsUpdate performs a detailed comparison to avoid unnecessary updates
-	if r.deploymentNeedsUpdate(ctx, deployment, vmcp, vmcpConfigChecksum) {
-		newDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum)
+	if r.deploymentNeedsUpdate(ctx, deployment, vmcp, vmcpConfigChecksum, workloadNames) {
+		newDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, workloadNames)
 		if newDeployment == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create updated Deployment object")
 		}
@@ -603,6 +614,7 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	workloadNames []string,
 ) bool {
 	if deployment == nil || vmcp == nil {
 		return true
@@ -612,7 +624,7 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	if r.containerNeedsUpdate(ctx, deployment, vmcp) {
+	if r.containerNeedsUpdate(ctx, deployment, vmcp, workloadNames) {
 		return true
 	}
 
@@ -632,6 +644,7 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	workloadNames []string,
 ) bool {
 	if deployment == nil || vmcp == nil || len(deployment.Spec.Template.Spec.Containers) == 0 {
 		return true
@@ -651,7 +664,7 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	}
 
 	// Check if environment variables have changed
-	expectedEnv := r.buildEnvVarsForVmcp(ctx, vmcp)
+	expectedEnv := r.buildEnvVarsForVmcp(ctx, vmcp, workloadNames)
 	if !reflect.DeepEqual(container.Env, expectedEnv) {
 		return true
 	}

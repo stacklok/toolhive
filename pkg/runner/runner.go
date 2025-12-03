@@ -330,15 +330,6 @@ func (r *Runner) Run(ctx context.Context) error {
 			logger.Warnf("Warning: Failed to cleanup telemetry: %v", err)
 		}
 
-		// Remove the PID file if it exists
-		// TODO: Stop writing to PID file once we migrate over to statuses.
-		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to remove PID file: %v", err)
-		}
-		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName); err != nil {
-			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.ContainerName, err)
-		}
-
 		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
 	}
 
@@ -403,8 +394,8 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Wait for either a signal or the done channel to be closed
 	select {
-	case sig := <-sigCh:
-		stopMCPServer(fmt.Sprintf("Received signal %s", sig))
+	case <-ctx.Done():
+		stopMCPServer("Context cancelled")
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container exit)
 		// Clean up the PID file and state

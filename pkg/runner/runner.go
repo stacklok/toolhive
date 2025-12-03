@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -330,6 +328,15 @@ func (r *Runner) Run(ctx context.Context) error {
 			logger.Warnf("Warning: Failed to cleanup telemetry: %v", err)
 		}
 
+		// Remove the PID file if it exists
+		// TODO: Stop writing to PID file once we migrate over to statuses.
+		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
+			logger.Warnf("Warning: Failed to remove PID file: %v", err)
+		}
+		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName); err != nil {
+			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.ContainerName, err)
+		}
+
 		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
 	}
 
@@ -348,10 +355,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	} else {
 		logger.Info("Press Ctrl+C to stop or wait for container to exit")
 	}
-
-	// Set up signal handling
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// Create a done channel to signal when the server has been stopped
 	doneCh := make(chan struct{})

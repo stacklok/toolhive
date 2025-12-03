@@ -1245,12 +1245,14 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 				authConfigRef = mcpServer.Spec.ExternalAuthConfigRef.Name
 				authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef
 			}
-			// Override backend status based on MCPServer phase for definitive failure states
-			// Only override for Failed/Terminating phases, preserve Unknown for Pending
-			if mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhaseFailed ||
+			// Override backend status based on MCPServer phase for non-ready states
+			// Mark as unavailable for Pending, Failed, or Terminating phases since the backend
+			// cannot serve requests in these states (e.g., ImagePullBackOff, CrashLoopBackOff)
+			if mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhasePending ||
+				mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhaseFailed ||
 				mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhaseTerminating {
 				backendStatus = mcpv1alpha1.BackendStatusUnavailable
-				ctxLogger.V(1).Info("Backend MCPServer failed or terminating, marking as unavailable",
+				ctxLogger.V(1).Info("Backend MCPServer not ready, marking as unavailable",
 					"name", workloadName,
 					"phase", mcpServer.Status.Phase)
 			}

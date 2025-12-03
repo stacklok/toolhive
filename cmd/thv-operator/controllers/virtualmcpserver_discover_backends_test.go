@@ -339,7 +339,7 @@ func TestVirtualMCPServerDiscoverBackends(t *testing.T) {
 				"healthy":   "ready",       // MCPServerPhaseRunning -> BackendHealthy -> "ready"
 				"unhealthy": "unavailable", // MCPServerPhaseFailed -> BackendUnhealthy -> "unavailable"
 				"degraded":  "ready",       // MCPServerPhaseRunning -> BackendHealthy -> "ready"
-				"unknown":   "unknown",     // MCPServerPhasePending -> BackendUnknown -> "unknown"
+				"unknown":   "unavailable", // MCPServerPhasePending -> BackendUnknown -> "unavailable" (controller override)
 			},
 			expectedAuthConfigs: map[string]string{},
 			expectError:         false,

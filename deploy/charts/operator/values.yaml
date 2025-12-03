@@ -14,12 +14,12 @@ operator:
   # -- List of image pull secrets to use
   imagePullSecrets: []
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.6.10
+  image: ghcr.io/stacklok/toolhive/operator:v0.6.11
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.6.10
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.6.11
 
   # -- Image to use for Virtual MCP Server (vMCP) deployments
   vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.6.10

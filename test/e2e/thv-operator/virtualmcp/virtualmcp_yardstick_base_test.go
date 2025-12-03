@@ -247,6 +247,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 
 	Context("when testing group membership changes trigger reconciliation", func() {
 		backend3Name := "yardstick-c"
+		backend4Name := "yardstick-d"
 
 		It("should have two discovered backends initially", func() {
 			status, err := GetVirtualMCPServerStatus(ctx, k8sClient, vmcpServerName, testNamespace)
@@ -298,14 +299,30 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		})
 
 		It("should remove a backend when deleted from the group", func() {
-			By("Deleting a backend MCPServer from the group")
-			backend2 := &mcpv1alpha1.MCPServer{
+			By("Creating a dedicated backend MCPServer for deletion test")
+			CreateMCPServerAndWait(ctx, k8sClient, backend4Name, testNamespace,
+				mcpGroupName, images.YardstickServerImage, timeout, pollingInterval)
+
+			By("Waiting for VirtualMCPServer to discover the new backend (should have 4 backends)")
+			Eventually(func() error {
+				status, err := GetVirtualMCPServerStatus(ctx, k8sClient, vmcpServerName, testNamespace)
+				if err != nil {
+					return err
+				}
+				if status.BackendCount != 4 {
+					return fmt.Errorf("expected 4 backends before deletion, got %d", status.BackendCount)
+				}
+				return nil
+			}, timeout, pollingInterval).Should(Succeed())
+
+			By("Deleting the dedicated backend MCPServer from the group")
+			backend4 := &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      backend2Name,
+					Name:      backend4Name,
 					Namespace: testNamespace,
 				},
 			}
-			Expect(k8sClient.Delete(ctx, backend2)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, backend4)).To(Succeed())
 
 			By("Waiting for VirtualMCPServer to reconcile and remove the deleted backend")
 			Eventually(func() error {
@@ -314,12 +331,12 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 					return err
 				}
 
-				if status.BackendCount != 2 {
-					return fmt.Errorf("expected 2 backends after removal, got %d", status.BackendCount)
+				if status.BackendCount != 3 {
+					return fmt.Errorf("expected 3 backends after removal, got %d", status.BackendCount)
 				}
 
-				if len(status.DiscoveredBackends) != 2 {
-					return fmt.Errorf("expected 2 discovered backends after removal, got %d", len(status.DiscoveredBackends))
+				if len(status.DiscoveredBackends) != 3 {
+					return fmt.Errorf("expected 3 discovered backends after removal, got %d", len(status.DiscoveredBackends))
 				}
 
 				backendNames := make([]string, len(status.DiscoveredBackends))
@@ -327,8 +344,8 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 					backendNames[i] = backend.Name
 				}
 
-				if slices.Contains(backendNames, backend2Name) {
-					return fmt.Errorf("deleted backend %s still found in discovered backends: %v", backend2Name, backendNames)
+				if slices.Contains(backendNames, backend4Name) {
+					return fmt.Errorf("deleted backend %s still found in discovered backends: %v", backend4Name, backendNames)
 				}
 
 				return nil
@@ -348,14 +365,16 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		})
 
 		AfterAll(func() {
-			By("Cleaning up additional backend from membership test")
-			backend3 := &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      backend3Name,
-					Namespace: testNamespace,
-				},
+			By("Cleaning up additional backends from membership test")
+			for _, backendName := range []string{backend3Name, backend4Name} {
+				backend := &mcpv1alpha1.MCPServer{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      backendName,
+						Namespace: testNamespace,
+					},
+				}
+				_ = k8sClient.Delete(ctx, backend)
 			}
-			_ = k8sClient.Delete(ctx, backend3)
 		})
 	})
 })

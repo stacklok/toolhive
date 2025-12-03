@@ -14,7 +14,7 @@ permissions:
 jobs:
   update-registry:
     name: Update Registry
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6

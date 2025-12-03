@@ -126,7 +126,7 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 			// BackendCount represents the number of ready backends
 			readyCount := 0
 			for _, backend := range s.discoveredBackends {
-				if backend.Status == "ready" {
+				if backend.Status == mcpv1alpha1.BackendStatusReady {
 					readyCount++
 				}
 			}

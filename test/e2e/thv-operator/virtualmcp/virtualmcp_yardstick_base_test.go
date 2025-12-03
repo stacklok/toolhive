@@ -9,6 +9,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -312,8 +313,8 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			for _, backend := range vmcpServer.Status.DiscoveredBackends {
 				backendStatuses[backend.Name] = backend.Status
 			}
-			Expect(backendStatuses[backend1Name]).To(Equal("unavailable"))
-			Expect(backendStatuses[backend2Name]).To(Equal("ready"))
+			Expect(backendStatuses[backend1Name]).To(Equal(mcpv1alpha1.BackendStatusUnavailable))
+			Expect(backendStatuses[backend2Name]).To(Equal(mcpv1alpha1.BackendStatusReady))
 
 			By("Restoring backend to use valid image")
 			// Restore yardstick-a's image back to the valid YardstickImage
@@ -386,8 +387,8 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			for _, backend := range vmcpServer.Status.DiscoveredBackends {
 				restoredBackendStatuses[backend.Name] = backend.Status
 			}
-			Expect(restoredBackendStatuses[backend1Name]).To(Equal("ready"))
-			Expect(restoredBackendStatuses[backend2Name]).To(Equal("ready"))
+			Expect(restoredBackendStatuses[backend1Name]).To(Equal(mcpv1alpha1.BackendStatusReady))
+			Expect(restoredBackendStatuses[backend2Name]).To(Equal(mcpv1alpha1.BackendStatusReady))
 		})
 	})
 })

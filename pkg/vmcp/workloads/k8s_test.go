@@ -103,15 +103,14 @@ func TestDiscoverAuth_TokenExchange(t *testing.T) {
 	assert.Equal(t, "token_exchange", backend.AuthConfig.Type)
 	assert.NotNil(t, backend.AuthConfig)
 
-	// Verify metadata contains expected fields
-	metadata := backend.AuthConfig
-	assert.NotNil(t, metadata.TokenExchange)
-	assert.Equal(t, "https://auth.example.com/token", metadata.TokenExchange.TokenURL)
-	assert.Equal(t, "test-client", metadata.TokenExchange.ClientID)
-	assert.Equal(t, "my-secret-value", metadata.TokenExchange.ClientSecret)
-	assert.Equal(t, "https://api.example.com", metadata.TokenExchange.Audience)
-	assert.Equal(t, []string{"read", "write"}, metadata.TokenExchange.Scopes)
-	assert.Equal(t, "urn:ietf:params:oauth:token-type:access_token", metadata.TokenExchange.SubjectTokenType)
+	// Verify typed fields contain expected values
+	assert.NotNil(t, backend.AuthConfig.TokenExchange)
+	assert.Equal(t, "https://auth.example.com/token", backend.AuthConfig.TokenExchange.TokenURL)
+	assert.Equal(t, "test-client", backend.AuthConfig.TokenExchange.ClientID)
+	assert.Equal(t, "my-secret-value", backend.AuthConfig.TokenExchange.ClientSecret)
+	assert.Equal(t, "https://api.example.com", backend.AuthConfig.TokenExchange.Audience)
+	assert.Equal(t, []string{"read", "write"}, backend.AuthConfig.TokenExchange.Scopes)
+	assert.Equal(t, "urn:ietf:params:oauth:token-type:access_token", backend.AuthConfig.TokenExchange.SubjectTokenType)
 }
 
 func TestDiscoverAuth_HeaderInjection(t *testing.T) {
@@ -181,13 +180,12 @@ func TestDiscoverAuth_HeaderInjection(t *testing.T) {
 	assert.Equal(t, "header_injection", backend.AuthConfig.Type)
 	assert.NotNil(t, backend.AuthConfig)
 
-	// Verify metadata contains expected fields
-	metadata := backend.AuthConfig
-	assert.NotNil(t, metadata.HeaderInjection)
-	assert.Equal(t, "X-API-Key", metadata.HeaderInjection.HeaderName)
-	assert.Equal(t, "my-api-key-value", metadata.HeaderInjection.HeaderValue)
+	// Verify typed fields contain expected values
+	assert.NotNil(t, backend.AuthConfig.HeaderInjection)
+	assert.Equal(t, "X-API-Key", backend.AuthConfig.HeaderInjection.HeaderName)
+	assert.Equal(t, "my-api-key-value", backend.AuthConfig.HeaderInjection.HeaderValue)
 	// Env var reference should be removed after secret resolution
-	assert.Empty(t, metadata.HeaderInjection.HeaderValueEnv)
+	assert.Empty(t, backend.AuthConfig.HeaderInjection.HeaderValueEnv)
 }
 
 func TestDiscoverAuth_NoAuthConfig(t *testing.T) {

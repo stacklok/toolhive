@@ -61,7 +61,7 @@ func TestTokenExchangeConverter_ConvertToStrategy(t *testing.T) {
 				TokenExchange: &authtypes.TokenExchangeConfig{
 					TokenURL:         "https://auth.example.com/token",
 					ClientID:         "test-client",
-					ClientSecretEnv:  "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+					ClientSecretEnv:  "", // Set by controller, not converter
 					Audience:         "https://api.example.com",
 					Scopes:           []string{"read", "write"},
 					SubjectTokenType: "urn:ietf:params:oauth:token-type:access_token",
@@ -314,7 +314,7 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "no-op when client_secret_env not present",
+			name: "no-op when client_secret_ref not present",
 			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
@@ -323,12 +323,9 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
 					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
 					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
-						TokenURL: "https://auth.example.com/token",
-						ClientID: "test-client",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
-							Name: "client-secret",
-							Key:  "secret",
-						},
+						TokenURL:        "https://auth.example.com/token",
+						ClientID:        "test-client",
+						ClientSecretRef: nil, // No secret ref, so no-op
 					},
 				},
 			},
@@ -433,8 +430,13 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 					ClientSecretEnv: "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
 				},
 			},
-			wantErr:     true,
-			errContains: "clientSecretRef is nil",
+			wantStrategy: &authtypes.BackendAuthStrategy{
+				Type: authtypes.StrategyTypeTokenExchange,
+				TokenExchange: &authtypes.TokenExchangeConfig{
+					ClientSecretEnv: "TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET",
+				},
+			},
+			wantErr: false, // No-op when ClientSecretRef is nil
 		},
 		{
 			name: "missing secret",

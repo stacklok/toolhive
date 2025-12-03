@@ -30,7 +30,6 @@ const (
 //
 // This struct provides type-safe configuration for different authentication strategies
 // using HeaderInjection or TokenExchange fields based on the Type field.
-// The Metadata field is kept for backward compatibility with existing code.
 type BackendAuthStrategy struct {
 	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange"
 	Type string `json:"type" yaml:"type"`

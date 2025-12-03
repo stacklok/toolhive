@@ -957,13 +957,14 @@ func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 	return strategy, nil
 }
 
+var envVarSanitizeRegex = regexp.MustCompile(`[^A-Z0-9_]`)
 // generateUniqueTokenExchangeEnvVarName generates a unique environment variable name for token exchange
 // client secrets, incorporating the ExternalAuthConfig name to ensure uniqueness.
 func generateUniqueTokenExchangeEnvVarName(configName string) string {
 	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
 	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
 	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
+	sanitized = envVarSanitizeRegex.ReplaceAllString(sanitized, "_")
 	return fmt.Sprintf("TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_%s", sanitized)
 }
 
@@ -973,7 +974,7 @@ func generateUniqueHeaderInjectionEnvVarName(configName string) string {
 	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
 	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
 	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
+	sanitized = envVarSanitizeRegex.ReplaceAllString(sanitized, "_")
 	return fmt.Sprintf("TOOLHIVE_HEADER_INJECTION_VALUE_%s", sanitized)
 }
 

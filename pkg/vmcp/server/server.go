@@ -211,6 +211,14 @@ func New(
 		return nil, fmt.Errorf("workflow validation failed: %w", err)
 	}
 
+	// Decorate workflow executors with telemetry if provider is configured
+	if cfg.TelemetryProvider != nil {
+		workflowExecutors, err = MonitorWorkflowExecutors(cfg.TelemetryProvider.MeterProvider(), workflowExecutors)
+		if err != nil {
+			return nil, fmt.Errorf("failed to monitor workflow executors: %w", err)
+		}
+	}
+
 	// Create session manager with VMCPSession factory
 	// This enables type-safe access to routing tables while maintaining session lifecycle management
 	sessionManager := transportsession.NewManager(cfg.SessionTTL, vmcpsession.VMCPSessionFactory())

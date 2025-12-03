@@ -1,20 +1,24 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/config"
+	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
 var (
 	unsetBuildEnvAll bool
+	fromSecret       bool
+	fromEnv          bool
 )
 
 var setBuildEnvCmd = &cobra.Command{
-	Use:   "set-build-env <KEY> <value>",
+	Use:   "set-build-env <KEY> [value]",
 	Short: "Set a build environment variable for protocol builds",
 	Long: `Set a build environment variable that will be injected into Dockerfiles
 during protocol builds (npx://, uvx://, go://). This is useful for configuring
@@ -25,6 +29,11 @@ Environment variable names must:
 - Contain only uppercase letters, numbers, and underscores
 - Not be a reserved system variable (PATH, HOME, etc.)
 
+You can set the value in three ways:
+1. Directly: thv config set-build-env KEY value
+2. From a ToolHive secret: thv config set-build-env KEY --from-secret secret-name
+3. From shell environment: thv config set-build-env KEY --from-env
+
 Common use cases:
 - NPM_CONFIG_REGISTRY: Custom npm registry URL
 - PIP_INDEX_URL: Custom PyPI index URL
@@ -34,10 +43,9 @@ Common use cases:
 
 Examples:
   thv config set-build-env NPM_CONFIG_REGISTRY https://npm.corp.example.com
-  thv config set-build-env PIP_INDEX_URL https://pypi.corp.example.com/simple
-  thv config set-build-env GOPROXY https://goproxy.corp.example.com
-  thv config set-build-env GOPRIVATE "github.com/myorg/*"`,
-	Args: cobra.ExactArgs(2),
+  thv config set-build-env GITHUB_TOKEN --from-secret github-pat
+  thv config set-build-env ARTIFACTORY_API_KEY --from-env`,
+	Args: cobra.RangeArgs(1, 2),
 	RunE: setBuildEnvCmdFunc,
 }
 
@@ -73,6 +81,23 @@ func init() {
 	configCmd.AddCommand(getBuildEnvCmd)
 	configCmd.AddCommand(unsetBuildEnvCmd)
 
+	// Add --from-secret and --from-env flags to set command
+	setBuildEnvCmd.Flags().BoolVar(
+		&fromSecret,
+		"from-secret",
+		false,
+		"Read value from a ToolHive secret at build time (value argument becomes secret name)",
+	)
+	setBuildEnvCmd.Flags().BoolVar(
+		&fromEnv,
+		"from-env",
+		false,
+		"Read value from shell environment at build time",
+	)
+
+	// Make flags mutually exclusive
+	setBuildEnvCmd.MarkFlagsMutuallyExclusive("from-secret", "from-env")
+
 	// Add --all flag to unset command
 	unsetBuildEnvCmd.Flags().BoolVar(
 		&unsetBuildEnvAll,
@@ -82,11 +107,79 @@ func init() {
 	)
 }
 
+func validateSecretExists(ctx context.Context, secretName string) error {
+	configProvider := config.NewDefaultProvider()
+	cfg := configProvider.GetConfig()
+
+	// Check if secrets are set up
+	if !cfg.Secrets.SetupCompleted {
+		return secrets.ErrSecretsNotSetup
+	}
+
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err != nil {
+		return fmt.Errorf("failed to get secrets provider type: %w", err)
+	}
+
+	manager, err := secrets.CreateSecretProvider(providerType)
+	if err != nil {
+		return fmt.Errorf("failed to create secrets provider: %w", err)
+	}
+
+	// Try to get the secret to validate it exists
+	_, err = manager.GetSecret(ctx, secretName)
+	if err != nil {
+		return fmt.Errorf("secret '%s' not found or inaccessible: %w", secretName, err)
+	}
+
+	return nil
+}
+
 func setBuildEnvCmdFunc(_ *cobra.Command, args []string) error {
 	key := args[0]
+	provider := config.NewDefaultProvider()
+
+	// Handle --from-secret flag
+	if fromSecret {
+		if len(args) != 2 {
+			return fmt.Errorf("secret name is required when using --from-secret")
+		}
+		secretName := args[1]
+
+		// Validate that the secret exists
+		ctx := context.Background()
+		if err := validateSecretExists(ctx, secretName); err != nil {
+			return fmt.Errorf("failed to validate secret: %w", err)
+		}
+
+		if err := provider.SetBuildEnvFromSecret(key, secretName); err != nil {
+			return fmt.Errorf("failed to set build environment variable from secret: %w", err)
+		}
+
+		fmt.Printf("Successfully configured build environment variable %s to read from secret: %s\n", key, secretName)
+		return nil
+	}
+
+	// Handle --from-env flag
+	if fromEnv {
+		if len(args) > 1 {
+			return fmt.Errorf("value argument should not be provided when using --from-env")
+		}
+
+		if err := provider.SetBuildEnvFromShell(key); err != nil {
+			return fmt.Errorf("failed to set build environment variable from shell: %w", err)
+		}
+
+		fmt.Printf("Successfully configured build environment variable %s to read from shell environment\n", key)
+		return nil
+	}
+
+	// Handle literal value
+	if len(args) != 2 {
+		return fmt.Errorf("value is required when not using --from-secret or --from-env")
+	}
 	value := args[1]
 
-	provider := config.NewDefaultProvider()
 	if err := provider.SetBuildEnv(key, value); err != nil {
 		return fmt.Errorf("failed to set build environment variable: %w", err)
 	}
@@ -95,38 +188,64 @@ func setBuildEnvCmdFunc(_ *cobra.Command, args []string) error {
 	return nil
 }
 
+// buildEnvEntry represents a build environment variable with its source
+type buildEnvEntry struct {
+	key, value, source string
+}
+
+// getAllBuildEnvEntries collects all build env entries from all sources
+func getAllBuildEnvEntries(provider config.Provider) []buildEnvEntry {
+	var entries []buildEnvEntry
+	for k, v := range provider.GetAllBuildEnv() {
+		entries = append(entries, buildEnvEntry{k, v, "literal"})
+	}
+	for k, v := range provider.GetAllBuildEnvFromSecrets() {
+		entries = append(entries, buildEnvEntry{k, v, "secret"})
+	}
+	for _, k := range provider.GetAllBuildEnvFromShell() {
+		entries = append(entries, buildEnvEntry{k, "", "shell"})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
+	return entries
+}
+
+func (e buildEnvEntry) String() string {
+	switch e.source {
+	case "secret":
+		return fmt.Sprintf("%s=<from-secret:%s>", e.key, e.value)
+	case "shell":
+		return fmt.Sprintf("%s=<from-env>", e.key)
+	default:
+		return fmt.Sprintf("%s=%s", e.key, e.value)
+	}
+}
+
 func getBuildEnvCmdFunc(_ *cobra.Command, args []string) error {
 	provider := config.NewDefaultProvider()
 
 	if len(args) == 1 {
-		// Get specific variable
 		key := args[0]
-		value, exists := provider.GetBuildEnv(key)
-		if !exists {
+		if value, exists := provider.GetBuildEnv(key); exists {
+			fmt.Printf("%s=%s\n", key, value)
+		} else if secretName, exists := provider.GetBuildEnvFromSecret(key); exists {
+			fmt.Printf("%s=<from-secret:%s>\n", key, secretName)
+		} else if provider.GetBuildEnvFromShell(key) {
+			fmt.Printf("%s=<from-env>\n", key)
+		} else {
 			fmt.Printf("Build environment variable %s is not configured.\n", key)
-			return nil
 		}
-		fmt.Printf("%s=%s\n", key, value)
 		return nil
 	}
 
-	// Get all variables
-	envVars := provider.GetAllBuildEnv()
-	if len(envVars) == 0 {
+	entries := getAllBuildEnvEntries(provider)
+	if len(entries) == 0 {
 		fmt.Println("No build environment variables are configured.")
 		return nil
 	}
 
-	// Sort keys for consistent output
-	keys := make([]string, 0, len(envVars))
-	for k := range envVars {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
 	fmt.Println("Configured build environment variables:")
-	for _, k := range keys {
-		fmt.Printf("  %s=%s\n", k, envVars[k])
+	for _, e := range entries {
+		fmt.Printf("  %s\n", e)
 	}
 	return nil
 }
@@ -135,17 +254,17 @@ func unsetBuildEnvCmdFunc(_ *cobra.Command, args []string) error {
 	provider := config.NewDefaultProvider()
 
 	if unsetBuildEnvAll {
-		envVars := provider.GetAllBuildEnv()
-		if len(envVars) == 0 {
+		entries := getAllBuildEnvEntries(provider)
+		if len(entries) == 0 {
 			fmt.Println("No build environment variables are configured.")
 			return nil
 		}
-
-		if err := provider.UnsetAllBuildEnv(); err != nil {
-			return fmt.Errorf("failed to remove build environment variables: %w", err)
+		for _, e := range entries {
+			if err := unsetBuildEnvBySource(provider, e.key, e.source); err != nil {
+				return err
+			}
 		}
-
-		fmt.Printf("Successfully removed %d build environment variable(s).\n", len(envVars))
+		fmt.Printf("Successfully removed %d build environment variable(s).\n", len(entries))
 		return nil
 	}
 
@@ -154,16 +273,32 @@ func unsetBuildEnvCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	key := args[0]
-	_, exists := provider.GetBuildEnv(key)
-	if !exists {
-		fmt.Printf("Build environment variable %s is not configured.\n", key)
-		return nil
+	if _, exists := provider.GetBuildEnv(key); exists {
+		return unsetBuildEnvBySource(provider, key, "literal")
 	}
-
-	if err := provider.UnsetBuildEnv(key); err != nil {
-		return fmt.Errorf("failed to remove build environment variable: %w", err)
+	if _, exists := provider.GetBuildEnvFromSecret(key); exists {
+		return unsetBuildEnvBySource(provider, key, "secret")
 	}
+	if provider.GetBuildEnvFromShell(key) {
+		return unsetBuildEnvBySource(provider, key, "shell")
+	}
+	fmt.Printf("Build environment variable %s is not configured.\n", key)
+	return nil
+}
 
+func unsetBuildEnvBySource(provider config.Provider, key, source string) error {
+	var err error
+	switch source {
+	case "literal":
+		err = provider.UnsetBuildEnv(key)
+	case "secret":
+		err = provider.UnsetBuildEnvFromSecret(key)
+	case "shell":
+		err = provider.UnsetBuildEnvFromShell(key)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to remove %s: %w", key, err)
+	}
 	fmt.Printf("Successfully removed build environment variable: %s\n", key)
 	return nil
 }

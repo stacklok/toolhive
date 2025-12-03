@@ -122,11 +122,8 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 		}
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
-		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
-
-		By("Getting NodePort for VirtualMCPServer")
-		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+		By("Waiting for VirtualMCPServer to be fully ready (CR, pods, and health)")
+		vmcpNodePort = WaitForVMCPFullyReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 
 		By(fmt.Sprintf("VirtualMCPServer accessible at http://localhost:%d", vmcpNodePort))
 	})

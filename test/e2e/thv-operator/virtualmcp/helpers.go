@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"time"
 
@@ -690,6 +691,60 @@ func GetVMCPNodePort(
 		nodePort = service.Spec.Ports[0].NodePort
 		return nil
 	}, timeout, pollingInterval).Should(gomega.Succeed(), "NodePort should be assigned")
+
+	return nodePort
+}
+
+// WaitForVMCPHealthy polls the VirtualMCPServer's /health endpoint until it responds successfully.
+// This ensures the server is fully initialized and ready to handle MCP requests, which may happen
+// after the Kubernetes readiness probe passes but before the MCP server is fully initialized.
+func WaitForVMCPHealthy(nodePort int32, timeout time.Duration) {
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	url := fmt.Sprintf("http://localhost:%d/health", nodePort)
+
+	gomega.Eventually(func() error {
+		resp, err := httpClient.Get(url)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("health check returned status %d", resp.StatusCode)
+		}
+		return nil
+	}, timeout, 2*time.Second).Should(gomega.Succeed(), "VirtualMCPServer health endpoint should be reachable")
+}
+
+// WaitForVMCPFullyReady performs a complete readiness check sequence for a VirtualMCPServer:
+// 1. Waits for the VirtualMCPServer CRD to reach Ready status
+// 2. Waits for all vMCP pods to be running and ready
+// 3. Retrieves the NodePort for the service
+// 4. Polls the /health endpoint until the server is fully initialized
+//
+// This helper ensures the vMCP server is truly ready to handle MCP requests, addressing
+// timing issues where the Kubernetes readiness probe passes before the server is fully initialized.
+// Returns the NodePort that can be used to access the vMCP server.
+func WaitForVMCPFullyReady(
+	ctx context.Context,
+	c client.Client,
+	vmcpServerName, namespace string,
+	timeout, pollingInterval time.Duration,
+) int32 {
+	// Step 1: Wait for VirtualMCPServer CRD to be ready
+	WaitForVirtualMCPServerReady(ctx, c, vmcpServerName, namespace, timeout)
+
+	// Step 2: Wait for pods to be running and ready
+	vmcpLabels := map[string]string{
+		"app.kubernetes.io/name":     "virtualmcpserver",
+		"app.kubernetes.io/instance": vmcpServerName,
+	}
+	WaitForPodsReady(ctx, c, namespace, vmcpLabels, timeout)
+
+	// Step 3: Get NodePort
+	nodePort := GetVMCPNodePort(ctx, c, vmcpServerName, namespace, timeout, pollingInterval)
+
+	// Step 4: Wait for health endpoint to be reachable
+	WaitForVMCPHealthy(nodePort, timeout)
 
 	return nodePort
 }

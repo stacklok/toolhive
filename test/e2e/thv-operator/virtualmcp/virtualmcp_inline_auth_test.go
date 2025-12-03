@@ -88,11 +88,8 @@ var _ = Describe("VirtualMCPServer Inline Auth with Anonymous Incoming", Ordered
 		}
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
-		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
-
-		By("Getting NodePort for VirtualMCPServer")
-		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+		By("Waiting for VirtualMCPServer to be fully ready (CR, pods, and health)")
+		vmcpNodePort = WaitForVMCPFullyReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 	})
 
 	AfterAll(func() {
@@ -283,11 +280,8 @@ var _ = Describe("VirtualMCPServer Inline Auth with OIDC Incoming", Ordered, fun
 		}
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
-		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
-
-		By("Getting NodePort for VirtualMCPServer")
-		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+		By("Waiting for VirtualMCPServer to be fully ready (CR, pods, and health)")
+		vmcpNodePort = WaitForVMCPFullyReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 	})
 
 	AfterAll(func() {

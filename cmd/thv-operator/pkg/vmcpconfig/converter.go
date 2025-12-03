@@ -4,11 +4,13 @@ package vmcpconfig
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -18,19 +20,31 @@ const (
 	authzLabelValueInline = "inline"
 	// conflictResolutionPrefix is the string value for prefix conflict resolution strategy
 	conflictResolutionPrefix = "prefix"
+	// vmcpOIDCClientSecretEnvVar is the environment variable name for the OIDC client secret.
+	// The deployment controller mounts secrets as environment variables with this name.
+	//nolint:gosec // This is an environment variable name, not a credential
+	vmcpOIDCClientSecretEnvVar = "VMCP_OIDC_CLIENT_SECRET"
 )
 
 // Converter converts VirtualMCPServer CRD specs to vmcp Config
-type Converter struct{}
+type Converter struct {
+	oidcResolver oidc.Resolver
+}
 
-// NewConverter creates a new Converter instance
-func NewConverter() *Converter {
-	return &Converter{}
+// NewConverter creates a new Converter instance.
+// oidcResolver is required and used to resolve OIDC configuration from various sources
+// (kubernetes, configMap, inline). Use a mock resolver in tests.
+// Returns an error if oidcResolver is nil.
+func NewConverter(oidcResolver oidc.Resolver) (*Converter, error) {
+	if oidcResolver == nil {
+		return nil, fmt.Errorf("oidcResolver is required")
+	}
+	return &Converter{
+		oidcResolver: oidcResolver,
+	}, nil
 }
 
 // Convert converts VirtualMCPServer CRD spec to vmcp Config
-//
-//nolint:unparam // error return reserved for future reference resolution
 func (c *Converter) Convert(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -42,7 +56,11 @@ func (c *Converter) Convert(
 
 	// Convert IncomingAuth
 	if vmcp.Spec.IncomingAuth != nil {
-		config.IncomingAuth = c.convertIncomingAuth(ctx, vmcp)
+		incomingAuth, err := c.convertIncomingAuth(ctx, vmcp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert incoming auth: %w", err)
+		}
+		config.IncomingAuth = incomingAuth
 	}
 
 	// Convert OutgoingAuth - always set with defaults if not specified
@@ -84,45 +102,34 @@ func (c *Converter) Convert(
 	return config, nil
 }
 
-// convertIncomingAuth converts IncomingAuthConfig from CRD to vmcp config
-func (*Converter) convertIncomingAuth(
-	_ context.Context,
+// convertIncomingAuth converts IncomingAuthConfig from CRD to vmcp config.
+func (c *Converter) convertIncomingAuth(
+	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) *vmcpconfig.IncomingAuthConfig {
+) (*vmcpconfig.IncomingAuthConfig, error) {
+	ctxLogger := log.FromContext(ctx)
+
 	incoming := &vmcpconfig.IncomingAuthConfig{
 		Type: vmcp.Spec.IncomingAuth.Type,
 	}
 
 	// Convert OIDC configuration if present
 	if vmcp.Spec.IncomingAuth.OIDCConfig != nil {
-		// Handle inline OIDC configuration
-		if vmcp.Spec.IncomingAuth.OIDCConfig.Type == authzLabelValueInline && vmcp.Spec.IncomingAuth.OIDCConfig.Inline != nil {
-			inline := vmcp.Spec.IncomingAuth.OIDCConfig.Inline
-			oidcConfig := &vmcpconfig.OIDCConfig{
-				Issuer:                          inline.Issuer,
-				ClientID:                        inline.ClientID, // Note: API uses clientId (camelCase) but config uses ClientID
-				Audience:                        inline.Audience,
-				Resource:                        vmcp.Spec.IncomingAuth.OIDCConfig.ResourceURL,
-				Scopes:                          nil, // TODO: Add scopes if needed
-				ProtectedResourceAllowPrivateIP: inline.ProtectedResourceAllowPrivateIP,
-				InsecureAllowHTTP:               inline.InsecureAllowHTTP,
-			}
-
-			// Handle client secret - always use environment variable reference for security
-			// Both ClientSecretRef (reference to existing secret) and ClientSecret (literal value)
-			// are mounted as environment variables by the deployment controller
-			if inline.ClientSecretRef != nil || inline.ClientSecret != "" {
-				// Generate environment variable name that will be mounted in the deployment
-				// The deployment controller will mount the secret (either from ClientSecretRef or
-				// from a generated secret for ClientSecret literal values)
-				oidcConfig.ClientSecretEnv = "VMCP_OIDC_CLIENT_SECRET"
-			}
-
-			incoming.OIDC = oidcConfig
-		} else {
-			// TODO: Handle configMap and kubernetes types
-			// For now, create empty config to avoid nil pointer
-			incoming.OIDC = &vmcpconfig.OIDCConfig{}
+		// Use the OIDC resolver to handle all OIDC types (kubernetes, configMap, inline)
+		// VirtualMCPServer implements OIDCConfigurable, so the resolver can work with it directly
+		resolvedConfig, err := c.oidcResolver.Resolve(ctx, vmcp)
+		if err != nil {
+			ctxLogger.Error(err, "failed to resolve OIDC config",
+				"vmcp", vmcp.Name,
+				"namespace", vmcp.Namespace,
+				"oidcType", vmcp.Spec.IncomingAuth.OIDCConfig.Type)
+			// Fail closed: return error when OIDC is configured but resolution fails
+			// This prevents deploying without authentication when OIDC is explicitly requested
+			return nil, fmt.Errorf("OIDC resolution failed for type %q: %w",
+				vmcp.Spec.IncomingAuth.OIDCConfig.Type, err)
+		}
+		if resolvedConfig != nil {
+			incoming.OIDC = mapResolvedOIDCToVmcpConfig(resolvedConfig, vmcp.Spec.IncomingAuth.OIDCConfig)
 		}
 	}
 
@@ -146,7 +153,53 @@ func (*Converter) convertIncomingAuth(
 		// TODO: Load policies from ConfigMap if Type is "configMap"
 	}
 
-	return incoming
+	return incoming, nil
+}
+
+// mapResolvedOIDCToVmcpConfig maps from oidc.OIDCConfig (resolved by the OIDC resolver)
+// to vmcpconfig.OIDCConfig (used by the vmcp runtime).
+// This keeps the vmcp config types separate from the operator's OIDC resolver types,
+// maintaining clean architectural boundaries while enabling unified OIDC resolution.
+func mapResolvedOIDCToVmcpConfig(
+	resolved *oidc.OIDCConfig,
+	oidcConfigRef *mcpv1alpha1.OIDCConfigRef,
+) *vmcpconfig.OIDCConfig {
+	if resolved == nil {
+		return nil
+	}
+
+	config := &vmcpconfig.OIDCConfig{
+		Issuer:                          resolved.Issuer,
+		ClientID:                        resolved.ClientID,
+		Audience:                        resolved.Audience,
+		Resource:                        resolved.ResourceURL,
+		ProtectedResourceAllowPrivateIP: resolved.JWKSAllowPrivateIP,
+		InsecureAllowHTTP:               resolved.InsecureAllowHTTP,
+		// Scopes are not currently in oidc.OIDCConfig - should be added later
+	}
+
+	// Handle client secret - the deployment controller mounts secrets as environment variables
+	// We need to set ClientSecretEnv for all OIDC config types that may have a client secret
+	if oidcConfigRef != nil {
+		switch oidcConfigRef.Type {
+		case mcpv1alpha1.OIDCConfigTypeInline:
+			// Inline config: check if ClientSecretRef or ClientSecret is set
+			if oidcConfigRef.Inline != nil {
+				if oidcConfigRef.Inline.ClientSecretRef != nil || oidcConfigRef.Inline.ClientSecret != "" {
+					config.ClientSecretEnv = vmcpOIDCClientSecretEnvVar
+				}
+			}
+		case mcpv1alpha1.OIDCConfigTypeConfigMap:
+			// ConfigMap config: check if the resolved config has a client secret
+			// Note: Storing secrets in ConfigMaps is not recommended; use inline with SecretRef instead
+			if resolved.ClientSecret != "" {
+				config.ClientSecretEnv = vmcpOIDCClientSecretEnvVar
+			}
+			// OIDCConfigTypeKubernetes does not use client secrets (uses service account tokens)
+		}
+	}
+
+	return config
 }
 
 // convertOutgoingAuth converts OutgoingAuthConfig from CRD to vmcp config

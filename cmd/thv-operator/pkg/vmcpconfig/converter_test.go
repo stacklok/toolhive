@@ -3,19 +3,159 @@ package vmcpconfig
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
+	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
+
+// Compile-time interface assertion to ensure VirtualMCPServer implements OIDCConfigurable.
+// This catches interface drift at compile time rather than runtime.
+// Placed here because api/v1alpha1 cannot import pkg/oidc (circular dependency).
+var _ oidc.OIDCConfigurable = (*mcpv1alpha1.VirtualMCPServer)(nil)
+
+// newNoOpMockResolver creates a mock resolver that returns (nil, nil) for all calls.
+// Use this in tests that don't care about OIDC configuration.
+func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	mockResolver := oidcmocks.NewMockResolver(ctrl)
+	mockResolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	return mockResolver
+}
+
+// newTestConverter creates a Converter with the given resolver, failing the test if creation fails.
+func newTestConverter(t *testing.T, resolver oidc.Resolver) *Converter {
+	t.Helper()
+	converter, err := NewConverter(resolver)
+	require.NoError(t, err)
+	return converter
+}
+
+// newTestVMCPServer creates a VirtualMCPServer with OIDC config for testing.
+func newTestVMCPServer(oidcConfig *mcpv1alpha1.OIDCConfigRef) *mcpv1alpha1.VirtualMCPServer {
+	return &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef:     mcpv1alpha1.GroupRef{Name: "test-group"},
+			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{Type: "oidc", OIDCConfig: oidcConfig},
+		},
+	}
+}
+
+func TestConverter_OIDCResolution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		oidcConfig *mcpv1alpha1.OIDCConfigRef
+		mockReturn *oidc.OIDCConfig
+		mockErr    error
+		validate   func(t *testing.T, config *vmcpconfig.Config, err error)
+	}{
+		{
+			name:       "successful resolution maps all fields",
+			oidcConfig: &mcpv1alpha1.OIDCConfigRef{Type: mcpv1alpha1.OIDCConfigTypeKubernetes},
+			mockReturn: &oidc.OIDCConfig{
+				Issuer: "https://issuer.example.com", Audience: "my-audience",
+				ResourceURL: "https://resource.example.com", JWKSAllowPrivateIP: true,
+			},
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				require.NotNil(t, config.IncomingAuth.OIDC)
+				assert.Equal(t, "https://issuer.example.com", config.IncomingAuth.OIDC.Issuer)
+				assert.Equal(t, "my-audience", config.IncomingAuth.OIDC.Audience)
+				assert.Equal(t, "https://resource.example.com", config.IncomingAuth.OIDC.Resource)
+				assert.True(t, config.IncomingAuth.OIDC.ProtectedResourceAllowPrivateIP)
+			},
+		},
+		{
+			name:       "resolution error returns error (fail-closed)",
+			oidcConfig: &mcpv1alpha1.OIDCConfigRef{Type: mcpv1alpha1.OIDCConfigTypeConfigMap},
+			mockErr:    errors.New("configmap not found"),
+			validate: func(t *testing.T, _ *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "OIDC resolution failed")
+			},
+		},
+		{
+			name:       "nil resolved config results in nil OIDC",
+			oidcConfig: &mcpv1alpha1.OIDCConfigRef{Type: mcpv1alpha1.OIDCConfigTypeInline},
+			mockReturn: nil,
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Nil(t, config.IncomingAuth.OIDC)
+			},
+		},
+		{
+			name: "inline with client secret sets ClientSecretEnv",
+			oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+				Type:   mcpv1alpha1.OIDCConfigTypeInline,
+				Inline: &mcpv1alpha1.InlineOIDCConfig{ClientSecret: "secret"},
+			},
+			mockReturn: &oidc.OIDCConfig{Issuer: "https://issuer.example.com"},
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, "VMCP_OIDC_CLIENT_SECRET", config.IncomingAuth.OIDC.ClientSecretEnv)
+			},
+		},
+		{
+			name: "configmap with client secret sets ClientSecretEnv",
+			oidcConfig: &mcpv1alpha1.OIDCConfigRef{
+				Type:      mcpv1alpha1.OIDCConfigTypeConfigMap,
+				ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{Name: "config"},
+			},
+			mockReturn: &oidc.OIDCConfig{Issuer: "https://issuer.example.com", ClientSecret: "secret"},
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, "VMCP_OIDC_CLIENT_SECRET", config.IncomingAuth.OIDC.ClientSecretEnv)
+			},
+		},
+		{
+			name:       "kubernetes type does not set ClientSecretEnv",
+			oidcConfig: &mcpv1alpha1.OIDCConfigRef{Type: mcpv1alpha1.OIDCConfigTypeKubernetes},
+			mockReturn: &oidc.OIDCConfig{Issuer: "https://kubernetes.default.svc"},
+			validate: func(t *testing.T, config *vmcpconfig.Config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Empty(t, config.IncomingAuth.OIDC.ClientSecretEnv)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockResolver := oidcmocks.NewMockResolver(ctrl)
+			mockResolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(tt.mockReturn, tt.mockErr)
+
+			converter := newTestConverter(t, mockResolver)
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			config, err := converter.Convert(ctx, newTestVMCPServer(tt.oidcConfig))
+
+			tt.validate(t, config, err)
+		})
+	}
+}
 
 func TestConvertCompositeTools_Parameters(t *testing.T) {
 	t.Parallel()
@@ -146,8 +286,7 @@ func TestConvertCompositeTools_Parameters(t *testing.T) {
 				},
 			}
 
-			// Create converter and context with logger
-			converter := NewConverter()
+			converter := newTestConverter(t, newNoOpMockResolver(t))
 			ctx := log.IntoContext(context.Background(), logr.Discard())
 
 			// Convert
@@ -229,7 +368,7 @@ func TestConvertCompositeTools_Timeout(t *testing.T) {
 				},
 			}
 
-			converter := NewConverter()
+			converter := newTestConverter(t, newNoOpMockResolver(t))
 			ctx := log.IntoContext(context.Background(), logr.Discard())
 
 			result := converter.convertCompositeTools(ctx, vmcpServer)
@@ -352,7 +491,7 @@ func TestConverter_ConvertCompositeTools_ErrorHandling(t *testing.T) {
 				},
 			}
 
-			converter := NewConverter()
+			converter := newTestConverter(t, newNoOpMockResolver(t))
 			ctx := log.IntoContext(context.Background(), logr.Discard())
 			config, err := converter.Convert(ctx, vmcpServer)
 
@@ -401,7 +540,7 @@ func TestConverter_ConvertCompositeTools_NoErrorHandling(t *testing.T) {
 		},
 	}
 
-	converter := NewConverter()
+	converter := newTestConverter(t, newNoOpMockResolver(t))
 	ctx := log.IntoContext(context.Background(), logr.Discard())
 	config, err := converter.Convert(ctx, vmcpServer)
 
@@ -442,7 +581,7 @@ func TestConverter_ConvertCompositeTools_StepTimeout(t *testing.T) {
 		},
 	}
 
-	converter := NewConverter()
+	converter := newTestConverter(t, newNoOpMockResolver(t))
 	ctx := log.IntoContext(context.Background(), logr.Discard())
 	config, err := converter.Convert(ctx, vmcpServer)
 
@@ -794,7 +933,7 @@ func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
 				},
 			}
 
-			converter := NewConverter()
+			converter := newTestConverter(t, newNoOpMockResolver(t))
 			ctx := log.IntoContext(context.Background(), logr.Discard())
 			config, err := converter.Convert(ctx, vmcpServer)
 

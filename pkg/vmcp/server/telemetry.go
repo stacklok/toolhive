@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 )
 
 const (
@@ -101,4 +102,86 @@ func (t telemetryBackendClient) GetPrompt(ctx context.Context, target *vmcp.Back
 func (t telemetryBackendClient) ListCapabilities(ctx context.Context, target *vmcp.BackendTarget) (_ *vmcp.CapabilityList, retErr error) {
 	defer t.record(ctx, target, "list_capabilities", &retErr)()
 	return t.backendClient.ListCapabilities(ctx, target)
+}
+
+// MonitorWorkflowExecutors decorates workflow executors with telemetry recording.
+// It wraps each executor to emit metrics for execution count, duration, and errors.
+func MonitorWorkflowExecutors(
+	meterProvider metric.MeterProvider,
+	executors map[string]adapter.WorkflowExecutor,
+) (map[string]adapter.WorkflowExecutor, error) {
+	if len(executors) == 0 {
+		return executors, nil
+	}
+
+	meter := meterProvider.Meter(instrumentationName)
+
+	executionsTotal, err := meter.Int64Counter(
+		"toolhive_vmcp_workflow_executions_total",
+		metric.WithDescription("Total number of workflow executions"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create workflow executions counter: %w", err)
+	}
+
+	errorsTotal, err := meter.Int64Counter(
+		"toolhive_vmcp_workflow_errors_total",
+		metric.WithDescription("Total number of workflow execution errors"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create workflow errors counter: %w", err)
+	}
+
+	executionDuration, err := meter.Float64Histogram(
+		"toolhive_vmcp_workflow_duration_seconds",
+		metric.WithDescription("Duration of workflow executions in seconds"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create workflow duration histogram: %w", err)
+	}
+
+	monitored := make(map[string]adapter.WorkflowExecutor, len(executors))
+	for name, executor := range executors {
+		monitored[name] = &telemetryWorkflowExecutor{
+			name:              name,
+			executor:          executor,
+			executionsTotal:   executionsTotal,
+			errorsTotal:       errorsTotal,
+			executionDuration: executionDuration,
+		}
+	}
+
+	return monitored, nil
+}
+
+// telemetryWorkflowExecutor wraps a WorkflowExecutor with telemetry recording.
+type telemetryWorkflowExecutor struct {
+	name              string
+	executor          adapter.WorkflowExecutor
+	executionsTotal   metric.Int64Counter
+	errorsTotal       metric.Int64Counter
+	executionDuration metric.Float64Histogram
+}
+
+var _ adapter.WorkflowExecutor = (*telemetryWorkflowExecutor)(nil)
+
+// ExecuteWorkflow executes the workflow and records telemetry metrics.
+func (t *telemetryWorkflowExecutor) ExecuteWorkflow(ctx context.Context, params map[string]any) (*adapter.WorkflowResult, error) {
+	attrs := metric.WithAttributes(
+		attribute.String("workflow.name", t.name),
+	)
+
+	start := time.Now()
+	t.executionsTotal.Add(ctx, 1, attrs)
+
+	result, err := t.executor.ExecuteWorkflow(ctx, params)
+
+	duration := time.Since(start)
+	t.executionDuration.Record(ctx, duration.Seconds(), attrs)
+
+	if err != nil {
+		t.errorsTotal.Add(ctx, 1, attrs)
+	}
+
+	return result, err
 }

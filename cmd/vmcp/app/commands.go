@@ -4,7 +4,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -304,29 +303,29 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	host, _ := cmd.Flags().GetString("host")
 	port, _ := cmd.Flags().GetInt("port")
 
-	// If telemetry is configured, we need to setup the middleware and monitor the backends.
-	var telemetryMiddleware func(http.Handler) http.Handler
+	// If telemetry is configured, create the provider and monitor the backends.
+	var telemetryProvider *telemetry.Provider
 	if cfg.Telemetry != nil {
-		provider, err := telemetry.NewProvider(ctx, *cfg.Telemetry)
+		var err error
+		telemetryProvider, err = telemetry.NewProvider(ctx, *cfg.Telemetry)
 		if err != nil {
 			return fmt.Errorf("failed to create telemetry provider: %w", err)
 		}
-		telemetryMiddleware = provider.Middleware(cfg.Name, "streamable-http")
 
-		backendClient, err = vmcp.MonitorBackends(ctx, provider.MeterProvider(), backends, backendClient)
+		backendClient, err = vmcp.MonitorBackends(ctx, telemetryProvider.MeterProvider(), backends, backendClient)
 		if err != nil {
 			return fmt.Errorf("failed to monitor backends: %w", err)
 		}
 	}
 
 	serverCfg := &vmcpserver.Config{
-		Name:                cfg.Name,
-		Version:             getVersion(),
-		Host:                host,
-		Port:                port,
-		AuthMiddleware:      authMiddleware,
-		AuthInfoHandler:     authInfoHandler,
-		TelemetryMiddleware: telemetryMiddleware,
+		Name:              cfg.Name,
+		Version:           getVersion(),
+		Host:              host,
+		Port:              port,
+		AuthMiddleware:    authMiddleware,
+		AuthInfoHandler:   authInfoHandler,
+		TelemetryProvider: telemetryProvider,
 	}
 
 	// Convert composite tool configurations to workflow definitions

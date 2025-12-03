@@ -108,8 +108,6 @@ func NewTransparentProxy(
 	}
 
 	// Create health checker always for Kubernetes probes
-	// For remote proxies, pass nil pinger since we can't ping authenticated servers
-	// For local proxies, create pinger to check MCP server status
 	var mcpPinger healthcheck.MCPPinger
 	if enableHealthCheck {
 		mcpPinger = NewMCPPinger(targetURI)

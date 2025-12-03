@@ -51,10 +51,12 @@ func (p *MCPPinger) Ping(ctx context.Context) (time.Duration, error) {
 
 	duration := time.Since(start)
 
-	// For SSE servers, we expect various responses:
+	// For Streamable HTTP servers, we expect various responses:
 	// - 200 OK for root endpoints
 	// - 404 for non-existent endpoints (but server is still alive)
+	// - 401 for remote workloads (we may not be able to authenticate, but this response indicates the server is alive).
 	// - Other 4xx/5xx may indicate server issues
+	// For now, we accept any non 50x response for both local and remote.
 	if resp.StatusCode >= 200 && resp.StatusCode < 500 {
 		logger.Debugf("SSE server health check successful in %v (status: %d)", duration, resp.StatusCode)
 		return duration, nil

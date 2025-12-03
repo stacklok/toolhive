@@ -37,8 +37,6 @@ var templateFS embed.FS
 type Templates struct {
 	Header         string
 	Footer         string
-	HeaderFeature  string
-	FooterFeature  string
 	KeepAnnotation string
 }
 
@@ -58,19 +56,21 @@ type Config struct {
 }
 
 // CRD feature flag groups
-// Maps CRD name prefixes to their corresponding Helm values flag
-var crdFeatureFlags = map[string]string{
-	// Server group: mcpservers, mcpexternalauthconfigs, mcpremoteproxies, mcptoolconfigs, mcpgroups
-	"mcpservers":             "enableServer",
-	"mcpexternalauthconfigs": "enableServer",
-	"mcpremoteproxies":       "enableServer",
-	"mcptoolconfigs":         "enableServer",
-	"mcpgroups":              "enableServer",
-	// Registry group: mcpregistries
-	"mcpregistries": "enableRegistry",
-	// VirtualMCP group: virtualmcpservers, virtualmcpcompositetooldefinitions
-	"virtualmcpservers":                  "enableVirtualMcp",
-	"virtualmcpcompositetooldefinitions": "enableVirtualMcp",
+// Maps CRD name prefixes to their corresponding Helm values flags
+// CRDs can belong to multiple groups (e.g., mcpexternalauthconfigs is used by both server and virtualMcp)
+var crdFeatureFlags = map[string][]string{
+	// Server group
+	"mcpservers":       {"server"},
+	"mcpremoteproxies": {"server"},
+	"mcptoolconfigs":   {"server"},
+	"mcpgroups":        {"server"},
+	// Registry group
+	"mcpregistries": {"registry"},
+	// VirtualMCP group
+	"virtualmcpservers":                  {"virtualMcp"},
+	"virtualmcpcompositetooldefinitions": {"virtualMcp"},
+	// Shared CRDs (used by multiple groups)
+	"mcpexternalauthconfigs": {"server", "virtualMcp"},
 }
 
 func main() {
@@ -104,16 +104,6 @@ func loadTemplates() (*Templates, error) {
 		return nil, fmt.Errorf("failed to load footer template: %w", err)
 	}
 
-	headerFeature, err := templateFS.ReadFile("templates/header-feature.tpl")
-	if err != nil {
-		return nil, fmt.Errorf("failed to load header-feature template: %w", err)
-	}
-
-	footerFeature, err := templateFS.ReadFile("templates/footer-feature.tpl")
-	if err != nil {
-		return nil, fmt.Errorf("failed to load footer-feature template: %w", err)
-	}
-
 	keepAnnotation, err := templateFS.ReadFile("templates/keep-annotation.tpl")
 	if err != nil {
 		return nil, fmt.Errorf("failed to load keep-annotation template: %w", err)
@@ -122,8 +112,6 @@ func loadTemplates() (*Templates, error) {
 	return &Templates{
 		Header:         string(header),
 		Footer:         string(footer),
-		HeaderFeature:  string(headerFeature),
-		FooterFeature:  string(footerFeature),
 		KeepAnnotation: string(keepAnnotation),
 	}, nil
 }
@@ -190,14 +178,14 @@ func wrapCRDFile(sourcePath string, cfg Config, templates *Templates) error {
 		fmt.Printf("  CRD name: %s\n", crdName)
 	}
 
-	// Get the feature flag for this CRD (if any)
-	featureFlag := getFeatureFlag(crdName)
-	if cfg.Verbose && featureFlag != "" {
-		fmt.Printf("  Feature flag: crds.%s\n", featureFlag)
+	// Get the feature flags for this CRD (if any)
+	featureFlags := getFeatureFlags(crdName)
+	if cfg.Verbose && len(featureFlags) > 0 {
+		fmt.Printf("  Feature flags: %v\n", featureFlags)
 	}
 
 	// Wrap the content with Helm template conditionals
-	wrapped, err := wrapContent(content, crdName, filename, templates, featureFlag)
+	wrapped, err := wrapContent(content, crdName, filename, templates, featureFlags)
 	if err != nil {
 		return fmt.Errorf("failed to wrap content: %w", err)
 	}
@@ -228,39 +216,52 @@ func extractCRDName(content []byte) (string, error) {
 	return crd.Metadata.Name, nil
 }
 
-// getFeatureFlag returns the Helm values feature flag for a given CRD name.
-// Returns empty string if no feature flag is needed (CRD is always installed).
-func getFeatureFlag(crdName string) string {
+// getFeatureFlags returns the Helm values feature flags for a given CRD name.
+// Returns nil if no feature flags are needed (CRD is always installed).
+func getFeatureFlags(crdName string) []string {
 	// CRD names are in format: plural.group (e.g., mcpservers.toolhive.stacklok.dev)
 	// Extract the plural name (before the first dot)
 	parts := strings.SplitN(crdName, ".", 2)
 	if len(parts) == 0 {
-		return ""
+		return nil
 	}
 	plural := parts[0]
 
-	// Look up the feature flag for this CRD type
-	if featureFlag, ok := crdFeatureFlags[plural]; ok {
-		return featureFlag
+	// Look up the feature flags for this CRD type
+	if flags, ok := crdFeatureFlags[plural]; ok {
+		return flags
 	}
 
-	return ""
+	return nil
 }
 
-func wrapContent(content []byte, crdName, filename string, templates *Templates, featureFlag string) ([]byte, error) {
-	var buf bytes.Buffer
-
-	// Select appropriate header/footer based on whether CRD has a feature flag
-	header := templates.Header
-	footer := templates.Footer
-	if featureFlag != "" {
-		header = templates.HeaderFeature
-		footer = templates.FooterFeature
-		// Replace the feature flag placeholder
-		header = strings.ReplaceAll(header, "__FEATURE_FLAG__", featureFlag)
+// buildFeatureCondition generates the Helm template conditional for feature flags.
+// Single flag: .Values.crds.install.server
+// Multiple flags: or .Values.crds.install.server .Values.crds.install.virtualMcp
+func buildFeatureCondition(flags []string) string {
+	if len(flags) == 0 {
+		return ""
 	}
 
-	// Write header with conditionals (replace placeholders)
+	// Build the Values references
+	refs := make([]string, len(flags))
+	for i, f := range flags {
+		refs[i] = ".Values.crds.install." + f
+	}
+
+	if len(refs) == 1 {
+		return refs[0]
+	}
+
+	// Multiple flags: use "or" function
+	return "or " + strings.Join(refs, " ")
+}
+
+func wrapContent(content []byte, crdName, filename string, templates *Templates, featureFlags []string) ([]byte, error) {
+	var buf bytes.Buffer
+
+	// Build header with feature flag conditional
+	header := strings.ReplaceAll(templates.Header, "__FEATURE_CONDITION__", buildFeatureCondition(featureFlags))
 	header = strings.ReplaceAll(header, "__CRD_NAME__", crdName)
 	header = strings.ReplaceAll(header, "__FILENAME__", filename)
 	buf.WriteString(header)
@@ -301,7 +302,7 @@ func wrapContent(content []byte, crdName, filename string, templates *Templates,
 	}
 
 	// Write footer from template
-	buf.WriteString(footer)
+	buf.WriteString(templates.Footer)
 
 	return buf.Bytes(), nil
 }

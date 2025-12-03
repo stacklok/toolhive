@@ -8,7 +8,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/permissions"
 )
 
-// Updates to the registry schema should be reflected in the JSON schema file located at pkg/registry/data/schema.json.
+// Updates to the registry schema should be reflected in the JSON schema file located at pkg/registry/data/toolhive-legacy-registry.schema.json.
 // The schema is used for validation and documentation purposes.
 //
 // The embedded registry.json is automatically validated against the schema during tests.

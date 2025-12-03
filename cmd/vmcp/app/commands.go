@@ -303,18 +303,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	host, _ := cmd.Flags().GetString("host")
 	port, _ := cmd.Flags().GetInt("port")
 
-	// If telemetry is configured, create the provider and monitor the backends.
+	// If telemetry is configured, create the provider.
 	var telemetryProvider *telemetry.Provider
 	if cfg.Telemetry != nil {
 		var err error
 		telemetryProvider, err = telemetry.NewProvider(ctx, *cfg.Telemetry)
 		if err != nil {
 			return fmt.Errorf("failed to create telemetry provider: %w", err)
-		}
-
-		backendClient, err = vmcpserver.MonitorBackends(ctx, telemetryProvider.MeterProvider(), backends, backendClient)
-		if err != nil {
-			return fmt.Errorf("failed to monitor backends: %w", err)
 		}
 	}
 

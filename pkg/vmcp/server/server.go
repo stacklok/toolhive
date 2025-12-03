@@ -211,9 +211,13 @@ func New(
 		return nil, fmt.Errorf("workflow validation failed: %w", err)
 	}
 
-	// Decorate workflow executors with telemetry if provider is configured
+	// Decorate backend client and workflow executors with telemetry if provider is configured
 	if cfg.TelemetryProvider != nil {
-		workflowExecutors, err = MonitorWorkflowExecutors(cfg.TelemetryProvider.MeterProvider(), workflowExecutors)
+		backendClient, err = monitorBackends(context.Background(), cfg.TelemetryProvider.MeterProvider(), backends, backendClient)
+		if err != nil {
+			return nil, fmt.Errorf("failed to monitor backends: %w", err)
+		}
+		workflowExecutors, err = monitorWorkflowExecutors(cfg.TelemetryProvider.MeterProvider(), workflowExecutors)
 		if err != nil {
 			return nil, fmt.Errorf("failed to monitor workflow executors: %w", err)
 		}

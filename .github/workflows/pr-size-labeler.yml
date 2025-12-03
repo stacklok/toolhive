@@ -10,7 +10,7 @@ permissions:
 jobs:
   calculate-pr-size:
     name: Calculate PR Size
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - name: Get PR details
         id: pr

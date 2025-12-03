@@ -32,7 +32,7 @@ permissions:
 jobs:
   compute-build-flags:
     name: Compute Build Flags
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     outputs:
       commit-date: ${{ steps.ldflags.outputs.commit-date }}
       commit: ${{ steps.ldflags.outputs.commit }}

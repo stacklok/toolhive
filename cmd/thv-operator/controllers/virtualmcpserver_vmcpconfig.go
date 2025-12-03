@@ -29,8 +29,9 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	// Create OIDC resolver to handle all OIDC types (kubernetes, configMap, inline)
 	oidcResolver := oidc.NewResolver(r.Client)
 
-	// Convert CRD to vmcp config using converter with OIDC resolver
-	converter, err := vmcpconfig.NewConverter(oidcResolver)
+	// Convert CRD to vmcp config using converter with OIDC resolver and Kubernetes client
+	// The client is needed to fetch referenced VirtualMCPCompositeToolDefinition resources
+	converter, err := vmcpconfig.NewConverter(oidcResolver, r.Client)
 	if err != nil {
 		return fmt.Errorf("failed to create vmcp converter: %w", err)
 	}

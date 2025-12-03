@@ -13,6 +13,9 @@ import (
 	"go.uber.org/mock/gomock"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -39,7 +42,7 @@ func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
 // newTestConverter creates a Converter with the given resolver, failing the test if creation fails.
 func newTestConverter(t *testing.T, resolver oidc.Resolver) *Converter {
 	t.Helper()
-	converter, err := NewConverter(resolver)
+	converter, err := NewConverter(resolver, nil)
 	require.NoError(t, err)
 	return converter
 }
@@ -951,6 +954,399 @@ func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
 
 				// Use recursive helper to validate all nested levels
 				validateOutputProperties(t, tt.expectedOutput.Properties, tool.Output.Properties, "")
+			}
+		})
+	}
+}
+
+// createTestScheme creates a test scheme with required types
+func createTestScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = scheme.AddToScheme(s)
+	_ = mcpv1alpha1.AddToScheme(s)
+	return s
+}
+
+func TestConverter_CompositeToolRefs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		vmcp          *mcpv1alpha1.VirtualMCPServer
+		compositeDefs []*mcpv1alpha1.VirtualMCPCompositeToolDefinition
+		k8sClient     client.Client
+		expectError   bool
+		errorContains string
+		validate      func(t *testing.T, config *vmcpconfig.Config)
+	}{
+		{
+			name: "successfully fetch and merge referenced composite tool",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
+						{Name: "referenced-tool"},
+					},
+				},
+			},
+			compositeDefs: []*mcpv1alpha1.VirtualMCPCompositeToolDefinition{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "referenced-tool",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
+						Name:        "referenced-tool",
+						Description: "A referenced composite tool",
+						Steps: []mcpv1alpha1.WorkflowStep{
+							{
+								ID:   "step1",
+								Type: "tool",
+								Tool: "backend.tool1",
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, config *vmcpconfig.Config) {
+				t.Helper()
+				require.Len(t, config.CompositeTools, 1)
+				assert.Equal(t, "referenced-tool", config.CompositeTools[0].Name)
+				assert.Equal(t, "A referenced composite tool", config.CompositeTools[0].Description)
+				require.Len(t, config.CompositeTools[0].Steps, 1)
+				assert.Equal(t, "step1", config.CompositeTools[0].Steps[0].ID)
+				assert.Equal(t, "backend.tool1", config.CompositeTools[0].Steps[0].Tool)
+			},
+		},
+		{
+			name: "merge inline and referenced composite tools",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
+						{
+							Name:        "inline-tool",
+							Description: "An inline composite tool",
+							Steps: []mcpv1alpha1.WorkflowStep{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.inline-tool",
+								},
+							},
+						},
+					},
+					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
+						{Name: "referenced-tool"},
+					},
+				},
+			},
+			compositeDefs: []*mcpv1alpha1.VirtualMCPCompositeToolDefinition{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "referenced-tool",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
+						Name:        "referenced-tool",
+						Description: "A referenced composite tool",
+						Steps: []mcpv1alpha1.WorkflowStep{
+							{
+								ID:   "step1",
+								Type: "tool",
+								Tool: "backend.referenced-tool",
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, config *vmcpconfig.Config) {
+				t.Helper()
+				require.Len(t, config.CompositeTools, 2)
+				// Check that both tools are present
+				toolNames := make(map[string]bool)
+				for _, tool := range config.CompositeTools {
+					toolNames[tool.Name] = true
+				}
+				assert.True(t, toolNames["inline-tool"], "inline-tool should be present")
+				assert.True(t, toolNames["referenced-tool"], "referenced-tool should be present")
+			},
+		},
+		{
+			name: "error when referenced composite tool not found",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
+						{Name: "non-existent-tool"},
+					},
+				},
+			},
+			compositeDefs: []*mcpv1alpha1.VirtualMCPCompositeToolDefinition{},
+			expectError:   true,
+			errorContains: "not found",
+		},
+		{
+			name: "error when duplicate tool names exist",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
+						{
+							Name:        "duplicate-tool",
+							Description: "An inline tool",
+							Steps: []mcpv1alpha1.WorkflowStep{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.tool1",
+								},
+							},
+						},
+					},
+					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
+						{Name: "referenced-tool"},
+					},
+				},
+			},
+			compositeDefs: []*mcpv1alpha1.VirtualMCPCompositeToolDefinition{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "referenced-tool",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
+						Name:        "duplicate-tool", // Same name as inline tool
+						Description: "A referenced tool with duplicate name",
+						Steps: []mcpv1alpha1.WorkflowStep{
+							{
+								ID:   "step1",
+								Type: "tool",
+								Tool: "backend.tool2",
+							},
+						},
+					},
+				},
+			},
+			expectError:   true,
+			errorContains: "duplicate composite tool name",
+		},
+		{
+			name: "skip referenced tools when k8sClient is nil",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
+						{
+							Name:        "inline-tool",
+							Description: "An inline composite tool",
+							Steps: []mcpv1alpha1.WorkflowStep{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.tool1",
+								},
+							},
+						},
+					},
+					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
+						{Name: "referenced-tool"},
+					},
+				},
+			},
+			compositeDefs: []*mcpv1alpha1.VirtualMCPCompositeToolDefinition{},
+			k8sClient:     nil, // No client provided
+			expectError:   false,
+			validate: func(t *testing.T, config *vmcpconfig.Config) {
+				t.Helper()
+				// Only inline tool should be present, referenced tool should be skipped
+				require.Len(t, config.CompositeTools, 1)
+				assert.Equal(t, "inline-tool", config.CompositeTools[0].Name)
+			},
+		},
+		{
+			name: "handle multiple referenced tools",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
+						{Name: "tool1"},
+						{Name: "tool2"},
+					},
+				},
+			},
+			compositeDefs: []*mcpv1alpha1.VirtualMCPCompositeToolDefinition{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "tool1",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
+						Name:        "tool1",
+						Description: "First referenced tool",
+						Steps: []mcpv1alpha1.WorkflowStep{
+							{
+								ID:   "step1",
+								Type: "tool",
+								Tool: "backend.tool1",
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "tool2",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
+						Name:        "tool2",
+						Description: "Second referenced tool",
+						Steps: []mcpv1alpha1.WorkflowStep{
+							{
+								ID:   "step1",
+								Type: "tool",
+								Tool: "backend.tool2",
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, config *vmcpconfig.Config) {
+				t.Helper()
+				require.Len(t, config.CompositeTools, 2)
+				toolNames := make(map[string]bool)
+				for _, tool := range config.CompositeTools {
+					toolNames[tool.Name] = true
+				}
+				assert.True(t, toolNames["tool1"], "tool1 should be present")
+				assert.True(t, toolNames["tool2"], "tool2 should be present")
+			},
+		},
+		{
+			name: "convert referenced tool with parameters and timeout",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
+						{Name: "referenced-tool"},
+					},
+				},
+			},
+			compositeDefs: []*mcpv1alpha1.VirtualMCPCompositeToolDefinition{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "referenced-tool",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
+						Name:        "referenced-tool",
+						Description: "A referenced tool with parameters",
+						Parameters: &runtime.RawExtension{
+							Raw: []byte(`{"type":"object","properties":{"param1":{"type":"string"}}}`),
+						},
+						Timeout: "5m",
+						Steps: []mcpv1alpha1.WorkflowStep{
+							{
+								ID:   "step1",
+								Type: "tool",
+								Tool: "backend.tool1",
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, config *vmcpconfig.Config) {
+				t.Helper()
+				require.Len(t, config.CompositeTools, 1)
+				tool := config.CompositeTools[0]
+				assert.Equal(t, "referenced-tool", tool.Name)
+				assert.Equal(t, vmcpconfig.Duration(5*time.Minute), tool.Timeout)
+				require.NotNil(t, tool.Parameters)
+				params := tool.Parameters
+				assert.Equal(t, "object", params["type"])
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Setup fake Kubernetes client
+			var fakeClient client.Client
+			if tt.k8sClient != nil {
+				// Use provided client
+				fakeClient = tt.k8sClient
+			} else {
+				// Create fake client with objects (or nil if we want to test nil client behavior)
+				testScheme := createTestScheme()
+				objects := []client.Object{tt.vmcp}
+				for _, def := range tt.compositeDefs {
+					objects = append(objects, def)
+				}
+				fakeClient = fake.NewClientBuilder().
+					WithScheme(testScheme).
+					WithObjects(objects...).
+					Build()
+			}
+
+			// For the nil client test case, we need to explicitly pass nil
+			converterClient := fakeClient
+			if tt.name == "skip referenced tools when k8sClient is nil" {
+				converterClient = nil
+			}
+
+			// Create converter with client
+			resolver := newNoOpMockResolver(t)
+			converter, err := NewConverter(resolver, converterClient)
+			require.NoError(t, err)
+
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			config, err := converter.Convert(ctx, tt.vmcp)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, config)
+				if tt.validate != nil {
+					tt.validate(t, config)
+				}
 			}
 		})
 	}

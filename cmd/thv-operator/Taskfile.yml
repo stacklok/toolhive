@@ -29,13 +29,15 @@ vars:
 tasks:
   kind-setup:
     desc: Setup a local Kind cluster with DNS configured to use public DNS servers via extraMounts
+    dir: {{.ROOT_DIR}}/cmd/thv-operator
     cmds:
-      - cmd: cd {{.ROOT_DIR}}/cmd/thv-operator && kind create cluster --name toolhive --config kind-config.yaml
+      - kind create cluster --name toolhive --config kind-config.yaml
 
   kind-setup-e2e:
     desc: Setup a local Kind cluster with port mappings for e2e testing (allows accessing NodePort services on localhost). DNS is configured to use public DNS servers via extraMounts.
+    dir: {{.ROOT_DIR}}/test/e2e/thv-operator
     cmds:
-      - cmd: cd {{.ROOT_DIR}}/test/e2e/thv-operator && kind create cluster --name toolhive --config kind-config.yaml
+      - kind create cluster --name toolhive --config kind-config.yaml
 
   kind-destroy:
     desc: Destroy a local Kind cluster

@@ -8,16 +8,12 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
-
-// Compile-time check to ensure corev1 is used (for Service type)
-var _ = corev1.ServiceSpec{}
 
 // conflictResolutionTestSetup holds the configuration for setting up a conflict resolution test
 type conflictResolutionTestSetup struct {
@@ -34,70 +30,16 @@ type conflictResolutionTestSetup struct {
 // setupConflictResolutionTest creates MCPGroup, backend MCPServers, and VirtualMCPServer
 // Returns the NodePort for accessing the VirtualMCPServer
 func setupConflictResolutionTest(setup conflictResolutionTestSetup) int32 {
-	var vmcpNodePort int32
-
 	By(fmt.Sprintf("Creating MCPGroup: %s", setup.groupName))
-	mcpGroup := &mcpv1alpha1.MCPGroup{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      setup.groupName,
-			Namespace: setup.namespace,
-		},
-		Spec: mcpv1alpha1.MCPGroupSpec{
-			Description: fmt.Sprintf("Test MCP Group for %s conflict resolution", setup.aggregation.ConflictResolution),
-		},
-	}
-	Expect(k8sClient.Create(ctx, mcpGroup)).To(Succeed())
-
-	By("Waiting for MCPGroup to be ready")
-	Eventually(func() bool {
-		err := k8sClient.Get(ctx, types.NamespacedName{
-			Name:      setup.groupName,
-			Namespace: setup.namespace,
-		}, mcpGroup)
-		if err != nil {
-			return false
-		}
-		return mcpGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
-	}, setup.timeout, setup.pollingInterval).Should(BeTrue())
+	CreateMCPGroupAndWait(ctx, k8sClient, setup.groupName, setup.namespace,
+		fmt.Sprintf("Test MCP Group for %s conflict resolution", setup.aggregation.ConflictResolution),
+		setup.timeout, setup.pollingInterval)
 
 	By(fmt.Sprintf("Creating backend MCPServers: %s, %s", setup.backend1Name, setup.backend2Name))
-	for _, backendName := range []string{setup.backend1Name, setup.backend2Name} {
-		backend := &mcpv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      backendName,
-				Namespace: setup.namespace,
-			},
-			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  setup.groupName,
-				Image:     images.YardstickServerImage,
-				Transport: "streamable-http",
-				ProxyPort: 8080,
-				McpPort:   8080,
-				Env: []mcpv1alpha1.EnvVar{
-					{Name: "TRANSPORT", Value: "streamable-http"},
-				},
-			},
-		}
-		Expect(k8sClient.Create(ctx, backend)).To(Succeed())
-	}
-
-	By("Waiting for backend MCPServers to be ready")
-	for _, backendName := range []string{setup.backend1Name, setup.backend2Name} {
-		Eventually(func() error {
-			server := &mcpv1alpha1.MCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      backendName,
-				Namespace: setup.namespace,
-			}, server)
-			if err != nil {
-				return fmt.Errorf("failed to get server: %w", err)
-			}
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
-				return nil
-			}
-			return fmt.Errorf("%s not ready yet, phase: %s", backendName, server.Status.Phase)
-		}, setup.timeout, setup.pollingInterval).Should(Succeed(), fmt.Sprintf("%s should be ready", backendName))
-	}
+	CreateMCPServerAndWait(ctx, k8sClient, setup.backend1Name, setup.namespace, setup.groupName,
+		images.YardstickServerImage, setup.timeout, setup.pollingInterval)
+	CreateMCPServerAndWait(ctx, k8sClient, setup.backend2Name, setup.namespace, setup.groupName,
+		images.YardstickServerImage, setup.timeout, setup.pollingInterval)
 
 	By(fmt.Sprintf("Creating VirtualMCPServer: %s with %s conflict resolution", setup.vmcpName, setup.aggregation.ConflictResolution))
 	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
@@ -122,22 +64,7 @@ func setupConflictResolutionTest(setup conflictResolutionTestSetup) int32 {
 	WaitForVirtualMCPServerReady(ctx, k8sClient, setup.vmcpName, setup.namespace, setup.timeout)
 
 	By("Getting NodePort for VirtualMCPServer")
-	serviceName := fmt.Sprintf("vmcp-%s", setup.vmcpName)
-	Eventually(func() error {
-		service := &corev1.Service{}
-		err := k8sClient.Get(ctx, types.NamespacedName{
-			Name:      serviceName,
-			Namespace: setup.namespace,
-		}, service)
-		if err != nil {
-			return err
-		}
-		if len(service.Spec.Ports) == 0 || service.Spec.Ports[0].NodePort == 0 {
-			return fmt.Errorf("nodePort not assigned for vmcp")
-		}
-		vmcpNodePort = service.Spec.Ports[0].NodePort
-		return nil
-	}, setup.timeout, setup.pollingInterval).Should(Succeed())
+	vmcpNodePort := GetVMCPNodePort(ctx, k8sClient, setup.vmcpName, setup.namespace, setup.timeout, setup.pollingInterval)
 
 	By(fmt.Sprintf("VirtualMCPServer accessible at http://localhost:%d", vmcpNodePort))
 	return vmcpNodePort

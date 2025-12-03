@@ -583,6 +583,117 @@ if __name__ == '__main__':
 PYTHON_SCRIPT
 `
 
+// VMCPServiceName returns the Kubernetes service name for a VirtualMCPServer
+func VMCPServiceName(vmcpServerName string) string {
+	return fmt.Sprintf("vmcp-%s", vmcpServerName)
+}
+
+// CreateMCPGroupAndWait creates an MCPGroup and waits for it to become ready.
+// Returns the created MCPGroup after it reaches Ready phase.
+func CreateMCPGroupAndWait(
+	ctx context.Context,
+	c client.Client,
+	name, namespace, description string,
+	timeout, pollingInterval time.Duration,
+) *mcpv1alpha1.MCPGroup {
+	mcpGroup := &mcpv1alpha1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPGroupSpec{
+			Description: description,
+		},
+	}
+	gomega.Expect(c.Create(ctx, mcpGroup)).To(gomega.Succeed())
+
+	gomega.Eventually(func() bool {
+		err := c.Get(ctx, types.NamespacedName{
+			Name:      name,
+			Namespace: namespace,
+		}, mcpGroup)
+		if err != nil {
+			return false
+		}
+		return mcpGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
+	}, timeout, pollingInterval).Should(gomega.BeTrue(), "MCPGroup should become ready")
+
+	return mcpGroup
+}
+
+// CreateMCPServerAndWait creates an MCPServer with the specified image and waits for it to be running.
+// Returns the created MCPServer after it reaches Running phase.
+func CreateMCPServerAndWait(
+	ctx context.Context,
+	c client.Client,
+	name, namespace, groupRef, image string,
+	timeout, pollingInterval time.Duration,
+) *mcpv1alpha1.MCPServer {
+	backend := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			GroupRef:  groupRef,
+			Image:     image,
+			Transport: "streamable-http",
+			ProxyPort: 8080,
+			McpPort:   8080,
+			Env: []mcpv1alpha1.EnvVar{
+				{Name: "TRANSPORT", Value: "streamable-http"},
+			},
+		},
+	}
+	gomega.Expect(c.Create(ctx, backend)).To(gomega.Succeed())
+
+	gomega.Eventually(func() error {
+		server := &mcpv1alpha1.MCPServer{}
+		err := c.Get(ctx, types.NamespacedName{
+			Name:      name,
+			Namespace: namespace,
+		}, server)
+		if err != nil {
+			return fmt.Errorf("failed to get server: %w", err)
+		}
+		if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+			return nil
+		}
+		return fmt.Errorf("%s not ready yet, phase: %s", name, server.Status.Phase)
+	}, timeout, pollingInterval).Should(gomega.Succeed(), fmt.Sprintf("MCPServer %s should be ready", name))
+
+	return backend
+}
+
+// GetVMCPNodePort waits for the VirtualMCPServer service to have a NodePort assigned and returns it.
+func GetVMCPNodePort(
+	ctx context.Context,
+	c client.Client,
+	vmcpServerName, namespace string,
+	timeout, pollingInterval time.Duration,
+) int32 {
+	var nodePort int32
+	serviceName := VMCPServiceName(vmcpServerName)
+
+	gomega.Eventually(func() error {
+		service := &corev1.Service{}
+		err := c.Get(ctx, types.NamespacedName{
+			Name:      serviceName,
+			Namespace: namespace,
+		}, service)
+		if err != nil {
+			return err
+		}
+		if len(service.Spec.Ports) == 0 || service.Spec.Ports[0].NodePort == 0 {
+			return fmt.Errorf("nodePort not assigned for vmcp service %s", serviceName)
+		}
+		nodePort = service.Spec.Ports[0].NodePort
+		return nil
+	}, timeout, pollingInterval).Should(gomega.Succeed(), "NodePort should be assigned")
+
+	return nodePort
+}
+
 // InstrumentedBackendScript is an instrumented backend script that tracks Bearer tokens
 const InstrumentedBackendScript = `
 pip install --quiet flask && python3 - <<'PYTHON_SCRIPT'

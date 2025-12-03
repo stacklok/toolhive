@@ -29,34 +29,10 @@ var _ = Describe("VirtualMCPServer Inline Auth with Anonymous Incoming", Ordered
 		vmcpNodePort    int32
 	)
 
-	vmcpServiceName := func() string {
-		return fmt.Sprintf("vmcp-%s", vmcpServerName)
-	}
-
 	BeforeAll(func() {
 		By("Creating MCPGroup")
-		mcpGroup := &mcpv1alpha1.MCPGroup{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      mcpGroupName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.MCPGroupSpec{
-				Description: "Test MCP Group for VirtualMCP inline auth with anonymous incoming",
-			},
-		}
-		Expect(k8sClient.Create(ctx, mcpGroup)).To(Succeed())
-
-		By("Waiting for MCPGroup to be ready")
-		Eventually(func() bool {
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      mcpGroupName,
-				Namespace: testNamespace,
-			}, mcpGroup)
-			if err != nil {
-				return false
-			}
-			return mcpGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
-		}, timeout, pollingInterval).Should(BeTrue())
+		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, testNamespace,
+			"Test MCP Group for VirtualMCP inline auth with anonymous incoming", timeout, pollingInterval)
 
 		By("Creating backend MCPServer")
 		backend1 := &mcpv1alpha1.MCPServer{
@@ -116,33 +92,18 @@ var _ = Describe("VirtualMCPServer Inline Auth with Anonymous Incoming", Ordered
 		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
 
 		By("Getting NodePort for VirtualMCPServer")
-		Eventually(func() error {
-			service := &corev1.Service{}
-			serviceName := vmcpServiceName()
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      serviceName,
-				Namespace: testNamespace,
-			}, service)
-			if err != nil {
-				return err
-			}
-			if len(service.Spec.Ports) == 0 || service.Spec.Ports[0].NodePort == 0 {
-				return fmt.Errorf("nodePort not assigned for vmcp")
-			}
-			vmcpNodePort = service.Spec.Ports[0].NodePort
-			return nil
-		}, timeout, pollingInterval).Should(Succeed())
+		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 	})
 
 	AfterAll(func() {
 		By("Cleaning up test resources")
-		k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
+		_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},
 		})
-		k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+		_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: backend1Name, Namespace: testNamespace},
 		})
-		k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
+		_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: testNamespace},
 		})
 	})
@@ -230,10 +191,6 @@ var _ = Describe("VirtualMCPServer Inline Auth with OIDC Incoming", Ordered, fun
 		mockOIDCIssuerURL   string
 	)
 
-	vmcpServiceName := func() string {
-		return fmt.Sprintf("vmcp-%s", vmcpServerName)
-	}
-
 	BeforeAll(func() {
 		By("Deploying mock OIDC server with HTTP")
 		DeployMockOIDCServerHTTP(ctx, k8sClient, testNamespace, mockOIDCServerName)
@@ -255,28 +212,8 @@ var _ = Describe("VirtualMCPServer Inline Auth with OIDC Incoming", Ordered, fun
 		Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 
 		By("Creating MCPGroup")
-		mcpGroup := &mcpv1alpha1.MCPGroup{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      mcpGroupName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.MCPGroupSpec{
-				Description: "Test MCP Group for VirtualMCP inline auth with OIDC incoming",
-			},
-		}
-		Expect(k8sClient.Create(ctx, mcpGroup)).To(Succeed())
-
-		By("Waiting for MCPGroup to be ready")
-		Eventually(func() bool {
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      mcpGroupName,
-				Namespace: testNamespace,
-			}, mcpGroup)
-			if err != nil {
-				return false
-			}
-			return mcpGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
-		}, timeout, pollingInterval).Should(BeTrue())
+		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, testNamespace,
+			"Test MCP Group for VirtualMCP inline auth with OIDC incoming", timeout, pollingInterval)
 
 		By("Creating backend MCPServer")
 		backend1 := &mcpv1alpha1.MCPServer{
@@ -350,36 +287,21 @@ var _ = Describe("VirtualMCPServer Inline Auth with OIDC Incoming", Ordered, fun
 		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
 
 		By("Getting NodePort for VirtualMCPServer")
-		Eventually(func() error {
-			service := &corev1.Service{}
-			serviceName := vmcpServiceName()
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      serviceName,
-				Namespace: testNamespace,
-			}, service)
-			if err != nil {
-				return err
-			}
-			if len(service.Spec.Ports) == 0 || service.Spec.Ports[0].NodePort == 0 {
-				return fmt.Errorf("nodePort not assigned for vmcp")
-			}
-			vmcpNodePort = service.Spec.Ports[0].NodePort
-			return nil
-		}, timeout, pollingInterval).Should(Succeed())
+		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 	})
 
 	AfterAll(func() {
 		By("Cleaning up test resources")
-		k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
+		_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},
 		})
-		k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+		_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: backend1Name, Namespace: testNamespace},
 		})
-		k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
+		_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: testNamespace},
 		})
-		k8sClient.Delete(ctx, &corev1.Secret{
+		_ = k8sClient.Delete(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: testNamespace},
 		})
 		CleanupMockServer(ctx, k8sClient, testNamespace, mockOIDCServerName, "")

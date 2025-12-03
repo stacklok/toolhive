@@ -62,4 +62,3 @@ echo "  kubectl get pods -n toolhive-system"
 echo ""
 echo "Check operator logs:"
 echo "  kubectl logs -n toolhive-system -l app.kubernetes.io/name=toolhive-operator"
-

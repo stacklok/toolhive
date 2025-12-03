@@ -80,11 +80,9 @@ spec:
                   FailureMode defines the failure handling strategy
                   - abort: Stop execution on first failure (default)
                   - continue: Continue executing remaining steps
-                  - best_effort: Try all steps, report partial success
                 enum:
                 - abort
                 - continue
-                - best_effort
                 type: string
               name:
                 description: Name is the workflow name exposed as a composite tool
@@ -92,31 +90,75 @@ spec:
                 minLength: 1
                 pattern: ^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$
                 type: string
-              parameters:
-                additionalProperties:
-                  description: ParameterSpec defines a parameter for a composite tool
-                  properties:
-                    default:
-                      description: Default is the default value for the parameter
-                      type: string
-                    description:
-                      description: Description describes the parameter
-                      type: string
-                    required:
-                      default: false
-                      description: Required indicates if the parameter is required
-                      type: boolean
-                    type:
-                      description: Type is the parameter type (string, integer, boolean,
-                        etc.)
-                      type: string
-                  required:
-                  - type
-                  type: object
+              output:
                 description: |-
-                  Parameters defines the input parameter schema for the workflow
-                  Each key is a parameter name, each value is the parameter specification
+                  Output defines the structured output schema for the composite tool.
+                  Specifies how to construct the final output from workflow step results.
+                  If not specified, the workflow returns the last step's output (backward compatible).
+                properties:
+                  properties:
+                    additionalProperties:
+                      description: OutputPropertySpec defines a single output property
+                      properties:
+                        default:
+                          description: Default is the fallback value if template expansion
+                            fails
+                          x-kubernetes-preserve-unknown-fields: true
+                        description:
+                          description: Description is a human-readable description
+                            exposed to clients and models
+                          type: string
+                        properties:
+                          description: Properties defines nested properties for object
+                            types
+                          x-kubernetes-preserve-unknown-fields: true
+                        type:
+                          description: 'Type is the JSON Schema type: "string", "integer",
+                            "number", "boolean", "object", "array"'
+                          enum:
+                          - string
+                          - integer
+                          - number
+                          - boolean
+                          - object
+                          - array
+                          type: string
+                        value:
+                          description: |-
+                            Value is a template string for constructing the runtime value
+                            Supports template syntax: {{.steps.step_id.output.field}}, {{.params.param_name}}
+                            For object types, this can be a JSON string that will be deserialized
+                          type: string
+                      required:
+                      - type
+                      type: object
+                    description: |-
+                      Properties defines the output properties
+                      Map key is the property name, value is the property definition
+                    type: object
+                  required:
+                    description: Required lists property names that must be present
+                      in the output
+                    items:
+                      type: string
+                    type: array
                 type: object
+              parameters:
+                description: |-
+                  Parameters defines the input parameter schema for the workflow in JSON Schema format.
+                  Should be a JSON Schema object with "type": "object" and "properties".
+                  Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
+                  Example:
+                    {
+                      "type": "object",
+                      "properties": {
+                        "param1": {"type": "string", "default": "value"},
+                        "param2": {"type": "integer"}
+                      },
+                      "required": ["param2"]
+                    }
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               steps:
                 description: |-
                   Steps defines the workflow step definitions
@@ -166,6 +208,12 @@ spec:
                             MaxRetries is the maximum number of retries
                             Only used when Action is "retry"
                           type: integer
+                        retryDelay:
+                          description: |-
+                            RetryDelay is the delay between retry attempts
+                            Only used when Action is "retry"
+                          pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m))+$
+                          type: string
                       type: object
                     schema:
                       description: Schema defines the expected response schema for

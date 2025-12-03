@@ -7,22 +7,33 @@ import (
 // External auth configuration types
 const (
 	// ExternalAuthTypeTokenExchange is the type for RFC-8693 token exchange
-	ExternalAuthTypeTokenExchange = "tokenExchange"
+	ExternalAuthTypeTokenExchange ExternalAuthType = "tokenExchange"
+
+	// ExternalAuthTypeHeaderInjection is the type for custom header injection
+	ExternalAuthTypeHeaderInjection ExternalAuthType = "headerInjection"
 )
+
+// ExternalAuthType represents the type of external authentication
+type ExternalAuthType string
 
 // MCPExternalAuthConfigSpec defines the desired state of MCPExternalAuthConfig.
 // MCPExternalAuthConfig resources are namespace-scoped and can only be referenced by
 // MCPServer resources in the same namespace.
 type MCPExternalAuthConfigSpec struct {
 	// Type is the type of external authentication to configure
-	// +kubebuilder:validation:Enum=tokenExchange
+	// +kubebuilder:validation:Enum=tokenExchange;headerInjection
 	// +kubebuilder:validation:Required
-	Type string `json:"type"`
+	Type ExternalAuthType `json:"type"`
 
 	// TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange
 	// Only used when Type is "tokenExchange"
 	// +optional
 	TokenExchange *TokenExchangeConfig `json:"tokenExchange,omitempty"`
+
+	// HeaderInjection configures custom HTTP header injection
+	// Only used when Type is "headerInjection"
+	// +optional
+	HeaderInjection *HeaderInjectionConfig `json:"headerInjection,omitempty"`
 }
 
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
@@ -67,6 +78,20 @@ type TokenExchangeConfig struct {
 	// If empty or not set, the exchanged token will replace the Authorization header (default behavior).
 	// +optional
 	ExternalTokenHeaderName string `json:"externalTokenHeaderName,omitempty"`
+}
+
+// HeaderInjectionConfig holds configuration for custom HTTP header injection authentication.
+// This allows injecting a secret-based header value into requests to backend MCP servers.
+// For security reasons, only secret references are supported (no plaintext values).
+type HeaderInjectionConfig struct {
+	// HeaderName is the name of the HTTP header to inject
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	HeaderName string `json:"headerName"`
+
+	// ValueSecretRef references a Kubernetes Secret containing the header value
+	// +kubebuilder:validation:Required
+	ValueSecretRef *SecretKeyRef `json:"valueSecretRef"`
 }
 
 // SecretKeyRef is a reference to a key within a Secret

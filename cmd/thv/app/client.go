@@ -52,6 +52,7 @@ Valid clients:
   - amp-vscode: Sourcegraph Amp extension for VS Code
   - amp-vscode-insider: Sourcegraph Amp extension for VS Code Insiders
   - amp-windsurf: Sourcegraph Amp extension for Windsurf
+  - antigravity: Google Antigravity IDE
   - claude-code: Claude Code CLI
   - cline: Cline extension for VS Code
   - continue: Continue.dev extensions for VS Code and JetBrains
@@ -65,7 +66,8 @@ Valid clients:
   - vscode: Visual Studio Code (GitHub Copilot)
   - vscode-insider: Visual Studio Code Insiders edition
   - windsurf: Windsurf IDE
-  - windsurf-jetbrains: Windsurf for JetBrains IDEs`,
+  - windsurf-jetbrains: Windsurf for JetBrains IDEs
+  - zed: Zed editor`,
 	Args: cobra.ExactArgs(1),
 	RunE: clientRegisterCmdFunc,
 }
@@ -81,6 +83,7 @@ Valid clients:
   - amp-vscode: Sourcegraph Amp extension for VS Code
   - amp-vscode-insider: Sourcegraph Amp extension for VS Code Insiders
   - amp-windsurf: Sourcegraph Amp extension for Windsurf
+  - antigravity: Google Antigravity IDE
   - claude-code: Claude Code CLI
   - cline: Cline extension for VS Code
   - continue: Continue.dev extensions for VS Code and JetBrains
@@ -94,7 +97,8 @@ Valid clients:
   - vscode: Visual Studio Code (GitHub Copilot)
   - vscode-insider: Visual Studio Code Insiders edition
   - windsurf: Windsurf IDE
-  - windsurf-jetbrains: Windsurf for JetBrains IDEs`,
+  - windsurf-jetbrains: Windsurf for JetBrains IDEs
+  - zed: Zed editor`,
 	Args: cobra.ExactArgs(1),
 	RunE: clientRemoveCmdFunc,
 }
@@ -202,13 +206,13 @@ func clientRegisterCmdFunc(cmd *cobra.Command, args []string) error {
 	switch clientType {
 	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode", "windsurf", "windsurf-jetbrains",
 		"amp-cli", "amp-vscode", "amp-vscode-insider", "amp-cursor", "amp-windsurf", "lm-studio", "goose", "trae",
-		"continue", "opencode", "kiro":
+		"continue", "opencode", "kiro", "antigravity", "zed":
 		// Valid client type
 	default:
 		return fmt.Errorf(
 			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider, "+
 				"windsurf, windsurf-jetbrains, amp-cli, amp-vscode, amp-vscode-insider, amp-cursor, amp-windsurf, lm-studio, "+
-				"goose, trae, continue, opencode, kiro)",
+				"goose, trae, continue, opencode, kiro, antigravity, zed)",
 			clientType)
 	}
 
@@ -222,13 +226,13 @@ func clientRemoveCmdFunc(cmd *cobra.Command, args []string) error {
 	switch clientType {
 	case "roo-code", "cline", "cursor", "claude-code", "vscode-insider", "vscode", "windsurf", "windsurf-jetbrains",
 		"amp-cli", "amp-vscode", "amp-vscode-insider", "amp-cursor", "amp-windsurf", "lm-studio", "goose", "trae",
-		"continue", "opencode", "kiro":
+		"continue", "opencode", "kiro", "antigravity", "zed":
 		// Valid client type
 	default:
 		return fmt.Errorf(
 			"invalid client type: %s (valid types: roo-code, cline, cursor, claude-code, vscode, vscode-insider, "+
 				"windsurf, windsurf-jetbrains, amp-cli, amp-vscode, amp-vscode-insider, amp-cursor, amp-windsurf, lm-studio, "+
-				"goose, trae, continue, opencode, kiro)",
+				"goose, trae, continue, opencode, kiro, antigravity, zed)",
 			clientType)
 	}
 

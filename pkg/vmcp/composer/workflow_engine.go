@@ -205,7 +205,39 @@ func (e *workflowEngine) ExecuteWorkflow(
 
 	// Workflow completed successfully
 	result.Status = WorkflowStatusCompleted
-	result.Output = workflowCtx.GetLastStepOutput()
+
+	// Update workflow metadata before output construction
+	// This ensures {{.workflow.*}} template variables are available with accurate values
+	e.updateWorkflowMetadata(workflowCtx, result.StartTime, WorkflowStatusCompleted)
+
+	// Construct output based on configuration
+	if def.Output == nil {
+		// Backward compatible: return last step output
+		result.Output = workflowCtx.GetLastStepOutput()
+	} else {
+		// Construct output from schema
+		constructedOutput, err := e.constructOutputFromConfig(ctx, def.Output, workflowCtx)
+		if err != nil {
+			result.Status = WorkflowStatusFailed
+			result.Error = fmt.Errorf("output construction failed: %w", err)
+			result.EndTime = time.Now()
+			result.Duration = result.EndTime.Sub(result.StartTime)
+
+			// Save failure state
+			if e.stateStore != nil {
+				finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusFailed)
+				finalState.StartTime = result.StartTime
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = e.stateStore.SaveState(ctx, workflowCtx.WorkflowID, finalState)
+			}
+
+			logger.Errorf("Workflow %s failed during output construction: %v", def.Name, err)
+			return result, result.Error
+		}
+		result.Output = constructedOutput
+	}
+
 	result.EndTime = time.Now()
 	result.Duration = result.EndTime.Sub(result.StartTime)
 
@@ -690,6 +722,13 @@ func (e *workflowEngine) ValidateWorkflow(_ context.Context, def *WorkflowDefini
 		}
 	}
 
+	// Validate output configuration if present
+	if def.Output != nil {
+		if err := ValidateOutputConfig(def.Output); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -844,6 +883,34 @@ func (e *workflowEngine) CancelWorkflow(ctx context.Context, workflowID string) 
 
 	logger.Infof("Workflow %s marked as cancelled", workflowID)
 	return nil
+}
+
+// updateWorkflowMetadata updates the workflow metadata with current execution state.
+// This should be called before output construction to ensure template variables
+// like {{.workflow.duration_ms}} and {{.workflow.step_count}} have accurate values.
+func (*workflowEngine) updateWorkflowMetadata(
+	workflowCtx *WorkflowContext,
+	startTime time.Time,
+	status WorkflowStatusType,
+) {
+	workflowCtx.mu.Lock()
+	defer workflowCtx.mu.Unlock()
+
+	if workflowCtx.Workflow == nil {
+		return
+	}
+
+	// Count completed steps
+	completedSteps := 0
+	for _, step := range workflowCtx.Steps {
+		if step.Status == StepStatusCompleted {
+			completedSteps++
+		}
+	}
+
+	workflowCtx.Workflow.StepCount = completedSteps
+	workflowCtx.Workflow.Status = status
+	workflowCtx.Workflow.DurationMs = time.Since(startTime).Milliseconds()
 }
 
 // applyParameterDefaults applies default values from JSON Schema to workflow parameters.

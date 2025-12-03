@@ -20,7 +20,7 @@ group: "engineering-team"  # Reference to ToolHive group
 
 # ===== INCOMING AUTHENTICATION (Client → Virtual MCP) =====
 incoming_auth:
-  type: oidc  # Options: oidc | anonymous | local
+  type: oidc  # Options: oidc | anonymous
   # OIDC configuration
   oidc:
     issuer: "https://keycloak.example.com/realms/myrealm"
@@ -49,8 +49,6 @@ outgoing_auth:
   # Default behavior for backends without explicit config
   default:
     type: unauthenticated  # unauthenticated | header_injection | token_exchange
-    # TODO: Uncomment when pass_through is implemented
-    # type: pass_through  # Forward client token unchanged
 
   # Per-backend authentication configurations
   # IMPORTANT: These tokens are for backend APIs (e.g., github-api, jira-api),
@@ -92,18 +90,6 @@ outgoing_auth:
     #     client_secret_env: "JIRA_EXCHANGE_SECRET"
     #     audience: "jira-api"  # Token audience for Jira API
     #     scopes: ["read:jira-work", "write:jira-work"]
-
-    # TODO: Uncomment when pass_through strategy is implemented
-    # internal-db:
-    #   type: pass_through  # Forward client token unchanged
-
-# ===== TOKEN CACHING =====
-# Token cache configuration
-token_cache:
-  provider: memory  # Options: memory | redis | custom
-  config:
-    max_entries: 1000
-    ttl_offset: "5m"  # Refresh tokens 5 minutes before expiry
 
 # ===== TOOL AGGREGATION =====
 aggregation:
@@ -161,8 +147,14 @@ operational:
 # composite_tools:
 #   - name: "deploy_and_notify"
 #     description: "Deploy PR with user confirmation and notification"
+#     # Parameters use standard JSON Schema format per MCP specification
 #     parameters:
-#       pr_number: {type: "integer"}
+#       type: object
+#       properties:
+#         pr_number:
+#           type: integer
+#           description: "Pull request number to deploy"
+#       required: ["pr_number"]
 #     timeout: "30m"
 #
 #     steps:

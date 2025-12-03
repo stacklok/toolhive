@@ -38,14 +38,17 @@ spec:
   name: investigate_incident
   description: Investigate incident by gathering logs, metrics, and traces in parallel
   parameters:
-    incident_id:
-      type: string
-      description: The incident identifier
-      required: true
-    time_range:
-      type: string
-      description: Time range for data collection
-      required: true
+    type: object
+    properties:
+      incident_id:
+        type: string
+        description: The incident identifier
+      time_range:
+        type: string
+        description: Time range for data collection
+    required:
+      - incident_id
+      - time_range
   steps:
     # Level 1: These three steps run in parallel (no dependencies)
     - id: fetch_logs
@@ -213,7 +216,7 @@ Set the workflow's `failureMode` to control global error behavior:
 ```yaml
 spec:
   name: resilient_workflow
-  failureMode: continue  # Options: abort, continue, best_effort
+  failureMode: continue  # Options: abort, continue
   steps:
     # ...
 ```
@@ -224,7 +227,6 @@ spec:
 |------|----------|----------|
 | `abort` | Stop immediately on first error (default) | Critical workflows where partial completion is dangerous |
 | `continue` | Log errors but continue executing remaining steps | Data collection where some failures are acceptable |
-| `best_effort` | Try all steps, aggregate errors at end | Monitoring/reporting where you want maximum data |
 
 ### Step-Level Error Handling
 

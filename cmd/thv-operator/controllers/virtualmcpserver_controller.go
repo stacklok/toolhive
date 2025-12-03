@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"regexp"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -27,6 +29,20 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
+	"github.com/stacklok/toolhive/pkg/groups"
+	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
+)
+
+const (
+	// OutgoingAuthSourceDiscovered indicates that auth configs should be automatically discovered from MCPServers
+	OutgoingAuthSourceDiscovered = "discovered"
+	// OutgoingAuthSourceInline indicates that auth configs should be explicitly specified
+	OutgoingAuthSourceInline = "inline"
 )
 
 // VirtualMCPServerReconciler reconciles a VirtualMCPServer object
@@ -101,6 +117,28 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			ctxLogger.Error(err, "Failed to apply status updates after resource reconciliation error")
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Discover backends from the MCPGroup
+	discoveredBackends, err := r.discoverBackends(ctx, vmcp)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to discover backends")
+		// Don't fail reconciliation if backend discovery fails, but log the error
+		statusManager.SetCondition(
+			"BackendsDiscovered",
+			"BackendDiscoveryFailed",
+			fmt.Sprintf("Failed to discover backends: %v", err),
+			metav1.ConditionFalse,
+		)
+	} else {
+		statusManager.SetDiscoveredBackends(discoveredBackends)
+		statusManager.SetCondition(
+			"BackendsDiscovered",
+			"BackendsDiscoveredSuccessfully",
+			fmt.Sprintf("Discovered %d backends", len(discoveredBackends)),
+			metav1.ConditionTrue,
+		)
+		ctxLogger.Info("Discovered backends", "count", len(discoveredBackends))
 	}
 
 	// Update status based on pod health
@@ -642,12 +680,20 @@ func (*VirtualMCPServerReconciler) deploymentMetadataNeedsUpdate(
 
 	// TODO: Add support for ResourceOverrides if needed in the future
 
-	if !maps.Equal(deployment.Labels, expectedLabels) {
-		return true
+	// Check that all expected labels are present with correct values
+	// (Allows Kubernetes-managed labels to exist without triggering updates)
+	for key, expectedValue := range expectedLabels {
+		if actualValue, exists := deployment.Labels[key]; !exists || actualValue != expectedValue {
+			return true
+		}
 	}
 
-	if !maps.Equal(deployment.Annotations, expectedAnnotations) {
-		return true
+	// Check that all expected annotations are present with correct values
+	// (Allows Kubernetes-managed annotations like deployment.kubernetes.io/revision to exist)
+	for key, expectedValue := range expectedAnnotations {
+		if actualValue, exists := deployment.Annotations[key]; !exists || actualValue != expectedValue {
+			return true
+		}
 	}
 
 	return false
@@ -860,6 +906,310 @@ func vmcpConfigMapName(vmcpName string) string {
 func createVmcpServiceURL(vmcpName, namespace string, port int32) string {
 	serviceName := vmcpServiceName(vmcpName)
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
+}
+
+// convertExternalAuthConfigToStrategy converts an MCPExternalAuthConfig to a BackendAuthStrategy.
+// This uses the converter registry to support all auth types (token exchange, header injection, etc.).
+// For ConfigMap mode (inline), secrets are referenced as environment variables that will be
+// mounted in the deployment. Each ExternalAuthConfig gets a unique env var name to avoid conflicts.
+func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
+	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+) (*authtypes.BackendAuthStrategy, error) {
+	// Use the converter registry to convert to typed strategy
+	registry := converters.DefaultRegistry()
+	converter, err := registry.GetConverter(externalAuthConfig.Spec.Type)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to typed BackendAuthStrategy (this will use env var references for secrets)
+	strategy, err := converter.ConvertToStrategy(externalAuthConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert external auth config to strategy: %w", err)
+	}
+
+	// Set unique env var names per ExternalAuthConfig to avoid conflicts
+	// when multiple configs of the same type reference different secrets
+	if strategy.TokenExchange != nil &&
+		externalAuthConfig.Spec.TokenExchange != nil &&
+		externalAuthConfig.Spec.TokenExchange.ClientSecretRef != nil {
+		strategy.TokenExchange.ClientSecretEnv = generateUniqueTokenExchangeEnvVarName(externalAuthConfig.Name)
+	}
+	if strategy.HeaderInjection != nil &&
+		externalAuthConfig.Spec.HeaderInjection != nil &&
+		externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
+		strategy.HeaderInjection.HeaderValueEnv = generateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
+	}
+
+	return strategy, nil
+}
+
+// generateUniqueTokenExchangeEnvVarName generates a unique environment variable name for token exchange
+// client secrets, incorporating the ExternalAuthConfig name to ensure uniqueness.
+func generateUniqueTokenExchangeEnvVarName(configName string) string {
+	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
+	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
+	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
+	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
+	return fmt.Sprintf("TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_%s", sanitized)
+}
+
+// generateUniqueHeaderInjectionEnvVarName generates a unique environment variable name for header injection
+// values, incorporating the ExternalAuthConfig name to ensure uniqueness.
+func generateUniqueHeaderInjectionEnvVarName(configName string) string {
+	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
+	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
+	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
+	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
+	return fmt.Sprintf("TOOLHIVE_HEADER_INJECTION_VALUE_%s", sanitized)
+}
+
+// convertBackendAuthConfigToVMCP converts a BackendAuthConfig from CRD to vmcp config.
+func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
+	ctx context.Context,
+	namespace string,
+	crdConfig *mcpv1alpha1.BackendAuthConfig,
+) (*authtypes.BackendAuthStrategy, error) {
+	// For type="discovered", return a minimal strategy (will be populated by discovery)
+	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeDiscovered {
+		return &authtypes.BackendAuthStrategy{
+			Type: crdConfig.Type,
+		}, nil
+	}
+
+	// For type="external_auth_config_ref", fetch and convert the referenced config
+	if crdConfig.ExternalAuthConfigRef != nil {
+		// Fetch the MCPExternalAuthConfig and convert it
+		externalAuthConfig, err := ctrlutil.GetExternalAuthConfigByName(
+			ctx, r.Client, namespace, crdConfig.ExternalAuthConfigRef.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", crdConfig.ExternalAuthConfigRef.Name, err)
+		}
+
+		// Convert the external auth config to strategy
+		return r.convertExternalAuthConfigToStrategy(externalAuthConfig)
+	}
+
+	// Fallback: return minimal strategy
+	return &authtypes.BackendAuthStrategy{
+		Type: crdConfig.Type,
+	}, nil
+}
+
+// discovers ExternalAuthConfig from MCPServers and adds them to the outgoing config
+func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	workloadNames []string,
+	outgoing *vmcpconfig.OutgoingAuthConfig,
+) {
+	ctxLogger := log.FromContext(ctx)
+
+	// TODO: Optimize this by doing a List operation with a label selector or field selector
+	// to fetch all MCPServers in the namespace at once, then filter by names, rather than
+	// doing N Get calls. This would reduce API calls and improve performance for groups
+	// with many workloads.
+	for _, workloadName := range workloadNames {
+		mcpServer := &mcpv1alpha1.MCPServer{}
+		if err := r.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: vmcp.Namespace}, mcpServer); err != nil {
+			// Skip if MCPServer not found (might be a different workload type)
+			continue
+		}
+
+		// Only process if MCPServer has ExternalAuthConfigRef
+		if mcpServer.Spec.ExternalAuthConfigRef == nil {
+			continue
+		}
+
+		// Fetch the MCPExternalAuthConfig
+		externalAuthConfig, err := ctrlutil.GetExternalAuthConfigByName(
+			ctx, r.Client, vmcp.Namespace, mcpServer.Spec.ExternalAuthConfigRef.Name)
+		if err != nil {
+			ctxLogger.V(1).Info("Failed to get MCPExternalAuthConfig for backend, skipping",
+				"backend", workloadName,
+				"externalAuthConfig", mcpServer.Spec.ExternalAuthConfigRef.Name,
+				"error", err)
+			continue
+		}
+
+		// Convert MCPExternalAuthConfig to BackendAuthStrategy
+		strategy, err := r.convertExternalAuthConfigToStrategy(externalAuthConfig)
+		if err != nil {
+			ctxLogger.V(1).Info("Failed to convert MCPExternalAuthConfig to strategy, skipping",
+				"backend", workloadName,
+				"externalAuthConfig", externalAuthConfig.Name,
+				"error", err)
+			continue
+		}
+
+		// Only add if not already overridden in inline config
+		if vmcp.Spec.OutgoingAuth == nil || vmcp.Spec.OutgoingAuth.Backends == nil {
+			outgoing.Backends[workloadName] = strategy
+		} else if _, exists := vmcp.Spec.OutgoingAuth.Backends[workloadName]; !exists {
+			// Only add discovered config if not explicitly overridden
+			outgoing.Backends[workloadName] = strategy
+		}
+	}
+}
+
+// buildOutgoingAuthConfig builds an OutgoingAuthConfig from the VirtualMCPServer spec,
+// discovering ExternalAuthConfig from MCPServers when source is "discovered".
+func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	workloadNames []string,
+) (*vmcpconfig.OutgoingAuthConfig, error) {
+	// Determine source - default to "discovered" if not specified
+	source := OutgoingAuthSourceDiscovered
+	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Source != "" {
+		source = vmcp.Spec.OutgoingAuth.Source
+	}
+
+	outgoing := &vmcpconfig.OutgoingAuthConfig{
+		Source:   source,
+		Backends: make(map[string]*authtypes.BackendAuthStrategy),
+	}
+
+	// Convert Default if specified
+	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Default != nil {
+		defaultStrategy, err := r.convertBackendAuthConfigToVMCP(ctx, vmcp.Namespace, vmcp.Spec.OutgoingAuth.Default)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert default auth config: %w", err)
+		}
+		outgoing.Default = defaultStrategy
+	}
+
+	// Discover ExternalAuthConfig from MCPServers if source is "discovered"
+	if source == OutgoingAuthSourceDiscovered {
+		r.discoverExternalAuthConfigs(ctx, vmcp, workloadNames, outgoing)
+	}
+
+	// Apply inline overrides (works for all source modes)
+	if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
+		for backendName, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
+			strategy, err := r.convertBackendAuthConfigToVMCP(ctx, vmcp.Namespace, &backendAuth)
+			if err != nil {
+				return nil, fmt.Errorf("failed to convert backend auth config for %s: %w", backendName, err)
+			}
+			outgoing.Backends[backendName] = strategy
+		}
+	}
+
+	return outgoing, nil
+}
+
+// discoverBackends discovers all MCPServers in the referenced MCPGroup and returns
+// a list of DiscoveredBackend objects with their current status.
+// This reuses the existing workload discovery code from pkg/vmcp/workloads.
+func (r *VirtualMCPServerReconciler) discoverBackends(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) ([]mcpv1alpha1.DiscoveredBackend, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	// Create groups manager using the controller's client and VirtualMCPServer's namespace
+	groupsManager := groups.NewCRDManager(r.Client, vmcp.Namespace)
+
+	// Create K8S workload discoverer for the VirtualMCPServer's namespace
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(r.Client, vmcp.Namespace)
+
+	// Get all workload names in the group
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.Spec.GroupRef.Name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list workloads in group: %w", err)
+	}
+
+	// Build outgoing auth config only if OutgoingAuth is explicitly configured
+	// This allows the aggregator to apply auth config to backends based on source mode
+	var authConfig *vmcpconfig.OutgoingAuthConfig
+	if vmcp.Spec.OutgoingAuth != nil {
+		var err error
+		authConfig, err = r.buildOutgoingAuthConfig(ctx, vmcp, workloadNames)
+		if err != nil {
+			ctxLogger.V(1).Info("Failed to build outgoing auth config, continuing without auth",
+				"error", err)
+			// Continue without auth config rather than failing
+			authConfig = nil
+		}
+	}
+
+	// Use the aggregator's unified backend discoverer to reuse discovery logic
+	backendDiscoverer := aggregator.NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig)
+
+	// Discover backends using the aggregator
+	backends, err := backendDiscoverer.Discover(ctx, vmcp.Spec.GroupRef.Name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover backends: %w", err)
+	}
+
+	// Create a map of discovered backend names for quick lookup
+	discoveredBackendMap := make(map[string]*vmcptypes.Backend, len(backends))
+	for i := range backends {
+		discoveredBackendMap[backends[i].Name] = &backends[i]
+	}
+
+	discoveredBackends := make([]mcpv1alpha1.DiscoveredBackend, 0, len(workloadNames))
+	now := metav1.Now()
+
+	// Convert vmcp.Backend to DiscoveredBackend for all workloads in the group
+	for _, workloadName := range workloadNames {
+		backend, found := discoveredBackendMap[workloadName]
+		if !found {
+			// Workload exists but is not accessible (no URL or error)
+			discoveredBackends = append(discoveredBackends, mcpv1alpha1.DiscoveredBackend{
+				Name:            workloadName,
+				Status:          "unavailable",
+				LastHealthCheck: now,
+			})
+			continue
+		}
+
+		// Convert vmcp.Backend to DiscoveredBackend
+		// Map health status from BackendHealthStatus to string
+		var backendStatus string
+		switch backend.HealthStatus {
+		case vmcptypes.BackendHealthy:
+			backendStatus = "ready"
+		case vmcptypes.BackendUnhealthy, vmcptypes.BackendUnauthenticated:
+			backendStatus = "unavailable"
+		case vmcptypes.BackendDegraded:
+			backendStatus = "degraded"
+		case vmcptypes.BackendUnknown:
+			backendStatus = "unknown"
+		default:
+			backendStatus = "unknown"
+		}
+
+		// Extract auth config reference directly from MCPServer
+		// (Backend.AuthMetadata is populated later by aggregator, so we query MCPServer directly)
+		authConfigRef := ""
+		authType := ""
+		mcpServer := &mcpv1alpha1.MCPServer{}
+		if err := r.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: vmcp.Namespace}, mcpServer); err == nil {
+			if mcpServer.Spec.ExternalAuthConfigRef != nil {
+				authConfigRef = mcpServer.Spec.ExternalAuthConfigRef.Name
+				authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef
+			}
+		}
+
+		discoveredBackend := mcpv1alpha1.DiscoveredBackend{
+			Name:            backend.Name,
+			AuthConfigRef:   authConfigRef,
+			AuthType:        authType,
+			Status:          backendStatus,
+			LastHealthCheck: now,
+			URL:             backend.BaseURL,
+		}
+
+		discoveredBackends = append(discoveredBackends, discoveredBackend)
+		ctxLogger.V(1).Info("Discovered backend",
+			"name", backend.Name,
+			"status", backendStatus,
+			"url", backend.BaseURL,
+			"authConfigRef", authConfigRef)
+	}
+
+	return discoveredBackends, nil
 }
 
 // SetupWithManager sets up the controller with the Manager

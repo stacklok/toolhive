@@ -1,5 +1,10 @@
 FROM golang:1.25-alpine AS builder
 
+{{if .BuildEnv}}
+# Custom build environment variables
+{{range $key, $value := .BuildEnv}}ENV {{$key}}="{{$value}}"
+{{end}}
+{{end}}
 {{if .CACertContent}}
 # Add custom CA certificate BEFORE any network operations
 # This ensures that package managers can verify TLS certificates in corporate networks
@@ -99,4 +104,4 @@ COPY --from=builder --chown=appuser:appgroup /build/ /app/
 USER appuser
 
 # Run the pre-built MCP server binary
-ENTRYPOINT ["/app/mcp-server"]
+ENTRYPOINT ["/app/mcp-server"{{range .BuildArgs}}, "{{.}}"{{end}}]

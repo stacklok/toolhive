@@ -1,5 +1,10 @@
 FROM node:22-alpine AS builder
 
+{{if .BuildEnv}}
+# Custom build environment variables
+{{range $key, $value := .BuildEnv}}ENV {{$key}}="{{$value}}"
+{{end}}
+{{end}}
 {{if .CACertContent}}
 # Add custom CA certificate BEFORE any network operations
 # This ensures that package managers can verify TLS certificates in corporate networks
@@ -95,11 +100,6 @@ ENV NODE_PATH=/app/node_modules \
 # Switch to non-root user
 USER appuser
 
-# `MCPPackage` may include a version suffix (e.g., `package@1.2.3`), which we cannot use here.
-# Create a small wrapper script to handle this.
-RUN echo "#!/bin/sh" >> entrypoint.sh && \
-    echo "exec npx {{.MCPPackage}} \"\$@\"" >> entrypoint.sh && \
-    chmod +x entrypoint.sh
-
-# Run the preinstalled MCP package directly using npx.
-ENTRYPOINT ["./entrypoint.sh"]
+# Run the preinstalled MCP package directly using npx
+# MCPPackageClean has version suffix already stripped (e.g., @org/package@1.2.3 -> @org/package)
+ENTRYPOINT ["npx", "{{.MCPPackageClean}}"{{range .BuildArgs}}, "{{.}}"{{end}}]

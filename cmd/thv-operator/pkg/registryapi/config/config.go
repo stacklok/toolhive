@@ -101,19 +101,62 @@ const (
 type Config struct {
 	// RegistryName is the name/identifier for this registry instance
 	// Defaults to "default" if not specified
-	RegistryName string            `yaml:"registryName,omitempty"`
-	Source       *SourceConfig     `yaml:"source"`
-	SyncPolicy   *SyncPolicyConfig `yaml:"syncPolicy,omitempty"`
-	Filter       *FilterConfig     `yaml:"filter,omitempty"`
+	RegistryName string           `yaml:"registryName,omitempty"`
+	Registries   []RegistryConfig `yaml:"registries"`
+	Database     *DatabaseConfig  `yaml:"database,omitempty"`
 }
 
-// SourceConfig defines the data source configuration
-type SourceConfig struct {
-	Type   string      `yaml:"type"`
-	Format string      `yaml:"format"`
-	Git    *GitConfig  `yaml:"git,omitempty"`
-	API    *APIConfig  `yaml:"api,omitempty"`
-	File   *FileConfig `yaml:"file,omitempty"`
+// DatabaseConfig defines PostgreSQL database configuration
+// Uses two-user security model: separate users for operations and migrations
+type DatabaseConfig struct {
+	// Host is the database server hostname
+	Host string `yaml:"host"`
+
+	// Port is the database server port
+	Port int `yaml:"port"`
+
+	// User is the application user (limited privileges: SELECT, INSERT, UPDATE, DELETE)
+	// Credentials provided via pgpass file
+	User string `yaml:"user"`
+
+	// MigrationUser is the migration user (elevated privileges: CREATE, ALTER, DROP)
+	// Used for running database schema migrations
+	// Credentials provided via pgpass file
+	MigrationUser string `yaml:"migrationUser"`
+
+	// Database is the database name
+	Database string `yaml:"database"`
+
+	// SSLMode is the SSL mode for the connection
+	SSLMode string `yaml:"sslMode"`
+
+	// MaxOpenConns is the maximum number of open connections to the database
+	MaxOpenConns int `yaml:"maxOpenConns"`
+
+	// MaxIdleConns is the maximum number of idle connections in the pool
+	MaxIdleConns int `yaml:"maxIdleConns"`
+
+	// ConnMaxLifetime is the maximum amount of time a connection may be reused
+	ConnMaxLifetime string `yaml:"connMaxLifetime"`
+}
+
+// RegistryConfig defines the configuration for a registry data source
+type RegistryConfig struct {
+	// Name is a unique identifier for this registry configuration
+	Name       string            `yaml:"name"`
+	Format     string            `yaml:"format"`
+	Git        *GitConfig        `yaml:"git,omitempty"`
+	API        *APIConfig        `yaml:"api,omitempty"`
+	File       *FileConfig       `yaml:"file,omitempty"`
+	Kubernetes *KubernetesConfig `yaml:"kubernetes,omitempty"`
+	SyncPolicy *SyncPolicyConfig `yaml:"syncPolicy,omitempty"`
+	Filter     *FilterConfig     `yaml:"filter,omitempty"`
+}
+
+// KubernetesConfig defines a Kubernetes-based registry source where data is discovered
+// from MCPServer resources in the cluster. This is the default type for the built-in "default" registry.
+type KubernetesConfig struct {
+	// Empty struct - presence indicates this is a Kubernetes registry
 }
 
 // GitConfig defines Git source settings
@@ -197,6 +240,9 @@ func (c *Config) ToConfigMapWithContentChecksum(mcpRegistry *mcpv1alpha1.MCPRegi
 	return configMap, nil
 }
 
+// DefaultRegistryName is the name of the default managed registry
+const DefaultRegistryName = "default"
+
 func (cm *configManager) BuildConfig() (*Config, error) {
 	config := Config{}
 
@@ -208,102 +254,152 @@ func (cm *configManager) BuildConfig() (*Config, error) {
 
 	config.RegistryName = mcpRegistry.Name
 
-	if err := buildSourceConfig(&mcpRegistry.Spec.Source, &config); err != nil {
-		return nil, fmt.Errorf("failed to build source configuration: %w", err)
+	if len(mcpRegistry.Spec.Registries) == 0 {
+		return nil, fmt.Errorf("at least one registry must be specified")
 	}
 
-	if err := buildSyncPolicyConfig(mcpRegistry.Spec.SyncPolicy, &config); err != nil {
-		return nil, fmt.Errorf("failed to build sync policy configuration: %w", err)
+	// Validate registry names are unique
+	if err := validateRegistryNames(mcpRegistry.Spec.Registries); err != nil {
+		return nil, fmt.Errorf("invalid registry configuration: %w", err)
 	}
 
-	buildFilterConfig(mcpRegistry.Spec.Filter, &config)
+	// Build registry configs from user-specified registries
+	userRegistries := make([]RegistryConfig, 0, len(mcpRegistry.Spec.Registries))
+	for _, registrySpec := range mcpRegistry.Spec.Registries {
+		registryConfig, err := buildRegistryConfig(&registrySpec)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build registry configuration for %q: %w", registrySpec.Name, err)
+		}
+		userRegistries = append(userRegistries, *registryConfig)
+	}
+
+	// Prepend the default kubernetes registry as the first entry
+	defaultRegistry := RegistryConfig{
+		Name:       DefaultRegistryName,
+		Kubernetes: &KubernetesConfig{},
+	}
+	config.Registries = append([]RegistryConfig{defaultRegistry}, userRegistries...)
+
+	// Build database configuration from CRD spec or use defaults
+	config.Database = buildDatabaseConfig(mcpRegistry.Spec.DatabaseConfig)
 
 	return &config, nil
 }
 
-func buildFilterConfig(filter *mcpv1alpha1.RegistryFilter, config *Config) {
-	if filter == nil {
-		return
-	}
-
-	// Initialize Filter if needed
-	if config.Filter == nil {
-		config.Filter = &FilterConfig{}
-	}
-
-	if filter.NameFilters != nil {
-		config.Filter.Names = &NameFilterConfig{
-			Include: filter.NameFilters.Include,
-			Exclude: filter.NameFilters.Exclude,
+// validateRegistryNames ensures all registry names are unique
+func validateRegistryNames(registries []mcpv1alpha1.MCPRegistryConfig) error {
+	seen := make(map[string]bool)
+	for _, registry := range registries {
+		if registry.Name == "" {
+			return fmt.Errorf("registry name is required")
 		}
-	}
-
-	if filter.Tags != nil {
-		config.Filter.Tags = &TagFilterConfig{
-			Include: filter.Tags.Include,
-			Exclude: filter.Tags.Exclude,
+		if seen[registry.Name] {
+			return fmt.Errorf("duplicate registry name: %q", registry.Name)
 		}
+		seen[registry.Name] = true
 	}
-}
-
-func buildSyncPolicyConfig(syncPolicy *mcpv1alpha1.SyncPolicy, config *Config) error {
-	if syncPolicy == nil {
-		return fmt.Errorf("sync policy configuration is required")
-	}
-
-	if syncPolicy.Interval == "" {
-		return fmt.Errorf("sync policy interval is required")
-	}
-
-	config.SyncPolicy = &SyncPolicyConfig{
-		Interval: syncPolicy.Interval,
-	}
-
 	return nil
 }
 
-func buildSourceConfig(source *mcpv1alpha1.MCPRegistrySource, config *Config) error {
-	if source == nil || source.Type == "" {
-		return fmt.Errorf("source type is required")
+func buildFilePath(registryName string) *FileConfig {
+	return buildFilePathWithCustomName(registryName, RegistryJSONFileName)
+}
+
+func buildFilePathWithCustomName(registryName string, filename string) *FileConfig {
+	return &FileConfig{
+		Path: filepath.Join(RegistryJSONFilePath, registryName, filename),
+	}
+}
+
+//nolint:gocyclo // Complexity is acceptable for handling multiple source types
+func buildRegistryConfig(registrySpec *mcpv1alpha1.MCPRegistryConfig) (*RegistryConfig, error) {
+	if registrySpec.Name == "" {
+		return nil, fmt.Errorf("registry name is required")
 	}
 
-	sourceConfig := SourceConfig{}
-
-	if source.Format == "" {
-		return fmt.Errorf("source format is required")
+	registryConfig := RegistryConfig{
+		Name:   registrySpec.Name,
+		Format: registrySpec.Format,
 	}
-	sourceConfig.Format = source.Format
 
-	switch source.Type {
-	case mcpv1alpha1.RegistrySourceTypeConfigMap:
+	if registrySpec.Format == "" {
+		registryConfig.Format = mcpv1alpha1.RegistryFormatToolHive
+	}
+
+	// Determine source type and build appropriate config
+	sourceCount := 0
+	if registrySpec.ConfigMapRef != nil {
+		sourceCount++
 		// we use the file source config for configmap sources
 		// because the configmap will be mounted as a file in the registry server container.
 		// this stops the registry server worrying about configmap sources when all it has to do
 		// is read the file on startup
-		sourceConfig.File = &FileConfig{
-			Path: filepath.Join(RegistryJSONFilePath, RegistryJSONFileName),
-		}
-		sourceConfig.Type = SourceTypeFile
-	case mcpv1alpha1.RegistrySourceTypeGit:
-		gitConfig, err := buildGitSourceConfig(source.Git)
+		registryConfig.File = buildFilePath(registrySpec.Name)
+	}
+	if registrySpec.Git != nil {
+		sourceCount++
+		gitConfig, err := buildGitSourceConfig(registrySpec.Git)
 		if err != nil {
-			return fmt.Errorf("failed to build Git source configuration: %w", err)
+			return nil, fmt.Errorf("failed to build Git source configuration: %w", err)
 		}
-		sourceConfig.Git = gitConfig
-		sourceConfig.Type = SourceTypeGit
-	case mcpv1alpha1.RegistrySourceTypeAPI:
-		apiConfig, err := buildAPISourceConfig(source.API)
+		registryConfig.Git = gitConfig
+	}
+	if registrySpec.API != nil {
+		sourceCount++
+		apiConfig, err := buildAPISourceConfig(registrySpec.API)
 		if err != nil {
-			return fmt.Errorf("failed to build API source configuration: %w", err)
+			return nil, fmt.Errorf("failed to build API source configuration: %w", err)
 		}
-		sourceConfig.API = apiConfig
-		sourceConfig.Type = SourceTypeAPI
-	default:
-		return fmt.Errorf("unsupported source type: %s", source.Type)
+		registryConfig.API = apiConfig
+	}
+	if registrySpec.PVCRef != nil {
+		sourceCount++
+		// PVC sources are mounted at /config/registry/{registryName}/
+		// File path: /config/registry/{registryName}/{pvcRef.path}
+		// Multiple registries can share the same PVC by mounting it at different paths
+		pvcPath := RegistryJSONFileName
+		if registrySpec.PVCRef.Path != "" {
+			pvcPath = registrySpec.PVCRef.Path
+		}
+		registryConfig.File = buildFilePathWithCustomName(registrySpec.Name, pvcPath)
 	}
 
-	config.Source = &sourceConfig
-	return nil
+	if sourceCount == 0 {
+		return nil, fmt.Errorf("exactly one source type (ConfigMapRef, Git, API, or PVCRef) must be specified")
+	}
+	if sourceCount > 1 {
+		return nil, fmt.Errorf("only one source type (ConfigMapRef, Git, API, or PVCRef) can be specified")
+	}
+
+	// Build sync policy
+	if registrySpec.SyncPolicy != nil {
+		if registrySpec.SyncPolicy.Interval == "" {
+			return nil, fmt.Errorf("sync policy interval is required")
+		}
+		registryConfig.SyncPolicy = &SyncPolicyConfig{
+			Interval: registrySpec.SyncPolicy.Interval,
+		}
+	}
+
+	// Build filter
+	if registrySpec.Filter != nil {
+		filterConfig := &FilterConfig{}
+		if registrySpec.Filter.NameFilters != nil {
+			filterConfig.Names = &NameFilterConfig{
+				Include: registrySpec.Filter.NameFilters.Include,
+				Exclude: registrySpec.Filter.NameFilters.Exclude,
+			}
+		}
+		if registrySpec.Filter.Tags != nil {
+			filterConfig.Tags = &TagFilterConfig{
+				Include: registrySpec.Filter.Tags.Include,
+				Exclude: registrySpec.Filter.Tags.Exclude,
+			}
+		}
+		registryConfig.Filter = filterConfig
+	}
+
+	return &registryConfig, nil
 }
 
 func buildGitSourceConfig(git *mcpv1alpha1.GitSource) (*GitConfig, error) {
@@ -345,4 +441,57 @@ func buildAPISourceConfig(api *mcpv1alpha1.APISource) (*APIConfig, error) {
 	return &APIConfig{
 		Endpoint: api.Endpoint,
 	}, nil
+}
+
+// buildDatabaseConfig creates a DatabaseConfig from the CRD spec.
+// If the spec is nil or fields are empty, sensible defaults are used.
+func buildDatabaseConfig(dbConfig *mcpv1alpha1.MCPRegistryDatabaseConfig) *DatabaseConfig {
+	// Default values
+	config := &DatabaseConfig{
+		Host:            "postgres",
+		Port:            5432,
+		User:            "db_app",
+		MigrationUser:   "db_migrator",
+		Database:        "registry",
+		SSLMode:         "prefer",
+		MaxOpenConns:    10,
+		MaxIdleConns:    2,
+		ConnMaxLifetime: "30m",
+	}
+
+	// If no database config specified, return defaults
+	if dbConfig == nil {
+		return config
+	}
+
+	// Override defaults with values from CRD spec if provided
+	if dbConfig.Host != "" {
+		config.Host = dbConfig.Host
+	}
+	if dbConfig.Port != 0 {
+		config.Port = dbConfig.Port
+	}
+	if dbConfig.User != "" {
+		config.User = dbConfig.User
+	}
+	if dbConfig.MigrationUser != "" {
+		config.MigrationUser = dbConfig.MigrationUser
+	}
+	if dbConfig.Database != "" {
+		config.Database = dbConfig.Database
+	}
+	if dbConfig.SSLMode != "" {
+		config.SSLMode = dbConfig.SSLMode
+	}
+	if dbConfig.MaxOpenConns != 0 {
+		config.MaxOpenConns = dbConfig.MaxOpenConns
+	}
+	if dbConfig.MaxIdleConns != 0 {
+		config.MaxIdleConns = dbConfig.MaxIdleConns
+	}
+	if dbConfig.ConnMaxLifetime != "" {
+		config.ConnMaxLifetime = dbConfig.ConnMaxLifetime
+	}
+
+	return config
 }

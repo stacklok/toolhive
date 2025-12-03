@@ -34,10 +34,6 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	CompositeToolRefs []CompositeToolDefinitionRef `json:"compositeToolRefs,omitempty"`
 
-	// TokenCache configures token caching behavior
-	// +optional
-	TokenCache *TokenCacheConfig `json:"tokenCache,omitempty"`
-
 	// Operational defines operational settings like timeouts and health checks
 	// +optional
 	Operational *OperationalConfig `json:"operational,omitempty"`
@@ -68,8 +64,8 @@ type GroupRef struct {
 
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
 type IncomingAuthConfig struct {
-	// Type defines the authentication type: anonymous, local, or oidc
-	// +kubebuilder:validation:Enum=anonymous;local;oidc
+	// Type defines the authentication type: anonymous or oidc
+	// +kubebuilder:validation:Enum=anonymous;oidc
 	// +optional
 	Type string `json:"type,omitempty"`
 
@@ -89,8 +85,7 @@ type OutgoingAuthConfig struct {
 	// Source defines how backend authentication configurations are determined
 	// - discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef
 	// - inline: Explicit per-backend configuration in VirtualMCPServer
-	// - mixed: Discover most, override specific backends
-	// +kubebuilder:validation:Enum=discovered;inline;mixed
+	// +kubebuilder:validation:Enum=discovered;inline
 	// +kubebuilder:default=discovered
 	// +optional
 	Source string `json:"source,omitempty"`
@@ -100,7 +95,7 @@ type OutgoingAuthConfig struct {
 	Default *BackendAuthConfig `json:"default,omitempty"`
 
 	// Backends defines per-backend authentication overrides
-	// Works in all modes (discovered, inline, mixed)
+	// Works in all modes (discovered, inline)
 	// +optional
 	Backends map[string]BackendAuthConfig `json:"backends,omitempty"`
 }
@@ -108,7 +103,7 @@ type OutgoingAuthConfig struct {
 // BackendAuthConfig defines authentication configuration for a backend MCPServer
 type BackendAuthConfig struct {
 	// Type defines the authentication type
-	// +kubebuilder:validation:Enum=discovered;pass_through;external_auth_config_ref
+	// +kubebuilder:validation:Enum=discovered;external_auth_config_ref
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 
@@ -185,9 +180,22 @@ type CompositeToolSpec struct {
 	// +kubebuilder:validation:Required
 	Description string `json:"description"`
 
-	// Parameters defines the input parameters for the composite tool
+	// Parameters defines the input parameter schema in JSON Schema format.
+	// Should be a JSON Schema object with "type": "object" and "properties".
+	// Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
+	// Example:
+	//   {
+	//     "type": "object",
+	//     "properties": {
+	//       "param1": {"type": "string", "default": "value"},
+	//       "param2": {"type": "integer"}
+	//     },
+	//     "required": ["param2"]
+	//   }
 	// +optional
-	Parameters map[string]ParameterSpec `json:"parameters,omitempty"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	Parameters *runtime.RawExtension `json:"parameters,omitempty"`
 
 	// Steps defines the workflow steps
 	// +kubebuilder:validation:Required
@@ -198,26 +206,54 @@ type CompositeToolSpec struct {
 	// +kubebuilder:default="30m"
 	// +optional
 	Timeout string `json:"timeout,omitempty"`
+
+	// Output defines the structured output schema for the composite tool.
+	// Specifies how to construct the final output from workflow step results.
+	// If not specified, the workflow returns the last step's output (backward compatible).
+	// +optional
+	Output *OutputSpec `json:"output,omitempty"`
 }
 
-// ParameterSpec defines a parameter for a composite tool
-type ParameterSpec struct {
-	// Type is the parameter type (string, integer, boolean, etc.)
+// OutputSpec defines the structured output schema for a composite tool workflow
+type OutputSpec struct {
+	// Properties defines the output properties
+	// Map key is the property name, value is the property definition
+	// +optional
+	Properties map[string]OutputPropertySpec `json:"properties,omitempty"`
+
+	// Required lists property names that must be present in the output
+	// +optional
+	Required []string `json:"required,omitempty"`
+}
+
+// OutputPropertySpec defines a single output property
+type OutputPropertySpec struct {
+	// Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array"
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=string;integer;number;boolean;object;array
 	Type string `json:"type"`
 
-	// Description describes the parameter
+	// Description is a human-readable description exposed to clients and models
 	// +optional
 	Description string `json:"description,omitempty"`
 
-	// Default is the default value for the parameter
+	// Value is a template string for constructing the runtime value
+	// Supports template syntax: {{.steps.step_id.output.field}}, {{.params.param_name}}
+	// For object types, this can be a JSON string that will be deserialized
 	// +optional
-	Default string `json:"default,omitempty"`
+	Value string `json:"value,omitempty"`
 
-	// Required indicates if the parameter is required
-	// +kubebuilder:default=false
+	// Properties defines nested properties for object types
 	// +optional
-	Required bool `json:"required,omitempty"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
+	Properties map[string]OutputPropertySpec `json:"properties,omitempty"`
+
+	// Default is the fallback value if template expansion fails
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
+	Default *runtime.RawExtension `json:"default,omitempty"`
 }
 
 // WorkflowStep defines a step in a composite tool workflow
@@ -282,64 +318,12 @@ type ErrorHandling struct {
 	// Only used when Action is "retry"
 	// +optional
 	MaxRetries int `json:"maxRetries,omitempty"`
-}
 
-// TokenCacheConfig configures token caching behavior
-type TokenCacheConfig struct {
-	// Provider defines the cache provider type
-	// +kubebuilder:validation:Enum=memory;redis
-	// +kubebuilder:default=memory
+	// RetryDelay is the delay between retry attempts
+	// Only used when Action is "retry"
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m))+$`
 	// +optional
-	Provider string `json:"provider,omitempty"`
-
-	// Memory configures in-memory token caching
-	// Only used when Provider is "memory"
-	// +optional
-	Memory *MemoryCacheConfig `json:"memory,omitempty"`
-
-	// Redis configures Redis token caching
-	// Only used when Provider is "redis"
-	// +optional
-	Redis *RedisCacheConfig `json:"redis,omitempty"`
-}
-
-// MemoryCacheConfig configures in-memory token caching
-type MemoryCacheConfig struct {
-	// MaxEntries is the maximum number of cache entries
-	// +kubebuilder:default=1000
-	// +optional
-	MaxEntries int `json:"maxEntries,omitempty"`
-
-	// TTLOffset is the duration before token expiry to refresh
-	// +kubebuilder:default="5m"
-	// +optional
-	TTLOffset string `json:"ttlOffset,omitempty"`
-}
-
-// RedisCacheConfig configures Redis token caching
-type RedisCacheConfig struct {
-	// Address is the Redis server address
-	// +kubebuilder:validation:Required
-	Address string `json:"address"`
-
-	// DB is the Redis database number
-	// +kubebuilder:default=0
-	// +optional
-	DB int `json:"db,omitempty"`
-
-	// KeyPrefix is the prefix for cache keys
-	// +kubebuilder:default="vmcp:tokens:"
-	// +optional
-	KeyPrefix string `json:"keyPrefix,omitempty"`
-
-	// PasswordRef references a secret containing the Redis password
-	// +optional
-	PasswordRef *SecretKeyRef `json:"passwordRef,omitempty"`
-
-	// TLS enables TLS for Redis connections
-	// +kubebuilder:default=false
-	// +optional
-	TLS bool `json:"tls,omitempty"`
+	RetryDelay string `json:"retryDelay,omitempty"`
 }
 
 // OperationalConfig defines operational settings
@@ -408,6 +392,32 @@ type CircuitBreakerConfig struct {
 	Timeout string `json:"timeout,omitempty"`
 }
 
+// DiscoveredBackend represents a discovered backend MCPServer in the MCPGroup
+type DiscoveredBackend struct {
+	// Name is the name of the backend MCPServer
+	Name string `json:"name"`
+
+	// AuthConfigRef is the name of the discovered MCPExternalAuthConfig (if any)
+	// +optional
+	AuthConfigRef string `json:"authConfigRef,omitempty"`
+
+	// AuthType is the type of authentication configured
+	// +optional
+	AuthType string `json:"authType,omitempty"`
+
+	// Status is the current status of the backend (ready, degraded, unavailable)
+	// +optional
+	Status string `json:"status,omitempty"`
+
+	// LastHealthCheck is the timestamp of the last health check
+	// +optional
+	LastHealthCheck metav1.Time `json:"lastHealthCheck,omitempty"`
+
+	// URL is the URL of the backend MCPServer
+	// +optional
+	URL string `json:"url,omitempty"`
+}
+
 // VirtualMCPServerStatus defines the observed state of VirtualMCPServer
 type VirtualMCPServerStatus struct {
 	// Conditions represent the latest available observations of the VirtualMCPServer's state
@@ -430,6 +440,14 @@ type VirtualMCPServerStatus struct {
 	// URL is the URL where the Virtual MCP server can be accessed
 	// +optional
 	URL string `json:"url,omitempty"`
+
+	// DiscoveredBackends lists discovered backend configurations from the MCPGroup
+	// +optional
+	DiscoveredBackends []DiscoveredBackend `json:"discoveredBackends,omitempty"`
+
+	// BackendCount is the number of discovered backends
+	// +optional
+	BackendCount int `json:"backendCount,omitempty"`
 }
 
 // VirtualMCPServerPhase represents the lifecycle phase of a VirtualMCPServer
@@ -483,9 +501,6 @@ const (
 	// BackendAuthTypeDiscovered automatically discovers from backend's externalAuthConfigRef
 	BackendAuthTypeDiscovered = "discovered"
 
-	// BackendAuthTypePassThrough forwards client token unchanged
-	BackendAuthTypePassThrough = "pass_through"
-
 	// BackendAuthTypeExternalAuthConfigRef references an MCPExternalAuthConfig resource
 	BackendAuthTypeExternalAuthConfigRef = "external_auth_config_ref"
 )
@@ -511,11 +526,24 @@ const (
 	WorkflowStepTypeElicitation = "elicitation"
 )
 
+// Error handling actions
+const (
+	// ErrorActionAbort aborts the workflow on error
+	ErrorActionAbort = "abort"
+
+	// ErrorActionContinue continues the workflow on error
+	ErrorActionContinue = "continue"
+
+	// ErrorActionRetry retries the step on error
+	ErrorActionRetry = "retry"
+)
+
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=vmcp;virtualmcp
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="The phase of the VirtualMCPServer"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url",description="Virtual MCP server URL"
+//+kubebuilder:printcolumn:name="Backends",type="integer",JSONPath=".status.backendCount",description="Discovered backends count"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Age"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 

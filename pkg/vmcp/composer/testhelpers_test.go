@@ -3,6 +3,7 @@ package composer
 import (
 	"context"
 	"testing"
+	"time"
 
 	"go.uber.org/mock/gomock"
 
@@ -80,11 +81,19 @@ func (te *testEngine) expectToolCallWithAnyArgs(toolName string, output map[stri
 
 // newWorkflowContext creates a test workflow context.
 func newWorkflowContext(params map[string]any) *WorkflowContext {
+	startTime := time.Now().UTC()
 	return &WorkflowContext{
 		WorkflowID: "test-workflow",
 		Params:     params,
 		Steps:      make(map[string]*StepResult),
 		Variables:  make(map[string]any),
+		Workflow: &WorkflowMetadata{
+			ID:         "test-workflow",
+			StartTime:  startTime,
+			StepCount:  0,
+			Status:     WorkflowStatusPending,
+			DurationMs: 0,
+		},
 	}
 }
 

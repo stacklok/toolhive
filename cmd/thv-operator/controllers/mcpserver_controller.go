@@ -36,6 +36,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/transport"
 )
 
 // MCPServerReconciler reconciles a MCPServer object
@@ -388,9 +389,16 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	// Update the MCPServer status with the service URL
+	// Update the MCPServer status with the service URL including transport-specific path
 	if mcpServer.Status.URL == "" {
-		mcpServer.Status.URL = ctrlutil.CreateProxyServiceURL(mcpServer.Name, mcpServer.Namespace, mcpServer.GetProxyPort())
+		host := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, mcpServer.Namespace)
+		mcpServer.Status.URL = transport.GenerateMCPServerURL(
+			mcpServer.Spec.Transport,
+			host,
+			int(mcpServer.GetProxyPort()),
+			mcpServer.Name,
+			"", // empty remoteURL for MCPServer (not remote proxy)
+		)
 		err = r.Status().Update(ctx, mcpServer)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update MCPServer status")
@@ -496,7 +504,7 @@ func (r *MCPServerReconciler) validateAndUpdatePodTemplateStatus(ctx context.Con
 		return true
 	}
 
-	_, err := NewMCPServerPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec)
+	_, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
 	if err != nil {
 		// Record event for invalid PodTemplateSpec
 		if r.Recorder != nil {
@@ -906,7 +914,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Using ConfigMap mode for all configuration
 	// Pod template patch for secrets and service account
-	builder, err := NewMCPServerPodTemplateSpecBuilder(m.Spec.PodTemplateSpec)
+	builder, err := ctrlutil.NewPodTemplateSpecBuilder(m.Spec.PodTemplateSpec, mcpContainerName)
 	if err != nil {
 		// NOTE: This should be unreachable - early validation in Reconcile() blocks invalid specs
 		// This is defense-in-depth: if somehow reached, log and continue without pod customizations
@@ -1097,7 +1105,8 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 		if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides != nil {
 			if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels != nil {
-				deploymentLabels = ctrlutil.MergeLabels(ls, m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels)
+				deploymentTemplateLabels = ctrlutil.MergeLabels(ls,
+					m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Labels)
 			}
 			if m.Spec.ResourceOverrides.ProxyDeployment.PodTemplateMetadataOverrides.Annotations != nil {
 				deploymentTemplateAnnotations = ctrlutil.MergeAnnotations(deploymentAnnotations,
@@ -1445,7 +1454,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			serviceAccount = &defaultSA
 		}
 
-		builder, err := NewMCPServerPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec)
+		builder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
 		if err != nil {
 			// If we can't parse the PodTemplateSpec, consider it as needing update
 			return true

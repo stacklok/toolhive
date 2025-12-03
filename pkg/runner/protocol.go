@@ -11,6 +11,7 @@ import (
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
 	"github.com/stacklok/toolhive/pkg/certs"
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container/images"
 	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -32,12 +33,13 @@ func HandleProtocolScheme(
 	serverOrImage string,
 	caCertPath string,
 ) (string, error) {
-	return BuildFromProtocolSchemeWithName(ctx, imageManager, serverOrImage, caCertPath, "", false)
+	return BuildFromProtocolSchemeWithName(ctx, imageManager, serverOrImage, caCertPath, "", nil, false)
 }
 
 // BuildFromProtocolSchemeWithName checks if the serverOrImage string contains a protocol scheme (uvx://, npx://, or go://)
 // and builds a Docker image for it if needed with a custom image name.
 // If imageName is empty, a default name will be generated.
+// buildArgs are baked into the container's ENTRYPOINT at build time (e.g., required subcommands).
 // If dryRun is true, returns the Dockerfile content instead of building the image.
 // Returns the Docker image name (or Dockerfile content if dryRun) and any error encountered.
 func BuildFromProtocolSchemeWithName(
@@ -46,6 +48,7 @@ func BuildFromProtocolSchemeWithName(
 	serverOrImage string,
 	caCertPath string,
 	imageName string,
+	buildArgs []string,
 	dryRun bool,
 ) (string, error) {
 	transportType, packageName, err := ParseProtocolScheme(serverOrImage)
@@ -53,7 +56,7 @@ func BuildFromProtocolSchemeWithName(
 		return "", err
 	}
 
-	templateData, err := createTemplateData(transportType, packageName, caCertPath)
+	templateData, err := createTemplateData(transportType, packageName, caCertPath, buildArgs)
 	if err != nil {
 		return "", err
 	}
@@ -84,14 +87,35 @@ func ParseProtocolScheme(serverOrImage string) (templates.TransportType, string,
 	return "", "", fmt.Errorf("unsupported protocol scheme: %s", serverOrImage)
 }
 
-// createTemplateData creates the template data with optional CA certificate.
-func createTemplateData(transportType templates.TransportType, packageName, caCertPath string) (templates.TemplateData, error) {
+// validateBuildArgs ensures buildArgs don't contain single quotes which would break
+// shell quoting in the UVX template. Single quotes cannot be escaped within single-quoted
+// strings in shell, making them the only character that can enable command injection.
+// NPX and GO use JSON array ENTRYPOINTs without shell interpretation, so they're safe.
+func validateBuildArgs(buildArgs []string) error {
+	for _, arg := range buildArgs {
+		if strings.Contains(arg, "'") {
+			return fmt.Errorf("buildArg cannot contain single quotes: %s", arg)
+		}
+	}
+	return nil
+}
+
+// createTemplateData creates the template data with optional CA certificate and build arguments.
+func createTemplateData(
+	transportType templates.TransportType, packageName, caCertPath string, buildArgs []string,
+) (templates.TemplateData, error) {
+	// Validate buildArgs to prevent shell injection in templates that use sh -c
+	if err := validateBuildArgs(buildArgs); err != nil {
+		return templates.TemplateData{}, err
+	}
+
 	// Check if this is a local path (for Go packages only)
 	isLocalPath := transportType == templates.TransportTypeGO && isLocalGoPath(packageName)
 
 	templateData := templates.TemplateData{
 		MCPPackage:  packageName,
 		IsLocalPath: isLocalPath,
+		BuildArgs:   buildArgs,
 	}
 
 	if caCertPath != "" {
@@ -100,7 +124,20 @@ func createTemplateData(transportType templates.TransportType, packageName, caCe
 		}
 	}
 
+	// Load build environment variables from configuration
+	addBuildEnvToTemplate(&templateData)
+
 	return templateData, nil
+}
+
+// addBuildEnvToTemplate loads build environment variables from config and adds them to template data.
+func addBuildEnvToTemplate(templateData *templates.TemplateData) {
+	provider := config.NewProvider()
+	buildEnv := provider.GetAllBuildEnv()
+	if len(buildEnv) > 0 {
+		templateData.BuildEnv = buildEnv
+		logger.Debugf("Loaded %d build environment variable(s) from configuration", len(buildEnv))
+	}
 }
 
 // addCACertToTemplate reads and validates a CA certificate, adding it to the template data.

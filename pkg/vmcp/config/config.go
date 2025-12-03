@@ -11,14 +11,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
-)
-
-// Token cache provider types
-const (
-	// CacheProviderMemory represents in-memory token cache provider
-	CacheProviderMemory = "memory"
-	// CacheProviderRedis represents Redis token cache provider
-	CacheProviderRedis = "redis"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
@@ -89,9 +82,6 @@ type Config struct {
 	// For Kubernetes, complex workflows can also reference VirtualMCPCompositeToolDefinition CRDs.
 	CompositeTools []*CompositeToolConfig `json:"composite_tools,omitempty" yaml:"composite_tools,omitempty"`
 
-	// TokenCache configures token caching.
-	TokenCache *TokenCacheConfig `json:"token_cache,omitempty" yaml:"token_cache,omitempty"`
-
 	// Operational configures operational settings.
 	Operational *OperationalConfig `json:"operational,omitempty" yaml:"operational,omitempty"`
 
@@ -135,6 +125,14 @@ type OIDCConfig struct {
 
 	// Scopes are the required OAuth scopes.
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+
+	// ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
+	// Use with caution - only enable for trusted internal IDPs or testing
+	ProtectedResourceAllowPrivateIP bool `json:"protected_resource_allow_private_ip,omitempty" yaml:"protected_resource_allow_private_ip,omitempty"` //nolint:lll
+
+	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing
+	// WARNING: This is insecure and should NEVER be used in production
+	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 }
 
 // AuthzConfig configures authorization.
@@ -148,50 +146,38 @@ type AuthzConfig struct {
 
 // OutgoingAuthConfig configures backend authentication.
 type OutgoingAuthConfig struct {
-	// Source defines how to discover backend auth: "inline", "discovered", "mixed"
+	// Source defines how to discover backend auth: "inline", "discovered"
 	// - inline: Explicit configuration in OutgoingAuth
 	// - discovered: Auto-discover from backend MCPServer.externalAuthConfigRef (Kubernetes only)
-	// - mixed: Discover with selective overrides
 	Source string `json:"source" yaml:"source"`
 
 	// Default is the default auth strategy for backends without explicit config.
-	Default *BackendAuthStrategy `json:"default,omitempty" yaml:"default,omitempty"`
+	Default *authtypes.BackendAuthStrategy `json:"default,omitempty" yaml:"default,omitempty"`
 
 	// Backends contains per-backend auth configuration.
-	Backends map[string]*BackendAuthStrategy `json:"backends,omitempty" yaml:"backends,omitempty"`
+	Backends map[string]*authtypes.BackendAuthStrategy `json:"backends,omitempty" yaml:"backends,omitempty"`
 }
 
-// BackendAuthStrategy defines how to authenticate to a specific backend.
-type BackendAuthStrategy struct {
-	// Type is the auth strategy: "pass_through", "token_exchange", "client_credentials",
-	// "service_account", "header_injection", "oauth_proxy"
-	Type string `json:"type" yaml:"type"`
-
-	// Metadata contains strategy-specific configuration.
-	// This is opaque and interpreted by the auth strategy implementation.
-	Metadata map[string]any `json:"metadata,omitempty" yaml:"metadata,omitempty"`
-}
-
-// ResolveForBackend returns the auth strategy and metadata for a given backend ID.
+// ResolveForBackend returns the auth strategy for a given backend ID.
 // It checks for backend-specific config first, then falls back to default.
-// Returns empty string and nil if no authentication is configured.
-func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) (string, map[string]any) {
+// Returns nil if no authentication is configured.
+func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.BackendAuthStrategy {
 	if c == nil {
-		return "", nil
+		return nil
 	}
 
 	// Check for backend-specific configuration
 	if strategy, exists := c.Backends[backendID]; exists && strategy != nil {
-		return strategy.Type, strategy.Metadata
+		return strategy
 	}
 
 	// Fall back to default configuration
 	if c.Default != nil {
-		return c.Default.Type, c.Default.Metadata
+		return c.Default
 	}
 
 	// No authentication configured
-	return "", nil
+	return nil
 }
 
 // AggregationConfig configures capability aggregation.
@@ -204,6 +190,8 @@ type AggregationConfig struct {
 
 	// Tools contains per-workload tool configuration.
 	Tools []*WorkloadToolConfig `json:"tools,omitempty" yaml:"tools,omitempty"`
+
+	ExcludeAllTools bool `json:"excludeAllTools,omitempty"`
 }
 
 // ConflictResolutionConfig contains conflict resolution settings.
@@ -226,6 +214,8 @@ type WorkloadToolConfig struct {
 
 	// Overrides maps tool names to override configurations.
 	Overrides map[string]*ToolOverride `json:"overrides,omitempty" yaml:"overrides,omitempty"`
+
+	ExcludeAll bool `json:"excludeAll,omitempty"`
 }
 
 // ToolOverride defines tool name/description overrides.
@@ -235,45 +225,6 @@ type ToolOverride struct {
 
 	// Description is the new tool description (for updating).
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
-}
-
-// TokenCacheConfig configures token caching.
-type TokenCacheConfig struct {
-	// Provider is the cache provider: "memory", "redis"
-	Provider string `json:"provider" yaml:"provider"`
-
-	// Memory contains memory cache config (when Provider = "memory").
-	Memory *MemoryCacheConfig `json:"memory,omitempty" yaml:"memory,omitempty"`
-
-	// Redis contains Redis cache config (when Provider = "redis").
-	Redis *RedisCacheConfig `json:"redis,omitempty" yaml:"redis,omitempty"`
-}
-
-// MemoryCacheConfig configures in-memory token caching.
-type MemoryCacheConfig struct {
-	// MaxEntries is the maximum number of cached tokens.
-	MaxEntries int `json:"max_entries" yaml:"max_entries"`
-
-	// TTLOffset is how long before expiry to refresh tokens.
-	TTLOffset Duration `json:"ttl_offset" yaml:"ttl_offset"`
-}
-
-// RedisCacheConfig configures Redis token caching.
-type RedisCacheConfig struct {
-	// Address is the Redis server address.
-	Address string `json:"address" yaml:"address"`
-
-	// DB is the Redis database number.
-	DB int `json:"db" yaml:"db"`
-
-	// KeyPrefix is the prefix for cache keys.
-	KeyPrefix string `json:"key_prefix,omitempty" yaml:"key_prefix,omitempty"`
-
-	// Password is the Redis password (or secret reference).
-	Password string `json:"password,omitempty" yaml:"password,omitempty"`
-
-	// TTLOffset is how long before expiry to refresh tokens.
-	TTLOffset Duration `json:"ttl_offset" yaml:"ttl_offset"`
 }
 
 // OperationalConfig contains operational settings.
@@ -331,23 +282,35 @@ type CompositeToolConfig struct {
 	// Description describes what the workflow does.
 	Description string `json:"description,omitempty"`
 
-	// Parameters defines input parameter schema.
-	Parameters map[string]ParameterSchema `json:"parameters,omitempty"`
+	// Parameters defines input parameter schema in JSON Schema format.
+	// Should be a JSON Schema object with "type": "object" and "properties".
+	// Example:
+	//   {
+	//     "type": "object",
+	//     "properties": {
+	//       "param1": {"type": "string", "default": "value"},
+	//       "param2": {"type": "integer"}
+	//     },
+	//     "required": ["param2"]
+	//   }
+	//
+	// We use map[string]any rather than a typed struct because JSON Schema is highly
+	// flexible with many optional fields (default, enum, minimum, maximum, pattern,
+	// items, additionalProperties, oneOf, anyOf, allOf, etc.). Using map[string]any
+	// allows full JSON Schema compatibility without needing to define every possible
+	// field, and matches how the MCP SDK handles inputSchema.
+	Parameters map[string]any `json:"parameters,omitempty"`
 
 	// Timeout is the maximum workflow execution time.
 	Timeout Duration `json:"timeout,omitempty"`
 
 	// Steps are the workflow steps to execute.
 	Steps []*WorkflowStepConfig `json:"steps"`
-}
 
-// ParameterSchema defines a workflow parameter.
-type ParameterSchema struct {
-	// Type is the parameter type (e.g., "string", "integer").
-	Type string `json:"type"`
-
-	// Default is the default value (optional).
-	Default any `json:"default,omitempty"`
+	// Output defines the structured output schema for this workflow.
+	// If not specified, the workflow returns the last step's output (backward compatible).
+	// +optional
+	Output *OutputConfig `json:"output,omitempty" yaml:"output,omitempty"`
 }
 
 // WorkflowStepConfig defines a single workflow step.
@@ -400,6 +363,46 @@ type StepErrorHandling struct {
 type ElicitationResponseConfig struct {
 	// Action: "skip_remaining", "abort", "continue"
 	Action string `json:"action"`
+}
+
+// OutputConfig defines the structured output schema for a composite tool workflow.
+// This follows the same pattern as the Parameters field, defining both the
+// MCP output schema (type, description) and runtime value construction (value, default).
+type OutputConfig struct {
+	// Properties defines the output properties.
+	// Map key is the property name, value is the property definition.
+	Properties map[string]OutputProperty `json:"properties" yaml:"properties"`
+
+	// Required lists property names that must be present in the output.
+	// +optional
+	Required []string `json:"required,omitempty" yaml:"required,omitempty"`
+}
+
+// OutputProperty defines a single output property.
+// For non-object types, Value is required.
+// For object types, either Value or Properties must be specified (but not both).
+type OutputProperty struct {
+	// Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array".
+	Type string `json:"type" yaml:"type"`
+
+	// Description is a human-readable description exposed to clients and models.
+	Description string `json:"description" yaml:"description"`
+
+	// Value is a template string for constructing the runtime value.
+	// For object types, this can be a JSON string that will be deserialized.
+	// Supports template syntax: {{.steps.step_id.output.field}}, {{.params.param_name}}
+	// +optional
+	Value string `json:"value,omitempty" yaml:"value,omitempty"`
+
+	// Properties defines nested properties for object types.
+	// Each nested property has full metadata (type, description, value/properties).
+	// +optional
+	Properties map[string]OutputProperty `json:"properties,omitempty" yaml:"properties,omitempty"`
+
+	// Default is the fallback value if template expansion fails.
+	// Type coercion is applied to match the declared Type.
+	// +optional
+	Default any `json:"default,omitempty" yaml:"default,omitempty"`
 }
 
 // Validator validates configuration.

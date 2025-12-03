@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,6 +23,7 @@ type OIDCMockServer struct {
 	provider fosite.OAuth2Provider
 	store    *storage.MemoryStore
 	port     int
+	rsaKey   *rsa.PrivateKey
 
 	// Channel to capture OAuth requests for auto-completion
 	authRequestChan chan *AuthRequest
@@ -55,7 +57,7 @@ func NewOIDCMockServer(port int, clientID, clientSecret string, opts ...func(*fo
 		Secret:        []byte(clientSecret),
 		RedirectURIs:  []string{"http://localhost:8080/callback", "http://127.0.0.1:8080/callback"},
 		ResponseTypes: []string{"code"},
-		GrantTypes:    []string{"authorization_code", "refresh_token"},
+		GrantTypes:    []string{"authorization_code", "refresh_token", "client_credentials"},
 		Scopes:        []string{"openid", "profile", "email"},
 	}
 	store.Clients[clientID] = client
@@ -102,6 +104,7 @@ func NewOIDCMockServer(port int, clientID, clientSecret string, opts ...func(*fo
 		},
 		compose.OAuth2AuthorizeExplicitFactory,
 		compose.OAuth2RefreshTokenGrantFactory,
+		compose.OAuth2ClientCredentialsGrantFactory,
 		compose.OpenIDConnectExplicitFactory,
 		compose.OAuth2TokenIntrospectionFactory,
 	)
@@ -110,6 +113,7 @@ func NewOIDCMockServer(port int, clientID, clientSecret string, opts ...func(*fo
 		provider: provider,
 		store:    store,
 		port:     port,
+		rsaKey:   key,
 	}
 
 	// Create HTTP server with routes
@@ -303,11 +307,41 @@ func (m *OIDCMockServer) handleUserInfo(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleJWKS handles JWKS requests
-func (*OIDCMockServer) handleJWKS(w http.ResponseWriter, _ *http.Request) {
-	// For simplicity, return empty JWKS
-	// In a real implementation, you'd return the public keys
+func (m *OIDCMockServer) handleJWKS(w http.ResponseWriter, _ *http.Request) {
+	// Extract public key components
+	publicKey := m.rsaKey.Public().(*rsa.PublicKey)
+	n := publicKey.N
+	e := publicKey.E
+
+	// Convert to base64url format
+	nBytes := n.Bytes()
+	eBytes := make([]byte, 4)
+	eBytes[0] = byte(e >> 24)
+	eBytes[1] = byte(e >> 16)
+	eBytes[2] = byte(e >> 8)
+	eBytes[3] = byte(e)
+
+	// Trim leading zeros from exponent
+	eStart := 0
+	for eStart < len(eBytes) && eBytes[eStart] == 0 {
+		eStart++
+	}
+	eBytes = eBytes[eStart:]
+
+	nB64 := base64.RawURLEncoding.EncodeToString(nBytes)
+	eB64 := base64.RawURLEncoding.EncodeToString(eBytes)
+
 	jwks := map[string]interface{}{
-		"keys": []interface{}{},
+		"keys": []map[string]interface{}{
+			{
+				"kty": "RSA",
+				"use": "sig",
+				"kid": "test-key-1",
+				"alg": "RS256",
+				"n":   nB64,
+				"e":   eB64,
+			},
+		},
 	}
 
 	w.Header().Set("Content-Type", "application/json")

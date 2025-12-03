@@ -101,7 +101,7 @@ func TestConvertOutgoingAuth(t *testing.T) {
 			outgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 				Source: "inline",
 				Default: &mcpv1alpha1.BackendAuthConfig{
-					Type: mcpv1alpha1.BackendAuthTypePassThrough,
+					Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 				},
 			},
 			expectedSource: "inline",
@@ -111,14 +111,14 @@ func TestConvertOutgoingAuth(t *testing.T) {
 		{
 			name: "with per-backend auth",
 			outgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-				Source: "mixed",
+				Source: "discovered",
 				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 					"backend-1": {
-						Type: mcpv1alpha1.BackendAuthTypePassThrough,
+						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 					},
 				},
 			},
-			expectedSource: "mixed",
+			expectedSource: "discovered",
 			hasDefault:     false,
 			backendCount:   1,
 		},
@@ -162,15 +162,13 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 		name         string
 		authConfig   *mcpv1alpha1.BackendAuthConfig
 		expectedType string
-		hasMetadata  bool
 	}{
 		{
-			name: "pass through",
+			name: "discovered",
 			authConfig: &mcpv1alpha1.BackendAuthConfig{
-				Type: mcpv1alpha1.BackendAuthTypePassThrough,
+				Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 			},
-			expectedType: mcpv1alpha1.BackendAuthTypePassThrough,
-			hasMetadata:  false,
+			expectedType: mcpv1alpha1.BackendAuthTypeDiscovered,
 		},
 		{
 			name: "external auth config ref",
@@ -181,7 +179,6 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 				},
 			},
 			expectedType: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
-			hasMetadata:  true,
 		},
 	}
 
@@ -212,9 +209,12 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 			require.NotNil(t, strategy)
 			assert.Equal(t, tt.expectedType, strategy.Type)
 
-			if tt.hasMetadata {
-				assert.NotEmpty(t, strategy.Metadata)
-			}
+			// Note: HeaderInjection and TokenExchange are nil because the CRD's
+			// BackendAuthConfig only stores type and reference information.
+			// For external_auth_config_ref, the actual auth config is resolved
+			// at runtime from the referenced MCPExternalAuthConfig resource.
+			assert.Nil(t, strategy.HeaderInjection)
+			assert.Nil(t, strategy.TokenExchange)
 		})
 	}
 }
@@ -514,13 +514,13 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 			},
 			// OutgoingAuth with Backends map
 			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-				Source: "mixed",
+				Source: "discovered",
 				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
 					"backend-zebra": {
 						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 					},
 					"backend-alpha": {
-						Type: mcpv1alpha1.BackendAuthTypePassThrough,
+						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 					},
 					"backend-middle": {
 						Type: mcpv1alpha1.BackendAuthTypeDiscovered,

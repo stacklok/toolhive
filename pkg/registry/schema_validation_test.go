@@ -2,12 +2,14 @@ package registry
 
 import (
 	"encoding/json"
+	"regexp"
 	"testing"
 
+	"github.com/modelcontextprotocol/registry/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/registry/types"
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // TestEmbeddedRegistrySchemaValidation validates that the embedded registry.json
@@ -252,7 +254,7 @@ func TestRegistrySchemaValidation(t *testing.T) {
 				}
 			}`,
 			expectError:   true,
-			errorContains: "additional properties",
+			errorContains: "Additional property",
 		},
 		{
 			name: "valid remote server",
@@ -331,7 +333,8 @@ func TestValidateRegistrySchemaWithInvalidJSON(t *testing.T) {
 
 	err := ValidateRegistrySchema([]byte(invalidJSON))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to parse registry data")
+	// gojsonschema returns validation error for invalid JSON
+	assert.Contains(t, err.Error(), "invalid character")
 }
 
 // TestValidateEmbeddedRegistryCanLoadData tests that we can actually load the embedded registry
@@ -390,4 +393,290 @@ func TestMultipleValidationErrors(t *testing.T) {
 	assert.Contains(t, errorMsg, "2.", "Should have multiple numbered errors")
 
 	t.Logf("Multi-error output:\n%s", errorMsg)
+}
+
+// TestValidateUpstreamRegistry tests the ValidateUpstreamRegistry function
+func TestValidateUpstreamRegistry(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		data          string
+		wantErr       bool
+		errorContains string
+	}{
+		{
+			name: "valid registry with all fields",
+			data: `{
+				"$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": [],
+					"groups": []
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "valid registry without groups (optional)",
+			data: `{
+				"$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": []
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "valid registry with group",
+			data: `{
+				"$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": [],
+					"groups": [
+						{
+							"name": "test-group",
+							"description": "Test group",
+							"servers": []
+						}
+					]
+				}
+			}`,
+			wantErr: false,
+		},
+		{
+			name: "missing meta",
+			data: `{
+				"version": "1.0.0",
+				"data": {
+					"servers": []
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "meta",
+		},
+		{
+			name: "missing data",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "data",
+		},
+		{
+			name: "missing servers in data",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {}
+			}`,
+			wantErr:       true,
+			errorContains: "servers",
+		},
+		{
+			name: "missing last_updated in meta",
+			data: `{
+				"version": "1.0.0",
+				"meta": {},
+				"data": {
+					"servers": []
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "last_updated",
+		},
+		{
+			name: "invalid version format",
+			data: `{
+				"version": "invalid",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": []
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "version",
+		},
+		{
+			name: "invalid date format",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "not-a-date"
+				},
+				"data": {
+					"servers": []
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "date-time",
+		},
+		{
+			name: "missing required group fields",
+			data: `{
+				"version": "1.0.0",
+				"meta": {
+					"last_updated": "2024-01-15T10:30:00Z"
+				},
+				"data": {
+					"servers": [],
+					"groups": [
+						{
+							"name": "incomplete-group"
+						}
+					]
+				}
+			}`,
+			wantErr:       true,
+			errorContains: "description",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateUpstreamRegistry([]byte(tt.data))
+			if tt.wantErr {
+				assert.Error(t, err)
+				if tt.errorContains != "" {
+					assert.Contains(t, err.Error(), tt.errorContains)
+				}
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestValidateUpstreamRegistry_RealWorld tests validation with realistic registry data
+func TestValidateUpstreamRegistry_RealWorld(t *testing.T) {
+	t.Parallel()
+
+	// Simulate a realistic upstream registry
+	realWorldRegistry := `{
+		"$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/upstream-registry.schema.json",
+		"version": "1.0.0",
+		"meta": {
+			"last_updated": "2024-11-25T10:30:00Z"
+		},
+		"data": {
+			"servers": [
+				{
+					"$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+					"name": "io.github.stacklok/test-server",
+					"description": "A test MCP server",
+					"version": "1.0.0",
+					"title": "Test Server"
+				}
+			],
+			"groups": []
+		}
+	}`
+
+	err := ValidateUpstreamRegistry([]byte(realWorldRegistry))
+	assert.NoError(t, err, "Real-world registry example should validate successfully")
+}
+
+// walkJSONObjects walks through nested JSON objects following the provided path.
+// Returns the final object and true if successful, or nil and false if any path segment fails.
+func walkJSONObjects(root map[string]any, paths ...string) (map[string]any, bool) {
+	current := root
+	for _, path := range paths {
+		next, ok := current[path].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current = next
+	}
+	return current, true
+}
+
+// TestUpstreamRegistrySchemaVersionSync ensures that the schema reference in
+// upstream-registry.schema.json matches the schema version from the Go package
+// (model.CurrentSchemaVersion). This prevents schema drift when upgrading the
+// modelcontextprotocol/registry package.
+func TestUpstreamRegistrySchemaVersionSync(t *testing.T) {
+	t.Parallel()
+
+	// Read the upstream registry schema file
+	schemaPath := "data/upstream-registry.schema.json"
+	schemaData, err := embeddedSchemaFS.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatalf("Failed to read embedded schema file: %v", err)
+	}
+
+	// Parse the schema JSON
+	var schema map[string]interface{}
+	if err := json.Unmarshal(schemaData, &schema); err != nil {
+		t.Fatalf("Failed to parse schema JSON: %v", err)
+	}
+
+	// Navigate to the $ref field in data.properties.servers.items
+	items, ok := walkJSONObjects(schema, "properties", "data", "properties", "servers", "items")
+	if !ok {
+		t.Fatal("Failed to navigate to data.properties.servers.items in schema")
+	}
+
+	refURL, ok := items["$ref"].(string)
+	if !ok {
+		t.Fatal("Failed to get $ref URL from items")
+	}
+
+	// Extract the date from the URL
+	// Expected format: https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json
+	re := regexp.MustCompile(`/schemas/([0-9]{4}-[0-9]{2}-[0-9]{2})/`)
+	matches := re.FindStringSubmatch(refURL)
+	if len(matches) != 2 {
+		t.Fatalf("Failed to extract date from schema URL: %s", refURL)
+	}
+	schemaDate := matches[1]
+
+	// Compare with the Go package constant
+	expectedDate := model.CurrentSchemaVersion
+	if schemaDate != expectedDate {
+		t.Errorf("Schema version mismatch!\n"+
+			"  Schema file (%s): %s\n"+
+			"  Go package (model.CurrentSchemaVersion): %s\n\n"+
+			"To fix: Update pkg/registry/data/upstream-registry.schema.json to use date %s:\n"+
+			"  In data.properties.servers.items.$ref:\n"+
+			"  \"$ref\": \"https://static.modelcontextprotocol.io/schemas/%s/server.schema.json\"",
+			schemaPath, schemaDate, expectedDate, expectedDate, expectedDate)
+	}
+
+	// Also check groups schema if present
+	groupServerItems, ok := walkJSONObjects(schema, "properties", "data", "properties", "groups", "items", "properties", "servers", "items")
+	if ok {
+		groupRefURL, ok := groupServerItems["$ref"].(string)
+		if ok {
+			groupMatches := re.FindStringSubmatch(groupRefURL)
+			if len(groupMatches) == 2 {
+				groupSchemaDate := groupMatches[1]
+				if groupSchemaDate != expectedDate {
+					t.Errorf("Groups schema version mismatch!\n"+
+						"  Groups $ref date: %s\n"+
+						"  Expected: %s\n\n"+
+						"To fix: Update data.properties.groups.items.properties.servers.items.$ref",
+						groupSchemaDate, expectedDate)
+				}
+			}
+		}
+	}
 }

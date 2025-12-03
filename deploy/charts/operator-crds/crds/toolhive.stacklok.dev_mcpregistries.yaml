@@ -60,6 +60,80 @@ spec:
           spec:
             description: MCPRegistrySpec defines the desired state of MCPRegistry
             properties:
+              databaseConfig:
+                description: |-
+                  DatabaseConfig defines the PostgreSQL database configuration for the registry API server.
+                  If not specified, defaults will be used:
+                    - Host: "postgres"
+                    - Port: 5432
+                    - User: "db_app"
+                    - MigrationUser: "db_migrator"
+                    - Database: "registry"
+                    - SSLMode: "prefer"
+                    - MaxOpenConns: 10
+                    - MaxIdleConns: 2
+                    - ConnMaxLifetime: "30m"
+                properties:
+                  connMaxLifetime:
+                    default: 30m
+                    description: |-
+                      ConnMaxLifetime is the maximum amount of time a connection may be reused (Go duration format)
+                      Examples: "30m", "1h", "24h"
+                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                    type: string
+                  database:
+                    default: registry
+                    description: Database is the database name
+                    type: string
+                  host:
+                    default: postgres
+                    description: Host is the database server hostname
+                    type: string
+                  maxIdleConns:
+                    default: 2
+                    description: MaxIdleConns is the maximum number of idle connections
+                      in the pool
+                    minimum: 0
+                    type: integer
+                  maxOpenConns:
+                    default: 10
+                    description: MaxOpenConns is the maximum number of open connections
+                      to the database
+                    minimum: 1
+                    type: integer
+                  migrationUser:
+                    default: db_migrator
+                    description: |-
+                      MigrationUser is the migration user (elevated privileges: CREATE, ALTER, DROP)
+                      Used for running database schema migrations
+                      Credentials should be provided via pgpass file or environment variables
+                    type: string
+                  port:
+                    default: 5432
+                    description: Port is the database server port
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  sslMode:
+                    default: prefer
+                    description: |-
+                      SSLMode is the SSL mode for the connection
+                      Valid values: disable, allow, prefer, require, verify-ca, verify-full
+                    enum:
+                    - disable
+                    - allow
+                    - prefer
+                    - require
+                    - verify-ca
+                    - verify-full
+                    type: string
+                  user:
+                    default: db_app
+                    description: |-
+                      User is the application user (limited privileges: SELECT, INSERT, UPDATE, DELETE)
+                      Credentials should be provided via pgpass file or environment variables
+                    type: string
+                type: object
               displayName:
                 description: DisplayName is a human-readable name for the registry
                 type: string
@@ -72,158 +146,210 @@ spec:
                   MCPServers with images not found in any registry will be rejected.
                   When false (default), MCPServers can be deployed regardless of registry presence.
                 type: boolean
-              filter:
-                description: Filter defines include/exclude patterns for registry
-                  content
-                properties:
-                  names:
-                    description: NameFilters defines name-based filtering
-                    properties:
-                      exclude:
-                        description: Exclude is a list of glob patterns to exclude
-                        items:
-                          type: string
-                        type: array
-                      include:
-                        description: Include is a list of glob patterns to include
-                        items:
-                          type: string
-                        type: array
-                    type: object
-                  tags:
-                    description: Tags defines tag-based filtering
-                    properties:
-                      exclude:
-                        description: Exclude is a list of tags to exclude
-                        items:
-                          type: string
-                        type: array
-                      include:
-                        description: Include is a list of tags to include
-                        items:
-                          type: string
-                        type: array
-                    type: object
-                type: object
-              source:
-                description: Source defines the configuration for the registry data
-                  source
-                properties:
-                  api:
-                    description: |-
-                      API defines the API source configuration
-                      Only used when Type is "api"
-                    properties:
-                      endpoint:
-                        description: |-
-                          Endpoint is the base API URL (without path)
-                          The controller will append the appropriate paths:
-                          Phase 1 (ToolHive API):
-                            - /v0/servers - List all servers (single response, no pagination)
-                            - /v0/servers/{name} - Get specific server (future)
-                            - /v0/info - Get registry metadata (future)
-                          Example: "http://my-registry-api.default.svc.cluster.local/api"
-                        minLength: 1
-                        pattern: ^https?://.*
-                        type: string
-                    required:
-                    - endpoint
-                    type: object
-                  configMapRef:
-                    description: |-
-                      ConfigMapRef defines the ConfigMap source configuration
-                      Only used when Type is "configmap"
-                    properties:
-                      key:
-                        description: The key to select.
-                        type: string
-                      name:
-                        default: ""
-                        description: |-
-                          Name of the referent.
-                          This field is effectively required, but due to backwards compatibility is
-                          allowed to be empty. Instances of this type with an empty value here are
-                          almost certainly wrong.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                      optional:
-                        description: Specify whether the ConfigMap or its key must
-                          be defined
-                        type: boolean
-                    required:
-                    - key
-                    type: object
-                    x-kubernetes-map-type: atomic
-                  format:
-                    default: toolhive
-                    description: Format is the data format (toolhive, upstream)
-                    enum:
-                    - toolhive
-                    - upstream
-                    type: string
-                  git:
-                    description: |-
-                      Git defines the Git repository source configuration
-                      Only used when Type is "git"
-                    properties:
-                      branch:
-                        description: Branch is the Git branch to use (mutually exclusive
-                          with Tag and Commit)
-                        minLength: 1
-                        type: string
-                      commit:
-                        description: Commit is the Git commit SHA to use (mutually
-                          exclusive with Branch and Tag)
-                        minLength: 1
-                        type: string
-                      path:
-                        default: registry.json
-                        description: Path is the path to the registry file within
-                          the repository
-                        pattern: ^.*\.json$
-                        type: string
-                      repository:
-                        description: Repository is the Git repository URL (HTTP/HTTPS/SSH)
-                        minLength: 1
-                        pattern: ^(file:///|https?://|git@|ssh://|git://).*
-                        type: string
-                      tag:
-                        description: Tag is the Git tag to use (mutually exclusive
-                          with Branch and Commit)
-                        minLength: 1
-                        type: string
-                    required:
-                    - repository
-                    type: object
-                  type:
-                    default: configmap
-                    description: Type is the type of source (configmap, git, api)
-                    enum:
-                    - configmap
-                    - git
-                    - api
-                    type: string
-                required:
-                - type
-                type: object
-              syncPolicy:
+              podTemplateSpec:
                 description: |-
-                  SyncPolicy defines the automatic synchronization behavior for the registry.
-                  If specified, enables automatic synchronization at the given interval.
-                  Manual synchronization is always supported via annotation-based triggers
-                  regardless of this setting.
-                properties:
-                  interval:
-                    description: |-
-                      Interval is the sync interval for automatic synchronization (Go duration format)
-                      Examples: "1h", "30m", "24h"
-                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
-                    type: string
-                required:
-                - interval
+                  PodTemplateSpec defines the pod template to use for the registry API server
+                  This allows for customizing the pod configuration beyond what is provided by the other fields.
+                  Note that to modify the specific container the registry API server runs in, you must specify
+                  the `registry-api` container name in the PodTemplateSpec.
+                  This field accepts a PodTemplateSpec object as JSON/YAML.
                 type: object
+                x-kubernetes-preserve-unknown-fields: true
+              registries:
+                description: Registries defines the configuration for the registry
+                  data sources
+                items:
+                  description: MCPRegistryConfig defines the configuration for a registry
+                    data source
+                  properties:
+                    api:
+                      description: |-
+                        API defines the API source configuration
+                        Mutually exclusive with ConfigMapRef, Git, and PVCRef
+                      properties:
+                        endpoint:
+                          description: |-
+                            Endpoint is the base API URL (without path)
+                            The controller will append the appropriate paths:
+                            Phase 1 (ToolHive API):
+                              - /v0/servers - List all servers (single response, no pagination)
+                              - /v0/servers/{name} - Get specific server (future)
+                              - /v0/info - Get registry metadata (future)
+                            Example: "http://my-registry-api.default.svc.cluster.local/api"
+                          minLength: 1
+                          pattern: ^https?://.*
+                          type: string
+                      required:
+                      - endpoint
+                      type: object
+                    configMapRef:
+                      description: |-
+                        ConfigMapRef defines the ConfigMap source configuration
+                        Mutually exclusive with Git, API, and PVCRef
+                      properties:
+                        key:
+                          description: The key to select.
+                          type: string
+                        name:
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                          type: string
+                        optional:
+                          description: Specify whether the ConfigMap or its key must
+                            be defined
+                          type: boolean
+                      required:
+                      - key
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    filter:
+                      description: Filter defines include/exclude patterns for registry
+                        content
+                      properties:
+                        names:
+                          description: NameFilters defines name-based filtering
+                          properties:
+                            exclude:
+                              description: Exclude is a list of glob patterns to exclude
+                              items:
+                                type: string
+                              type: array
+                            include:
+                              description: Include is a list of glob patterns to include
+                              items:
+                                type: string
+                              type: array
+                          type: object
+                        tags:
+                          description: Tags defines tag-based filtering
+                          properties:
+                            exclude:
+                              description: Exclude is a list of tags to exclude
+                              items:
+                                type: string
+                              type: array
+                            include:
+                              description: Include is a list of tags to include
+                              items:
+                                type: string
+                              type: array
+                          type: object
+                      type: object
+                    format:
+                      default: toolhive
+                      description: Format is the data format (toolhive, upstream)
+                      enum:
+                      - toolhive
+                      - upstream
+                      type: string
+                    git:
+                      description: |-
+                        Git defines the Git repository source configuration
+                        Mutually exclusive with ConfigMapRef, API, and PVCRef
+                      properties:
+                        branch:
+                          description: Branch is the Git branch to use (mutually exclusive
+                            with Tag and Commit)
+                          minLength: 1
+                          type: string
+                        commit:
+                          description: Commit is the Git commit SHA to use (mutually
+                            exclusive with Branch and Tag)
+                          minLength: 1
+                          type: string
+                        path:
+                          default: registry.json
+                          description: Path is the path to the registry file within
+                            the repository
+                          pattern: ^.*\.json$
+                          type: string
+                        repository:
+                          description: Repository is the Git repository URL (HTTP/HTTPS/SSH)
+                          minLength: 1
+                          pattern: ^(file:///|https?://|git@|ssh://|git://).*
+                          type: string
+                        tag:
+                          description: Tag is the Git tag to use (mutually exclusive
+                            with Branch and Commit)
+                          minLength: 1
+                          type: string
+                      required:
+                      - repository
+                      type: object
+                    name:
+                      description: Name is a unique identifier for this registry configuration
+                        within the MCPRegistry
+                      minLength: 1
+                      type: string
+                    pvcRef:
+                      description: |-
+                        PVCRef defines the PersistentVolumeClaim source configuration
+                        Mutually exclusive with ConfigMapRef, Git, and API
+                      properties:
+                        claimName:
+                          description: ClaimName is the name of the PersistentVolumeClaim
+                          minLength: 1
+                          type: string
+                        path:
+                          default: registry.json
+                          description: |-
+                            Path is the relative path to the registry file within the PVC.
+                            The PVC is mounted at /config/registry/{registryName}/.
+                            The full file path becomes: /config/registry/{registryName}/{path}
+
+                            This design:
+                            - Each registry gets its own mount point (consistent with ConfigMap sources)
+                            - Multiple registries can share the same PVC by mounting it at different paths
+                            - Users control PVC organization freely via the path field
+
+                            Examples:
+                              Registry "production" using PVC "shared-data" with path "prod/registry.json":
+                                PVC contains /prod/registry.json → accessed at /config/registry/production/prod/registry.json
+
+                              Registry "development" using SAME PVC "shared-data" with path "dev/registry.json":
+                                PVC contains /dev/registry.json → accessed at /config/registry/development/dev/registry.json
+                                (Same PVC, different mount path)
+
+                              Registry "staging" using DIFFERENT PVC "other-pvc" with path "registry.json":
+                                PVC contains /registry.json → accessed at /config/registry/staging/registry.json
+                                (Different PVC, independent mount)
+
+                              Registry "team-a" with path "v1/servers.json":
+                                PVC contains /v1/servers.json → accessed at /config/registry/team-a/v1/servers.json
+                                (Subdirectories allowed in path)
+                          pattern: ^.*\.json$
+                          type: string
+                      required:
+                      - claimName
+                      type: object
+                    syncPolicy:
+                      description: |-
+                        SyncPolicy defines the automatic synchronization behavior for this registry.
+                        If specified, enables automatic synchronization at the given interval.
+                        Manual synchronization is always supported via annotation-based triggers
+                        regardless of this setting.
+                      properties:
+                        interval:
+                          description: |-
+                            Interval is the sync interval for automatic synchronization (Go duration format)
+                            Examples: "1h", "30m", "24h"
+                          pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                          type: string
+                      required:
+                      - interval
+                      type: object
+                  required:
+                  - name
+                  type: object
+                minItems: 1
+                type: array
             required:
-            - source
+            - registries
             type: object
           status:
             description: MCPRegistryStatus defines the observed state of MCPRegistry
@@ -423,12 +549,8 @@ spec:
             type: object
         type: object
         x-kubernetes-validations:
-        - message: configMapRef field is required when source type is 'configmap',
-            git field is required when source type is 'git', api field is required
-            when source type is 'api'
-          rule: 'self.spec.source.type == ''configmap'' ? has(self.spec.source.configMapRef)
-            : (self.spec.source.type == ''git'' ? has(self.spec.source.git) : (self.spec.source.type
-            == ''api'' ? has(self.spec.source.api) : true))'
+        - message: at least one registry must be specified
+          rule: size(self.spec.registries) > 0
     served: true
     storage: true
     subresources:

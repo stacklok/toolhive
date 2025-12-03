@@ -9,8 +9,8 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/logger"
-	"github.com/stacklok/toolhive/pkg/registry"
-	"github.com/stacklok/toolhive/pkg/registry/types"
+	regpkg "github.com/stacklok/toolhive/pkg/registry"
+	"github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 const (
@@ -59,8 +59,8 @@ func getRegistryInfoWithProvider(configProvider config.Provider) (RegistryType, 
 }
 
 // getCurrentProvider returns the current registry provider using the injected config
-func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (registry.Provider, bool) {
-	provider, err := registry.GetDefaultProviderWithConfig(rr.configProvider)
+func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Provider, bool) {
+	provider, err := regpkg.GetDefaultProviderWithConfig(rr.configProvider)
 	if err != nil {
 		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
 		logger.Errorf("Failed to get registry provider: %v", err)
@@ -256,7 +256,7 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Reset the default provider to pick up configuration changes
-	registry.ResetDefaultProvider()
+	regpkg.ResetDefaultProvider()
 
 	response := UpdateRegistryResponse{
 		Message: message,
@@ -401,8 +401,8 @@ func (rr *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 
 	// Build response with both container and remote servers
 	response := listServersResponse{
-		Servers:       make([]*types.ImageMetadata, 0, len(reg.Servers)),
-		RemoteServers: make([]*types.RemoteServerMetadata, 0, len(reg.RemoteServers)),
+		Servers:       make([]*registry.ImageMetadata, 0, len(reg.Servers)),
+		RemoteServers: make([]*registry.RemoteServerMetadata, 0, len(reg.RemoteServers)),
 	}
 
 	// Add container servers
@@ -460,14 +460,14 @@ func (rr *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	// Build response based on server type
 	var response getServerResponse
 	if server.IsRemote() {
-		if remote, ok := server.(*types.RemoteServerMetadata); ok {
+		if remote, ok := server.(*registry.RemoteServerMetadata); ok {
 			response = getServerResponse{
 				RemoteServer: remote,
 				IsRemote:     true,
 			}
 		}
 	} else {
-		if img, ok := server.(*types.ImageMetadata); ok {
+		if img, ok := server.(*registry.ImageMetadata); ok {
 			response = getServerResponse{
 				Server:   img,
 				IsRemote: false,
@@ -528,7 +528,7 @@ type getRegistryResponse struct {
 	// Source of the registry (URL, file path, or empty string for built-in)
 	Source string `json:"source"`
 	// Full registry data
-	Registry *types.Registry `json:"registry"`
+	Registry *registry.Registry `json:"registry"`
 }
 
 // listServersResponse represents the response for listing servers in a registry
@@ -536,9 +536,9 @@ type getRegistryResponse struct {
 //	@Description	Response containing a list of servers
 type listServersResponse struct {
 	// List of container servers in the registry
-	Servers []*types.ImageMetadata `json:"servers"`
+	Servers []*registry.ImageMetadata `json:"servers"`
 	// List of remote servers in the registry (if any)
-	RemoteServers []*types.RemoteServerMetadata `json:"remote_servers,omitempty"`
+	RemoteServers []*registry.RemoteServerMetadata `json:"remote_servers,omitempty"`
 }
 
 // getServerResponse represents the response for getting a server from a registry
@@ -546,9 +546,9 @@ type listServersResponse struct {
 //	@Description	Response containing server details
 type getServerResponse struct {
 	// Container server details (if it's a container server)
-	Server *types.ImageMetadata `json:"server,omitempty"`
+	Server *registry.ImageMetadata `json:"server,omitempty"`
 	// Remote server details (if it's a remote server)
-	RemoteServer *types.RemoteServerMetadata `json:"remote_server,omitempty"`
+	RemoteServer *registry.RemoteServerMetadata `json:"remote_server,omitempty"`
 	// Indicates if this is a remote server
 	IsRemote bool `json:"is_remote"`
 }

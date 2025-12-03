@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 func TestValidator_ValidateBasicFields(t *testing.T) {
@@ -128,6 +129,29 @@ func TestValidator_ValidateIncomingAuth(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid OIDC auth without client secret (public client)",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:   "https://example.com",
+					ClientID: "public-client",
+					Audience: "vmcp",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid OIDC auth without client_id (JWT validation only)",
+			auth: &IncomingAuthConfig{
+				Type: "oidc",
+				OIDC: &OIDCConfig{
+					Issuer:   "https://example.com",
+					Audience: "vmcp",
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "invalid auth type",
 			auth: &IncomingAuthConfig{
 				Type: "invalid",
@@ -190,7 +214,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			name: "valid inline source with unauthenticated default",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
-				Default: &BackendAuthStrategy{
+				Default: &authtypes.BackendAuthStrategy{
 					Type: "unauthenticated",
 				},
 			},
@@ -200,35 +224,24 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			name: "valid header_injection backend",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
-				Backends: map[string]*BackendAuthStrategy{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"github": {
 						Type: "header_injection",
-						Metadata: map[string]any{
-							"header_name":  "Authorization",
-							"header_value": "secret-token",
+						HeaderInjection: &authtypes.HeaderInjectionConfig{
+							HeaderName:  "Authorization",
+							HeaderValue: "secret-token",
 						},
 					},
 				},
 			},
 			wantErr: false,
 		},
-		// TODO: Uncomment when pass_through strategy is implemented
-		// {
-		// 	name: "valid inline source with pass_through default",
-		// 	auth: &OutgoingAuthConfig{
-		// 		Source: "inline",
-		// 		Default: &BackendAuthStrategy{
-		// 			Type: "pass_through",
-		// 		},
-		// 	},
-		// 	wantErr: false,
-		// },
 		// TODO: Uncomment when token_exchange strategy is implemented
 		// {
 		// 	name: "valid token_exchange backend",
 		// 	auth: &OutgoingAuthConfig{
 		// 		Source: "inline",
-		// 		Backends: map[string]*BackendAuthStrategy{
+		// 		Backends: map[string]*authtypes.BackendAuthStrategy{
 		// 			"github": {
 		// 				Type: "token_exchange",
 		// 				Metadata: map[string]any{
@@ -253,7 +266,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			name: "invalid backend auth type",
 			auth: &OutgoingAuthConfig{
 				Source: "inline",
-				Backends: map[string]*BackendAuthStrategy{
+				Backends: map[string]*authtypes.BackendAuthStrategy{
 					"test": {
 						Type: "invalid",
 					},
@@ -267,7 +280,7 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 		// 	name: "token_exchange missing required metadata",
 		// 	auth: &OutgoingAuthConfig{
 		// 		Source: "inline",
-		// 		Backends: map[string]*BackendAuthStrategy{
+		// 		Backends: map[string]*authtypes.BackendAuthStrategy{
 		// 			"github": {
 		// 				Type: "token_exchange",
 		// 				Metadata: map[string]any{
@@ -391,82 +404,6 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 			if tt.wantErr && err != nil && tt.errMsg != "" {
 				if !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("validateAggregation() error message = %v, want to contain %v", err.Error(), tt.errMsg)
-				}
-			}
-		})
-	}
-}
-
-func TestValidator_ValidateTokenCache(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		cache   *TokenCacheConfig
-		wantErr bool
-		errMsg  string
-	}{
-		{
-			name:    "nil cache (optional)",
-			cache:   nil,
-			wantErr: false,
-		},
-		{
-			name: "valid memory cache",
-			cache: &TokenCacheConfig{
-				Provider: CacheProviderMemory,
-				Memory: &MemoryCacheConfig{
-					MaxEntries: 1000,
-					TTLOffset:  Duration(5 * time.Minute),
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "valid redis cache",
-			cache: &TokenCacheConfig{
-				Provider: "redis",
-				Redis: &RedisCacheConfig{
-					Address:   "localhost:6379",
-					TTLOffset: Duration(5 * time.Minute),
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "invalid provider",
-			cache: &TokenCacheConfig{
-				Provider: "invalid",
-			},
-			wantErr: true,
-			errMsg:  "token_cache.provider must be one of",
-		},
-		{
-			name: "memory cache with negative max entries",
-			cache: &TokenCacheConfig{
-				Provider: CacheProviderMemory,
-				Memory: &MemoryCacheConfig{
-					MaxEntries: -1,
-				},
-			},
-			wantErr: true,
-			errMsg:  "max_entries must be positive",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			v := NewValidator()
-			err := v.validateTokenCache(tt.cache)
-
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validateTokenCache() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			if tt.wantErr && err != nil && tt.errMsg != "" {
-				if !strings.Contains(err.Error(), tt.errMsg) {
-					t.Errorf("validateTokenCache() error message = %v, want to contain %v", err.Error(), tt.errMsg)
 				}
 			}
 		})

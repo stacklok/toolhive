@@ -174,25 +174,30 @@ type methodHandler func(map[string]interface{}) (string, map[string]interface{})
 
 // methodHandlers maps MCP methods to their respective handlers
 var methodHandlers = map[string]methodHandler{
-	"initialize":               handleInitializeMethod,
-	"tools/call":               handleNamedResourceMethod,
-	"prompts/get":              handleNamedResourceMethod,
-	"resources/read":           handleResourceReadMethod,
-	"resources/list":           handleListMethod,
-	"tools/list":               handleListMethod,
-	"prompts/list":             handleListMethod,
-	"progress/update":          handleProgressMethod,
-	"notifications/message":    handleNotificationMethod,
-	"logging/setLevel":         handleLoggingMethod,
-	"completion/complete":      handleCompletionMethod,
-	"elicitation/create":       handleElicitationMethod,
-	"sampling/createMessage":   handleSamplingMethod,
-	"resources/subscribe":      handleResourceSubscribeMethod,
-	"resources/unsubscribe":    handleResourceUnsubscribeMethod,
-	"resources/templates/list": handleListMethod,
-	"roots/list":               handleListMethod,
-	"notifications/progress":   handleProgressNotificationMethod,
-	"notifications/cancelled":  handleCancelledNotificationMethod,
+	"initialize":                 handleInitializeMethod,
+	"tools/call":                 handleNamedResourceMethod,
+	"prompts/get":                handleNamedResourceMethod,
+	"resources/read":             handleResourceReadMethod,
+	"resources/list":             handleListMethod,
+	"tools/list":                 handleListMethod,
+	"prompts/list":               handleListMethod,
+	"progress/update":            handleProgressMethod,
+	"notifications/message":      handleNotificationMethod,
+	"logging/setLevel":           handleLoggingMethod,
+	"completion/complete":        handleCompletionMethod,
+	"elicitation/create":         handleElicitationMethod,
+	"sampling/createMessage":     handleSamplingMethod,
+	"resources/subscribe":        handleResourceSubscribeMethod,
+	"resources/unsubscribe":      handleResourceUnsubscribeMethod,
+	"resources/templates/list":   handleListMethod,
+	"roots/list":                 handleListMethod,
+	"notifications/progress":     handleProgressNotificationMethod,
+	"notifications/cancelled":    handleCancelledNotificationMethod,
+	"tasks/list":                 handleListMethod,
+	"tasks/get":                  handleTaskIDMethod,
+	"tasks/cancel":               handleTaskIDMethod,
+	"tasks/result":               handleTaskIDMethod,
+	"notifications/tasks/status": handleTaskStatusNotificationMethod,
 }
 
 // staticResourceIDs maps methods to their static resource IDs
@@ -414,6 +419,34 @@ func handleCancelledNotificationMethod(paramsMap map[string]interface{}) (string
 	// Handle numeric request IDs
 	if requestId, ok := paramsMap["requestId"].(float64); ok {
 		return strconv.FormatFloat(requestId, 'f', 0, 64), paramsMap
+	}
+	return "", paramsMap
+}
+
+// handleTaskIDMethod extracts resource ID for task operations (tasks/get, tasks/cancel, tasks/result).
+// Returns the taskId parameter as the resource identifier, or empty string if not present.
+// Handles both string and numeric taskId values.
+func handleTaskIDMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
+	if taskId, ok := paramsMap["taskId"].(string); ok {
+		return taskId, nil
+	}
+	// Handle numeric task IDs
+	if taskId, ok := paramsMap["taskId"].(float64); ok {
+		return strconv.FormatFloat(taskId, 'f', 0, 64), nil
+	}
+	return "", nil
+}
+
+// handleTaskStatusNotificationMethod extracts resource ID for task status notifications.
+// Returns the taskId parameter as the resource identifier while preserving all notification parameters.
+// Handles both string and numeric taskId values.
+func handleTaskStatusNotificationMethod(paramsMap map[string]interface{}) (string, map[string]interface{}) {
+	if taskId, ok := paramsMap["taskId"].(string); ok {
+		return taskId, paramsMap
+	}
+	// Handle numeric task IDs
+	if taskId, ok := paramsMap["taskId"].(float64); ok {
+		return strconv.FormatFloat(taskId, 'f', 0, 64), paramsMap
 	}
 	return "", paramsMap
 }

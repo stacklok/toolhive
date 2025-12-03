@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"text/template"
+	"time"
 )
 
 const (
@@ -131,11 +132,12 @@ func (e *defaultTemplateExpander) expandString(
 		return "", fmt.Errorf("context cancelled before template expansion: %w", err)
 	}
 
-	// Create template context with params and steps
+	// Create template context with params, steps, vars, and workflow metadata
 	tmplCtx := map[string]any{
-		"params": workflowCtx.Params,
-		"steps":  e.buildStepsContext(workflowCtx),
-		"vars":   workflowCtx.Variables,
+		"params":   workflowCtx.Params,
+		"steps":    e.buildStepsContext(workflowCtx),
+		"vars":     workflowCtx.Variables,
+		"workflow": e.buildWorkflowContext(workflowCtx),
 	}
 
 	// Parse and execute template
@@ -187,6 +189,26 @@ func (*defaultTemplateExpander) buildStepsContext(workflowCtx *WorkflowContext) 
 	return stepsCtx
 }
 
+// buildWorkflowContext converts WorkflowMetadata to a template-friendly structure.
+// This provides access to workflow metadata via {{.workflow.id}}, {{.workflow.duration_ms}}, etc.
+func (*defaultTemplateExpander) buildWorkflowContext(workflowCtx *WorkflowContext) map[string]any {
+	// Acquire read lock to safely access Workflow metadata during concurrent execution
+	workflowCtx.mu.RLock()
+	defer workflowCtx.mu.RUnlock()
+
+	if workflowCtx.Workflow == nil {
+		return map[string]any{}
+	}
+
+	return map[string]any{
+		"id":          workflowCtx.Workflow.ID,
+		"duration_ms": workflowCtx.Workflow.DurationMs,
+		"step_count":  workflowCtx.Workflow.StepCount,
+		"status":      string(workflowCtx.Workflow.Status),
+		"start_time":  workflowCtx.Workflow.StartTime.Format(time.RFC3339),
+	}
+}
+
 // EvaluateCondition evaluates a condition template to a boolean.
 // The condition string must evaluate to "true" or "false".
 func (e *defaultTemplateExpander) EvaluateCondition(
@@ -206,9 +228,9 @@ func (e *defaultTemplateExpander) EvaluateCondition(
 
 	// Parse as boolean
 	switch result {
-	case "true", "True", "TRUE":
+	case "true", "True", "TRUE": //nolint:goconst // Boolean literals are clearer than constants
 		return true, nil
-	case "false", "False", "FALSE":
+	case "false", "False", "FALSE": //nolint:goconst // Boolean literals are clearer than constants
 		return false, nil
 	default:
 		return false, fmt.Errorf("condition must evaluate to 'true' or 'false', got: %q", result)

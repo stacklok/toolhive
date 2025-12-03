@@ -134,6 +134,8 @@ components:
       - Continue
       - OpenCode
       - Kiro
+      - Antigravity
+      - Zed
     client.MCPClientStatus:
       properties:
         client_type:
@@ -159,6 +161,8 @@ components:
           - Continue
           - OpenCode
           - Kiro
+          - Antigravity
+          - Zed
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -337,6 +341,363 @@ components:
           type: array
           uniqueItems: false
       type: object
+    registry.EnvVar:
+      properties:
+        default:
+          description: |-
+            Default is the value to use if the environment variable is not explicitly provided
+            Only used for non-required variables
+          type: string
+        description:
+          description: Description is a human-readable explanation of the variable's
+            purpose
+          type: string
+        name:
+          description: Name is the environment variable name (e.g., API_KEY)
+          type: string
+        required:
+          description: |-
+            Required indicates whether this environment variable must be provided
+            If true and not provided via command line or secrets, the user will be prompted for a value
+          type: boolean
+        secret:
+          description: |-
+            Secret indicates whether this environment variable contains sensitive information
+            If true, the value will be stored as a secret rather than as a plain environment variable
+          type: boolean
+      type: object
+    registry.Group:
+      properties:
+        description:
+          description: Description is a human-readable description of the group's
+            purpose and functionality
+          type: string
+        name:
+          description: Name is the identifier for the group, used when referencing
+            the group in commands
+          type: string
+        remote_servers:
+          additionalProperties:
+            $ref: '#/components/schemas/registry.RemoteServerMetadata'
+          description: RemoteServers is a map of server names to their corresponding
+            remote server definitions within this group
+          type: object
+        servers:
+          additionalProperties:
+            $ref: '#/components/schemas/registry.ImageMetadata'
+          description: Servers is a map of server names to their corresponding server
+            definitions within this group
+          type: object
+      type: object
+    registry.Header:
+      properties:
+        choices:
+          description: Choices provides a list of valid values for the header (optional)
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        default:
+          description: |-
+            Default is the value to use if the header is not explicitly provided
+            Only used for non-required headers
+          type: string
+        description:
+          description: Description is a human-readable explanation of the header's
+            purpose
+          type: string
+        name:
+          description: Name is the header name (e.g., X-API-Key, Authorization)
+          type: string
+        required:
+          description: |-
+            Required indicates whether this header must be provided
+            If true and not provided via command line or secrets, the user will be prompted for a value
+          type: boolean
+        secret:
+          description: |-
+            Secret indicates whether this header contains sensitive information
+            If true, the value will be stored as a secret rather than as plain text
+          type: boolean
+      type: object
+    registry.ImageMetadata:
+      description: Container server details (if it's a container server)
+      properties:
+        args:
+          description: |-
+            Args are the default command-line arguments to pass to the MCP server container.
+            These arguments will be used only if no command-line arguments are provided by the user.
+            If the user provides arguments, they will override these defaults.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        custom_metadata:
+          additionalProperties: {}
+          description: CustomMetadata allows for additional user-defined metadata
+          type: object
+        description:
+          description: Description is a human-readable description of the server's
+            purpose and functionality
+          type: string
+        docker_tags:
+          description: DockerTags lists the available Docker tags for this server
+            image
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        env_vars:
+          description: EnvVars defines environment variables that can be passed to
+            the server
+          items:
+            $ref: '#/components/schemas/registry.EnvVar'
+          type: array
+          uniqueItems: false
+        image:
+          description: Image is the Docker image reference for the MCP server
+          type: string
+        metadata:
+          $ref: '#/components/schemas/registry.Metadata'
+        name:
+          description: |-
+            Name is the identifier for the MCP server, used when referencing the server in commands
+            If not provided, it will be auto-generated from the registry key
+          type: string
+        permissions:
+          $ref: '#/components/schemas/permissions.Profile'
+        provenance:
+          $ref: '#/components/schemas/registry.Provenance'
+        repository_url:
+          description: RepositoryURL is the URL to the source code repository for
+            the server
+          type: string
+        status:
+          description: Status indicates whether the server is currently active or
+            deprecated
+          type: string
+        tags:
+          description: Tags are categorization labels for the server to aid in discovery
+            and filtering
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        target_port:
+          description: TargetPort is the port for the container to expose (only applicable
+            to SSE and Streamable HTTP transports)
+          type: integer
+        tier:
+          description: Tier represents the tier classification level of the server,
+            e.g., "Official" or "Community"
+          type: string
+        tools:
+          description: Tools is a list of tool names provided by this MCP server
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        transport:
+          description: |-
+            Transport defines the communication protocol for the server
+            For containers: stdio, sse, or streamable-http
+            For remote servers: sse or streamable-http (stdio not supported)
+          type: string
+      type: object
+    registry.Metadata:
+      description: Metadata contains additional information about the server such
+        as popularity metrics
+      properties:
+        last_updated:
+          description: LastUpdated is the timestamp when the server was last updated,
+            in RFC3339 format
+          type: string
+        pulls:
+          description: Pulls indicates how many times the server image has been downloaded
+          type: integer
+        stars:
+          description: Stars represents the popularity rating or number of stars for
+            the server
+          type: integer
+      type: object
+    registry.OAuthConfig:
+      description: |-
+        OAuthConfig provides OAuth/OIDC configuration for authentication to the remote server
+        Used with the thv proxy command's --remote-auth flags
+      properties:
+        authorize_url:
+          description: |-
+            AuthorizeURL is the OAuth authorization endpoint URL
+            Used for non-OIDC OAuth flows when issuer is not provided
+          type: string
+        callback_port:
+          description: |-
+            CallbackPort is the specific port to use for the OAuth callback server
+            If not specified, a random available port will be used
+          type: integer
+        client_id:
+          description: ClientID is the OAuth client ID for authentication
+          type: string
+        issuer:
+          description: |-
+            Issuer is the OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
+            Used for OIDC discovery to find authorization and token endpoints
+          type: string
+        oauth_params:
+          additionalProperties:
+            type: string
+          description: |-
+            OAuthParams contains additional OAuth parameters to include in the authorization request
+            These are server-specific parameters like "prompt", "response_mode", etc.
+          type: object
+        resource:
+          description: Resource is the OAuth 2.0 resource indicator (RFC 8707)
+          type: string
+        scopes:
+          description: |-
+            Scopes are the OAuth scopes to request
+            If not specified, defaults to ["openid", "profile", "email"] for OIDC
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        token_url:
+          description: |-
+            TokenURL is the OAuth token endpoint URL
+            Used for non-OIDC OAuth flows when issuer is not provided
+          type: string
+        use_pkce:
+          description: |-
+            UsePKCE indicates whether to use PKCE for the OAuth flow
+            Defaults to true for enhanced security
+          type: boolean
+      type: object
+    registry.Provenance:
+      description: Provenance contains verification and signing metadata
+      properties:
+        attestation:
+          $ref: '#/components/schemas/registry.VerifiedAttestation'
+        cert_issuer:
+          type: string
+        repository_ref:
+          type: string
+        repository_uri:
+          type: string
+        runner_environment:
+          type: string
+        signer_identity:
+          type: string
+        sigstore_url:
+          type: string
+      type: object
+    registry.Registry:
+      description: Full registry data
+      properties:
+        groups:
+          description: Groups is a slice of group definitions containing related MCP
+            servers
+          items:
+            $ref: '#/components/schemas/registry.Group'
+          type: array
+          uniqueItems: false
+        last_updated:
+          description: LastUpdated is the timestamp when the registry was last updated,
+            in RFC3339 format
+          type: string
+        remote_servers:
+          additionalProperties:
+            $ref: '#/components/schemas/registry.RemoteServerMetadata'
+          description: |-
+            RemoteServers is a map of server names to their corresponding remote server definitions
+            These are MCP servers accessed via HTTP/HTTPS using the thv proxy command
+          type: object
+        servers:
+          additionalProperties:
+            $ref: '#/components/schemas/registry.ImageMetadata'
+          description: Servers is a map of server names to their corresponding server
+            definitions
+          type: object
+        version:
+          description: Version is the schema version of the registry
+          type: string
+      type: object
+    registry.RemoteServerMetadata:
+      description: Remote server details (if it's a remote server)
+      properties:
+        custom_metadata:
+          additionalProperties: {}
+          description: CustomMetadata allows for additional user-defined metadata
+          type: object
+        description:
+          description: Description is a human-readable description of the server's
+            purpose and functionality
+          type: string
+        env_vars:
+          description: |-
+            EnvVars defines environment variables that can be passed to configure the client
+            These might be needed for client-side configuration when connecting to the remote server
+          items:
+            $ref: '#/components/schemas/registry.EnvVar'
+          type: array
+          uniqueItems: false
+        headers:
+          description: |-
+            Headers defines HTTP headers that can be passed to the remote server for authentication
+            These are used with the thv proxy command's authentication features
+          items:
+            $ref: '#/components/schemas/registry.Header'
+          type: array
+          uniqueItems: false
+        metadata:
+          $ref: '#/components/schemas/registry.Metadata'
+        name:
+          description: |-
+            Name is the identifier for the MCP server, used when referencing the server in commands
+            If not provided, it will be auto-generated from the registry key
+          type: string
+        oauth_config:
+          $ref: '#/components/schemas/registry.OAuthConfig'
+        repository_url:
+          description: RepositoryURL is the URL to the source code repository for
+            the server
+          type: string
+        status:
+          description: Status indicates whether the server is currently active or
+            deprecated
+          type: string
+        tags:
+          description: Tags are categorization labels for the server to aid in discovery
+            and filtering
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        tier:
+          description: Tier represents the tier classification level of the server,
+            e.g., "Official" or "Community"
+          type: string
+        tools:
+          description: Tools is a list of tool names provided by this MCP server
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        transport:
+          description: |-
+            Transport defines the communication protocol for the server
+            For containers: stdio, sse, or streamable-http
+            For remote servers: sse or streamable-http (stdio not supported)
+          type: string
+        url:
+          description: URL is the endpoint URL for the remote MCP server (e.g., https://api.example.com/mcp)
+          type: string
+      type: object
+    registry.VerifiedAttestation:
+      properties:
+        predicate: {}
+        predicate_type:
+          type: string
+      type: object
     remote.Config:
       description: RemoteAuthConfig contains OAuth configuration for remote MCP servers
       properties:
@@ -353,13 +714,13 @@ components:
         env_vars:
           description: Environment variables for the client
           items:
-            $ref: '#/components/schemas/types.EnvVar'
+            $ref: '#/components/schemas/registry.EnvVar'
           type: array
           uniqueItems: false
         headers:
           description: Headers for HTTP requests
           items:
-            $ref: '#/components/schemas/types.Header'
+            $ref: '#/components/schemas/registry.Header'
           type: array
           uniqueItems: false
         issuer:
@@ -675,185 +1036,6 @@ components:
           description: TokenURL is the OAuth 2.0 token endpoint URL
           type: string
       type: object
-    types.EnvVar:
-      properties:
-        default:
-          description: |-
-            Default is the value to use if the environment variable is not explicitly provided
-            Only used for non-required variables
-          type: string
-        description:
-          description: Description is a human-readable explanation of the variable's
-            purpose
-          type: string
-        name:
-          description: Name is the environment variable name (e.g., API_KEY)
-          type: string
-        required:
-          description: |-
-            Required indicates whether this environment variable must be provided
-            If true and not provided via command line or secrets, the user will be prompted for a value
-          type: boolean
-        secret:
-          description: |-
-            Secret indicates whether this environment variable contains sensitive information
-            If true, the value will be stored as a secret rather than as a plain environment variable
-          type: boolean
-      type: object
-    types.Group:
-      properties:
-        description:
-          description: Description is a human-readable description of the group's
-            purpose and functionality
-          type: string
-        name:
-          description: Name is the identifier for the group, used when referencing
-            the group in commands
-          type: string
-        remote_servers:
-          additionalProperties:
-            $ref: '#/components/schemas/types.RemoteServerMetadata'
-          description: RemoteServers is a map of server names to their corresponding
-            remote server definitions within this group
-          type: object
-        servers:
-          additionalProperties:
-            $ref: '#/components/schemas/types.ImageMetadata'
-          description: Servers is a map of server names to their corresponding server
-            definitions within this group
-          type: object
-      type: object
-    types.Header:
-      properties:
-        choices:
-          description: Choices provides a list of valid values for the header (optional)
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        default:
-          description: |-
-            Default is the value to use if the header is not explicitly provided
-            Only used for non-required headers
-          type: string
-        description:
-          description: Description is a human-readable explanation of the header's
-            purpose
-          type: string
-        name:
-          description: Name is the header name (e.g., X-API-Key, Authorization)
-          type: string
-        required:
-          description: |-
-            Required indicates whether this header must be provided
-            If true and not provided via command line or secrets, the user will be prompted for a value
-          type: boolean
-        secret:
-          description: |-
-            Secret indicates whether this header contains sensitive information
-            If true, the value will be stored as a secret rather than as plain text
-          type: boolean
-      type: object
-    types.ImageMetadata:
-      description: Container server details (if it's a container server)
-      properties:
-        args:
-          description: |-
-            Args are the default command-line arguments to pass to the MCP server container.
-            These arguments will be used only if no command-line arguments are provided by the user.
-            If the user provides arguments, they will override these defaults.
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        custom_metadata:
-          additionalProperties: {}
-          description: CustomMetadata allows for additional user-defined metadata
-          type: object
-        description:
-          description: Description is a human-readable description of the server's
-            purpose and functionality
-          type: string
-        docker_tags:
-          description: DockerTags lists the available Docker tags for this server
-            image
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        env_vars:
-          description: EnvVars defines environment variables that can be passed to
-            the server
-          items:
-            $ref: '#/components/schemas/types.EnvVar'
-          type: array
-          uniqueItems: false
-        image:
-          description: Image is the Docker image reference for the MCP server
-          type: string
-        metadata:
-          $ref: '#/components/schemas/types.Metadata'
-        name:
-          description: |-
-            Name is the identifier for the MCP server, used when referencing the server in commands
-            If not provided, it will be auto-generated from the registry key
-          type: string
-        permissions:
-          $ref: '#/components/schemas/permissions.Profile'
-        provenance:
-          $ref: '#/components/schemas/types.Provenance'
-        repository_url:
-          description: RepositoryURL is the URL to the source code repository for
-            the server
-          type: string
-        status:
-          description: Status indicates whether the server is currently active or
-            deprecated
-          type: string
-        tags:
-          description: Tags are categorization labels for the server to aid in discovery
-            and filtering
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        target_port:
-          description: TargetPort is the port for the container to expose (only applicable
-            to SSE and Streamable HTTP transports)
-          type: integer
-        tier:
-          description: Tier represents the tier classification level of the server,
-            e.g., "Official" or "Community"
-          type: string
-        tools:
-          description: Tools is a list of tool names provided by this MCP server
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        transport:
-          description: |-
-            Transport defines the communication protocol for the server
-            For containers: stdio, sse, or streamable-http
-            For remote servers: sse or streamable-http (stdio not supported)
-          type: string
-      type: object
-    types.Metadata:
-      description: Metadata contains additional information about the server such
-        as popularity metrics
-      properties:
-        last_updated:
-          description: LastUpdated is the timestamp when the server was last updated,
-            in RFC3339 format
-          type: string
-        pulls:
-          description: Pulls indicates how many times the server image has been downloaded
-          type: integer
-        stars:
-          description: Stars represents the popularity rating or number of stars for
-            the server
-          type: integer
-      type: object
     types.MiddlewareConfig:
       properties:
         parameters:
@@ -865,184 +1047,12 @@ components:
           description: Type is a string representing the middleware type.
           type: string
       type: object
-    types.OAuthConfig:
-      description: |-
-        OAuthConfig provides OAuth/OIDC configuration for authentication to the remote server
-        Used with the thv proxy command's --remote-auth flags
-      properties:
-        authorize_url:
-          description: |-
-            AuthorizeURL is the OAuth authorization endpoint URL
-            Used for non-OIDC OAuth flows when issuer is not provided
-          type: string
-        callback_port:
-          description: |-
-            CallbackPort is the specific port to use for the OAuth callback server
-            If not specified, a random available port will be used
-          type: integer
-        client_id:
-          description: ClientID is the OAuth client ID for authentication
-          type: string
-        issuer:
-          description: |-
-            Issuer is the OAuth/OIDC issuer URL (e.g., https://accounts.google.com)
-            Used for OIDC discovery to find authorization and token endpoints
-          type: string
-        oauth_params:
-          additionalProperties:
-            type: string
-          description: |-
-            OAuthParams contains additional OAuth parameters to include in the authorization request
-            These are server-specific parameters like "prompt", "response_mode", etc.
-          type: object
-        resource:
-          description: Resource is the OAuth 2.0 resource indicator (RFC 8707)
-          type: string
-        scopes:
-          description: |-
-            Scopes are the OAuth scopes to request
-            If not specified, defaults to ["openid", "profile", "email"] for OIDC
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        token_url:
-          description: |-
-            TokenURL is the OAuth token endpoint URL
-            Used for non-OIDC OAuth flows when issuer is not provided
-          type: string
-        use_pkce:
-          description: |-
-            UsePKCE indicates whether to use PKCE for the OAuth flow
-            Defaults to true for enhanced security
-          type: boolean
-      type: object
-    types.Provenance:
-      description: Provenance contains verification and signing metadata
-      properties:
-        attestation:
-          $ref: '#/components/schemas/types.VerifiedAttestation'
-        cert_issuer:
-          type: string
-        repository_ref:
-          type: string
-        repository_uri:
-          type: string
-        runner_environment:
-          type: string
-        signer_identity:
-          type: string
-        sigstore_url:
-          type: string
-      type: object
     types.ProxyMode:
       description: ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
       type: string
       x-enum-varnames:
       - ProxyModeSSE
       - ProxyModeStreamableHTTP
-    types.Registry:
-      description: Full registry data
-      properties:
-        groups:
-          description: Groups is a slice of group definitions containing related MCP
-            servers
-          items:
-            $ref: '#/components/schemas/types.Group'
-          type: array
-          uniqueItems: false
-        last_updated:
-          description: LastUpdated is the timestamp when the registry was last updated,
-            in RFC3339 format
-          type: string
-        remote_servers:
-          additionalProperties:
-            $ref: '#/components/schemas/types.RemoteServerMetadata'
-          description: |-
-            RemoteServers is a map of server names to their corresponding remote server definitions
-            These are MCP servers accessed via HTTP/HTTPS using the thv proxy command
-          type: object
-        servers:
-          additionalProperties:
-            $ref: '#/components/schemas/types.ImageMetadata'
-          description: Servers is a map of server names to their corresponding server
-            definitions
-          type: object
-        version:
-          description: Version is the schema version of the registry
-          type: string
-      type: object
-    types.RemoteServerMetadata:
-      description: Remote server details (if it's a remote server)
-      properties:
-        custom_metadata:
-          additionalProperties: {}
-          description: CustomMetadata allows for additional user-defined metadata
-          type: object
-        description:
-          description: Description is a human-readable description of the server's
-            purpose and functionality
-          type: string
-        env_vars:
-          description: |-
-            EnvVars defines environment variables that can be passed to configure the client
-            These might be needed for client-side configuration when connecting to the remote server
-          items:
-            $ref: '#/components/schemas/types.EnvVar'
-          type: array
-          uniqueItems: false
-        headers:
-          description: |-
-            Headers defines HTTP headers that can be passed to the remote server for authentication
-            These are used with the thv proxy command's authentication features
-          items:
-            $ref: '#/components/schemas/types.Header'
-          type: array
-          uniqueItems: false
-        metadata:
-          $ref: '#/components/schemas/types.Metadata'
-        name:
-          description: |-
-            Name is the identifier for the MCP server, used when referencing the server in commands
-            If not provided, it will be auto-generated from the registry key
-          type: string
-        oauth_config:
-          $ref: '#/components/schemas/types.OAuthConfig'
-        repository_url:
-          description: RepositoryURL is the URL to the source code repository for
-            the server
-          type: string
-        status:
-          description: Status indicates whether the server is currently active or
-            deprecated
-          type: string
-        tags:
-          description: Tags are categorization labels for the server to aid in discovery
-            and filtering
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        tier:
-          description: Tier represents the tier classification level of the server,
-            e.g., "Official" or "Community"
-          type: string
-        tools:
-          description: Tools is a list of tool names provided by this MCP server
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        transport:
-          description: |-
-            Transport defines the communication protocol for the server
-            For containers: stdio, sse, or streamable-http
-            For remote servers: sse or streamable-http (stdio not supported)
-          type: string
-        url:
-          description: URL is the endpoint URL for the remote MCP server (e.g., https://api.example.com/mcp)
-          type: string
-      type: object
     types.TransportType:
       description: TransportType is the type of transport used for this workload.
       type: string
@@ -1051,12 +1061,6 @@ components:
       - TransportTypeSSE
       - TransportTypeStreamableHTTP
       - TransportTypeInspector
-    types.VerifiedAttestation:
-      properties:
-        predicate: {}
-        predicate_type:
-          type: string
-      type: object
     v1.RegistryType:
       description: Type of registry (file, url, or default)
       type: string
@@ -1123,6 +1127,8 @@ components:
             - Continue
             - OpenCode
             - Kiro
+            - Antigravity
+            - Zed
           type: array
           uniqueItems: false
       type: object
@@ -1177,6 +1183,8 @@ components:
           - Continue
           - OpenCode
           - Kiro
+          - Antigravity
+          - Zed
       type: object
     v1.createClientResponse:
       properties:
@@ -1209,6 +1217,8 @@ components:
           - Continue
           - OpenCode
           - Kiro
+          - Antigravity
+          - Zed
       type: object
     v1.createGroupRequest:
       properties:
@@ -1244,7 +1254,7 @@ components:
           type: string
         headers:
           items:
-            $ref: '#/components/schemas/types.Header'
+            $ref: '#/components/schemas/registry.Header'
           type: array
           uniqueItems: false
         host:
@@ -1348,7 +1358,7 @@ components:
           description: Name of the registry
           type: string
         registry:
-          $ref: '#/components/schemas/types.Registry'
+          $ref: '#/components/schemas/registry.Registry'
         server_count:
           description: Number of servers in the registry
           type: integer
@@ -1387,9 +1397,9 @@ components:
           description: Indicates if this is a remote server
           type: boolean
         remote_server:
-          $ref: '#/components/schemas/types.RemoteServerMetadata'
+          $ref: '#/components/schemas/registry.RemoteServerMetadata'
         server:
-          $ref: '#/components/schemas/types.ImageMetadata'
+          $ref: '#/components/schemas/registry.ImageMetadata'
       type: object
     v1.groupListResponse:
       properties:
@@ -1416,13 +1426,13 @@ components:
         remote_servers:
           description: List of remote servers in the registry (if any)
           items:
-            $ref: '#/components/schemas/types.RemoteServerMetadata'
+            $ref: '#/components/schemas/registry.RemoteServerMetadata'
           type: array
           uniqueItems: false
         servers:
           description: List of container servers in the registry
           items:
-            $ref: '#/components/schemas/types.ImageMetadata'
+            $ref: '#/components/schemas/registry.ImageMetadata'
           type: array
           uniqueItems: false
       type: object
@@ -1607,7 +1617,7 @@ components:
           type: string
         headers:
           items:
-            $ref: '#/components/schemas/types.Header'
+            $ref: '#/components/schemas/registry.Header'
           type: array
           uniqueItems: false
         host:

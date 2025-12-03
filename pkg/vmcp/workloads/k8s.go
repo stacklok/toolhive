@@ -7,7 +7,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -17,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 )
 
 // k8sDiscoverer is a direct implementation of Discoverer for Kubernetes workloads.
@@ -28,11 +28,16 @@ type k8sDiscoverer struct {
 
 // NewK8SDiscoverer creates a new Kubernetes workload discoverer that directly uses
 // the Kubernetes client to discover MCPServer CRDs.
-func NewK8SDiscoverer() (Discoverer, error) {
+// If namespace is empty, it will detect the namespace using k8s.GetCurrentNamespace().
+func NewK8SDiscoverer(namespace ...string) (Discoverer, error) {
 	// Create a scheme for controller-runtime client
 	scheme := runtime.NewScheme()
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(mcpv1alpha1.AddToScheme(scheme))
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add client-go scheme: %w", err)
+	}
+	if err := mcpv1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to add MCP v1alpha1 scheme: %w", err)
+	}
 
 	// Create controller-runtime client
 	k8sClient, err := k8s.NewControllerRuntimeClient(scheme)
@@ -40,13 +45,24 @@ func NewK8SDiscoverer() (Discoverer, error) {
 		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 
-	// Detect namespace
-	namespace := k8s.GetCurrentNamespace()
+	// Use provided namespace or detect it
+	var ns string
+	if len(namespace) > 0 && namespace[0] != "" {
+		ns = namespace[0]
+	} else {
+		ns = k8s.GetCurrentNamespace()
+	}
 
+	return NewK8SDiscovererWithClient(k8sClient, ns), nil
+}
+
+// NewK8SDiscovererWithClient creates a new Kubernetes workload discoverer with a provided client.
+// This is useful for testing with fake clients.
+func NewK8SDiscovererWithClient(k8sClient client.Client, namespace string) Discoverer {
 	return &k8sDiscoverer{
 		k8sClient: k8sClient,
 		namespace: namespace,
-	}, nil
+	}
 }
 
 // ListWorkloadsInGroup returns all workload names that belong to the specified group.
@@ -83,7 +99,13 @@ func (d *k8sDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workloadNa
 	}
 
 	// Convert MCPServer to Backend
-	backend := d.mcpServerToBackend(mcpServer)
+	backend := d.mcpServerToBackend(ctx, mcpServer)
+
+	// If auth discovery failed, mcpServerToBackend returns nil
+	if backend == nil {
+		logger.Warnf("Skipping workload %s due to auth discovery failure", workloadName)
+		return nil, nil
+	}
 
 	// Skip workloads without a URL (not accessible)
 	if backend.BaseURL == "" {
@@ -95,7 +117,9 @@ func (d *k8sDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workloadNa
 }
 
 // mcpServerToBackend converts an MCPServer CRD to a vmcp.Backend.
-func (*k8sDiscoverer) mcpServerToBackend(mcpServer *mcpv1alpha1.MCPServer) *vmcp.Backend {
+// If the MCPServer has an ExternalAuthConfigRef, it will be fetched and converted to auth strategy metadata.
+// Auth discovery errors are logged but do not fail backend creation.
+func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer) *vmcp.Backend {
 	// Parse transport type
 	transportType, err := transporttypes.ParseTransportType(mcpServer.Spec.Transport)
 	if err != nil {
@@ -165,7 +189,48 @@ func (*k8sDiscoverer) mcpServerToBackend(mcpServer *mcpv1alpha1.MCPServer) *vmcp
 		backend.Metadata["namespace"] = mcpServer.Namespace
 	}
 
+	// Discover and populate authentication configuration from MCPServer
+	if err := d.discoverAuthConfig(ctx, mcpServer, backend); err != nil {
+		// If auth discovery fails, we must fail - don't silently allow unauthorized access
+		// This is a security-critical operation: if auth is configured but fails to load,
+		// we should not proceed without it
+		logger.Errorf("Failed to discover auth config for MCPServer %s: %v", mcpServer.Name, err)
+		return nil
+	}
+
 	return backend
+}
+
+// discoverAuthConfig discovers and populates authentication configuration from the MCPServer's ExternalAuthConfigRef.
+// This enables runtime discovery of backend authentication requirements.
+//
+// Return behavior:
+//   - Returns nil error if ExternalAuthConfigRef is nil (no auth config) - this is expected behavior
+//   - Returns nil error if auth config is discovered and successfully populated into backend
+//   - Returns error if auth config exists but discovery/resolution fails (e.g., missing secret, invalid config)
+func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer, backend *vmcp.Backend) error {
+	// Discover and resolve auth using the converters package
+	strategy, err := converters.DiscoverAndResolveAuth(
+		ctx,
+		mcpServer.Spec.ExternalAuthConfigRef,
+		mcpServer.Namespace,
+		d.k8sClient,
+	)
+	if err != nil {
+		return err
+	}
+
+	// If no auth was discovered, nothing to populate
+	if strategy == nil {
+		logger.Debugf("MCPServer %s has no ExternalAuthConfigRef, no auth config to discover", mcpServer.Name)
+		return nil
+	}
+
+	// Populate backend auth fields with typed strategy
+	backend.AuthConfig = strategy
+
+	logger.Debugf("Discovered auth config for MCPServer %s: strategy=%s", mcpServer.Name, strategy.Type)
+	return nil
 }
 
 // mapK8SWorkloadPhaseToHealth converts a MCPServerPhase to a backend health status.

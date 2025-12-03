@@ -26,6 +26,10 @@ spec:
       jsonPath: .status.url
       name: URL
       type: string
+    - description: Discovered backends count
+      jsonPath: .status.backendCount
+      name: Backends
+      type: integer
     - description: Age
       jsonPath: .metadata.creationTimestamp
       name: Age
@@ -179,31 +183,76 @@ spec:
                     name:
                       description: Name is the name of the composite tool
                       type: string
-                    parameters:
-                      additionalProperties:
-                        description: ParameterSpec defines a parameter for a composite
-                          tool
+                    output:
+                      description: |-
+                        Output defines the structured output schema for the composite tool.
+                        Specifies how to construct the final output from workflow step results.
+                        If not specified, the workflow returns the last step's output (backward compatible).
+                      properties:
                         properties:
-                          default:
-                            description: Default is the default value for the parameter
-                            type: string
-                          description:
-                            description: Description describes the parameter
-                            type: string
-                          required:
-                            default: false
-                            description: Required indicates if the parameter is required
-                            type: boolean
-                          type:
-                            description: Type is the parameter type (string, integer,
-                              boolean, etc.)
-                            type: string
+                          additionalProperties:
+                            description: OutputPropertySpec defines a single output
+                              property
+                            properties:
+                              default:
+                                description: Default is the fallback value if template
+                                  expansion fails
+                                x-kubernetes-preserve-unknown-fields: true
+                              description:
+                                description: Description is a human-readable description
+                                  exposed to clients and models
+                                type: string
+                              properties:
+                                description: Properties defines nested properties
+                                  for object types
+                                x-kubernetes-preserve-unknown-fields: true
+                              type:
+                                description: 'Type is the JSON Schema type: "string",
+                                  "integer", "number", "boolean", "object", "array"'
+                                enum:
+                                - string
+                                - integer
+                                - number
+                                - boolean
+                                - object
+                                - array
+                                type: string
+                              value:
+                                description: |-
+                                  Value is a template string for constructing the runtime value
+                                  Supports template syntax: {{.steps.step_id.output.field}}, {{.params.param_name}}
+                                  For object types, this can be a JSON string that will be deserialized
+                                type: string
+                            required:
+                            - type
+                            type: object
+                          description: |-
+                            Properties defines the output properties
+                            Map key is the property name, value is the property definition
+                          type: object
                         required:
-                        - type
-                        type: object
-                      description: Parameters defines the input parameters for the
-                        composite tool
+                          description: Required lists property names that must be
+                            present in the output
+                          items:
+                            type: string
+                          type: array
                       type: object
+                    parameters:
+                      description: |-
+                        Parameters defines the input parameter schema in JSON Schema format.
+                        Should be a JSON Schema object with "type": "object" and "properties".
+                        Per MCP specification, this should follow standard JSON Schema for tool inputSchema.
+                        Example:
+                          {
+                            "type": "object",
+                            "properties": {
+                              "param1": {"type": "string", "default": "value"},
+                              "param2": {"type": "integer"}
+                            },
+                            "required": ["param2"]
+                          }
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
                     steps:
                       description: Steps defines the workflow steps
                       items:
@@ -252,6 +301,12 @@ spec:
                                   MaxRetries is the maximum number of retries
                                   Only used when Action is "retry"
                                 type: integer
+                              retryDelay:
+                                description: |-
+                                  RetryDelay is the delay between retry attempts
+                                  Only used when Action is "retry"
+                                pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m))+$
+                                type: string
                             type: object
                           schema:
                             description: Schema defines the expected response schema
@@ -438,6 +493,12 @@ spec:
                           jwksUrl:
                             description: JWKSURL is the URL to fetch the JWKS from
                             type: string
+                          protectedResourceAllowPrivateIP:
+                            default: false
+                            description: |-
+                              ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
+                              Use with caution - only enable for trusted internal IDPs or testing
+                            type: boolean
                           thvCABundlePath:
                             description: |-
                               ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests
@@ -505,11 +566,10 @@ spec:
                     - type
                     type: object
                   type:
-                    description: 'Type defines the authentication type: anonymous,
-                      local, or oidc'
+                    description: 'Type defines the authentication type: anonymous
+                      or oidc'
                     enum:
                     - anonymous
-                    - local
                     - oidc
                     type: string
                 type: object
@@ -599,7 +659,6 @@ spec:
                           description: Type defines the authentication type
                           enum:
                           - discovered
-                          - pass_through
                           - external_auth_config_ref
                           type: string
                       required:
@@ -607,7 +666,7 @@ spec:
                       type: object
                     description: |-
                       Backends defines per-backend authentication overrides
-                      Works in all modes (discovered, inline, mixed)
+                      Works in all modes (discovered, inline)
                     type: object
                   default:
                     description: Default defines default behavior for backends without
@@ -629,7 +688,6 @@ spec:
                         description: Type defines the authentication type
                         enum:
                         - discovered
-                        - pass_through
                         - external_auth_config_ref
                         type: string
                     required:
@@ -641,11 +699,9 @@ spec:
                       Source defines how backend authentication configurations are determined
                       - discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef
                       - inline: Explicit per-backend configuration in VirtualMCPServer
-                      - mixed: Discover most, override specific backends
                     enum:
                     - discovered
                     - inline
-                    - mixed
                     type: string
                 type: object
               podTemplateSpec:
@@ -666,75 +722,15 @@ spec:
                 - NodePort
                 - LoadBalancer
                 type: string
-              tokenCache:
-                description: TokenCache configures token caching behavior
-                properties:
-                  memory:
-                    description: |-
-                      Memory configures in-memory token caching
-                      Only used when Provider is "memory"
-                    properties:
-                      maxEntries:
-                        default: 1000
-                        description: MaxEntries is the maximum number of cache entries
-                        type: integer
-                      ttlOffset:
-                        default: 5m
-                        description: TTLOffset is the duration before token expiry
-                          to refresh
-                        type: string
-                    type: object
-                  provider:
-                    default: memory
-                    description: Provider defines the cache provider type
-                    enum:
-                    - memory
-                    - redis
-                    type: string
-                  redis:
-                    description: |-
-                      Redis configures Redis token caching
-                      Only used when Provider is "redis"
-                    properties:
-                      address:
-                        description: Address is the Redis server address
-                        type: string
-                      db:
-                        default: 0
-                        description: DB is the Redis database number
-                        type: integer
-                      keyPrefix:
-                        default: 'vmcp:tokens:'
-                        description: KeyPrefix is the prefix for cache keys
-                        type: string
-                      passwordRef:
-                        description: PasswordRef references a secret containing the
-                          Redis password
-                        properties:
-                          key:
-                            description: Key is the key within the secret
-                            type: string
-                          name:
-                            description: Name is the name of the secret
-                            type: string
-                        required:
-                        - key
-                        - name
-                        type: object
-                      tls:
-                        default: false
-                        description: TLS enables TLS for Redis connections
-                        type: boolean
-                    required:
-                    - address
-                    type: object
-                type: object
             required:
             - groupRef
             type: object
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
+              backendCount:
+                description: BackendCount is the number of discovered backends
+                type: integer
               conditions:
                 description: Conditions represent the latest available observations
                   of the VirtualMCPServer's state
@@ -791,6 +787,39 @@ spec:
                   - reason
                   - status
                   - type
+                  type: object
+                type: array
+              discoveredBackends:
+                description: DiscoveredBackends lists discovered backend configurations
+                  from the MCPGroup
+                items:
+                  description: DiscoveredBackend represents a discovered backend MCPServer
+                    in the MCPGroup
+                  properties:
+                    authConfigRef:
+                      description: AuthConfigRef is the name of the discovered MCPExternalAuthConfig
+                        (if any)
+                      type: string
+                    authType:
+                      description: AuthType is the type of authentication configured
+                      type: string
+                    lastHealthCheck:
+                      description: LastHealthCheck is the timestamp of the last health
+                        check
+                      format: date-time
+                      type: string
+                    name:
+                      description: Name is the name of the backend MCPServer
+                      type: string
+                    status:
+                      description: Status is the current status of the backend (ready,
+                        degraded, unavailable)
+                      type: string
+                    url:
+                      description: URL is the URL of the backend MCPServer
+                      type: string
+                  required:
+                  - name
                   type: object
                 type: array
               message:

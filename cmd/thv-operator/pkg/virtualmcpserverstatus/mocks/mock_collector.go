@@ -66,6 +66,18 @@ func (mr *MockStatusManagerMockRecorder) SetCondition(conditionType, reason, mes
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetCondition", reflect.TypeOf((*MockStatusManager)(nil).SetCondition), conditionType, reason, message, status)
 }
 
+// SetDiscoveredBackends mocks base method.
+func (m *MockStatusManager) SetDiscoveredBackends(backends []v1alpha1.DiscoveredBackend) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetDiscoveredBackends", backends)
+}
+
+// SetDiscoveredBackends indicates an expected call of SetDiscoveredBackends.
+func (mr *MockStatusManagerMockRecorder) SetDiscoveredBackends(backends any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetDiscoveredBackends", reflect.TypeOf((*MockStatusManager)(nil).SetDiscoveredBackends), backends)
+}
+
 // SetGroupRefValidatedCondition mocks base method.
 func (m *MockStatusManager) SetGroupRefValidatedCondition(reason, message string, status v1.ConditionStatus) {
 	m.ctrl.T.Helper()

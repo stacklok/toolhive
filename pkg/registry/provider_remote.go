@@ -7,7 +7,7 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/registry/types"
+	types "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 // RemoteRegistryProvider provides registry data from a remote HTTP endpoint

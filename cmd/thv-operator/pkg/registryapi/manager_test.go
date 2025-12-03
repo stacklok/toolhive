@@ -11,6 +11,7 @@ import (
 	"go.uber.org/mock/gomock"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -66,6 +67,7 @@ func TestReconcileAPIService(t *testing.T) {
 		_ = mcpv1alpha1.AddToScheme(scheme)
 		_ = appsv1.AddToScheme(scheme)
 		_ = corev1.AddToScheme(scheme)
+		_ = rbacv1.AddToScheme(scheme)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -78,18 +80,20 @@ func TestReconcileAPIService(t *testing.T) {
 				Namespace: "test-namespace",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Source: mcpv1alpha1.MCPRegistrySource{
-					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
-					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMapRef: &corev1.ConfigMapKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: "test-configmap",
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "default",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
 						},
-						Key: "registry.json",
+						SyncPolicy: &mcpv1alpha1.SyncPolicy{
+							Interval: "10m",
+						},
 					},
-				},
-				SyncPolicy: &mcpv1alpha1.SyncPolicy{
-					Interval: "10m",
 				},
 			},
 		}
@@ -141,6 +145,7 @@ func TestReconcileAPIService(t *testing.T) {
 		_ = mcpv1alpha1.AddToScheme(scheme)
 		_ = appsv1.AddToScheme(scheme)
 		_ = corev1.AddToScheme(scheme)
+		_ = rbacv1.AddToScheme(scheme)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -153,12 +158,20 @@ func TestReconcileAPIService(t *testing.T) {
 				Namespace: "test-namespace",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Source: mcpv1alpha1.MCPRegistrySource{
-					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
-					Format: mcpv1alpha1.RegistryFormatToolHive,
-				},
-				SyncPolicy: &mcpv1alpha1.SyncPolicy{
-					Interval: "10m",
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "default",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+						SyncPolicy: &mcpv1alpha1.SyncPolicy{
+							Interval: "10m",
+						},
+					},
 				},
 			},
 		}
@@ -207,18 +220,20 @@ func TestReconcileAPIService(t *testing.T) {
 				Namespace: "test-namespace",
 			},
 			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Source: mcpv1alpha1.MCPRegistrySource{
-					Type:   mcpv1alpha1.RegistrySourceTypeConfigMap,
-					Format: mcpv1alpha1.RegistryFormatToolHive,
-					ConfigMapRef: &corev1.ConfigMapKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{
-							Name: "test-configmap",
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "default",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
 						},
-						Key: "registry.json",
+						SyncPolicy: &mcpv1alpha1.SyncPolicy{
+							Interval: "10m",
+						},
 					},
-				},
-				SyncPolicy: &mcpv1alpha1.SyncPolicy{
-					Interval: "10m",
 				},
 			},
 		}

@@ -74,13 +74,6 @@ func (r *VirtualMCPServer) Validate() error {
 		}
 	}
 
-	// Validate TokenCache configuration
-	if r.Spec.TokenCache != nil {
-		if err := r.validateTokenCache(); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
@@ -109,10 +102,9 @@ func (r *VirtualMCPServer) validateOutgoingAuth() error {
 	validSources := map[string]bool{
 		"discovered": true,
 		"inline":     true,
-		"mixed":      true,
 	}
 	if auth.Source != "" && !validSources[auth.Source] {
-		return fmt.Errorf("spec.outgoingAuth.source must be one of: discovered, inline, mixed")
+		return fmt.Errorf("spec.outgoingAuth.source must be one of: discovered, inline")
 	}
 
 	// Validate backend configurations
@@ -144,12 +136,12 @@ func (*VirtualMCPServer) validateBackendAuth(backendName string, auth BackendAut
 			return fmt.Errorf("spec.outgoingAuth.backends[%s].externalAuthConfigRef.name is required", backendName)
 		}
 
-	case BackendAuthTypeDiscovered, BackendAuthTypePassThrough:
+	case BackendAuthTypeDiscovered:
 		// No additional validation needed
 
 	default:
 		return fmt.Errorf(
-			"spec.outgoingAuth.backends[%s].type must be one of: discovered, pass_through, service_account, external_auth_config_ref",
+			"spec.outgoingAuth.backends[%s].type must be one of: discovered, external_auth_config_ref",
 			backendName)
 	}
 
@@ -332,53 +324,24 @@ func validateStepErrorHandling(toolIndex, stepIndex int, step WorkflowStep) erro
 	}
 
 	validActions := map[string]bool{
-		"abort":    true,
-		"continue": true,
-		"retry":    true,
+		ErrorActionAbort:    true,
+		ErrorActionContinue: true,
+		ErrorActionRetry:    true,
 	}
 	if !validActions[step.OnError.Action] {
 		return fmt.Errorf("spec.compositeTools[%d].steps[%d].onError.action must be abort, continue, or retry",
 			toolIndex, stepIndex)
 	}
 
-	if step.OnError.Action == "retry" && step.OnError.MaxRetries < 1 {
+	if step.OnError.Action == ErrorActionRetry && step.OnError.MaxRetries < 1 {
 		return fmt.Errorf("spec.compositeTools[%d].steps[%d].onError.maxRetries must be at least 1 when action is retry",
 			toolIndex, stepIndex)
 	}
 
-	return nil
-}
-
-// validateTokenCache validates token cache configuration
-func (r *VirtualMCPServer) validateTokenCache() error {
-	cache := r.Spec.TokenCache
-
-	// Validate provider
-	if cache.Provider != "" {
-		validProviders := map[string]bool{
-			"memory": true,
-			"redis":  true,
-		}
-		if !validProviders[cache.Provider] {
-			return fmt.Errorf("spec.tokenCache.provider must be memory or redis")
-		}
-	}
-
-	// Validate provider-specific configuration
-	if cache.Provider == "redis" || (cache.Provider == "" && cache.Redis != nil) {
-		if cache.Redis == nil {
-			return fmt.Errorf("spec.tokenCache.redis is required when provider is redis")
-		}
-		if cache.Redis.Address == "" {
-			return fmt.Errorf("spec.tokenCache.redis.address is required")
-		}
-		if cache.Redis.PasswordRef != nil {
-			if cache.Redis.PasswordRef.Name == "" {
-				return fmt.Errorf("spec.tokenCache.redis.passwordRef.name is required when passwordRef is specified")
-			}
-			if cache.Redis.PasswordRef.Key == "" {
-				return fmt.Errorf("spec.tokenCache.redis.passwordRef.key is required when passwordRef is specified")
-			}
+	if step.OnError.Action == ErrorActionRetry && step.OnError.RetryDelay != "" {
+		if err := validateDuration(step.OnError.RetryDelay); err != nil {
+			return fmt.Errorf("spec.compositeTools[%d].steps[%d].onError.retryDelay: %w",
+				toolIndex, stepIndex, err)
 		}
 	}
 

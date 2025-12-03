@@ -23,6 +23,13 @@ type Provider interface {
 	SetCACert(certPath string) error
 	GetCACert() (certPath string, exists bool, accessible bool)
 	UnsetCACert() error
+
+	// Build environment operations
+	SetBuildEnv(key, value string) error
+	GetBuildEnv(key string) (value string, exists bool)
+	GetAllBuildEnv() map[string]string
+	UnsetBuildEnv(key string) error
+	UnsetAllBuildEnv() error
 }
 
 // DefaultProvider implements Provider using the default XDG config path
@@ -86,6 +93,31 @@ func (d *DefaultProvider) GetCACert() (certPath string, exists bool, accessible 
 // UnsetCACert removes the CA certificate configuration
 func (d *DefaultProvider) UnsetCACert() error {
 	return unsetCACert(d)
+}
+
+// SetBuildEnv validates and sets a build environment variable
+func (d *DefaultProvider) SetBuildEnv(key, value string) error {
+	return setBuildEnv(d, key, value)
+}
+
+// GetBuildEnv returns a specific build environment variable
+func (d *DefaultProvider) GetBuildEnv(key string) (value string, exists bool) {
+	return getBuildEnv(d, key)
+}
+
+// GetAllBuildEnv returns all build environment variables
+func (d *DefaultProvider) GetAllBuildEnv() map[string]string {
+	return getAllBuildEnv(d)
+}
+
+// UnsetBuildEnv removes a specific build environment variable
+func (d *DefaultProvider) UnsetBuildEnv(key string) error {
+	return unsetBuildEnv(d, key)
+}
+
+// UnsetAllBuildEnv removes all build environment variables
+func (d *DefaultProvider) UnsetAllBuildEnv() error {
+	return unsetAllBuildEnv(d)
 }
 
 // PathProvider implements Provider using a specific config path
@@ -159,6 +191,31 @@ func (p *PathProvider) UnsetCACert() error {
 	return unsetCACert(p)
 }
 
+// SetBuildEnv validates and sets a build environment variable
+func (p *PathProvider) SetBuildEnv(key, value string) error {
+	return setBuildEnv(p, key, value)
+}
+
+// GetBuildEnv returns a specific build environment variable
+func (p *PathProvider) GetBuildEnv(key string) (value string, exists bool) {
+	return getBuildEnv(p, key)
+}
+
+// GetAllBuildEnv returns all build environment variables
+func (p *PathProvider) GetAllBuildEnv() map[string]string {
+	return getAllBuildEnv(p)
+}
+
+// UnsetBuildEnv removes a specific build environment variable
+func (p *PathProvider) UnsetBuildEnv(key string) error {
+	return unsetBuildEnv(p, key)
+}
+
+// UnsetAllBuildEnv removes all build environment variables
+func (p *PathProvider) UnsetAllBuildEnv() error {
+	return unsetAllBuildEnv(p)
+}
+
 // KubernetesProvider is a no-op implementation of Provider for Kubernetes environments.
 // In Kubernetes, configuration is managed by the cluster, not by local files.
 type KubernetesProvider struct{}
@@ -222,6 +279,31 @@ func (*KubernetesProvider) GetCACert() (certPath string, exists bool, accessible
 
 // UnsetCACert is a no-op for Kubernetes environments
 func (*KubernetesProvider) UnsetCACert() error {
+	return nil
+}
+
+// SetBuildEnv is a no-op for Kubernetes environments
+func (*KubernetesProvider) SetBuildEnv(_, _ string) error {
+	return nil
+}
+
+// GetBuildEnv returns empty for Kubernetes environments
+func (*KubernetesProvider) GetBuildEnv(_ string) (value string, exists bool) {
+	return "", false
+}
+
+// GetAllBuildEnv returns empty map for Kubernetes environments
+func (*KubernetesProvider) GetAllBuildEnv() map[string]string {
+	return make(map[string]string)
+}
+
+// UnsetBuildEnv is a no-op for Kubernetes environments
+func (*KubernetesProvider) UnsetBuildEnv(_ string) error {
+	return nil
+}
+
+// UnsetAllBuildEnv is a no-op for Kubernetes environments
+func (*KubernetesProvider) UnsetAllBuildEnv() error {
 	return nil
 }
 

@@ -147,9 +147,6 @@ func TestVirtualMCPServerDefaultValues(t *testing.T) {
 			Aggregation: &AggregationConfig{
 				ConflictResolution: "", // Should default to "prefix"
 			},
-			TokenCache: &TokenCacheConfig{
-				Provider: "", // Should default to "memory"
-			},
 		},
 	}
 
@@ -157,7 +154,6 @@ func TestVirtualMCPServerDefaultValues(t *testing.T) {
 	// but we document expected values here
 	assert.NotNil(t, vmcp.Spec.OutgoingAuth)
 	assert.NotNil(t, vmcp.Spec.Aggregation)
-	assert.NotNil(t, vmcp.Spec.TokenCache)
 }
 
 func TestVirtualMCPServerNamespaceIsolation(t *testing.T) {
@@ -270,13 +266,6 @@ func TestBackendAuthConfigTypes(t *testing.T) {
 			name: "discovered_auth",
 			authConfig: BackendAuthConfig{
 				Type: BackendAuthTypeDiscovered,
-			},
-			isValid: true,
-		},
-		{
-			name: "pass_through_auth",
-			authConfig: BackendAuthConfig{
-				Type: BackendAuthTypePassThrough,
 			},
 			isValid: true,
 		},

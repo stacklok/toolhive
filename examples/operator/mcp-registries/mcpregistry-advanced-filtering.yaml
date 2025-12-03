@@ -204,26 +204,26 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Database Servers Only"
-  source:
-    type: configmap
-    format: toolhive
-    configMapRef:
-      name: advanced-filtering-registry-data
-      key: registry.json
-  syncPolicy:
-    interval: "45m"
-  filter:
-    names:
-      include:
-        - "*-postgres"   # Only PostgreSQL servers
-        - "*-mongodb"    # Only MongoDB servers
-      exclude:
-        - "legacy-*"     # Exclude legacy servers
-    tags:
-      include:
-        - "database"     # Only database servers
-      exclude:
-        - "deprecated"   # Exclude deprecated servers
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: advanced-filtering-registry-data
+        key: registry.json
+      syncPolicy:
+        interval: "45m"
+      filter:
+        names:
+          include:
+            - "*-postgres"   # Only PostgreSQL servers
+            - "*-mongodb"    # Only MongoDB servers
+          exclude:
+            - "legacy-*"     # Exclude legacy servers
+        tags:
+          include:
+            - "database"     # Only database servers
+          exclude:
+            - "deprecated"   # Exclude deprecated servers
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPRegistry
@@ -232,27 +232,27 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Production & Monitoring Tools"
-  source:
-    type: configmap
-    format: toolhive
-    configMapRef:
-      name: advanced-filtering-registry-data
-      key: registry.json
-  syncPolicy:
-    interval: "15m"  # More frequent sync for production tools
-  filter:
-    names:
-      include:
-        - "prod-*"         # Production servers
-        - "monitoring-*"   # Monitoring servers
-    tags:
-      include:
-        - "production"     # Production-ready servers
-        - "monitoring"     # Monitoring tools
-        - "observability"  # Observability tools
-      exclude:
-        - "experimental"   # No experimental features
-        - "testing"        # No testing tools
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: advanced-filtering-registry-data
+        key: registry.json
+      syncPolicy:
+        interval: "15m"  # More frequent sync for production tools
+      filter:
+        names:
+          include:
+            - "prod-*"         # Production servers
+            - "monitoring-*"   # Monitoring servers
+        tags:
+          include:
+            - "production"     # Production-ready servers
+            - "monitoring"     # Monitoring tools
+            - "observability"  # Observability tools
+          exclude:
+            - "experimental"   # No experimental features
+            - "testing"        # No testing tools
 ---
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPRegistry
@@ -261,22 +261,22 @@ metadata:
   namespace: toolhive-system
 spec:
   displayName: "Development & Testing Tools"
-  source:
-    type: configmap
-    format: toolhive
-    configMapRef:
-      name: advanced-filtering-registry-data
-      key: registry.json
-  filter:
-    names:
-      exclude:
-        - "prod-*"      # Exclude production servers
-        - "legacy-*"    # Exclude legacy servers
-    tags:
-      include:
-        - "development"   # Development tools
-        - "testing"       # Testing tools
-        - "debugging"     # Debugging tools
-      exclude:
-        - "production"    # No production servers
-        - "deprecated"    # No deprecated tools
+  registries:
+    - name: default
+      format: toolhive
+      configMapRef:
+        name: advanced-filtering-registry-data
+        key: registry.json
+      filter:
+        names:
+          exclude:
+            - "prod-*"      # Exclude production servers
+            - "legacy-*"    # Exclude legacy servers
+        tags:
+          include:
+            - "development"   # Development tools
+            - "testing"       # Testing tools
+            - "debugging"     # Debugging tools
+          exclude:
+            - "production"    # No production servers
+            - "deprecated"    # No deprecated tools

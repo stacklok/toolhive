@@ -20,7 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
-	regtypes "github.com/stacklok/toolhive/pkg/registry/types"
+	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -273,6 +273,7 @@ func BuildRunnerConfig(
 	}
 
 	if runFlags.RemoteURL != "" {
+		logger.Debugf("Attempting to run remote MCP server: %s", runFlags.RemoteURL)
 		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, nil,
 			nil, envVarValidator, oidcConfig, telemetryConfig)
 	}

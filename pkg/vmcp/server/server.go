@@ -199,6 +199,17 @@ func New(
 	// This provides SDK-agnostic elicitation with security validation
 	elicitationHandler := composer.NewDefaultElicitationHandler(sdkElicitationRequester)
 
+	// Decorate backend client with telemetry if provider is configured
+	// This must happen BEFORE creating the workflow engine so that workflow
+	// backend calls are instrumented when they occur during workflow execution.
+	if cfg.TelemetryProvider != nil {
+		var err error
+		backendClient, err = monitorBackends(context.Background(), cfg.TelemetryProvider.MeterProvider(), backends, backendClient)
+		if err != nil {
+			return nil, fmt.Errorf("failed to monitor backends: %w", err)
+		}
+	}
+
 	// Create workflow engine (composer) for executing composite tools
 	// The composer orchestrates multi-step workflows across backends
 	// Use in-memory state store with 5-minute cleanup interval and 1-hour max age for completed workflows
@@ -211,12 +222,8 @@ func New(
 		return nil, fmt.Errorf("workflow validation failed: %w", err)
 	}
 
-	// Decorate backend client and workflow executors with telemetry if provider is configured
+	// Decorate workflow executors with telemetry if provider is configured
 	if cfg.TelemetryProvider != nil {
-		backendClient, err = monitorBackends(context.Background(), cfg.TelemetryProvider.MeterProvider(), backends, backendClient)
-		if err != nil {
-			return nil, fmt.Errorf("failed to monitor backends: %w", err)
-		}
 		workflowExecutors, err = monitorWorkflowExecutors(cfg.TelemetryProvider.MeterProvider(), workflowExecutors)
 		if err != nil {
 			return nil, fmt.Errorf("failed to monitor workflow executors: %w", err)

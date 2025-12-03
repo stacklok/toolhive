@@ -12,7 +12,7 @@ permissions:
 jobs:
   apply-size-label:
     name: Apply Size Label
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     if: github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Download artifact
@@ -79,7 +79,7 @@ jobs:
 
   enforce-xl-justification:
     name: Enforce XL PR Justification
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     if: github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout repository

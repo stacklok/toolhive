@@ -54,7 +54,7 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum")
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []string{})
 
 	require.NotNil(t, deployment)
 	assert.Equal(t, vmcp.Name, deployment.Name)
@@ -134,7 +134,7 @@ func TestBuildEnvVarsForVmcp(t *testing.T) {
 	}
 
 	r := &VirtualMCPServerReconciler{}
-	env := r.buildEnvVarsForVmcp(context.Background(), vmcp)
+	env := r.buildEnvVarsForVmcp(context.Background(), vmcp, []string{})
 
 	// Should have VMCP_NAME and VMCP_NAMESPACE
 	foundName := false
@@ -344,7 +344,7 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	}
 
 	// Test nil inputs
-	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, ""))
+	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, "", []string{}))
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -354,7 +354,7 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	}
 
 	// Test with nil deployment
-	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum"))
+	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum", []string{}))
 }
 
 // TestServiceNeedsUpdate tests service update detection

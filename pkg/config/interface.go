@@ -30,6 +30,18 @@ type Provider interface {
 	GetAllBuildEnv() map[string]string
 	UnsetBuildEnv(key string) error
 	UnsetAllBuildEnv() error
+
+	// Build environment from secrets operations
+	SetBuildEnvFromSecret(key, secretName string) error
+	GetBuildEnvFromSecret(key string) (secretName string, exists bool)
+	GetAllBuildEnvFromSecrets() map[string]string
+	UnsetBuildEnvFromSecret(key string) error
+
+	// Build environment from shell operations
+	SetBuildEnvFromShell(key string) error
+	GetBuildEnvFromShell(key string) (exists bool)
+	GetAllBuildEnvFromShell() []string
+	UnsetBuildEnvFromShell(key string) error
 }
 
 // DefaultProvider implements Provider using the default XDG config path
@@ -118,6 +130,46 @@ func (d *DefaultProvider) UnsetBuildEnv(key string) error {
 // UnsetAllBuildEnv removes all build environment variables
 func (d *DefaultProvider) UnsetAllBuildEnv() error {
 	return unsetAllBuildEnv(d)
+}
+
+// SetBuildEnvFromSecret validates and sets a secret reference for a build environment variable
+func (d *DefaultProvider) SetBuildEnvFromSecret(key, secretName string) error {
+	return setBuildEnvFromSecret(d, key, secretName)
+}
+
+// GetBuildEnvFromSecret retrieves the secret name for a build environment variable
+func (d *DefaultProvider) GetBuildEnvFromSecret(key string) (secretName string, exists bool) {
+	return getBuildEnvFromSecret(d, key)
+}
+
+// GetAllBuildEnvFromSecrets returns all build env secret references
+func (d *DefaultProvider) GetAllBuildEnvFromSecrets() map[string]string {
+	return getAllBuildEnvFromSecrets(d)
+}
+
+// UnsetBuildEnvFromSecret removes a secret reference
+func (d *DefaultProvider) UnsetBuildEnvFromSecret(key string) error {
+	return unsetBuildEnvFromSecret(d, key)
+}
+
+// SetBuildEnvFromShell adds an environment variable name to read from shell at build time
+func (d *DefaultProvider) SetBuildEnvFromShell(key string) error {
+	return setBuildEnvFromShell(d, key)
+}
+
+// GetBuildEnvFromShell checks if a key is configured to read from shell
+func (d *DefaultProvider) GetBuildEnvFromShell(key string) bool {
+	return getBuildEnvFromShell(d, key)
+}
+
+// GetAllBuildEnvFromShell returns all keys configured to read from shell
+func (d *DefaultProvider) GetAllBuildEnvFromShell() []string {
+	return getAllBuildEnvFromShell(d)
+}
+
+// UnsetBuildEnvFromShell removes a key from shell environment list
+func (d *DefaultProvider) UnsetBuildEnvFromShell(key string) error {
+	return unsetBuildEnvFromShell(d, key)
 }
 
 // PathProvider implements Provider using a specific config path
@@ -216,6 +268,46 @@ func (p *PathProvider) UnsetAllBuildEnv() error {
 	return unsetAllBuildEnv(p)
 }
 
+// SetBuildEnvFromSecret validates and sets a secret reference for a build environment variable
+func (p *PathProvider) SetBuildEnvFromSecret(key, secretName string) error {
+	return setBuildEnvFromSecret(p, key, secretName)
+}
+
+// GetBuildEnvFromSecret retrieves the secret name for a build environment variable
+func (p *PathProvider) GetBuildEnvFromSecret(key string) (secretName string, exists bool) {
+	return getBuildEnvFromSecret(p, key)
+}
+
+// GetAllBuildEnvFromSecrets returns all build env secret references
+func (p *PathProvider) GetAllBuildEnvFromSecrets() map[string]string {
+	return getAllBuildEnvFromSecrets(p)
+}
+
+// UnsetBuildEnvFromSecret removes a secret reference
+func (p *PathProvider) UnsetBuildEnvFromSecret(key string) error {
+	return unsetBuildEnvFromSecret(p, key)
+}
+
+// SetBuildEnvFromShell adds an environment variable name to read from shell at build time
+func (p *PathProvider) SetBuildEnvFromShell(key string) error {
+	return setBuildEnvFromShell(p, key)
+}
+
+// GetBuildEnvFromShell checks if a key is configured to read from shell
+func (p *PathProvider) GetBuildEnvFromShell(key string) bool {
+	return getBuildEnvFromShell(p, key)
+}
+
+// GetAllBuildEnvFromShell returns all keys configured to read from shell
+func (p *PathProvider) GetAllBuildEnvFromShell() []string {
+	return getAllBuildEnvFromShell(p)
+}
+
+// UnsetBuildEnvFromShell removes a key from shell environment list
+func (p *PathProvider) UnsetBuildEnvFromShell(key string) error {
+	return unsetBuildEnvFromShell(p, key)
+}
+
 // KubernetesProvider is a no-op implementation of Provider for Kubernetes environments.
 // In Kubernetes, configuration is managed by the cluster, not by local files.
 type KubernetesProvider struct{}
@@ -304,6 +396,46 @@ func (*KubernetesProvider) UnsetBuildEnv(_ string) error {
 
 // UnsetAllBuildEnv is a no-op for Kubernetes environments
 func (*KubernetesProvider) UnsetAllBuildEnv() error {
+	return nil
+}
+
+// SetBuildEnvFromSecret is a no-op for Kubernetes environments
+func (*KubernetesProvider) SetBuildEnvFromSecret(_, _ string) error {
+	return nil
+}
+
+// GetBuildEnvFromSecret returns empty for Kubernetes environments
+func (*KubernetesProvider) GetBuildEnvFromSecret(_ string) (secretName string, exists bool) {
+	return "", false
+}
+
+// GetAllBuildEnvFromSecrets returns empty map for Kubernetes environments
+func (*KubernetesProvider) GetAllBuildEnvFromSecrets() map[string]string {
+	return make(map[string]string)
+}
+
+// UnsetBuildEnvFromSecret is a no-op for Kubernetes environments
+func (*KubernetesProvider) UnsetBuildEnvFromSecret(_ string) error {
+	return nil
+}
+
+// SetBuildEnvFromShell is a no-op for Kubernetes environments
+func (*KubernetesProvider) SetBuildEnvFromShell(_ string) error {
+	return nil
+}
+
+// GetBuildEnvFromShell returns false for Kubernetes environments
+func (*KubernetesProvider) GetBuildEnvFromShell(_ string) bool {
+	return false
+}
+
+// GetAllBuildEnvFromShell returns empty slice for Kubernetes environments
+func (*KubernetesProvider) GetAllBuildEnvFromShell() []string {
+	return []string{}
+}
+
+// UnsetBuildEnvFromShell is a no-op for Kubernetes environments
+func (*KubernetesProvider) UnsetBuildEnvFromShell(_ string) error {
 	return nil
 }
 

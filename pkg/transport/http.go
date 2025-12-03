@@ -205,7 +205,7 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		targetURI,
 		t.prometheusHandler,
 		t.authInfoHandler,
-		t.remoteURL == "",
+		true,
 		t.remoteURL != "",
 		string(t.transportType),
 		middlewares...)

@@ -453,7 +453,7 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	err := r.ensureVmcpConfigConfigMap(context.Background(), testVmcp)
+	err := r.ensureVmcpConfigConfigMap(context.Background(), testVmcp, []string{})
 	require.NoError(t, err)
 
 	// Verify ConfigMap was created

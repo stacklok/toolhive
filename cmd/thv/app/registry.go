@@ -340,6 +340,14 @@ func printTextServerInfo(name string, server types.ServerMetadata) {
 		fmt.Printf("  %s\n", strings.Join(tags, ", "))
 	}
 
+	// Print custom metadata
+	if customMetadata := server.GetCustomMetadata(); len(customMetadata) > 0 {
+		fmt.Println("\nCustom Metadata:")
+		for key, value := range customMetadata {
+			fmt.Printf("  %s: %v\n", key, value)
+		}
+	}
+
 	// Print example command
 	fmt.Println("\nExample Command:")
 	fmt.Printf("  thv run %s\n", name)

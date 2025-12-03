@@ -4,6 +4,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -12,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
@@ -288,7 +290,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Create router
 	rtr := vmcprouter.NewDefaultRouter()
 
-	// Setup authentication middleware
 	logger.Infof("Setting up incoming authentication (type: %s)", cfg.IncomingAuth.Type)
 
 	authMiddleware, authInfoHandler, err := factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth)
@@ -303,13 +304,23 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	host, _ := cmd.Flags().GetString("host")
 	port, _ := cmd.Flags().GetInt("port")
 
+	var telemetryMiddleware func(http.Handler) http.Handler
+	if cfg.Telemetry != nil {
+		provider, err := telemetry.NewProvider(ctx, *cfg.Telemetry)
+		if err != nil {
+			return fmt.Errorf("failed to create telemetry provider: %w", err)
+		}
+		telemetryMiddleware = provider.Middleware(cfg.Name, "streamable-http")
+	}
+
 	serverCfg := &vmcpserver.Config{
-		Name:            cfg.Name,
-		Version:         getVersion(),
-		Host:            host,
-		Port:            port,
-		AuthMiddleware:  authMiddleware,
-		AuthInfoHandler: authInfoHandler,
+		Name:                cfg.Name,
+		Version:             getVersion(),
+		Host:                host,
+		Port:                port,
+		AuthMiddleware:      authMiddleware,
+		AuthInfoHandler:     authInfoHandler,
+		TelemetryMiddleware: telemetryMiddleware,
 	}
 
 	// Convert composite tool configurations to workflow definitions

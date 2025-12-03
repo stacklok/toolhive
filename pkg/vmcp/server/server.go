@@ -82,6 +82,10 @@ type Config struct {
 	// AuthInfoHandler is the optional handler for /.well-known/oauth-protected-resource endpoint.
 	// Exposes OIDC discovery information about the protected resource.
 	AuthInfoHandler http.Handler
+
+	// TelemetryMiddleware is the optional telemetry middleware to apply to MCP routes.
+	// If nil, no telemetry is recorded.
+	TelemetryMiddleware func(http.Handler) http.Handler
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -343,6 +347,11 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// MCP endpoint - apply middleware chain: auth → discovery
 	var mcpHandler http.Handler = streamableServer
+
+	if s.config.TelemetryMiddleware != nil {
+		mcpHandler = s.config.TelemetryMiddleware(mcpHandler)
+		logger.Info("Telemetry middleware enabled for MCP endpoints")
+	}
 
 	// Apply discovery middleware (runs after auth middleware)
 	// Discovery middleware performs per-request capability aggregation with user context

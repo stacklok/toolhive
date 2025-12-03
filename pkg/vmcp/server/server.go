@@ -351,6 +351,16 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/ping", s.handleHealth)
 
+	// Optional Prometheus metrics endpoint (unauthenticated)
+	if s.config.TelemetryProvider != nil {
+		if prometheusHandler := s.config.TelemetryProvider.PrometheusHandler(); prometheusHandler != nil {
+			mux.Handle("/metrics", prometheusHandler)
+			logger.Info("Prometheus metrics endpoint enabled at /metrics")
+		} else {
+			logger.Warn("Prometheus metrics endpoint is not enabled, but telemetry provider is configured")
+		}
+	}
+
 	// Optional .well-known discovery endpoints (unauthenticated, RFC 9728 compliant)
 	// Handles /.well-known/oauth-protected-resource and subpaths (e.g., /mcp)
 	if wellKnownHandler := auth.NewWellKnownHandler(s.config.AuthInfoHandler); wellKnownHandler != nil {

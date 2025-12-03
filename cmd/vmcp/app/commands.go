@@ -312,7 +312,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("failed to create telemetry provider: %w", err)
 		}
 
-		backendClient, err = vmcp.MonitorBackends(ctx, telemetryProvider.MeterProvider(), backends, backendClient)
+		backendClient, err = vmcpserver.MonitorBackends(ctx, telemetryProvider.MeterProvider(), backends, backendClient)
 		if err != nil {
 			return fmt.Errorf("failed to monitor backends: %w", err)
 		}

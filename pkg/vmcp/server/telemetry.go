@@ -30,15 +30,15 @@ func monitorBackends(ctx context.Context, meterProvider metric.MeterProvider, ba
 	}
 	backendCount.Record(ctx, int64(len(backends)))
 
-	requestsTotal, err := meter.Int64Counter("toolhive_vmcp_requests_total", metric.WithDescription("Total number of requests per backend"))
+	requestsTotal, err := meter.Int64Counter("toolhive_vmcp_backend_requests_total", metric.WithDescription("Total number of requests per backend"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create requests total counter: %w", err)
 	}
-	errorsTotal, err := meter.Int64Counter("toolhive_vmcp_errors_total", metric.WithDescription("Total number of errors per backend"))
+	errorsTotal, err := meter.Int64Counter("toolhive_vmcp_backend_errors_total", metric.WithDescription("Total number of errors per backend"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create errors total counter: %w", err)
 	}
-	requestsDuration, err := meter.Float64Histogram("toolhive_vmcp_requests_duration", metric.WithDescription("Duration of requests in seconds per backend"))
+	requestsDuration, err := meter.Float64Histogram("toolhive_vmcp_backend_requests_duration", metric.WithDescription("Duration of requests in seconds per backend"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create requests duration histogram: %w", err)
 	}

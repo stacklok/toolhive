@@ -566,12 +566,15 @@ spec:
                     - type
                     type: object
                   type:
-                    description: 'Type defines the authentication type: anonymous
-                      or oidc'
+                    description: |-
+                      Type defines the authentication type: anonymous or oidc
+                      When no authentication is required, explicitly set this to "anonymous"
                     enum:
                     - anonymous
                     - oidc
                     type: string
+                required:
+                - type
                 type: object
               operational:
                 description: Operational defines operational settings like timeouts

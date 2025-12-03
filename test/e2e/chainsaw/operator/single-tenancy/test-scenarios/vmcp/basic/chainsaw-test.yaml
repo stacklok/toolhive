@@ -28,6 +28,7 @@ spec:
             groupRef:
               name: test-group
             incomingAuth:
+              type: oidc
               oidcConfig:
                 type: inline
                 inline:

@@ -955,3 +955,92 @@ func TestConverter_ConvertCompositeTools_OutputSpec(t *testing.T) {
 		})
 	}
 }
+
+func TestConverter_IncomingAuthRequired(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		incomingAuth       *mcpv1alpha1.IncomingAuthConfig
+		expectedAuthType   string
+		expectedOIDCConfig *vmcpconfig.OIDCConfig
+		expectNilAuth      bool
+		description        string
+	}{
+		{
+			name:          "nil incomingAuth results in nil config",
+			incomingAuth:  nil,
+			expectNilAuth: true,
+			description:   "Should return nil IncomingAuth when not specified - CRD validation will reject this",
+		},
+		{
+			name: "explicit anonymous auth",
+			incomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Type: "anonymous",
+			},
+			expectedAuthType: "anonymous",
+			description:      "Should use anonymous auth when explicitly specified",
+		},
+		{
+			name: "explicit oidc auth with inline config",
+			incomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Type: "oidc",
+				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: "inline",
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:   "https://example.com",
+						ClientID: "test-client",
+						Audience: "test-audience",
+					},
+				},
+			},
+			expectedAuthType: "oidc",
+			expectedOIDCConfig: &vmcpconfig.OIDCConfig{
+				Issuer:   "https://example.com",
+				ClientID: "test-client",
+				Audience: "test-audience",
+			},
+			description: "Should correctly convert OIDC auth config",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef:     mcpv1alpha1.GroupRef{Name: "test-group"},
+					IncomingAuth: tt.incomingAuth,
+				},
+			}
+
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			config, err := converter.Convert(ctx, vmcpServer)
+
+			require.NoError(t, err, tt.description)
+			require.NotNil(t, config, tt.description)
+
+			if tt.expectNilAuth {
+				assert.Nil(t, config.IncomingAuth, tt.description)
+			} else {
+				require.NotNil(t, config.IncomingAuth, tt.description)
+				assert.Equal(t, tt.expectedAuthType, config.IncomingAuth.Type, tt.description)
+
+				if tt.expectedOIDCConfig != nil {
+					require.NotNil(t, config.IncomingAuth.OIDC, tt.description)
+					assert.Equal(t, tt.expectedOIDCConfig.Issuer, config.IncomingAuth.OIDC.Issuer, tt.description)
+					assert.Equal(t, tt.expectedOIDCConfig.ClientID, config.IncomingAuth.OIDC.ClientID, tt.description)
+					assert.Equal(t, tt.expectedOIDCConfig.Audience, config.IncomingAuth.OIDC.Audience, tt.description)
+				} else {
+					assert.Nil(t, config.IncomingAuth.OIDC, tt.description)
+				}
+			}
+		})
+	}
+}

@@ -1257,9 +1257,11 @@ func (r *MCPServerReconciler) serviceForMCPServer(ctx context.Context, m *mcpv1a
 func checkContainerError(containerStatus corev1.ContainerStatus) (bool, string) {
 	if containerStatus.State.Waiting != nil {
 		reason := containerStatus.State.Waiting.Reason
-		// These reasons indicate the pod is not healthy
-		if reason == "ImagePullBackOff" || reason == "ErrImagePull" ||
-			reason == "CrashLoopBackOff" || reason == "CreateContainerError" ||
+		// These reasons indicate definitive failures (not transient)
+		// Note: ImagePullBackOff and ErrImagePull are treated as pending conditions
+		// because they are often transient (network issues, temporary registry unavailability)
+		// and Kubernetes will keep retrying
+		if reason == "CrashLoopBackOff" || reason == "CreateContainerError" ||
 			reason == "InvalidImageName" {
 			return true, reason
 		}
@@ -1313,8 +1315,8 @@ func categorizePodStatus(pod corev1.Pod) (running, pending, failed int, failureR
 
 // updateMCPServerStatus updates the status of the MCPServer
 func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv1alpha1.MCPServer) error {
-	// List pods for the StatefulSet only (not proxy pods)
-	// The StatefulSet pods are labeled with "app": "mcpserver"
+	// List pods for the MCPServer Deployment only (not proxy pods)
+	// The Deployment pods are labeled with "app": "mcpserver"
 	podList := &corev1.PodList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(m.Namespace),
@@ -1325,7 +1327,7 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 	}
 
 	if len(podList.Items) == 0 {
-		// No StatefulSet pods found yet
+		// No Deployment pods found yet
 		m.Status.Phase = mcpv1alpha1.MCPServerPhasePending
 		m.Status.Message = "MCP server is being created"
 		return r.Status().Update(ctx, m)

@@ -467,7 +467,7 @@ func TestVirtualMCPServerStatusManagerDiscoveredBackends(t *testing.T) {
 
 	assert.True(t, updated, "status should be updated")
 	assert.Len(t, vmcpStatus.DiscoveredBackends, 3, "should have 3 discovered backends")
-	assert.Equal(t, 3, vmcpStatus.BackendCount, "backendCount should be 3")
+	assert.Equal(t, 2, vmcpStatus.BackendCount, "backendCount should be 2 (only ready backends)")
 
 	// Verify backend details
 	assert.Equal(t, "backend-1", vmcpStatus.DiscoveredBackends[0].Name)

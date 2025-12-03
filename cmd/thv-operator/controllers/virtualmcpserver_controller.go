@@ -807,6 +807,8 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
+	ctxLogger := log.FromContext(ctx)
+
 	// List the pods for this VirtualMCPServer's deployment
 	podList := &corev1.PodList{}
 	listOpts := []client.ListOption{
@@ -836,41 +838,58 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 
 	// Update the status based on pod health
 	if running > 0 {
-		// Check backend health to determine if we should be Ready or Degraded
-		readyBackends := 0
-		unhealthyBackends := 0 // Count unavailable, degraded, and unknown backends
-		for _, backend := range vmcp.Status.DiscoveredBackends {
-			switch backend.Status {
-			case mcpv1alpha1.BackendStatusReady:
-				readyBackends++
-			case mcpv1alpha1.BackendStatusUnavailable, mcpv1alpha1.BackendStatusDegraded, mcpv1alpha1.BackendStatusUnknown:
-				unhealthyBackends++
+		// Only check backend health if backends have been discovered
+		// During initial startup, backends may not be discovered yet
+		if len(vmcp.Status.DiscoveredBackends) > 0 {
+			// Check backend health to determine if we should be Ready or Degraded
+			readyBackends := 0
+			unhealthyBackends := 0 // Count unavailable, degraded, and unknown backends
+			for _, backend := range vmcp.Status.DiscoveredBackends {
+				switch backend.Status {
+				case mcpv1alpha1.BackendStatusReady:
+					readyBackends++
+				case mcpv1alpha1.BackendStatusUnavailable, mcpv1alpha1.BackendStatusDegraded, mcpv1alpha1.BackendStatusUnknown:
+					unhealthyBackends++
+				default:
+					// Treat unexpected status values as unhealthy
+					ctxLogger.V(1).Info("Unexpected backend status, treating as unhealthy",
+						"backend", backend.Name,
+						"status", backend.Status)
+					unhealthyBackends++
+				}
 			}
-		}
 
-		totalBackends := readyBackends + unhealthyBackends
-		if readyBackends == 0 && unhealthyBackends > 0 {
-			// All backends unhealthy - set to Degraded
-			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseDegraded)
-			statusManager.SetMessage(fmt.Sprintf("Virtual MCP server is running but all %d backends are unhealthy", unhealthyBackends))
-			statusManager.SetReadyCondition("BackendsUnavailable", "All backends are unhealthy", metav1.ConditionFalse)
-		} else if unhealthyBackends > 0 {
-			// Some backends unhealthy - set to Degraded
-			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseDegraded)
-			statusManager.SetMessage(
-				fmt.Sprintf("Virtual MCP server is running with %d/%d backends available",
-					readyBackends, totalBackends))
-			statusManager.SetReadyCondition("BackendsDegraded", "Some backends are unhealthy", metav1.ConditionFalse)
-		} else if readyBackends > 0 {
-			// All backends ready - set to Ready
+			totalBackends := readyBackends + unhealthyBackends
+			if readyBackends == 0 && unhealthyBackends > 0 {
+				// All backends unhealthy - set to Degraded
+				statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseDegraded)
+				statusManager.SetMessage(fmt.Sprintf("Virtual MCP server is running but all %d backends are unhealthy", unhealthyBackends))
+				statusManager.SetReadyCondition("BackendsUnavailable", "All backends are unhealthy", metav1.ConditionFalse)
+			} else if unhealthyBackends > 0 {
+				// Some backends unhealthy - set to Degraded
+				statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseDegraded)
+				statusManager.SetMessage(
+					fmt.Sprintf("Virtual MCP server is running with %d/%d backends available",
+						readyBackends, totalBackends))
+				statusManager.SetReadyCondition("BackendsDegraded", "Some backends are unhealthy", metav1.ConditionFalse)
+			} else if readyBackends > 0 {
+				// All backends ready - set to Ready
+				statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseReady)
+				statusManager.SetMessage("Virtual MCP server is running")
+				statusManager.SetReadyCondition("DeploymentReady", "Deployment is ready", metav1.ConditionTrue)
+			} else {
+				// Edge case: backends exist but none were counted (shouldn't happen with default case)
+				ctxLogger.V(1).Info("No backends were counted, treating as degraded",
+					"discoveredBackendsCount", len(vmcp.Status.DiscoveredBackends))
+				statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseDegraded)
+				statusManager.SetMessage("Virtual MCP server is running but backend status cannot be determined")
+				statusManager.SetReadyCondition("BackendsUnknown", "Backend status unknown", metav1.ConditionFalse)
+			}
+		} else {
+			// No backends discovered yet - pods running is sufficient for Ready during initial startup
 			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseReady)
 			statusManager.SetMessage("Virtual MCP server is running")
 			statusManager.SetReadyCondition("DeploymentReady", "Deployment is ready", metav1.ConditionTrue)
-		} else {
-			// No backends discovered yet - set to Pending
-			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhasePending)
-			statusManager.SetMessage("Virtual MCP server is starting, waiting for backends")
-			statusManager.SetReadyCondition("BackendsNotReady", "No backends discovered yet", metav1.ConditionFalse)
 		}
 	} else if pending > 0 {
 		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhasePending)
@@ -1134,6 +1153,8 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 // discoverBackends discovers all MCPServers in the referenced MCPGroup and returns
 // a list of DiscoveredBackend objects with their current status.
 // This reuses the existing workload discovery code from pkg/vmcp/workloads.
+//
+//nolint:gocyclo
 func (r *VirtualMCPServerReconciler) discoverBackends(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -1224,11 +1245,12 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 				authConfigRef = mcpServer.Spec.ExternalAuthConfigRef.Name
 				authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef
 			}
-			// Override backend status based on MCPServer phase
-			// If MCPServer is not Running, mark backend as unavailable regardless of aggregator health check
-			if mcpServer.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+			// Override backend status based on MCPServer phase for definitive failure states
+			// Only override for Failed/Terminating phases, preserve Unknown for Pending
+			if mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhaseFailed ||
+				mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhaseTerminating {
 				backendStatus = mcpv1alpha1.BackendStatusUnavailable
-				ctxLogger.V(1).Info("Backend MCPServer not running, marking as unavailable",
+				ctxLogger.V(1).Info("Backend MCPServer failed or terminating, marking as unavailable",
 					"name", workloadName,
 					"phase", mcpServer.Status.Phase)
 			}

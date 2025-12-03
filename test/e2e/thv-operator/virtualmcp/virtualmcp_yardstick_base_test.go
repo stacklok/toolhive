@@ -269,7 +269,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				backend.Spec.Image = "non-existent-image:invalid"
 				return k8sClient.Update(ctx, backend)
 			}, timeout, pollingInterval).Should(Succeed())
-			By("Waiting for MCPServer to transition to Failed state")
+			By("Waiting for MCPServer to transition to Pending state (proxy not ready)")
 			Eventually(func() mcpv1alpha1.MCPServerPhase {
 				backend := &mcpv1alpha1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -280,8 +280,8 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 					return ""
 				}
 				return backend.Status.Phase
-			}, timeout, pollingInterval).Should(Equal(mcpv1alpha1.MCPServerPhaseFailed),
-				"MCPServer should transition to Failed when image is invalid")
+			}, timeout, pollingInterval).Should(Equal(mcpv1alpha1.MCPServerPhasePending),
+				"MCPServer should be Pending when backend container has image pull issues but proxy is still running")
 
 			By("Waiting for VirtualMCPServer to transition to Degraded phase")
 			Eventually(func() mcpv1alpha1.VirtualMCPServerPhase {
@@ -297,6 +297,11 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				"VirtualMCPServer should enter Degraded phase when a backend is unavailable")
 
 			By("Verifying backend count reflects one ready backend")
+			// Re-fetch VirtualMCPServer to ensure we have the latest status
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			}, vmcpServer)).To(Succeed(), "Should be able to fetch VirtualMCPServer")
 			Expect(vmcpServer.Status.BackendCount).To(Equal(1), "Should have 1 ready backend")
 
 			By("Verifying discovered backends list shows one unavailable backend")
@@ -321,16 +326,16 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				if err != nil {
 					return err
 				}
-				backend.Spec.Image = YardstickImage
+				backend.Spec.Image = images.YardstickServerImage
 				return k8sClient.Update(ctx, backend)
 			}, timeout, pollingInterval).Should(Succeed())
-			By("Deleting the StatefulSet pod to force recreation with new image")
-			// StatefulSets don't automatically recreate pods when spec changes
-			// We need to delete the pod to force it to be recreated with the new image
+			By("Deleting the Deployment pod to force immediate recreation with new image")
+			// Manually delete the pod to force immediate recreation rather than waiting
+			// for the normal rolling update process, which speeds up the E2E test
 			podToDelete := &corev1.Pod{}
 			Eventually(func() error {
 				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      backend1Name + "-0", // StatefulSet pod name
+					Name:      backend1Name + "-0", // Pod name pattern
 					Namespace: testNamespace,
 				}, podToDelete)
 				if err != nil {
@@ -369,6 +374,11 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 				"VirtualMCPServer should return to Ready phase when all backends are restored")
 
 			By("Verifying both backends are ready")
+			// Re-fetch VirtualMCPServer to ensure we have the latest status
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			}, vmcpServer)).To(Succeed(), "Should be able to fetch VirtualMCPServer")
 			Expect(vmcpServer.Status.BackendCount).To(Equal(2), "Should have 2 ready backends")
 			Expect(vmcpServer.Status.DiscoveredBackends).To(HaveLen(2), "Should track both backends")
 

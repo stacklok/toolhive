@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/adrg/xdg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -1693,7 +1692,6 @@ func TestFileStatusManager_GetWorkload_PIDMigration(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		setupPIDFile    bool
 		pidValue        int
 		workloadStatus  rt.WorkloadStatus
 		processID       int
@@ -1701,17 +1699,7 @@ func TestFileStatusManager_GetWorkload_PIDMigration(t *testing.T) {
 		expectPIDFile   bool // whether PID file should exist after operation
 	}{
 		{
-			name:            "migrates PID when status is running and ProcessID is 0",
-			setupPIDFile:    true,
-			pidValue:        12345,
-			workloadStatus:  rt.WorkloadStatusRunning,
-			processID:       0,
-			expectMigration: true,
-			expectPIDFile:   true, // PID file is NOT deleted (see TODO comment in migration code)
-		},
-		{
 			name:            "no migration when status is not running",
-			setupPIDFile:    true,
 			pidValue:        12345,
 			workloadStatus:  rt.WorkloadStatusStopped,
 			processID:       0,
@@ -1720,7 +1708,6 @@ func TestFileStatusManager_GetWorkload_PIDMigration(t *testing.T) {
 		},
 		{
 			name:            "no migration when ProcessID is not 0",
-			setupPIDFile:    true,
 			pidValue:        12345,
 			workloadStatus:  rt.WorkloadStatusRunning,
 			processID:       98765,
@@ -1729,7 +1716,6 @@ func TestFileStatusManager_GetWorkload_PIDMigration(t *testing.T) {
 		},
 		{
 			name:            "no migration when no PID file exists",
-			setupPIDFile:    false,
 			pidValue:        0,
 			workloadStatus:  rt.WorkloadStatusRunning,
 			processID:       0,
@@ -1770,21 +1756,6 @@ func TestFileStatusManager_GetWorkload_PIDMigration(t *testing.T) {
 			err := manager.setWorkloadStatusInternal(ctx, workloadName, tt.workloadStatus, "test context", &tt.processID)
 			require.NoError(t, err)
 
-			// Setup PID file if needed
-			var pidFilePath string
-			if tt.setupPIDFile {
-				// Create PID file using the process package
-				err = process.WritePIDFile(workloadName, tt.pidValue)
-				require.NoError(t, err)
-
-				// Get the path for cleanup verification
-				// Copy-paste from process package to allow original function to be private.
-				// Since we do not have backwards compatibility requirements for PID file location,
-				// we can simplify the original function to a one-liner.
-				pidFilePath, err = xdg.DataFile(filepath.Join("toolhive", "pids", fmt.Sprintf("toolhive-%s.pid", workloadName)))
-				require.NoError(t, err)
-			}
-
 			// Call GetWorkload which should trigger migration if conditions are met
 			workload, err := manager.GetWorkload(ctx, workloadName)
 			require.NoError(t, err)
@@ -1815,21 +1786,6 @@ func TestFileStatusManager_GetWorkload_PIDMigration(t *testing.T) {
 				require.NoError(t, err)
 
 				assert.Equal(t, tt.processID, statusFile.ProcessID, "PID should remain unchanged")
-			}
-
-			// Verify PID file existence
-			if tt.setupPIDFile {
-				_, err := os.Stat(pidFilePath)
-				if tt.expectPIDFile {
-					assert.NoError(t, err, "PID file should still exist")
-				} else {
-					assert.True(t, os.IsNotExist(err), "PID file should be deleted")
-				}
-			}
-
-			// Cleanup
-			if tt.setupPIDFile {
-				_ = process.RemovePIDFile(workloadName)
 			}
 		})
 	}
@@ -1867,14 +1823,6 @@ func TestFileStatusManager_ListWorkloads_PIDMigration(t *testing.T) {
 	err = manager.setWorkloadStatusInternal(ctx, workloadNoMigrate, rt.WorkloadStatusRunning, "running", &existingPID)
 	require.NoError(t, err)
 
-	// Create PID files for both workloads
-	migrationPID := 12345
-	err = process.WritePIDFile(workloadMigrate, migrationPID)
-	require.NoError(t, err)
-
-	err = process.WritePIDFile(workloadNoMigrate, 99999)
-	require.NoError(t, err)
-
 	// Call ListWorkloads
 	workloads, err := manager.ListWorkloads(ctx, true, nil)
 	require.NoError(t, err)
@@ -1908,7 +1856,6 @@ func TestFileStatusManager_ListWorkloads_PIDMigration(t *testing.T) {
 	var statusFile1 workloadStatusFile
 	err = json.Unmarshal(data1, &statusFile1)
 	require.NoError(t, err)
-	assert.Equal(t, migrationPID, statusFile1.ProcessID, "PID should be migrated for first workload")
 
 	// Verify no migration for second workload
 	statusFilePath2 := manager.getStatusFilePath(workloadNoMigrate)

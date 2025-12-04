@@ -292,34 +292,41 @@ spec:
 
 ### `.spec.telemetry` (optional)
 
-Configures OpenTelemetry-based observability for the Virtual MCP server, including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint.
+Configures OpenTelemetry-based observability for the Virtual MCP server, including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint. Uses the same configuration structure as `MCPServer.spec.telemetry`.
 
-**Type**: `telemetry.Config`
+**Type**: `TelemetryConfig`
 
 **Fields**:
-- `endpoint` (string): OTLP collector endpoint (host:port format)
-- `serviceName` (string): Service name for telemetry
-- `serviceVersion` (string): Service version for telemetry
-- `tracingEnabled` (boolean): Enable distributed tracing
-- `metricsEnabled` (boolean): Enable OTLP metrics export
-- `samplingRate` (float64): Trace sampling rate (0.0-1.0)
-- `headers` (map[string]string): Authentication headers for OTLP endpoint
-- `insecure` (boolean): Use HTTP instead of HTTPS
-- `enablePrometheusMetricsPath` (boolean): Expose Prometheus /metrics endpoint
-- `environmentVariables` ([]string): Environment variable names to include as span attributes
-- `customAttributes` (map[string]string): Custom resource attributes for all telemetry signals
+- `openTelemetry` (OpenTelemetryConfig, optional): OpenTelemetry configuration
+  - `enabled` (boolean): Controls whether OpenTelemetry is enabled
+  - `endpoint` (string): OTLP endpoint URL for tracing and metrics
+  - `serviceName` (string): Service name for telemetry (defaults to VirtualMCPServer name)
+  - `headers` ([]string): Authentication headers for OTLP endpoint (key=value format)
+  - `insecure` (boolean): Use HTTP instead of HTTPS for the OTLP endpoint
+  - `metrics` (OpenTelemetryMetricsConfig, optional): Metrics-specific configuration
+    - `enabled` (boolean): Controls whether OTLP metrics are sent
+  - `tracing` (OpenTelemetryTracingConfig, optional): Tracing-specific configuration
+    - `enabled` (boolean): Controls whether OTLP tracing is sent
+    - `samplingRate` (string): Trace sampling rate (0.0-1.0, default: "0.05")
+- `prometheus` (PrometheusConfig, optional): Prometheus-specific configuration
+  - `enabled` (boolean): Controls whether Prometheus metrics endpoint is exposed at /metrics
 
 **Example**:
 ```yaml
 spec:
   telemetry:
-    endpoint: "otel-collector:4317"
-    serviceName: "my-vmcp"
-    tracingEnabled: true
-    metricsEnabled: true
-    samplingRate: 0.1
-    insecure: true
-    enablePrometheusMetricsPath: true
+    openTelemetry:
+      enabled: true
+      endpoint: "otel-collector:4317"
+      serviceName: "my-vmcp"
+      insecure: true
+      tracing:
+        enabled: true
+        samplingRate: "0.1"
+      metrics:
+        enabled: true
+    prometheus:
+      enabled: true
 ```
 
 For details on what metrics and traces are emitted, see the [Virtual MCP Server Observability](./virtualmcpserver-observability.md) documentation.
@@ -487,11 +494,16 @@ spec:
 
   # Observability
   telemetry:
-    endpoint: "otel-collector:4317"
-    tracingEnabled: true
-    metricsEnabled: true
-    samplingRate: 0.1
-    enablePrometheusMetricsPath: true
+    openTelemetry:
+      enabled: true
+      endpoint: "otel-collector:4317"
+      tracing:
+        enabled: true
+        samplingRate: "0.1"
+      metrics:
+        enabled: true
+    prometheus:
+      enabled: true
 
 status:
   phase: Ready

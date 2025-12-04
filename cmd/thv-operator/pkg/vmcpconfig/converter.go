@@ -15,6 +15,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -110,9 +111,7 @@ func (c *Converter) Convert(
 		config.Operational = c.convertOperational(ctx, vmcp)
 	}
 
-	// Convert Telemetry - pass through directly as it's the same type.
-	// Eventually, we may want to decouple the two, but for now this is fine.
-	config.Telemetry = vmcp.Spec.Telemetry
+	config.Telemetry = spectoconfig.ConvertTelemetryConfig(ctx, vmcp.Spec.Telemetry, vmcp.Name)
 
 	// Apply operational defaults (fills missing values)
 	config.EnsureOperationalDefaults()

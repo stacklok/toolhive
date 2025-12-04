@@ -126,6 +126,18 @@ Elicitation enables servers to request information from users:
 
 ToolHive implementation: Full support in `pkg/vmcp/composer/elicitation_handler.go`
 
+### Authorization (Updated in 2025-11-25)
+
+MCP 2025-11-25 significantly updated the authorization model for HTTP transports:
+- Based on OAuth 2.1, RFC 9728 (Protected Resource Metadata), RFC 8707 (Resource Indicators)
+- **Client ID Metadata Documents** is the NEW preferred client registration (over DCR)
+- Token audience validation and PKCE are REQUIRED
+- Security best practices: `https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices`
+
+**For OAuth/auth implementation details, defer to the oauth-expert agent.**
+
+ToolHive auth implementation: `pkg/auth/` (discovery, OAuth flows, token handling)
+
 ## ToolHive Implementation
 
 ### Package Structure
@@ -209,6 +221,8 @@ Per MCP spec, always consider:
 - Tasks: https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks
 - Transports: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
 - Elicitation: https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation
+- Authorization: https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization
+- Security Best Practices: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices
 
 **ToolHive Implementation**:
 - Transport code: `pkg/transport/`

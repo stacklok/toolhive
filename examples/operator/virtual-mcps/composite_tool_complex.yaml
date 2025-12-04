@@ -1,0 +1,411 @@
+# Example: Complex VirtualMCPCompositeToolDefinition
+#
+# This example demonstrates an advanced composite tool workflow with:
+# - Parallel execution of independent steps (DAG-based)
+# - Conditional execution based on previous step results
+# - Multiple dependencies and complex data flow
+# - Error handling with retries
+# - Template variable usage for dynamic arguments
+#
+# Use case: Deploy application with pre-checks and post-verification
+#
+# Workflow stages:
+# 1. Parallel pre-deployment checks (health check + resource check)
+# 2. Backup current deployment (depends on checks passing)
+# 3. Deploy new version (depends on backup)
+# 4. Parallel post-deployment verification (health + logs)
+# 5. Send notification with results
+#
+# Prerequisites:
+# - Backend MCPServers providing required tools (kubectl, monitoring, notification)
+# - VirtualMCPServer must reference this composite tool
+#
+# Usage:
+#   kubectl apply -f composite_tool_complex.yaml
+
+---
+# Create MCPGroup
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: deployment-services
+  namespace: default
+spec:
+  description: Backend services for deployment workflows
+
+---
+# Create backend MCPServers
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick-sse
+  namespace: default
+spec:
+  groupRef: deployment-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: sse
+  env:
+  - name: TRANSPORT
+    value: sse
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: default
+spec:
+  groupRef: deployment-services
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick-streamable
+  namespace: default
+spec:
+  groupRef: deployment-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: streamable-http
+  env:
+  - name: TRANSPORT
+    value: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Create OIDC client secret
+# NOTE: Replace with your actual OIDC client secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oidc-client-secret
+  namespace: default
+type: Opaque
+stringData:
+  clientSecret: "YOUR_OIDC_CLIENT_SECRET"
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPCompositeToolDefinition
+metadata:
+  name: deploy-with-verification
+  namespace: default
+spec:
+  name: deploy_application_safe
+  description: |
+    Safely deploy an application with comprehensive checks:
+    - Pre-deployment health and resource validation
+    - Automatic backup before deployment
+    - Post-deployment verification
+    - Notification of results
+
+  # Total workflow timeout
+  timeout: 15m
+
+  # Abort on first failure to prevent partial deployments
+  failureMode: abort
+
+  steps:
+    # ============================================
+    # Stage 1: Parallel Pre-Deployment Checks
+    # ============================================
+
+    # Check 1a: Verify cluster health
+    - id: check_cluster_health
+      type: tool
+      tool: kubectl.get
+      arguments:
+        resource: nodes
+        output: json
+      timeout: 1m
+      # No dependencies - can run immediately in parallel
+
+    # Check 1b: Verify resource availability
+    - id: check_resource_quota
+      type: tool
+      tool: kubectl.get
+      arguments:
+        resource: resourcequota
+        namespace: "{{.params.namespace}}"
+        output: json
+      timeout: 1m
+      # No dependencies - runs in parallel with check_cluster_health
+
+    # ============================================
+    # Stage 2: Backup Current Deployment
+    # ============================================
+
+    # Get current deployment manifest
+    - id: get_current_deployment
+      type: tool
+      tool: kubectl.get
+      arguments:
+        resource: deployment
+        name: "{{.params.deployment_name}}"
+        namespace: "{{.params.namespace}}"
+        output: yaml
+      # Depends on both health checks passing
+      dependsOn:
+        - check_cluster_health
+        - check_resource_quota
+      timeout: 2m
+
+    # Save backup to storage
+    - id: save_backup
+      type: tool
+      tool: s3.put_object
+      arguments:
+        bucket: deployment-backups
+        key: "{{.params.deployment_name}}/backup-{{.timestamp}}.yaml"
+        content: "{{.steps.get_current_deployment.output.manifest}}"
+      dependsOn:
+        - get_current_deployment
+      timeout: 2m
+
+    # ============================================
+    # Stage 3: Deploy New Version
+    # ============================================
+
+    # Apply new deployment manifest
+    - id: apply_deployment
+      type: tool
+      tool: kubectl.apply
+      arguments:
+        manifest: "{{.params.new_manifest}}"
+        namespace: "{{.params.namespace}}"
+      # Only deploy after backup is safe
+      dependsOn:
+        - save_backup
+      timeout: 5m
+
+    # Wait for deployment to roll out
+    - id: wait_for_rollout
+      type: tool
+      tool: kubectl.rollout.status
+      arguments:
+        resource: deployment
+        name: "{{.params.deployment_name}}"
+        namespace: "{{.params.namespace}}"
+        timeout: "5m"
+      dependsOn:
+        - apply_deployment
+      timeout: 6m
+
+    # ============================================
+    # Stage 4: Parallel Post-Deployment Verification
+    # ============================================
+
+    # Verify 4a: Check pod health
+    - id: verify_pod_health
+      type: tool
+      tool: kubectl.get
+      arguments:
+        resource: pods
+        namespace: "{{.params.namespace}}"
+        labelSelector: "app={{.params.deployment_name}}"
+        output: json
+      dependsOn:
+        - wait_for_rollout
+      timeout: 2m
+
+    # Verify 4b: Check application endpoint
+    - id: verify_endpoint
+      type: tool
+      tool: http.get
+      arguments:
+        url: "{{.params.health_check_url}}"
+        expectedStatus: "200"
+      dependsOn:
+        - wait_for_rollout
+      timeout: 2m
+
+    # Verify 4c: Check recent logs for errors
+    - id: check_logs
+      type: tool
+      tool: kubectl.logs
+      arguments:
+        resource: deployment
+        name: "{{.params.deployment_name}}"
+        namespace: "{{.params.namespace}}"
+        since: 2m
+        tail: "100"
+      dependsOn:
+        - wait_for_rollout
+      timeout: 2m
+
+    # ============================================
+    # Stage 5: Collect Metrics and Notify
+    # ============================================
+
+    # Get deployment metrics
+    - id: collect_metrics
+      type: tool
+      tool: prometheus.query
+      arguments:
+        query: |
+          rate(http_requests_total{
+            namespace="{{.params.namespace}}",
+            deployment="{{.params.deployment_name}}"
+          }[5m])
+      # Depends on all verification steps completing
+      dependsOn:
+        - verify_pod_health
+        - verify_endpoint
+        - check_logs
+      timeout: 1m
+
+    # Send success notification
+    - id: notify_success
+      type: tool
+      tool: slack.send_message
+      arguments:
+        channel: "#deployments"
+        message: |
+          ✅ Deployment Successful!
+
+          **Deployment:** {{.params.deployment_name}}
+          **Namespace:** {{.params.namespace}}
+          **Time:** {{.timestamp}}
+
+          **Health Checks:**
+          - Cluster Health: ✓
+          - Resource Quota: ✓
+          - Pod Health: ✓
+          - Endpoint Health: ✓
+
+          **Backup Location:**
+          s3://deployment-backups/{{.params.deployment_name}}/backup-{{.timestamp}}.yaml
+
+          **Metrics:** {{.steps.collect_metrics.output.rate}}
+      dependsOn:
+        - collect_metrics
+      timeout: 1m
+
+---
+# Example VirtualMCPServer using the complex composite tool
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: vmcp-complex-workflows
+  namespace: default
+spec:
+  groupRef:
+    name: deployment-services
+
+  incomingAuth:
+    type: oidc
+    oidcConfig:
+      type: inline
+      resourceUrl: http://vmcp-complex-workflows.default.svc.cluster.local:4483
+      inline:
+        issuer: https://auth.example.com
+        clientId: deployment-client
+        audience: vmcp-deployments
+        clientSecretRef:
+          name: oidc-client-secret
+          key: clientSecret
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          # Only allow deployments from authorized principals
+          - |
+            permit(
+              principal,
+              action == Action::"tools/call",
+              resource
+            ) when {
+              principal.role in ["developer", "devops", "admin"] &&
+              resource.tool == "deploy_application_safe"
+            };
+
+  outgoingAuth:
+    source: inline
+    backends:
+      kubectl-mcp:
+        type: external_auth_config_ref
+        externalAuthConfigRef:
+          name: k8s-service-account-auth
+      s3-mcp:
+        type: external_auth_config_ref
+        externalAuthConfigRef:
+          name: s3-api-credentials
+      prometheus-mcp:
+        type: external_auth_config_ref
+        externalAuthConfigRef:
+          name: prometheus-query-auth
+      slack-mcp:
+        type: external_auth_config_ref
+        externalAuthConfigRef:
+          name: slack-bot-token
+
+  aggregation:
+    conflictResolution: prefix
+    conflictResolutionConfig:
+      prefixFormat: "{workload}_"
+
+  # Reference the complex composite tool
+  compositeToolRefs:
+    - name: deploy-with-verification
+
+  operational:
+    failureHandling:
+      healthCheckInterval: 30s
+      unhealthyThreshold: 3
+      partialFailureMode: fail
+
+---
+# Example usage from MCP client:
+#
+# {
+#   "jsonrpc": "2.0",
+#   "method": "tools/call",
+#   "params": {
+#     "name": "deploy_application_safe",
+#     "arguments": {
+#       "deployment_name": "my-app",
+#       "namespace": "production",
+#       "new_manifest": "<yaml content>",
+#       "health_check_url": "https://my-app.example.com/health"
+#     }
+#   },
+#   "id": 1
+# }
+#
+# Execution flow:
+# 1. Parallel: check_cluster_health + check_resource_quota
+# 2. Sequential: get_current_deployment -> save_backup
+# 3. Sequential: apply_deployment -> wait_for_rollout
+# 4. Parallel: verify_pod_health + verify_endpoint + check_logs
+# 5. Sequential: collect_metrics -> notify_success
+#
+# If any step fails, the workflow aborts and returns detailed error information
+# including which step failed and the error message.

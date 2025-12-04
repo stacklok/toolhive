@@ -1,0 +1,191 @@
+# Example: Simple VirtualMCPCompositeToolDefinition
+#
+# This example demonstrates a simple composite tool workflow that:
+# - Chains two tool calls sequentially
+# - Uses output from first tool as input to second tool
+# - Has basic error handling and timeout configuration
+#
+# Use case: Create a backup of a file before modifying it
+#
+# Note: This example includes:
+# - MCPGroup "my-services"
+# - Sample backend MCPServers
+# - VirtualMCPCompositeToolDefinition
+# - VirtualMCPServer that uses the composite tool
+#
+# Usage:
+#   kubectl apply -f composite_tool_simple.yaml
+
+---
+# Create MCPGroup
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: my-services
+  namespace: default
+spec:
+  description: Sample services for composite tool example
+
+---
+# Create backend MCPServers
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick-sse
+  namespace: default
+spec:
+  groupRef: my-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: sse
+  env:
+  - name: TRANSPORT
+    value: sse
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: default
+spec:
+  groupRef: my-services
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Create VirtualMCPCompositeToolDefinition
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPCompositeToolDefinition
+metadata:
+  name: backup-file
+  namespace: default
+spec:
+  # Name exposed to clients as a composite tool
+  name: backup_and_modify_file
+
+  # Human-readable description
+  description: Creates a backup of a file before modifying its contents
+
+  # Maximum time for entire workflow
+  timeout: 5m
+
+  # Failure mode: "abort" stops on first error, "continue" tries all steps
+  failureMode: abort
+
+  # Sequential workflow steps
+  steps:
+    # Step 1: Read the original file
+    - id: read_original
+      type: tool
+      # Reference to backend tool (will be resolved by vMCP router)
+      tool: read_file
+      # Input arguments (can use template variables)
+      arguments:
+        path: "{{.params.file_path}}"
+      # Step-specific timeout
+      timeout: 1m
+
+    # Step 2: Write backup file
+    - id: write_backup
+      type: tool
+      tool: write_file
+      arguments:
+        # Create backup with .bak extension
+        path: "{{.params.file_path}}.bak"
+        # Use output from previous step
+        content: "{{.steps.read_original.output.content}}"
+      # This step depends on read_original completing successfully
+      dependsOn:
+        - read_original
+      timeout: 1m
+
+    # Step 3: Write modified file
+    - id: write_modified
+      type: tool
+      tool: write_file
+      arguments:
+        path: "{{.params.file_path}}"
+        # New content provided by client
+        content: "{{.params.new_content}}"
+      # This step depends on backup being created
+      dependsOn:
+        - write_backup
+      timeout: 1m
+
+---
+# Example VirtualMCPServer using the composite tool
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: vmcp-with-composite-tool
+  namespace: default
+spec:
+  groupRef:
+    name: my-services
+
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+
+  outgoingAuth:
+    source: discovered
+
+  aggregation:
+    conflictResolution: prefix
+    conflictResolutionConfig:
+      prefixFormat: "{workload}_"
+
+  # Reference the composite tool
+  compositeToolRefs:
+    - name: backup-file
+
+  operational:
+    failureHandling:
+      healthCheckInterval: 30s
+      unhealthyThreshold: 3
+      partialFailureMode: fail
+
+---
+# Example usage from MCP client:
+#
+# Call the composite tool like any other tool:
+# {
+#   "jsonrpc": "2.0",
+#   "method": "tools/call",
+#   "params": {
+#     "name": "backup_and_modify_file",
+#     "arguments": {
+#       "file_path": "/data/config.yaml",
+#       "new_content": "updated: true\nversion: 2.0"
+#     }
+#   },
+#   "id": 1
+# }
+#
+# The vMCP will:
+# 1. Read the file at /data/config.yaml
+# 2. Write backup to /data/config.yaml.bak
+# 3. Write new content to /data/config.yaml
+# 4. Return combined results from all steps

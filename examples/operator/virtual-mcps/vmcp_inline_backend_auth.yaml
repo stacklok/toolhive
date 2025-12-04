@@ -1,0 +1,186 @@
+# Example: VirtualMCPServer with Inline Incoming Auth Configuration
+#
+# This example demonstrates how to configure incoming authentication inline
+# using OIDC with Cedar policies. This gives you full control over client
+# authentication and authorization.
+#
+# Use cases:
+# - Production deployments with OIDC authentication
+# - Custom authorization policies using Cedar
+# - Explicit control over incoming auth configuration
+#
+# Prerequisites:
+# - OIDC provider configured (e.g., Keycloak, Auth0, Okta)
+# - Kubernetes Secrets for OIDC client secret
+#
+# Note: This example includes:
+# - Inline OIDC configuration for incoming auth
+# - Cedar authorization policies
+# - Discovered mode for outgoing auth (backend authentication)
+# - MCPGroup and sample backend MCPServers
+#
+# Usage:
+#   kubectl apply -f vmcp_inline_backend_auth.yaml
+
+---
+# Create OIDC client secret for incoming authentication
+# NOTE: Replace with your actual OIDC client secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vmcp-oidc-client-secret
+  namespace: default
+type: Opaque
+stringData:
+  clientSecret: "YOUR_OIDC_CLIENT_SECRET"
+
+---
+# Create MCPGroup
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: my-services
+  namespace: default
+spec:
+  description: Sample services for inline auth example
+
+---
+# Create backend MCPServer: yardstick with SSE transport
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick-sse
+  namespace: default
+spec:
+  groupRef: my-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: sse
+  env:
+  - name: TRANSPORT
+    value: sse
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Create backend MCPServer: fetch with streamable-http transport
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: default
+spec:
+  groupRef: my-services
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Create backend MCPServer: yardstick with streamable-http transport
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick-streamable
+  namespace: default
+spec:
+  groupRef: my-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: streamable-http
+  env:
+  - name: TRANSPORT
+    value: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: inline-auth-vmcp
+  namespace: default
+spec:
+  groupRef:
+    name: my-services
+
+  # Incoming authentication - inline OIDC configuration
+  incomingAuth:
+    type: oidc
+    oidcConfig:
+      type: inline
+      resourceUrl: http://inline-auth-vmcp.default.svc.cluster.local:4483
+      inline:
+        issuer: https://auth.example.com
+        clientId: vmcp-client
+        audience: vmcp-api
+        clientSecretRef:
+          name: vmcp-oidc-client-secret
+          key: clientSecret
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          # Allow developers to call tools
+          - |
+            permit(
+              principal,
+              action == Action::"tools/call",
+              resource
+            ) when {
+              principal.role == "developer"
+            };
+          # Allow developers and operators to read resources
+          - |
+            permit(
+              principal,
+              action == Action::"resources/read",
+              resource
+            ) when {
+              principal.role in ["developer", "operator"]
+            };
+          # Forbid non-admins from using dangerous tools
+          - |
+            forbid(
+              principal,
+              action == Action::"tools/call",
+              resource
+            ) when {
+              resource.tool in ["delete_file", "execute_command"] &&
+              principal.role != "admin"
+            };
+
+  # Outgoing authentication - discovered from backend MCPServers
+  outgoingAuth:
+    source: discovered
+
+  # Aggregation configuration
+  aggregation:
+    conflictResolution: prefix
+    conflictResolutionConfig:
+      prefixFormat: "{workload}_"
+
+  operational:
+    failureHandling:
+      healthCheckInterval: 30s
+      unhealthyThreshold: 3
+      partialFailureMode: best_effort

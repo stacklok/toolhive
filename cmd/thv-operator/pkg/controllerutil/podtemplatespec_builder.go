@@ -131,7 +131,9 @@ func (b *PodTemplateSpecBuilder) isEmpty() bool {
 		podSpec.Affinity == nil &&
 		podSpec.SecurityContext == nil &&
 		podSpec.PriorityClassName == "" &&
-		len(podSpec.ImagePullSecrets) == 0
+		len(podSpec.ImagePullSecrets) == 0 &&
+		len(b.spec.Labels) == 0 &&
+		len(b.spec.Annotations) == 0
 }
 
 // parsePodTemplateSpec parses a RawExtension into a PodTemplateSpec.

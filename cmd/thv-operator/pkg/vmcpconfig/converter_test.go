@@ -1442,3 +1442,308 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 		})
 	}
 }
+
+// Test helpers for MCPToolConfig tests
+func newMCPToolConfig(name, namespace string, filter []string, overrides map[string]mcpv1alpha1.ToolOverride) *mcpv1alpha1.MCPToolConfig {
+	return &mcpv1alpha1.MCPToolConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec:       mcpv1alpha1.MCPToolConfigSpec{ToolsFilter: filter, ToolsOverride: overrides},
+	}
+}
+
+func toolOverride(name, desc string) mcpv1alpha1.ToolOverride {
+	return mcpv1alpha1.ToolOverride{Name: name, Description: desc}
+}
+
+func vmcpToolOverride(name, desc string) *vmcpconfig.ToolOverride {
+	return &vmcpconfig.ToolOverride{Name: name, Description: desc}
+}
+
+func TestResolveMCPToolConfig(t *testing.T) {
+	t.Parallel()
+
+	ns := "test-ns"
+	tests := []struct {
+		name        string
+		configName  string
+		existing    *mcpv1alpha1.MCPToolConfig
+		expectError bool
+	}{
+		{
+			name:       "successfully resolve existing MCPToolConfig",
+			configName: "test-config",
+			existing:   newMCPToolConfig("test-config", ns, []string{"tool1", "tool2"}, nil),
+		},
+		{
+			name:        "error when MCPToolConfig not found",
+			configName:  "nonexistent",
+			expectError: true,
+		},
+		{
+			name:       "successfully resolve with overrides",
+			configName: "config-with-overrides",
+			existing: newMCPToolConfig("config-with-overrides", ns, []string{"fetch"},
+				map[string]mcpv1alpha1.ToolOverride{"fetch": toolOverride("renamed_fetch", "Renamed tool")}),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var k8sClient client.Client
+			if tt.existing != nil {
+				k8sClient = newTestK8sClient(t, tt.existing)
+			} else {
+				k8sClient = newTestK8sClient(t)
+			}
+
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			converter.k8sClient = k8sClient
+
+			result, err := converter.resolveMCPToolConfig(context.Background(), ns, tt.configName)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Nil(t, result)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, result)
+				assert.Equal(t, tt.existing.Spec, result.Spec)
+			}
+		})
+	}
+}
+
+func TestMergeToolConfigFilter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		existing []string
+		config   *mcpv1alpha1.MCPToolConfig
+		expected []string
+	}{
+		{
+			name:     "merge when workload has none",
+			existing: nil,
+			config:   newMCPToolConfig("", "", []string{"tool1", "tool2"}, nil),
+			expected: []string{"tool1", "tool2"},
+		},
+		{
+			name:     "inline takes precedence",
+			existing: []string{"inline_tool"},
+			config:   newMCPToolConfig("", "", []string{"config_tool"}, nil),
+			expected: []string{"inline_tool"},
+		},
+		{
+			name:     "no change when config has no filter",
+			existing: []string{"existing_tool"},
+			config:   newMCPToolConfig("", "", nil, nil),
+			expected: []string{"existing_tool"},
+		},
+		{
+			name:     "empty filter from config",
+			existing: nil,
+			config:   newMCPToolConfig("", "", []string{}, nil),
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			wtc := &vmcpconfig.WorkloadToolConfig{Filter: tt.existing}
+			(&Converter{}).mergeToolConfigFilter(wtc, tt.config)
+
+			assert.Equal(t, tt.expected, wtc.Filter)
+		})
+	}
+}
+
+func TestMergeToolConfigOverrides(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		existing map[string]*vmcpconfig.ToolOverride
+		config   *mcpv1alpha1.MCPToolConfig
+		expected map[string]*vmcpconfig.ToolOverride
+	}{
+		{
+			name:     "merge when workload has none",
+			existing: nil,
+			config:   newMCPToolConfig("", "", nil, map[string]mcpv1alpha1.ToolOverride{"tool1": toolOverride("renamed_tool1", "Renamed description")}),
+			expected: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("renamed_tool1", "Renamed description")},
+		},
+		{
+			name:     "inline takes precedence",
+			existing: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("inline_name", "Inline description")},
+			config:   newMCPToolConfig("", "", nil, map[string]mcpv1alpha1.ToolOverride{"tool1": toolOverride("config_name", "Config description")}),
+			expected: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("inline_name", "Inline description")},
+		},
+		{
+			name:     "merge non-conflicting",
+			existing: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("inline_tool1", "Inline description")},
+			config:   newMCPToolConfig("", "", nil, map[string]mcpv1alpha1.ToolOverride{"tool2": toolOverride("config_tool2", "Config description")}),
+			expected: map[string]*vmcpconfig.ToolOverride{
+				"tool1": vmcpToolOverride("inline_tool1", "Inline description"),
+				"tool2": vmcpToolOverride("config_tool2", "Config description"),
+			},
+		},
+		{
+			name:     "no change when config has no overrides",
+			existing: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("existing_name", "")},
+			config:   newMCPToolConfig("", "", nil, nil),
+			expected: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("existing_name", "")},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			wtc := &vmcpconfig.WorkloadToolConfig{Overrides: tt.existing}
+			(&Converter{}).mergeToolConfigOverrides(wtc, tt.config)
+
+			assert.Equal(t, tt.expected, wtc.Overrides)
+		})
+	}
+}
+
+func TestApplyInlineOverrides(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		inline   map[string]mcpv1alpha1.ToolOverride
+		existing map[string]*vmcpconfig.ToolOverride
+		expected map[string]*vmcpconfig.ToolOverride
+	}{
+		{
+			name:     "apply to empty workload",
+			inline:   map[string]mcpv1alpha1.ToolOverride{"tool1": toolOverride("renamed_tool1", "Inline description")},
+			existing: nil,
+			expected: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("renamed_tool1", "Inline description")},
+		},
+		{
+			name:     "replace existing",
+			inline:   map[string]mcpv1alpha1.ToolOverride{"tool1": toolOverride("new_name", "New description")},
+			existing: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("old_name", "Old description")},
+			expected: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("new_name", "New description")},
+		},
+		{
+			name:     "no change when no inline",
+			inline:   nil,
+			existing: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("existing_name", "")},
+			expected: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("existing_name", "")},
+		},
+		{
+			name: "multiple overrides",
+			inline: map[string]mcpv1alpha1.ToolOverride{
+				"tool1": toolOverride("renamed_tool1", "Description 1"),
+				"tool2": toolOverride("renamed_tool2", "Description 2"),
+			},
+			existing: nil,
+			expected: map[string]*vmcpconfig.ToolOverride{
+				"tool1": vmcpToolOverride("renamed_tool1", "Description 1"),
+				"tool2": vmcpToolOverride("renamed_tool2", "Description 2"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+
+			wtc := &vmcpconfig.WorkloadToolConfig{Overrides: tt.existing}
+			toolConfig := mcpv1alpha1.WorkloadToolConfig{Overrides: tt.inline}
+			(&Converter{}).applyInlineOverrides(toolConfig, wtc)
+
+			assert.Equal(t, tt.expected, wtc.Overrides)
+		})
+	}
+}
+
+func TestConvertToolConfigs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		tools            []mcpv1alpha1.WorkloadToolConfig
+		existingConfig   *mcpv1alpha1.MCPToolConfig
+		expectedWorkload string
+		expectedFilter   []string
+		expectedOverride map[string]*vmcpconfig.ToolOverride
+	}{
+		{
+			name: "inline config only",
+			tools: []mcpv1alpha1.WorkloadToolConfig{{
+				Workload:  "backend1",
+				Filter:    []string{"tool1", "tool2"},
+				Overrides: map[string]mcpv1alpha1.ToolOverride{"tool1": toolOverride("renamed_tool1", "Renamed")},
+			}},
+			expectedWorkload: "backend1",
+			expectedFilter:   []string{"tool1", "tool2"},
+			expectedOverride: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("renamed_tool1", "Renamed")},
+		},
+		{
+			name: "with MCPToolConfig reference",
+			tools: []mcpv1alpha1.WorkloadToolConfig{{
+				Workload:      "backend1",
+				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "test-config"},
+			}},
+			existingConfig: newMCPToolConfig("test-config", "default", []string{"fetch"},
+				map[string]mcpv1alpha1.ToolOverride{"fetch": toolOverride("renamed_fetch", "Renamed fetch")}),
+			expectedWorkload: "backend1",
+			expectedFilter:   []string{"fetch"},
+			expectedOverride: map[string]*vmcpconfig.ToolOverride{"fetch": vmcpToolOverride("renamed_fetch", "Renamed fetch")},
+		},
+		{
+			name: "inline takes precedence",
+			tools: []mcpv1alpha1.WorkloadToolConfig{{
+				Workload:      "backend1",
+				Filter:        []string{"inline_tool"},
+				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "test-config"},
+				Overrides:     map[string]mcpv1alpha1.ToolOverride{"fetch": toolOverride("inline_fetch", "Inline override")},
+			}},
+			existingConfig: newMCPToolConfig("test-config", "default", []string{"config_tool"},
+				map[string]mcpv1alpha1.ToolOverride{"fetch": toolOverride("config_fetch", "Config override")}),
+			expectedWorkload: "backend1",
+			expectedFilter:   []string{"inline_tool"},
+			expectedOverride: map[string]*vmcpconfig.ToolOverride{"fetch": vmcpToolOverride("inline_fetch", "Inline override")},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			var k8sClient client.Client
+			if tt.existingConfig != nil {
+				k8sClient = newTestK8sClient(t, tt.existingConfig)
+			} else {
+				k8sClient = newTestK8sClient(t)
+			}
+
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			converter.k8sClient = k8sClient
+
+			vmcp := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+				Spec:       mcpv1alpha1.VirtualMCPServerSpec{Aggregation: &mcpv1alpha1.AggregationConfig{Tools: tt.tools}},
+			}
+
+			agg := &vmcpconfig.AggregationConfig{}
+			converter.convertToolConfigs(ctx, vmcp, agg)
+
+			require.Len(t, agg.Tools, 1)
+			assert.Equal(t, tt.expectedWorkload, agg.Tools[0].Workload)
+			assert.Equal(t, tt.expectedFilter, agg.Tools[0].Filter)
+			assert.Equal(t, tt.expectedOverride, agg.Tools[0].Overrides)
+		})
+	}
+}

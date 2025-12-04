@@ -173,7 +173,7 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 				GinkgoWriter.Printf("  Exposed tool: %s - %s\n", tool.Name, tool.Description)
 			}
 
-			// Verify filtering: should only have echo tool from backend1 (renamed to renamed_echo)
+			// Verify filtering: should only have fetch tool from backend1 (renamed to renamed_fetch)
 			toolNames := make([]string, len(tools.Tools))
 			for i, tool := range tools.Tools {
 				toolNames[i] = tool.Name
@@ -339,8 +339,8 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 			}, toolConfig)
 			Expect(err).ToNot(HaveOccurred())
 
-			// Verify filter
-			Expect(toolConfig.Spec.ToolsFilter).To(ContainElement("fetch"))
+			// Verify filter contains the renamed tool name (filtering happens after override)
+			Expect(toolConfig.Spec.ToolsFilter).To(ContainElement("renamed_fetch"))
 			Expect(toolConfig.Spec.ToolsFilter).To(HaveLen(1))
 
 			// Verify overrides

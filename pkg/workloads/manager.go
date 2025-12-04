@@ -587,10 +587,6 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	}
 
 	// Write the PID to a file so the stop command can kill the process
-	// TODO: Stop writing to PID file once we migrate over to statuses fully.
-	if err := process.WritePIDFile(runConfig.BaseName, detachedCmd.Process.Pid); err != nil {
-		logger.Warnf("Warning: Failed to write PID file: %v", err)
-	}
 	if err := d.statuses.SetWorkloadPID(ctx, runConfig.BaseName, detachedCmd.Process.Pid); err != nil {
 		logger.Warnf("Failed to set workload %s PID: %v", runConfig.BaseName, err)
 	}

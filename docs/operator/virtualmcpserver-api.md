@@ -47,13 +47,26 @@ Configures authentication for clients connecting to the Virtual MCP server. Reus
 **Type**: `IncomingAuthConfig`
 
 **Fields**:
-- `oidcConfig` (OIDCConfigRef, optional): OIDC authentication configuration
+- `type` (string, required): Authentication type. Must be explicitly specified.
+  - `anonymous`: No authentication required (use this when no auth is needed)
+  - `oidc`: OIDC/OAuth2 authentication
+- `oidcConfig` (OIDCConfigRef, optional): OIDC authentication configuration (required when type=oidc)
 - `authzConfig` (AuthzConfigRef, optional): Authorization policy configuration
 
-**Example**:
+**Important**: The `type` field must always be explicitly specified. When no authentication is required, use `type: anonymous`.
+
+**Example (anonymous auth)**:
 ```yaml
 spec:
   incomingAuth:
+    type: anonymous
+```
+
+**Example (OIDC auth)**:
+```yaml
+spec:
+  incomingAuth:
+    type: oidc
     oidcConfig:
       type: kubernetes
       kubernetes:
@@ -362,6 +375,7 @@ spec:
 
   # Client authentication
   incomingAuth:
+    type: oidc
     oidcConfig:
       type: kubernetes
       kubernetes:
@@ -489,7 +503,9 @@ status:
 
 The VirtualMCPServer CRD includes comprehensive validation:
 
-1. **Required Fields**: `spec.groupRef.name` must be specified
+1. **Required Fields**:
+   - `spec.groupRef.name` must be specified
+   - `spec.incomingAuth.type` must be explicitly specified (use `anonymous` when no auth is needed)
 2. **Reference Validation**: All references (groupRef, authConfigRef, toolConfigRef) must be valid
 3. **Conflict Resolution**: Priority strategy requires `priorityOrder` configuration
 4. **Composite Tools**: Must have unique names, valid steps with IDs, and proper dependencies

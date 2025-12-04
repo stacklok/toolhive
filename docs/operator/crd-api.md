@@ -449,7 +449,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type defines the authentication type: anonymous or oidc |  | Enum: [anonymous oidc] <br /> |
+| `type` _string_ | Type defines the authentication type: anonymous or oidc<br />When no authentication is required, explicitly set this to "anonymous" |  | Enum: [anonymous oidc] <br />Required: \{\} <br /> |
 | `oidcConfig` _[OIDCConfigRef](#oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration<br />Reuses MCPServer OIDC patterns |  |  |
 | `authzConfig` _[AuthzConfigRef](#authzconfigref)_ | AuthzConfig defines authorization policy configuration<br />Reuses MCPServer authz patterns |  |  |
 
@@ -1966,7 +1966,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `groupRef` _[GroupRef](#groupref)_ | GroupRef references an existing MCPGroup that defines backend workloads<br />The referenced MCPGroup must exist in the same namespace |  | Required: \{\} <br /> |
-| `incomingAuth` _[IncomingAuthConfig](#incomingauthconfig)_ | IncomingAuth configures authentication for clients connecting to the Virtual MCP server |  |  |
+| `incomingAuth` _[IncomingAuthConfig](#incomingauthconfig)_ | IncomingAuth configures authentication for clients connecting to the Virtual MCP server<br />Must be explicitly set - use "anonymous" type when no authentication is required |  | Required: \{\} <br /> |
 | `outgoingAuth` _[OutgoingAuthConfig](#outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend MCPServers |  |  |
 | `aggregation` _[AggregationConfig](#aggregationconfig)_ | Aggregation defines tool aggregation and conflict resolution strategies |  |  |
 | `compositeTools` _[CompositeToolSpec](#compositetoolspec) array_ | CompositeTools defines inline composite tool definitions<br />For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead |  |  |

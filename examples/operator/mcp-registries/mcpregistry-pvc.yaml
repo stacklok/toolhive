@@ -101,7 +101,7 @@ spec:
           # Write production registry data
           cat > /data/prod-data/registry.json <<'EOF'
           {
-            "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+            "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
             "version": "1.0.0",
             "last_updated": "2025-11-26T12:00:00Z",
             "servers": {
@@ -193,7 +193,7 @@ spec:
           # Write development registry data
           cat > /data/dev-data/registry.json <<'EOF'
           {
-            "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+            "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
             "version": "1.0.0",
             "last_updated": "2025-11-26T12:00:00Z",
             "servers": {

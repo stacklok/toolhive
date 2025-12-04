@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -53,6 +54,11 @@ type VirtualMCPServerSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
+
+	// Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
+	// including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint
+	// +optional
+	Telemetry *telemetry.Config `json:"telemetry,omitempty"`
 }
 
 // GroupRef references an MCPGroup resource

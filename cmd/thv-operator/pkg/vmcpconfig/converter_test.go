@@ -42,7 +42,11 @@ func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
 // newTestConverter creates a Converter with the given resolver, failing the test if creation fails.
 func newTestConverter(t *testing.T, resolver oidc.Resolver) *Converter {
 	t.Helper()
-	converter, err := NewConverter(resolver, nil)
+	testScheme := createTestScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		Build()
+	converter, err := NewConverter(resolver, fakeClient)
 	require.NoError(t, err)
 	return converter
 }
@@ -1254,7 +1258,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 			errorContains: "duplicate composite tool name",
 		},
 		{
-			name: "skip referenced tools when k8sClient is nil",
+			name: "error when k8sClient is nil",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-vmcp",
@@ -1262,33 +1266,12 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
-					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
-						{
-							Name:        "inline-tool",
-							Description: "An inline composite tool",
-							Steps: []mcpv1alpha1.WorkflowStep{
-								{
-									ID:   "step1",
-									Type: "tool",
-									Tool: "backend.tool1",
-								},
-							},
-						},
-					},
-					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
-						{Name: "referenced-tool"},
-					},
 				},
 			},
 			compositeDefs: []*mcpv1alpha1.VirtualMCPCompositeToolDefinition{},
 			k8sClient:     nil, // No client provided
-			expectError:   false,
-			validate: func(t *testing.T, config *vmcpconfig.Config) {
-				t.Helper()
-				// Only inline tool should be present, referenced tool should be skipped
-				require.Len(t, config.CompositeTools, 1)
-				assert.Equal(t, "inline-tool", config.CompositeTools[0].Name)
-			},
+			expectError:   true,
+			errorContains: "k8sClient is required",
 		},
 		{
 			name: "handle multiple referenced tools",
@@ -1426,15 +1409,16 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 					Build()
 			}
 
-			// For the nil client test case, we need to explicitly pass nil
-			converterClient := fakeClient
-			if tt.name == "skip referenced tools when k8sClient is nil" {
-				converterClient = nil
-			}
-
 			// Create converter with client
 			resolver := newNoOpMockResolver(t)
-			converter, err := NewConverter(resolver, converterClient)
+			converter, err := NewConverter(resolver, fakeClient)
+			if tt.name == "error when k8sClient is nil" {
+				// For this test, we explicitly pass nil to test the error
+				_, err = NewConverter(resolver, nil)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorContains)
+				return
+			}
 			require.NoError(t, err)
 
 			ctx := log.IntoContext(context.Background(), logr.Discard())

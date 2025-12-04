@@ -40,10 +40,13 @@ type Converter struct {
 // oidcResolver is required and used to resolve OIDC configuration from various sources
 // (kubernetes, configMap, inline). Use a mock resolver in tests.
 // k8sClient is required and used to fetch referenced VirtualMCPCompositeToolDefinition resources.
-// Returns an error if oidcResolver is nil.
+// Returns an error if oidcResolver or k8sClient is nil.
 func NewConverter(oidcResolver oidc.Resolver, k8sClient client.Client) (*Converter, error) {
 	if oidcResolver == nil {
 		return nil, fmt.Errorf("oidcResolver is required")
+	}
+	if k8sClient == nil {
+		return nil, fmt.Errorf("k8sClient is required")
 	}
 	return &Converter{
 		oidcResolver: oidcResolver,
@@ -320,7 +323,9 @@ func (c *Converter) convertCompositeTools(
 	compositeTools := make([]*vmcpconfig.CompositeToolConfig, 0, len(vmcp.Spec.CompositeTools))
 
 	for _, crdTool := range vmcp.Spec.CompositeTools {
-		tool := c.convertCompositeToolSpec(ctx, crdTool.Name, crdTool.Description, crdTool.Timeout, crdTool.Parameters, crdTool.Steps, crdTool.Output, crdTool.Name)
+		tool := c.convertCompositeToolSpec(
+			ctx, crdTool.Name, crdTool.Description, crdTool.Timeout,
+			crdTool.Parameters, crdTool.Steps, crdTool.Output, crdTool.Name)
 		compositeTools = append(compositeTools, tool)
 	}
 
@@ -333,24 +338,17 @@ func (c *Converter) convertAllCompositeTools(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) ([]*vmcpconfig.CompositeToolConfig, error) {
-	ctxLogger := log.FromContext(ctx)
-
 	// Convert inline composite tools
 	inlineTools := c.convertCompositeTools(ctx, vmcp)
 
-	// Convert referenced composite tools if client is available
+	// Convert referenced composite tools
 	var referencedTools []*vmcpconfig.CompositeToolConfig
-	if c.k8sClient != nil && len(vmcp.Spec.CompositeToolRefs) > 0 {
+	if len(vmcp.Spec.CompositeToolRefs) > 0 {
 		var err error
 		referencedTools, err = c.convertReferencedCompositeTools(ctx, vmcp)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert referenced composite tools: %w", err)
 		}
-	} else if len(vmcp.Spec.CompositeToolRefs) > 0 {
-		ctxLogger.Info("CompositeToolRefs specified but no Kubernetes client available, skipping referenced tools",
-			"vmcp", vmcp.Name,
-			"namespace", vmcp.Namespace,
-			"refCount", len(vmcp.Spec.CompositeToolRefs))
 	}
 
 	// Merge inline and referenced tools
@@ -402,12 +400,14 @@ func (c *Converter) convertCompositeToolDefinition(
 	ctx context.Context,
 	def *mcpv1alpha1.VirtualMCPCompositeToolDefinition,
 ) *vmcpconfig.CompositeToolConfig {
-	return c.convertCompositeToolSpec(ctx, def.Spec.Name, def.Spec.Description, def.Spec.Timeout, def.Spec.Parameters, def.Spec.Steps, def.Spec.Output, def.Name)
+	return c.convertCompositeToolSpec(
+		ctx, def.Spec.Name, def.Spec.Description, def.Spec.Timeout,
+		def.Spec.Parameters, def.Spec.Steps, def.Spec.Output, def.Name)
 }
 
 // convertCompositeToolSpec is a shared helper that converts common composite tool fields to CompositeToolConfig.
 // This eliminates code duplication between convertCompositeTools and convertCompositeToolDefinition.
-func (*Converter) convertCompositeToolSpec(
+func (c *Converter) convertCompositeToolSpec(
 	ctx context.Context,
 	name, description, timeout string,
 	parameters *runtime.RawExtension,
@@ -451,6 +451,24 @@ func (*Converter) convertCompositeToolSpec(
 	}
 
 	// Convert steps
+	tool.Steps = c.convertWorkflowSteps(ctx, steps, toolNameForLogging)
+
+	// Convert output configuration
+	if output != nil {
+		tool.Output = convertOutputSpec(ctx, output)
+	}
+
+	return tool
+}
+
+// convertWorkflowSteps converts a slice of WorkflowStep CRD objects to WorkflowStepConfig.
+func (*Converter) convertWorkflowSteps(
+	ctx context.Context,
+	steps []mcpv1alpha1.WorkflowStep,
+	toolNameForLogging string,
+) []*vmcpconfig.WorkflowStepConfig {
+	workflowSteps := make([]*vmcpconfig.WorkflowStepConfig, 0, len(steps))
+
 	for _, crdStep := range steps {
 		step := &vmcpconfig.WorkflowStepConfig{
 			ID:        crdStep.ID,
@@ -506,15 +524,10 @@ func (*Converter) convertCompositeToolSpec(
 			step.OnError = stepError
 		}
 
-		tool.Steps = append(tool.Steps, step)
+		workflowSteps = append(workflowSteps, step)
 	}
 
-	// Convert output configuration
-	if output != nil {
-		tool.Output = convertOutputSpec(ctx, output)
-	}
-
-	return tool
+	return workflowSteps
 }
 
 // validateCompositeToolNames checks for duplicate tool names across all composite tools.

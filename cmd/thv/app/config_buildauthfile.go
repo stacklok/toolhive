@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -110,6 +111,11 @@ func init() {
 func setBuildAuthFileCmdFunc(_ *cobra.Command, args []string) error {
 	name := args[0]
 
+	// Validate the file name first
+	if err := config.ValidateBuildAuthFileName(name); err != nil {
+		return err
+	}
+
 	var content string
 	if authFileFromStdin {
 		// Read from stdin
@@ -126,12 +132,28 @@ func setBuildAuthFileCmdFunc(_ *cobra.Command, args []string) error {
 		content = args[1]
 	}
 
-	provider := config.NewDefaultProvider()
-	if err := provider.SetBuildAuthFile(name, content); err != nil {
-		return fmt.Errorf("failed to set build auth file: %w", err)
+	// Get the secrets manager to store the content securely
+	manager, err := getSecretsManager()
+	if err != nil {
+		return fmt.Errorf("failed to get secrets manager: %w (run 'thv secret setup' first)", err)
 	}
 
-	fmt.Printf("Successfully set build auth file: %s\n", name)
+	// Store the content in the secrets provider
+	secretName := config.BuildAuthFileSecretName(name)
+	ctx := context.Background()
+	if err := manager.SetSecret(ctx, secretName, content); err != nil {
+		return fmt.Errorf("failed to store auth file in secrets: %w", err)
+	}
+
+	// Mark the auth file as configured in the config (only a marker, no content)
+	provider := config.NewDefaultProvider()
+	if err := provider.MarkBuildAuthFileConfigured(name); err != nil {
+		// Try to clean up the secret if marking fails
+		_ = manager.DeleteSecret(ctx, secretName)
+		return fmt.Errorf("failed to mark build auth file as configured: %w", err)
+	}
+
+	fmt.Printf("Successfully set build auth file: %s (stored securely in secrets)\n", name)
 	return nil
 }
 
@@ -161,41 +183,64 @@ func readFromStdin() (string, error) {
 
 func getBuildAuthFileCmdFunc(_ *cobra.Command, args []string) error {
 	provider := config.NewDefaultProvider()
+	ctx := context.Background()
 
 	if len(args) == 1 {
 		name := args[0]
-		content, exists := provider.GetBuildAuthFile(name)
-		if !exists {
+		if !provider.IsBuildAuthFileConfigured(name) {
 			fmt.Printf("Build auth file %s is not configured.\n", name)
 			return nil
 		}
-		lines := strings.Count(content, "\n") + 1
-		fmt.Printf("%s: %d line(s) -> %s\n", name, lines, config.SupportedAuthFiles[name])
+
+		// Get content from secrets if requested
 		if showAuthFileContent {
+			manager, err := getSecretsManager()
+			if err != nil {
+				return fmt.Errorf("failed to get secrets manager: %w", err)
+			}
+			secretName := config.BuildAuthFileSecretName(name)
+			content, err := manager.GetSecret(ctx, secretName)
+			if err != nil {
+				return fmt.Errorf("failed to retrieve auth file content: %w", err)
+			}
+			lines := strings.Count(content, "\n") + 1
+			fmt.Printf("%s: %d line(s) -> %s\n", name, lines, config.SupportedAuthFiles[name])
 			fmt.Printf("Content:\n%s\n", content)
+		} else {
+			fmt.Printf("%s: configured -> %s\n", name, config.SupportedAuthFiles[name])
 		}
 		return nil
 	}
 
-	authFiles := provider.GetAllBuildAuthFiles()
-	if len(authFiles) == 0 {
+	configuredFiles := provider.GetConfiguredBuildAuthFiles()
+	if len(configuredFiles) == 0 {
 		fmt.Println("No build auth files are configured.")
 		return nil
 	}
 
-	names := make([]string, 0, len(authFiles))
-	for name := range authFiles {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	sort.Strings(configuredFiles)
 
 	fmt.Println("Configured build auth files:")
-	for _, name := range names {
-		content := authFiles[name]
-		lines := strings.Count(content, "\n") + 1
-		fmt.Printf("  %s: %d line(s) -> %s\n", name, lines, config.SupportedAuthFiles[name])
+	for _, name := range configuredFiles {
 		if showAuthFileContent {
+			manager, err := getSecretsManager()
+			if err != nil {
+				fmt.Printf("  %s: configured -> %s (unable to retrieve content: %v)\n",
+					name, config.SupportedAuthFiles[name], err)
+				continue
+			}
+			secretName := config.BuildAuthFileSecretName(name)
+			content, err := manager.GetSecret(ctx, secretName)
+			if err != nil {
+				fmt.Printf("  %s: configured -> %s (unable to retrieve content: %v)\n",
+					name, config.SupportedAuthFiles[name], err)
+				continue
+			}
+			lines := strings.Count(content, "\n") + 1
+			fmt.Printf("  %s: %d line(s) -> %s\n", name, lines, config.SupportedAuthFiles[name])
 			fmt.Printf("  Content:\n%s\n", content)
+		} else {
+			fmt.Printf("  %s: configured -> %s\n", name, config.SupportedAuthFiles[name])
 		}
 	}
 	return nil
@@ -203,19 +248,30 @@ func getBuildAuthFileCmdFunc(_ *cobra.Command, args []string) error {
 
 func unsetBuildAuthFileCmdFunc(_ *cobra.Command, args []string) error {
 	provider := config.NewDefaultProvider()
+	ctx := context.Background()
 
 	if unsetBuildAuthFileAll {
-		authFiles := provider.GetAllBuildAuthFiles()
-		if len(authFiles) == 0 {
+		configuredFiles := provider.GetConfiguredBuildAuthFiles()
+		if len(configuredFiles) == 0 {
 			fmt.Println("No build auth files are configured.")
 			return nil
+		}
+
+		// Try to get secrets manager to delete secrets (but don't fail if unavailable)
+		manager, err := getSecretsManager()
+		if err == nil {
+			for _, name := range configuredFiles {
+				secretName := config.BuildAuthFileSecretName(name)
+				// Best effort - don't fail if secret doesn't exist
+				_ = manager.DeleteSecret(ctx, secretName)
+			}
 		}
 
 		if err := provider.UnsetAllBuildAuthFiles(); err != nil {
 			return fmt.Errorf("failed to remove build auth files: %w", err)
 		}
 
-		fmt.Printf("Successfully removed %d build auth file(s).\n", len(authFiles))
+		fmt.Printf("Successfully removed %d build auth file(s).\n", len(configuredFiles))
 		return nil
 	}
 
@@ -224,10 +280,16 @@ func unsetBuildAuthFileCmdFunc(_ *cobra.Command, args []string) error {
 	}
 
 	name := args[0]
-	_, exists := provider.GetBuildAuthFile(name)
-	if !exists {
+	if !provider.IsBuildAuthFileConfigured(name) {
 		fmt.Printf("Build auth file %s is not configured.\n", name)
 		return nil
+	}
+
+	// Try to delete the secret (but don't fail if secrets manager unavailable)
+	manager, err := getSecretsManager()
+	if err == nil {
+		secretName := config.BuildAuthFileSecretName(name)
+		_ = manager.DeleteSecret(ctx, secretName)
 	}
 
 	if err := provider.UnsetBuildAuthFile(name); err != nil {

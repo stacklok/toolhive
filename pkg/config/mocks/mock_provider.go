@@ -40,20 +40,6 @@ func (m *MockProvider) EXPECT() *MockProviderMockRecorder {
 	return m.recorder
 }
 
-// GetAllBuildAuthFiles mocks base method.
-func (m *MockProvider) GetAllBuildAuthFiles() map[string]string {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetAllBuildAuthFiles")
-	ret0, _ := ret[0].(map[string]string)
-	return ret0
-}
-
-// GetAllBuildAuthFiles indicates an expected call of GetAllBuildAuthFiles.
-func (mr *MockProviderMockRecorder) GetAllBuildAuthFiles() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllBuildAuthFiles", reflect.TypeOf((*MockProvider)(nil).GetAllBuildAuthFiles))
-}
-
 // GetAllBuildEnv mocks base method.
 func (m *MockProvider) GetAllBuildEnv() map[string]string {
 	m.ctrl.T.Helper()
@@ -94,21 +80,6 @@ func (m *MockProvider) GetAllBuildEnvFromShell() []string {
 func (mr *MockProviderMockRecorder) GetAllBuildEnvFromShell() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllBuildEnvFromShell", reflect.TypeOf((*MockProvider)(nil).GetAllBuildEnvFromShell))
-}
-
-// GetBuildAuthFile mocks base method.
-func (m *MockProvider) GetBuildAuthFile(name string) (string, bool) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetBuildAuthFile", name)
-	ret0, _ := ret[0].(string)
-	ret1, _ := ret[1].(bool)
-	return ret0, ret1
-}
-
-// GetBuildAuthFile indicates an expected call of GetBuildAuthFile.
-func (mr *MockProviderMockRecorder) GetBuildAuthFile(name any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetBuildAuthFile", reflect.TypeOf((*MockProvider)(nil).GetBuildAuthFile), name)
 }
 
 // GetBuildEnv mocks base method.
@@ -185,6 +156,20 @@ func (mr *MockProviderMockRecorder) GetConfig() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetConfig", reflect.TypeOf((*MockProvider)(nil).GetConfig))
 }
 
+// GetConfiguredBuildAuthFiles mocks base method.
+func (m *MockProvider) GetConfiguredBuildAuthFiles() []string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetConfiguredBuildAuthFiles")
+	ret0, _ := ret[0].([]string)
+	return ret0
+}
+
+// GetConfiguredBuildAuthFiles indicates an expected call of GetConfiguredBuildAuthFiles.
+func (mr *MockProviderMockRecorder) GetConfiguredBuildAuthFiles() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetConfiguredBuildAuthFiles", reflect.TypeOf((*MockProvider)(nil).GetConfiguredBuildAuthFiles))
+}
+
 // GetRegistryConfig mocks base method.
 func (m *MockProvider) GetRegistryConfig() (string, string, bool, string) {
 	m.ctrl.T.Helper()
@@ -202,6 +187,20 @@ func (mr *MockProviderMockRecorder) GetRegistryConfig() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRegistryConfig", reflect.TypeOf((*MockProvider)(nil).GetRegistryConfig))
 }
 
+// IsBuildAuthFileConfigured mocks base method.
+func (m *MockProvider) IsBuildAuthFileConfigured(name string) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsBuildAuthFileConfigured", name)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// IsBuildAuthFileConfigured indicates an expected call of IsBuildAuthFileConfigured.
+func (mr *MockProviderMockRecorder) IsBuildAuthFileConfigured(name any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsBuildAuthFileConfigured", reflect.TypeOf((*MockProvider)(nil).IsBuildAuthFileConfigured), name)
+}
+
 // LoadOrCreateConfig mocks base method.
 func (m *MockProvider) LoadOrCreateConfig() (*config.Config, error) {
 	m.ctrl.T.Helper()
@@ -217,18 +216,18 @@ func (mr *MockProviderMockRecorder) LoadOrCreateConfig() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadOrCreateConfig", reflect.TypeOf((*MockProvider)(nil).LoadOrCreateConfig))
 }
 
-// SetBuildAuthFile mocks base method.
-func (m *MockProvider) SetBuildAuthFile(name, content string) error {
+// MarkBuildAuthFileConfigured mocks base method.
+func (m *MockProvider) MarkBuildAuthFileConfigured(name string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetBuildAuthFile", name, content)
+	ret := m.ctrl.Call(m, "MarkBuildAuthFileConfigured", name)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// SetBuildAuthFile indicates an expected call of SetBuildAuthFile.
-func (mr *MockProviderMockRecorder) SetBuildAuthFile(name, content any) *gomock.Call {
+// MarkBuildAuthFileConfigured indicates an expected call of MarkBuildAuthFileConfigured.
+func (mr *MockProviderMockRecorder) MarkBuildAuthFileConfigured(name any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetBuildAuthFile", reflect.TypeOf((*MockProvider)(nil).SetBuildAuthFile), name, content)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkBuildAuthFileConfigured", reflect.TypeOf((*MockProvider)(nil).MarkBuildAuthFileConfigured), name)
 }
 
 // SetBuildEnv mocks base method.

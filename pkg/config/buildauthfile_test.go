@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-const testNpmrcContent = "//npm.corp.example.com/:_authToken=TOKEN"
-
 func TestValidateBuildAuthFileName(t *testing.T) {
 	t.Parallel()
 
@@ -40,49 +38,56 @@ func TestValidateBuildAuthFileName(t *testing.T) {
 	}
 }
 
-func TestSetBuildAuthFile(t *testing.T) {
+func TestBuildAuthFileSecretName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		fileType string
+		expected string
+	}{
+		{"npmrc", "BUILD_AUTH_FILE_npmrc"},
+		{"netrc", "BUILD_AUTH_FILE_netrc"},
+		{"yarnrc", "BUILD_AUTH_FILE_yarnrc"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.fileType, func(t *testing.T) {
+			t.Parallel()
+
+			result := BuildAuthFileSecretName(tt.fileType)
+			if result != tt.expected {
+				t.Errorf("BuildAuthFileSecretName(%q) = %q, want %q", tt.fileType, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestMarkBuildAuthFileConfigured(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
 		fileKey string
-		content string
 		wantErr bool
 	}{
 		{
 			name:    "valid npmrc",
 			fileKey: "npmrc",
-			content: testNpmrcContent,
 			wantErr: false,
 		},
 		{
 			name:    "valid netrc",
 			fileKey: "netrc",
-			content: "machine github.com login git password TOKEN",
 			wantErr: false,
 		},
 		{
 			name:    "valid yarnrc",
 			fileKey: "yarnrc",
-			content: "registry \"https://npm.corp.example.com\"",
-			wantErr: false,
-		},
-		{
-			name:    "multiline content",
-			fileKey: "npmrc",
-			content: "//npm.corp.example.com/:_authToken=TOKEN\nalways-auth=true",
-			wantErr: false,
-		},
-		{
-			name:    "empty content",
-			fileKey: "npmrc",
-			content: "",
 			wantErr: false,
 		},
 		{
 			name:    "unsupported file type",
 			fileKey: "piprc",
-			content: "some content",
 			wantErr: true,
 		},
 	}
@@ -95,61 +100,50 @@ func TestSetBuildAuthFile(t *testing.T) {
 			configPath := filepath.Join(tempDir, "config.yaml")
 			provider := NewPathProvider(configPath)
 
-			err := setBuildAuthFile(provider, tt.fileKey, tt.content)
+			err := markBuildAuthFileConfigured(provider, tt.fileKey)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("setBuildAuthFile(%q, %q) error = %v, wantErr %v", tt.fileKey, tt.content, err, tt.wantErr)
+				t.Errorf("markBuildAuthFileConfigured(%q) error = %v, wantErr %v", tt.fileKey, err, tt.wantErr)
 			}
 
 			if !tt.wantErr {
-				// Verify it was stored
-				content, exists := getBuildAuthFile(provider, tt.fileKey)
-				if !exists {
-					t.Errorf("expected auth file to be stored")
-				}
-				if content != tt.content {
-					t.Errorf("expected content %q, got %q", tt.content, content)
+				// Verify it was marked as configured
+				if !isBuildAuthFileConfigured(provider, tt.fileKey) {
+					t.Errorf("expected auth file to be marked as configured")
 				}
 			}
 		})
 	}
 }
 
-func TestGetBuildAuthFile(t *testing.T) {
+func TestIsBuildAuthFileConfigured(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.yaml")
 	provider := NewPathProvider(configPath)
 
-	// Test getting non-existent file
-	_, exists := getBuildAuthFile(provider, "npmrc")
-	if exists {
-		t.Errorf("expected npmrc to not exist initially")
+	// Test getting non-configured file
+	if isBuildAuthFileConfigured(provider, "npmrc") {
+		t.Errorf("expected npmrc to not be configured initially")
 	}
 
-	// Set a file and get it
-	content := testNpmrcContent
-	err := setBuildAuthFile(provider, "npmrc", content)
+	// Mark a file as configured and check it
+	err := markBuildAuthFileConfigured(provider, "npmrc")
 	if err != nil {
-		t.Fatalf("failed to set auth file: %v", err)
+		t.Fatalf("failed to mark auth file: %v", err)
 	}
 
-	got, exists := getBuildAuthFile(provider, "npmrc")
-	if !exists {
-		t.Errorf("expected npmrc to exist after setting")
-	}
-	if got != content {
-		t.Errorf("expected content %q, got %q", content, got)
+	if !isBuildAuthFileConfigured(provider, "npmrc") {
+		t.Errorf("expected npmrc to be configured after marking")
 	}
 
-	// Getting a different file type should return not found
-	_, exists = getBuildAuthFile(provider, "netrc")
-	if exists {
-		t.Errorf("expected netrc to not exist")
+	// A different file type should not be configured
+	if isBuildAuthFileConfigured(provider, "netrc") {
+		t.Errorf("expected netrc to not be configured")
 	}
 }
 
-func TestGetAllBuildAuthFiles(t *testing.T) {
+func TestGetConfiguredBuildAuthFiles(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
@@ -157,44 +151,44 @@ func TestGetAllBuildAuthFiles(t *testing.T) {
 	provider := NewPathProvider(configPath)
 
 	// Test empty initial state
-	authFiles := getAllBuildAuthFiles(provider)
-	if len(authFiles) != 0 {
-		t.Errorf("expected no auth files initially, got %d", len(authFiles))
+	configuredFiles := getConfiguredBuildAuthFiles(provider)
+	if len(configuredFiles) != 0 {
+		t.Errorf("expected no auth files initially, got %d", len(configuredFiles))
 	}
 
-	// Add some auth files
-	npmrcContent := testNpmrcContent
-	netrcContent := "machine github.com login git password TOKEN"
-
-	err := setBuildAuthFile(provider, "npmrc", npmrcContent)
+	// Mark some auth files as configured
+	err := markBuildAuthFileConfigured(provider, "npmrc")
 	if err != nil {
-		t.Fatalf("failed to set npmrc: %v", err)
+		t.Fatalf("failed to mark npmrc: %v", err)
 	}
 
-	err = setBuildAuthFile(provider, "netrc", netrcContent)
+	err = markBuildAuthFileConfigured(provider, "netrc")
 	if err != nil {
-		t.Fatalf("failed to set netrc: %v", err)
+		t.Fatalf("failed to mark netrc: %v", err)
 	}
 
-	// Get all files
-	authFiles = getAllBuildAuthFiles(provider)
-	if len(authFiles) != 2 {
-		t.Errorf("expected 2 auth files, got %d", len(authFiles))
+	// Get all configured files
+	configuredFiles = getConfiguredBuildAuthFiles(provider)
+	if len(configuredFiles) != 2 {
+		t.Errorf("expected 2 configured auth files, got %d", len(configuredFiles))
 	}
 
-	if authFiles["npmrc"] != npmrcContent {
-		t.Errorf("expected npmrc content %q, got %q", npmrcContent, authFiles["npmrc"])
+	// Check that both files are in the list
+	hasNpmrc := false
+	hasNetrc := false
+	for _, f := range configuredFiles {
+		if f == "npmrc" {
+			hasNpmrc = true
+		}
+		if f == "netrc" {
+			hasNetrc = true
+		}
 	}
-
-	if authFiles["netrc"] != netrcContent {
-		t.Errorf("expected netrc content %q, got %q", netrcContent, authFiles["netrc"])
+	if !hasNpmrc {
+		t.Errorf("expected npmrc to be in configured files")
 	}
-
-	// Verify it returns a copy (mutation doesn't affect original)
-	authFiles["new"] = "test"
-	authFiles2 := getAllBuildAuthFiles(provider)
-	if len(authFiles2) != 2 {
-		t.Errorf("expected original to be unchanged, got %d entries", len(authFiles2))
+	if !hasNetrc {
+		t.Errorf("expected netrc to be in configured files")
 	}
 }
 
@@ -205,16 +199,14 @@ func TestUnsetBuildAuthFile(t *testing.T) {
 	configPath := filepath.Join(tempDir, "config.yaml")
 	provider := NewPathProvider(configPath)
 
-	// Set and verify
-	content := testNpmrcContent
-	err := setBuildAuthFile(provider, "npmrc", content)
+	// Mark and verify
+	err := markBuildAuthFileConfigured(provider, "npmrc")
 	if err != nil {
-		t.Fatalf("failed to set auth file: %v", err)
+		t.Fatalf("failed to mark auth file: %v", err)
 	}
 
-	_, exists := getBuildAuthFile(provider, "npmrc")
-	if !exists {
-		t.Fatalf("expected auth file to exist")
+	if !isBuildAuthFileConfigured(provider, "npmrc") {
+		t.Fatalf("expected auth file to be configured")
 	}
 
 	// Unset and verify
@@ -223,8 +215,7 @@ func TestUnsetBuildAuthFile(t *testing.T) {
 		t.Fatalf("failed to unset auth file: %v", err)
 	}
 
-	_, exists = getBuildAuthFile(provider, "npmrc")
-	if exists {
+	if isBuildAuthFileConfigured(provider, "npmrc") {
 		t.Errorf("expected auth file to be removed")
 	}
 }
@@ -250,26 +241,26 @@ func TestUnsetAllBuildAuthFiles(t *testing.T) {
 	configPath := filepath.Join(tempDir, "config.yaml")
 	provider := NewPathProvider(configPath)
 
-	// Add multiple auth files
-	err := setBuildAuthFile(provider, "npmrc", "npmrc content")
+	// Mark multiple auth files
+	err := markBuildAuthFileConfigured(provider, "npmrc")
 	if err != nil {
-		t.Fatalf("failed to set npmrc: %v", err)
+		t.Fatalf("failed to mark npmrc: %v", err)
 	}
 
-	err = setBuildAuthFile(provider, "netrc", "netrc content")
+	err = markBuildAuthFileConfigured(provider, "netrc")
 	if err != nil {
-		t.Fatalf("failed to set netrc: %v", err)
+		t.Fatalf("failed to mark netrc: %v", err)
 	}
 
-	err = setBuildAuthFile(provider, "yarnrc", "yarnrc content")
+	err = markBuildAuthFileConfigured(provider, "yarnrc")
 	if err != nil {
-		t.Fatalf("failed to set yarnrc: %v", err)
+		t.Fatalf("failed to mark yarnrc: %v", err)
 	}
 
-	// Verify all were set
-	authFiles := getAllBuildAuthFiles(provider)
-	if len(authFiles) != 3 {
-		t.Fatalf("expected 3 auth files, got %d", len(authFiles))
+	// Verify all were marked
+	configuredFiles := getConfiguredBuildAuthFiles(provider)
+	if len(configuredFiles) != 3 {
+		t.Fatalf("expected 3 auth files, got %d", len(configuredFiles))
 	}
 
 	// Unset all
@@ -279,9 +270,9 @@ func TestUnsetAllBuildAuthFiles(t *testing.T) {
 	}
 
 	// Verify all were removed
-	authFiles = getAllBuildAuthFiles(provider)
-	if len(authFiles) != 0 {
-		t.Errorf("expected 0 auth files after unset all, got %d", len(authFiles))
+	configuredFiles = getConfiguredBuildAuthFiles(provider)
+	if len(configuredFiles) != 0 {
+		t.Errorf("expected 0 auth files after unset all, got %d", len(configuredFiles))
 	}
 }
 
@@ -299,34 +290,28 @@ func TestUnsetAllBuildAuthFiles_Empty(t *testing.T) {
 	}
 }
 
-func TestSetBuildAuthFile_UpdateExisting(t *testing.T) {
+func TestMarkBuildAuthFileConfigured_UpdateExisting(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.yaml")
 	provider := NewPathProvider(configPath)
 
-	// Set initial content
-	initialContent := "initial content"
-	err := setBuildAuthFile(provider, "npmrc", initialContent)
+	// Mark initial
+	err := markBuildAuthFileConfigured(provider, "npmrc")
 	if err != nil {
-		t.Fatalf("failed to set initial content: %v", err)
+		t.Fatalf("failed to mark initially: %v", err)
 	}
 
-	// Update with new content
-	newContent := "new content"
-	err = setBuildAuthFile(provider, "npmrc", newContent)
+	// Mark again (should not error)
+	err = markBuildAuthFileConfigured(provider, "npmrc")
 	if err != nil {
-		t.Fatalf("failed to update content: %v", err)
+		t.Fatalf("failed to mark again: %v", err)
 	}
 
-	// Verify content was updated
-	content, exists := getBuildAuthFile(provider, "npmrc")
-	if !exists {
-		t.Fatalf("expected auth file to exist")
-	}
-	if content != newContent {
-		t.Errorf("expected content %q, got %q", newContent, content)
+	// Verify still configured
+	if !isBuildAuthFileConfigured(provider, "npmrc") {
+		t.Fatalf("expected auth file to still be configured")
 	}
 }
 

@@ -5,6 +5,10 @@ import (
 	"strings"
 )
 
+// BuildAuthFileSecretPrefix is the prefix used for storing build auth file content in secrets
+// #nosec G101 -- This is not a credential, just a prefix for secret names
+const BuildAuthFileSecretPrefix = "BUILD_AUTH_FILE_"
+
 // SupportedAuthFiles maps file type names to their target paths in the container
 var SupportedAuthFiles = map[string]string{
 	"npmrc":  "/root/.npmrc",
@@ -24,8 +28,14 @@ func ValidateBuildAuthFileName(name string) error {
 	return nil
 }
 
-// setBuildAuthFile stores the content for an auth file
-func setBuildAuthFile(p Provider, name, content string) error {
+// BuildAuthFileSecretName returns the secret name for a given auth file type
+func BuildAuthFileSecretName(fileType string) string {
+	return BuildAuthFileSecretPrefix + fileType
+}
+
+// markBuildAuthFileConfigured marks an auth file type as configured in the config.
+// The actual content is stored in the secrets provider, not in the config.
+func markBuildAuthFileConfigured(p Provider, name string) error {
 	if err := ValidateBuildAuthFileName(name); err != nil {
 		return err
 	}
@@ -34,34 +44,39 @@ func setBuildAuthFile(p Provider, name, content string) error {
 		if c.BuildAuthFiles == nil {
 			c.BuildAuthFiles = make(map[string]string)
 		}
-		c.BuildAuthFiles[name] = content
+		// Store only a marker - actual content is in secrets
+		c.BuildAuthFiles[name] = "secret:" + BuildAuthFileSecretName(name)
 	})
 }
 
-// getBuildAuthFile retrieves the content for an auth file
-func getBuildAuthFile(p Provider, name string) (content string, exists bool) {
+// isBuildAuthFileConfigured checks if an auth file type is configured
+func isBuildAuthFileConfigured(p Provider, name string) bool {
 	config := p.GetConfig()
 	if config.BuildAuthFiles == nil {
-		return "", false
+		return false
 	}
-	content, exists = config.BuildAuthFiles[name]
-	return content, exists
+	_, exists := config.BuildAuthFiles[name]
+	return exists
 }
 
-// getAllBuildAuthFiles returns all configured auth files
-func getAllBuildAuthFiles(p Provider) map[string]string {
+// getConfiguredBuildAuthFiles returns a list of configured auth file types.
+// Note: This only returns which files are configured, not their content.
+// Use the secrets provider to retrieve actual content.
+func getConfiguredBuildAuthFiles(p Provider) []string {
 	config := p.GetConfig()
 	if config.BuildAuthFiles == nil {
-		return make(map[string]string)
+		return nil
 	}
-	result := make(map[string]string, len(config.BuildAuthFiles))
-	for k, v := range config.BuildAuthFiles {
-		result[k] = v
+	result := make([]string, 0, len(config.BuildAuthFiles))
+	for k := range config.BuildAuthFiles {
+		result = append(result, k)
 	}
 	return result
 }
 
-// unsetBuildAuthFile removes an auth file configuration
+// unsetBuildAuthFile removes an auth file configuration marker.
+// Note: This only removes the config marker. The caller should also delete
+// the corresponding secret from the secrets provider.
 func unsetBuildAuthFile(p Provider, name string) error {
 	return p.UpdateConfig(func(c *Config) {
 		if c.BuildAuthFiles != nil {
@@ -70,7 +85,9 @@ func unsetBuildAuthFile(p Provider, name string) error {
 	})
 }
 
-// unsetAllBuildAuthFiles removes all auth file configurations
+// unsetAllBuildAuthFiles removes all auth file configuration markers.
+// Note: This only removes the config markers. The caller should also delete
+// the corresponding secrets from the secrets provider.
 func unsetAllBuildAuthFiles(p Provider) error {
 	return p.UpdateConfig(func(c *Config) {
 		c.BuildAuthFiles = nil

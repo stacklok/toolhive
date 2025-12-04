@@ -130,8 +130,10 @@ func createTemplateData(
 		return templateData, err
 	}
 
-	// Load build auth files from configuration
-	addBuildAuthFilesToTemplate(&templateData)
+	// Load build auth files from configuration and secrets
+	if err := addBuildAuthFilesToTemplate(&templateData); err != nil {
+		return templateData, err
+	}
 
 	return templateData, nil
 }
@@ -182,15 +184,61 @@ func addBuildEnvToTemplate(templateData *templates.TemplateData) error {
 	return nil
 }
 
-// addBuildAuthFilesToTemplate loads build auth files from config and adds them to template data.
-func addBuildAuthFilesToTemplate(templateData *templates.TemplateData) {
+// addBuildAuthFilesToTemplate loads build auth files from config and secrets, adding them to template data.
+func addBuildAuthFilesToTemplate(templateData *templates.TemplateData) error {
 	provider := config.NewProvider()
-	authFiles := provider.GetAllBuildAuthFiles()
+	configuredFiles := provider.GetConfiguredBuildAuthFiles()
+
+	if len(configuredFiles) == 0 {
+		return nil
+	}
+
+	// Resolve auth file content from secrets
+	authFiles, err := resolveBuildAuthFilesFromSecrets(configuredFiles)
+	if err != nil {
+		return err
+	}
 
 	if len(authFiles) > 0 {
 		templateData.BuildAuthFiles = authFiles
 		logger.Debugf("Loaded %d build auth file(s)", len(authFiles))
 	}
+
+	return nil
+}
+
+// resolveBuildAuthFilesFromSecrets resolves auth file content from the secrets provider.
+func resolveBuildAuthFilesFromSecrets(configuredFiles []string) (map[string]string, error) {
+	ctx := context.Background()
+	configProvider := config.NewProvider()
+	cfg := configProvider.GetConfig()
+
+	// Check if secrets are set up
+	if !cfg.Secrets.SetupCompleted {
+		return nil, secrets.ErrSecretsNotSetup
+	}
+
+	providerType, err := cfg.Secrets.GetProviderType()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get secrets provider type: %w", err)
+	}
+
+	manager, err := secrets.CreateSecretProvider(providerType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create secrets provider: %w", err)
+	}
+
+	resolved := make(map[string]string, len(configuredFiles))
+	for _, fileType := range configuredFiles {
+		secretName := config.BuildAuthFileSecretName(fileType)
+		content, err := manager.GetSecret(ctx, secretName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get secret '%s' for auth file %s: %w", secretName, fileType, err)
+		}
+		resolved[fileType] = content
+	}
+
+	return resolved, nil
 }
 
 // resolveSecretsForBuildEnv resolves secret references to their actual values.

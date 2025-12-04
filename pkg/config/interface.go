@@ -43,10 +43,10 @@ type Provider interface {
 	GetAllBuildEnvFromShell() []string
 	UnsetBuildEnvFromShell(key string) error
 
-	// Build auth file operations
-	SetBuildAuthFile(name, content string) error
-	GetBuildAuthFile(name string) (content string, exists bool)
-	GetAllBuildAuthFiles() map[string]string
+	// Build auth file operations (content stored in secrets provider, not config)
+	MarkBuildAuthFileConfigured(name string) error
+	IsBuildAuthFileConfigured(name string) bool
+	GetConfiguredBuildAuthFiles() []string
 	UnsetBuildAuthFile(name string) error
 	UnsetAllBuildAuthFiles() error
 }
@@ -179,19 +179,19 @@ func (d *DefaultProvider) UnsetBuildEnvFromShell(key string) error {
 	return unsetBuildEnvFromShell(d, key)
 }
 
-// SetBuildAuthFile stores content for an auth file
-func (d *DefaultProvider) SetBuildAuthFile(name, content string) error {
-	return setBuildAuthFile(d, name, content)
+// MarkBuildAuthFileConfigured marks an auth file type as configured
+func (d *DefaultProvider) MarkBuildAuthFileConfigured(name string) error {
+	return markBuildAuthFileConfigured(d, name)
 }
 
-// GetBuildAuthFile retrieves content for an auth file
-func (d *DefaultProvider) GetBuildAuthFile(name string) (content string, exists bool) {
-	return getBuildAuthFile(d, name)
+// IsBuildAuthFileConfigured checks if an auth file type is configured
+func (d *DefaultProvider) IsBuildAuthFileConfigured(name string) bool {
+	return isBuildAuthFileConfigured(d, name)
 }
 
-// GetAllBuildAuthFiles returns all configured auth files
-func (d *DefaultProvider) GetAllBuildAuthFiles() map[string]string {
-	return getAllBuildAuthFiles(d)
+// GetConfiguredBuildAuthFiles returns list of configured auth file types
+func (d *DefaultProvider) GetConfiguredBuildAuthFiles() []string {
+	return getConfiguredBuildAuthFiles(d)
 }
 
 // UnsetBuildAuthFile removes an auth file configuration
@@ -340,19 +340,19 @@ func (p *PathProvider) UnsetBuildEnvFromShell(key string) error {
 	return unsetBuildEnvFromShell(p, key)
 }
 
-// SetBuildAuthFile stores content for an auth file
-func (p *PathProvider) SetBuildAuthFile(name, content string) error {
-	return setBuildAuthFile(p, name, content)
+// MarkBuildAuthFileConfigured marks an auth file type as configured
+func (p *PathProvider) MarkBuildAuthFileConfigured(name string) error {
+	return markBuildAuthFileConfigured(p, name)
 }
 
-// GetBuildAuthFile retrieves content for an auth file
-func (p *PathProvider) GetBuildAuthFile(name string) (content string, exists bool) {
-	return getBuildAuthFile(p, name)
+// IsBuildAuthFileConfigured checks if an auth file type is configured
+func (p *PathProvider) IsBuildAuthFileConfigured(name string) bool {
+	return isBuildAuthFileConfigured(p, name)
 }
 
-// GetAllBuildAuthFiles returns all configured auth files
-func (p *PathProvider) GetAllBuildAuthFiles() map[string]string {
-	return getAllBuildAuthFiles(p)
+// GetConfiguredBuildAuthFiles returns list of configured auth file types
+func (p *PathProvider) GetConfiguredBuildAuthFiles() []string {
+	return getConfiguredBuildAuthFiles(p)
 }
 
 // UnsetBuildAuthFile removes an auth file configuration
@@ -496,19 +496,19 @@ func (*KubernetesProvider) UnsetBuildEnvFromShell(_ string) error {
 	return nil
 }
 
-// SetBuildAuthFile is a no-op for Kubernetes environments
-func (*KubernetesProvider) SetBuildAuthFile(_, _ string) error {
+// MarkBuildAuthFileConfigured is a no-op for Kubernetes environments
+func (*KubernetesProvider) MarkBuildAuthFileConfigured(_ string) error {
 	return nil
 }
 
-// GetBuildAuthFile returns empty for Kubernetes environments
-func (*KubernetesProvider) GetBuildAuthFile(_ string) (content string, exists bool) {
-	return "", false
+// IsBuildAuthFileConfigured returns false for Kubernetes environments
+func (*KubernetesProvider) IsBuildAuthFileConfigured(_ string) bool {
+	return false
 }
 
-// GetAllBuildAuthFiles returns empty map for Kubernetes environments
-func (*KubernetesProvider) GetAllBuildAuthFiles() map[string]string {
-	return make(map[string]string)
+// GetConfiguredBuildAuthFiles returns empty slice for Kubernetes environments
+func (*KubernetesProvider) GetConfiguredBuildAuthFiles() []string {
+	return []string{}
 }
 
 // UnsetBuildAuthFile is a no-op for Kubernetes environments

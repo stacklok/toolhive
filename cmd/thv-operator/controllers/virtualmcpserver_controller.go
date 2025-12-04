@@ -16,7 +16,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -104,9 +103,12 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
 
 	// Validate PodTemplateSpec early - before other validations
-	if !r.validateAndUpdatePodTemplateStatus(ctx, vmcp) {
-		// Invalid PodTemplateSpec - return without error to avoid infinite retries
+	if !r.validateAndUpdatePodTemplateStatus(ctx, vmcp, statusManager) {
+		// Invalid PodTemplateSpec - apply status updates and return without error to avoid infinite retries
 		// The user must fix the spec and the next reconciliation will retry
+		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+			ctxLogger.Error(err, "Failed to apply status updates after PodTemplateSpec validation error")
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -134,16 +136,16 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		ctxLogger.Error(err, "Failed to discover backends")
 		// Don't fail reconciliation if backend discovery fails, but log the error
 		statusManager.SetCondition(
-			"BackendsDiscovered",
-			"BackendDiscoveryFailed",
+			mcpv1alpha1.ConditionTypeVirtualMCPServerBackendsDiscovered,
+			mcpv1alpha1.ConditionReasonVirtualMCPServerBackendDiscoveryFailed,
 			fmt.Sprintf("Failed to discover backends: %v", err),
 			metav1.ConditionFalse,
 		)
 	} else {
 		statusManager.SetDiscoveredBackends(discoveredBackends)
 		statusManager.SetCondition(
-			"BackendsDiscovered",
-			"BackendsDiscoveredSuccessfully",
+			mcpv1alpha1.ConditionTypeVirtualMCPServerBackendsDiscovered,
+			mcpv1alpha1.ConditionReasonVirtualMCPServerBackendsDiscoveredSuccessfully,
 			fmt.Sprintf("Discovered %d backends", len(discoveredBackends)),
 			metav1.ConditionTrue,
 		)
@@ -263,11 +265,13 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 	return nil
 }
 
-// validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and updates the VirtualMCPServer status
-// with appropriate conditions and events. Returns true if validation passes, false otherwise.
+// validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and uses StatusManager to collect
+// status changes. Returns true if validation passes, false otherwise.
+// The caller is responsible for applying status updates via applyStatusUpdates().
 func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
 ) bool {
 	ctxLogger := log.FromContext(ctx)
 
@@ -285,39 +289,27 @@ func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 				"Failed to parse PodTemplateSpec: %v. Deployment blocked until PodTemplateSpec is fixed.", err)
 		}
 
-		// Update status to reflect invalid PodTemplateSpec
-		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhaseFailed
-		vmcp.Status.Message = fmt.Sprintf("Invalid PodTemplateSpec: %v", err)
-
-		// Set condition for invalid PodTemplateSpec
-		meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
-			Type:               "PodTemplateSpecValid",
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: vmcp.Generation,
-			Reason:             "InvalidPodTemplateSpec",
-			Message:            fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
-		})
-
-		if statusErr := r.Status().Update(ctx, vmcp); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update VirtualMCPServer status with PodTemplateSpec validation")
-		}
+		// Use StatusManager to collect status changes
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(fmt.Sprintf("Invalid PodTemplateSpec: %v", err))
+		statusManager.SetCondition(
+			mcpv1alpha1.ConditionTypeVirtualMCPServerPodTemplateSpecValid,
+			mcpv1alpha1.ConditionReasonVirtualMCPServerPodTemplateSpecInvalid,
+			fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
+			metav1.ConditionFalse,
+		)
 
 		ctxLogger.Error(err, "PodTemplateSpec validation failed")
 		return false
 	}
 
-	// Set condition for valid PodTemplateSpec
-	meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
-		Type:               "PodTemplateSpecValid",
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: vmcp.Generation,
-		Reason:             "PodTemplateSpecValid",
-		Message:            "PodTemplateSpec is valid",
-	})
-
-	if statusErr := r.Status().Update(ctx, vmcp); statusErr != nil {
-		ctxLogger.Error(statusErr, "Failed to update VirtualMCPServer status with PodTemplateSpec validation")
-	}
+	// Use StatusManager to collect status changes for valid PodTemplateSpec
+	statusManager.SetCondition(
+		mcpv1alpha1.ConditionTypeVirtualMCPServerPodTemplateSpecValid,
+		mcpv1alpha1.ConditionReasonVirtualMCPServerPodTemplateSpecValid,
+		"PodTemplateSpec is valid",
+		metav1.ConditionTrue,
+	)
 
 	return true
 }

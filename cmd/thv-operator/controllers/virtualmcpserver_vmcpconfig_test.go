@@ -34,6 +34,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfigpkg "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
 // newNoOpMockResolver creates a mock resolver that returns (nil, nil) for all calls.
@@ -439,13 +440,22 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 		},
 	}
 
+	// Create MCPGroup for workload discovery
+	mcpGroup := &mcpv1alpha1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-group",
+			Namespace: "default",
+		},
+		Spec: mcpv1alpha1.MCPGroupSpec{},
+	}
+
 	scheme := runtime.NewScheme()
 	_ = mcpv1alpha1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(testVmcp).
+		WithObjects(testVmcp, mcpGroup).
 		Build()
 
 	r := &VirtualMCPServerReconciler{
@@ -453,7 +463,13 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	err := r.ensureVmcpConfigConfigMap(context.Background(), testVmcp, []string{})
+	// Fetch workload names (matching production behavior)
+	ctx := context.Background()
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, testVmcp.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testVmcp.Spec.GroupRef.Name)
+	require.NoError(t, err, "should successfully list workloads in group")
+
+	err = r.ensureVmcpConfigConfigMap(ctx, testVmcp, workloadNames)
 	require.NoError(t, err)
 
 	// Verify ConfigMap was created
@@ -702,8 +718,13 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 		Scheme: testScheme,
 	}
 
+	// Fetch workload names (matching production behavior)
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.GroupRef.Name)
+	require.NoError(t, err, "should successfully list workloads in group")
+
 	// Test the ensureVmcpConfigConfigMap function
-	err := reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames)
 	require.NoError(t, err, "should successfully create ConfigMap with referenced composite tool")
 
 	// Verify ConfigMap was created
@@ -820,8 +841,13 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 		Scheme: testScheme,
 	}
 
+	// Fetch workload names (matching production behavior)
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.GroupRef.Name)
+	require.NoError(t, err, "should successfully list workloads in group")
+
 	// Test the ensureVmcpConfigConfigMap function
-	err := reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames)
 	require.NoError(t, err, "should successfully merge inline and referenced tools")
 
 	// Verify ConfigMap was created
@@ -898,8 +924,13 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_NotFound(t *testing.T) {
 		Scheme: testScheme,
 	}
 
+	// Fetch workload names (matching production behavior)
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.Spec.GroupRef.Name)
+	require.NoError(t, err, "should successfully list workloads in group")
+
 	// Test should fail with not found error
-	err := reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames)
 	require.Error(t, err, "should fail when referenced tool doesn't exist")
 	assert.Contains(t, err.Error(), "not found", "error should mention not found")
 }

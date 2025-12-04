@@ -152,6 +152,7 @@ type Server struct {
 //
 //nolint:gocyclo // Complexity from hook logic is acceptable
 func New(
+	ctx context.Context,
 	cfg *Config,
 	rt router.Router,
 	backendClient vmcp.BackendClient,
@@ -205,7 +206,7 @@ func New(
 	if cfg.TelemetryProvider != nil {
 		var err error
 		backendClient, err = monitorBackends(
-			context.Background(),
+			ctx,
 			cfg.TelemetryProvider.MeterProvider(),
 			cfg.TelemetryProvider.TracerProvider(),
 			backends,

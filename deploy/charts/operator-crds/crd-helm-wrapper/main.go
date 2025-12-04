@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// crd-helm-wrapper is a tool that wraps Kubernetes CRD YAML files with Helm
-// template conditionals for conditional installation, feature flags,
-// and resource policy annotations.
+// crd-helm-wrapper wraps Kubernetes CRD YAML files with Helm template
+// conditionals for feature-flagged installation and resource policy annotations.
 package main
 
 import (
@@ -33,115 +32,59 @@ import (
 //go:embed templates/*.tpl
 var templateFS embed.FS
 
-// Templates holds the loaded template content
-type Templates struct {
-	Header         string
-	Footer         string
-	KeepAnnotation string
-}
-
-// CRDMetadata represents the minimal structure needed to extract CRD name
-type CRDMetadata struct {
-	Kind     string `yaml:"kind"`
-	Metadata struct {
-		Name string `yaml:"name"`
-	} `yaml:"metadata"`
-}
-
-// Config holds the wrapper configuration
-type Config struct {
-	SourceDir string
-	TargetDir string
-	Verbose   bool
-}
-
-// CRD feature flag groups
-// Maps CRD name prefixes to their corresponding Helm values flags
-// CRDs can belong to multiple groups (e.g., mcpexternalauthconfigs is used by both server and virtualMcp)
+// crdFeatureFlags maps CRD plural names to their Helm values feature flags.
+// CRDs can belong to multiple groups (e.g., mcpexternalauthconfigs is shared).
 var crdFeatureFlags = map[string][]string{
-	// Server group
-	"mcpservers":       {"server"},
-	"mcpremoteproxies": {"server"},
-	"mcptoolconfigs":   {"server"},
-	"mcpgroups":        {"server"},
-	// Registry group
-	"mcpregistries": {"registry"},
-	// VirtualMCP group
+	"mcpservers":                         {"server"},
+	"mcpremoteproxies":                   {"server"},
+	"mcptoolconfigs":                     {"server"},
+	"mcpgroups":                          {"server"},
+	"mcpregistries":                      {"registry"},
 	"virtualmcpservers":                  {"virtualMcp"},
 	"virtualmcpcompositetooldefinitions": {"virtualMcp"},
-	// Shared CRDs (used by multiple groups)
-	"mcpexternalauthconfigs": {"server", "virtualMcp"},
+	"mcpexternalauthconfigs":             {"server", "virtualMcp"},
 }
 
 func main() {
-	cfg := Config{}
-
-	flag.StringVar(&cfg.SourceDir, "source", "", "Source directory containing raw CRD YAML files")
-	flag.StringVar(&cfg.TargetDir, "target", "", "Target directory for wrapped Helm templates")
-	flag.BoolVar(&cfg.Verbose, "verbose", false, "Enable verbose output")
+	sourceDir := flag.String("source", "", "Source directory containing raw CRD YAML files")
+	targetDir := flag.String("target", "", "Target directory for wrapped Helm templates")
+	verbose := flag.Bool("verbose", false, "Enable verbose output")
 	flag.Parse()
 
-	if cfg.SourceDir == "" || cfg.TargetDir == "" {
+	if *sourceDir == "" || *targetDir == "" {
 		fmt.Fprintln(os.Stderr, "Usage: crd-helm-wrapper -source <dir> -target <dir>")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
-	if err := run(cfg); err != nil {
+	if err := run(*sourceDir, *targetDir, *verbose); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func loadTemplates() (*Templates, error) {
-	header, err := templateFS.ReadFile("templates/header.tpl")
-	if err != nil {
-		return nil, fmt.Errorf("failed to load header template: %w", err)
-	}
-
-	footer, err := templateFS.ReadFile("templates/footer.tpl")
-	if err != nil {
-		return nil, fmt.Errorf("failed to load footer template: %w", err)
-	}
-
-	keepAnnotation, err := templateFS.ReadFile("templates/keep-annotation.tpl")
-	if err != nil {
-		return nil, fmt.Errorf("failed to load keep-annotation template: %w", err)
-	}
-
-	return &Templates{
-		Header:         string(header),
-		Footer:         string(footer),
-		KeepAnnotation: string(keepAnnotation),
-	}, nil
-}
-
-func run(cfg Config) error {
-	// Load templates
+func run(sourceDir, targetDir string, verbose bool) error {
 	templates, err := loadTemplates()
 	if err != nil {
 		return err
 	}
 
-	// Ensure target directory exists with secure permissions
-	if err := os.MkdirAll(cfg.TargetDir, 0750); err != nil {
+	if err := os.MkdirAll(targetDir, 0750); err != nil {
 		return fmt.Errorf("failed to create target directory: %w", err)
 	}
 
-	// Find all YAML files in source directory
-	files, err := filepath.Glob(filepath.Join(cfg.SourceDir, "*.yaml"))
+	files, err := filepath.Glob(filepath.Join(sourceDir, "*.yaml"))
 	if err != nil {
 		return fmt.Errorf("failed to glob source files: %w", err)
 	}
-
 	if len(files) == 0 {
-		return fmt.Errorf("no YAML files found in %s", cfg.SourceDir)
+		return fmt.Errorf("no YAML files found in %s", sourceDir)
 	}
 
 	fmt.Printf("Found %d CRD files to process\n", len(files))
 
 	for _, file := range files {
-		if err := wrapCRDFile(file, cfg, templates); err != nil {
+		if err := wrapCRDFile(file, sourceDir, targetDir, templates, verbose); err != nil {
 			return fmt.Errorf("failed to wrap %s: %w", file, err)
 		}
 	}
@@ -150,47 +93,52 @@ func run(cfg Config) error {
 	return nil
 }
 
-func wrapCRDFile(sourcePath string, cfg Config, templates *Templates) error {
-	filename := filepath.Base(sourcePath)
-	targetPath := filepath.Join(cfg.TargetDir, filename)
+func loadTemplates() (map[string]string, error) {
+	names := []string{"header", "footer", "keep-annotation"}
+	templates := make(map[string]string, len(names))
 
+	for _, name := range names {
+		data, err := templateFS.ReadFile("templates/" + name + ".tpl")
+		if err != nil {
+			return nil, fmt.Errorf("failed to load %s template: %w", name, err)
+		}
+		templates[name] = string(data)
+	}
+	return templates, nil
+}
+
+func wrapCRDFile(sourcePath, sourceDir, targetDir string, templates map[string]string, verbose bool) error {
+	filename := filepath.Base(sourcePath)
 	fmt.Printf("Processing: %s\n", filename)
 
-	// Sanitize source path - ensure it's within the expected source directory
-	cleanSourcePath := filepath.Clean(sourcePath)
-	if !strings.HasPrefix(cleanSourcePath, filepath.Clean(cfg.SourceDir)) {
+	// Sanitize path to prevent directory traversal
+	cleanPath := filepath.Clean(sourcePath)
+	if !strings.HasPrefix(cleanPath, filepath.Clean(sourceDir)) {
 		return fmt.Errorf("source path escapes source directory: %s", sourcePath)
 	}
 
-	// Read the source file
-	content, err := os.ReadFile(cleanSourcePath) // #nosec G304 - path is sanitized above
+	content, err := os.ReadFile(cleanPath) // #nosec G304 - path is sanitized above
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
 	}
 
-	// Extract CRD name from the YAML
 	crdName, err := extractCRDName(content)
 	if err != nil {
 		return fmt.Errorf("failed to extract CRD name: %w", err)
 	}
 
-	if cfg.Verbose {
+	if verbose {
 		fmt.Printf("  CRD name: %s\n", crdName)
 	}
 
-	// Get the feature flags for this CRD (if any)
 	featureFlags := getFeatureFlags(crdName)
-	if cfg.Verbose && len(featureFlags) > 0 {
+	if verbose && len(featureFlags) > 0 {
 		fmt.Printf("  Feature flags: %v\n", featureFlags)
 	}
 
-	// Wrap the content with Helm template conditionals
-	wrapped, err := wrapContent(content, crdName, filename, templates, featureFlags)
-	if err != nil {
-		return fmt.Errorf("failed to wrap content: %w", err)
-	}
+	wrapped := wrapContent(content, templates, featureFlags)
 
-	// Write the wrapped content
+	targetPath := filepath.Join(targetDir, filename)
 	if err := os.WriteFile(targetPath, wrapped, 0600); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
@@ -200,50 +148,38 @@ func wrapCRDFile(sourcePath string, cfg Config, templates *Templates) error {
 }
 
 func extractCRDName(content []byte) (string, error) {
-	var crd CRDMetadata
+	var crd struct {
+		Kind     string `yaml:"kind"`
+		Metadata struct {
+			Name string `yaml:"name"`
+		} `yaml:"metadata"`
+	}
+
 	if err := yaml.Unmarshal(content, &crd); err != nil {
 		return "", fmt.Errorf("failed to parse YAML: %w", err)
 	}
-
 	if crd.Kind != "CustomResourceDefinition" {
 		return "", fmt.Errorf("expected CustomResourceDefinition, got %s", crd.Kind)
 	}
-
 	if crd.Metadata.Name == "" {
 		return "", fmt.Errorf("CRD name is empty")
 	}
-
 	return crd.Metadata.Name, nil
 }
 
-// getFeatureFlags returns the Helm values feature flags for a given CRD name.
-// Returns nil if no feature flags are needed (CRD is always installed).
 func getFeatureFlags(crdName string) []string {
-	// CRD names are in format: plural.group (e.g., mcpservers.toolhive.stacklok.dev)
-	// Extract the plural name (before the first dot)
-	parts := strings.SplitN(crdName, ".", 2)
-	if len(parts) == 0 {
-		return nil
+	// CRD names are "plural.group" (e.g., mcpservers.toolhive.stacklok.dev)
+	if idx := strings.Index(crdName, "."); idx > 0 {
+		return crdFeatureFlags[crdName[:idx]]
 	}
-	plural := parts[0]
-
-	// Look up the feature flags for this CRD type
-	if flags, ok := crdFeatureFlags[plural]; ok {
-		return flags
-	}
-
 	return nil
 }
 
-// buildFeatureCondition generates the Helm template conditional for feature flags.
-// Single flag: .Values.crds.install.server
-// Multiple flags: or .Values.crds.install.server .Values.crds.install.virtualMcp
 func buildFeatureCondition(flags []string) string {
 	if len(flags) == 0 {
 		return ""
 	}
 
-	// Build the Values references
 	refs := make([]string, len(flags))
 	for i, f := range flags {
 		refs[i] = ".Values.crds.install." + f
@@ -252,85 +188,64 @@ func buildFeatureCondition(flags []string) string {
 	if len(refs) == 1 {
 		return refs[0]
 	}
-
-	// Multiple flags: use "or" function
 	return "or " + strings.Join(refs, " ")
 }
 
-func wrapContent(content []byte, crdName, filename string, templates *Templates, featureFlags []string) ([]byte, error) {
+func wrapContent(content []byte, templates map[string]string, featureFlags []string) []byte {
 	var buf bytes.Buffer
 
-	// Build header with feature flag conditional
-	header := strings.ReplaceAll(templates.Header, "__FEATURE_CONDITION__", buildFeatureCondition(featureFlags))
-	header = strings.ReplaceAll(header, "__CRD_NAME__", crdName)
-	header = strings.ReplaceAll(header, "__FILENAME__", filename)
+	// Write header with feature flag conditional
+	header := strings.ReplaceAll(templates["header"], "__FEATURE_CONDITION__", buildFeatureCondition(featureFlags))
 	buf.WriteString(header)
 
-	// Process the YAML content line by line to inject the keep annotation
+	// Process YAML content line by line
 	scanner := bufio.NewScanner(bytes.NewReader(content))
-	annotationsWritten := false
-
-	// Check if first line is just "---"
 	skipFirstLine := bytes.HasPrefix(content, []byte("---\n")) || bytes.HasPrefix(content, []byte("---\r\n"))
-
+	annotationsWritten := false
 	lineNum := 0
+
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Text()
 
-		// Skip the first line if it's just "---"
+		// Skip document separator on first line
 		if lineNum == 1 && skipFirstLine && strings.TrimSpace(line) == "---" {
 			continue
 		}
 
-		// Detect the annotations block and inject the keep annotation
+		// Inject keep annotation after annotations: line
 		if strings.TrimSpace(line) == "annotations:" && !annotationsWritten {
 			buf.WriteString(line + "\n")
-			buf.WriteString(templates.KeepAnnotation)
+			buf.WriteString(templates["keep-annotation"])
 			annotationsWritten = true
 			continue
 		}
 
-		// Escape any Go template-like syntax in CRD descriptions to prevent Helm from interpreting them
-		line = escapeTemplateDelimiters(line)
-
-		buf.WriteString(line + "\n")
+		// Escape Go template syntax in CRD descriptions
+		buf.WriteString(escapeTemplateDelimiters(line) + "\n")
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("failed to scan content: %w", err)
-	}
-
-	// Write footer from template
-	buf.WriteString(templates.Footer)
-
-	return buf.Bytes(), nil
+	buf.WriteString(templates["footer"])
+	return buf.Bytes()
 }
 
-// escapeTemplateDelimiters escapes Go/Helm template delimiters in CRD content
-// to prevent Helm from interpreting documentation examples as template directives.
-// Uses Helm's built-in escaping: {{ "{{" }} renders as {{ in output.
+// escapeTemplateDelimiters escapes {{ and }} in CRD content to prevent Helm
+// from interpreting documentation examples as template directives.
 func escapeTemplateDelimiters(line string) string {
-	// Only escape if line contains template-like syntax that isn't our intentional Helm directives
-	// Look for patterns like {{.something}} which are documentation examples
 	if !strings.Contains(line, "{{") {
 		return line
 	}
 
-	// Skip lines that are our intentional Helm template directives (start with {{-)
+	// Skip our intentional Helm directives
 	trimmed := strings.TrimSpace(line)
-	if strings.HasPrefix(trimmed, "{{-") || strings.HasPrefix(trimmed, "{{") && strings.Contains(trimmed, ".Values") {
+	if strings.HasPrefix(trimmed, "{{-") || (strings.HasPrefix(trimmed, "{{") && strings.Contains(trimmed, ".Values")) {
 		return line
 	}
 
-	// Use placeholders to avoid nested replacement issues
-	// First replace complete patterns {{...}} with a placeholder
+	// Escape using Helm's built-in syntax: {{ "{{" }} renders as {{
 	line = strings.ReplaceAll(line, "{{", "\x00OPEN\x00")
 	line = strings.ReplaceAll(line, "}}", "\x00CLOSE\x00")
-
-	// Now replace placeholders with Helm-escaped versions
 	line = strings.ReplaceAll(line, "\x00OPEN\x00", `{{ "{{" }}`)
 	line = strings.ReplaceAll(line, "\x00CLOSE\x00", `{{ "}}" }}`)
-
 	return line
 }

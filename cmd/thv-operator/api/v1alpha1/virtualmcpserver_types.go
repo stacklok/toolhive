@@ -3,8 +3,6 @@ package v1alpha1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-
-	"github.com/stacklok/toolhive/pkg/telemetry"
 )
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
@@ -60,7 +58,7 @@ type VirtualMCPServerSpec struct {
 	// Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
 	// including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint
 	// +optional
-	Telemetry *telemetry.Config `json:"telemetry,omitempty"`
+	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
 }
 
 // GroupRef references an MCPGroup resource

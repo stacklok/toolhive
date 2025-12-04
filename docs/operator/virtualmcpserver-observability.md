@@ -45,7 +45,8 @@ The vMCP creates spans for each individual backend operation as well as workflow
 ## Configuration
 
 Configure telemetry in the `VirtualMCPServer` resource using the `spec.telemetry`
-field:
+field. The telemetry configuration uses the same `TelemetryConfig` type as
+`MCPServer`, providing a consistent configuration experience across resources.
 
 ```yaml
 apiVersion: toolhive.stacklok.dev/v1alpha1
@@ -55,14 +56,21 @@ metadata:
 spec:
   groupRef:
     name: my-group
+  incomingAuth:
+    type: anonymous
   telemetry:
-    endpoint: "otel-collector:4317"
-    serviceName: "my-vmcp"
-    tracingEnabled: true
-    metricsEnabled: true
-    samplingRate: 0.1
-    insecure: true
-    enablePrometheusMetricsPath: true
+    openTelemetry:
+      enabled: true
+      endpoint: "otel-collector:4317"
+      serviceName: "my-vmcp"
+      insecure: true
+      tracing:
+        enabled: true
+        samplingRate: "0.1"
+      metrics:
+        enabled: true
+    prometheus:
+      enabled: true
 ```
 
 See the [VirtualMCPServer API reference](./virtualmcpserver-api.md) for complete

@@ -141,6 +141,7 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			fmt.Sprintf("Failed to discover backends: %v", err),
 			metav1.ConditionFalse,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 	} else {
 		statusManager.SetDiscoveredBackends(discoveredBackends)
 		statusManager.SetCondition(
@@ -149,6 +150,7 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			fmt.Sprintf("Discovered %d backends", len(discoveredBackends)),
 			metav1.ConditionTrue,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 		ctxLogger.Info("Discovered backends", "count", len(discoveredBackends))
 	}
 
@@ -234,6 +236,7 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 			message,
 			metav1.ConditionFalse,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 		return err
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get MCPGroup")
@@ -251,6 +254,7 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 			message,
 			metav1.ConditionFalse,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 		// Requeue to check again later
 		return fmt.Errorf("MCPGroup %s is not ready", vmcp.Spec.GroupRef.Name)
 	}
@@ -261,6 +265,7 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 		fmt.Sprintf("MCPGroup %s is valid and ready", vmcp.Spec.GroupRef.Name),
 		metav1.ConditionTrue,
 	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
 
 	return nil
 }
@@ -298,6 +303,7 @@ func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 			fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
 			metav1.ConditionFalse,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 
 		ctxLogger.Error(err, "PodTemplateSpec validation failed")
 		return false
@@ -310,6 +316,7 @@ func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 		"PodTemplateSpec is valid",
 		metav1.ConditionTrue,
 	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
 
 	return true
 }
@@ -332,6 +339,7 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 			fmt.Sprintf("Authentication configuration is invalid: %v", err),
 			metav1.ConditionFalse,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 		// Record event for secret validation failure
 		if r.Recorder != nil {
 			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "SecretValidationFailed",
@@ -346,6 +354,7 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 		"Authentication configuration is valid",
 		metav1.ConditionTrue,
 	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
 
 	// List workloads once and pass to functions that need them
 	// This ensures consistency - all functions use the same workload list

@@ -204,7 +204,7 @@ func New(
 	// backend calls are instrumented when they occur during workflow execution.
 	if cfg.TelemetryProvider != nil {
 		var err error
-		backendClient, err = monitorBackends(context.Background(), cfg.TelemetryProvider.MeterProvider(), backends, backendClient)
+		backendClient, err = monitorBackends(context.Background(), cfg.TelemetryProvider.MeterProvider(), cfg.TelemetryProvider.TracerProvider(), backends, backendClient)
 		if err != nil {
 			return nil, fmt.Errorf("failed to monitor backends: %w", err)
 		}
@@ -224,7 +224,7 @@ func New(
 
 	// Decorate workflow executors with telemetry if provider is configured
 	if cfg.TelemetryProvider != nil {
-		workflowExecutors, err = monitorWorkflowExecutors(cfg.TelemetryProvider.MeterProvider(), workflowExecutors)
+		workflowExecutors, err = monitorWorkflowExecutors(cfg.TelemetryProvider.MeterProvider(), cfg.TelemetryProvider.TracerProvider(), workflowExecutors)
 		if err != nil {
 			return nil, fmt.Errorf("failed to monitor workflow executors: %w", err)
 		}

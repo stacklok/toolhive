@@ -704,7 +704,7 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	if r.podTemplateSpecNeedsUpdate(ctx, deployment, vmcp) {
+	if r.podTemplateSpecNeedsUpdate(ctx, deployment, vmcp, workloadNames) {
 		return true
 	}
 
@@ -816,6 +816,7 @@ func (r *VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	workloadNames []string,
 ) bool {
 	if deployment == nil || vmcp == nil {
 		return true
@@ -834,7 +835,7 @@ func (r *VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 	}
 
 	// Generate a fresh deployment with PodTemplateSpec applied
-	expectedDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum)
+	expectedDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, workloadNames)
 	if expectedDeployment == nil {
 		// If we can't generate expected deployment, assume update is needed
 		return true

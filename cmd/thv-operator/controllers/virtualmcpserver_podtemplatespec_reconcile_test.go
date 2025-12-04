@@ -89,8 +89,8 @@ func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 	}
 
 	// Generate deployment twice with same input
-	dep1 := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum")
-	dep2 := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum")
+	dep1 := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []string{})
+	dep2 := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []string{})
 
 	// Both should be non-nil
 	assert.NotNil(t, dep1, "First deployment should not be nil")
@@ -219,7 +219,7 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 			}
 
 			// Generate existing deployment using the reconciler (this ensures we have a real deployment structure)
-			existingDeployment := reconciler.deploymentForVirtualMCPServer(context.Background(), initialVmcp, "test-checksum")
+			existingDeployment := reconciler.deploymentForVirtualMCPServer(context.Background(), initialVmcp, "test-checksum", []string{})
 			assert.NotNil(t, existingDeployment, "Should generate existing deployment")
 
 			// Create VirtualMCPServer with new PodTemplateSpec
@@ -237,7 +237,7 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 			}
 
 			// Check if update is needed
-			needsUpdate := reconciler.podTemplateSpecNeedsUpdate(context.Background(), existingDeployment, newVmcp)
+			needsUpdate := reconciler.podTemplateSpecNeedsUpdate(context.Background(), existingDeployment, newVmcp, []string{})
 			assert.Equal(t, tt.expectUpdate, needsUpdate,
 				"PodTemplateSpec update detection should match expected value")
 		})

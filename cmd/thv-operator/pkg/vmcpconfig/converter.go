@@ -381,8 +381,8 @@ func (c *Converter) convertReferencedCompositeTools(
 
 		if err := c.k8sClient.Get(ctx, key, compositeToolDef); err != nil {
 			if errors.IsNotFound(err) {
-				return nil, fmt.Errorf("referenced VirtualMCPCompositeToolDefinition %q not found in namespace %q",
-					ref.Name, vmcp.Namespace)
+				return nil, fmt.Errorf("referenced VirtualMCPCompositeToolDefinition %q not found in namespace %q: %w",
+					ref.Name, vmcp.Namespace, err)
 			}
 			return nil, fmt.Errorf("failed to get VirtualMCPCompositeToolDefinition %q: %w", ref.Name, err)
 		}

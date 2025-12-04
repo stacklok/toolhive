@@ -486,6 +486,9 @@ const (
 
 	// ConditionTypeVirtualMCPServerGroupRefValidated indicates whether the GroupRef is valid
 	ConditionTypeVirtualMCPServerGroupRefValidated = "GroupRefValidated"
+
+	// ConditionTypeCompositeToolRefsValidated indicates whether the CompositeToolRefs are valid
+	ConditionTypeCompositeToolRefsValidated = "CompositeToolRefsValidated"
 )
 
 // Condition reasons for VirtualMCPServer
@@ -504,6 +507,12 @@ const (
 
 	// ConditionReasonGroupRefNotReady indicates the referenced MCPGroup is not ready
 	ConditionReasonVirtualMCPServerGroupRefNotReady = "GroupRefNotReady"
+
+	// ConditionReasonCompositeToolRefsValid indicates the CompositeToolRefs are valid
+	ConditionReasonCompositeToolRefsValid = "CompositeToolRefsValid"
+
+	// ConditionReasonCompositeToolRefNotFound indicates a referenced VirtualMCPCompositeToolDefinition was not found
+	ConditionReasonCompositeToolRefNotFound = "CompositeToolRefNotFound"
 )
 
 // Backend authentication types

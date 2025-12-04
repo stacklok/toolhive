@@ -119,6 +119,15 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
+	// Validate CompositeToolRefs
+	if err := r.validateCompositeToolRefs(ctx, vmcp, statusManager); err != nil {
+		// Apply status changes before returning error
+		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+			ctxLogger.Error(err, "Failed to apply status updates after CompositeToolRefs validation error")
+		}
+		return ctrl.Result{}, err
+	}
+
 	// Ensure all resources
 	if err := r.ensureAllResources(ctx, vmcp, statusManager); err != nil {
 		// Apply status changes before returning error
@@ -257,6 +266,59 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 	statusManager.SetGroupRefValidatedCondition(
 		mcpv1alpha1.ConditionReasonVirtualMCPServerGroupRefValid,
 		fmt.Sprintf("MCPGroup %s is valid and ready", vmcp.Spec.GroupRef.Name),
+		metav1.ConditionTrue,
+	)
+
+	return nil
+}
+
+// validateCompositeToolRefs validates that all referenced VirtualMCPCompositeToolDefinition resources exist
+func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// If no composite tool refs, nothing to validate
+	if len(vmcp.Spec.CompositeToolRefs) == 0 {
+		// Set condition to indicate validation passed (no refs to validate)
+		statusManager.SetCompositeToolRefsValidatedCondition(
+			mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
+			"No composite tool references to validate",
+			metav1.ConditionTrue,
+		)
+		return nil
+	}
+
+	// Validate each referenced composite tool definition exists
+	for _, ref := range vmcp.Spec.CompositeToolRefs {
+		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
+		err := r.Get(ctx, types.NamespacedName{
+			Name:      ref.Name,
+			Namespace: vmcp.Namespace,
+		}, compositeToolDef)
+
+		if errors.IsNotFound(err) {
+			message := fmt.Sprintf("Referenced VirtualMCPCompositeToolDefinition %s not found", ref.Name)
+			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetCompositeToolRefsValidatedCondition(
+				mcpv1alpha1.ConditionReasonCompositeToolRefNotFound,
+				message,
+				metav1.ConditionFalse,
+			)
+			return err
+		} else if err != nil {
+			ctxLogger.Error(err, "Failed to get VirtualMCPCompositeToolDefinition", "name", ref.Name)
+			return err
+		}
+	}
+
+	// All composite tool refs are valid
+	statusManager.SetCompositeToolRefsValidatedCondition(
+		mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
+		fmt.Sprintf("All %d composite tool references are valid", len(vmcp.Spec.CompositeToolRefs)),
 		metav1.ConditionTrue,
 	)
 

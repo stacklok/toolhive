@@ -159,14 +159,24 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		ctxLogger.Info("Discovered backends", "count", len(discoveredBackends))
 	}
 
-	// Update status based on pod health
-	if err := r.updateVirtualMCPServerStatus(ctx, vmcp, statusManager); err != nil {
+	// Fetch the latest version before updating status to ensure we use the current Generation
+	latestVMCP := &mcpv1alpha1.VirtualMCPServer{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      vmcp.Name,
+		Namespace: vmcp.Namespace,
+	}, latestVMCP); err != nil {
+		ctxLogger.Error(err, "Failed to get latest VirtualMCPServer before status update")
+		return ctrl.Result{}, err
+	}
+
+	// Update status based on pod health using the latest Generation
+	if err := r.updateVirtualMCPServerStatus(ctx, latestVMCP, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to update VirtualMCPServer status")
 		return ctrl.Result{}, err
 	}
 
 	// Apply all collected status changes in a single batch update
-	if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+	if err := r.applyStatusUpdates(ctx, latestVMCP, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to apply final status updates")
 		return ctrl.Result{}, err
 	}

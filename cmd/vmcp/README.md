@@ -14,6 +14,7 @@ The Virtual MCP Server (vmcp) is a standalone binary that aggregates multiple MC
 - ✅ **Session Management**: MCP protocol session tracking with TTL-based cleanup
 - ✅ **Health Endpoints**: `/health` and `/ping` for service monitoring
 - ✅ **Configuration Validation**: `vmcp validate` command for config verification
+- ✅ **Observability**: OpenTelemetry metrics and traces for backend operations and workflow executions
 
 ### In Progress
 - 🚧 **Incoming Authentication** (Issue #165): OIDC, local, anonymous authentication
@@ -121,6 +122,7 @@ vmcp uses a YAML configuration file to define:
 3. **Outgoing Authentication**: Virtual MCP → Backend API token exchange
 4. **Tool Aggregation**: Conflict resolution and filtering strategies
 5. **Operational Settings**: Timeouts, health checks, circuit breakers
+6. **Telemetry**: OpenTelemetry metrics/tracing and Prometheus endpoint
 
 See [examples/vmcp-config.yaml](../../examples/vmcp-config.yaml) for a complete example.
 

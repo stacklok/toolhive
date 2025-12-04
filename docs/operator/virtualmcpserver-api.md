@@ -290,6 +290,40 @@ spec:
               cpu: "1000m"
 ```
 
+### `.spec.telemetry` (optional)
+
+Configures OpenTelemetry-based observability for the Virtual MCP server, including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint.
+
+**Type**: `telemetry.Config`
+
+**Fields**:
+- `endpoint` (string): OTLP collector endpoint (host:port format)
+- `serviceName` (string): Service name for telemetry
+- `serviceVersion` (string): Service version for telemetry
+- `tracingEnabled` (boolean): Enable distributed tracing
+- `metricsEnabled` (boolean): Enable OTLP metrics export
+- `samplingRate` (float64): Trace sampling rate (0.0-1.0)
+- `headers` (map[string]string): Authentication headers for OTLP endpoint
+- `insecure` (boolean): Use HTTP instead of HTTPS
+- `enablePrometheusMetricsPath` (boolean): Expose Prometheus /metrics endpoint
+- `environmentVariables` ([]string): Environment variable names to include as span attributes
+- `customAttributes` (map[string]string): Custom resource attributes for all telemetry signals
+
+**Example**:
+```yaml
+spec:
+  telemetry:
+    endpoint: "otel-collector:4317"
+    serviceName: "my-vmcp"
+    tracingEnabled: true
+    metricsEnabled: true
+    samplingRate: 0.1
+    insecure: true
+    enablePrometheusMetricsPath: true
+```
+
+For details on what metrics and traces are emitted, see the [Virtual MCP Server Observability](./virtualmcpserver-observability.md) documentation.
+
 ## Status Fields
 
 ### `.status.conditions`
@@ -451,6 +485,14 @@ spec:
         failureThreshold: 5
         timeout: 60s
 
+  # Observability
+  telemetry:
+    endpoint: "otel-collector:4317"
+    tracingEnabled: true
+    metricsEnabled: true
+    samplingRate: 0.1
+    enablePrometheusMetricsPath: true
+
 status:
   phase: Ready
   message: "Virtual MCP serving 3 backends with 15 tools"
@@ -518,4 +560,5 @@ The VirtualMCPServer CRD includes comprehensive validation:
 - [MCPServer](./mcpserver-api.md): Individual MCP server instances
 - [MCPExternalAuthConfig](./mcpexternalauthconfig-api.md): External authentication configuration
 - [MCPToolConfig](./toolconfig-api.md): Tool filtering and renaming configuration
+- [Virtual MCP Server Observability](./virtualmcpserver-observability.md): Telemetry and metrics documentation
 - [Virtual MCP Proposal](../proposals/THV-2106-virtual-mcp-server.md): Complete design proposal

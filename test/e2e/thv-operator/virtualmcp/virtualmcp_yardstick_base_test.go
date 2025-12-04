@@ -10,6 +10,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -242,6 +243,153 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(vmcpServer.Status.Phase).To(Equal(mcpv1alpha1.VirtualMCPServerPhaseReady))
+		})
+
+		It("should reflect backend health changes in status", func() {
+			By("Verifying VirtualMCPServer initially has 2 backends")
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			}, vmcpServer)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(vmcpServer.Status.Phase).To(Equal(mcpv1alpha1.VirtualMCPServerPhaseReady))
+			Expect(vmcpServer.Status.BackendCount).To(Equal(2))
+			Expect(vmcpServer.Status.DiscoveredBackends).To(HaveLen(2))
+
+			By("Updating backend to use invalid image to make it unhealthy")
+			// Update yardstick-a to use a non-existent image, causing ImagePullBackOff
+			Eventually(func() error {
+				backend := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      backend1Name,
+					Namespace: testNamespace,
+				}, backend)
+				if err != nil {
+					return err
+				}
+				backend.Spec.Image = "non-existent-image:invalid"
+				return k8sClient.Update(ctx, backend)
+			}, timeout, pollingInterval).Should(Succeed())
+			By("Waiting for MCPServer to transition to Pending state (proxy not ready)")
+			Eventually(func() mcpv1alpha1.MCPServerPhase {
+				backend := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      backend1Name,
+					Namespace: testNamespace,
+				}, backend)
+				if err != nil {
+					return ""
+				}
+				return backend.Status.Phase
+			}, timeout, pollingInterval).Should(Equal(mcpv1alpha1.MCPServerPhasePending),
+				"MCPServer should be Pending when backend container has image pull issues but proxy is still running")
+
+			By("Waiting for VirtualMCPServer to transition to Degraded phase")
+			Eventually(func() mcpv1alpha1.VirtualMCPServerPhase {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				}, vmcpServer)
+				if err != nil {
+					return ""
+				}
+				return vmcpServer.Status.Phase
+			}, timeout, pollingInterval).Should(Equal(mcpv1alpha1.VirtualMCPServerPhaseDegraded),
+				"VirtualMCPServer should enter Degraded phase when a backend is unavailable")
+
+			By("Verifying backend count reflects one ready backend")
+			// Re-fetch VirtualMCPServer to ensure we have the latest status
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			}, vmcpServer)).To(Succeed(), "Should be able to fetch VirtualMCPServer")
+			Expect(vmcpServer.Status.BackendCount).To(Equal(1), "Should have 1 ready backend")
+
+			By("Verifying discovered backends list shows one unavailable backend")
+			Expect(vmcpServer.Status.DiscoveredBackends).To(HaveLen(2), "Should track both backends")
+
+			// Check that one backend is unavailable and one is ready
+			backendStatuses := make(map[string]string)
+			for _, backend := range vmcpServer.Status.DiscoveredBackends {
+				backendStatuses[backend.Name] = backend.Status
+			}
+			Expect(backendStatuses[backend1Name]).To(Equal(mcpv1alpha1.BackendStatusUnavailable))
+			Expect(backendStatuses[backend2Name]).To(Equal(mcpv1alpha1.BackendStatusReady))
+
+			By("Restoring backend to use valid image")
+			// Restore yardstick-a's image back to the valid YardstickImage
+			Eventually(func() error {
+				backend := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      backend1Name,
+					Namespace: testNamespace,
+				}, backend)
+				if err != nil {
+					return err
+				}
+				backend.Spec.Image = images.YardstickServerImage
+				return k8sClient.Update(ctx, backend)
+			}, timeout, pollingInterval).Should(Succeed())
+			By("Deleting the Deployment pod to force immediate recreation with new image")
+			// Manually delete the pod to force immediate recreation rather than waiting
+			// for the normal rolling update process, which speeds up the E2E test
+			podToDelete := &corev1.Pod{}
+			Eventually(func() error {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      backend1Name + "-0", // Pod name pattern
+					Namespace: testNamespace,
+				}, podToDelete)
+				if err != nil {
+					return err
+				}
+				return k8sClient.Delete(ctx, podToDelete)
+			}, timeout, pollingInterval).Should(Succeed())
+
+			By("Waiting for backend to be Running again")
+			Eventually(func() error {
+				server := &mcpv1alpha1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      backend1Name,
+					Namespace: testNamespace,
+				}, server)
+				if err != nil {
+					return fmt.Errorf("failed to get server: %w", err)
+				}
+				if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
+					return nil
+				}
+				return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
+			}, timeout, pollingInterval).Should(Succeed())
+
+			By("Waiting for VirtualMCPServer to return to Ready phase")
+			Eventually(func() mcpv1alpha1.VirtualMCPServerPhase {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      vmcpServerName,
+					Namespace: testNamespace,
+				}, vmcpServer)
+				if err != nil {
+					return ""
+				}
+				return vmcpServer.Status.Phase
+			}, timeout, pollingInterval).Should(Equal(mcpv1alpha1.VirtualMCPServerPhaseReady),
+				"VirtualMCPServer should return to Ready phase when all backends are restored")
+
+			By("Verifying both backends are ready")
+			// Re-fetch VirtualMCPServer to ensure we have the latest status
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			}, vmcpServer)).To(Succeed(), "Should be able to fetch VirtualMCPServer")
+			Expect(vmcpServer.Status.BackendCount).To(Equal(2), "Should have 2 ready backends")
+			Expect(vmcpServer.Status.DiscoveredBackends).To(HaveLen(2), "Should track both backends")
+
+			restoredBackendStatuses := make(map[string]string)
+			for _, backend := range vmcpServer.Status.DiscoveredBackends {
+				restoredBackendStatuses[backend.Name] = backend.Status
+			}
+			Expect(restoredBackendStatuses[backend1Name]).To(Equal(mcpv1alpha1.BackendStatusReady))
+			Expect(restoredBackendStatuses[backend2Name]).To(Equal(mcpv1alpha1.BackendStatusReady))
 		})
 	})
 

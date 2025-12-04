@@ -576,7 +576,7 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 		expectedPhase mcpv1alpha1.VirtualMCPServerPhase
 	}{
 		{
-			name: "running pods",
+			name: "ready pods",
 			vmcp: &mcpv1alpha1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testVmcpName,
@@ -592,10 +592,45 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 					},
 					Status: corev1.PodStatus{
 						Phase: corev1.PodRunning,
+						Conditions: []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionTrue,
+							},
+						},
 					},
 				},
 			},
 			expectedPhase: mcpv1alpha1.VirtualMCPServerPhaseReady,
+		},
+		{
+			name: "running but not ready pods",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testVmcpName,
+					Namespace: "default",
+				},
+			},
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      testVmcpName + "-pod-1",
+						Namespace: "default",
+						Labels:    labelsForVirtualMCPServer(testVmcpName),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						// No PodReady condition or PodReady=False means pod isn't ready yet
+						Conditions: []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionFalse,
+							},
+						},
+					},
+				},
+			},
+			expectedPhase: mcpv1alpha1.VirtualMCPServerPhasePending,
 		},
 		{
 			name: "pending pods",

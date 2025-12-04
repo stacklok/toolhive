@@ -40,6 +40,20 @@ func (m *MockProvider) EXPECT() *MockProviderMockRecorder {
 	return m.recorder
 }
 
+// GetAllBuildAuthFiles mocks base method.
+func (m *MockProvider) GetAllBuildAuthFiles() map[string]string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetAllBuildAuthFiles")
+	ret0, _ := ret[0].(map[string]string)
+	return ret0
+}
+
+// GetAllBuildAuthFiles indicates an expected call of GetAllBuildAuthFiles.
+func (mr *MockProviderMockRecorder) GetAllBuildAuthFiles() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllBuildAuthFiles", reflect.TypeOf((*MockProvider)(nil).GetAllBuildAuthFiles))
+}
+
 // GetAllBuildEnv mocks base method.
 func (m *MockProvider) GetAllBuildEnv() map[string]string {
 	m.ctrl.T.Helper()
@@ -80,6 +94,21 @@ func (m *MockProvider) GetAllBuildEnvFromShell() []string {
 func (mr *MockProviderMockRecorder) GetAllBuildEnvFromShell() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllBuildEnvFromShell", reflect.TypeOf((*MockProvider)(nil).GetAllBuildEnvFromShell))
+}
+
+// GetBuildAuthFile mocks base method.
+func (m *MockProvider) GetBuildAuthFile(name string) (string, bool) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetBuildAuthFile", name)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(bool)
+	return ret0, ret1
+}
+
+// GetBuildAuthFile indicates an expected call of GetBuildAuthFile.
+func (mr *MockProviderMockRecorder) GetBuildAuthFile(name any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetBuildAuthFile", reflect.TypeOf((*MockProvider)(nil).GetBuildAuthFile), name)
 }
 
 // GetBuildEnv mocks base method.
@@ -188,6 +217,20 @@ func (mr *MockProviderMockRecorder) LoadOrCreateConfig() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadOrCreateConfig", reflect.TypeOf((*MockProvider)(nil).LoadOrCreateConfig))
 }
 
+// SetBuildAuthFile mocks base method.
+func (m *MockProvider) SetBuildAuthFile(name, content string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetBuildAuthFile", name, content)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetBuildAuthFile indicates an expected call of SetBuildAuthFile.
+func (mr *MockProviderMockRecorder) SetBuildAuthFile(name, content any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetBuildAuthFile", reflect.TypeOf((*MockProvider)(nil).SetBuildAuthFile), name, content)
+}
+
 // SetBuildEnv mocks base method.
 func (m *MockProvider) SetBuildEnv(key, value string) error {
 	m.ctrl.T.Helper()
@@ -286,6 +329,20 @@ func (mr *MockProviderMockRecorder) SetRegistryURL(registryURL, allowPrivateRegi
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetRegistryURL", reflect.TypeOf((*MockProvider)(nil).SetRegistryURL), registryURL, allowPrivateRegistryIp)
 }
 
+// UnsetAllBuildAuthFiles mocks base method.
+func (m *MockProvider) UnsetAllBuildAuthFiles() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UnsetAllBuildAuthFiles")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UnsetAllBuildAuthFiles indicates an expected call of UnsetAllBuildAuthFiles.
+func (mr *MockProviderMockRecorder) UnsetAllBuildAuthFiles() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnsetAllBuildAuthFiles", reflect.TypeOf((*MockProvider)(nil).UnsetAllBuildAuthFiles))
+}
+
 // UnsetAllBuildEnv mocks base method.
 func (m *MockProvider) UnsetAllBuildEnv() error {
 	m.ctrl.T.Helper()
@@ -298,6 +355,20 @@ func (m *MockProvider) UnsetAllBuildEnv() error {
 func (mr *MockProviderMockRecorder) UnsetAllBuildEnv() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnsetAllBuildEnv", reflect.TypeOf((*MockProvider)(nil).UnsetAllBuildEnv))
+}
+
+// UnsetBuildAuthFile mocks base method.
+func (m *MockProvider) UnsetBuildAuthFile(name string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UnsetBuildAuthFile", name)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UnsetBuildAuthFile indicates an expected call of UnsetBuildAuthFile.
+func (mr *MockProviderMockRecorder) UnsetBuildAuthFile(name any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnsetBuildAuthFile", reflect.TypeOf((*MockProvider)(nil).UnsetBuildAuthFile), name)
 }
 
 // UnsetBuildEnv mocks base method.

@@ -36,6 +36,11 @@ ENV NODE_ENV=production \
 # Set working directory for package installation
 WORKDIR /build
 
+{{if index .BuildAuthFiles "npmrc"}}
+# Copy npmrc for registry authentication (build stage only)
+COPY .npmrc /root/.npmrc
+{{end}}
+
 {{if .IsLocalPath}}
 # Copy the local source code
 COPY . /build/

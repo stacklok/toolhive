@@ -130,6 +130,9 @@ func createTemplateData(
 		return templateData, err
 	}
 
+	// Load build auth files from configuration
+	addBuildAuthFilesToTemplate(&templateData)
+
 	return templateData, nil
 }
 
@@ -177,6 +180,17 @@ func addBuildEnvToTemplate(templateData *templates.TemplateData) error {
 	}
 
 	return nil
+}
+
+// addBuildAuthFilesToTemplate loads build auth files from config and adds them to template data.
+func addBuildAuthFilesToTemplate(templateData *templates.TemplateData) {
+	provider := config.NewProvider()
+	authFiles := provider.GetAllBuildAuthFiles()
+
+	if len(authFiles) > 0 {
+		templateData.BuildAuthFiles = authFiles
+		logger.Debugf("Loaded %d build auth file(s)", len(authFiles))
+	}
 }
 
 // resolveSecretsForBuildEnv resolves secret references to their actual values.
@@ -375,6 +389,55 @@ func writeCACertificate(buildContextDir, caCertContent string, isLocalPath bool)
 	return cleanupFunc, nil
 }
 
+// writeAuthFiles writes auth files to the build context.
+// Returns a cleanup function to remove the files after build.
+func writeAuthFiles(buildContextDir string, authFiles map[string]string, isLocalPath bool) (func(), error) {
+	if len(authFiles) == 0 {
+		return func() {}, nil
+	}
+
+	// Map of auth file types to their filenames in the build context
+	authFileNames := map[string]string{
+		"npmrc":  ".npmrc",
+		"netrc":  ".netrc",
+		"yarnrc": ".yarnrc",
+	}
+
+	var writtenFiles []string
+	for fileType, content := range authFiles {
+		filename, ok := authFileNames[fileType]
+		if !ok {
+			continue
+		}
+
+		filePath := filepath.Join(buildContextDir, filename)
+		if err := os.WriteFile(filePath, []byte(content), 0600); err != nil {
+			// Clean up any files we've written so far
+			for _, f := range writtenFiles {
+				_ = os.Remove(f)
+			}
+			return nil, fmt.Errorf("failed to write auth file %s: %w", filename, err)
+		}
+		writtenFiles = append(writtenFiles, filePath)
+		logger.Debugf("Added auth file to build context: %s", filePath)
+	}
+
+	var cleanupFunc func()
+	if isLocalPath {
+		cleanupFunc = func() {
+			for _, f := range writtenFiles {
+				if err := os.Remove(f); err != nil {
+					logger.Debugf("Failed to remove temporary auth file %s: %v", f, err)
+				}
+			}
+		}
+	} else {
+		cleanupFunc = func() {}
+	}
+
+	return cleanupFunc, nil
+}
+
 // generateImageName generates a unique Docker image name based on the package and transport type.
 func generateImageName(transportType templates.TransportType, packageName string) string {
 	tag := time.Now().Format("20060102150405")
@@ -419,6 +482,13 @@ func buildImageFromTemplateWithName(
 		return "", err
 	}
 	defer caCertCleanup()
+
+	// Write auth files if provided
+	authFilesCleanup, err := writeAuthFiles(buildCtx.Dir, templateData.BuildAuthFiles, templateData.IsLocalPath)
+	if err != nil {
+		return "", err
+	}
+	defer authFilesCleanup()
 
 	// Use provided image name or generate one
 	finalImageName := imageName

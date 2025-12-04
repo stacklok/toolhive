@@ -40,6 +40,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Set working directory for package installation
 WORKDIR /build
 
+{{if index .BuildAuthFiles "netrc"}}
+# Copy netrc for registry authentication (build stage only)
+COPY .netrc /root/.netrc
+RUN chmod 600 /root/.netrc
+{{end}}
+
 {{if .IsLocalPath}}
 # Copy the local source code
 COPY . /build/

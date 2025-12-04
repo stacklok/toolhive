@@ -81,6 +81,12 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
 
+
+
+var (
+    envVarSanitizeRegex = regexp.MustCompile(`[^A-Z0-9_]`)
+)
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -957,7 +963,6 @@ func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 	return strategy, nil
 }
 
-var envVarSanitizeRegex = regexp.MustCompile(`[^A-Z0-9_]`)
 // generateUniqueTokenExchangeEnvVarName generates a unique environment variable name for token exchange
 // client secrets, incorporating the ExternalAuthConfig name to ensure uniqueness.
 func generateUniqueTokenExchangeEnvVarName(configName string) string {

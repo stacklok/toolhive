@@ -342,8 +342,6 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 	return nil
 }
 
-// validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and updates the VirtualMCPServer status
-// with appropriate conditions and events. Returns true if validation passes, false otherwise.
 // validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and uses StatusManager to collect
 // status changes. Returns true if validation passes, false otherwise.
 // The caller is responsible for applying status updates via applyStatusUpdates().

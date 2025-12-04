@@ -358,7 +358,7 @@ func (c *Converter) convertAllCompositeTools(
 
 	// Validate for duplicate names
 	if err := validateCompositeToolNames(allTools); err != nil {
-		return nil, fmt.Errorf("duplicate composite tool names: %w", err)
+		return nil, fmt.Errorf("invalid composite tools: %w", err)
 	}
 
 	return allTools, nil

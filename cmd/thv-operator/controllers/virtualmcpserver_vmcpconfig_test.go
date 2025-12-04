@@ -50,11 +50,10 @@ func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
 // newTestConverter creates a Converter with the given resolver, failing the test if creation fails.
 func newTestConverter(t *testing.T, resolver *oidcmocks.MockResolver) *vmcpconfig.Converter {
 	t.Helper()
+	// Create a fake k8s client for testing
 	scheme := runtime.NewScheme()
 	_ = mcpv1alpha1.AddToScheme(scheme)
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		Build()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	converter, err := vmcpconfig.NewConverter(resolver, fakeClient)
 	require.NoError(t, err)
 	return converter

@@ -13,7 +13,6 @@ import (
 	"go.uber.org/mock/gomock"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -39,14 +38,19 @@ func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
 	return mockResolver
 }
 
+// newTestK8sClient creates a fake Kubernetes client for testing.
+func newTestK8sClient(t *testing.T, objects ...client.Object) client.Client {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+}
+
 // newTestConverter creates a Converter with the given resolver, failing the test if creation fails.
 func newTestConverter(t *testing.T, resolver oidc.Resolver) *Converter {
 	t.Helper()
-	testScheme := createTestScheme()
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(testScheme).
-		Build()
-	converter, err := NewConverter(resolver, fakeClient)
+	k8sClient := newTestK8sClient(t)
+	converter, err := NewConverter(resolver, k8sClient)
 	require.NoError(t, err)
 	return converter
 }
@@ -1070,7 +1074,6 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 // createTestScheme creates a test scheme with required types
 func createTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
-	_ = scheme.AddToScheme(s)
 	_ = mcpv1alpha1.AddToScheme(s)
 	return s
 }

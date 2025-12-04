@@ -90,19 +90,44 @@ subsequently.
 
 ### Secret Handling
 
-For backend authentication, secrets need to be fetched and made available to
-the vMCP server. Currently, secrets are not embedded in ConfigMaps. Instead,
-the operator mounts Kubernetes Secrets as environment variables in the vMCP
-pod, and the ConfigMap only contains references to those environment variable
-names. This is the standard Kubernetes pattern for secret handling.
+For backend authentication, secrets are fetched directly by vMCP via the K8s
+API when resolving ExternalAuthConfig references.
 
-With the move to vMCP-side discovery, vMCP will fetch secrets directly via the
-K8s API when resolving ExternalAuthConfig references. The recommendation is to
-fetch at discovery time with refresh via Secret informer. When a Secret
-changes, the informer notifies vMCP which re-resolves auth for affected
-backends. This provides a fast request path while handling secret rotation
-automatically. The existing code in `pkg/vmcp/workloads/k8s.go` already
-follows this pattern.
+**Security boundary: same-namespace only**
+
+This approach is secure because secret access is constrained to the vMCP's own
+namespace through two mechanisms:
+
+1. **RBAC scoping**: The operator creates a namespace-scoped `Role` (not
+   `ClusterRole`) with `get`, `list`, `watch` permissions on secrets. The
+   `RoleBinding` binds this to the vMCP's `ServiceAccount` in the same
+   namespace. vMCP cannot access secrets in other namespaces.
+
+2. **API design**: The `SecretKeyRef` type used by `MCPExternalAuthConfig` has
+   no `Namespace` field - only `Name` and `Key`. Secret lookups always use the
+   parent resource's namespace, preventing cross-namespace references at the
+   schema level.
+
+**Secret change propagation**
+
+Secret changes are handled using the `Watches()` pattern with mapping
+functions, which is the idiomatic controller-runtime approach:
+
+```go
+Watches(
+    &corev1.Secret{},
+    handler.EnqueueRequestsFromMapFunc(w.secretToMCPServers),
+)
+```
+
+When a Secret changes, the mapping function finds MCPServers that reference it
+(via their ExternalAuthConfig) and enqueues reconcile requests. The reconciler
+then re-fetches the secret and updates the backend's auth configuration. This
+provides automatic secret rotation without pod restarts.
+
+The existing RBAC rules in `virtualmcpserver_deployment.go` already grant the
+necessary permissions, and `pkg/vmcp/workloads/k8s.go` demonstrates the
+discovery pattern.
 
 ### Dynamic Registry
 

@@ -38,15 +38,24 @@ func monitorBackends(
 	}
 	backendCount.Record(ctx, int64(len(backends)))
 
-	requestsTotal, err := meter.Int64Counter("toolhive_vmcp_backend_requests_total", metric.WithDescription("Total number of requests per backend"))
+	requestsTotal, err := meter.Int64Counter(
+		"toolhive_vmcp_backend_requests_total",
+		metric.WithDescription("Total number of requests per backend"),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create requests total counter: %w", err)
 	}
-	errorsTotal, err := meter.Int64Counter("toolhive_vmcp_backend_errors_total", metric.WithDescription("Total number of errors per backend"))
+	errorsTotal, err := meter.Int64Counter(
+		"toolhive_vmcp_backend_errors_total",
+		metric.WithDescription("Total number of errors per backend"),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create errors total counter: %w", err)
 	}
-	requestsDuration, err := meter.Float64Histogram("toolhive_vmcp_backend_requests_duration", metric.WithDescription("Duration of requests in seconds per backend"))
+	requestsDuration, err := meter.Float64Histogram(
+		"toolhive_vmcp_backend_requests_duration",
+		metric.WithDescription("Duration of requests in seconds per backend"),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create requests duration histogram: %w", err)
 	}
@@ -73,7 +82,9 @@ var _ vmcp.BackendClient = telemetryBackendClient{}
 
 // record updates the metrics and creates a span for each method on the BackendClient interface.
 // It returns a function that should be deferred to record the duration, error, and end the span.
-func (t telemetryBackendClient) record(ctx context.Context, target *vmcp.BackendTarget, action string, err *error) (context.Context, func()) {
+func (t telemetryBackendClient) record(
+	ctx context.Context, target *vmcp.BackendTarget, action string, err *error,
+) (context.Context, func()) {
 	// Create span attributes
 	commonAttrs := []attribute.KeyValue{
 		attribute.String("target.workload_id", target.WorkloadID),
@@ -104,25 +115,33 @@ func (t telemetryBackendClient) record(ctx context.Context, target *vmcp.Backend
 	}
 }
 
-func (t telemetryBackendClient) CallTool(ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments map[string]any) (_ map[string]any, retErr error) {
+func (t telemetryBackendClient) CallTool(
+	ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments map[string]any,
+) (_ map[string]any, retErr error) {
 	ctx, done := t.record(ctx, target, "call_tool", &retErr)
 	defer done()
 	return t.backendClient.CallTool(ctx, target, toolName, arguments)
 }
 
-func (t telemetryBackendClient) ReadResource(ctx context.Context, target *vmcp.BackendTarget, uri string) (_ []byte, retErr error) {
+func (t telemetryBackendClient) ReadResource(
+	ctx context.Context, target *vmcp.BackendTarget, uri string,
+) (_ []byte, retErr error) {
 	ctx, done := t.record(ctx, target, "read_resource", &retErr)
 	defer done()
 	return t.backendClient.ReadResource(ctx, target, uri)
 }
 
-func (t telemetryBackendClient) GetPrompt(ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any) (_ string, retErr error) {
+func (t telemetryBackendClient) GetPrompt(
+	ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any,
+) (_ string, retErr error) {
 	ctx, done := t.record(ctx, target, "get_prompt", &retErr)
 	defer done()
 	return t.backendClient.GetPrompt(ctx, target, name, arguments)
 }
 
-func (t telemetryBackendClient) ListCapabilities(ctx context.Context, target *vmcp.BackendTarget) (_ *vmcp.CapabilityList, retErr error) {
+func (t telemetryBackendClient) ListCapabilities(
+	ctx context.Context, target *vmcp.BackendTarget,
+) (_ *vmcp.CapabilityList, retErr error) {
 	ctx, done := t.record(ctx, target, "list_capabilities", &retErr)
 	defer done()
 	return t.backendClient.ListCapabilities(ctx, target)

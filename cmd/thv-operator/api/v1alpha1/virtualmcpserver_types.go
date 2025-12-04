@@ -1,9 +1,10 @@
 package v1alpha1
 
 import (
-	"github.com/stacklok/toolhive/pkg/telemetry"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/stacklok/toolhive/pkg/telemetry"
 )
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer

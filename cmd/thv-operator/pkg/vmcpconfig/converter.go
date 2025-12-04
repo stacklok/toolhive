@@ -110,6 +110,10 @@ func (c *Converter) Convert(
 		config.Operational = c.convertOperational(ctx, vmcp)
 	}
 
+	// Convert Telemetry - pass through directly as it's the same type
+
+	config.Telemetry = vmcp.Spec.Telemetry
+
 	// Apply operational defaults (fills missing values)
 	config.EnsureOperationalDefaults()
 

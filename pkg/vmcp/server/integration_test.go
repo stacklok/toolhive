@@ -192,7 +192,7 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 	// Mock Stop to be called during server shutdown
 	mockDiscoveryMgr.EXPECT().Stop().Times(1)
 
-	srv, err := server.New(&server.Config{
+	srv, err := server.New(ctx, &server.Config{
 		Name:    "test-vmcp",
 		Version: "1.0.0",
 		Host:    "127.0.0.1",
@@ -322,7 +322,7 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 	}
 
 	// Create and start server
-	srv, err := server.New(&server.Config{
+	srv, err := server.New(ctx, &server.Config{
 		Name:           "test-vmcp",
 		Version:        "1.0.0",
 		Host:           "127.0.0.1",

@@ -165,7 +165,7 @@ func NewVMCPServer(
 	rtr := router.NewDefaultRouter()
 
 	// Create vMCP server with test-specific defaults
-	vmcpServer, err := vmcpserver.New(&vmcpserver.Config{
+	vmcpServer, err := vmcpserver.New(ctx, &vmcpserver.Config{
 		Name:              "test-vmcp",
 		Version:           "1.0.0",
 		Host:              "127.0.0.1",

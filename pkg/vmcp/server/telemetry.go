@@ -39,22 +39,21 @@ func monitorBackends(
 	backendCount.Record(ctx, int64(len(backends)))
 
 	requestsTotal, err := meter.Int64Counter(
-		"toolhive_vmcp_backend_requests_total",
-		metric.WithDescription("Total number of requests per backend"),
-	)
+		"toolhive_vmcp_backend_requests",
+		metric.WithDescription("Total number of requests per backend"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create requests total counter: %w", err)
 	}
 	errorsTotal, err := meter.Int64Counter(
-		"toolhive_vmcp_backend_errors_total",
-		metric.WithDescription("Total number of errors per backend"),
-	)
+		"toolhive_vmcp_backend_errors",
+		metric.WithDescription("Total number of errors per backend"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create errors total counter: %w", err)
 	}
 	requestsDuration, err := meter.Float64Histogram(
 		"toolhive_vmcp_backend_requests_duration",
 		metric.WithDescription("Duration of requests in seconds per backend"),
+		metric.WithUnit("s"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create requests duration histogram: %w", err)
@@ -161,7 +160,7 @@ func monitorWorkflowExecutors(
 	meter := meterProvider.Meter(instrumentationName)
 
 	executionsTotal, err := meter.Int64Counter(
-		"toolhive_vmcp_workflow_executions_total",
+		"toolhive_vmcp_workflow_executions",
 		metric.WithDescription("Total number of workflow executions"),
 	)
 	if err != nil {
@@ -169,7 +168,7 @@ func monitorWorkflowExecutors(
 	}
 
 	errorsTotal, err := meter.Int64Counter(
-		"toolhive_vmcp_workflow_errors_total",
+		"toolhive_vmcp_workflow_errors",
 		metric.WithDescription("Total number of workflow execution errors"),
 	)
 	if err != nil {
@@ -177,8 +176,9 @@ func monitorWorkflowExecutors(
 	}
 
 	executionDuration, err := meter.Float64Histogram(
-		"toolhive_vmcp_workflow_duration_seconds",
+		"toolhive_vmcp_workflow_duration",
 		metric.WithDescription("Duration of workflow executions in seconds"),
+		metric.WithUnit("s"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workflow duration histogram: %w", err)

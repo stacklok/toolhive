@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
@@ -18,7 +20,13 @@ const (
 
 // monitorBackends decorates the backend client so it records telemetry on each method call.
 // It also emits a gauge for the number of backends discovered once, since the number of backends is static.
-func monitorBackends(ctx context.Context, meterProvider metric.MeterProvider, backends []vmcp.Backend, backendClient vmcp.BackendClient) (vmcp.BackendClient, error) {
+func monitorBackends(
+	ctx context.Context,
+	meterProvider metric.MeterProvider,
+	tracerProvider trace.TracerProvider,
+	backends []vmcp.Backend,
+	backendClient vmcp.BackendClient,
+) (vmcp.BackendClient, error) {
 	meter := meterProvider.Meter(instrumentationName)
 
 	backendCount, err := meter.Int64Gauge(
@@ -45,15 +53,16 @@ func monitorBackends(ctx context.Context, meterProvider metric.MeterProvider, ba
 
 	return telemetryBackendClient{
 		backendClient:    backendClient,
+		tracer:           tracerProvider.Tracer(instrumentationName),
 		requestsTotal:    requestsTotal,
 		errorsTotal:      errorsTotal,
 		requestsDuration: requestsDuration,
 	}, nil
-
 }
 
 type telemetryBackendClient struct {
 	backendClient vmcp.BackendClient
+	tracer        trace.Tracer
 
 	requestsTotal    metric.Int64Counter
 	errorsTotal      metric.Int64Counter
@@ -62,52 +71,68 @@ type telemetryBackendClient struct {
 
 var _ vmcp.BackendClient = telemetryBackendClient{}
 
-// record updates the telemetry metrics for each method on the BackendClient interface.
-// It returns a function that should be deferred to record the duration and error.
-func (t telemetryBackendClient) record(ctx context.Context, target *vmcp.BackendTarget, action string, err *error) func() {
-	attrs := metric.WithAttributes(
+// record updates the metrics and creates a span for each method on the BackendClient interface.
+// It returns a function that should be deferred to record the duration, error, and end the span.
+func (t telemetryBackendClient) record(ctx context.Context, target *vmcp.BackendTarget, action string, err *error) (context.Context, func()) {
+	// Create span attributes
+	commonAttrs := []attribute.KeyValue{
 		attribute.String("target.workload_id", target.WorkloadID),
 		attribute.String("target.workload_name", target.WorkloadName),
 		attribute.String("target.base_url", target.BaseURL),
 		attribute.String("target.transport_type", target.TransportType),
 		attribute.String("action", action),
-	)
-	start := time.Now()
-	t.requestsTotal.Add(ctx, 1, attrs)
+	}
 
-	return func() {
+	ctx, span := t.tracer.Start(ctx, "telemetryBackendClient."+action,
+		// TODO: Add params and results to the span once we have reusable sanitization functions.
+		trace.WithAttributes(commonAttrs...),
+	)
+
+	metricAttrs := metric.WithAttributes(commonAttrs...)
+	start := time.Now()
+	t.requestsTotal.Add(ctx, 1, metricAttrs)
+
+	return ctx, func() {
 		duration := time.Since(start)
-		t.requestsDuration.Record(ctx, duration.Seconds(), attrs)
-		if err != nil {
-			t.errorsTotal.Add(ctx, 1, attrs)
+		t.requestsDuration.Record(ctx, duration.Seconds(), metricAttrs)
+		if err != nil && *err != nil {
+			t.errorsTotal.Add(ctx, 1, metricAttrs)
+			span.RecordError(*err)
+			span.SetStatus(codes.Error, (*err).Error())
 		}
+		span.End()
 	}
 }
 
 func (t telemetryBackendClient) CallTool(ctx context.Context, target *vmcp.BackendTarget, toolName string, arguments map[string]any) (_ map[string]any, retErr error) {
-	defer t.record(ctx, target, "call_tool", &retErr)()
+	ctx, done := t.record(ctx, target, "call_tool", &retErr)
+	defer done()
 	return t.backendClient.CallTool(ctx, target, toolName, arguments)
 }
 
 func (t telemetryBackendClient) ReadResource(ctx context.Context, target *vmcp.BackendTarget, uri string) (_ []byte, retErr error) {
-	defer t.record(ctx, target, "read_resource", &retErr)()
+	ctx, done := t.record(ctx, target, "read_resource", &retErr)
+	defer done()
 	return t.backendClient.ReadResource(ctx, target, uri)
 }
 
 func (t telemetryBackendClient) GetPrompt(ctx context.Context, target *vmcp.BackendTarget, name string, arguments map[string]any) (_ string, retErr error) {
-	defer t.record(ctx, target, "get_prompt", &retErr)()
+	ctx, done := t.record(ctx, target, "get_prompt", &retErr)
+	defer done()
 	return t.backendClient.GetPrompt(ctx, target, name, arguments)
 }
 
 func (t telemetryBackendClient) ListCapabilities(ctx context.Context, target *vmcp.BackendTarget) (_ *vmcp.CapabilityList, retErr error) {
-	defer t.record(ctx, target, "list_capabilities", &retErr)()
+	ctx, done := t.record(ctx, target, "list_capabilities", &retErr)
+	defer done()
 	return t.backendClient.ListCapabilities(ctx, target)
 }
 
 // monitorWorkflowExecutors decorates workflow executors with telemetry recording.
-// It wraps each executor to emit metrics for execution count, duration, and errors.
+// It wraps each executor to emit metrics and traces for execution count, duration, and errors.
 func monitorWorkflowExecutors(
 	meterProvider metric.MeterProvider,
+	tracerProvider trace.TracerProvider,
 	executors map[string]adapter.WorkflowExecutor,
 ) (map[string]adapter.WorkflowExecutor, error) {
 	if len(executors) == 0 {
@@ -140,11 +165,14 @@ func monitorWorkflowExecutors(
 		return nil, fmt.Errorf("failed to create workflow duration histogram: %w", err)
 	}
 
+	tracer := tracerProvider.Tracer(instrumentationName)
+
 	monitored := make(map[string]adapter.WorkflowExecutor, len(executors))
 	for name, executor := range executors {
 		monitored[name] = &telemetryWorkflowExecutor{
 			name:              name,
 			executor:          executor,
+			tracer:            tracer,
 			executionsTotal:   executionsTotal,
 			errorsTotal:       errorsTotal,
 			executionDuration: executionDuration,
@@ -158,6 +186,7 @@ func monitorWorkflowExecutors(
 type telemetryWorkflowExecutor struct {
 	name              string
 	executor          adapter.WorkflowExecutor
+	tracer            trace.Tracer
 	executionsTotal   metric.Int64Counter
 	errorsTotal       metric.Int64Counter
 	executionDuration metric.Float64Histogram
@@ -165,22 +194,31 @@ type telemetryWorkflowExecutor struct {
 
 var _ adapter.WorkflowExecutor = (*telemetryWorkflowExecutor)(nil)
 
-// ExecuteWorkflow executes the workflow and records telemetry metrics.
+// ExecuteWorkflow executes the workflow and records telemetry metrics and traces.
 func (t *telemetryWorkflowExecutor) ExecuteWorkflow(ctx context.Context, params map[string]any) (*adapter.WorkflowResult, error) {
-	attrs := metric.WithAttributes(
+	commonAttrs := []attribute.KeyValue{
 		attribute.String("workflow.name", t.name),
-	)
+	}
 
+	ctx, span := t.tracer.Start(ctx, "telemetryWorkflowExecutor.ExecuteWorkflow",
+		// TODO: Add params and results to the span once we have reusable sanitization functions.
+		trace.WithAttributes(commonAttrs...),
+	)
+	defer span.End()
+
+	metricAttrs := metric.WithAttributes(commonAttrs...)
 	start := time.Now()
-	t.executionsTotal.Add(ctx, 1, attrs)
+	t.executionsTotal.Add(ctx, 1, metricAttrs)
 
 	result, err := t.executor.ExecuteWorkflow(ctx, params)
 
 	duration := time.Since(start)
-	t.executionDuration.Record(ctx, duration.Seconds(), attrs)
+	t.executionDuration.Record(ctx, duration.Seconds(), metricAttrs)
 
 	if err != nil {
-		t.errorsTotal.Add(ctx, 1, attrs)
+		t.errorsTotal.Add(ctx, 1, metricAttrs)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 	}
 
 	return result, err

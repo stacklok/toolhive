@@ -21,3 +21,9 @@
 .idea/
 *.tmproj
 .vscode/
+# Source CRD files and wrapper tool (only wrapped templates are needed)
+files/
+crd-helm-wrapper/
+# Documentation
+CLAUDE.md
+CONTRIBUTING.md

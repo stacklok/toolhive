@@ -1,1 +1,13 @@
-# empty values file as we do not need any values for the CRDs at the moment
+# -- CRD installation configuration
+crds:
+  # -- Whether to add the "helm.sh/resource-policy: keep" annotation to CRDs
+  # When true, CRDs will not be deleted when the Helm release is uninstalled
+  keep: true
+  # -- Feature flags for CRD groups
+  install:
+    # -- Install Server CRDs (mcpservers, mcpremoteproxies, mcptoolconfigs, mcpgroups)
+    server: true
+    # -- Install Registry CRDs (mcpregistries)
+    registry: true
+    # -- Install VirtualMCP CRDs (virtualmcpservers, virtualmcpcompositetooldefinitions)
+    virtualMcp: true

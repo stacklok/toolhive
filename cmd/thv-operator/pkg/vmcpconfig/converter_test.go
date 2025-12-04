@@ -330,10 +330,10 @@ func TestConvertCompositeTools_Timeout(t *testing.T) {
 			description:     "Should handle empty timeout",
 		},
 		{
-			name:            "invalid timeout format - should default to zero",
+			name:            "invalid timeout format - should default to 30m",
 			timeout:         "invalid",
-			expectedTimeout: 0,
-			description:     "Should handle invalid timeout format gracefully",
+			expectedTimeout: 30 * 60 * 1e9, // 30 minutes (default from CRD)
+			description:     "Should handle invalid timeout format gracefully by using default 30m",
 		},
 		{
 			name:            "timeout in seconds",

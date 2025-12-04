@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -312,85 +313,14 @@ func (*Converter) convertAggregation(
 }
 
 // convertCompositeTools converts CompositeToolSpec from CRD to vmcp config
-func (*Converter) convertCompositeTools(
+func (c *Converter) convertCompositeTools(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) []*vmcpconfig.CompositeToolConfig {
 	compositeTools := make([]*vmcpconfig.CompositeToolConfig, 0, len(vmcp.Spec.CompositeTools))
 
 	for _, crdTool := range vmcp.Spec.CompositeTools {
-		tool := &vmcpconfig.CompositeToolConfig{
-			Name:        crdTool.Name,
-			Description: crdTool.Description,
-			Steps:       make([]*vmcpconfig.WorkflowStepConfig, 0, len(crdTool.Steps)),
-		}
-
-		// Parse timeout
-		if crdTool.Timeout != "" {
-			if duration, err := time.ParseDuration(crdTool.Timeout); err == nil {
-				tool.Timeout = vmcpconfig.Duration(duration)
-			}
-		}
-
-		// Convert parameters from runtime.RawExtension to map[string]any
-		if crdTool.Parameters != nil && len(crdTool.Parameters.Raw) > 0 {
-			var params map[string]any
-			if err := json.Unmarshal(crdTool.Parameters.Raw, &params); err != nil {
-				// Log warning but continue - validation should have caught this at admission time
-				ctxLogger := log.FromContext(ctx)
-				ctxLogger.Error(err, "failed to unmarshal composite tool parameters",
-					"tool", crdTool.Name, "raw", string(crdTool.Parameters.Raw))
-			} else {
-				tool.Parameters = params
-			}
-		}
-
-		// Convert steps
-		for _, crdStep := range crdTool.Steps {
-			step := &vmcpconfig.WorkflowStepConfig{
-				ID:        crdStep.ID,
-				Type:      crdStep.Type,
-				Tool:      crdStep.Tool,
-				Arguments: convertArguments(crdStep.Arguments),
-				Message:   crdStep.Message,
-				Condition: crdStep.Condition,
-				DependsOn: crdStep.DependsOn,
-			}
-
-			// Parse timeout
-			if crdStep.Timeout != "" {
-				if duration, err := time.ParseDuration(crdStep.Timeout); err == nil {
-					step.Timeout = vmcpconfig.Duration(duration)
-				}
-			}
-
-			// Convert error handling
-			if crdStep.OnError != nil {
-				stepError := &vmcpconfig.StepErrorHandling{
-					Action:     crdStep.OnError.Action,
-					RetryCount: crdStep.OnError.MaxRetries,
-				}
-				if crdStep.OnError.RetryDelay != "" {
-					if duration, err := time.ParseDuration(crdStep.OnError.RetryDelay); err != nil {
-						// Log warning but continue - validation should have caught this at admission time
-						ctxLogger := log.FromContext(ctx)
-						ctxLogger.Error(err, "failed to parse retry delay",
-							"step", crdStep.ID, "retryDelay", crdStep.OnError.RetryDelay)
-					} else {
-						stepError.RetryDelay = vmcpconfig.Duration(duration)
-					}
-				}
-				step.OnError = stepError
-			}
-
-			tool.Steps = append(tool.Steps, step)
-		}
-
-		// Convert output configuration
-		if crdTool.Output != nil {
-			tool.Output = convertOutputSpec(ctx, crdTool.Output)
-		}
-
+		tool := c.convertCompositeToolSpec(ctx, crdTool.Name, crdTool.Description, crdTool.Timeout, crdTool.Parameters, crdTool.Steps, crdTool.Output, crdTool.Name)
 		compositeTools = append(compositeTools, tool)
 	}
 
@@ -468,37 +398,60 @@ func (c *Converter) convertReferencedCompositeTools(
 }
 
 // convertCompositeToolDefinition converts a VirtualMCPCompositeToolDefinition to CompositeToolConfig.
-func (*Converter) convertCompositeToolDefinition(
+func (c *Converter) convertCompositeToolDefinition(
 	ctx context.Context,
 	def *mcpv1alpha1.VirtualMCPCompositeToolDefinition,
 ) *vmcpconfig.CompositeToolConfig {
+	return c.convertCompositeToolSpec(ctx, def.Spec.Name, def.Spec.Description, def.Spec.Timeout, def.Spec.Parameters, def.Spec.Steps, def.Spec.Output, def.Name)
+}
+
+// convertCompositeToolSpec is a shared helper that converts common composite tool fields to CompositeToolConfig.
+// This eliminates code duplication between convertCompositeTools and convertCompositeToolDefinition.
+func (*Converter) convertCompositeToolSpec(
+	ctx context.Context,
+	name, description, timeout string,
+	parameters *runtime.RawExtension,
+	steps []mcpv1alpha1.WorkflowStep,
+	output *mcpv1alpha1.OutputSpec,
+	toolNameForLogging string,
+) *vmcpconfig.CompositeToolConfig {
 	tool := &vmcpconfig.CompositeToolConfig{
-		Name:        def.Spec.Name,
-		Description: def.Spec.Description,
-		Steps:       make([]*vmcpconfig.WorkflowStepConfig, 0, len(def.Spec.Steps)),
+		Name:        name,
+		Description: description,
+		Steps:       make([]*vmcpconfig.WorkflowStepConfig, 0, len(steps)),
 	}
 
 	// Parse timeout
-	if def.Spec.Timeout != "" {
-		if duration, err := time.ParseDuration(def.Spec.Timeout); err == nil {
+	if timeout != "" {
+		if duration, err := time.ParseDuration(timeout); err != nil {
+			// Log error but continue with default - validation should have caught this at admission time
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "failed to parse composite tool timeout, using default",
+				"tool", toolNameForLogging, "timeout", timeout)
+			// Use default timeout of 30m (matches CRD default)
+			if defaultDuration, defaultErr := time.ParseDuration("30m"); defaultErr == nil {
+				tool.Timeout = vmcpconfig.Duration(defaultDuration)
+			}
+		} else {
 			tool.Timeout = vmcpconfig.Duration(duration)
 		}
 	}
 
 	// Convert parameters from runtime.RawExtension to map[string]any
-	if def.Spec.Parameters != nil && len(def.Spec.Parameters.Raw) > 0 {
+	if parameters != nil && len(parameters.Raw) > 0 {
 		var params map[string]any
-		if err := json.Unmarshal(def.Spec.Parameters.Raw, &params); err != nil {
+		if err := json.Unmarshal(parameters.Raw, &params); err != nil {
+			// Log warning but continue - validation should have caught this at admission time
 			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "failed to unmarshal composite tool definition parameters",
-				"name", def.Name, "raw", string(def.Spec.Parameters.Raw))
+			ctxLogger.Error(err, "failed to unmarshal composite tool parameters",
+				"tool", toolNameForLogging, "raw", string(parameters.Raw))
 		} else {
 			tool.Parameters = params
 		}
 	}
 
 	// Convert steps
-	for _, crdStep := range def.Spec.Steps {
+	for _, crdStep := range steps {
 		step := &vmcpconfig.WorkflowStepConfig{
 			ID:        crdStep.ID,
 			Type:      crdStep.Type,
@@ -509,9 +462,28 @@ func (*Converter) convertCompositeToolDefinition(
 			DependsOn: crdStep.DependsOn,
 		}
 
+		// Convert Schema from runtime.RawExtension to map[string]any (for elicitation steps)
+		if crdStep.Schema != nil && len(crdStep.Schema.Raw) > 0 {
+			var schema map[string]any
+			if err := json.Unmarshal(crdStep.Schema.Raw, &schema); err != nil {
+				// Log warning but continue - validation should have caught this at admission time
+				ctxLogger := log.FromContext(ctx)
+				ctxLogger.Error(err, "failed to unmarshal step schema",
+					"tool", toolNameForLogging, "step", crdStep.ID, "raw", string(crdStep.Schema.Raw))
+			} else {
+				step.Schema = schema
+			}
+		}
+
 		// Parse timeout
 		if crdStep.Timeout != "" {
-			if duration, err := time.ParseDuration(crdStep.Timeout); err == nil {
+			if duration, err := time.ParseDuration(crdStep.Timeout); err != nil {
+				// Log error but continue without step timeout - step will use tool-level timeout or no timeout
+				// Validation should have caught this at admission time
+				ctxLogger := log.FromContext(ctx)
+				ctxLogger.Error(err, "failed to parse step timeout, step will use tool-level timeout",
+					"tool", toolNameForLogging, "step", crdStep.ID, "timeout", crdStep.Timeout)
+			} else {
 				step.Timeout = vmcpconfig.Duration(duration)
 			}
 		}
@@ -538,8 +510,8 @@ func (*Converter) convertCompositeToolDefinition(
 	}
 
 	// Convert output configuration
-	if def.Spec.Output != nil {
-		tool.Output = convertOutputSpec(ctx, def.Spec.Output)
+	if output != nil {
+		tool.Output = convertOutputSpec(ctx, output)
 	}
 
 	return tool

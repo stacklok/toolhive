@@ -1,7 +1,10 @@
 package app
 
 import (
+	"bufio"
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -13,10 +16,11 @@ import (
 var (
 	unsetBuildAuthFileAll bool
 	showAuthFileContent   bool
+	authFileFromStdin     bool
 )
 
 var setBuildAuthFileCmd = &cobra.Command{
-	Use:   "set-build-auth-file <name> <content>",
+	Use:   "set-build-auth-file <name> [content]",
 	Short: "Set an auth file for protocol builds",
 	Long: `Set authentication file content that will be injected into the container
 during protocol builds (npx://, uvx://, go://). This is useful for authenticating
@@ -37,8 +41,12 @@ Examples:
   # Set netrc for pip/Go authentication
   thv config set-build-auth-file netrc 'machine github.com login git password TOKEN'
 
-Note: For multi-line content, use quotes or heredoc syntax in your shell.`,
-	Args: cobra.ExactArgs(2),
+  # Read content from stdin (avoids exposing secrets in shell history)
+  cat ~/.npmrc | thv config set-build-auth-file npmrc --stdin
+  thv config set-build-auth-file npmrc --stdin < ~/.npmrc
+
+Note: For multi-line content, use quotes, heredoc syntax, or --stdin.`,
+	Args: cobra.RangeArgs(1, 2),
 	RunE: setBuildAuthFileCmdFunc,
 }
 
@@ -90,11 +98,33 @@ func init() {
 		false,
 		"Show the actual file content (contains credentials)",
 	)
+
+	setBuildAuthFileCmd.Flags().BoolVar(
+		&authFileFromStdin,
+		"stdin",
+		false,
+		"Read file content from stdin instead of command line argument",
+	)
 }
 
 func setBuildAuthFileCmdFunc(_ *cobra.Command, args []string) error {
 	name := args[0]
-	content := args[1]
+
+	var content string
+	if authFileFromStdin {
+		// Read from stdin
+		data, err := readFromStdin()
+		if err != nil {
+			return fmt.Errorf("failed to read from stdin: %w", err)
+		}
+		content = data
+	} else {
+		// Read from command line argument
+		if len(args) < 2 {
+			return fmt.Errorf("content argument required (or use --stdin to read from stdin)")
+		}
+		content = args[1]
+	}
 
 	provider := config.NewDefaultProvider()
 	if err := provider.SetBuildAuthFile(name, content); err != nil {
@@ -103,6 +133,30 @@ func setBuildAuthFileCmdFunc(_ *cobra.Command, args []string) error {
 
 	fmt.Printf("Successfully set build auth file: %s\n", name)
 	return nil
+}
+
+// readFromStdin reads all content from stdin.
+func readFromStdin() (string, error) {
+	// Check if stdin has data (is not a terminal)
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return "", fmt.Errorf("failed to stat stdin: %w", err)
+	}
+
+	// If stdin is a terminal with no piped data, return an error
+	if (stat.Mode() & os.ModeCharDevice) != 0 {
+		return "", fmt.Errorf("no input provided on stdin (pipe content or redirect from a file)")
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return "", err
+	}
+
+	// Trim trailing newline that's often added by echo/cat
+	content := strings.TrimSuffix(string(data), "\n")
+	return content, nil
 }
 
 func getBuildAuthFileCmdFunc(_ *cobra.Command, args []string) error {

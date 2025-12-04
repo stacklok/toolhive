@@ -34,16 +34,21 @@ Examples:
   # Set netrc for pip/Go authentication
   thv config set-build-auth-file netrc 'machine github.com login git password TOKEN'
 
-Note: For multi-line content, use quotes or heredoc syntax in your shell.
+  # Read content from stdin (avoids exposing secrets in shell history)
+  cat ~/.npmrc | thv config set-build-auth-file npmrc --stdin
+  thv config set-build-auth-file npmrc --stdin < ~/.npmrc
+
+Note: For multi-line content, use quotes, heredoc syntax, or --stdin.
 
 ```
-thv config set-build-auth-file <name> <content> [flags]
+thv config set-build-auth-file <name> [content] [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for set-build-auth-file
+  -h, --help    help for set-build-auth-file
+      --stdin   Read file content from stdin instead of command line argument
 ```
 
 ### Options inherited from parent commands

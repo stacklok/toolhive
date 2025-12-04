@@ -13,8 +13,9 @@ type VirtualMCPServerSpec struct {
 	GroupRef GroupRef `json:"groupRef"`
 
 	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server
-	// +optional
-	IncomingAuth *IncomingAuthConfig `json:"incomingAuth,omitempty"`
+	// Must be explicitly set - use "anonymous" type when no authentication is required
+	// +kubebuilder:validation:Required
+	IncomingAuth *IncomingAuthConfig `json:"incomingAuth"`
 
 	// OutgoingAuth configures authentication from Virtual MCP to backend MCPServers
 	// +optional
@@ -65,9 +66,10 @@ type GroupRef struct {
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
 type IncomingAuthConfig struct {
 	// Type defines the authentication type: anonymous or oidc
+	// When no authentication is required, explicitly set this to "anonymous"
 	// +kubebuilder:validation:Enum=anonymous;oidc
-	// +optional
-	Type string `json:"type,omitempty"`
+	// +kubebuilder:validation:Required
+	Type string `json:"type"`
 
 	// OIDCConfig defines OIDC authentication configuration
 	// Reuses MCPServer OIDC patterns

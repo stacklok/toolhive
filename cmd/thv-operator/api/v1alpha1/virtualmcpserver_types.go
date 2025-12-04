@@ -489,6 +489,11 @@ const (
 
 	// ConditionTypeCompositeToolRefsValidated indicates whether the CompositeToolRefs are valid
 	ConditionTypeCompositeToolRefsValidated = "CompositeToolRefsValidated"
+	// ConditionTypeVirtualMCPServerPodTemplateSpecValid indicates whether the PodTemplateSpec is valid
+	ConditionTypeVirtualMCPServerPodTemplateSpecValid = "PodTemplateSpecValid"
+
+	// ConditionTypeVirtualMCPServerBackendsDiscovered indicates whether backends have been discovered
+	ConditionTypeVirtualMCPServerBackendsDiscovered = "BackendsDiscovered"
 )
 
 // Condition reasons for VirtualMCPServer
@@ -513,6 +518,26 @@ const (
 
 	// ConditionReasonCompositeToolRefNotFound indicates a referenced VirtualMCPCompositeToolDefinition was not found
 	ConditionReasonCompositeToolRefNotFound = "CompositeToolRefNotFound"
+	// ConditionReasonVirtualMCPServerPodTemplateSpecValid indicates PodTemplateSpec validation succeeded
+	ConditionReasonVirtualMCPServerPodTemplateSpecValid = "PodTemplateSpecValid"
+
+	// ConditionReasonVirtualMCPServerPodTemplateSpecInvalid indicates PodTemplateSpec validation failed
+	ConditionReasonVirtualMCPServerPodTemplateSpecInvalid = "InvalidPodTemplateSpec"
+
+	// ConditionReasonVirtualMCPServerBackendsDiscoveredSuccessfully indicates backends were discovered successfully
+	ConditionReasonVirtualMCPServerBackendsDiscoveredSuccessfully = "BackendsDiscoveredSuccessfully"
+
+	// ConditionReasonVirtualMCPServerBackendDiscoveryFailed indicates backend discovery failed
+	ConditionReasonVirtualMCPServerBackendDiscoveryFailed = "BackendDiscoveryFailed"
+
+	// ConditionReasonVirtualMCPServerDeploymentFailed indicates the deployment failed
+	ConditionReasonVirtualMCPServerDeploymentFailed = "DeploymentFailed"
+
+	// ConditionReasonVirtualMCPServerDeploymentReady indicates the deployment is ready
+	ConditionReasonVirtualMCPServerDeploymentReady = "DeploymentReady"
+
+	// ConditionReasonVirtualMCPServerDeploymentNotReady indicates the deployment is not ready
+	ConditionReasonVirtualMCPServerDeploymentNotReady = "DeploymentNotReady"
 )
 
 // Backend authentication types

@@ -40,13 +40,14 @@ Do NOT invoke for:
 The MCP specification is versioned. To find and use the latest version:
 
 1. **Start here**: Fetch https://modelcontextprotocol.io to find links to current documentation
-2. **Known working URLs** (as of 2025-06-18 spec version):
-   - Main overview: `https://modelcontextprotocol.io/specification/2025-06-18`
-   - Basic spec: `https://modelcontextprotocol.io/specification/2025-06-18/basic`
-   - Transports: `https://modelcontextprotocol.io/specification/2025-06-18/basic/transports`
-   - Lifecycle: `https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle`
+2. **Known working URLs** (as of 2025-11-25 spec version):
+   - Main overview: `https://modelcontextprotocol.io/specification/2025-11-25`
+   - Transports: `https://modelcontextprotocol.io/specification/2025-11-25/basic/transports`
+   - Lifecycle: `https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle`
+   - Tasks: `https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks`
+   - Elicitation: `https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation`
 
-3. **Check for newer versions**: The date in the URL (2025-06-18) indicates spec version. Look for newer dates.
+3. **Check for newer versions**: The date in the URL (2025-11-25) indicates spec version. Look for newer dates.
 
 4. **Always verify URLs**: If a URL gives 404, try alternative paths or check the main site.
 
@@ -71,10 +72,11 @@ When fetching specifications during a session:
 
 ### Transport Types
 
-Per the 2025-06-18 specification, MCP defines these transports:
-- **stdio**: Standard input/output (preferred, clients SHOULD support)
-- **Streamable HTTP**: HTTP-based transport for multiple connections
-- **Custom transports**: Implementations MAY add custom transports
+Per the 2025-11-25 specification, MCP defines two standard transports:
+- **stdio**: Standard input/output. Server reads JSON-RPC from stdin, writes to stdout. Messages delimited by newlines. Preferred for single-process architectures.
+- **Streamable HTTP**: HTTP-based transport for multiple connections. Uses POST/GET on single endpoint. Supports optional SSE for streaming. Includes session management via `Mcp-Session-Id` header. Requires `MCP-Protocol-Version` header on subsequent requests.
+
+**Note**: HTTP+SSE transport from 2024-11-05 is deprecated; use Streamable HTTP instead.
 
 **Always fetch the latest transport documentation** as this evolves over time.
 
@@ -85,8 +87,9 @@ Per the 2025-06-18 specification, MCP defines these transports:
 - **Clients**: Connectors within host applications
 - **Servers**: Services providing context and capabilities
 
-**Server capabilities**: Resources, Prompts, Tools
+**Server capabilities**: Resources, Prompts, Tools, Utilities (Completion, Logging, Pagination)
 **Client capabilities**: Sampling, Roots, Elicitation
+**Protocol utilities**: Cancellation, Ping, Progress, Tasks
 
 ### Lifecycle Phases
 
@@ -102,6 +105,27 @@ Per the 2025-06-18 specification, MCP defines these transports:
 
 All messages MUST follow JSON-RPC 2.0 specification.
 
+### Tasks (New in 2025-11-25)
+
+Tasks enable durable state machines for tracking long-running operations:
+- **Methods**: `tasks/list`, `tasks/get`, `tasks/cancel`, `tasks/result`
+- **Notification**: `notifications/tasks/status`
+- **Status lifecycle**: working → input_required | completed | failed | cancelled
+- **Key fields**: taskId, status, statusMessage, createdAt, lastUpdatedAt, ttl, pollInterval
+- **Capability**: Declared via `tasks.requests.*` during initialization
+
+ToolHive implementation: Parser support in `pkg/mcp/parser.go`
+
+### Elicitation
+
+Elicitation enables servers to request information from users:
+- **Method**: `elicitation/create`
+- **Form Mode**: Direct in-band data collection with JSON schema validation
+- **URL Mode** (New in 2025-11-25): Out-of-band for sensitive data (credentials, OAuth flows)
+- **Security**: Form mode MUST NOT be used for sensitive information
+
+ToolHive implementation: Full support in `pkg/vmcp/composer/elicitation_handler.go`
+
 ## ToolHive Implementation
 
 ### Package Structure
@@ -111,11 +135,13 @@ All messages MUST follow JSON-RPC 2.0 specification.
 - `pkg/api/`: REST API server wrapping MCP servers
 
 ### Key Files
-- `pkg/transport/types.go`: Transport interface definitions
-- `pkg/transport/stdio/`: stdio transport implementation
-- `pkg/transport/http/`: HTTP transport implementation
-- `pkg/transport/sse/`: SSE transport (check deprecation status)
-- `pkg/transport/streamable/`: Streamable HTTP implementation
+- `pkg/transport/types/transport.go`: Transport interface definitions
+- `pkg/transport/stdio.go`: stdio transport implementation
+- `pkg/transport/http.go`: HTTP transport implementation
+- `pkg/transport/proxy/streamable/`: Streamable HTTP proxy implementation
+- `pkg/transport/proxy/httpsse/`: HTTP+SSE proxy (legacy, prefer streamable)
+- `pkg/transport/session/`: Session management for transports
+- `pkg/mcp/parser.go`: MCP JSON-RPC message parsing middleware
 
 ### Design Patterns
 - Factory pattern for transport creation
@@ -163,6 +189,9 @@ When working on MCP-related code:
 - Proxy functionality enables networked MCP servers
 - Cedar policies control access to MCP resources
 - Stdio is the preferred transport (clients SHOULD support it)
+- Streamable HTTP requires `MCP-Protocol-Version` header on requests after initialize
+- Session management uses `Mcp-Session-Id` header for Streamable HTTP
+- Tasks provide durable state tracking for long-running operations (2025-11-25+)
 
 ## Security Considerations
 
@@ -176,12 +205,17 @@ Per MCP spec, always consider:
 
 **Primary (Always Check First)**:
 - MCP Main Site: https://modelcontextprotocol.io
-- Specification: Check main site for latest version
+- Latest Spec (2025-11-25): https://modelcontextprotocol.io/specification/2025-11-25
+- Tasks: https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks
+- Transports: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+- Elicitation: https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation
 
 **ToolHive Implementation**:
 - Transport code: `pkg/transport/`
+- MCP parsing: `pkg/mcp/`
 - Runner code: `pkg/runner/`
 - API code: `pkg/api/`
+- vMCP (Virtual MCP): `pkg/vmcp/`
 
 ## Remember
 

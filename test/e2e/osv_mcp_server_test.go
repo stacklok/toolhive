@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/adrg/xdg"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -458,7 +460,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 
 	Describe("Running OSV MCP server in the foreground", func() {
 		Context("when running OSV server in foreground", func() {
-			It("starts, creates PID file, stays healthy, then stops & removes PID file [Serial]", func() {
+			It("starts, creates status file, stays healthy, then stops & updates status file [Serial]", func() {
 				serverName := generateUniqueServerName("osv-foreground-test")
 
 				// 1) Start the foreground process in the background (goroutine) with a generous timeout.
@@ -491,6 +493,12 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 				By("waiting for foreground server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
 				Expect(err).ToNot(HaveOccurred(), "server should reach running state")
+
+				// 2.5) Verify status file was created
+				By("verifying status file was created")
+				Eventually(func() bool {
+					return statusFileExists(serverName)
+				}, 5*time.Second, 200*time.Millisecond).Should(BeTrue(), "status file should be created")
 
 				// 3) Verify workload is running via workload manager
 				By("verifying workload status is running via workload manager")
@@ -548,8 +556,27 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 					return workload.Status
 				}, 15*time.Second, 200*time.Millisecond).Should(Equal(runtime.WorkloadStatusStopped), "workload should be in stopped status after stop")
 
+				// 8) Verify status file still exists with stopped status (it's not deleted, just marked as stopped)
+				By("verifying status file still exists after stop")
+				Expect(statusFileExists(serverName)).To(BeTrue(), "status file should still exist after stop")
+
 			})
 		})
 
 	})
 })
+
+// getStatusFilePath returns the path to the status file for a given workload name
+func getStatusFilePath(workloadName string) (string, error) {
+	return xdg.DataFile(filepath.Join("toolhive", "statuses", workloadName+".json"))
+}
+
+// statusFileExists checks if the status file exists for a given workload
+func statusFileExists(workloadName string) bool {
+	statusPath, err := getStatusFilePath(workloadName)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(statusPath)
+	return err == nil
+}

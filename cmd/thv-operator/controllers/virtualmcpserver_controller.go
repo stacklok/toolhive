@@ -4,6 +4,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"reflect"
@@ -15,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -100,6 +102,13 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Create status manager for batched updates
 	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+
+	// Validate PodTemplateSpec early - before other validations
+	if !r.validateAndUpdatePodTemplateStatus(ctx, vmcp) {
+		// Invalid PodTemplateSpec - return without error to avoid infinite retries
+		// The user must fix the spec and the next reconciliation will retry
+		return ctrl.Result{}, nil
+	}
 
 	// Validate GroupRef
 	if err := r.validateGroupRef(ctx, vmcp, statusManager); err != nil {
@@ -252,6 +261,65 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 	)
 
 	return nil
+}
+
+// validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and updates the VirtualMCPServer status
+// with appropriate conditions and events. Returns true if validation passes, false otherwise.
+func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) bool {
+	ctxLogger := log.FromContext(ctx)
+
+	// Only validate if PodTemplateSpec is provided
+	if vmcp.Spec.PodTemplateSpec == nil || vmcp.Spec.PodTemplateSpec.Raw == nil {
+		// No PodTemplateSpec provided, validation passes
+		return true
+	}
+
+	_, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp")
+	if err != nil {
+		// Record event for invalid PodTemplateSpec
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "InvalidPodTemplateSpec",
+				"Failed to parse PodTemplateSpec: %v. Deployment blocked until PodTemplateSpec is fixed.", err)
+		}
+
+		// Update status to reflect invalid PodTemplateSpec
+		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhaseFailed
+		vmcp.Status.Message = fmt.Sprintf("Invalid PodTemplateSpec: %v", err)
+
+		// Set condition for invalid PodTemplateSpec
+		meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
+			Type:               "PodTemplateSpecValid",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: vmcp.Generation,
+			Reason:             "InvalidPodTemplateSpec",
+			Message:            fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
+		})
+
+		if statusErr := r.Status().Update(ctx, vmcp); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update VirtualMCPServer status with PodTemplateSpec validation")
+		}
+
+		ctxLogger.Error(err, "PodTemplateSpec validation failed")
+		return false
+	}
+
+	// Set condition for valid PodTemplateSpec
+	meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
+		Type:               "PodTemplateSpecValid",
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: vmcp.Generation,
+		Reason:             "PodTemplateSpecValid",
+		Message:            "PodTemplateSpec is valid",
+	})
+
+	if statusErr := r.Status().Update(ctx, vmcp); statusErr != nil {
+		ctxLogger.Error(statusErr, "Failed to update VirtualMCPServer status with PodTemplateSpec validation")
+	}
+
+	return true
 }
 
 // ensureAllResources ensures all Kubernetes resources for the VirtualMCPServer
@@ -636,6 +704,10 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
+	if r.podTemplateSpecNeedsUpdate(ctx, deployment, vmcp) {
+		return true
+	}
+
 	return false
 }
 
@@ -735,6 +807,52 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	}
 
 	return false
+}
+
+// podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed
+// This method compares the current deployment against a freshly generated deployment
+// that includes the PodTemplateSpec customizations.
+func (r *VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) bool {
+	if deployment == nil || vmcp == nil {
+		return true
+	}
+
+	// If no PodTemplateSpec is provided, no update needed
+	if vmcp.Spec.PodTemplateSpec == nil || vmcp.Spec.PodTemplateSpec.Raw == nil {
+		return false
+	}
+
+	// Get the vmcp config checksum
+	vmcpConfigChecksum, err := r.getVmcpConfigChecksum(ctx, vmcp)
+	if err != nil {
+		// If we can't get the checksum, assume update is needed
+		return true
+	}
+
+	// Generate a fresh deployment with PodTemplateSpec applied
+	expectedDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum)
+	if expectedDeployment == nil {
+		// If we can't generate expected deployment, assume update is needed
+		return true
+	}
+
+	// Compare the pod template specs
+	currentJSON, err := json.Marshal(deployment.Spec.Template)
+	if err != nil {
+		return true
+	}
+
+	expectedJSON, err := json.Marshal(expectedDeployment.Spec.Template)
+	if err != nil {
+		return true
+	}
+
+	// If the JSON representations differ, an update is needed
+	return string(currentJSON) != string(expectedJSON)
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated

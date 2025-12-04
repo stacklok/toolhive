@@ -237,7 +237,10 @@ func TestVMCPServer_TwoBoundaryAuth_HeaderInjection(t *testing.T) {
 // Prometheus metrics for composite tool workflow executions and backend requests on /metrics.
 // This test creates a composite tool, executes it, and verifies the metrics
 // for both the workflow and the backend subtool calls are correctly exposed.
+//
+//nolint:paralleltest // safe to run in parallel with other tests
 func TestVMCPServer_Telemetry_CompositeToolMetrics(t *testing.T) {
+	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

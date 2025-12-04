@@ -61,7 +61,7 @@ func (c *Converter) Convert(
 		Group: vmcp.Spec.GroupRef.Name,
 	}
 
-	// Convert IncomingAuth
+	// Convert IncomingAuth - required field, no defaults
 	if vmcp.Spec.IncomingAuth != nil {
 		incomingAuth, err := c.convertIncomingAuth(ctx, vmcp)
 		if err != nil {

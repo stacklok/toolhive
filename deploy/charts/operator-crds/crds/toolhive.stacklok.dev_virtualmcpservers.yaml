@@ -359,8 +359,9 @@ spec:
                 - name
                 type: object
               incomingAuth:
-                description: IncomingAuth configures authentication for clients connecting
-                  to the Virtual MCP server
+                description: |-
+                  IncomingAuth configures authentication for clients connecting to the Virtual MCP server
+                  Must be explicitly set - use "anonymous" type when no authentication is required
                 properties:
                   authzConfig:
                     description: |-
@@ -566,12 +567,15 @@ spec:
                     - type
                     type: object
                   type:
-                    description: 'Type defines the authentication type: anonymous
-                      or oidc'
+                    description: |-
+                      Type defines the authentication type: anonymous or oidc
+                      When no authentication is required, explicitly set this to "anonymous"
                     enum:
                     - anonymous
                     - oidc
                     type: string
+                required:
+                - type
                 type: object
               operational:
                 description: Operational defines operational settings like timeouts
@@ -724,6 +728,7 @@ spec:
                 type: string
             required:
             - groupRef
+            - incomingAuth
             type: object
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer

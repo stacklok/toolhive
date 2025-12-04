@@ -71,6 +71,9 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 					GroupRef: mcpv1alpha1.GroupRef{
 						Name: mcpGroupName,
 					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
 					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
 						{Name: compositeToolDefName},
 					},
@@ -233,6 +236,9 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 					GroupRef: mcpv1alpha1.GroupRef{
 						Name: mcpGroupName,
 					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
 					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
 						{Name: compositeToolDefName},
 					},
@@ -351,6 +357,9 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: mcpv1alpha1.GroupRef{
 						Name: mcpGroupName,
+					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
 					},
 					// No CompositeToolRefs
 				},

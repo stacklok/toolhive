@@ -385,7 +385,7 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/")
 	}
 
-	// MCP endpoint - apply middleware chain: auth → discovery
+	// MCP endpoint - apply middleware chain: auth → discovery → telemetry
 	var mcpHandler http.Handler = streamableServer
 
 	if s.config.TelemetryProvider != nil {

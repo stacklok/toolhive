@@ -39,7 +39,7 @@ the workflow name as an attribute.
 
 ## Distributed Tracing
 
-The vMCP creates spans for each individual backend operation as well as workflow executions, enabling the attribution of workflow exection errors or latency to specific tool calls.
+The vMCP creates spans for each individual backend operation as well as workflow executions, enabling the attribution of workflow execution errors or latency to specific tool calls.
 
 
 ## Configuration

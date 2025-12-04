@@ -1401,6 +1401,13 @@ components:
         server:
           $ref: '#/components/schemas/registry.ImageMetadata'
       type: object
+    v1.getUsageMetricsStatusResponse:
+      description: Response containing usage metrics status
+      properties:
+        enabled:
+          description: Whether usage metrics collection is enabled
+          type: boolean
+      type: object
     v1.groupListResponse:
       properties:
         groups:
@@ -1695,6 +1702,23 @@ components:
           description: Success message
           type: string
       type: object
+    v1.updateUsageMetricsStatusRequest:
+      description: Request to update usage metrics status
+      properties:
+        enabled:
+          description: Set to true to enable usage metrics, false to disable
+          type: boolean
+      type: object
+    v1.updateUsageMetricsStatusResponse:
+      description: Response after updating usage metrics status
+      properties:
+        enabled:
+          description: Whether usage metrics collection is enabled
+          type: boolean
+        message:
+          description: Success message
+          type: string
+      type: object
     v1.versionResponse:
       properties:
         version:
@@ -1895,6 +1919,56 @@ paths:
       summary: Unregister multiple clients
       tags:
       - clients
+  /api/v1beta/config/usage-metrics:
+    get:
+      description: Get the current status of usage metrics collection
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.getUsageMetricsStatusResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Get usage metrics status
+      tags:
+      - config
+    put:
+      description: Enable or disable usage metrics collection
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/v1.updateUsageMetricsStatusRequest'
+        description: Update usage metrics status request
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/v1.updateUsageMetricsStatusResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Update usage metrics status
+      tags:
+      - config
   /api/v1beta/discovery/clients:
     get:
       description: List all clients compatible with ToolHive and their status

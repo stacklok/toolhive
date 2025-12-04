@@ -227,6 +227,7 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		"/api/v1beta/clients":   v1.ClientRouter(b.clientManager, b.workloadManager, b.groupManager),
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
 		"/api/v1beta/groups":    v1.GroupsRouter(b.groupManager, b.workloadManager, b.clientManager),
+		"/api/v1beta/config":    v1.ConfigRouter(),
 	}
 
 	// Only mount docs router if enabled

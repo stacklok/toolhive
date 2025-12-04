@@ -42,6 +42,10 @@ type Provider interface {
 	GetBuildEnvFromShell(key string) (exists bool)
 	GetAllBuildEnvFromShell() []string
 	UnsetBuildEnvFromShell(key string) error
+
+	// Usage metrics operations
+	SetUsageMetricsEnabled(enabled bool) error
+	GetUsageMetricsEnabled() bool
 }
 
 // DefaultProvider implements Provider using the default XDG config path
@@ -170,6 +174,16 @@ func (d *DefaultProvider) GetAllBuildEnvFromShell() []string {
 // UnsetBuildEnvFromShell removes a key from shell environment list
 func (d *DefaultProvider) UnsetBuildEnvFromShell(key string) error {
 	return unsetBuildEnvFromShell(d, key)
+}
+
+// SetUsageMetricsEnabled enables or disables usage metrics collection
+func (d *DefaultProvider) SetUsageMetricsEnabled(enabled bool) error {
+	return setUsageMetricsEnabled(d, enabled)
+}
+
+// GetUsageMetricsEnabled returns whether usage metrics are currently enabled
+func (d *DefaultProvider) GetUsageMetricsEnabled() bool {
+	return getUsageMetricsEnabled(d)
 }
 
 // PathProvider implements Provider using a specific config path
@@ -308,6 +322,16 @@ func (p *PathProvider) UnsetBuildEnvFromShell(key string) error {
 	return unsetBuildEnvFromShell(p, key)
 }
 
+// SetUsageMetricsEnabled enables or disables usage metrics collection
+func (p *PathProvider) SetUsageMetricsEnabled(enabled bool) error {
+	return setUsageMetricsEnabled(p, enabled)
+}
+
+// GetUsageMetricsEnabled returns whether usage metrics are currently enabled
+func (p *PathProvider) GetUsageMetricsEnabled() bool {
+	return getUsageMetricsEnabled(p)
+}
+
 // KubernetesProvider is a no-op implementation of Provider for Kubernetes environments.
 // In Kubernetes, configuration is managed by the cluster, not by local files.
 type KubernetesProvider struct{}
@@ -437,6 +461,16 @@ func (*KubernetesProvider) GetAllBuildEnvFromShell() []string {
 // UnsetBuildEnvFromShell is a no-op for Kubernetes environments
 func (*KubernetesProvider) UnsetBuildEnvFromShell(_ string) error {
 	return nil
+}
+
+// SetUsageMetricsEnabled is a no-op for Kubernetes environments
+func (*KubernetesProvider) SetUsageMetricsEnabled(_ bool) error {
+	return nil
+}
+
+// GetUsageMetricsEnabled returns false for Kubernetes environments
+func (*KubernetesProvider) GetUsageMetricsEnabled() bool {
+	return false
 }
 
 // NewProvider creates the appropriate config provider based on the runtime environment

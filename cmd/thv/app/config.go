@@ -261,27 +261,26 @@ func unsetRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 func usageMetricsCmdFunc(_ *cobra.Command, args []string) error {
 	action := args[0]
 
-	var disable bool
+	var enabled bool
 	switch action {
 	case "enable":
-		disable = false
+		enabled = true
 	case "disable":
-		disable = true
+		enabled = false
 	default:
 		return fmt.Errorf("invalid argument: %s (expected 'enable' or 'disable')", action)
 	}
 
-	err := config.UpdateConfig(func(c *config.Config) {
-		c.DisableUsageMetrics = disable
-	})
+	provider := config.NewDefaultProvider()
+	err := provider.SetUsageMetricsEnabled(enabled)
 	if err != nil {
-		return fmt.Errorf("failed to update configuration: %w", err)
+		return err
 	}
 
-	if disable {
-		fmt.Println("Usage metrics disabled.")
-	} else {
+	if enabled {
 		fmt.Println("Usage metrics enabled.")
+	} else {
+		fmt.Println("Usage metrics disabled.")
 	}
 	return nil
 }

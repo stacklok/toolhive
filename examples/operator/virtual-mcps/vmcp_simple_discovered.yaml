@@ -1,0 +1,87 @@
+# Example: Simple VirtualMCPServer with Discovered Mode
+#
+# This example demonstrates the simplest configuration for a VirtualMCPServer
+# using discovered mode for authentication. In this mode:
+# - Authentication configurations are automatically discovered from backend MCPServers
+# - Conflict resolution uses simple prefix strategy
+# - Anonymous incoming authentication for easy testing
+#
+# This example creates:
+# 1. A simple MCPServer backend (filesystem)
+# 2. An MCPGroup to organize it
+# 3. A VirtualMCPServer that aggregates the group
+#
+# Usage:
+#   kubectl apply -f vmcp_simple_discovered.yaml
+
+---
+# Step 1: Create MCPGroup first
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: my-services
+  namespace: default
+spec:
+  description: Simple test group for VirtualMCPServer example
+
+---
+# Step 2: Create MCPServer backend that references the group
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick-simple
+  namespace: default
+spec:
+  groupRef: my-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: stdio
+  proxyPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 3: Create VirtualMCPServer
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: simple-vmcp
+  namespace: default
+spec:
+  # Reference to the MCPGroup containing backend MCPServers
+  groupRef:
+    name: my-services
+
+  # Incoming authentication (client -> vMCP)
+  # Using anonymous auth for simplicity - replace with OIDC in production
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+
+  # Outgoing authentication (vMCP -> backends)
+  # "discovered" mode automatically finds auth configs from backend MCPServers
+  outgoingAuth:
+    source: discovered
+
+  # Aggregation configuration
+  # Prefix strategy prevents tool name conflicts by adding workload name prefix
+  aggregation:
+    conflictResolution: prefix
+    conflictResolutionConfig:
+      prefixFormat: "{workload}_"
+
+  # Optional: Service type (default is ClusterIP)
+  # serviceType: ClusterIP
+
+  # Optional: Operational settings
+  operational:
+    failureHandling:
+      healthCheckInterval: 30s

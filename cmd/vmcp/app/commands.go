@@ -12,6 +12,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
@@ -288,7 +289,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Create router
 	rtr := vmcprouter.NewDefaultRouter()
 
-	// Setup authentication middleware
 	logger.Infof("Setting up incoming authentication (type: %s)", cfg.IncomingAuth.Type)
 
 	authMiddleware, authInfoHandler, err := factory.NewIncomingAuthMiddleware(ctx, cfg.IncomingAuth)
@@ -303,13 +303,30 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	host, _ := cmd.Flags().GetString("host")
 	port, _ := cmd.Flags().GetInt("port")
 
+	// If telemetry is configured, create the provider.
+	var telemetryProvider *telemetry.Provider
+	if cfg.Telemetry != nil {
+		var err error
+		telemetryProvider, err = telemetry.NewProvider(ctx, *cfg.Telemetry)
+		if err != nil {
+			return fmt.Errorf("failed to create telemetry provider: %w", err)
+		}
+		defer func() {
+			err := telemetryProvider.Shutdown(ctx)
+			if err != nil {
+				logger.Errorf("failed to shutdown telemetry provider: %v", err)
+			}
+		}()
+	}
+
 	serverCfg := &vmcpserver.Config{
-		Name:            cfg.Name,
-		Version:         getVersion(),
-		Host:            host,
-		Port:            port,
-		AuthMiddleware:  authMiddleware,
-		AuthInfoHandler: authInfoHandler,
+		Name:              cfg.Name,
+		Version:           getVersion(),
+		Host:              host,
+		Port:              port,
+		AuthMiddleware:    authMiddleware,
+		AuthInfoHandler:   authInfoHandler,
+		TelemetryProvider: telemetryProvider,
 	}
 
 	// Convert composite tool configurations to workflow definitions
@@ -322,7 +339,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Create server with discovery manager, backends, and workflow definitions
-	srv, err := vmcpserver.New(serverCfg, rtr, backendClient, discoveryMgr, backends, workflowDefs)
+	srv, err := vmcpserver.New(ctx, serverCfg, rtr, backendClient, discoveryMgr, backends, workflowDefs)
 	if err != nil {
 		return fmt.Errorf("failed to create Virtual MCP Server: %w", err)
 	}

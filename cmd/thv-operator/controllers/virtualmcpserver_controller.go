@@ -81,6 +81,9 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
+var (
+	envVarSanitizeRegex = regexp.MustCompile(`[^A-Z0-9_]`)
+)
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -1288,7 +1291,7 @@ func generateUniqueTokenExchangeEnvVarName(configName string) string {
 	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
 	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
 	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
+	sanitized = envVarSanitizeRegex.ReplaceAllString(sanitized, "_")
 	return fmt.Sprintf("TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_%s", sanitized)
 }
 
@@ -1298,7 +1301,7 @@ func generateUniqueHeaderInjectionEnvVarName(configName string) string {
 	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
 	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
 	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
+	sanitized = envVarSanitizeRegex.ReplaceAllString(sanitized, "_")
 	return fmt.Sprintf("TOOLHIVE_HEADER_INJECTION_VALUE_%s", sanitized)
 }
 

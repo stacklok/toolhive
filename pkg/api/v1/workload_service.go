@@ -244,7 +244,7 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 			"", "", "", "", "", false, false),
 		runner.WithToolsFilter(req.ToolsFilter),
 		runner.WithToolsOverride(toolsOverride),
-		runner.WithTelemetryConfig("", false, false, false, "", 0.0, nil, false, nil),
+		runner.WithTelemetryConfigFromFlags("", false, false, false, "", 0.0, nil, false, nil),
 	}
 
 	// Determine transport type

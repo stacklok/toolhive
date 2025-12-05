@@ -40,11 +40,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Set working directory for package installation
 WORKDIR /build
 
+{{if index .BuildAuthFiles "netrc"}}
+# Copy netrc for registry authentication (build stage only)
+COPY .netrc /root/.netrc
+RUN chmod 600 /root/.netrc
+{{end}}
+
 {{if .IsLocalPath}}
 # Copy the local source code
 COPY . /build/
 # Install the local package and its dependencies
 RUN uv pip install --system /build/
+
+# Clean up auth files from build directory to prevent leaking to final image
+RUN rm -f /build/.netrc /build/.npmrc /build/.yarnrc /root/.netrc
 {{else}}
 # Install the tool using uv tool install
 # This properly handles package-to-executable mapping and dependencies

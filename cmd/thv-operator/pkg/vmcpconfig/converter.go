@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -17,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -270,14 +269,14 @@ func (c *Converter) convertBackendAuthConfig(
 	crdConfig *mcpv1alpha1.BackendAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
 	// If type is "discovered", return unauthenticated strategy
-	if crdConfig.Type == "discovered" {
+	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeDiscovered {
 		return &authtypes.BackendAuthStrategy{
-			Type: "unauthenticated",
+			Type: authtypes.StrategyTypeUnauthenticated,
 		}, nil
 	}
 
 	// If type is "external_auth_config_ref", resolve the MCPExternalAuthConfig
-	if crdConfig.Type == "external_auth_config_ref" {
+	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef {
 		if crdConfig.ExternalAuthConfigRef == nil {
 			return nil, fmt.Errorf("backend %s: external_auth_config_ref type requires externalAuthConfigRef field", backendName)
 		}
@@ -310,19 +309,19 @@ func (*Converter) convertExternalAuthConfigToStrategy(
 
 	switch externalAuthConfig.Spec.Type {
 	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
-		strategy.Type = "unauthenticated"
+		strategy.Type = authtypes.StrategyTypeUnauthenticated
 
 	case mcpv1alpha1.ExternalAuthTypeHeaderInjection:
 		if externalAuthConfig.Spec.HeaderInjection == nil {
 			return nil, fmt.Errorf("headerInjection config is required when type is headerInjection")
 		}
 
-		strategy.Type = "header_injection"
+		strategy.Type = authtypes.StrategyTypeHeaderInjection
 		strategy.HeaderInjection = &authtypes.HeaderInjectionConfig{
 			HeaderName: externalAuthConfig.Spec.HeaderInjection.HeaderName,
 			// The secret value will be mounted as an environment variable by the deployment controller
 			// Use the same env var naming convention as the deployment controller
-			HeaderValueEnv: generateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name),
+			HeaderValueEnv: controllerutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name),
 		}
 
 	case mcpv1alpha1.ExternalAuthTypeTokenExchange:
@@ -330,7 +329,7 @@ func (*Converter) convertExternalAuthConfigToStrategy(
 			return nil, fmt.Errorf("tokenExchange config is required when type is tokenExchange")
 		}
 
-		strategy.Type = "token_exchange"
+		strategy.Type = authtypes.StrategyTypeTokenExchange
 		strategy.TokenExchange = &authtypes.TokenExchangeConfig{
 			TokenURL:         externalAuthConfig.Spec.TokenExchange.TokenURL,
 			ClientID:         externalAuthConfig.Spec.TokenExchange.ClientID,
@@ -343,7 +342,7 @@ func (*Converter) convertExternalAuthConfigToStrategy(
 		if externalAuthConfig.Spec.TokenExchange.ClientSecretRef != nil {
 			// The secret value will be mounted as an environment variable by the deployment controller
 			// Use the same env var naming convention as the deployment controller
-			strategy.TokenExchange.ClientSecretEnv = generateUniqueTokenExchangeEnvVarName(externalAuthConfig.Name)
+			strategy.TokenExchange.ClientSecretEnv = controllerutil.GenerateUniqueTokenExchangeEnvVarName(externalAuthConfig.Name)
 		}
 
 	default:
@@ -882,26 +881,4 @@ func (*Converter) convertOperational(
 	}
 
 	return operational
-}
-
-// generateUniqueTokenExchangeEnvVarName generates a unique environment variable name for token exchange
-// client secrets, incorporating the ExternalAuthConfig name to ensure uniqueness.
-// This must match the naming convention used by the deployment controller.
-func generateUniqueTokenExchangeEnvVarName(configName string) string {
-	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
-	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
-	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
-	return fmt.Sprintf("TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_%s", sanitized)
-}
-
-// generateUniqueHeaderInjectionEnvVarName generates a unique environment variable name for header injection
-// values, incorporating the ExternalAuthConfig name to ensure uniqueness.
-// This must match the naming convention used by the deployment controller.
-func generateUniqueHeaderInjectionEnvVarName(configName string) string {
-	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
-	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
-	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
-	return fmt.Sprintf("TOOLHIVE_HEADER_INJECTION_VALUE_%s", sanitized)
 }

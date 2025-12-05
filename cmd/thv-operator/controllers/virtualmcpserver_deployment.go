@@ -433,7 +433,7 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		if externalAuthConfig.Spec.TokenExchange.ClientSecretRef == nil {
 			return nil, nil // No secret to mount
 		}
-		envVarName = generateUniqueTokenExchangeEnvVarName(externalAuthConfigName)
+		envVarName = ctrlutil.GenerateUniqueTokenExchangeEnvVarName(externalAuthConfigName)
 		secretRef = externalAuthConfig.Spec.TokenExchange.ClientSecretRef
 
 	case mcpv1alpha1.ExternalAuthTypeHeaderInjection:
@@ -443,7 +443,7 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		if externalAuthConfig.Spec.HeaderInjection.ValueSecretRef == nil {
 			return nil, nil // No secret to mount
 		}
-		envVarName = generateUniqueHeaderInjectionEnvVarName(externalAuthConfigName)
+		envVarName = ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfigName)
 		secretRef = externalAuthConfig.Spec.HeaderInjection.ValueSecretRef
 
 	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:

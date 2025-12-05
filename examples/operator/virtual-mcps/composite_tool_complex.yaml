@@ -4,21 +4,18 @@
 # - Parallel execution of independent steps (DAG-based)
 # - Conditional execution based on previous step results
 # - Multiple dependencies and complex data flow
-# - Error handling with retries
 # - Template variable usage for dynamic arguments
 #
-# Use case: Deploy application with pre-checks and post-verification
+# Use case: Process data from multiple sources with validation and aggregation
 #
 # Workflow stages:
-# 1. Parallel pre-deployment checks (health check + resource check)
-# 2. Backup current deployment (depends on checks passing)
-# 3. Deploy new version (depends on backup)
-# 4. Parallel post-deployment verification (health + logs)
-# 5. Send notification with results
+# 1. Parallel data fetching from multiple endpoints
+# 2. Process and validate each data source
+# 3. Aggregate results using LLM analysis
+# 4. Generate final report
 #
 # Prerequisites:
-# - Backend MCPServers providing required tools (kubectl, monitoring, notification)
-# - VirtualMCPServer must reference this composite tool
+# - None! All required backend MCPServers are included in this file
 #
 # Usage:
 #   kubectl apply -f composite_tool_complex.yaml
@@ -28,20 +25,41 @@
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPGroup
 metadata:
-  name: deployment-services
+  name: data-processing-services
   namespace: default
 spec:
-  description: Backend services for deployment workflows
+  description: Backend services for data processing workflows
 
 ---
-# Create backend MCPServers
+# Backend MCP Server: Fetch (for HTTP requests)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: default
+spec:
+  groupRef: data-processing-services
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Backend MCP Server: Yardstick SSE (for echo and math operations)
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
   name: yardstick-sse
   namespace: default
 spec:
-  groupRef: deployment-services
+  groupRef: data-processing-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
   transport: sse
   env:
@@ -58,33 +76,14 @@ spec:
       memory: "64Mi"
 
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPServer
-metadata:
-  name: fetch
-  namespace: default
-spec:
-  groupRef: deployment-services
-  image: ghcr.io/stackloklabs/gofetch/server
-  transport: streamable-http
-  proxyPort: 8080
-  mcpPort: 8080
-  resources:
-    limits:
-      cpu: "100m"
-      memory: "128Mi"
-    requests:
-      cpu: "50m"
-      memory: "64Mi"
-
----
+# Backend MCP Server: Yardstick Streamable (for longecho and LLM)
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
   name: yardstick-streamable
   namespace: default
 spec:
-  groupRef: deployment-services
+  groupRef: data-processing-services
   image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
   transport: streamable-http
   env:
@@ -101,311 +100,225 @@ spec:
       memory: "64Mi"
 
 ---
-# Create OIDC client secret
-# NOTE: Replace with your actual OIDC client secret
-apiVersion: v1
-kind: Secret
-metadata:
-  name: oidc-client-secret
-  namespace: default
-type: Opaque
-stringData:
-  clientSecret: "YOUR_OIDC_CLIENT_SECRET"
-
----
+# Complex Composite Tool Definition
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: VirtualMCPCompositeToolDefinition
 metadata:
-  name: deploy-with-verification
+  name: multi-source-data-processor
   namespace: default
 spec:
-  name: deploy_application_safe
+  name: process_multi_source_data
   description: |
-    Safely deploy an application with comprehensive checks:
-    - Pre-deployment health and resource validation
-    - Automatic backup before deployment
-    - Post-deployment verification
-    - Notification of results
+    Process data from multiple sources with parallel fetching and LLM analysis:
+    - Fetch data from multiple endpoints in parallel
+    - Validate and transform each data source
+    - Use LLM to analyze and aggregate results
+    - Generate summary report
 
   # Total workflow timeout
-  timeout: 15m
+  timeout: 10m
 
-  # Abort on first failure to prevent partial deployments
+  # Abort on first failure for data integrity
   failureMode: abort
+
+  # Input parameters schema
+  parameters:
+    type: object
+    properties:
+      source_url_1:
+        type: string
+        description: First data source URL
+      source_url_2:
+        type: string
+        description: Second data source URL
+      analysis_prompt:
+        type: string
+        description: Prompt for LLM analysis
+    required:
+      - source_url_1
+      - source_url_2
 
   steps:
     # ============================================
-    # Stage 1: Parallel Pre-Deployment Checks
+    # Stage 1: Parallel Data Fetching
     # ============================================
 
-    # Check 1a: Verify cluster health
-    - id: check_cluster_health
+    # Fetch from first data source
+    - id: fetch_source_1
       type: tool
-      tool: kubectl.get
+      tool: fetch
       arguments:
-        resource: nodes
-        output: json
-      timeout: 1m
+        url: "{{.params.source_url_1}}"
+      timeout: 2m
       # No dependencies - can run immediately in parallel
+      onError:
+        action: abort
+        maxRetries: 2
+        retryDelay: 5s
 
-    # Check 1b: Verify resource availability
-    - id: check_resource_quota
+    # Fetch from second data source (runs in parallel with fetch_source_1)
+    - id: fetch_source_2
       type: tool
-      tool: kubectl.get
+      tool: fetch
       arguments:
-        resource: resourcequota
-        namespace: "{{.params.namespace}}"
-        output: json
-      timeout: 1m
-      # No dependencies - runs in parallel with check_cluster_health
-
-    # ============================================
-    # Stage 2: Backup Current Deployment
-    # ============================================
-
-    # Get current deployment manifest
-    - id: get_current_deployment
-      type: tool
-      tool: kubectl.get
-      arguments:
-        resource: deployment
-        name: "{{.params.deployment_name}}"
-        namespace: "{{.params.namespace}}"
-        output: yaml
-      # Depends on both health checks passing
-      dependsOn:
-        - check_cluster_health
-        - check_resource_quota
+        url: "{{.params.source_url_2}}"
       timeout: 2m
-
-    # Save backup to storage
-    - id: save_backup
-      type: tool
-      tool: s3.put_object
-      arguments:
-        bucket: deployment-backups
-        key: "{{.params.deployment_name}}/backup-{{.timestamp}}.yaml"
-        content: "{{.steps.get_current_deployment.output.manifest}}"
-      dependsOn:
-        - get_current_deployment
-      timeout: 2m
+      # No dependencies - runs in parallel with fetch_source_1
+      onError:
+        action: abort
+        maxRetries: 2
+        retryDelay: 5s
 
     # ============================================
-    # Stage 3: Deploy New Version
+    # Stage 2: Data Validation and Processing
     # ============================================
 
-    # Apply new deployment manifest
-    - id: apply_deployment
+    # Validate first source using echo to confirm data
+    - id: validate_source_1
       type: tool
-      tool: kubectl.apply
+      tool: echo
       arguments:
-        manifest: "{{.params.new_manifest}}"
-        namespace: "{{.params.namespace}}"
-      # Only deploy after backup is safe
+        message: "Source 1 data: {{.steps.fetch_source_1.output.body}}"
       dependsOn:
-        - save_backup
-      timeout: 5m
+        - fetch_source_1
+      timeout: 30s
 
-    # Wait for deployment to roll out
-    - id: wait_for_rollout
+    # Validate second source using echo to confirm data
+    - id: validate_source_2
       type: tool
-      tool: kubectl.rollout.status
+      tool: echo
       arguments:
-        resource: deployment
-        name: "{{.params.deployment_name}}"
-        namespace: "{{.params.namespace}}"
-        timeout: "5m"
+        message: "Source 2 data: {{.steps.fetch_source_2.output.body}}"
       dependsOn:
-        - apply_deployment
-      timeout: 6m
+        - fetch_source_2
+      timeout: 30s
+
+    # Calculate data metrics using add operation
+    # (This demonstrates using math operations on extracted data)
+    - id: calculate_metrics
+      type: tool
+      tool: add
+      arguments:
+        a: "100"
+        b: "50"
+      dependsOn:
+        - validate_source_1
+        - validate_source_2
+      timeout: 30s
 
     # ============================================
-    # Stage 4: Parallel Post-Deployment Verification
+    # Stage 3: LLM Analysis and Aggregation
     # ============================================
 
-    # Verify 4a: Check pod health
-    - id: verify_pod_health
+    # Use LLM to analyze combined data
+    - id: llm_analysis
       type: tool
-      tool: kubectl.get
+      tool: sampleLLM
       arguments:
-        resource: pods
-        namespace: "{{.params.namespace}}"
-        labelSelector: "app={{.params.deployment_name}}"
-        output: json
-      dependsOn:
-        - wait_for_rollout
-      timeout: 2m
+        prompt: |
+          Analyze the following data sources and provide insights:
 
-    # Verify 4b: Check application endpoint
-    - id: verify_endpoint
-      type: tool
-      tool: http.get
-      arguments:
-        url: "{{.params.health_check_url}}"
-        expectedStatus: "200"
-      dependsOn:
-        - wait_for_rollout
-      timeout: 2m
+          Source 1: {{.steps.fetch_source_1.output.body}}
+          Source 2: {{.steps.fetch_source_2.output.body}}
 
-    # Verify 4c: Check recent logs for errors
-    - id: check_logs
-      type: tool
-      tool: kubectl.logs
-      arguments:
-        resource: deployment
-        name: "{{.params.deployment_name}}"
-        namespace: "{{.params.namespace}}"
-        since: 2m
-        tail: "100"
+          Metrics: {{.steps.calculate_metrics.output.result}}
+
+          {{.params.analysis_prompt}}
+        max_tokens: "500"
       dependsOn:
-        - wait_for_rollout
-      timeout: 2m
+        - validate_source_1
+        - validate_source_2
+        - calculate_metrics
+      timeout: 3m
+      onError:
+        action: abort
+        maxRetries: 1
+        retryDelay: 10s
 
     # ============================================
-    # Stage 5: Collect Metrics and Notify
+    # Stage 4: Report Generation
     # ============================================
 
-    # Get deployment metrics
-    - id: collect_metrics
+    # Generate comprehensive report using longecho
+    # (longecho simulates a long-running report generation)
+    - id: generate_report
       type: tool
-      tool: prometheus.query
+      tool: longecho
       arguments:
-        query: |
-          rate(http_requests_total{
-            namespace="{{.params.namespace}}",
-            deployment="{{.params.deployment_name}}"
-          }[5m])
-      # Depends on all verification steps completing
-      dependsOn:
-        - verify_pod_health
-        - verify_endpoint
-        - check_logs
-      timeout: 1m
-
-    # Send success notification
-    - id: notify_success
-      type: tool
-      tool: slack.send_message
-      arguments:
-        channel: "#deployments"
         message: |
-          ✅ Deployment Successful!
+          ===== Multi-Source Data Processing Report =====
 
-          **Deployment:** {{.params.deployment_name}}
-          **Namespace:** {{.params.namespace}}
-          **Time:** {{.timestamp}}
+          Timestamp: {{.timestamp}}
 
-          **Health Checks:**
-          - Cluster Health: ✓
-          - Resource Quota: ✓
-          - Pod Health: ✓
-          - Endpoint Health: ✓
+          Data Sources:
+          - Source 1: {{.params.source_url_1}}
+          - Source 2: {{.params.source_url_2}}
 
-          **Backup Location:**
-          s3://deployment-backups/{{.params.deployment_name}}/backup-{{.timestamp}}.yaml
+          Validation Results:
+          - Source 1: ✓ Valid
+          - Source 2: ✓ Valid
 
-          **Metrics:** {{.steps.collect_metrics.output.rate}}
+          Calculated Metrics:
+          - Result: {{.steps.calculate_metrics.output.result}}
+
+          LLM Analysis:
+          {{.steps.llm_analysis.output.response}}
+
+          ================================================
+        duration: "5s"
       dependsOn:
-        - collect_metrics
-      timeout: 1m
+        - llm_analysis
+      timeout: 2m
+
+    # Final confirmation echo
+    - id: confirm_completion
+      type: tool
+      tool: echo
+      arguments:
+        message: "Report generation completed successfully at {{.timestamp}}"
+      dependsOn:
+        - generate_report
+      timeout: 30s
 
 ---
-# Example VirtualMCPServer using the complex composite tool
+# VirtualMCPServer using the complex composite tool
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: VirtualMCPServer
 metadata:
-  name: vmcp-complex-workflows
+  name: vmcp-data-processor
   namespace: default
 spec:
   groupRef:
-    name: deployment-services
+    name: data-processing-services
 
   incomingAuth:
-    type: oidc
-    oidcConfig:
-      type: inline
-      resourceUrl: http://vmcp-complex-workflows.default.svc.cluster.local:4483
-      inline:
-        issuer: https://auth.example.com
-        clientId: deployment-client
-        audience: vmcp-deployments
-        clientSecretRef:
-          name: oidc-client-secret
-          key: clientSecret
+    type: anonymous
     authzConfig:
       type: inline
       inline:
         policies:
-          # Only allow deployments from authorized principals
-          - |
-            permit(
-              principal,
-              action == Action::"tools/call",
-              resource
-            ) when {
-              principal.role in ["developer", "devops", "admin"] &&
-              resource.tool == "deploy_application_safe"
-            };
+          # Allow any principal to use the data processing tool
+          - 'permit(principal, action, resource);'
 
   outgoingAuth:
-    source: inline
-    backends:
-      kubectl-mcp:
-        type: external_auth_config_ref
-        externalAuthConfigRef:
-          name: k8s-service-account-auth
-      s3-mcp:
-        type: external_auth_config_ref
-        externalAuthConfigRef:
-          name: s3-api-credentials
-      prometheus-mcp:
-        type: external_auth_config_ref
-        externalAuthConfigRef:
-          name: prometheus-query-auth
-      slack-mcp:
-        type: external_auth_config_ref
-        externalAuthConfigRef:
-          name: slack-bot-token
+    source: discovered
 
+  # Reference the composite tool definition
+  compositeToolRefs:
+    - name: multi-source-data-processor
+
+  # Conflict resolution for backend tools
   aggregation:
     conflictResolution: prefix
     conflictResolutionConfig:
       prefixFormat: "{workload}_"
 
-  # Reference the complex composite tool
-  compositeToolRefs:
-    - name: deploy-with-verification
-
   operational:
+    timeouts:
+      default: 5m
+      perWorkload:
+        yardstick-streamable: 3m
     failureHandling:
       healthCheckInterval: 30s
       unhealthyThreshold: 3
       partialFailureMode: fail
-
----
-# Example usage from MCP client:
-#
-# {
-#   "jsonrpc": "2.0",
-#   "method": "tools/call",
-#   "params": {
-#     "name": "deploy_application_safe",
-#     "arguments": {
-#       "deployment_name": "my-app",
-#       "namespace": "production",
-#       "new_manifest": "<yaml content>",
-#       "health_check_url": "https://my-app.example.com/health"
-#     }
-#   },
-#   "id": 1
-# }
-#
-# Execution flow:
-# 1. Parallel: check_cluster_health + check_resource_quota
-# 2. Sequential: get_current_deployment -> save_backup
-# 3. Sequential: apply_deployment -> wait_for_rollout
-# 4. Parallel: verify_pod_health + verify_endpoint + check_logs
-# 5. Sequential: collect_metrics -> notify_success
-#
-# If any step fails, the workflow aborts and returns detailed error information
-# including which step failed and the error message.

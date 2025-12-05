@@ -93,7 +93,7 @@ spec:
 ---
 # Strategy 1: Prefix-based Conflict Resolution
 # Tools are prefixed with workload name to avoid conflicts
-# Example: "read_file" becomes "filesystem_read_file" and "s3_read_file"
+# Example: If tool "echo" exists in backend "yardstick-sse", it becomes "yardstick-sse_echo"
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: VirtualMCPServer
 metadata:
@@ -121,10 +121,10 @@ spec:
       # Format string for prefixes
       # Available variables: {workload}, {namespace}
       prefixFormat: "{workload}_"
-      # Result: If "filesystem-mcp" and "s3-mcp" both have "read_file":
-      # - yardstick_sse_echo
+      # Result: Tools from all backends are prefixed with their workload name:
+      # - yardstick-sse_echo
       # - fetch_fetch
-      # - yardstick_streamable_longecho
+      # - yardstick-streamable_longecho
 
   operational:
     failureHandling:

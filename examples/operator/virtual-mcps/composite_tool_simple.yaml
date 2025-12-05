@@ -1,17 +1,14 @@
 # Example: Simple VirtualMCPCompositeToolDefinition
 #
 # This example demonstrates a simple composite tool workflow that:
-# - Chains two tool calls sequentially
-# - Uses output from first tool as input to second tool
+# - Chains multiple tool calls sequentially
+# - Uses output from one tool as input to the next
 # - Has basic error handling and timeout configuration
 #
-# Use case: Create a backup of a file before modifying it
+# Use case: Fetch data from a URL and process it with validation
 #
-# Note: This example includes:
-# - MCPGroup "my-services"
-# - Sample backend MCPServers
-# - VirtualMCPCompositeToolDefinition
-# - VirtualMCPServer that uses the composite tool
+# Prerequisites:
+# - None! All required backend MCPServers are included in this file
 #
 # Usage:
 #   kubectl apply -f composite_tool_simple.yaml
@@ -24,10 +21,31 @@ metadata:
   name: my-services
   namespace: default
 spec:
-  description: Sample services for composite tool example
+  description: Sample services for simple composite tool example
 
 ---
-# Create backend MCPServers
+# Backend MCP Server: Fetch (for HTTP requests)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: default
+spec:
+  groupRef: my-services
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Backend MCP Server: Yardstick SSE (for echo and validation)
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
@@ -51,91 +69,81 @@ spec:
       memory: "64Mi"
 
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPServer
-metadata:
-  name: fetch
-  namespace: default
-spec:
-  groupRef: my-services
-  image: ghcr.io/stackloklabs/gofetch/server
-  transport: streamable-http
-  proxyPort: 8080
-  mcpPort: 8080
-  resources:
-    limits:
-      cpu: "100m"
-      memory: "128Mi"
-    requests:
-      cpu: "50m"
-      memory: "64Mi"
-
----
-# Create VirtualMCPCompositeToolDefinition
+# Simple Composite Tool Definition
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: VirtualMCPCompositeToolDefinition
 metadata:
-  name: backup-file
+  name: fetch-and-validate
   namespace: default
 spec:
   # Name exposed to clients as a composite tool
-  name: backup_and_modify_file
+  name: fetch_and_validate_data
 
   # Human-readable description
-  description: Creates a backup of a file before modifying its contents
+  description: Fetches data from a URL and validates it by echoing the content back
 
   # Maximum time for entire workflow
-  timeout: 5m
+  timeout: 3m
 
   # Failure mode: "abort" stops on first error, "continue" tries all steps
   failureMode: abort
 
+  # Input parameters schema
+  parameters:
+    type: object
+    properties:
+      url:
+        type: string
+        description: The URL to fetch data from
+    required:
+      - url
+
   # Sequential workflow steps
   steps:
-    # Step 1: Read the original file
-    - id: read_original
+    # Step 1: Fetch data from URL
+    - id: fetch_data
       type: tool
       # Reference to backend tool (will be resolved by vMCP router)
-      tool: read_file
+      tool: fetch
       # Input arguments (can use template variables)
       arguments:
-        path: "{{.params.file_path}}"
+        url: "{{.params.url}}"
       # Step-specific timeout
       timeout: 1m
+      onError:
+        action: abort
+        maxRetries: 2
+        retryDelay: 5s
 
-    # Step 2: Write backup file
-    - id: write_backup
+    # Step 2: Validate by echoing the fetched content
+    - id: validate_content
       type: tool
-      tool: write_file
+      tool: echo
       arguments:
-        # Create backup with .bak extension
-        path: "{{.params.file_path}}.bak"
         # Use output from previous step
-        content: "{{.steps.read_original.output.content}}"
-      # This step depends on read_original completing successfully
+        message: "Fetched content from {{.params.url}}: {{.steps.fetch_data.output.body}}"
+      # This step depends on fetch_data completing successfully
       dependsOn:
-        - read_original
-      timeout: 1m
+        - fetch_data
+      timeout: 30s
 
-    # Step 3: Write modified file
-    - id: write_modified
+    # Step 3: Confirm success with a final echo
+    - id: confirm_success
       type: tool
-      tool: write_file
+      tool: echo
       arguments:
-        path: "{{.params.file_path}}"
-        # New content provided by client
-        content: "{{.params.new_content}}"
-      # This step depends on backup being created
+        message: "Successfully fetched and validated data from {{.params.url}} at {{.timestamp}}"
+      # This step depends on validation completing
       dependsOn:
-        - write_backup
-      timeout: 1m
+        - validate_content
+      timeout: 30s
 
 ---
-# Example VirtualMCPServer using the composite tool
+# VirtualMCPServer using the simple composite tool
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: VirtualMCPServer
 metadata:
-  name: vmcp-with-composite-tool
+  name: vmcp-simple-composite
   namespace: default
 spec:
   groupRef:
@@ -147,19 +155,21 @@ spec:
       type: inline
       inline:
         policies:
+          # Allow any principal to use the composite tool
           - 'permit(principal, action, resource);'
 
   outgoingAuth:
     source: discovered
 
+  # Reference the composite tool definition
+  compositeToolRefs:
+    - name: fetch-and-validate
+
+  # Conflict resolution for backend tools
   aggregation:
     conflictResolution: prefix
     conflictResolutionConfig:
       prefixFormat: "{workload}_"
-
-  # Reference the composite tool
-  compositeToolRefs:
-    - name: backup-file
 
   operational:
     failureHandling:
@@ -175,17 +185,31 @@ spec:
 #   "jsonrpc": "2.0",
 #   "method": "tools/call",
 #   "params": {
-#     "name": "backup_and_modify_file",
+#     "name": "fetch_and_validate_data",
 #     "arguments": {
-#       "file_path": "/data/config.yaml",
-#       "new_content": "updated: true\nversion: 2.0"
+#       "url": "https://api.github.com/repos/stacklok/toolhive"
 #     }
 #   },
 #   "id": 1
 # }
 #
 # The vMCP will:
-# 1. Read the file at /data/config.yaml
-# 2. Write backup to /data/config.yaml.bak
-# 3. Write new content to /data/config.yaml
+# 1. Fetch data from the provided URL
+# 2. Echo/validate the fetched content
+# 3. Confirm success with timestamp
 # 4. Return combined results from all steps
+#
+# Example output:
+# {
+#   "jsonrpc": "2.0",
+#   "result": {
+#     "content": [
+#       {
+#         "type": "text",
+#         "text": "Successfully fetched and validated data from https://api.github.com/repos/stacklok/toolhive at 2024-01-15T10:30:00Z"
+#       }
+#     ],
+#     "isError": false
+#   },
+#   "id": 1
+# }

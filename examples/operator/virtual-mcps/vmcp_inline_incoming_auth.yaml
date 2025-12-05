@@ -20,7 +20,7 @@
 # - MCPGroup and sample backend MCPServers
 #
 # Usage:
-#   kubectl apply -f vmcp_inline_backend_auth.yaml
+#   kubectl apply -f vmcp_inline_incoming_auth.yaml
 
 ---
 # Create OIDC client secret for incoming authentication

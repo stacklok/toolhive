@@ -39,19 +39,103 @@ reconciles on MCPServer changes. The vMCP server simply loads config from the
 ConfigMap and routes requests, though it has duplicate discovery code it
 doesn't use dynamically.
 
-The target architecture flips these responsibilities. The operator becomes a
-"dumb" infrastructure manager that watches VirtualMCPServer, writes minimal
-static config to ConfigMap, creates RBAC, manages Deployment and Service, and
-updates CRD status. The vMCP server becomes "smart" by running a
-controller-runtime manager, watching MCPServer/ExternalAuthConfig/Secret via
-informers, owning all backend discovery and auth resolution, and gating
-readiness on informer sync.
+The target architecture supports two discovery modes, selected by the admin
+based on their security and operational requirements.
 
-### Status Reporting Mechanism
+### Discovery Modes
 
-One design decision is how the operator should learn about vMCP's discovered
-backends to update the VirtualMCPServer CRD status. There are two main
-approaches to consider, both with pros and cons:
+VirtualMCPServer supports two mutually exclusive discovery modes. The mode is
+determined by the `outgoingAuth.source` field.
+
+#### Dynamic Mode (`outgoingAuth.source: discovered`)
+
+The vMCP server runs a controller-runtime manager with informers watching
+MCPServer, MCPExternalAuthConfig, and Secret resources. It discovers backends
+dynamically, resolves auth configurations at runtime, and updates automatically
+when backends change - no pod restarts required.
+
+**When to use:** You need real-time backend updates and can accept namespace-
+scoped K8s API access from the vMCP pod.
+
+**vMCP pod permissions:** Read access to MCPServers, MCPGroups,
+MCPExternalAuthConfigs, ConfigMaps, and Secrets in its namespace.
+
+```yaml
+apiVersion: mcp.toolhive.stacklok.io/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: my-vmcp
+spec:
+  groupRef:
+    name: my-group
+
+  outgoingAuth:
+    source: discovered  # vMCP discovers auth from MCPServer.spec.externalAuthConfigRef
+```
+
+#### Static Mode (`outgoingAuth.source: inline`)
+
+The operator discovers MCPServers in the group, but all auth configuration is
+specified inline in the VirtualMCPServer spec. The operator mounts secrets as
+environment variables and embeds complete configuration in the ConfigMap. The
+vMCP binary has zero K8s API access - no ServiceAccount, Role, or RoleBinding.
+
+**When to use:** Security-sensitive deployments where the internet-facing vMCP
+pod should have no K8s API access. Backend changes require operator reconcile
+and pod restart.
+
+**vMCP pod permissions:** None. Reads config from mounted ConfigMap, secrets
+from environment variables.
+
+```yaml
+apiVersion: mcp.toolhive.stacklok.io/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: my-vmcp
+spec:
+  groupRef:
+    name: my-group
+
+  outgoingAuth:
+    source: inline  # Auth config is inline, not discovered from MCPExternalAuthConfig
+    backends:
+      github-mcp:
+        type: token_exchange
+        tokenExchange:
+          tokenUrl: https://oauth.example.com/token
+          clientId: github-client
+          clientSecretRef:
+            name: github-auth-secret
+            key: client-secret
+          audience: https://api.github.com
+      slack-mcp:
+        type: header_injection
+        headerInjection:
+          headerName: Authorization
+          valueSecretRef:
+            name: slack-api-secret
+            key: token
+```
+
+#### Mode Comparison
+
+| Aspect | Dynamic Mode | Static Mode |
+|--------|-------------|-------------|
+| `outgoingAuth.source` | `discovered` | `inline` |
+| Backend discovery | vMCP watches MCPServers | Operator embeds in ConfigMap |
+| Auth config source | MCPExternalAuthConfig CRDs | Inline in VirtualMCPServer spec |
+| Secret access | vMCP reads via K8s API | Operator mounts as env vars |
+| Backend changes | Real-time, no restart | Requires pod restart |
+| vMCP K8s permissions | Namespace-scoped read | None |
+| Attack surface | K8s API from internet-facing pod | No K8s API exposure |
+
+### Status Reporting Mechanism (Dynamic Mode Only)
+
+In dynamic mode, the operator needs to learn about vMCP's discovered backends
+to update the VirtualMCPServer CRD status. There are two approaches:
+
+In static mode, the operator already knows the backends (it discovered them
+from MCPServers in the group), so no status reporting mechanism is needed.
 
 **Option A: HTTP Polling**
 
@@ -90,12 +174,10 @@ subsequently.
 
 ### Secret Handling
 
-For backend authentication, secrets are fetched directly by vMCP via the K8s
-API when resolving ExternalAuthConfig references.
+Secret handling differs between discovery modes.
 
-**Security boundary: same-namespace only**
-
-This approach is secure because secret access is constrained to the vMCP's own
+**Dynamic mode:** vMCP fetches secrets directly via the K8s API when resolving
+ExternalAuthConfig references. Secret access is constrained to the vMCP's own
 namespace through two mechanisms:
 
 1. **RBAC scoping**: The operator creates a namespace-scoped `Role` (not
@@ -108,28 +190,18 @@ namespace through two mechanisms:
    parent resource's namespace, preventing cross-namespace references at the
    schema level.
 
-**Secret change propagation**
-
 Secret changes are handled using the `Watches()` pattern with mapping
-functions, which is the idiomatic controller-runtime approach:
+functions. When a Secret changes, the mapping function finds MCPServers that
+reference it and enqueues reconcile requests. The reconciler re-fetches the
+secret and updates the backend's auth configuration, providing automatic
+secret rotation without pod restarts.
 
-```go
-Watches(
-    &corev1.Secret{},
-    handler.EnqueueRequestsFromMapFunc(w.secretToMCPServers),
-)
-```
+**Static mode:** The operator validates that referenced secrets exist and
+mounts them as environment variables in the vMCP pod. The vMCP binary reads
+secrets from environment variables - no K8s API access required. Secret
+rotation requires a pod restart (Deployment rollout).
 
-When a Secret changes, the mapping function finds MCPServers that reference it
-(via their ExternalAuthConfig) and enqueues reconcile requests. The reconciler
-then re-fetches the secret and updates the backend's auth configuration. This
-provides automatic secret rotation without pod restarts.
-
-The existing RBAC rules in `virtualmcpserver_deployment.go` already grant the
-necessary permissions, and `pkg/vmcp/workloads/k8s.go` demonstrates the
-discovery pattern.
-
-### Dynamic Registry
+### Dynamic Registry (Dynamic Mode Only)
 
 The current `immutableRegistry` discovers backends once at startup and never
 changes. For dynamic discovery, we need a mutable registry with thread-safe
@@ -145,7 +217,10 @@ discovery manager includes this version in its cache key, so any backend
 change automatically invalidates all cached capabilities without explicit
 invalidation logic.
 
-### Startup Synchronization
+In static mode, the immutableRegistry is used since backends don't change at
+runtime.
+
+### Startup Synchronization (Dynamic Mode Only)
 
 The readiness probe gates traffic until the controller-runtime cache has
 synced via `WaitForCacheSync()`. This guarantees that informers have received
@@ -162,6 +237,9 @@ If the first request arrives during this window, the client may see fewer
 backends than expected. This is transient and self-correcting - backends
 appear within seconds as reconcilers process the queue. A startup probe with
 generous timeout handles slow-starting scenarios.
+
+In static mode, no synchronization is needed - backends are loaded from the
+ConfigMap at startup.
 
 ### Config Changes
 
@@ -216,10 +294,11 @@ Files to create:
 Files to modify:
 - `pkg/vmcp/server/server.go` - Register `/status` endpoint alongside existing `/health` and `/ping`
 
-### Phase 2: Create Mutable Backend Registry
+### Phase 2: Create Mutable Backend Registry (Dynamic Mode Only)
 
 Replace `immutableRegistry` with a thread-safe `DynamicRegistry` that supports
 dynamic updates. This is foundational for the reconciler work in Phase 3.
+Static mode continues using `immutableRegistry`.
 
 The interface extends the existing `BackendRegistry` with simple, idempotent
 mutation operations:
@@ -316,12 +395,14 @@ Files to modify:
 - `pkg/vmcp/registry.go` - Add `DynamicRegistry` interface and `dynamicRegistry` implementation
 - `pkg/vmcp/discovery/manager.go` - Add `registryVersion` field to cache entries and version check on lookup
 
-### Phase 3: Add Reconciler Infrastructure
+### Phase 3: Add Reconciler Infrastructure (Dynamic Mode Only)
 
 Create a new `pkg/vmcp/k8s/` package with controller-runtime integration for
-Kubernetes mode. We use the reconciler pattern rather than direct informer
+dynamic mode. We use the reconciler pattern rather than direct informer
 event handlers because it provides built-in retry with exponential backoff,
 rate limiting, event deduplication, and cleaner error handling.
+
+Static mode skips this entirely - no controller-runtime, no informers.
 
 The manager wraps controller-runtime:
 
@@ -440,11 +521,13 @@ Files to modify:
 - `pkg/vmcp/server/server.go` - Initialize K8s manager in K8s mode, add `/readyz` endpoint
 - `cmd/vmcp/app/commands.go` - Detect K8s mode, create and start manager goroutine
 
-### Phase 4: Move Auth Resolution to vMCP
+### Phase 4: Move Auth Resolution to vMCP (Dynamic Mode Only)
 
 Refactor the existing auth resolution code for use by the reconcilers. The code in `pkg/vmcp/workloads/k8s.go` already implements discovery with `discoverAuthConfig()` and the converters in `pkg/vmcp/auth/converters/` handle the actual resolution.
 
-**Secret Handling Approach**: vMCP fetches secrets at runtime via the Kubernetes API rather than relying on env var mounting. This approach is preferred because:
+In static mode, auth is resolved by the operator and embedded in the ConfigMap.
+
+**Secret Handling Approach (Dynamic Mode)**: vMCP fetches secrets at runtime via the Kubernetes API rather than relying on env var mounting. This approach is preferred because:
 - **Zero-downtime rotation**: Secret changes propagate in seconds via watches, no pod restart needed
 - **Better security**: Secrets never appear in pod specs or `kubectl describe pod` output
 - **Dynamic alignment**: Matches the dynamic backend discovery model - new backends work without pod restarts
@@ -473,11 +556,14 @@ Files to modify:
 - `pkg/vmcp/workloads/k8s.go` - Refactor `discoverAuthConfig()` for use by reconcilers
 - `pkg/vmcp/auth/converters/` - Ensure converters work with vMCP's K8s client context
 
-### Phase 5: Simplify Operator
+### Phase 5: Update Operator for Mode-Aware Behavior
 
-Remove backend discovery and auth resolution from the operator. The operator's role becomes purely infrastructure management.
+The operator behavior changes based on the discovery mode.
 
-ConfigMap content is simplified to contain only static configuration:
+**Dynamic mode (`outgoingAuth.source: discovered`):**
+
+Remove backend discovery and auth resolution from the operator. ConfigMap
+content is simplified:
 
 ```yaml
 name: my-vmcp-server
@@ -494,15 +580,56 @@ outgoing_auth:
   source: discovered  # vMCP discovers at runtime
 aggregation:
   conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
 composite_tools: [...]
 ```
 
-Code to remove from operator:
+Code to remove from operator (dynamic mode path):
 - `discoverBackends()` function in `virtualmcpserver_controller.go`
 - `buildOutgoingAuthConfig()` function
 - Complex OutgoingAuth.Backends resolution in `vmcpconfig/converter.go`
+
+**Static mode (`outgoingAuth.source: inline`):**
+
+Operator discovers MCPServers in the group but uses inline auth config from
+the VirtualMCPServer spec. ConfigMap contains complete backend configuration:
+
+```yaml
+name: my-vmcp-server
+group_ref: my-group
+namespace: default
+incoming_auth:
+  type: oidc
+  oidc:
+    issuer: https://auth.example.com
+    client_id: my-client
+    client_secret_env: VMCP_OIDC_CLIENT_SECRET
+    audience: my-audience
+outgoing_auth:
+  source: inline
+backends:
+  - name: github-mcp
+    url: http://github-mcp.default.svc:8080
+    transport: sse
+    auth:
+      type: token_exchange
+      token_url: https://oauth.example.com/token
+      client_id: github-client
+      client_secret_env: VMCP_OUTGOING_GITHUB_CLIENT_SECRET
+      audience: https://api.github.com
+  - name: slack-mcp
+    url: http://slack-mcp.default.svc:8080
+    transport: sse
+    auth:
+      type: header_injection
+      header_name: Authorization
+      value_env: VMCP_OUTGOING_SLACK_TOKEN
+aggregation:
+  conflict_resolution: prefix
+composite_tools: [...]
+```
+
+The operator mounts secrets as environment variables (existing pattern) and
+does NOT create ServiceAccount/Role/RoleBinding for the vMCP pod.
 
 Status reporting implementation depends on the chosen approach:
 
@@ -536,9 +663,11 @@ Files to modify:
 - `cmd/thv-operator/controllers/virtualmcpserver_vmcpconfig.go` - Simplify config generation
 - `cmd/thv-operator/pkg/vmcpconfig/converter.go` - Remove OutgoingAuth.Backends resolution
 
-### Phase 6: Verify RBAC
+### Phase 6: Conditional RBAC Based on Mode
 
-Verify vMCP pod has necessary RBAC permissions. The existing rules should be sufficient for read-only access:
+The operator creates different RBAC resources based on the discovery mode.
+
+**Dynamic mode:** Full RBAC for K8s API access:
 
 ```go
 vmcpRBACRules = []rbacv1.PolicyRule{
@@ -555,7 +684,7 @@ vmcpRBACRules = []rbacv1.PolicyRule{
 }
 ```
 
-If StatusReporter (Option B) is chosen, additional RBAC is needed:
+If StatusReporter (Option B) is chosen, add:
 
 ```go
 {
@@ -565,25 +694,54 @@ If StatusReporter (Option B) is chosen, additional RBAC is needed:
 }
 ```
 
-Files to verify/modify:
-- `cmd/thv-operator/controllers/virtualmcpserver_controller.go` - Check existing RBAC rules, add status write if needed
+**Static mode:** No RBAC resources created. The vMCP pod runs without a
+ServiceAccount, Role, or RoleBinding. It has zero K8s API access.
+
+Files to modify:
+- `cmd/thv-operator/controllers/virtualmcpserver_controller.go` - Conditional RBAC creation based on `outgoingAuth.source`
 
 ## Open Questions
 
-**Status Reporting Mechanism**: HTTP polling vs StatusReporter is the primary open question. Polling is simpler with minimal RBAC but introduces 30-60 second latency. StatusReporter provides real-time updates but requires write RBAC and tighter coupling. This should be decided during design review.
+**Status Reporting Mechanism (Dynamic Mode)**: HTTP polling vs StatusReporter is
+the primary open question. Polling is simpler with minimal RBAC but introduces
+30-60 second latency. StatusReporter provides real-time updates but requires
+write RBAC and tighter coupling. This should be decided during design review.
 
-**Polling Intervals** (if Option A): Recommendation is 60 seconds on success, 30 seconds on failure. Should these be configurable?
+**Polling Intervals** (if Option A): Recommendation is 60 seconds on success, 30
+seconds on failure. Should these be configurable?
 
-**Status Endpoint Authentication**: Recommendation is unauthenticated since it exposes operational data not secrets. Should this be revisited?
+**Status Endpoint Authentication**: Recommendation is unauthenticated since it
+exposes operational data not secrets. Should this be revisited?
 
 ## Testing
 
-Unit tests should cover the DynamicRegistry operations and events, status endpoint handler, and cache invalidation with version changes.
+**Dynamic mode tests:**
 
-Integration tests should use envtest to verify reconciler behavior with a real API server. This includes MCPServer reconciliation, Secret change propagation, auth resolution end-to-end, and registry to discovery manager cache invalidation.
+Unit tests should cover the DynamicRegistry operations and events, status
+endpoint handler, and cache invalidation with version changes.
 
-E2E tests should cover the full flow with operator and vMCP pod, dynamic backend addition and removal, secret rotation detection, and readiness probe gating during startup.
+Integration tests should use envtest to verify reconciler behavior with a real
+API server. This includes MCPServer reconciliation, Secret change propagation,
+auth resolution end-to-end, and registry to discovery manager cache
+invalidation.
+
+E2E tests should cover the full flow with operator and vMCP pod, dynamic backend
+addition and removal, secret rotation detection, and readiness probe gating
+during startup.
+
+**Static mode tests:**
+
+Unit tests should verify the operator correctly generates complete ConfigMap
+with inline backend configs and mounts secrets as environment variables.
+
+Integration tests should verify that no RBAC resources are created and the vMCP
+pod starts without K8s API access.
+
+E2E tests should cover backend configuration via inline spec, secret rotation
+via pod restart, and verify zero K8s API calls from the vMCP pod.
 
 ## Future Enhancements
 
-Multi-replica caching with Redis or sticky sessions, session capability refresh via MCP notifications, and dynamic CLI mode are potential future enhancements but out of scope for this work.
+Multi-replica caching with Redis or sticky sessions, session capability refresh
+via MCP notifications, and dynamic CLI mode are potential future enhancements
+but out of scope for this work.

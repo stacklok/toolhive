@@ -1,0 +1,236 @@
+# Example: Production VirtualMCPServer with Full Configuration
+#
+# This example demonstrates a production-ready VirtualMCPServer with:
+# - OIDC authentication for incoming requests
+# - Inline backend auth configuration with overrides
+# - Manual conflict resolution with tool filters
+# - PodTemplateSpec customization for resource limits
+# - Service type configuration
+# - Comprehensive operational settings
+#
+# Prerequisites:
+# - Kubernetes cluster with ToolHive operator installed
+# - OIDC provider configured (update issuer URL in the example)
+#
+# Note: This example includes:
+# - Production namespace creation
+# - OIDC client secret (replace with your actual secret)
+# - MCPGroup "production-services"
+# - Three backend MCPServers (yardstick-streamable, fetch, yardstick-sse)
+#
+# Usage:
+#   kubectl apply -f vmcp_production_full.yaml
+
+---
+# Create production namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    environment: production
+
+---
+# Create OIDC client secret
+# NOTE: Replace "YOUR_OIDC_CLIENT_SECRET" with your actual client secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oidc-client-secret
+  namespace: production
+type: Opaque
+stringData:
+  clientSecret: "YOUR_OIDC_CLIENT_SECRET"
+
+---
+# Create MCPGroup for backend servers
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: production-services
+  namespace: production
+  labels:
+    environment: production
+spec:
+  description: Production backend services for VirtualMCPServer
+
+---
+# Create backend MCPServer: yardstick with streamable-http transport
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick-streamable
+  namespace: production
+  labels:
+    environment: production
+spec:
+  groupRef: production-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: streamable-http
+  env:
+  - name: TRANSPORT
+    value: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Create backend MCPServer: fetch with streamable-http transport
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: production
+  labels:
+    environment: production
+spec:
+  groupRef: production-services
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Create backend MCPServer: yardstick with sse transport
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick-sse
+  namespace: production
+  labels:
+    environment: production
+spec:
+  groupRef: production-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: sse
+  env:
+  - name: TRANSPORT
+    value: sse
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: production-vmcp
+  namespace: production
+  labels:
+    app: vmcp
+    environment: production
+spec:
+  # Reference to the MCPGroup containing backend MCPServers
+  groupRef:
+    name: production-services
+
+  # Incoming authentication (client -> vMCP)
+  # Using OIDC for secure authentication
+  incomingAuth:
+    type: oidc
+    oidcConfig:
+      type: inline
+      resourceUrl: http://production-vmcp.production.svc.cluster.local:4483
+      inline:
+        issuer: https://auth.example.com
+        clientId: production-vmcp-client
+        audience: vmcp-production
+        # Reference to Kubernetes Secret containing client secret
+        clientSecretRef:
+          name: oidc-client-secret
+          key: clientSecret
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          # Example Cedar policies for authorization
+          - |
+            permit(
+              principal,
+              action == Action::"tools/call",
+              resource
+            ) when {
+              principal.role == "developer"
+            };
+          - |
+            permit(
+              principal,
+              action == Action::"resources/read",
+              resource
+            ) when {
+              principal.role in ["developer", "operator"]
+            };
+
+  # Outgoing authentication (vMCP -> backends)
+  # Using discovered mode - automatically discovers auth from backend MCPServers
+  outgoingAuth:
+    source: discovered
+
+  # Aggregation configuration with priority conflict resolution
+  aggregation:
+    conflictResolution: priority
+    conflictResolutionConfig:
+      # Priority order for backends (first has highest priority)
+      priorityOrder:
+        - yardstick-streamable
+        - fetch
+        - yardstick-sse
+
+  # Service configuration
+  serviceType: LoadBalancer
+
+  # PodTemplateSpec for customizing pod resources and configuration
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: vmcp
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          # Environment variables for vMCP configuration
+          env:
+            - name: VMCP_LOG_LEVEL
+              value: "info"
+            - name: VMCP_METRICS_ENABLED
+              value: "true"
+      # Node affinity for production workloads
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: workload-type
+                    operator: In
+                    values:
+                      - production
+
+  # Operational settings
+  operational:
+    failureHandling:
+      healthCheckInterval: 30s
+      unhealthyThreshold: 3
+      partialFailureMode: fail

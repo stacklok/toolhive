@@ -46,6 +46,9 @@ COPY .npmrc /root/.npmrc
 COPY . /build/
 # Install dependencies if package.json exists
 RUN if [ -f package.json ]; then npm ci --only=production || npm install --production; fi
+
+# Clean up auth files from build directory to prevent leaking to final image
+RUN rm -f /build/.netrc /build/.npmrc /build/.yarnrc /root/.npmrc
 {{else}}
 # Create a package.json to install the MCP package
 RUN echo '{"name":"mcp-container","version":"1.0.0"}' > package.json

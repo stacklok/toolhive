@@ -45,6 +45,10 @@ COPY . /build/
 
 # Build the application
 RUN go build -o /app/mcp-server {{.MCPPackage}}
+
+# Clean up auth files from build directory to prevent leaking to final image
+# (authentication was already used during go build to fetch private modules)
+RUN rm -f /build/.netrc /build/.npmrc /build/.yarnrc /root/.netrc
 {{else}}
 # Pre-install the Go package at build time
 # This downloads all dependencies and builds the binary

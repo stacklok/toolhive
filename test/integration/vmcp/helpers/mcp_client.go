@@ -196,6 +196,36 @@ func AssertToolCallSuccess(tb testing.TB, result *mcp.CallToolResult) string {
 	return text
 }
 
+// AssertToolCallError asserts that a tool call failed (IsError=true)
+// and returns the concatenated text content from all content items.
+//
+// The function uses require assertions, so it will fail the test immediately
+// if the tool call was successful.
+//
+// Example:
+//
+//	result := client.CallTool(ctx, "failing_workflow", map[string]any{})
+//	text := helpers.AssertToolCallError(t, result)
+//	assert.Contains(t, text, "error message")
+func AssertToolCallError(tb testing.TB, result *mcp.CallToolResult) string {
+	tb.Helper()
+
+	require.NotNil(tb, result, "tool call result should not be nil")
+	require.True(tb, result.IsError, "tool call should return an error, got success: %v", result.Content)
+
+	var textParts []string
+	for _, content := range result.Content {
+		if textContent, ok := mcp.AsTextContent(content); ok {
+			textParts = append(textParts, textContent.Text)
+		}
+	}
+
+	text := strings.Join(textParts, "\n")
+	tb.Logf("Tool call failed as expected with %d content items, total text length: %d", len(result.Content), len(text))
+
+	return text
+}
+
 // AssertTextContains asserts that text contains all expected substrings.
 // This is a variadic helper for checking multiple content expectations in tool results.
 //

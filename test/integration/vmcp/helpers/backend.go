@@ -5,7 +5,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -31,6 +33,11 @@ type BackendTool struct {
 	// The handler receives the tool arguments as a map and should return
 	// a string representation of the result (typically JSON).
 	Handler func(ctx context.Context, args map[string]any) string
+
+	// ErrorHandler is an alternative handler that can return errors.
+	// If set, this takes precedence over Handler.
+	// Returns (result, isError).
+	ErrorHandler func(ctx context.Context, args map[string]any) (string, bool)
 }
 
 // NewBackendTool creates a new BackendTool with sensible defaults.
@@ -55,6 +62,60 @@ func NewBackendTool(name, description string, handler func(ctx context.Context, 
 			Properties: map[string]any{},
 		},
 		Handler: handler,
+	}
+}
+
+// NewErrorBackendTool creates a BackendTool that always returns an error.
+// This is useful for testing error handling and failure modes.
+func NewErrorBackendTool(name, description, errorMsg string) BackendTool {
+	return BackendTool{
+		Name:        name,
+		Description: description,
+		InputSchema: mcp.ToolInputSchema{
+			Type:       "object",
+			Properties: map[string]any{},
+		},
+		ErrorHandler: func(_ context.Context, _ map[string]any) (string, bool) {
+			return errorMsg, true
+		},
+	}
+}
+
+// NewSlowBackendTool creates a BackendTool that delays before returning.
+// This is useful for testing timeout behavior.
+func NewSlowBackendTool(name, description string, delay time.Duration, result string) BackendTool {
+	return BackendTool{
+		Name:        name,
+		Description: description,
+		InputSchema: mcp.ToolInputSchema{
+			Type:       "object",
+			Properties: map[string]any{},
+		},
+		Handler: func(_ context.Context, _ map[string]any) string {
+			time.Sleep(delay)
+			return result
+		},
+	}
+}
+
+// NewTransientBackendTool creates a BackendTool that fails a specified number of times before succeeding.
+// This is useful for testing retry behavior.
+func NewTransientBackendTool(name, description string, failCount int32, errorMsg, successMsg string) BackendTool {
+	var attempts int32
+	return BackendTool{
+		Name:        name,
+		Description: description,
+		InputSchema: mcp.ToolInputSchema{
+			Type:       "object",
+			Properties: map[string]any{},
+		},
+		ErrorHandler: func(_ context.Context, _ map[string]any) (string, bool) {
+			current := atomic.AddInt32(&attempts, 1)
+			if current <= failCount {
+				return errorMsg, true
+			}
+			return successMsg, false
+		},
 	}
 }
 
@@ -198,14 +259,23 @@ func CreateBackendServer(tb testing.TB, tools []BackendTool, opts ...BackendServ
 					args = make(map[string]any)
 				}
 
-				// Invoke the tool handler
-				result := tool.Handler(ctx, args)
+				// Invoke the appropriate handler
+				var result string
+				var isError bool
 
-				// Return successful result with text content
+				if tool.ErrorHandler != nil {
+					result, isError = tool.ErrorHandler(ctx, args)
+				} else {
+					result = tool.Handler(ctx, args)
+					isError = false
+				}
+
+				// Return result with text content
 				return &mcp.CallToolResult{
 					Content: []mcp.Content{
 						mcp.NewTextContent(result),
 					},
+					IsError: isError,
 				}, nil
 			},
 		)

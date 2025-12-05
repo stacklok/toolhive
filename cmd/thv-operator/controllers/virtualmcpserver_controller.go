@@ -121,6 +121,15 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
+	// Validate CompositeToolRefs
+	if err := r.validateCompositeToolRefs(ctx, vmcp, statusManager); err != nil {
+		// Apply status changes before returning error
+		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+			ctxLogger.Error(err, "Failed to apply status updates after CompositeToolRefs validation error")
+		}
+		return ctrl.Result{}, err
+	}
+
 	// Ensure all resources
 	if err := r.ensureAllResources(ctx, vmcp, statusManager); err != nil {
 		// Apply status changes before returning error
@@ -154,14 +163,24 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		ctxLogger.Info("Discovered backends", "count", len(discoveredBackends))
 	}
 
-	// Update status based on pod health
-	if err := r.updateVirtualMCPServerStatus(ctx, vmcp, statusManager); err != nil {
+	// Fetch the latest version before updating status to ensure we use the current Generation
+	latestVMCP := &mcpv1alpha1.VirtualMCPServer{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      vmcp.Name,
+		Namespace: vmcp.Namespace,
+	}, latestVMCP); err != nil {
+		ctxLogger.Error(err, "Failed to get latest VirtualMCPServer before status update")
+		return ctrl.Result{}, err
+	}
+
+	// Update status based on pod health using the latest Generation
+	if err := r.updateVirtualMCPServerStatus(ctx, latestVMCP, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to update VirtualMCPServer status")
 		return ctrl.Result{}, err
 	}
 
 	// Apply all collected status changes in a single batch update
-	if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+	if err := r.applyStatusUpdates(ctx, latestVMCP, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to apply final status updates")
 		return ctrl.Result{}, err
 	}
@@ -266,6 +285,59 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 		metav1.ConditionTrue,
 	)
 	statusManager.SetObservedGeneration(vmcp.Generation)
+
+	return nil
+}
+
+// validateCompositeToolRefs validates that all referenced VirtualMCPCompositeToolDefinition resources exist
+func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// If no composite tool refs, nothing to validate
+	if len(vmcp.Spec.CompositeToolRefs) == 0 {
+		// Set condition to indicate validation passed (no refs to validate)
+		statusManager.SetCompositeToolRefsValidatedCondition(
+			mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
+			"No composite tool references to validate",
+			metav1.ConditionTrue,
+		)
+		return nil
+	}
+
+	// Validate each referenced composite tool definition exists
+	for _, ref := range vmcp.Spec.CompositeToolRefs {
+		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
+		err := r.Get(ctx, types.NamespacedName{
+			Name:      ref.Name,
+			Namespace: vmcp.Namespace,
+		}, compositeToolDef)
+
+		if errors.IsNotFound(err) {
+			message := fmt.Sprintf("Referenced VirtualMCPCompositeToolDefinition %s not found", ref.Name)
+			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetCompositeToolRefsValidatedCondition(
+				mcpv1alpha1.ConditionReasonCompositeToolRefNotFound,
+				message,
+				metav1.ConditionFalse,
+			)
+			return err
+		} else if err != nil {
+			ctxLogger.Error(err, "Failed to get VirtualMCPCompositeToolDefinition", "name", ref.Name)
+			return err
+		}
+	}
+
+	// All composite tool refs are valid
+	statusManager.SetCompositeToolRefsValidatedCondition(
+		mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
+		fmt.Sprintf("All %d composite tool references are valid", len(vmcp.Spec.CompositeToolRefs)),
+		metav1.ConditionTrue,
+	)
 
 	return nil
 }

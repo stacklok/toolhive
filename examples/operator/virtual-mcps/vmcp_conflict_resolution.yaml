@@ -1,0 +1,235 @@
+# Example: All Conflict Resolution Strategies for VirtualMCPServer
+#
+# This file demonstrates all three conflict resolution strategies available
+# in VirtualMCPServer for handling tool name conflicts across backends:
+#
+# 1. Prefix Strategy - Add workload name prefix to tool names
+# 2. Priority Strategy - Use priority order to determine which backend wins
+# 3. Manual Strategy - Explicitly map tool names to specific backends
+#
+# When multiple backends provide tools with the same name, these strategies
+# determine which tool is exposed to clients.
+#
+# Usage:
+#   Choose one strategy and apply the relevant section
+
+---
+# Create MCPGroup for all examples
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: my-services
+  namespace: default
+spec:
+  description: Sample services for conflict resolution examples
+
+---
+# Create backend MCPServers used by all examples
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick-sse
+  namespace: default
+spec:
+  groupRef: my-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: sse
+  env:
+  - name: TRANSPORT
+    value: sse
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: default
+spec:
+  groupRef: my-services
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick-streamable
+  namespace: default
+spec:
+  groupRef: my-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: streamable-http
+  env:
+  - name: TRANSPORT
+    value: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Strategy 1: Prefix-based Conflict Resolution
+# Tools are prefixed with workload name to avoid conflicts
+# Example: If tool "echo" exists in backend "yardstick-sse", it becomes "yardstick-sse_echo"
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: vmcp-prefix-strategy
+  namespace: default
+spec:
+  groupRef:
+    name: my-services
+
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+
+  outgoingAuth:
+    source: discovered
+
+  # Prefix strategy configuration
+  aggregation:
+    conflictResolution: prefix
+    conflictResolutionConfig:
+      # Format string for prefixes
+      # Available variables: {workload}, {namespace}
+      prefixFormat: "{workload}_"
+      # Result: Tools from all backends are prefixed with their workload name:
+      # - yardstick-sse_echo
+      # - fetch_fetch
+      # - yardstick-streamable_longecho
+
+  operational:
+    failureHandling:
+      healthCheckInterval: 30s
+      unhealthyThreshold: 3
+      partialFailureMode: fail
+
+---
+# Strategy 2: Priority-based Conflict Resolution
+# Backends are prioritized; higher priority wins conflicts
+# Lower numbers = higher priority (1 is highest)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: vmcp-priority-strategy
+  namespace: default
+spec:
+  groupRef:
+    name: my-services
+
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+
+  outgoingAuth:
+    source: discovered
+
+  # Priority strategy configuration
+  aggregation:
+    conflictResolution: priority
+    conflictResolutionConfig:
+      # Priority order for backends (first in list has highest priority)
+      priorityOrder:
+        # Yardstick SSE has highest priority (first in list)
+        - yardstick-sse
+        # Fetch is second priority
+        - fetch
+        # Yardstick Streamable is third priority
+        - yardstick-streamable
+      # Result: If multiple backends have the same tool, yardstick-sse wins
+      # because it's first in priorityOrder
+
+  operational:
+    failureHandling:
+      healthCheckInterval: 30s
+      unhealthyThreshold: 3
+      partialFailureMode: fail
+
+---
+# Strategy 3: Manual Conflict Resolution with Tool Filtering
+# Use manual strategy combined with per-workload tool filtering
+# This provides explicit control over which tools are exposed from each backend
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: vmcp-manual-strategy
+  namespace: default
+spec:
+  groupRef:
+    name: my-services
+
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+
+  outgoingAuth:
+    source: discovered
+
+  # Manual strategy configuration
+  # Manual strategy validates conflicts at runtime and requires
+  # per-workload tool configuration to resolve them
+  aggregation:
+    conflictResolution: manual
+
+    # Per-workload tool configuration
+    # This specifies which tools to expose from each backend
+    # NOTE: Actual tool names depend on what the MCP servers provide
+    tools:
+      # Yardstick SSE backend
+      - workload: yardstick-sse
+        filter:
+          - echo
+          - add
+
+      # Fetch backend
+      - workload: fetch
+        filter:
+          - fetch
+
+      # Yardstick Streamable backend
+      - workload: yardstick-streamable
+        filter:
+          - longecho
+          - sampleLLM
+
+  operational:
+    failureHandling:
+      healthCheckInterval: 30s
+      unhealthyThreshold: 3
+      partialFailureMode: fail

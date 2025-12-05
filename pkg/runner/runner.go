@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -352,6 +354,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		logger.Info("Press Ctrl+C to stop or wait for container to exit")
 	}
 
+	// Set up signal handling
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
 	// Create a done channel to signal when the server has been stopped
 	doneCh := make(chan struct{})
 
@@ -393,8 +399,8 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Wait for either a signal or the done channel to be closed
 	select {
-	case <-ctx.Done():
-		stopMCPServer("Context cancelled")
+	case sig := <-sigCh:
+		stopMCPServer(fmt.Sprintf("Received signal %s", sig))
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container exit)
 		// Clean up the PID file and state

@@ -2,7 +2,6 @@
 package main
 
 import (
-	"context"
 	"os"
 	"os/signal"
 	"syscall"
@@ -24,7 +23,7 @@ func main() {
 	logger.Initialize()
 
 	// Setup signal handling for graceful cleanup
-	ctx := setupSignalHandler()
+	setupSignalHandler()
 
 	// Clean up stale lock files on startup
 	cleanupStaleLockFiles()
@@ -48,10 +47,8 @@ func main() {
 		migration.CheckAndPerformDefaultGroupMigration()
 	}
 
-	cmd := app.NewRootCmd(!app.IsCompletionCommand(os.Args) && !runtime.IsKubernetesRuntime())
-
 	// Skip update check for completion command or if we are running in kubernetes
-	if err := cmd.ExecuteContext(ctx); err != nil {
+	if err := app.NewRootCmd(!app.IsCompletionCommand(os.Args) && !runtime.IsKubernetesRuntime()).Execute(); err != nil {
 		// Clean up any remaining lock files on error exit
 		lockfile.CleanupAllLocks()
 		os.Exit(1)
@@ -62,19 +59,16 @@ func main() {
 }
 
 // setupSignalHandler configures signal handling to ensure lock files are cleaned up
-func setupSignalHandler() context.Context {
+func setupSignalHandler() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 
-	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		<-sigCh
 		logger.Debugf("Received signal, cleaning up lock files...")
 		lockfile.CleanupAllLocks()
-		cancel()
+		os.Exit(0)
 	}()
-
-	return ctx
 }
 
 // cleanupStaleLockFiles removes stale lock files from known directories on startup

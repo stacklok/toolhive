@@ -121,6 +121,15 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
+	// Validate CompositeToolRefs
+	if err := r.validateCompositeToolRefs(ctx, vmcp, statusManager); err != nil {
+		// Apply status changes before returning error
+		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+			ctxLogger.Error(err, "Failed to apply status updates after CompositeToolRefs validation error")
+		}
+		return ctrl.Result{}, err
+	}
+
 	// Ensure all resources
 	if err := r.ensureAllResources(ctx, vmcp, statusManager); err != nil {
 		// Apply status changes before returning error
@@ -154,14 +163,24 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		ctxLogger.Info("Discovered backends", "count", len(discoveredBackends))
 	}
 
-	// Update status based on pod health
-	if err := r.updateVirtualMCPServerStatus(ctx, vmcp, statusManager); err != nil {
+	// Fetch the latest version before updating status to ensure we use the current Generation
+	latestVMCP := &mcpv1alpha1.VirtualMCPServer{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      vmcp.Name,
+		Namespace: vmcp.Namespace,
+	}, latestVMCP); err != nil {
+		ctxLogger.Error(err, "Failed to get latest VirtualMCPServer before status update")
+		return ctrl.Result{}, err
+	}
+
+	// Update status based on pod health using the latest Generation
+	if err := r.updateVirtualMCPServerStatus(ctx, latestVMCP, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to update VirtualMCPServer status")
 		return ctrl.Result{}, err
 	}
 
 	// Apply all collected status changes in a single batch update
-	if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+	if err := r.applyStatusUpdates(ctx, latestVMCP, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to apply final status updates")
 		return ctrl.Result{}, err
 	}
@@ -266,6 +285,59 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 		metav1.ConditionTrue,
 	)
 	statusManager.SetObservedGeneration(vmcp.Generation)
+
+	return nil
+}
+
+// validateCompositeToolRefs validates that all referenced VirtualMCPCompositeToolDefinition resources exist
+func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// If no composite tool refs, nothing to validate
+	if len(vmcp.Spec.CompositeToolRefs) == 0 {
+		// Set condition to indicate validation passed (no refs to validate)
+		statusManager.SetCompositeToolRefsValidatedCondition(
+			mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
+			"No composite tool references to validate",
+			metav1.ConditionTrue,
+		)
+		return nil
+	}
+
+	// Validate each referenced composite tool definition exists
+	for _, ref := range vmcp.Spec.CompositeToolRefs {
+		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
+		err := r.Get(ctx, types.NamespacedName{
+			Name:      ref.Name,
+			Namespace: vmcp.Namespace,
+		}, compositeToolDef)
+
+		if errors.IsNotFound(err) {
+			message := fmt.Sprintf("Referenced VirtualMCPCompositeToolDefinition %s not found", ref.Name)
+			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetCompositeToolRefsValidatedCondition(
+				mcpv1alpha1.ConditionReasonCompositeToolRefNotFound,
+				message,
+				metav1.ConditionFalse,
+			)
+			return err
+		} else if err != nil {
+			ctxLogger.Error(err, "Failed to get VirtualMCPCompositeToolDefinition", "name", ref.Name)
+			return err
+		}
+	}
+
+	// All composite tool refs are valid
+	statusManager.SetCompositeToolRefsValidatedCondition(
+		mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
+		fmt.Sprintf("All %d composite tool references are valid", len(vmcp.Spec.CompositeToolRefs)),
+		metav1.ConditionTrue,
+	)
 
 	return nil
 }
@@ -1019,14 +1091,17 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 	}
 }
 
-// determineStatusFromPods determines the appropriate status based on pod states
+// determineStatusFromPods determines the appropriate status based on pod states.
+// The 'ready' parameter counts pods that have passed their readiness probes (PodReady condition is True),
+// not just pods in Running phase. This ensures the VirtualMCPServer is only marked Ready when
+// the underlying pods are actually ready to serve traffic.
 func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	running, pending, failed int,
+	ready, pending, failed int,
 ) statusDecision {
-	// Handle non-running states first (early returns reduce nesting)
-	if running == 0 {
+	// Handle non-ready states first (early returns reduce nesting)
+	if ready == 0 {
 		if failed > 0 {
 			return statusDecision{
 				phase:          mcpv1alpha1.VirtualMCPServerPhaseFailed,
@@ -1050,9 +1125,9 @@ func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 		}
 	}
 
-	// Pods are running - check backend health if backends exist
+	// Pods are ready (passed readiness probes) - check backend health if backends exist
 	if len(vmcp.Status.DiscoveredBackends) == 0 {
-		// No backends discovered yet - pods running is sufficient for Ready
+		// No backends discovered yet - pods ready is sufficient for Ready
 		return statusDecision{
 			phase:          mcpv1alpha1.VirtualMCPServerPhaseReady,
 			message:        "Virtual MCP server is running",
@@ -1081,25 +1156,37 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 		return err
 	}
 
-	// Count pod states
-	var running, pending, failed int
+	// Count pod states based on actual readiness, not just phase.
+	// A pod in Running phase may not be ready to serve traffic if it hasn't
+	// passed its readiness probe yet. We must check the PodReady condition.
+	var ready, pending, failed int
 	for _, pod := range podList.Items {
-		switch pod.Status.Phase {
-		case corev1.PodRunning:
-			running++
-		case corev1.PodPending:
-			pending++
-		case corev1.PodFailed:
+		// Check for terminal failure states first
+		if pod.Status.Phase == corev1.PodFailed {
 			failed++
-		case corev1.PodSucceeded:
-			running++
-		case corev1.PodUnknown:
+			continue
+		}
+
+		// Check if pod is actually ready to serve traffic (passed readiness probes)
+		// This is the authoritative signal that the pod can handle requests
+		isPodReady := false
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+				isPodReady = true
+				break
+			}
+		}
+
+		if isPodReady {
+			ready++
+		} else {
+			// Pod exists but isn't ready yet (still starting, or readiness probe failing)
 			pending++
 		}
 	}
 
 	// Determine status in one place (no branching/repetition)
-	decision := r.determineStatusFromPods(ctx, vmcp, running, pending, failed)
+	decision := r.determineStatusFromPods(ctx, vmcp, ready, pending, failed)
 
 	// Apply all status updates at once
 	statusManager.SetPhase(decision.phase)

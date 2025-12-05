@@ -1,0 +1,215 @@
+# Example: Simple VirtualMCPCompositeToolDefinition
+#
+# This example demonstrates a simple composite tool workflow that:
+# - Chains multiple tool calls sequentially
+# - Uses output from one tool as input to the next
+# - Has basic error handling and timeout configuration
+#
+# Use case: Fetch data from a URL and process it with validation
+#
+# Prerequisites:
+# - None! All required backend MCPServers are included in this file
+#
+# Usage:
+#   kubectl apply -f composite_tool_simple.yaml
+
+---
+# Create MCPGroup
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: my-services
+  namespace: default
+spec:
+  description: Sample services for simple composite tool example
+
+---
+# Backend MCP Server: Fetch (for HTTP requests)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: default
+spec:
+  groupRef: my-services
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Backend MCP Server: Yardstick SSE (for echo and validation)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick-sse
+  namespace: default
+spec:
+  groupRef: my-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: sse
+  env:
+  - name: TRANSPORT
+    value: sse
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Simple Composite Tool Definition
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPCompositeToolDefinition
+metadata:
+  name: fetch-and-validate
+  namespace: default
+spec:
+  # Name exposed to clients as a composite tool
+  name: fetch_and_validate_data
+
+  # Human-readable description
+  description: Fetches data from a URL and validates it by echoing the content back
+
+  # Maximum time for entire workflow
+  timeout: 3m
+
+  # Failure mode: "abort" stops on first error, "continue" tries all steps
+  failureMode: abort
+
+  # Input parameters schema
+  parameters:
+    type: object
+    properties:
+      url:
+        type: string
+        description: The URL to fetch data from
+    required:
+      - url
+
+  # Sequential workflow steps
+  steps:
+    # Step 1: Fetch data from URL
+    - id: fetch_data
+      type: tool
+      # Reference to backend tool (will be resolved by vMCP router)
+      tool: fetch
+      # Input arguments (can use template variables)
+      arguments:
+        url: "{{.params.url}}"
+      # Step-specific timeout
+      timeout: 1m
+      onError:
+        action: abort
+        maxRetries: 2
+        retryDelay: 5s
+
+    # Step 2: Validate by echoing the fetched content
+    - id: validate_content
+      type: tool
+      tool: echo
+      arguments:
+        # Use output from previous step
+        message: "Fetched content from {{.params.url}}: {{.steps.fetch_data.output.body}}"
+      # This step depends on fetch_data completing successfully
+      dependsOn:
+        - fetch_data
+      timeout: 30s
+
+    # Step 3: Confirm success with a final echo
+    - id: confirm_success
+      type: tool
+      tool: echo
+      arguments:
+        message: "Successfully fetched and validated data from {{.params.url}} at {{.timestamp}}"
+      # This step depends on validation completing
+      dependsOn:
+        - validate_content
+      timeout: 30s
+
+---
+# VirtualMCPServer using the simple composite tool
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: vmcp-simple-composite
+  namespace: default
+spec:
+  groupRef:
+    name: my-services
+
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          # Allow any principal to use the composite tool
+          - 'permit(principal, action, resource);'
+
+  outgoingAuth:
+    source: discovered
+
+  # Reference the composite tool definition
+  compositeToolRefs:
+    - name: fetch-and-validate
+
+  # Conflict resolution for backend tools
+  aggregation:
+    conflictResolution: prefix
+    conflictResolutionConfig:
+      prefixFormat: "{workload}_"
+
+  operational:
+    failureHandling:
+      healthCheckInterval: 30s
+      unhealthyThreshold: 3
+      partialFailureMode: fail
+
+---
+# Example usage from MCP client:
+#
+# Call the composite tool like any other tool:
+# {
+#   "jsonrpc": "2.0",
+#   "method": "tools/call",
+#   "params": {
+#     "name": "fetch_and_validate_data",
+#     "arguments": {
+#       "url": "https://api.github.com/repos/stacklok/toolhive"
+#     }
+#   },
+#   "id": 1
+# }
+#
+# The vMCP will:
+# 1. Fetch data from the provided URL
+# 2. Echo/validate the fetched content
+# 3. Confirm success with timestamp
+# 4. Return combined results from all steps
+#
+# Example output:
+# {
+#   "jsonrpc": "2.0",
+#   "result": {
+#     "content": [
+#       {
+#         "type": "text",
+#         "text": "Successfully fetched and validated data from https://api.github.com/repos/stacklok/toolhive at 2024-01-15T10:30:00Z"
+#       }
+#     ],
+#     "isError": false
+#   },
+#   "id": 1
+# }

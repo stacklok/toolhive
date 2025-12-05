@@ -1,11 +1,11 @@
 package e2e_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -115,25 +115,39 @@ var _ = Describe("Unhealthy Workload Detection", Label("stability", "unhealthy",
 
 // Helper functions for process and container management
 
+// workloadStatusFile represents the JSON structure stored on disk
+type workloadStatusFile struct {
+	Status        string    `json:"status"`
+	StatusContext string    `json:"status_context,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	ProcessID     int       `json:"process_id"`
+}
+
 // findProxyProcess finds the PID of the proxy process for a given server name
+// by reading it from the workload status file
 func findProxyProcess(serverName string) (int, error) {
-	// The proxy process PID should be stored in a file in the temp directory
-	// following the pattern: toolhive-{serverName}.pid
-	pidFile, err := xdg.DataFile(filepath.Join("toolhive", "pids", "toolhive-"+serverName+".pid"))
+	// The proxy process PID is stored in the status file
+	statusFilePath, err := xdg.DataFile(filepath.Join("toolhive", "statuses", serverName+".json"))
 	if err != nil {
-		return 0, fmt.Errorf("failed to get PID file path: %w", err)
+		return 0, fmt.Errorf("failed to get status file path: %w", err)
 	}
 
-	// Read the PID file
-	pidBytes, err := os.ReadFile(pidFile)
+	// Read the status file
+	statusBytes, err := os.ReadFile(statusFilePath)
 	if err != nil {
-		return 0, fmt.Errorf("failed to read PID file %s: %w", pidFile, err)
+		return 0, fmt.Errorf("failed to read status file %s: %w", statusFilePath, err)
 	}
 
-	pidStr := strings.TrimSpace(string(pidBytes))
-	pid, err := strconv.Atoi(pidStr)
-	if err != nil {
-		return 0, fmt.Errorf("failed to parse PID from file %s: %w", pidFile, err)
+	// Parse the JSON
+	var statusFile workloadStatusFile
+	if err := json.Unmarshal(statusBytes, &statusFile); err != nil {
+		return 0, fmt.Errorf("failed to parse status file %s: %w", statusFilePath, err)
+	}
+
+	pid := statusFile.ProcessID
+	if pid == 0 {
+		return 0, fmt.Errorf("process ID is 0 in status file")
 	}
 
 	// Verify the process is actually running

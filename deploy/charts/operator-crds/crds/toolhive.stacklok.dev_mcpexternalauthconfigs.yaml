@@ -147,6 +147,7 @@ spec:
                 enum:
                 - tokenExchange
                 - headerInjection
+                - unauthenticated
                 type: string
             required:
             - type

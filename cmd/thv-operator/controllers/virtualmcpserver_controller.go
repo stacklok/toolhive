@@ -16,7 +16,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -104,9 +103,12 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
 
 	// Validate PodTemplateSpec early - before other validations
-	if !r.validateAndUpdatePodTemplateStatus(ctx, vmcp) {
-		// Invalid PodTemplateSpec - return without error to avoid infinite retries
+	if !r.validateAndUpdatePodTemplateStatus(ctx, vmcp, statusManager) {
+		// Invalid PodTemplateSpec - apply status updates and return without error to avoid infinite retries
 		// The user must fix the spec and the next reconciliation will retry
+		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+			ctxLogger.Error(err, "Failed to apply status updates after PodTemplateSpec validation error")
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -134,19 +136,21 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		ctxLogger.Error(err, "Failed to discover backends")
 		// Don't fail reconciliation if backend discovery fails, but log the error
 		statusManager.SetCondition(
-			"BackendsDiscovered",
-			"BackendDiscoveryFailed",
+			mcpv1alpha1.ConditionTypeVirtualMCPServerBackendsDiscovered,
+			mcpv1alpha1.ConditionReasonVirtualMCPServerBackendDiscoveryFailed,
 			fmt.Sprintf("Failed to discover backends: %v", err),
 			metav1.ConditionFalse,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 	} else {
 		statusManager.SetDiscoveredBackends(discoveredBackends)
 		statusManager.SetCondition(
-			"BackendsDiscovered",
-			"BackendsDiscoveredSuccessfully",
+			mcpv1alpha1.ConditionTypeVirtualMCPServerBackendsDiscovered,
+			mcpv1alpha1.ConditionReasonVirtualMCPServerBackendsDiscoveredSuccessfully,
 			fmt.Sprintf("Discovered %d backends", len(discoveredBackends)),
 			metav1.ConditionTrue,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 		ctxLogger.Info("Discovered backends", "count", len(discoveredBackends))
 	}
 
@@ -232,6 +236,7 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 			message,
 			metav1.ConditionFalse,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 		return err
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get MCPGroup")
@@ -249,6 +254,7 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 			message,
 			metav1.ConditionFalse,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 		// Requeue to check again later
 		return fmt.Errorf("MCPGroup %s is not ready", vmcp.Spec.GroupRef.Name)
 	}
@@ -259,15 +265,18 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 		fmt.Sprintf("MCPGroup %s is valid and ready", vmcp.Spec.GroupRef.Name),
 		metav1.ConditionTrue,
 	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
 
 	return nil
 }
 
-// validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and updates the VirtualMCPServer status
-// with appropriate conditions and events. Returns true if validation passes, false otherwise.
+// validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and uses StatusManager to collect
+// status changes. Returns true if validation passes, false otherwise.
+// The caller is responsible for applying status updates via applyStatusUpdates().
 func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
 ) bool {
 	ctxLogger := log.FromContext(ctx)
 
@@ -285,39 +294,29 @@ func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
 				"Failed to parse PodTemplateSpec: %v. Deployment blocked until PodTemplateSpec is fixed.", err)
 		}
 
-		// Update status to reflect invalid PodTemplateSpec
-		vmcp.Status.Phase = mcpv1alpha1.VirtualMCPServerPhaseFailed
-		vmcp.Status.Message = fmt.Sprintf("Invalid PodTemplateSpec: %v", err)
-
-		// Set condition for invalid PodTemplateSpec
-		meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
-			Type:               "PodTemplateSpecValid",
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: vmcp.Generation,
-			Reason:             "InvalidPodTemplateSpec",
-			Message:            fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
-		})
-
-		if statusErr := r.Status().Update(ctx, vmcp); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update VirtualMCPServer status with PodTemplateSpec validation")
-		}
+		// Use StatusManager to collect status changes
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(fmt.Sprintf("Invalid PodTemplateSpec: %v", err))
+		statusManager.SetCondition(
+			mcpv1alpha1.ConditionTypeVirtualMCPServerPodTemplateSpecValid,
+			mcpv1alpha1.ConditionReasonVirtualMCPServerPodTemplateSpecInvalid,
+			fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 
 		ctxLogger.Error(err, "PodTemplateSpec validation failed")
 		return false
 	}
 
-	// Set condition for valid PodTemplateSpec
-	meta.SetStatusCondition(&vmcp.Status.Conditions, metav1.Condition{
-		Type:               "PodTemplateSpecValid",
-		Status:             metav1.ConditionTrue,
-		ObservedGeneration: vmcp.Generation,
-		Reason:             "PodTemplateSpecValid",
-		Message:            "PodTemplateSpec is valid",
-	})
-
-	if statusErr := r.Status().Update(ctx, vmcp); statusErr != nil {
-		ctxLogger.Error(statusErr, "Failed to update VirtualMCPServer status with PodTemplateSpec validation")
-	}
+	// Use StatusManager to collect status changes for valid PodTemplateSpec
+	statusManager.SetCondition(
+		mcpv1alpha1.ConditionTypeVirtualMCPServerPodTemplateSpecValid,
+		mcpv1alpha1.ConditionReasonVirtualMCPServerPodTemplateSpecValid,
+		"PodTemplateSpec is valid",
+		metav1.ConditionTrue,
+	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
 
 	return true
 }
@@ -340,6 +339,7 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 			fmt.Sprintf("Authentication configuration is invalid: %v", err),
 			metav1.ConditionFalse,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 		// Record event for secret validation failure
 		if r.Recorder != nil {
 			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "SecretValidationFailed",
@@ -354,6 +354,7 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 		"Authentication configuration is valid",
 		metav1.ConditionTrue,
 	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
 
 	// List workloads once and pass to functions that need them
 	// This ensures consistency - all functions use the same workload list
@@ -1018,14 +1019,17 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 	}
 }
 
-// determineStatusFromPods determines the appropriate status based on pod states
+// determineStatusFromPods determines the appropriate status based on pod states.
+// The 'ready' parameter counts pods that have passed their readiness probes (PodReady condition is True),
+// not just pods in Running phase. This ensures the VirtualMCPServer is only marked Ready when
+// the underlying pods are actually ready to serve traffic.
 func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	running, pending, failed int,
+	ready, pending, failed int,
 ) statusDecision {
-	// Handle non-running states first (early returns reduce nesting)
-	if running == 0 {
+	// Handle non-ready states first (early returns reduce nesting)
+	if ready == 0 {
 		if failed > 0 {
 			return statusDecision{
 				phase:          mcpv1alpha1.VirtualMCPServerPhaseFailed,
@@ -1049,9 +1053,9 @@ func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 		}
 	}
 
-	// Pods are running - check backend health if backends exist
+	// Pods are ready (passed readiness probes) - check backend health if backends exist
 	if len(vmcp.Status.DiscoveredBackends) == 0 {
-		// No backends discovered yet - pods running is sufficient for Ready
+		// No backends discovered yet - pods ready is sufficient for Ready
 		return statusDecision{
 			phase:          mcpv1alpha1.VirtualMCPServerPhaseReady,
 			message:        "Virtual MCP server is running",
@@ -1080,25 +1084,37 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 		return err
 	}
 
-	// Count pod states
-	var running, pending, failed int
+	// Count pod states based on actual readiness, not just phase.
+	// A pod in Running phase may not be ready to serve traffic if it hasn't
+	// passed its readiness probe yet. We must check the PodReady condition.
+	var ready, pending, failed int
 	for _, pod := range podList.Items {
-		switch pod.Status.Phase {
-		case corev1.PodRunning:
-			running++
-		case corev1.PodPending:
-			pending++
-		case corev1.PodFailed:
+		// Check for terminal failure states first
+		if pod.Status.Phase == corev1.PodFailed {
 			failed++
-		case corev1.PodSucceeded:
-			running++
-		case corev1.PodUnknown:
+			continue
+		}
+
+		// Check if pod is actually ready to serve traffic (passed readiness probes)
+		// This is the authoritative signal that the pod can handle requests
+		isPodReady := false
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+				isPodReady = true
+				break
+			}
+		}
+
+		if isPodReady {
+			ready++
+		} else {
+			// Pod exists but isn't ready yet (still starting, or readiness probe failing)
 			pending++
 		}
 	}
 
 	// Determine status in one place (no branching/repetition)
-	decision := r.determineStatusFromPods(ctx, vmcp, running, pending, failed)
+	decision := r.determineStatusFromPods(ctx, vmcp, ready, pending, failed)
 
 	// Apply all status updates at once
 	statusManager.SetPhase(decision.phase)

@@ -17,7 +17,7 @@ metadata:
 data:
   registry.json: |
     {
-      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
       "version": "1.0.0",
       "last_updated": "2025-01-14T00:00:00Z",
       "servers": {
@@ -288,7 +288,7 @@ spec:
 **ToolHive Format** (default):
 - Native ToolHive registry schema
 - Supports all ToolHive features
-- See [registry schema](../../pkg/registry/data/schema.json)
+- See [registry schema](../../pkg/registry/data/toolhive-legacy-registry.schema.json)
 
 **Upstream Format**:
 - Standard MCP registry format
@@ -640,4 +640,4 @@ Each registry configuration must have a unique `name` within the MCPRegistry.
 - [MCPServer Documentation](README.md#usage)
 - [Operator Installation](../../docs/kind/deploying-toolhive-operator.md)
 - [Registry Examples](../../examples/operator/mcp-registries/)
-- [Registry Schema](../../pkg/registry/data/schema.json)
+- [Registry Schema](../../pkg/registry/data/toolhive-legacy-registry.schema.json)

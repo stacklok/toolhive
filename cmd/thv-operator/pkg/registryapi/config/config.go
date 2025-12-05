@@ -154,6 +154,7 @@ type RegistryConfig struct {
 	Filter     *FilterConfig     `yaml:"filter,omitempty"`
 }
 
+// AuthMode represents the authentication mode
 type AuthMode string
 
 const (
@@ -161,6 +162,7 @@ const (
 	AuthModeAnonymous AuthMode = "anonymous"
 )
 
+// AuthConfig defines authentication configuration for the registry server
 type AuthConfig struct {
 	// Mode specifies the authentication mode (anonymous or oauth)
 	// Defaults to "oauth" if not specified (security-by-default).

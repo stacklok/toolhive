@@ -181,10 +181,25 @@ func WaitForPodsReady(ctx context.Context, c client.Client, namespace string, la
 				return fmt.Errorf("pod %s is in phase %s", pod.Name, pod.Status.Phase)
 			}
 
+			containerReady := false
+			podReady := false
+
 			for _, condition := range pod.Status.Conditions {
-				if condition.Type == corev1.ContainersReady && condition.Status != corev1.ConditionTrue {
-					return fmt.Errorf("pod %s containers not ready", pod.Name)
+				if condition.Type == corev1.ContainersReady {
+					containerReady = condition.Status == corev1.ConditionTrue
 				}
+
+				if condition.Type == corev1.PodReady {
+					podReady = condition.Status == corev1.ConditionTrue
+				}
+			}
+
+			if !containerReady {
+				return fmt.Errorf("pod %s containers not ready", pod.Name)
+			}
+
+			if !podReady {
+				return fmt.Errorf("pod %s not ready", pod.Name)
 			}
 		}
 		return nil

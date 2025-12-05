@@ -11,6 +11,11 @@ const (
 
 	// ExternalAuthTypeHeaderInjection is the type for custom header injection
 	ExternalAuthTypeHeaderInjection ExternalAuthType = "headerInjection"
+
+	// ExternalAuthTypeUnauthenticated is the type for no authentication
+	// This should only be used for backends on trusted networks (e.g., localhost, VPC)
+	// or when authentication is handled by network-level security
+	ExternalAuthTypeUnauthenticated ExternalAuthType = "unauthenticated"
 )
 
 // ExternalAuthType represents the type of external authentication
@@ -21,7 +26,7 @@ type ExternalAuthType string
 // MCPServer resources in the same namespace.
 type MCPExternalAuthConfigSpec struct {
 	// Type is the type of external authentication to configure
-	// +kubebuilder:validation:Enum=tokenExchange;headerInjection
+	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;unauthenticated
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
 

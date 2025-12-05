@@ -66,6 +66,10 @@ type VirtualMCPServerReconciler struct {
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 }
 
+var (
+	envVarSanitizeRegex = regexp.MustCompile(`[^A-Z0-9_]`)
+)
+
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpgroups,verbs=get;list;watch
@@ -81,9 +85,6 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
-var (
-	envVarSanitizeRegex = regexp.MustCompile(`[^A-Z0-9_]`)
-)
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.

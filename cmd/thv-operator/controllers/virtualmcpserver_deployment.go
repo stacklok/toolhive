@@ -446,6 +446,10 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		envVarName = generateUniqueHeaderInjectionEnvVarName(externalAuthConfigName)
 		secretRef = externalAuthConfig.Spec.HeaderInjection.ValueSecretRef
 
+	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
+		// No secrets to mount for unauthenticated
+		return nil, nil
+
 	default:
 		return nil, nil // Not applicable
 	}

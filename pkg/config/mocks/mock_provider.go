@@ -173,6 +173,20 @@ func (mr *MockProviderMockRecorder) GetRegistryConfig() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRegistryConfig", reflect.TypeOf((*MockProvider)(nil).GetRegistryConfig))
 }
 
+// GetUsageMetricsEnabled mocks base method.
+func (m *MockProvider) GetUsageMetricsEnabled() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetUsageMetricsEnabled")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// GetUsageMetricsEnabled indicates an expected call of GetUsageMetricsEnabled.
+func (mr *MockProviderMockRecorder) GetUsageMetricsEnabled() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUsageMetricsEnabled", reflect.TypeOf((*MockProvider)(nil).GetUsageMetricsEnabled))
+}
+
 // LoadOrCreateConfig mocks base method.
 func (m *MockProvider) LoadOrCreateConfig() (*config.Config, error) {
 	m.ctrl.T.Helper()
@@ -284,6 +298,20 @@ func (m *MockProvider) SetRegistryURL(registryURL string, allowPrivateRegistryIp
 func (mr *MockProviderMockRecorder) SetRegistryURL(registryURL, allowPrivateRegistryIp any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetRegistryURL", reflect.TypeOf((*MockProvider)(nil).SetRegistryURL), registryURL, allowPrivateRegistryIp)
+}
+
+// SetUsageMetricsEnabled mocks base method.
+func (m *MockProvider) SetUsageMetricsEnabled(enabled bool) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetUsageMetricsEnabled", enabled)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetUsageMetricsEnabled indicates an expected call of SetUsageMetricsEnabled.
+func (mr *MockProviderMockRecorder) SetUsageMetricsEnabled(enabled any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetUsageMetricsEnabled", reflect.TypeOf((*MockProvider)(nil).SetUsageMetricsEnabled), enabled)
 }
 
 // UnsetAllBuildEnv mocks base method.

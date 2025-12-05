@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck // Standard practice for Ginkgo
@@ -42,6 +43,9 @@ type THVCommand struct {
 	env    []string
 	dir    string
 	stdin  string
+
+	// cmd is the underlying exec.Cmd once a Run method is called.
+	cmd *exec.Cmd
 }
 
 // NewTHVCommand creates a new ToolHive command
@@ -82,22 +86,52 @@ func (c *THVCommand) RunWithTimeout(timeout time.Duration) (string, string, erro
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, c.config.THVBinary, c.args...) //nolint:gosec // Intentional for e2e testing
-	cmd.Env = c.env
+	c.cmd = exec.CommandContext(ctx, c.config.THVBinary, c.args...) //nolint:gosec // Intentional for e2e testing
+	c.cmd.Env = c.env
 	if c.dir != "" {
-		cmd.Dir = c.dir
+		c.cmd.Dir = c.dir
 	}
 	if c.stdin != "" {
-		cmd.Stdin = strings.NewReader(c.stdin)
+		c.cmd.Stdin = strings.NewReader(c.stdin)
 	}
 
 	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	c.cmd.Stdout = &stdout
+	c.cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err := c.cmd.Run()
 
 	return stdout.String(), stderr.String(), err
+}
+
+// InterruptAndWaitForExit interrupts the command and waits for it to exit.
+// If the context is cancelled, it returns an error.
+func (c *THVCommand) InterruptAndWaitForExit(ctx context.Context) error {
+	if c.cmd.ProcessState != nil {
+		// The command has already exited, so we can return early.
+		// Calling wait again will produce an error if called after the command has exited.
+		return nil
+	}
+	err := c.cmd.Process.Signal(syscall.SIGINT)
+	if err != nil {
+		return fmt.Errorf("failed to interrupt command: %w", err)
+	}
+
+	exitCh := make(chan struct{}, 1)
+	go func() {
+		err = c.cmd.Wait()
+		if err != nil {
+			GinkgoWriter.Printf("command exited with error after interrupt: %v", err)
+		}
+		exitCh <- struct{}{}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("context cancelled while waiting for command to exit")
+	case <-exitCh:
+		return nil
+	}
 }
 
 // ExpectSuccess runs the command and expects it to succeed

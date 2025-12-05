@@ -66,6 +66,10 @@ type VirtualMCPServerReconciler struct {
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 }
 
+var (
+	envVarSanitizeRegex = regexp.MustCompile(`[^A-Z0-9_]`)
+)
+
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpgroups,verbs=get;list;watch
@@ -1288,7 +1292,7 @@ func generateUniqueTokenExchangeEnvVarName(configName string) string {
 	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
 	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
 	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
+	sanitized = envVarSanitizeRegex.ReplaceAllString(sanitized, "_")
 	return fmt.Sprintf("TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_%s", sanitized)
 }
 
@@ -1298,7 +1302,7 @@ func generateUniqueHeaderInjectionEnvVarName(configName string) string {
 	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
 	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
 	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
+	sanitized = envVarSanitizeRegex.ReplaceAllString(sanitized, "_")
 	return fmt.Sprintf("TOOLHIVE_HEADER_INJECTION_VALUE_%s", sanitized)
 }
 

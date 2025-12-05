@@ -342,10 +342,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
 	}
 
-	// TODO: Stop writing to PID file once we migrate over to statuses.
-	if err := process.WriteCurrentPIDFile(r.Config.BaseName); err != nil {
-		logger.Warnf("Warning: Failed to write PID file: %v", err)
-	}
 	if err := r.statusManager.SetWorkloadPID(ctx, r.Config.BaseName, os.Getpid()); err != nil {
 		logger.Warnf("Warning: Failed to set workload PID: %v", err)
 	}

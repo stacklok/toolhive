@@ -482,7 +482,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 
 				// Always try to stop the server at the end so the goroutine returns.
 				defer func() {
-					// If this takes too long, the timeout willl kill the server eventually.
+					// If this takes too long, the timeout will kill the server eventually.
 					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 					defer cancel()
 					err := runCommand.InterruptAndWaitForExit(ctx)

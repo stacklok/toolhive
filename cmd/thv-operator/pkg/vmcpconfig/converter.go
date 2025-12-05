@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -86,7 +87,11 @@ func (c *Converter) Convert(
 
 	// Convert Aggregation - always set with defaults if not specified
 	if vmcp.Spec.Aggregation != nil {
-		config.Aggregation = c.convertAggregation(ctx, vmcp)
+		agg, err := c.convertAggregation(ctx, vmcp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert aggregation config: %w", err)
+		}
+		config.Aggregation = agg
 	} else {
 		// Provide default aggregation config with prefix conflict resolution
 		config.Aggregation = &vmcpconfig.AggregationConfig{
@@ -261,13 +266,15 @@ func (*Converter) convertBackendAuthConfig(
 func (c *Converter) convertAggregation(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) *vmcpconfig.AggregationConfig {
+) (*vmcpconfig.AggregationConfig, error) {
 	agg := &vmcpconfig.AggregationConfig{}
 
 	c.convertConflictResolution(vmcp, agg)
-	c.convertToolConfigs(ctx, vmcp, agg)
+	if err := c.convertToolConfigs(ctx, vmcp, agg); err != nil {
+		return nil, err
+	}
 
-	return agg
+	return agg, nil
 }
 
 // convertConflictResolution converts conflict resolution strategy and config
@@ -306,9 +313,9 @@ func (c *Converter) convertToolConfigs(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	agg *vmcpconfig.AggregationConfig,
-) {
+) error {
 	if len(vmcp.Spec.Aggregation.Tools) == 0 {
-		return
+		return nil
 	}
 
 	ctxLogger := log.FromContext(ctx)
@@ -320,11 +327,14 @@ func (c *Converter) convertToolConfigs(
 			Filter:   toolConfig.Filter,
 		}
 
-		c.applyToolConfigRef(ctx, ctxLogger, vmcp, toolConfig, wtc)
+		if err := c.applyToolConfigRef(ctx, ctxLogger, vmcp, toolConfig, wtc); err != nil {
+			return err
+		}
 		c.applyInlineOverrides(toolConfig, wtc)
 
 		agg.Tools = append(agg.Tools, wtc)
 	}
+	return nil
 }
 
 // applyToolConfigRef resolves and applies MCPToolConfig reference
@@ -334,9 +344,9 @@ func (c *Converter) applyToolConfigRef(
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	toolConfig mcpv1alpha1.WorkloadToolConfig,
 	wtc *vmcpconfig.WorkloadToolConfig,
-) {
+) error {
 	if toolConfig.ToolConfigRef == nil {
-		return
+		return nil
 	}
 
 	resolvedConfig, err := c.resolveMCPToolConfig(ctx, vmcp.Namespace, toolConfig.ToolConfigRef.Name)
@@ -344,15 +354,18 @@ func (c *Converter) applyToolConfigRef(
 		ctxLogger.Error(err, "failed to resolve MCPToolConfig reference",
 			"workload", toolConfig.Workload,
 			"toolConfigRef", toolConfig.ToolConfigRef.Name)
-		return
+		// Fail closed: return error when MCPToolConfig is configured but resolution fails
+		// This prevents deploying without tool filtering when explicit configuration is requested
+		return fmt.Errorf("MCPToolConfig resolution failed for %q: %w",
+			toolConfig.ToolConfigRef.Name, err)
 	}
 
-	if resolvedConfig == nil {
-		return
-	}
+	// Note: resolveMCPToolConfig never returns (nil, nil) - it either succeeds with
+	// (toolConfig, nil) or fails with (nil, error), so no nil check needed here
 
 	c.mergeToolConfigFilter(wtc, resolvedConfig)
 	c.mergeToolConfigOverrides(wtc, resolvedConfig)
+	return nil
 }
 
 // mergeToolConfigFilter merges filter from MCPToolConfig

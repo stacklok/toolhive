@@ -1657,7 +1657,6 @@ func TestApplyInlineOverrides(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-
 			wtc := &vmcpconfig.WorkloadToolConfig{Overrides: tt.existing}
 			toolConfig := mcpv1alpha1.WorkloadToolConfig{Overrides: tt.inline}
 			(&Converter{}).applyInlineOverrides(toolConfig, wtc)
@@ -1738,12 +1737,178 @@ func TestConvertToolConfigs(t *testing.T) {
 			}
 
 			agg := &vmcpconfig.AggregationConfig{}
-			converter.convertToolConfigs(ctx, vmcp, agg)
+			err := converter.convertToolConfigs(ctx, vmcp, agg)
 
+			require.NoError(t, err)
 			require.Len(t, agg.Tools, 1)
 			assert.Equal(t, tt.expectedWorkload, agg.Tools[0].Workload)
 			assert.Equal(t, tt.expectedFilter, agg.Tools[0].Filter)
 			assert.Equal(t, tt.expectedOverride, agg.Tools[0].Overrides)
+		})
+	}
+}
+
+// TestConvertToolConfigs_FailClosed tests that MCPToolConfig resolution errors cause conversion to fail.
+// This is a security feature: if a user explicitly references an MCPToolConfig (for tool filtering or
+// security policy enforcement), we should fail rather than deploy without the intended configuration.
+func TestConvertToolConfigs_FailClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		tools          []mcpv1alpha1.WorkloadToolConfig
+		existingConfig *mcpv1alpha1.MCPToolConfig
+		expectError    bool
+		expectedErrMsg string
+	}{
+		{
+			name: "error when MCPToolConfig reference not found (fail closed)",
+			tools: []mcpv1alpha1.WorkloadToolConfig{{
+				Workload:      "backend1",
+				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "nonexistent-config"},
+			}},
+			existingConfig: nil, // MCPToolConfig doesn't exist in cluster
+			expectError:    true,
+			expectedErrMsg: "MCPToolConfig resolution failed for \"nonexistent-config\"",
+		},
+		{
+			name: "no error when no ToolConfigRef specified",
+			tools: []mcpv1alpha1.WorkloadToolConfig{{
+				Workload: "backend1",
+				Filter:   []string{"tool1"},
+			}},
+			existingConfig: nil,
+			expectError:    false,
+		},
+		{
+			name: "successful when MCPToolConfig exists",
+			tools: []mcpv1alpha1.WorkloadToolConfig{{
+				Workload:      "backend1",
+				ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "valid-config"},
+			}},
+			existingConfig: newMCPToolConfig("valid-config", "default", []string{"fetch"}, nil),
+			expectError:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			var k8sClient client.Client
+			if tt.existingConfig != nil {
+				k8sClient = newTestK8sClient(t, tt.existingConfig)
+			} else {
+				k8sClient = newTestK8sClient(t)
+			}
+
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			converter.k8sClient = k8sClient
+
+			vmcp := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+				Spec:       mcpv1alpha1.VirtualMCPServerSpec{Aggregation: &mcpv1alpha1.AggregationConfig{Tools: tt.tools}},
+			}
+
+			agg := &vmcpconfig.AggregationConfig{}
+			err := converter.convertToolConfigs(ctx, vmcp, agg)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectedErrMsg)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestConvert_MCPToolConfigFailClosed tests that MCPToolConfig resolution errors propagate through
+// the full Convert() method and prevent VirtualMCPServer deployment.
+func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		vmcp           *mcpv1alpha1.VirtualMCPServer
+		existingConfig *mcpv1alpha1.MCPToolConfig
+		expectError    bool
+		expectedErrMsg string
+	}{
+		{
+			name: "Convert fails when MCPToolConfig not found",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Aggregation: &mcpv1alpha1.AggregationConfig{
+						Tools: []mcpv1alpha1.WorkloadToolConfig{{
+							Workload:      "backend1",
+							ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "missing-config"},
+						}},
+					},
+				},
+			},
+			existingConfig: nil,
+			expectError:    true,
+			expectedErrMsg: "failed to convert aggregation config",
+		},
+		{
+			name: "Convert succeeds when MCPToolConfig exists",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					Aggregation: &mcpv1alpha1.AggregationConfig{
+						Tools: []mcpv1alpha1.WorkloadToolConfig{{
+							Workload:      "backend1",
+							ToolConfigRef: &mcpv1alpha1.ToolConfigRef{Name: "valid-config"},
+						}},
+					},
+				},
+			},
+			existingConfig: newMCPToolConfig("valid-config", "default", []string{"fetch"}, nil),
+			expectError:    false,
+		},
+		{
+			name: "Convert succeeds when no Aggregation specified",
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+				},
+			},
+			existingConfig: nil,
+			expectError:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			var k8sClient client.Client
+			if tt.existingConfig != nil {
+				k8sClient = newTestK8sClient(t, tt.existingConfig)
+			} else {
+				k8sClient = newTestK8sClient(t)
+			}
+
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			converter.k8sClient = k8sClient
+
+			config, err := converter.Convert(ctx, tt.vmcp)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectedErrMsg)
+				assert.Nil(t, config)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, config)
+			}
 		})
 	}
 }

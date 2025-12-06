@@ -624,6 +624,13 @@ spec:
                           failures before marking unhealthy
                         type: integer
                     type: object
+                  logLevel:
+                    description: |-
+                      LogLevel sets the logging level for the Virtual MCP server.
+                      Set to "debug" to enable debug logging. When not set, defaults to info level.
+                    enum:
+                    - debug
+                    type: string
                   timeouts:
                     description: Timeouts configures timeout settings
                     properties:

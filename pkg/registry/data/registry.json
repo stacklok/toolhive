@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-12-05T00:18:44Z",
+  "last_updated": "2025-12-06T00:18:08Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -4475,6 +4475,109 @@
         "runner_environment": "github-hosted",
         "cert_issuer": "https://token.actions.githubusercontent.com"
       }
+    },
+    "pagerduty": {
+      "description": "Interact with PagerDuty for managing incidents, services, schedules, and event orchestrations",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "stdio",
+      "tools": [
+        "add_note_to_incident",
+        "add_responders",
+        "add_team_member",
+        "append_event_orchestration_router_rule",
+        "create_alert_grouping_setting",
+        "create_incident",
+        "create_schedule",
+        "create_schedule_override",
+        "create_service",
+        "create_status_page_post",
+        "create_status_page_post_update",
+        "create_team",
+        "delete_alert_grouping_setting",
+        "delete_team",
+        "get_alert_grouping_setting",
+        "get_escalation_policy",
+        "get_event_orchestration",
+        "get_event_orchestration_global",
+        "get_event_orchestration_router",
+        "get_event_orchestration_service",
+        "get_incident",
+        "get_incident_workflow",
+        "get_outlier_incident",
+        "get_past_incidents",
+        "get_related_incidents",
+        "get_schedule",
+        "get_service",
+        "get_status_page_post",
+        "get_team",
+        "get_user_data",
+        "list_alert_grouping_settings",
+        "list_escalation_policies",
+        "list_event_orchestrations",
+        "list_incident_workflows",
+        "list_incidents",
+        "list_oncalls",
+        "list_schedule_users",
+        "list_schedules",
+        "list_services",
+        "list_status_page_impacts",
+        "list_status_page_post_updates",
+        "list_status_page_severities",
+        "list_status_page_statuses",
+        "list_status_pages",
+        "list_team_members",
+        "list_teams",
+        "list_users",
+        "manage_incidents",
+        "remove_team_member",
+        "start_incident_workflow",
+        "update_alert_grouping_setting",
+        "update_event_orchestration_router",
+        "update_schedule",
+        "update_service",
+        "update_team"
+      ],
+      "repository_url": "https://github.com/PagerDuty/pagerduty-mcp-server",
+      "tags": [
+        "integration",
+        "api",
+        "incident-management",
+        "on-call",
+        "monitoring",
+        "alerting"
+      ],
+      "image": "ghcr.io/stacklok/dockyard/uvx/pagerduty-mcp:0.9.2",
+      "permissions": {
+        "network": {
+          "outbound": {
+            "allow_host": [
+              "api.pagerduty.com",
+              "api.eu.pagerduty.com"
+            ],
+            "allow_port": [
+              443
+            ]
+          }
+        }
+      },
+      "env_vars": [
+        {
+          "name": "PAGERDUTY_USER_API_KEY",
+          "description": "User API token for PagerDuty authentication",
+          "required": true,
+          "secret": true
+        },
+        {
+          "name": "PAGERDUTY_API_HOST",
+          "description": "PagerDuty API endpoint URL",
+          "required": false,
+          "default": "https://api.pagerduty.com"
+        }
+      ],
+      "args": [
+        "--enable-write-tools"
+      ]
     },
     "perplexity-ask": {
       "description": "Integrates Perplexity AI's Sonar API for live web searches, in-depth research, and reasoning tasks.",

@@ -350,7 +350,6 @@ func TestMCPServerToBackend_BasicFields(t *testing.T) {
 	assert.Equal(t, "http://localhost:8080", backend.BaseURL)
 	assert.Equal(t, "streamable-http", backend.TransportType)
 	assert.Equal(t, vmcp.BackendHealthy, backend.HealthStatus)
-	assert.Equal(t, "mcp", backend.Metadata["tool_type"])
 	assert.Equal(t, string(mcpv1alpha1.MCPServerPhaseRunning), backend.Metadata["workload_status"])
 	assert.Equal(t, namespace, backend.Metadata["namespace"])
 }

@@ -27,9 +27,6 @@ const (
 	// LabelPort is the label that contains the port
 	LabelPort = "toolhive-port"
 
-	// LabelToolType is the label that indicates the type of tool
-	LabelToolType = "toolhive-tool-type"
-
 	// LabelNetworkIsolation indicates that the network isolation functionality is enabled.
 	LabelNetworkIsolation = "toolhive-network-isolation"
 
@@ -50,9 +47,6 @@ func AddStandardLabels(labels map[string]string, containerName, containerBaseNam
 	labels[LabelBaseName] = containerBaseName
 	labels[LabelTransport] = transportType
 	labels[LabelPort] = fmt.Sprintf("%d", port)
-
-	// TODO: In the future, we'll support different tool types beyond just "mcp"
-	labels[LabelToolType] = "mcp"
 }
 
 // AddNetworkLabels adds network-related labels to a network
@@ -116,11 +110,6 @@ func GetPort(labels map[string]string) (int, error) {
 	return port, nil
 }
 
-// GetToolType gets the tool type from labels
-func GetToolType(labels map[string]string) string {
-	return labels[LabelToolType]
-}
-
 // GetGroup gets the group name from labels
 func GetGroup(labels map[string]string) string {
 	return labels[LabelGroup]
@@ -147,7 +136,6 @@ func IsStandardToolHiveLabel(key string) bool {
 		LabelBaseName,
 		LabelTransport,
 		LabelPort,
-		LabelToolType,
 		LabelNetworkIsolation,
 	}
 

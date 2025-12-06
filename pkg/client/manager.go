@@ -13,10 +13,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 )
 
-const (
-	mcpToolType = "mcp"
-)
-
 // Client represents a registered ToolHive client.
 type Client struct {
 	Name MCPClient `json:"name"`
@@ -206,9 +202,9 @@ func (m *defaultManager) RemoveServerFromClients(ctx context.Context, serverName
 }
 
 // shouldSkipWorkload determines if a workload should be skipped when adding/removing servers from clients.
-// Workloads are skipped if they are not MCP tool type and if they are not remote.
+// Workloads are skipped if they are not remote.
 func shouldSkipWorkload(workload core.Workload) bool {
-	return workload.ToolType != mcpToolType && !workload.Remote
+	return !workload.Remote
 }
 
 // addWorkloadsToClient adds the specified workloads to the client's configuration

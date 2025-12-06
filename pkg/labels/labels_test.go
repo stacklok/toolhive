@@ -26,7 +26,6 @@ func TestAddStandardLabels(t *testing.T) {
 				LabelBaseName:  "test-base",
 				LabelTransport: "http",
 				LabelPort:      "8080",
-				LabelToolType:  "mcp",
 			},
 		},
 		{
@@ -41,7 +40,6 @@ func TestAddStandardLabels(t *testing.T) {
 				LabelBaseName:  "another-base",
 				LabelTransport: "https",
 				LabelPort:      "9090",
-				LabelToolType:  "mcp",
 			},
 		},
 		{
@@ -56,7 +54,6 @@ func TestAddStandardLabels(t *testing.T) {
 				LabelBaseName:  "group-base",
 				LabelTransport: "sse",
 				LabelPort:      "7070",
-				LabelToolType:  "mcp",
 			},
 		},
 	}
@@ -391,11 +388,6 @@ func TestIsStandardToolHiveLabel(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "Standard tool type label",
-			key:      LabelToolType,
-			expected: true,
-		},
-		{
 			name:     "Standard network isolation label",
 			key:      LabelNetworkIsolation,
 			expected: true,
@@ -689,38 +681,6 @@ func TestParseLabelValidation(t *testing.T) {
 			}
 			if value != tc.expectedVal {
 				t.Errorf("Expected value to be '%s', but got '%s'", tc.expectedVal, value)
-			}
-		})
-	}
-}
-
-func TestGetToolType(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name     string
-		labels   map[string]string
-		expected string
-	}{
-		{
-			name: "Tool type exists",
-			labels: map[string]string{
-				LabelToolType: "mcp",
-			},
-			expected: "mcp",
-		},
-		{
-			name:     "Tool type doesn't exist",
-			labels:   map[string]string{},
-			expected: "",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			result := GetToolType(tc.labels)
-			if result != tc.expected {
-				t.Errorf("Expected tool type to be %s, but got %s", tc.expected, result)
 			}
 		})
 	}

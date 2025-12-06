@@ -228,11 +228,6 @@ components:
             StatusContext provides additional context about the workload's status.
             The exact meaning is determined by the status and the underlying runtime.
           type: string
-        tool_type:
-          description: |-
-            ToolType is the type of tool this workload represents.
-            For now, it will always be "mcp" - representing an MCP server.
-          type: string
         tools:
           description: ToolsFilter is the filter on tools applied to the workload.
           items:

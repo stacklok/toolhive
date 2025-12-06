@@ -93,7 +93,6 @@ func TestSortWorkloadsByName(t *testing.T) {
 					Package:       "zebra-pkg",
 					URL:           "http://localhost:8080",
 					Port:          8080,
-					ToolType:      "mcp",
 					TransportType: types.TransportTypeSSE,
 					Status:        runtime.WorkloadStatusRunning,
 					StatusContext: "healthy",
@@ -108,7 +107,6 @@ func TestSortWorkloadsByName(t *testing.T) {
 					Package:       "alpha-pkg",
 					URL:           "http://localhost:8081",
 					Port:          8081,
-					ToolType:      "mcp",
 					TransportType: types.TransportTypeStdio,
 					Status:        runtime.WorkloadStatusStopped,
 					StatusContext: "stopped",
@@ -159,7 +157,6 @@ func TestSortWorkloadsByName(t *testing.T) {
 					assert.Equal(t, originalWorkload.Package, sortedWorkload.Package)
 					assert.Equal(t, originalWorkload.URL, sortedWorkload.URL)
 					assert.Equal(t, originalWorkload.Port, sortedWorkload.Port)
-					assert.Equal(t, originalWorkload.ToolType, sortedWorkload.ToolType)
 					assert.Equal(t, originalWorkload.TransportType, sortedWorkload.TransportType)
 					assert.Equal(t, originalWorkload.Status, sortedWorkload.Status)
 					assert.Equal(t, originalWorkload.StatusContext, sortedWorkload.StatusContext)

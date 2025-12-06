@@ -57,9 +57,6 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 		}
 	}
 
-	// Get tool type from labels
-	toolType := labels.GetToolType(container.Labels)
-
 	// Get port from labels
 	port, err := labels.GetPort(container.Labels)
 	if err != nil {
@@ -103,7 +100,6 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 		Name:          name, // Use the calculated workload name (base name), not container name
 		Package:       container.Image,
 		URL:           url,
-		ToolType:      toolType,
 		TransportType: tType,
 		ProxyMode:     effectiveProxyMode,
 		Status:        container.State,

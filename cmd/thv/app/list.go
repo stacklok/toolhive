@@ -136,7 +136,7 @@ func printTextOutput(workloadList []core.Workload) {
 
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tPACKAGE\tSTATUS\tURL\tPORT\tTOOL TYPE\tGROUP\tCREATED AT")
+	fmt.Fprintln(w, "NAME\tPACKAGE\tSTATUS\tURL\tPORT\tGROUP\tCREATED AT")
 
 	// Print workload information
 	for _, c := range workloadList {
@@ -147,13 +147,12 @@ func printTextOutput(workloadList []core.Workload) {
 		}
 
 		// Print workload information
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
 			c.Name,
 			c.Package,
 			status,
 			c.URL,
 			c.Port,
-			c.ToolType,
 			c.Group,
 			c.CreatedAt,
 		)

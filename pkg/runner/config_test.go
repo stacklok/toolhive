@@ -460,7 +460,6 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 				"toolhive-name":      "test-server",
 				"toolhive-transport": "sse",
 				"toolhive-port":      "60000",
-				"toolhive-tool-type": "mcp",
 			},
 		},
 		{
@@ -477,7 +476,6 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 				"toolhive":           "true",
 				"toolhive-name":      "test-server",
 				"toolhive-transport": "stdio",
-				"toolhive-tool-type": "mcp",
 				"existing-label":     "existing-value",
 			},
 		},
@@ -496,7 +494,6 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 				"toolhive-name":      "test-server",
 				"toolhive-transport": "sse", // Should be "sse" not "stdio"
 				"toolhive-port":      "60000",
-				"toolhive-tool-type": "mcp",
 			},
 		},
 		{
@@ -514,7 +511,6 @@ func TestRunConfig_WithStandardLabels(t *testing.T) {
 				"toolhive-name":      "test-server",
 				"toolhive-transport": "streamable-http", // Should be "streamable-http" not "stdio"
 				"toolhive-port":      "60000",
-				"toolhive-tool-type": "mcp",
 			},
 		},
 	}

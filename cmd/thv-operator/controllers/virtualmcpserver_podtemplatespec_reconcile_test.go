@@ -16,18 +16,11 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
-// TestVirtualMCPServerReconcile_WithPodTemplateSpec tests are complex and require envtest
-// The key functionality is tested in:
-// - TestVirtualMCPServerPodTemplateSpecBuilder: builder validation
-// - TestVirtualMCPServerPodTemplateSpecValidation: parsing validation
-// - TestVirtualMCPServerPodTemplateSpecNeedsUpdate: change detection
-// - TestVirtualMCPServerPodTemplateSpecDeterministic: deterministic generation
-// - Integration tests in test/e2e/
-
-func TestVirtualMCPServerReconcile_WithValidPodTemplateSpec(t *testing.T) {
-	t.Parallel()
-	t.Skip("Complex reconciliation tests require envtest - see TestVirtualMCPServerPodTemplateSpec* for unit tests")
-}
+const (
+	testPodTemplateNamespace = "test-namespace"
+	testPodTemplateVmcpName  = "test-vmcp"
+	testPodTemplateGroupName = "test-group"
+)
 
 // TestVirtualMCPServerPodTemplateSpecDeterministic verifies that generating a deployment
 // twice with the same PodTemplateSpec produces identical results (no spurious updates)
@@ -38,9 +31,9 @@ func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
-	namespace := "test-namespace"
-	vmcpName := "test-vmcp"
-	groupName := "test-group"
+	namespace := testPodTemplateNamespace
+	vmcpName := testPodTemplateVmcpName
+	groupName := testPodTemplateGroupName
 
 	mcpGroup := &mcpv1alpha1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
@@ -107,9 +100,77 @@ func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 		"Generating deployment twice with same PodTemplateSpec should produce identical results")
 }
 
-func TestVirtualMCPServerDeploymentUpdate_WithPodTemplateSpecChange(t *testing.T) {
+// TestVirtualMCPServerPodTemplateSpecPreservesContainer verifies that when a user provides
+// a PodTemplateSpec with only pod-level settings (like nodeSelector), the controller-generated
+// vmcp container is preserved and not wiped out by the strategic merge patch.
+// This is a regression test for the nil-slice-becomes-empty-array bug.
+func TestVirtualMCPServerPodTemplateSpecPreservesContainer(t *testing.T) {
 	t.Parallel()
-	t.Skip("Complex reconciliation tests require envtest - see TestVirtualMCPServerPodTemplateSpecNeedsUpdate for change detection tests")
+	scheme := runtime.NewScheme()
+	_ = mcpv1alpha1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+
+	namespace := testPodTemplateNamespace
+	vmcpName := testPodTemplateVmcpName
+	groupName := testPodTemplateGroupName
+
+	mcpGroup := &mcpv1alpha1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      groupName,
+			Namespace: namespace,
+		},
+		Status: mcpv1alpha1.MCPGroupStatus{
+			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		},
+	}
+
+	// Use raw JSON directly (simulating real user input) - only nodeSelector, no containers
+	// This is the exact scenario that triggered the original bug
+	vmcp := &mcpv1alpha1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpName,
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.VirtualMCPServerSpec{
+			GroupRef: mcpv1alpha1.GroupRef{
+				Name: groupName,
+			},
+			PodTemplateSpec: &runtime.RawExtension{
+				Raw: []byte(`{"spec":{"nodeSelector":{"disktype":"ssd"}}}`),
+			},
+		},
+	}
+
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpConfigMapName(vmcpName),
+			Namespace: namespace,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(mcpGroup, vmcp, configMap).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	dep := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []string{})
+
+	// Verify deployment was created
+	assert.NotNil(t, dep, "Deployment should not be nil")
+
+	// Verify the vmcp container is preserved (not wiped out by strategic merge)
+	assert.Len(t, dep.Spec.Template.Spec.Containers, 1, "Should have exactly one container")
+	assert.Equal(t, "vmcp", dep.Spec.Template.Spec.Containers[0].Name, "Container should be named 'vmcp'")
+
+	// Verify the nodeSelector was applied
+	assert.Equal(t, "ssd", dep.Spec.Template.Spec.NodeSelector["disktype"],
+		"nodeSelector should be applied from PodTemplateSpec")
 }
 
 func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
@@ -168,9 +229,9 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 			_ = corev1.AddToScheme(scheme)
 			_ = appsv1.AddToScheme(scheme)
 
-			namespace := "test-namespace"
-			vmcpName := "test-vmcp"
-			groupName := "test-group"
+			namespace := testPodTemplateNamespace
+			vmcpName := testPodTemplateVmcpName
+			groupName := testPodTemplateGroupName
 
 			// Create MCPGroup (required for deployment generation)
 			mcpGroup := &mcpv1alpha1.MCPGroup{

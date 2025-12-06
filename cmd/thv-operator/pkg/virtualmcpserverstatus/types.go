@@ -32,6 +32,9 @@ type StatusManager interface {
 	// SetGroupRefValidatedCondition sets the GroupRef validation condition
 	SetGroupRefValidatedCondition(reason, message string, status metav1.ConditionStatus)
 
+	// SetCompositeToolRefsValidatedCondition sets the CompositeToolRefs validation condition
+	SetCompositeToolRefsValidatedCondition(reason, message string, status metav1.ConditionStatus)
+
 	// SetReadyCondition sets the Ready condition
 	SetReadyCondition(reason, message string, status metav1.ConditionStatus)
 

@@ -36,6 +36,33 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			errMsg:  "spec.groupRef.name is required",
 		},
 		{
+			name: "empty IncomingAuth type",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					IncomingAuth: &IncomingAuthConfig{
+						Type: "",
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.incomingAuth.type is required",
+		},
+		{
+			name: "OIDC auth without OIDCConfig",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					IncomingAuth: &IncomingAuthConfig{
+						Type:       "oidc",
+						OIDCConfig: nil,
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.incomingAuth.oidcConfig is required when type is oidc",
+		},
+		{
 			name: "valid outgoingAuth with discovered source",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
@@ -59,6 +86,23 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "spec.outgoingAuth.source must be one of: discovered, inline",
+		},
+		{
+			name: "invalid backend auth type",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					OutgoingAuth: &OutgoingAuthConfig{
+						Backends: map[string]BackendAuthConfig{
+							"test-backend": {
+								Type: "invalid-type",
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.outgoingAuth.backends[test-backend].type must be one of: discovered, external_auth_config_ref",
 		},
 		{
 			name: "valid backend external auth config ref",
@@ -369,6 +413,42 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			wantErr: true,
 			errMsg:  "spec.compositeTools[0].steps[1].id \"step1\" is duplicated",
 		},
+		{
+			name: "invalid composite tool - invalid step type",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:   "step1",
+									Type: "invalid-type",
+									Tool: "backend.tool",
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.compositeTools[0].steps[0].type must be tool or elicitation",
+		},
+		{
+			name: "invalid aggregation - invalid conflict resolution strategy",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					Aggregation: &AggregationConfig{
+						ConflictResolution: "invalid-strategy",
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.aggregation.conflictResolution must be one of: prefix, priority, manual",
+		},
 	}
 
 	for _, tt := range tests {
@@ -457,6 +537,31 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 				},
 			},
 			wantErr: false,
+		},
+		{
+			name: "invalid error handling action",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:   "step1",
+									Tool: "backend.tool1",
+									OnError: &ErrorHandling{
+										Action: "invalid-action",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.compositeTools[0].steps[0].onError.action must be abort, continue, or retry",
 		},
 		{
 			name: "invalid error handling - retry without maxRetries",
@@ -562,6 +667,29 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "spec.compositeTools[0].steps[0].onError.retryDelay: invalid duration format \"invalid\", expected format like '30s', '5m', '1h', '1h30m'",
+		},
+		{
+			name: "invalid composite tool - unknown dependency reference",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:        "step1",
+									Tool:      "backend.tool1",
+									DependsOn: []string{"unknown-step"},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.compositeTools[0].steps[0].dependsOn references unknown step \"unknown-step\"",
 		},
 	}
 

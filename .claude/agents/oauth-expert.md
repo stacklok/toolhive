@@ -30,7 +30,7 @@ Do NOT invoke for:
 - **Token Standards**: JWT, token introspection, token revocation, token exchange
 - **Discovery**: OAuth/OIDC discovery documents, metadata endpoints
 - **Security**: PKCE, state parameters, nonce, token binding
-- **RFC Compliance**: OAuth 2.0 (RFC 6749), OIDC Core, JWT (RFC 7519), Token Exchange (RFC 8693)
+- **RFC Compliance**: OAuth 2.0/2.1, OIDC Core, JWT (RFC 7519), Token Exchange (RFC 8693), Protected Resource Metadata (RFC 9728)
 
 ## Critical: Always Use Latest Standards
 
@@ -52,6 +52,13 @@ Do NOT invoke for:
 **Security Best Practices**:
 - OAuth 2.0 Security BCP (RFC 8252, RFC 8628): https://datatracker.ietf.org/doc/html/draft-ietf-oauth-security-topics
 - PKCE (RFC 7636): https://datatracker.ietf.org/doc/html/rfc7636
+
+**MCP Authorization (for MCP server authentication)**:
+- MCP Auth Spec: https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization
+- MCP Security Best Practices: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices
+- Protected Resource Metadata (RFC 9728): https://datatracker.ietf.org/doc/html/rfc9728
+- Resource Indicators (RFC 8707): https://datatracker.ietf.org/doc/html/rfc8707
+- Client ID Metadata Documents: https://datatracker.ietf.org/doc/html/draft-ietf-oauth-client-id-metadata-document-00
 
 ## ToolHive Authentication Architecture
 
@@ -198,6 +205,78 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 &actor_token=<actor_token>  // optional
 &actor_token_type=...       // optional
 ```
+
+## MCP Authorization Model (2025-11-25)
+
+MCP 2025-11-25 defines specific OAuth requirements for HTTP transports. This section covers MCP-specific OAuth patterns.
+
+### Client Registration Priority
+
+MCP defines a specific priority order for client registration:
+
+1. **Pre-registration**: When client and server have existing relationship
+2. **Client ID Metadata Documents** (PREFERRED): Clients host metadata at HTTPS URLs
+3. **Dynamic Client Registration (DCR)**: Fallback for backwards compatibility
+4. **User prompt**: Last resort when no other option available
+
+### Client ID Metadata Documents (NEW)
+
+The preferred approach for MCP client registration when no prior relationship exists:
+
+**Client Requirements**:
+- Host metadata at HTTPS URL with path component (e.g., `https://example.com/client.json`)
+- `client_id` MUST match the document URL exactly
+- Required fields: `client_id`, `client_name`, `redirect_uris`
+- MAY use `private_key_jwt` for client authentication
+
+**Server Discovery**:
+- Check `client_id_metadata_document_supported: true` in auth server metadata
+- Fall back to DCR if not supported
+
+**Example Metadata Document**:
+```json
+{
+  "client_id": "https://app.example.com/oauth/client-metadata.json",
+  "client_name": "Example MCP Client",
+  "redirect_uris": ["http://localhost:3000/callback"],
+  "grant_types": ["authorization_code"],
+  "token_endpoint_auth_method": "none"
+}
+```
+
+**ToolHive Status**: NOT YET IMPLEMENTED - DCR is currently used as primary approach
+
+### Protected Resource Metadata (RFC 9728)
+
+MCP servers MUST implement RFC 9728 for authorization server discovery:
+
+**Discovery Methods** (in order):
+1. `WWW-Authenticate` header with `resource_metadata` parameter on 401 response
+2. Well-known URI: `/.well-known/oauth-protected-resource/<path>` (endpoint-specific)
+3. Well-known URI: `/.well-known/oauth-protected-resource` (root-level)
+
+**ToolHive Implementation**: `pkg/auth/discovery/` - Full RFC 9728 support
+
+### Resource Indicators (RFC 8707)
+
+MCP clients MUST include `resource` parameter in auth and token requests:
+- Identifies the specific MCP server the token is for
+- Prevents token reuse across different services
+- Uses canonical URI format (lowercase scheme and host)
+
+**ToolHive Implementation**: `OAuthFlowConfig.Resource` in `pkg/auth/discovery/`
+
+### MCP-Specific Security Requirements
+
+**REQUIRED**:
+- PKCE with S256 code challenge method
+- Token audience validation (reject tokens not issued for you)
+- Token passthrough FORBIDDEN (never forward client tokens upstream)
+
+**Scope Handling**:
+1. Use `scope` from initial 401 `WWW-Authenticate` header if provided
+2. Fall back to `scopes_supported` from Protected Resource Metadata
+3. Handle 403 `insufficient_scope` for step-up authorization
 
 ## Security Best Practices
 

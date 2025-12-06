@@ -684,36 +684,39 @@ func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
-	// Build user-provided PodTemplateSpec
+	// Early return if no PodTemplateSpec provided
+	if vmcp.Spec.PodTemplateSpec == nil || len(vmcp.Spec.PodTemplateSpec.Raw) == 0 {
+		return nil
+	}
+
+	// Validate the PodTemplateSpec and check if there are meaningful customizations
 	builder, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp")
 	if err != nil {
 		return fmt.Errorf("failed to build PodTemplateSpec: %w", err)
 	}
 
-	userPodTemplateSpec := builder.Build()
-	if userPodTemplateSpec == nil {
-		// No customizations to apply
+	if builder.Build() == nil {
+		// No meaningful customizations to apply
 		return nil
 	}
 
-	// Marshal both the original and user-provided PodTemplateSpec
+	// Use the raw user JSON directly for strategic merge patch.
+	// This avoids the nil-slice-becomes-empty-array problem that occurs when
+	// we parse JSON into Go structs and re-marshal - Go's json.Marshal converts
+	// nil slices to [], which strategic merge patch interprets as "replace with empty".
+	// By using the raw JSON, we preserve exactly what the user specified.
+	userJSON := vmcp.Spec.PodTemplateSpec.Raw
+
 	originalJSON, err := json.Marshal(deployment.Spec.Template)
 	if err != nil {
 		return fmt.Errorf("failed to marshal original PodTemplateSpec: %w", err)
 	}
 
-	userJSON, err := json.Marshal(userPodTemplateSpec)
-	if err != nil {
-		return fmt.Errorf("failed to marshal user PodTemplateSpec: %w", err)
-	}
-
-	// Apply strategic merge patch to combine controller defaults with user customizations
 	patchedJSON, err := strategicpatch.StrategicMergePatch(originalJSON, userJSON, corev1.PodTemplateSpec{})
 	if err != nil {
 		return fmt.Errorf("failed to apply strategic merge patch: %w", err)
 	}
 
-	// Unmarshal the patched result back into the deployment
 	var patchedPodTemplateSpec corev1.PodTemplateSpec
 	if err := json.Unmarshal(patchedJSON, &patchedPodTemplateSpec); err != nil {
 		return fmt.Errorf("failed to unmarshal patched PodTemplateSpec: %w", err)

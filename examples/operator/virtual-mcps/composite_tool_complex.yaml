@@ -1,0 +1,324 @@
+# Example: Complex VirtualMCPCompositeToolDefinition
+#
+# This example demonstrates an advanced composite tool workflow with:
+# - Parallel execution of independent steps (DAG-based)
+# - Conditional execution based on previous step results
+# - Multiple dependencies and complex data flow
+# - Template variable usage for dynamic arguments
+#
+# Use case: Process data from multiple sources with validation and aggregation
+#
+# Workflow stages:
+# 1. Parallel data fetching from multiple endpoints
+# 2. Process and validate each data source
+# 3. Aggregate results using LLM analysis
+# 4. Generate final report
+#
+# Prerequisites:
+# - None! All required backend MCPServers are included in this file
+#
+# Usage:
+#   kubectl apply -f composite_tool_complex.yaml
+
+---
+# Create MCPGroup
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: data-processing-services
+  namespace: default
+spec:
+  description: Backend services for data processing workflows
+
+---
+# Backend MCP Server: Fetch (for HTTP requests)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: default
+spec:
+  groupRef: data-processing-services
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Backend MCP Server: Yardstick SSE (for echo and math operations)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick-sse
+  namespace: default
+spec:
+  groupRef: data-processing-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: sse
+  env:
+  - name: TRANSPORT
+    value: sse
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Backend MCP Server: Yardstick Streamable (for longecho and LLM)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick-streamable
+  namespace: default
+spec:
+  groupRef: data-processing-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: streamable-http
+  env:
+  - name: TRANSPORT
+    value: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Complex Composite Tool Definition
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPCompositeToolDefinition
+metadata:
+  name: multi-source-data-processor
+  namespace: default
+spec:
+  name: process_multi_source_data
+  description: |
+    Process data from multiple sources with parallel fetching and LLM analysis:
+    - Fetch data from multiple endpoints in parallel
+    - Validate and transform each data source
+    - Use LLM to analyze and aggregate results
+    - Generate summary report
+
+  # Total workflow timeout
+  timeout: 10m
+
+  # Abort on first failure for data integrity
+  failureMode: abort
+
+  # Input parameters schema
+  parameters:
+    type: object
+    properties:
+      source_url_1:
+        type: string
+        description: First data source URL
+      source_url_2:
+        type: string
+        description: Second data source URL
+      analysis_prompt:
+        type: string
+        description: Prompt for LLM analysis
+    required:
+      - source_url_1
+      - source_url_2
+
+  steps:
+    # ============================================
+    # Stage 1: Parallel Data Fetching
+    # ============================================
+
+    # Fetch from first data source
+    - id: fetch_source_1
+      type: tool
+      tool: fetch
+      arguments:
+        url: "{{.params.source_url_1}}"
+      timeout: 2m
+      # No dependencies - can run immediately in parallel
+      onError:
+        action: abort
+        maxRetries: 2
+        retryDelay: 5s
+
+    # Fetch from second data source (runs in parallel with fetch_source_1)
+    - id: fetch_source_2
+      type: tool
+      tool: fetch
+      arguments:
+        url: "{{.params.source_url_2}}"
+      timeout: 2m
+      # No dependencies - runs in parallel with fetch_source_1
+      onError:
+        action: abort
+        maxRetries: 2
+        retryDelay: 5s
+
+    # ============================================
+    # Stage 2: Data Validation and Processing
+    # ============================================
+
+    # Validate first source using echo to confirm data
+    - id: validate_source_1
+      type: tool
+      tool: echo
+      arguments:
+        message: "Source 1 data: {{.steps.fetch_source_1.output.body}}"
+      dependsOn:
+        - fetch_source_1
+      timeout: 30s
+
+    # Validate second source using echo to confirm data
+    - id: validate_source_2
+      type: tool
+      tool: echo
+      arguments:
+        message: "Source 2 data: {{.steps.fetch_source_2.output.body}}"
+      dependsOn:
+        - fetch_source_2
+      timeout: 30s
+
+    # Calculate data metrics using add operation
+    # (This demonstrates using math operations on extracted data)
+    - id: calculate_metrics
+      type: tool
+      tool: add
+      arguments:
+        a: "100"
+        b: "50"
+      dependsOn:
+        - validate_source_1
+        - validate_source_2
+      timeout: 30s
+
+    # ============================================
+    # Stage 3: LLM Analysis and Aggregation
+    # ============================================
+
+    # Use LLM to analyze combined data
+    - id: llm_analysis
+      type: tool
+      tool: sampleLLM
+      arguments:
+        prompt: |
+          Analyze the following data sources and provide insights:
+
+          Source 1: {{.steps.fetch_source_1.output.body}}
+          Source 2: {{.steps.fetch_source_2.output.body}}
+
+          Metrics: {{.steps.calculate_metrics.output.result}}
+
+          {{.params.analysis_prompt}}
+        max_tokens: "500"
+      dependsOn:
+        - validate_source_1
+        - validate_source_2
+        - calculate_metrics
+      timeout: 3m
+      onError:
+        action: abort
+        maxRetries: 1
+        retryDelay: 10s
+
+    # ============================================
+    # Stage 4: Report Generation
+    # ============================================
+
+    # Generate comprehensive report using longecho
+    # (longecho simulates a long-running report generation)
+    - id: generate_report
+      type: tool
+      tool: longecho
+      arguments:
+        message: |
+          ===== Multi-Source Data Processing Report =====
+
+          Timestamp: {{.timestamp}}
+
+          Data Sources:
+          - Source 1: {{.params.source_url_1}}
+          - Source 2: {{.params.source_url_2}}
+
+          Validation Results:
+          - Source 1: ✓ Valid
+          - Source 2: ✓ Valid
+
+          Calculated Metrics:
+          - Result: {{.steps.calculate_metrics.output.result}}
+
+          LLM Analysis:
+          {{.steps.llm_analysis.output.response}}
+
+          ================================================
+        duration: "5s"
+      dependsOn:
+        - llm_analysis
+      timeout: 2m
+
+    # Final confirmation echo
+    - id: confirm_completion
+      type: tool
+      tool: echo
+      arguments:
+        message: "Report generation completed successfully at {{.timestamp}}"
+      dependsOn:
+        - generate_report
+      timeout: 30s
+
+---
+# VirtualMCPServer using the complex composite tool
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: vmcp-data-processor
+  namespace: default
+spec:
+  groupRef:
+    name: data-processing-services
+
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          # Allow any principal to use the data processing tool
+          - 'permit(principal, action, resource);'
+
+  outgoingAuth:
+    source: discovered
+
+  # Reference the composite tool definition
+  compositeToolRefs:
+    - name: multi-source-data-processor
+
+  # Conflict resolution for backend tools
+  aggregation:
+    conflictResolution: prefix
+    conflictResolutionConfig:
+      prefixFormat: "{workload}_"
+
+  operational:
+    timeouts:
+      default: 5m
+      perWorkload:
+        yardstick-streamable: 3m
+    failureHandling:
+      healthCheckInterval: 30s
+      unhealthyThreshold: 3
+      partialFailureMode: fail

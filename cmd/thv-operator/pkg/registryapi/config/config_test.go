@@ -282,6 +282,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						Git: &mcpv1alpha1.GitSource{
 							Repository: "https://github.com/example/repo.git",
+							Path:       "registry.json",
 							// No branch, tag, or commit specified - should cause an error
 						},
 					},
@@ -294,6 +295,33 @@ func TestBuildConfig_GitSource(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "git branch, tag, and commit are mutually exclusive")
+		assert.Nil(t, config)
+	})
+
+	t.Run("no git path specified", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "default",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						Git: &mcpv1alpha1.GitSource{
+							Repository: "https://github.com/example/repo.git",
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "path is required")
 		assert.Nil(t, config)
 	})
 
@@ -311,6 +339,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 						Git: &mcpv1alpha1.GitSource{
 							Repository: "https://github.com/example/repo.git",
 							Branch:     "main",
+							Path:       "registry.json",
 						},
 						SyncPolicy: &mcpv1alpha1.SyncPolicy{
 							Interval: "1h",
@@ -357,6 +386,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 						Git: &mcpv1alpha1.GitSource{
 							Repository: "git@github.com:example/repo.git",
 							Tag:        "v1.2.3",
+							Path:       "registry.json",
 						},
 						SyncPolicy: &mcpv1alpha1.SyncPolicy{
 							Interval: "1h",
@@ -403,6 +433,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 						Git: &mcpv1alpha1.GitSource{
 							Repository: "https://github.com/example/repo.git",
 							Commit:     "abc123def456",
+							Path:       "registry.json",
 						},
 						SyncPolicy: &mcpv1alpha1.SyncPolicy{
 							Interval: "1h",
@@ -766,6 +797,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 						Git: &mcpv1alpha1.GitSource{
 							Repository: "https://github.com/example/repo.git",
 							Branch:     "main",
+							Path:       "registry.json",
 						},
 						SyncPolicy: &mcpv1alpha1.SyncPolicy{
 							Interval: "30m",
@@ -925,6 +957,7 @@ func TestToConfigMapWithContentChecksum(t *testing.T) {
 				Git: &GitConfig{
 					Repository: "https://github.com/example/mcp-servers.git",
 					Branch:     "main",
+					Path:       "registry.json",
 				},
 				SyncPolicy: &SyncPolicyConfig{
 					Interval: "15m",
@@ -1019,6 +1052,7 @@ func TestBuildConfig_MultipleRegistries(t *testing.T) {
 					Git: &mcpv1alpha1.GitSource{
 						Repository: "https://github.com/example/repo.git",
 						Branch:     "main",
+						Path:       "registry.json",
 					},
 					SyncPolicy: &mcpv1alpha1.SyncPolicy{
 						Interval: "30m",

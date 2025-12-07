@@ -204,7 +204,7 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 			port = int(mcpServer.Spec.Port) // Fallback to deprecated Port field
 		}
 		if port > 0 {
-			url = transport.GenerateMCPServerURL(mcpServer.Spec.Transport, transport.LocalhostIPv4, port, mcpServer.Name, "")
+			url = transport.GenerateMCPServerURL(mcpServer.Spec.Transport, mcpServer.Spec.ProxyMode, transport.LocalhostIPv4, port, mcpServer.Name, "")
 		}
 	}
 

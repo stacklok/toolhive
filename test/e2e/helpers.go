@@ -104,34 +104,9 @@ func (c *THVCommand) RunWithTimeout(timeout time.Duration) (string, string, erro
 	return stdout.String(), stderr.String(), err
 }
 
-// InterruptAndWaitForExit interrupts the command and waits for it to exit.
-// If the context is cancelled, it returns an error.
-func (c *THVCommand) InterruptAndWaitForExit(ctx context.Context) error {
-	if c.cmd.ProcessState != nil {
-		// The command has already exited, so we can return early.
-		// Calling wait again will produce an error if called after the command has exited.
-		return nil
-	}
-	err := c.cmd.Process.Signal(syscall.SIGINT)
-	if err != nil {
-		return fmt.Errorf("failed to interrupt command: %w", err)
-	}
-
-	exitCh := make(chan struct{}, 1)
-	go func() {
-		err = c.cmd.Wait()
-		if err != nil {
-			GinkgoWriter.Printf("command exited with error after interrupt: %v", err)
-		}
-		exitCh <- struct{}{}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return fmt.Errorf("context cancelled while waiting for command to exit")
-	case <-exitCh:
-		return nil
-	}
+// Interrupt interrupts the command and does NOT wait for it to exit.
+func (c *THVCommand) Interrupt() error {
+	return c.cmd.Process.Signal(syscall.SIGINT)
 }
 
 // ExpectSuccess runs the command and expects it to succeed
@@ -202,6 +177,7 @@ func StopAndRemoveMCPServer(config *TestConfig, serverName string) error {
 		}
 		return err
 	}
+
 	return nil
 }
 

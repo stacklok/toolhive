@@ -539,7 +539,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer cancel()
 				err = runCommand.Interrupt()
-				Expect(err).ToNot(HaveOccurred(), "server should be interruptable; stdout="+fgStdout+" stderr="+fgStderr)
+				Expect(err).ToNot(HaveOccurred(), "server should be interruptible; stdout="+fgStdout+" stderr="+fgStderr)
 				select {
 				case _, ok := <-runExited:
 					Expect(ok).To(BeTrue(), "server should have exited as result of interrupt; stdout="+fgStdout+" stderr="+fgStderr)

@@ -15,11 +15,33 @@ import (
 // If remoteURL is provided, the remote server's path will be used as the path of the proxy.
 // For SSE/STDIO transports, a "#<containerName>" fragment is appended.
 // For StreamableHTTP, no fragment is appended.
-func GenerateMCPServerURL(transportType string, host string, port int, containerName, remoteURL string) string {
+func GenerateMCPServerURL(transportType string, proxyMode string, host string, port int, containerName, remoteURL string) string {
 	base := fmt.Sprintf("http://%s:%d", host, port)
 
-	isSSE := transportType == types.TransportTypeSSE.String() || transportType == types.TransportTypeStdio.String()
-	isStreamable := transportType == types.TransportTypeStreamableHTTP.String()
+	var isSSE, isStreamable bool
+
+	if transportType == types.TransportTypeStdio.String() {
+		// For stdio, the proxy mode determines the HTTP endpoint
+		// Default to streamable-http if proxyMode is empty (matches CRD default)
+		effectiveProxyMode := proxyMode
+		if effectiveProxyMode == "" {
+			effectiveProxyMode = "streamable-http"
+		}
+
+		// Map proxy mode to endpoint type
+		if effectiveProxyMode == "sse" {
+			isSSE = true
+		} else {
+			// streamable-http or any other value
+			isStreamable = true
+		}
+	} else if transportType == types.TransportTypeSSE.String() {
+		// Native SSE transport
+		isSSE = true
+	} else if transportType == types.TransportTypeStreamableHTTP.String() {
+		// Native streamable-http transport
+		isStreamable = true
+	}
 
 	// ---- Remote path case ----
 	if remoteURL != "" {

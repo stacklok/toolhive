@@ -68,6 +68,9 @@ type Manager interface {
 	MoveToGroup(ctx context.Context, workloadNames []string, groupFrom string, groupTo string) error
 	// ListWorkloadsInGroup returns all workload names that belong to the specified group, including stopped workloads.
 	ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error)
+	// ListWorkloadsUsingSecret returns all workload names that use the specified secret.
+	// This is useful for warning users when updating or deleting secrets that are in use.
+	ListWorkloadsUsingSecret(ctx context.Context, secretName string) ([]string, error)
 	// DoesWorkloadExist checks if a workload with the given name exists.
 	DoesWorkloadExist(ctx context.Context, workloadName string) (bool, error)
 }
@@ -1330,6 +1333,54 @@ func (d *DefaultManager) ListWorkloadsInGroup(ctx context.Context, groupName str
 	}
 
 	return groupWorkloads, nil
+}
+
+// ListWorkloadsUsingSecret returns all workload names that use the specified secret.
+// It iterates through all saved RunConfigs and checks their Secrets field.
+func (*DefaultManager) ListWorkloadsUsingSecret(ctx context.Context, secretName string) ([]string, error) {
+	// Create a state store to access run configurations
+	store, err := state.NewRunConfigStore(state.DefaultAppName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create state store: %w", err)
+	}
+
+	// List all configurations
+	configNames, err := store.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list configurations: %w", err)
+	}
+
+	var workloadsUsingSecret []string
+
+	for _, name := range configNames {
+		// Load the run configuration
+		runConfig, err := runner.LoadState(ctx, name)
+		if err != nil {
+			// Skip configs we can't load - they may be corrupted or from an older version
+			logger.Debugf("failed to load state for %s: %v", name, err)
+			continue
+		}
+
+		// Check if any secret in this config matches the target secret
+		for _, secretParam := range runConfig.Secrets {
+			parsed, err := secrets.ParseSecretParameter(secretParam)
+			if err != nil {
+				// Skip malformed secret parameters
+				continue
+			}
+			if parsed.Name == secretName {
+				// Use the workload name from the config
+				workloadName := runConfig.Name
+				if workloadName == "" {
+					workloadName = name
+				}
+				workloadsUsingSecret = append(workloadsUsingSecret, workloadName)
+				break // No need to check other secrets in this config
+			}
+		}
+	}
+
+	return workloadsUsingSecret, nil
 }
 
 // getRemoteWorkloadsFromState retrieves remote servers from the state store

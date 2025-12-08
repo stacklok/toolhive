@@ -54,6 +54,11 @@ type VirtualMCPServerSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
+
+	// Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
+	// including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint
+	// +optional
+	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
 }
 
 // GroupRef references an MCPGroup resource

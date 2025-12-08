@@ -92,14 +92,18 @@ func (f *fileStatusManager) isRemoteWorkload(ctx context.Context, workloadName s
 	}
 	defer reader.Close()
 
-	// Read the configuration data
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return false, err
-	}
+    // Parse the JSON to check for remote_url field
+    var config struct {
+        RemoteURL string `json:"remote_url"`
+    }
 
-	// Check if the JSON contains "remote_url" field
-	return strings.Contains(string(data), `"remote_url"`), nil
+    decoder := json.NewDecoder(reader)
+    if err := decoder.Decode(&config); err != nil {
+        return false, err
+    }
+
+    // Check if the remote_url field is set
+    return config.RemoteURL != "", nil
 }
 
 // workloadStatusFile represents the JSON structure stored on disk

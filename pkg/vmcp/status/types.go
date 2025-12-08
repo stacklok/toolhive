@@ -1,11 +1,11 @@
 // Package status privdes status reporting capabilities for Virtual MCP servers.
 // It will enable vMCP runtime to report operational state to different platforms
 // Kubernetes, local CLI through a common interface
-
 package status
 
 import "time"
 
+// Phase represents the current operational phase of the VirtualMCP server.
 type Phase string
 
 const (
@@ -16,7 +16,7 @@ const (
 	// PhaseDegraded indicates the server is running but some backends are unhealthy
 	PhaseDegraded Phase = "Degraded"
 
-	// Phase Failed will indicate if the server has failed and cannot serve requests
+	// PhaseFailed will indicate if the server has failed and cannot serve requests
 	PhaseFailed Phase = "Failed"
 
 	// PhasePending indicates the server is starting up
@@ -31,12 +31,11 @@ type BackendHealthReport struct {
 	LastChecked time.Time
 }
 
-// RunTimeStatus it will represent the current operational status of the Virual MCP server
+// RuntimeStatus it will represent the current operational status of the Virual MCP server
 // Data structure that will be reported to Kubernates or logged locally
-
 type RuntimeStatus struct {
-	Phase   Phase
-	Message string
+	Phase    Phase
+	Message  string
 	Backends []BackendHealthReport
 
 	TotalToolCount    int

@@ -21,5 +21,3 @@ func NewReporter(name, namespace string) (Reporter, error) {
 func isKubernetesRuntime() bool {
 	return os.Getenv("KUBERNETES_SERVICE_HOST") != ""
 }
-
-

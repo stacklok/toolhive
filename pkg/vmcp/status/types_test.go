@@ -7,6 +7,8 @@ import (
 
 // TestPhaseConstants verifies phase constants are defined correctly
 func TestPhaseConstants(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		phase Phase
 		value string
@@ -16,11 +18,12 @@ func TestPhaseConstants(t *testing.T) {
 		{PhaseFailed, "Failed"},
 		{PhasePending, "Pending"},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(string(tt.phase), func(t *testing.T) {
+			t.Parallel()
 			if string(tt.phase) != tt.value {
-				t.Errorf("Phase %s has wrong value: got %s, want %s", 
+				t.Errorf("Phase %s has wrong value: got %s, want %s",
 					tt.phase, string(tt.phase), tt.value)
 			}
 		})
@@ -29,15 +32,17 @@ func TestPhaseConstants(t *testing.T) {
 
 // TestBackendHealthReport_Creation verifies struct initialization
 func TestBackendHealthReport_Creation(t *testing.T) {
+	t.Parallel()
+
 	now := time.Now()
-	
+
 	report := BackendHealthReport{
 		Name:        "test-backend",
 		Healthy:     true,
 		Message:     "All good",
 		LastChecked: now,
 	}
-	
+
 	if report.Name != "test-backend" {
 		t.Errorf("Name: got %s, want test-backend", report.Name)
 	}
@@ -54,11 +59,13 @@ func TestBackendHealthReport_Creation(t *testing.T) {
 
 // TestRuntimeStatus_Creation verifies struct initialization
 func TestRuntimeStatus_Creation(t *testing.T) {
+	t.Parallel()
+
 	backends := []BackendHealthReport{
 		{Name: "b1", Healthy: true},
 		{Name: "b2", Healthy: false},
 	}
-	
+
 	status := RuntimeStatus{
 		Phase:             PhaseReady,
 		Message:           "Test",
@@ -68,7 +75,7 @@ func TestRuntimeStatus_Creation(t *testing.T) {
 		UnhealthyBackends: 1,
 		LastDiscoveryTime: time.Now(),
 	}
-	
+
 	if status.Phase != PhaseReady {
 		t.Errorf("Phase: got %s, want Ready", status.Phase)
 	}
@@ -88,6 +95,8 @@ func TestRuntimeStatus_Creation(t *testing.T) {
 
 // TestRuntimeStatus_EmptyBackends verifies handling of empty backend list
 func TestRuntimeStatus_EmptyBackends(t *testing.T) {
+	t.Parallel()
+
 	status := RuntimeStatus{
 		Phase:             PhasePending,
 		Backends:          []BackendHealthReport{},
@@ -95,7 +104,7 @@ func TestRuntimeStatus_EmptyBackends(t *testing.T) {
 		HealthyBackends:   0,
 		UnhealthyBackends: 0,
 	}
-	
+
 	if status.Backends == nil {
 		t.Error("Backends should not be nil")
 	}

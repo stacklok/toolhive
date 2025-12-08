@@ -7,18 +7,20 @@ import (
 
 // TestNewReporter_CLI verifies factory creates LogReporter in CLI environment
 func TestNewReporter_CLI(t *testing.T) {
+	t.Parallel()
+
 	// Ensure we're NOT in Kubernetes
 	os.Unsetenv("KUBERNETES_SERVICE_HOST")
-	
+
 	reporter, err := NewReporter("test-server", "default")
 	if err != nil {
 		t.Fatalf("NewReporter should not error in CLI env, got: %v", err)
 	}
-	
+
 	if reporter == nil {
 		t.Fatal("NewReporter returned nil")
 	}
-	
+
 	// Verify it's a LogReporter by type assertion
 	_, ok := reporter.(*LogReporter)
 	if !ok {
@@ -28,6 +30,8 @@ func TestNewReporter_CLI(t *testing.T) {
 
 // TestNewReporter_Kubernetes verifies factory creates K8sReporter in K8s environment
 func TestNewReporter_Kubernetes(t *testing.T) {
+	t.Parallel()
+
 	// Simulate Kubernetes environment
 	originalValue := os.Getenv("KUBERNETES_SERVICE_HOST")
 	os.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
@@ -38,9 +42,9 @@ func TestNewReporter_Kubernetes(t *testing.T) {
 			os.Setenv("KUBERNETES_SERVICE_HOST", originalValue)
 		}
 	}()
-	
+
 	reporter, err := NewReporter("test-server", "default")
-	
+
 	// K8sReporter might fail to create client in test environment - that's OK
 	// We're testing that the factory TRIES to create K8sReporter
 	if err != nil {
@@ -48,11 +52,11 @@ func TestNewReporter_Kubernetes(t *testing.T) {
 		t.Logf("K8sReporter creation failed as expected in test env: %v", err)
 		return
 	}
-	
+
 	if reporter == nil {
 		t.Fatal("NewReporter returned nil without error")
 	}
-	
+
 	// Verify it's a K8sReporter
 	_, ok := reporter.(*K8sReporter)
 	if !ok {
@@ -62,6 +66,8 @@ func TestNewReporter_Kubernetes(t *testing.T) {
 
 // TestIsKubernetesRuntime verifies environment detection logic
 func TestIsKubernetesRuntime(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		envValue string
@@ -83,9 +89,10 @@ func TestIsKubernetesRuntime(t *testing.T) {
 			want:     true,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			// Save original value
 			originalValue := os.Getenv("KUBERNETES_SERVICE_HOST")
 			defer func() {
@@ -95,14 +102,14 @@ func TestIsKubernetesRuntime(t *testing.T) {
 					os.Setenv("KUBERNETES_SERVICE_HOST", originalValue)
 				}
 			}()
-			
+
 			// Set test value
 			if tt.envValue == "" {
 				os.Unsetenv("KUBERNETES_SERVICE_HOST")
 			} else {
 				os.Setenv("KUBERNETES_SERVICE_HOST", tt.envValue)
 			}
-			
+
 			got := isKubernetesRuntime()
 			if got != tt.want {
 				t.Errorf("isKubernetesRuntime() = %v, want %v", got, tt.want)
@@ -112,9 +119,20 @@ func TestIsKubernetesRuntime(t *testing.T) {
 }
 
 // TestNewReporter_WithDifferentNames verifies factory handles various names
+//
+//nolint:gci,paralleltest,tparallel
 func TestNewReporter_WithDifferentNames(t *testing.T) {
-	os.Unsetenv("KUBERNETES_SERVICE_HOST")
-	
+	// Clear K8s env var to ensure CLI mode
+	oldHost := os.Getenv("KUBERNETES_SERVICE_HOST")
+	os.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Cleanup(func() {
+		if oldHost != "" {
+			os.Setenv("KUBERNETES_SERVICE_HOST", oldHost)
+		} else {
+			os.Unsetenv("KUBERNETES_SERVICE_HOST")
+		}
+	})
+
 	tests := []struct {
 		name      string
 		vmcpName  string
@@ -125,7 +143,6 @@ func TestNewReporter_WithDifferentNames(t *testing.T) {
 		{"with numbers", "server123", "ns-456"},
 		{"long name", "very-long-server-name-for-testing", "some-namespace"},
 	}
-	
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			reporter, err := NewReporter(tt.vmcpName, tt.namespace)
@@ -135,13 +152,11 @@ func TestNewReporter_WithDifferentNames(t *testing.T) {
 			if reporter == nil {
 				t.Fatal("NewReporter returned nil")
 			}
-			
 			// Verify it's a LogReporter
 			logReporter, ok := reporter.(*LogReporter)
 			if !ok {
 				t.Fatalf("Expected LogReporter, got: %T", reporter)
 			}
-			
 			if logReporter.name != tt.vmcpName {
 				t.Errorf("Expected name %s, got %s", tt.vmcpName, logReporter.name)
 			}

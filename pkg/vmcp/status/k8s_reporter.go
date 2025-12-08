@@ -1,8 +1,10 @@
 package status
 
+//nolint:gci // Import grouping managed manually
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -10,6 +12,11 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+var (
+	schemeOnce sync.Once
+	schemeErr  error
 )
 
 // K8sReporter implements Reporter by updating VirtualMCPServer status in Kubernetes
@@ -24,9 +31,12 @@ type K8sReporter struct {
 
 // NewK8sReporter creates a new K8sReporter instance, using in-cluster configuration
 func NewK8sReporter(name, namespace string) (*K8sReporter, error) {
-	// Register VirtualMCPServer type with scheme
-	if err := mcpv1alpha1.AddToScheme(scheme.Scheme); err != nil {
-		return nil, fmt.Errorf("failed to register scheme: %w", err)
+	// Register VirtualMCPServer type with scheme (once)
+	schemeOnce.Do(func() {
+		schemeErr = mcpv1alpha1.AddToScheme(scheme.Scheme)
+	})
+	if schemeErr != nil {
+		return nil, fmt.Errorf("failed to register scheme: %w", schemeErr)
 	}
 
 	config, err := rest.InClusterConfig()

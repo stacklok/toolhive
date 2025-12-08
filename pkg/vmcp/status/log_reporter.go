@@ -31,7 +31,7 @@ func (l *LogReporter) SetStatusCallback(fn func() *RuntimeStatus) {
 }
 
 // Report logs status once to stdout
-func (l *LogReporter) Report(ctx context.Context, status *RuntimeStatus) error {
+func (l *LogReporter) Report(_ context.Context, status *RuntimeStatus) error {
 	logger.Infof("[%s] Status Report:", l.name)
 	logger.Infof("  Phase: %s", status.Phase)
 	logger.Infof("  Message: %s", status.Message)

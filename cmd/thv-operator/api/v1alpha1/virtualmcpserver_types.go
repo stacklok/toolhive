@@ -529,6 +529,10 @@ const (
 
 	// ConditionReasonCompositeToolRefNotFound indicates a referenced VirtualMCPCompositeToolDefinition was not found
 	ConditionReasonCompositeToolRefNotFound = "CompositeToolRefNotFound"
+
+	// ConditionReasonCompositeToolRefInvalid indicates a referenced VirtualMCPCompositeToolDefinition is invalid
+	ConditionReasonCompositeToolRefInvalid = "CompositeToolRefInvalid"
+
 	// ConditionReasonVirtualMCPServerPodTemplateSpecValid indicates PodTemplateSpec validation succeeded
 	ConditionReasonVirtualMCPServerPodTemplateSpecValid = "PodTemplateSpecValid"
 

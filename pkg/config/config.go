@@ -37,6 +37,7 @@ type Config struct {
 	BuildEnv               map[string]string   `yaml:"build_env,omitempty"`
 	BuildEnvFromSecrets    map[string]string   `yaml:"build_env_from_secrets,omitempty"`
 	BuildEnvFromShell      []string            `yaml:"build_env_from_shell,omitempty"`
+	BuildAuthFiles         map[string]string   `yaml:"build_auth_files,omitempty"`
 }
 
 // Secrets contains the settings for secrets management.

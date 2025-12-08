@@ -4,6 +4,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -20,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
+	"github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
 var rootCmd = &cobra.Command{
@@ -303,6 +305,28 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	host, _ := cmd.Flags().GetString("host")
 	port, _ := cmd.Flags().GetInt("port")
 
+	// Create status reporter for operational status reporting
+	// It will fall back to config name if the environment variables are not set
+
+	// this one fallback to config name
+	vmcpName := os.Getenv("VMCP_NAME")
+	if vmcpName == "" {
+		vmcpName = cfg.Name
+	}
+
+	// fallback to default namespace
+	vmcpNamespace := os.Getenv("VMCP_NAMESPACE")
+	if vmcpNamespace == "" {
+		vmcpNamespace = "default"
+	}
+
+	// it will continue without reporter
+	statusReporter, err := status.NewReporter(vmcpName, vmcpNamespace)
+	if err != nil {
+		logger.Warnf("Failed to create status reporter: %v (continuing without status reporting)", err)
+		statusReporter = nil
+	}
+
 	serverCfg := &vmcpserver.Config{
 		Name:            cfg.Name,
 		Version:         getVersion(),
@@ -310,6 +334,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Port:            port,
 		AuthMiddleware:  authMiddleware,
 		AuthInfoHandler: authInfoHandler,
+		StatusReporter:  statusReporter,
 	}
 
 	// Convert composite tool configurations to workflow definitions

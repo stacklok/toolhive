@@ -59,3 +59,20 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - virtualmcpservers
+  - virtualmcpservers/status
+  verbs:
+  - get
+  - update
+  - patch

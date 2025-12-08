@@ -66,6 +66,10 @@ type VirtualMCPServerReconciler struct {
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 }
 
+var (
+	envVarSanitizeRegex = regexp.MustCompile(`[^A-Z0-9_]`)
+)
+
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpgroups,verbs=get;list;watch
@@ -121,6 +125,15 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
+	// Validate CompositeToolRefs
+	if err := r.validateCompositeToolRefs(ctx, vmcp, statusManager); err != nil {
+		// Apply status changes before returning error
+		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+			ctxLogger.Error(err, "Failed to apply status updates after CompositeToolRefs validation error")
+		}
+		return ctrl.Result{}, err
+	}
+
 	// Ensure all resources
 	if err := r.ensureAllResources(ctx, vmcp, statusManager); err != nil {
 		// Apply status changes before returning error
@@ -154,14 +167,24 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		ctxLogger.Info("Discovered backends", "count", len(discoveredBackends))
 	}
 
-	// Update status based on pod health
-	if err := r.updateVirtualMCPServerStatus(ctx, vmcp, statusManager); err != nil {
+	// Fetch the latest version before updating status to ensure we use the current Generation
+	latestVMCP := &mcpv1alpha1.VirtualMCPServer{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      vmcp.Name,
+		Namespace: vmcp.Namespace,
+	}, latestVMCP); err != nil {
+		ctxLogger.Error(err, "Failed to get latest VirtualMCPServer before status update")
+		return ctrl.Result{}, err
+	}
+
+	// Update status based on pod health using the latest Generation
+	if err := r.updateVirtualMCPServerStatus(ctx, latestVMCP, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to update VirtualMCPServer status")
 		return ctrl.Result{}, err
 	}
 
 	// Apply all collected status changes in a single batch update
-	if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+	if err := r.applyStatusUpdates(ctx, latestVMCP, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to apply final status updates")
 		return ctrl.Result{}, err
 	}
@@ -266,6 +289,82 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 		metav1.ConditionTrue,
 	)
 	statusManager.SetObservedGeneration(vmcp.Generation)
+
+	return nil
+}
+
+// validateCompositeToolRefs validates that all referenced VirtualMCPCompositeToolDefinition resources exist
+func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// If no composite tool refs, nothing to validate
+	if len(vmcp.Spec.CompositeToolRefs) == 0 {
+		// Set condition to indicate validation passed (no refs to validate)
+		statusManager.SetCompositeToolRefsValidatedCondition(
+			mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
+			"No composite tool references to validate",
+			metav1.ConditionTrue,
+		)
+		return nil
+	}
+
+	// Validate each referenced composite tool definition exists
+	for _, ref := range vmcp.Spec.CompositeToolRefs {
+		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
+		err := r.Get(ctx, types.NamespacedName{
+			Name:      ref.Name,
+			Namespace: vmcp.Namespace,
+		}, compositeToolDef)
+
+		if errors.IsNotFound(err) {
+			message := fmt.Sprintf("Referenced VirtualMCPCompositeToolDefinition %s not found", ref.Name)
+			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetCompositeToolRefsValidatedCondition(
+				mcpv1alpha1.ConditionReasonCompositeToolRefNotFound,
+				message,
+				metav1.ConditionFalse,
+			)
+			return err
+		} else if err != nil {
+			ctxLogger.Error(err, "Failed to get VirtualMCPCompositeToolDefinition", "name", ref.Name)
+			return err
+		}
+
+		// Check that the composite tool definition is validated and valid
+		if compositeToolDef.Status.ValidationStatus == mcpv1alpha1.ValidationStatusInvalid {
+			message := fmt.Sprintf("Referenced VirtualMCPCompositeToolDefinition %s is invalid", ref.Name)
+			if len(compositeToolDef.Status.ValidationErrors) > 0 {
+				message = fmt.Sprintf("%s: %s", message, strings.Join(compositeToolDef.Status.ValidationErrors, "; "))
+			}
+			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetCompositeToolRefsValidatedCondition(
+				mcpv1alpha1.ConditionReasonCompositeToolRefInvalid,
+				message,
+				metav1.ConditionFalse,
+			)
+			return fmt.Errorf("referenced VirtualMCPCompositeToolDefinition %s is invalid", ref.Name)
+		}
+
+		// If ValidationStatus is Unknown, we still allow it (validation might be in progress)
+		// but log a warning
+		if compositeToolDef.Status.ValidationStatus == mcpv1alpha1.ValidationStatusUnknown {
+			ctxLogger.V(1).Info("Referenced composite tool definition validation status is Unknown, proceeding",
+				"name", ref.Name, "namespace", vmcp.Namespace)
+		}
+	}
+
+	// All composite tool refs are valid
+	statusManager.SetCompositeToolRefsValidatedCondition(
+		mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
+		fmt.Sprintf("All %d composite tool references are valid", len(vmcp.Spec.CompositeToolRefs)),
+		metav1.ConditionTrue,
+	)
 
 	return nil
 }
@@ -733,6 +832,12 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 
 	// Check if port has changed
 	if len(container.Ports) > 0 && container.Ports[0].ContainerPort != vmcpDefaultPort {
+		return true
+	}
+
+	// Check if container args have changed (includes --debug flag from logLevel)
+	expectedArgs := r.buildContainerArgsForVmcp(vmcp)
+	if !reflect.DeepEqual(container.Args, expectedArgs) {
 		return true
 	}
 
@@ -1216,7 +1321,7 @@ func generateUniqueTokenExchangeEnvVarName(configName string) string {
 	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
 	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
 	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
+	sanitized = envVarSanitizeRegex.ReplaceAllString(sanitized, "_")
 	return fmt.Sprintf("TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_%s", sanitized)
 }
 
@@ -1226,7 +1331,7 @@ func generateUniqueHeaderInjectionEnvVarName(configName string) string {
 	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
 	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
 	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
+	sanitized = envVarSanitizeRegex.ReplaceAllString(sanitized, "_")
 	return fmt.Sprintf("TOOLHIVE_HEADER_INJECTION_VALUE_%s", sanitized)
 }
 

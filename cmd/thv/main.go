@@ -13,7 +13,6 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv/app"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/migration"
@@ -48,7 +47,7 @@ func main() {
 		migration.CheckAndPerformDefaultGroupMigration()
 	}
 
-	cmd := app.NewRootCmd(!app.IsCompletionCommand(os.Args) && !runtime.IsKubernetesRuntime())
+	cmd := app.NewRootCmd(!app.IsCompletionCommand(os.Args))
 
 	// Skip update check for completion command or if we are running in kubernetes
 	if err := cmd.ExecuteContext(ctx); err != nil {

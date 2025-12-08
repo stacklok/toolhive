@@ -73,6 +73,11 @@ func (s *StatusCollector) SetGroupRefValidatedCondition(reason, message string, 
 	s.SetCondition(mcpv1alpha1.ConditionTypeVirtualMCPServerGroupRefValidated, reason, message, status)
 }
 
+// SetCompositeToolRefsValidatedCondition sets the CompositeToolRefs validation condition.
+func (s *StatusCollector) SetCompositeToolRefsValidatedCondition(reason, message string, status metav1.ConditionStatus) {
+	s.SetCondition(mcpv1alpha1.ConditionTypeCompositeToolRefsValidated, reason, message, status)
+}
+
 // SetAuthConfiguredCondition sets the AuthConfigured condition.
 func (s *StatusCollector) SetAuthConfiguredCondition(reason, message string, status metav1.ConditionStatus) {
 	s.SetCondition(mcpv1alpha1.ConditionTypeAuthConfigured, reason, message, status)

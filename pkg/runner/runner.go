@@ -315,16 +315,19 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Define a function to stop the MCP server
 	stopMCPServer := func(reason string) {
+		// Use a background context to avoid cancellation of the main context.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 1*time.Minute)
+		defer cleanupCancel()
 		logger.Infof("Stopping MCP server: %s", reason)
 
 		// Stop the transport (which also stops the container, monitoring, and handles removal)
 		logger.Infof("Stopping %s transport...", r.Config.Transport)
-		if err := transportHandler.Stop(ctx); err != nil {
+		if err := transportHandler.Stop(cleanupCtx); err != nil {
 			logger.Warnf("Warning: Failed to stop transport: %v", err)
 		}
 
 		// Cleanup telemetry provider
-		if err := r.Cleanup(ctx); err != nil {
+		if err := r.Cleanup(cleanupCtx); err != nil {
 			logger.Warnf("Warning: Failed to cleanup telemetry: %v", err)
 		}
 
@@ -333,7 +336,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to remove PID file: %v", err)
 		}
-		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName); err != nil {
+		if err := r.statusManager.ResetWorkloadPID(cleanupCtx, r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.ContainerName, err)
 		}
 

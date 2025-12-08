@@ -209,6 +209,7 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "configmap-registry", RegistryJSONFileName), config.Registries[1].File.Path)
 		require.NotNil(t, config.Registries[1].SyncPolicy)
 		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 }
@@ -282,6 +283,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 						Format: mcpv1alpha1.RegistryFormatToolHive,
 						Git: &mcpv1alpha1.GitSource{
 							Repository: "https://github.com/example/repo.git",
+							Path:       "registry.json",
 							// No branch, tag, or commit specified - should cause an error
 						},
 					},
@@ -294,6 +296,33 @@ func TestBuildConfig_GitSource(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "git branch, tag, and commit are mutually exclusive")
+		assert.Nil(t, config)
+	})
+
+	t.Run("no git path specified", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "default",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						Git: &mcpv1alpha1.GitSource{
+							Repository: "https://github.com/example/repo.git",
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManagerForTesting(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "path is required")
 		assert.Nil(t, config)
 	})
 
@@ -311,6 +340,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 						Git: &mcpv1alpha1.GitSource{
 							Repository: "https://github.com/example/repo.git",
 							Branch:     "main",
+							Path:       "registry.json",
 						},
 						SyncPolicy: &mcpv1alpha1.SyncPolicy{
 							Interval: "1h",
@@ -341,6 +371,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 		assert.Empty(t, config.Registries[1].Git.Commit)
 		require.NotNil(t, config.Registries[1].SyncPolicy)
 		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("valid git source with tag", func(t *testing.T) {
@@ -357,6 +388,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 						Git: &mcpv1alpha1.GitSource{
 							Repository: "git@github.com:example/repo.git",
 							Tag:        "v1.2.3",
+							Path:       "registry.json",
 						},
 						SyncPolicy: &mcpv1alpha1.SyncPolicy{
 							Interval: "1h",
@@ -387,6 +419,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 		assert.Empty(t, config.Registries[1].Git.Commit)
 		require.NotNil(t, config.Registries[1].SyncPolicy)
 		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("valid git source with commit", func(t *testing.T) {
@@ -403,6 +436,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 						Git: &mcpv1alpha1.GitSource{
 							Repository: "https://github.com/example/repo.git",
 							Commit:     "abc123def456",
+							Path:       "registry.json",
 						},
 						SyncPolicy: &mcpv1alpha1.SyncPolicy{
 							Interval: "1h",
@@ -433,6 +467,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 		assert.Equal(t, "abc123def456", config.Registries[1].Git.Commit)
 		require.NotNil(t, config.Registries[1].SyncPolicy)
 		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }
 
@@ -535,6 +570,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 		assert.Nil(t, config.Registries[1].Git)
 		require.NotNil(t, config.Registries[1].SyncPolicy)
 		assert.Equal(t, "1h", config.Registries[1].SyncPolicy.Interval)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }
 
@@ -579,6 +615,7 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 		require.NotNil(t, config.Registries[0].Kubernetes)
 		// Second registry should be the user-specified one
 		assert.Nil(t, config.Registries[1].SyncPolicy)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("empty interval", func(t *testing.T) {
@@ -653,6 +690,7 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 		// Second registry should be the user-specified one
 		require.NotNil(t, config.Registries[1].SyncPolicy)
 		assert.Equal(t, "30m", config.Registries[1].SyncPolicy.Interval)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }
 
@@ -700,6 +738,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 		require.NotNil(t, config.Registries[0].Kubernetes)
 		// Filter should be nil when not provided for the user-specified registry
 		assert.Nil(t, config.Registries[1].Filter)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("filter with name filters", func(t *testing.T) {
@@ -750,6 +789,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 		assert.Equal(t, []string{"*-deprecated", "*-test"}, config.Registries[1].Filter.Names.Exclude)
 		// Tags should be nil when not provided
 		assert.Nil(t, config.Registries[1].Filter.Tags)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("filter with tags", func(t *testing.T) {
@@ -766,6 +806,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 						Git: &mcpv1alpha1.GitSource{
 							Repository: "https://github.com/example/repo.git",
 							Branch:     "main",
+							Path:       "registry.json",
 						},
 						SyncPolicy: &mcpv1alpha1.SyncPolicy{
 							Interval: "30m",
@@ -798,6 +839,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 		assert.Equal(t, []string{"beta", "alpha", "experimental"}, config.Registries[1].Filter.Tags.Exclude)
 		// Names should be nil when not provided
 		assert.Nil(t, config.Registries[1].Filter.Names)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("filter with both name filters and tags", func(t *testing.T) {
@@ -851,6 +893,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 		require.NotNil(t, config.Registries[1].Filter.Tags)
 		assert.Equal(t, []string{"latest", "stable"}, config.Registries[1].Filter.Tags.Include)
 		assert.Equal(t, []string{"dev", "test"}, config.Registries[1].Filter.Tags.Exclude)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("filter with empty include and exclude lists", func(t *testing.T) {
@@ -907,6 +950,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 		require.NotNil(t, config.Registries[1].Filter.Tags)
 		assert.Empty(t, config.Registries[1].Filter.Tags.Include)
 		assert.Empty(t, config.Registries[1].Filter.Tags.Exclude)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }
 
@@ -925,6 +969,7 @@ func TestToConfigMapWithContentChecksum(t *testing.T) {
 				Git: &GitConfig{
 					Repository: "https://github.com/example/mcp-servers.git",
 					Branch:     "main",
+					Path:       "registry.json",
 				},
 				SyncPolicy: &SyncPolicyConfig{
 					Interval: "15m",
@@ -1019,6 +1064,7 @@ func TestBuildConfig_MultipleRegistries(t *testing.T) {
 					Git: &mcpv1alpha1.GitSource{
 						Repository: "https://github.com/example/repo.git",
 						Branch:     "main",
+						Path:       "registry.json",
 					},
 					SyncPolicy: &mcpv1alpha1.SyncPolicy{
 						Interval: "30m",
@@ -1063,6 +1109,7 @@ func TestBuildConfig_MultipleRegistries(t *testing.T) {
 	require.NotNil(t, config.Registries[2].Filter)
 	require.NotNil(t, config.Registries[2].Filter.Names)
 	assert.Equal(t, []string{"server-*"}, config.Registries[2].Filter.Names.Include)
+	assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 }
 
 func TestBuildConfig_PVCSource(t *testing.T) {
@@ -1107,6 +1154,7 @@ func TestBuildConfig_PVCSource(t *testing.T) {
 		require.NotNil(t, config.Registries[1].File)
 		// Path: /config/registry/{registryName}/{pvcRef.path}
 		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "pvc-registry", RegistryJSONFileName), config.Registries[1].File.Path)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("valid pvc source with subdirectory path", func(t *testing.T) {
@@ -1147,6 +1195,7 @@ func TestBuildConfig_PVCSource(t *testing.T) {
 		require.NotNil(t, config.Registries[1].File)
 		// Path: /config/registry/{registryName}/{pvcRef.path}
 		assert.Equal(t, filepath.Join(RegistryJSONFilePath, "production-registry", "production/v1/servers.json"), config.Registries[1].File.Path)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("valid pvc source with filter", func(t *testing.T) {
@@ -1199,6 +1248,7 @@ func TestBuildConfig_PVCSource(t *testing.T) {
 		assert.Equal(t, []string{"prod-*"}, config.Registries[1].Filter.Names.Include)
 		require.NotNil(t, config.Registries[1].Filter.Tags)
 		assert.Equal(t, []string{"production"}, config.Registries[1].Filter.Tags.Include)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }
 func TestBuildConfig_DatabaseConfig(t *testing.T) {
@@ -1244,6 +1294,7 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 		assert.Equal(t, 10, config.Database.MaxOpenConns)
 		assert.Equal(t, 2, config.Database.MaxIdleConns)
 		assert.Equal(t, "30m", config.Database.ConnMaxLifetime)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("custom database config", func(t *testing.T) {
@@ -1296,6 +1347,7 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 		assert.Equal(t, 25, config.Database.MaxOpenConns)
 		assert.Equal(t, 5, config.Database.MaxIdleConns)
 		assert.Equal(t, "1h", config.Database.ConnMaxLifetime)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 
 	t.Run("partial database config uses defaults for missing fields", func(t *testing.T) {
@@ -1344,5 +1396,6 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 		assert.Equal(t, 10, config.Database.MaxOpenConns)
 		assert.Equal(t, 2, config.Database.MaxIdleConns)
 		assert.Equal(t, "30m", config.Database.ConnMaxLifetime)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }

@@ -10,11 +10,13 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/env"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
+	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -63,8 +65,10 @@ type VMCPServerOption func(*vmcpServerConfig)
 
 // vmcpServerConfig holds configuration for creating a test vMCP server.
 type vmcpServerConfig struct {
-	conflictStrategy string
-	prefixFormat     string
+	conflictStrategy  string
+	prefixFormat      string
+	workflowDefs      map[string]*composer.WorkflowDefinition
+	telemetryProvider *telemetry.Provider
 }
 
 // WithPrefixConflictResolution configures prefix-based conflict resolution.
@@ -72,6 +76,20 @@ func WithPrefixConflictResolution(format string) VMCPServerOption {
 	return func(c *vmcpServerConfig) {
 		c.conflictStrategy = "prefix"
 		c.prefixFormat = format
+	}
+}
+
+// WithWorkflowDefinitions configures composite tool workflow definitions.
+func WithWorkflowDefinitions(defs map[string]*composer.WorkflowDefinition) VMCPServerOption {
+	return func(c *vmcpServerConfig) {
+		c.workflowDefs = defs
+	}
+}
+
+// WithTelemetryProvider configures the telemetry provider.
+func WithTelemetryProvider(provider *telemetry.Provider) VMCPServerOption {
+	return func(c *vmcpServerConfig) {
+		c.telemetryProvider = provider
 	}
 }
 
@@ -147,13 +165,14 @@ func NewVMCPServer(
 	rtr := router.NewDefaultRouter()
 
 	// Create vMCP server with test-specific defaults
-	vmcpServer, err := vmcpserver.New(&vmcpserver.Config{
-		Name:           "test-vmcp",
-		Version:        "1.0.0",
-		Host:           "127.0.0.1",
-		Port:           getFreePort(tb), // Get a random available port for parallel test execution
-		AuthMiddleware: auth.AnonymousMiddleware,
-	}, rtr, backendClient, discoveryMgr, backends, nil) // nil for workflowDefs in tests
+	vmcpServer, err := vmcpserver.New(ctx, &vmcpserver.Config{
+		Name:              "test-vmcp",
+		Version:           "1.0.0",
+		Host:              "127.0.0.1",
+		Port:              getFreePort(tb), // Get a random available port for parallel test execution
+		AuthMiddleware:    auth.AnonymousMiddleware,
+		TelemetryProvider: config.telemetryProvider,
+	}, rtr, backendClient, discoveryMgr, backends, config.workflowDefs)
 	require.NoError(tb, err, "failed to create vMCP server")
 
 	// Start server automatically

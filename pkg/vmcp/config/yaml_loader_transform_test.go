@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/env/mocks"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -767,4 +769,66 @@ func TestYAMLLoader_transformCompositeTools_WithOutputConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestYAMLLoader_transformTelemetryConfig tests that telemetry configuration is preserved
+// when transforming from raw YAML to the final Config struct.
+func TestYAMLLoader_transformTelemetryConfig(t *testing.T) {
+	t.Parallel()
+
+	// Note: yaml.v3 uses lowercase field names by default (no yaml tags on telemetry.Config)
+	yamlContent := `
+name: telemetry-test
+telemetry:
+  endpoint: "localhost:4318"
+  servicename: "test-service"
+  serviceversion: "1.2.3"
+  tracingenabled: true
+  metricsenabled: true
+  samplingrate: 0.75
+  insecure: true
+  enableprometheusmetricspath: true
+  headers:
+    Authorization: "Bearer token123"
+    X-Custom-Header: "custom-value"
+  environmentvariables:
+    - "NODE_ENV"
+    - "DEPLOYMENT_ENV"
+`
+
+	// Write temp file
+	tmpFile, err := os.CreateTemp("", "telemetry-test-*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+
+	_, err = tmpFile.WriteString(yamlContent)
+	require.NoError(t, err)
+	require.NoError(t, tmpFile.Close())
+
+	// Load config
+	ctrl := gomock.NewController(t)
+	mockEnv := mocks.NewMockReader(ctrl)
+	mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+
+	loader := NewYAMLLoader(tmpFile.Name(), mockEnv)
+	cfg, err := loader.Load()
+	require.NoError(t, err)
+
+	// Verify telemetry config is fully preserved
+	require.NotNil(t, cfg.Telemetry, "Telemetry config should not be nil")
+
+	require.Equal(t, telemetry.Config{
+		Endpoint:                    "localhost:4318",
+		ServiceName:                 "test-service",
+		ServiceVersion:              "1.2.3",
+		TracingEnabled:              true,
+		MetricsEnabled:              true,
+		SamplingRate:                0.75,
+		Insecure:                    true,
+		EnablePrometheusMetricsPath: true,
+		Headers:                     map[string]string{"Authorization": "Bearer token123", "X-Custom-Header": "custom-value"},
+		EnvironmentVariables:        []string{"NODE_ENV", "DEPLOYMENT_ENV"},
+		CustomAttributes:            nil,
+	}, *cfg.Telemetry)
+
 }

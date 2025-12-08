@@ -290,6 +290,47 @@ spec:
               cpu: "1000m"
 ```
 
+### `.spec.telemetry` (optional)
+
+Configures OpenTelemetry-based observability for the Virtual MCP server, including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint. Uses the same configuration structure as `MCPServer.spec.telemetry`.
+
+**Type**: `TelemetryConfig`
+
+**Fields**:
+- `openTelemetry` (OpenTelemetryConfig, optional): OpenTelemetry configuration
+  - `enabled` (boolean): Controls whether OpenTelemetry is enabled
+  - `endpoint` (string): OTLP endpoint URL for tracing and metrics
+  - `serviceName` (string): Service name for telemetry (defaults to VirtualMCPServer name)
+  - `headers` ([]string): Authentication headers for OTLP endpoint (key=value format)
+  - `insecure` (boolean): Use HTTP instead of HTTPS for the OTLP endpoint
+  - `metrics` (OpenTelemetryMetricsConfig, optional): Metrics-specific configuration
+    - `enabled` (boolean): Controls whether OTLP metrics are sent
+  - `tracing` (OpenTelemetryTracingConfig, optional): Tracing-specific configuration
+    - `enabled` (boolean): Controls whether OTLP tracing is sent
+    - `samplingRate` (string): Trace sampling rate (0.0-1.0, default: "0.05")
+- `prometheus` (PrometheusConfig, optional): Prometheus-specific configuration
+  - `enabled` (boolean): Controls whether Prometheus metrics endpoint is exposed at /metrics
+
+**Example**:
+```yaml
+spec:
+  telemetry:
+    openTelemetry:
+      enabled: true
+      endpoint: "otel-collector:4317"
+      serviceName: "my-vmcp"
+      insecure: true
+      tracing:
+        enabled: true
+        samplingRate: "0.1"
+      metrics:
+        enabled: true
+    prometheus:
+      enabled: true
+```
+
+For details on what metrics and traces are emitted, see the [Virtual MCP Server Observability](./virtualmcpserver-observability.md) documentation.
+
 ## Status Fields
 
 ### `.status.conditions`
@@ -451,6 +492,19 @@ spec:
         failureThreshold: 5
         timeout: 60s
 
+  # Observability
+  telemetry:
+    openTelemetry:
+      enabled: true
+      endpoint: "otel-collector:4317"
+      tracing:
+        enabled: true
+        samplingRate: "0.1"
+      metrics:
+        enabled: true
+    prometheus:
+      enabled: true
+
 status:
   phase: Ready
   message: "Virtual MCP serving 3 backends with 15 tools"
@@ -518,4 +572,5 @@ The VirtualMCPServer CRD includes comprehensive validation:
 - [MCPServer](./mcpserver-api.md): Individual MCP server instances
 - [MCPExternalAuthConfig](./mcpexternalauthconfig-api.md): External authentication configuration
 - [MCPToolConfig](./toolconfig-api.md): Tool filtering and renaming configuration
+- [Virtual MCP Server Observability](./virtualmcpserver-observability.md): Telemetry and metrics documentation
 - [Virtual MCP Proposal](../proposals/THV-2106-virtual-mcp-server.md): Complete design proposal

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
@@ -87,6 +88,9 @@ type Config struct {
 
 	// Metadata stores additional configuration metadata.
 	Metadata map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+
+	// Telemetry configures telemetry settings.
+	Telemetry *telemetry.Config `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.

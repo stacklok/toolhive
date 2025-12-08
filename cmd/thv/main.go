@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,7 +13,6 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv/app"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/lockfile"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/migration"
@@ -23,7 +23,7 @@ func main() {
 	logger.Initialize()
 
 	// Setup signal handling for graceful cleanup
-	setupSignalHandler()
+	ctx := setupSignalHandler()
 
 	// Clean up stale lock files on startup
 	cleanupStaleLockFiles()
@@ -47,8 +47,10 @@ func main() {
 		migration.CheckAndPerformDefaultGroupMigration()
 	}
 
+	cmd := app.NewRootCmd(!app.IsCompletionCommand(os.Args))
+
 	// Skip update check for completion command or if we are running in kubernetes
-	if err := app.NewRootCmd(!app.IsCompletionCommand(os.Args) && !runtime.IsKubernetesRuntime()).Execute(); err != nil {
+	if err := cmd.ExecuteContext(ctx); err != nil {
 		// Clean up any remaining lock files on error exit
 		lockfile.CleanupAllLocks()
 		os.Exit(1)
@@ -59,16 +61,19 @@ func main() {
 }
 
 // setupSignalHandler configures signal handling to ensure lock files are cleaned up
-func setupSignalHandler() {
+func setupSignalHandler() context.Context {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 
+	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		<-sigCh
 		logger.Debugf("Received signal, cleaning up lock files...")
 		lockfile.CleanupAllLocks()
-		os.Exit(0)
+		cancel()
 	}()
+
+	return ctx
 }
 
 // cleanupStaleLockFiles removes stale lock files from known directories on startup

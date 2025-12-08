@@ -66,6 +66,10 @@ type VirtualMCPServerReconciler struct {
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 }
 
+var (
+	envVarSanitizeRegex = regexp.MustCompile(`[^A-Z0-9_]`)
+)
+
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpgroups,verbs=get;list;watch
@@ -808,6 +812,12 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 
 	// Check if port has changed
 	if len(container.Ports) > 0 && container.Ports[0].ContainerPort != vmcpDefaultPort {
+		return true
+	}
+
+	// Check if container args have changed (includes --debug flag from logLevel)
+	expectedArgs := r.buildContainerArgsForVmcp(vmcp)
+	if !reflect.DeepEqual(container.Args, expectedArgs) {
 		return true
 	}
 

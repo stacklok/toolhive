@@ -42,6 +42,13 @@ type Provider interface {
 	GetBuildEnvFromShell(key string) (exists bool)
 	GetAllBuildEnvFromShell() []string
 	UnsetBuildEnvFromShell(key string) error
+
+	// Build auth file operations (content stored in secrets provider, not config)
+	MarkBuildAuthFileConfigured(name string) error
+	IsBuildAuthFileConfigured(name string) bool
+	GetConfiguredBuildAuthFiles() []string
+	UnsetBuildAuthFile(name string) error
+	UnsetAllBuildAuthFiles() error
 }
 
 // DefaultProvider implements Provider using the default XDG config path
@@ -170,6 +177,31 @@ func (d *DefaultProvider) GetAllBuildEnvFromShell() []string {
 // UnsetBuildEnvFromShell removes a key from shell environment list
 func (d *DefaultProvider) UnsetBuildEnvFromShell(key string) error {
 	return unsetBuildEnvFromShell(d, key)
+}
+
+// MarkBuildAuthFileConfigured marks an auth file type as configured
+func (d *DefaultProvider) MarkBuildAuthFileConfigured(name string) error {
+	return markBuildAuthFileConfigured(d, name)
+}
+
+// IsBuildAuthFileConfigured checks if an auth file type is configured
+func (d *DefaultProvider) IsBuildAuthFileConfigured(name string) bool {
+	return isBuildAuthFileConfigured(d, name)
+}
+
+// GetConfiguredBuildAuthFiles returns list of configured auth file types
+func (d *DefaultProvider) GetConfiguredBuildAuthFiles() []string {
+	return getConfiguredBuildAuthFiles(d)
+}
+
+// UnsetBuildAuthFile removes an auth file configuration
+func (d *DefaultProvider) UnsetBuildAuthFile(name string) error {
+	return unsetBuildAuthFile(d, name)
+}
+
+// UnsetAllBuildAuthFiles removes all auth file configurations
+func (d *DefaultProvider) UnsetAllBuildAuthFiles() error {
+	return unsetAllBuildAuthFiles(d)
 }
 
 // PathProvider implements Provider using a specific config path
@@ -308,6 +340,31 @@ func (p *PathProvider) UnsetBuildEnvFromShell(key string) error {
 	return unsetBuildEnvFromShell(p, key)
 }
 
+// MarkBuildAuthFileConfigured marks an auth file type as configured
+func (p *PathProvider) MarkBuildAuthFileConfigured(name string) error {
+	return markBuildAuthFileConfigured(p, name)
+}
+
+// IsBuildAuthFileConfigured checks if an auth file type is configured
+func (p *PathProvider) IsBuildAuthFileConfigured(name string) bool {
+	return isBuildAuthFileConfigured(p, name)
+}
+
+// GetConfiguredBuildAuthFiles returns list of configured auth file types
+func (p *PathProvider) GetConfiguredBuildAuthFiles() []string {
+	return getConfiguredBuildAuthFiles(p)
+}
+
+// UnsetBuildAuthFile removes an auth file configuration
+func (p *PathProvider) UnsetBuildAuthFile(name string) error {
+	return unsetBuildAuthFile(p, name)
+}
+
+// UnsetAllBuildAuthFiles removes all auth file configurations
+func (p *PathProvider) UnsetAllBuildAuthFiles() error {
+	return unsetAllBuildAuthFiles(p)
+}
+
 // KubernetesProvider is a no-op implementation of Provider for Kubernetes environments.
 // In Kubernetes, configuration is managed by the cluster, not by local files.
 type KubernetesProvider struct{}
@@ -436,6 +493,31 @@ func (*KubernetesProvider) GetAllBuildEnvFromShell() []string {
 
 // UnsetBuildEnvFromShell is a no-op for Kubernetes environments
 func (*KubernetesProvider) UnsetBuildEnvFromShell(_ string) error {
+	return nil
+}
+
+// MarkBuildAuthFileConfigured is a no-op for Kubernetes environments
+func (*KubernetesProvider) MarkBuildAuthFileConfigured(_ string) error {
+	return nil
+}
+
+// IsBuildAuthFileConfigured returns false for Kubernetes environments
+func (*KubernetesProvider) IsBuildAuthFileConfigured(_ string) bool {
+	return false
+}
+
+// GetConfiguredBuildAuthFiles returns empty slice for Kubernetes environments
+func (*KubernetesProvider) GetConfiguredBuildAuthFiles() []string {
+	return []string{}
+}
+
+// UnsetBuildAuthFile is a no-op for Kubernetes environments
+func (*KubernetesProvider) UnsetBuildAuthFile(_ string) error {
+	return nil
+}
+
+// UnsetAllBuildAuthFiles is a no-op for Kubernetes environments
+func (*KubernetesProvider) UnsetAllBuildAuthFiles() error {
 	return nil
 }
 

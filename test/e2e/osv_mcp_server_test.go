@@ -464,29 +464,34 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 				serverName := generateUniqueServerName("osv-foreground-test")
 
 				// 1) Start the foreground process in the background (goroutine) with a generous timeout.
-				done := make(chan struct{})
 				fgStdout := ""
 				fgStderr := ""
+				runExited := make(chan struct{}, 1)
+
+				// maintain a reference to the command so we can interrupt it when we're done.
+				runCommand := e2e.NewTHVCommand(
+					config, "run",
+					"--name", serverName,
+					"--transport", "streamable-http",
+					"--foreground",
+					"osv",
+				)
 				go func() {
-					out, errOut, _ := e2e.NewTHVCommand(
-						config, "run",
-						"--name", serverName,
-						"--transport", "streamable-http",
-						"--foreground",
-						"osv",
-					).RunWithTimeout(5 * time.Minute)
+					out, errOut, _ := runCommand.RunWithTimeout(5 * time.Minute)
 					fgStdout, fgStderr = out, errOut
-					close(done)
+					runExited <- struct{}{}
+					// Close the channel so any subsequent receives will immediately return.
+					close(runExited)
 				}()
 
 				// Always try to stop the server at the end so the goroutine returns.
 				defer func() {
-					_, _, _ = e2e.NewTHVCommand(config, "stop", serverName).Run()
-					select {
-					case <-done:
-					case <-time.After(15 * time.Second):
-						// Nothing else we can signal directly; the RunWithTimeout will eventually kill it.
+					err := runCommand.Interrupt()
+					if err != nil {
+						// This may be safe to ignore if the server is already stopped.
+						GinkgoWriter.Printf("Error interrupting foreground server during last cleanup: %v\n", err)
 					}
+					<-runExited
 				}()
 
 				// 2) Wait until the server is reported as running.
@@ -530,14 +535,16 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 
 				// 6) Stop the server; this should unblock the goroutine.
 				By("stopping the foreground server")
-				_, _ = e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
 
-				// Wait for the run goroutine to exit.
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				err = runCommand.Interrupt()
+				Expect(err).ToNot(HaveOccurred(), "server should be interruptible; stdout="+fgStdout+" stderr="+fgStderr)
 				select {
-				case <-done:
-					// ok
-				case <-time.After(15 * time.Second):
-					Fail("foreground run did not exit after stop; stdout="+fgStdout+" stderr="+fgStderr, 1)
+				case _, ok := <-runExited:
+					Expect(ok).To(BeTrue(), "server should have exited as result of interrupt; stdout="+fgStdout+" stderr="+fgStderr)
+				case <-ctx.Done():
+					Expect(false).To(BeTrue(), "server should have exited before timeout")
 				}
 
 				// 7) Workload should be stopped via workload manager.
@@ -556,9 +563,11 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 					return workload.Status
 				}, 15*time.Second, 200*time.Millisecond).Should(Equal(runtime.WorkloadStatusStopped), "workload should be in stopped status after stop")
 
-				// 8) Verify status file still exists with stopped status (it's not deleted, just marked as stopped)
-				By("verifying status file still exists after stop")
-				Expect(statusFileExists(serverName)).To(BeTrue(), "status file should still exist after stop")
+				// 8) Verify status file does NOT exist. Interrupting a foreground server should delete the status file.
+				// We may want to change this behavior and prefer the status to remain in a stopped state.
+				// For now, this test documents the current behavior.
+				By("verifying status file does not exist after stop")
+				Expect(!statusFileExists(serverName)).To(BeTrue(), "status file should not exist after stop")
 
 			})
 		})

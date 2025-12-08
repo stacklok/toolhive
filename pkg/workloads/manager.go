@@ -984,7 +984,11 @@ func (d *DefaultManager) restartRemoteWorkload(
 
 // maybeSetupRemoteWorkload is the startup steps for a remote workload.
 // A runner may not be returned if the workload is already running and supervised.
-func (d *DefaultManager) maybeSetupRemoteWorkload(ctx context.Context, name string, runConfig *runner.RunConfig) (*runner.Runner, error) {
+func (d *DefaultManager) maybeSetupRemoteWorkload(
+	ctx context.Context,
+	name string,
+	runConfig *runner.RunConfig,
+) (*runner.Runner, error) {
 	ctx, cancel := context.WithTimeout(ctx, AsyncOperationTimeout)
 	defer cancel()
 
@@ -1046,7 +1050,7 @@ func (d *DefaultManager) maybeSetupRemoteWorkload(ctx context.Context, name stri
 // restartContainerWorkload handles restarting a container-based workload.
 // It blocks until the context is cancelled or there is already a supervisor process running.
 func (d *DefaultManager) restartContainerWorkload(ctx context.Context, name string, foreground bool) error {
-	workloadName, mcpRunner, err := d.maybeSetupContainerWorkload(ctx, name, foreground)
+	workloadName, mcpRunner, err := d.maybeSetupContainerWorkload(ctx, name)
 	if err != nil {
 		return fmt.Errorf("failed to setup container workload: %w", err)
 	}
@@ -1062,7 +1066,7 @@ func (d *DefaultManager) restartContainerWorkload(ctx context.Context, name stri
 // A runner may not be returned if the workload is already running and supervised.
 //
 //nolint:gocyclo // Complexity is justified - handles multiple restart scenarios and edge cases
-func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name string, foreground bool) (string, *runner.Runner, error) {
+func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name string) (string, *runner.Runner, error) {
 	ctx, cancel := context.WithTimeout(ctx, AsyncOperationTimeout)
 	defer cancel()
 	// Get container info to resolve partial names and extract proper workload name

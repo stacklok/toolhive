@@ -334,6 +334,29 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 			ctxLogger.Error(err, "Failed to get VirtualMCPCompositeToolDefinition", "name", ref.Name)
 			return err
 		}
+
+		// Check that the composite tool definition is validated and valid
+		if compositeToolDef.Status.ValidationStatus == mcpv1alpha1.ValidationStatusInvalid {
+			message := fmt.Sprintf("Referenced VirtualMCPCompositeToolDefinition %s is invalid", ref.Name)
+			if len(compositeToolDef.Status.ValidationErrors) > 0 {
+				message = fmt.Sprintf("%s: %s", message, strings.Join(compositeToolDef.Status.ValidationErrors, "; "))
+			}
+			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetCompositeToolRefsValidatedCondition(
+				mcpv1alpha1.ConditionReasonCompositeToolRefInvalid,
+				message,
+				metav1.ConditionFalse,
+			)
+			return fmt.Errorf("referenced VirtualMCPCompositeToolDefinition %s is invalid", ref.Name)
+		}
+
+		// If ValidationStatus is Unknown, we still allow it (validation might be in progress)
+		// but log a warning
+		if compositeToolDef.Status.ValidationStatus == mcpv1alpha1.ValidationStatusUnknown {
+			ctxLogger.V(1).Info("Referenced composite tool definition validation status is Unknown, proceeding",
+				"name", ref.Name, "namespace", vmcp.Namespace)
+		}
 	}
 
 	// All composite tool refs are valid

@@ -835,6 +835,12 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 		return true
 	}
 
+	// Check if container args have changed (includes --debug flag from logLevel)
+	expectedArgs := r.buildContainerArgsForVmcp(vmcp)
+	if !reflect.DeepEqual(container.Args, expectedArgs) {
+		return true
+	}
+
 	// Check if environment variables have changed
 	expectedEnv := r.buildEnvVarsForVmcp(ctx, vmcp, workloadNames)
 	if !reflect.DeepEqual(container.Env, expectedEnv) {

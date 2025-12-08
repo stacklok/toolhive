@@ -316,7 +316,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Define a function to stop the MCP server
 	stopMCPServer := func(reason string) {
 		// Use a background context to avoid cancellation of the main context.
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 1*time.Minute)
 		defer cleanupCancel()
 		logger.Infof("Stopping MCP server: %s", reason)
 

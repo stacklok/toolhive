@@ -963,20 +963,35 @@ func (d *DefaultManager) restartSingleWorkload(ctx context.Context, name string,
 }
 
 // restartRemoteWorkload handles restarting a remote workload
+// It blocks until the context is cancelled or there is already a supervisor process running.
 func (d *DefaultManager) restartRemoteWorkload(
-	timeoutLessCtx context.Context,
+	ctx context.Context,
 	name string,
 	runConfig *runner.RunConfig,
 	foreground bool,
 ) error {
-	// Create a child context with a longer timeout
-	ctx, cancel := context.WithTimeout(timeoutLessCtx, AsyncOperationTimeout)
+	mcpRunner, err := d.maybeSetupRemoteWorkload(ctx, name, runConfig)
+	if err != nil {
+		return fmt.Errorf("failed to setup remote workload: %w", err)
+	}
+
+	if mcpRunner == nil {
+		return nil
+	}
+
+	return d.startWorkload(ctx, name, mcpRunner, foreground)
+}
+
+// maybeSetupRemoteWorkload is the startup steps for a remote workload.
+// A runner may not be returned if the workload is already running and supervised.
+func (d *DefaultManager) maybeSetupRemoteWorkload(ctx context.Context, name string, runConfig *runner.RunConfig) (*runner.Runner, error) {
+	ctx, cancel := context.WithTimeout(ctx, AsyncOperationTimeout)
 	defer cancel()
 
 	// Get workload status using the status manager
 	workload, err := d.statuses.GetWorkload(ctx, name)
 	if err != nil && !errors.Is(err, rt.ErrWorkloadNotFound) {
-		return err
+		return nil, err
 	}
 
 	// If workload is already running, check if the supervisor process is healthy
@@ -987,7 +1002,7 @@ func (d *DefaultManager) restartRemoteWorkload(
 		if supervisorAlive {
 			// Workload is running and healthy - preserve old behavior (no-op)
 			logger.Infof("Remote workload %s is already running", name)
-			return nil
+			return nil, nil
 		}
 
 		// Supervisor is dead/missing - we need to clean up and restart to fix the damaged state
@@ -1016,7 +1031,7 @@ func (d *DefaultManager) restartRemoteWorkload(
 	// Load runner configuration from state
 	mcpRunner, err := d.loadRunnerFromState(ctx, runConfig.BaseName)
 	if err != nil {
-		return fmt.Errorf("failed to load state for %s: %v", runConfig.BaseName, err)
+		return nil, fmt.Errorf("failed to load state for %s: %v", runConfig.BaseName, err)
 	}
 
 	// Set status to starting
@@ -1025,18 +1040,30 @@ func (d *DefaultManager) restartRemoteWorkload(
 	}
 
 	logger.Infof("Loaded configuration from state for %s", runConfig.BaseName)
-
-	// Start the remote workload using the loaded runner
-	// Use timeout-less context to avoid timeout cancellation - same reasoning as container workloads
-	return d.startWorkload(timeoutLessCtx, name, mcpRunner, foreground)
+	return mcpRunner, nil
 }
 
-// restartContainerWorkload handles restarting a container-based workload
+// restartContainerWorkload handles restarting a container-based workload.
+// It blocks until the context is cancelled or there is already a supervisor process running.
+func (d *DefaultManager) restartContainerWorkload(ctx context.Context, name string, foreground bool) error {
+	workloadName, mcpRunner, err := d.maybeSetupContainerWorkload(ctx, name, foreground)
+	if err != nil {
+		return fmt.Errorf("failed to setup container workload: %w", err)
+	}
+
+	if mcpRunner == nil {
+		return nil
+	}
+
+	return d.startWorkload(ctx, workloadName, mcpRunner, foreground)
+}
+
+// maybeSetupContainerWorkload is the startup steps for a container-based workload.
+// A runner may not be returned if the workload is already running and supervised.
 //
 //nolint:gocyclo // Complexity is justified - handles multiple restart scenarios and edge cases
-func (d *DefaultManager) restartContainerWorkload(timeoutLessCtx context.Context, name string, foreground bool) error {
-	// Create a child context with a longer timeout
-	ctx, cancel := context.WithTimeout(timeoutLessCtx, AsyncOperationTimeout)
+func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name string, foreground bool) (string, *runner.Runner, error) {
+	ctx, cancel := context.WithTimeout(ctx, AsyncOperationTimeout)
 	defer cancel()
 	// Get container info to resolve partial names and extract proper workload name
 	var containerName string
@@ -1061,7 +1088,7 @@ func (d *DefaultManager) restartContainerWorkload(timeoutLessCtx context.Context
 	// Get workload status using the status manager
 	workload, err := d.statuses.GetWorkload(ctx, name)
 	if err != nil && !errors.Is(err, rt.ErrWorkloadNotFound) {
-		return err
+		return "", nil, err
 	}
 
 	// Check if workload is running and healthy (including supervisor process)
@@ -1072,7 +1099,7 @@ func (d *DefaultManager) restartContainerWorkload(timeoutLessCtx context.Context
 		if supervisorAlive {
 			// Workload is running and healthy - preserve old behavior (no-op)
 			logger.Infof("Container %s is already running", containerName)
-			return nil
+			return "", nil, nil
 		}
 
 		// Supervisor is dead/missing - we need to clean up and restart to fix the damaged state
@@ -1111,7 +1138,7 @@ func (d *DefaultManager) restartContainerWorkload(timeoutLessCtx context.Context
 				if statusErr := d.statuses.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusError, err.Error()); statusErr != nil {
 					logger.Warnf("Failed to set workload %s status to error: %v", workloadName, statusErr)
 				}
-				return fmt.Errorf("failed to stop container %s: %v", containerName, err)
+				return "", nil, fmt.Errorf("failed to stop container %s: %v", containerName, err)
 			}
 			logger.Infof("Container %s stopped", containerName)
 		}
@@ -1130,7 +1157,7 @@ func (d *DefaultManager) restartContainerWorkload(timeoutLessCtx context.Context
 	// Load runner configuration from state
 	mcpRunner, err := d.loadRunnerFromState(ctx, workloadName)
 	if err != nil {
-		return fmt.Errorf("failed to load state for %s: %v", workloadName, err)
+		return "", nil, fmt.Errorf("failed to load state for %s: %v", workloadName, err)
 	}
 
 	// Set workload status to starting - use the workload name for status operations
@@ -1139,12 +1166,7 @@ func (d *DefaultManager) restartContainerWorkload(timeoutLessCtx context.Context
 	}
 	logger.Infof("Loaded configuration from state for %s", workloadName)
 
-	// Start the workload without a timeout to avoid timeout cancellation
-	// The ctx with AsyncOperationTimeout is only for the restart setup operations,
-	// but the actual workload should run indefinitely with its own lifecycle management
-	// Use workload name for user-facing operations
-	// We need to use the input context to support other reasons for context cancellation, such as SIGINT.
-	return d.startWorkload(timeoutLessCtx, workloadName, mcpRunner, foreground)
+	return workloadName, mcpRunner, nil
 }
 
 // startWorkload starts the workload in either foreground or background mode

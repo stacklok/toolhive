@@ -44,7 +44,8 @@ func TestGenerateMCPServerURL(t *testing.T) {
 		{
 			name:          "STDIO transport with empty proxyMode (defaults to streamable-http)",
 			transportType: types.TransportTypeStdio.String(),
-			proxyMode:     "",  
+
+			proxyMode:     "",
 			host:          "localhost",
 			port:          12345,
 			containerName: "test-container",
@@ -54,7 +55,7 @@ func TestGenerateMCPServerURL(t *testing.T) {
 		{
 			name:          "SSE transport",
 			transportType: types.TransportTypeSSE.String(),
-			proxyMode:     "", 
+			proxyMode:     "",
 			host:          "localhost",
 			port:          12345,
 			containerName: "test-container",
@@ -166,7 +167,7 @@ func TestGenerateMCPServerURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			url := GenerateMCPServerURL(tt.transportType, tt.proxyMode, tt.host, tt.port, tt.containerName, tt.targetURI)  // ✅ ADD proxyMode parameter
+			url := GenerateMCPServerURL(tt.transportType, tt.proxyMode, tt.host, tt.port, tt.containerName, tt.targetURI) // ✅ ADD proxyMode parameter
 			if url != tt.expected {
 				t.Errorf("GenerateMCPServerURL() = %v, want %v", url, tt.expected)
 			}

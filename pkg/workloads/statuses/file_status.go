@@ -117,9 +117,9 @@ type remoteWorkloadConfig struct {
 
 // populateRemoteWorkloadData populates a workload with data from the run config for remote workloads.
 // This includes URL, port, transport type, and other fields that are stored in the run config.
-func (*fileStatusManager) populateRemoteWorkloadData(ctx context.Context, workload *core.Workload) error {
+func (f *fileStatusManager) populateRemoteWorkloadData(ctx context.Context, workload *core.Workload) error {
 	// Load the run configuration JSON
-	reader, err := state.LoadRunConfigJSON(ctx, workload.Name)
+	reader, err := f.runConfigStore.GetReader(ctx, workload.Name)
 	if err != nil {
 		return fmt.Errorf("failed to load run config for remote workload %s: %w", workload.Name, err)
 	}
@@ -241,6 +241,7 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 				logger.Warnf("failed to populate remote workload data for %s: %v", workloadName, err)
 				// Mark as remote even if we couldn't load full data
 				result.Remote = true
+				result.Package = "remote (data failed to load)"
 			}
 		}
 

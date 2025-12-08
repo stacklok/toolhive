@@ -252,10 +252,23 @@ existing sessions would have stale information if these changed dynamically.
 
 ### CLI Mode
 
-CLI mode should remain static with one-time discovery at startup. Local
-development sessions are typically short-lived, and adding dynamic discovery
-to CLI would add complexity for limited benefit. This can be revisited as a
-separate work item if there's demand.
+CLI mode remains static with one-time discovery at startup. This is the same
+code path as K8s static mode - both read configuration at startup and use the
+immutableRegistry. The only difference is the config source:
+
+| Mode | Config Source | Secret Source |
+|------|---------------|---------------|
+| CLI | User-provided YAML file | Environment variables |
+| K8s Static | Operator-generated ConfigMap | Operator-mounted env vars |
+| K8s Dynamic | Minimal ConfigMap + runtime discovery | K8s API (Secrets) |
+
+This shared code path simplifies the implementation - CLI mode and K8s static
+mode use identical vMCP binary behavior. Only K8s dynamic mode adds the
+controller-runtime and informer complexity.
+
+Dynamic discovery for CLI would require Docker events integration or polling,
+which adds complexity for limited benefit in short-lived dev sessions. This can
+be revisited as a separate work item if there's demand.
 
 ## Implementation
 

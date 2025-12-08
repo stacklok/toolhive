@@ -33,6 +33,9 @@ type TemplateData struct {
 	// These are used for configuring package managers (e.g., custom registry URLs).
 	// Keys must be uppercase with underscores, values are validated for safety.
 	BuildEnv map[string]string
+	// BuildAuthFiles contains auth file contents keyed by file type (npmrc, netrc, etc).
+	// These files are injected into the builder stage only for authentication.
+	BuildAuthFiles map[string]string
 }
 
 // TransportType represents the type of transport to use.

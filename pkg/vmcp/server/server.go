@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	"github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
 const (
@@ -82,11 +83,18 @@ type Config struct {
 	// AuthInfoHandler is the optional handler for /.well-known/oauth-protected-resource endpoint.
 	// Exposes OIDC discovery information about the protected resource.
 	AuthInfoHandler http.Handler
+
+	// StatusReporter for reporting operational status (optional)
+	// If its nil, status reporting is disabled
+	StatusReporter status.Reporter
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
 type Server struct {
 	config *Config
+
+	// StatusReporter for reporting operational status to Kubernetes or logs
+	statusReporter status.Reporter
 
 	// MCP protocol server (mark3labs/mcp-go)
 	mcpServer *server.MCPServer
@@ -219,6 +227,7 @@ func New(
 	// Create Server instance
 	srv := &Server{
 		config:            cfg,
+		statusReporter:    cfg.StatusReporter,
 		mcpServer:         mcpServer,
 		router:            rt,
 		backendClient:     backendClient,
@@ -397,6 +406,15 @@ func (s *Server) Start(ctx context.Context) error {
 		close(s.ready)
 	})
 
+	// Start status reporter if configured
+	if s.statusReporter != nil {
+		reportInterval := 30 * time.Second
+		logger.Infof("Starting status reporter (interval: %v)", reportInterval)
+		if err := s.statusReporter.Start(ctx, reportInterval); err != nil {
+			logger.Errorf("Failed to start status reporter: %v", err)
+		}
+	}
+
 	// Wait for either context cancellation or server error
 	select {
 	case <-ctx.Done():
@@ -439,6 +457,12 @@ func (s *Server) Stop(ctx context.Context) error {
 	// Stop discovery manager to clean up background goroutines
 	if s.discoveryMgr != nil {
 		s.discoveryMgr.Stop()
+	}
+
+	// Stop status reporter to clean up background goroutine
+	if s.statusReporter != nil {
+		logger.Info("Stopping status reporter")
+		s.statusReporter.Stop()
 	}
 
 	if len(errs) > 0 {

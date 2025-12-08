@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
+	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -58,6 +59,11 @@ func WithMetadata(key, value string) func(*vmcptypes.Backend) {
 	}
 }
 
+// BackendsFromURL creates a single-element backend slice for simple test cases.
+func BackendsFromURL(id, url string) []vmcptypes.Backend {
+	return []vmcptypes.Backend{NewBackend(id, WithURL(url))}
+}
+
 // VMCPServerOption is a functional option for configuring a vMCP test server.
 type VMCPServerOption func(*vmcpServerConfig)
 
@@ -65,6 +71,7 @@ type VMCPServerOption func(*vmcpServerConfig)
 type vmcpServerConfig struct {
 	conflictStrategy string
 	prefixFormat     string
+	workflows        []*composer.WorkflowDefinition
 }
 
 // WithPrefixConflictResolution configures prefix-based conflict resolution.
@@ -72,6 +79,13 @@ func WithPrefixConflictResolution(format string) VMCPServerOption {
 	return func(c *vmcpServerConfig) {
 		c.conflictStrategy = "prefix"
 		c.prefixFormat = format
+	}
+}
+
+// WithWorkflows configures workflow definitions for the vMCP server.
+func WithWorkflows(workflows []*composer.WorkflowDefinition) VMCPServerOption {
+	return func(c *vmcpServerConfig) {
+		c.workflows = workflows
 	}
 }
 
@@ -146,6 +160,17 @@ func NewVMCPServer(
 	// Create router
 	rtr := router.NewDefaultRouter()
 
+	// Convert workflows slice to map keyed by workflow name
+	// Note: This is a simple conversion for test-created WorkflowDefinitions.
+	// For config-based workflows, use server.ConvertConfigToWorkflowDefinitions() instead.
+	var workflowsMap map[string]*composer.WorkflowDefinition
+	if len(config.workflows) > 0 {
+		workflowsMap = make(map[string]*composer.WorkflowDefinition, len(config.workflows))
+		for _, wf := range config.workflows {
+			workflowsMap[wf.Name] = wf
+		}
+	}
+
 	// Create vMCP server with test-specific defaults
 	vmcpServer, err := vmcpserver.New(&vmcpserver.Config{
 		Name:           "test-vmcp",
@@ -153,7 +178,7 @@ func NewVMCPServer(
 		Host:           "127.0.0.1",
 		Port:           getFreePort(tb), // Get a random available port for parallel test execution
 		AuthMiddleware: auth.AnonymousMiddleware,
-	}, rtr, backendClient, discoveryMgr, backends, nil) // nil for workflowDefs in tests
+	}, rtr, backendClient, discoveryMgr, backends, workflowsMap)
 	require.NoError(tb, err, "failed to create vMCP server")
 
 	// Start server automatically

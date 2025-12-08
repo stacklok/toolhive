@@ -192,9 +192,9 @@ operational:
 # OpenTelemetry-based metrics and tracing for backend operations and workflows
 telemetry:
   endpoint: "localhost:4317"  # OTLP collector endpoint
-  serviceName: "engineering-vmcp"
-  tracingEnabled: true
-  metricsEnabled: true
-  samplingRate: 0.1  # 10% sampling
+  servicename: "engineering-vmcp"
+  tracingenabled: true
+  metricsenabled: true
+  samplingrate: 0.1  # 10% sampling
   insecure: true  # Use HTTP instead of HTTPS
-  enablePrometheusMetricsPath: true  # Expose /metrics endpoint
+  enableprometheusmetricspath: true  # Expose /metrics endpoint

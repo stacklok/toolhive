@@ -1,4 +1,7 @@
 name: autoupdate
+permissions:
+  contents: read
+  pull-requests: write
 on:
   # Update all PRs on merge to main
   push:

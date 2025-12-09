@@ -194,7 +194,8 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 			authConfig: &mcpv1alpha1.BackendAuthConfig{
 				Type: mcpv1alpha1.BackendAuthTypeDiscovered,
 			},
-			expectedType: mcpv1alpha1.BackendAuthTypeDiscovered,
+			// "discovered" type is converted to "unauthenticated" by the converter
+			expectedType: "unauthenticated",
 		},
 		{
 			name: "external auth config ref",
@@ -204,7 +205,8 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 					Name: "auth-config",
 				},
 			},
-			expectedType: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
+			// For external_auth_config_ref, the type comes from the referenced MCPExternalAuthConfig
+			expectedType: "unauthenticated",
 		},
 	}
 
@@ -214,6 +216,10 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 			t.Parallel()
 
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: mcpv1alpha1.GroupRef{
 						Name: "test-group",
@@ -224,7 +230,34 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 				},
 			}
 
-			converter := newTestConverter(t, newNoOpMockResolver(t))
+			// For external_auth_config_ref test, create the referenced MCPExternalAuthConfig
+			var converter *vmcpconfig.Converter
+			if tt.authConfig.Type == mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef {
+				// Create a fake MCPExternalAuthConfig
+				externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "auth-config",
+						Namespace: "default",
+					},
+					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+						Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+					},
+				}
+
+				// Create converter with fake client that has the external auth config
+				scheme := runtime.NewScheme()
+				_ = mcpv1alpha1.AddToScheme(scheme)
+				fakeClient := fake.NewClientBuilder().
+					WithScheme(scheme).
+					WithObjects(externalAuthConfig).
+					Build()
+				var err error
+				converter, err = vmcpconfig.NewConverter(newNoOpMockResolver(t), fakeClient)
+				require.NoError(t, err)
+			} else {
+				converter = newTestConverter(t, newNoOpMockResolver(t))
+			}
+
 			config, err := converter.Convert(context.Background(), vmcpServer)
 			require.NoError(t, err)
 

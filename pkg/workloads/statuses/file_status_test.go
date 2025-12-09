@@ -1894,6 +1894,11 @@ func TestFileStatusManager_IsRemoteWorkload_EdgeCases(t *testing.T) {
             configJSON: `{"remote_url": ""}`,
             expected:   false,
         },
+        {
+            name:       "remote_url field with whitespace only",
+            configJSON: `{"remote_url": "   "}`,
+            expected:   false,
+        },
     }
 
     for _, tt := range tests {
@@ -1908,7 +1913,7 @@ func TestFileStatusManager_IsRemoteWorkload_EdgeCases(t *testing.T) {
                 t.Fatalf("failed to parse JSON: %v", err)
             }
 
-            result := config.RemoteURL != ""
+            result := strings.TrimSpace(config.RemoteURL) != ""
 
             if result != tt.expected {
                 t.Errorf("expected %v, got %v for JSON: %s", tt.expected, result, tt.configJSON)

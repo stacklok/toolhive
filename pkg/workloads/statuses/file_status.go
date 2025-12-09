@@ -102,7 +102,7 @@ func (f *fileStatusManager) isRemoteWorkload(ctx context.Context, workloadName s
     }
 
     // Check if the remote_url field is set
-    return config.RemoteURL != "", nil
+    return strings.TrimSpace(config.RemoteURL) != "", nil
 }
 
 // workloadStatusFile represents the JSON structure stored on disk

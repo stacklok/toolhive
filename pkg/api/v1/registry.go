@@ -257,6 +257,8 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 
 	// Reset the default provider to pick up configuration changes
 	regpkg.ResetDefaultProvider()
+	// Reset the config singleton to clear cached configuration
+	config.ResetSingleton()
 
 	response := UpdateRegistryResponse{
 		Message: message,

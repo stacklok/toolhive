@@ -13,10 +13,12 @@ func TestMCPExternalAuthConfig_ValidateCreate(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		config      *MCPExternalAuthConfig
-		expectError bool
-		errorMsg    string
+		name          string
+		config        *MCPExternalAuthConfig
+		expectError   bool
+		errorMsg      string
+		expectWarning bool
+		warningMsg    string
 	}{
 		{
 			name: "valid unauthenticated",
@@ -29,7 +31,9 @@ func TestMCPExternalAuthConfig_ValidateCreate(t *testing.T) {
 					Type: ExternalAuthTypeUnauthenticated,
 				},
 			},
-			expectError: false,
+			expectError:   false,
+			expectWarning: true,
+			warningMsg:    "'unauthenticated' type disables authentication to the backend. Only use for backends on trusted networks or when authentication is handled by network-level security.",
 		},
 		{
 			name: "unauthenticated with tokenExchange should fail",
@@ -45,8 +49,10 @@ func TestMCPExternalAuthConfig_ValidateCreate(t *testing.T) {
 					},
 				},
 			},
-			expectError: true,
-			errorMsg:    "tokenExchange must not be set when type is 'unauthenticated'",
+			expectError:   true,
+			errorMsg:      "tokenExchange must not be set when type is 'unauthenticated'",
+			expectWarning: true,
+			warningMsg:    "'unauthenticated' type disables authentication to the backend. Only use for backends on trusted networks or when authentication is handled by network-level security.",
 		},
 		{
 			name: "unauthenticated with headerInjection should fail",
@@ -66,8 +72,10 @@ func TestMCPExternalAuthConfig_ValidateCreate(t *testing.T) {
 					},
 				},
 			},
-			expectError: true,
-			errorMsg:    "headerInjection must not be set when type is 'unauthenticated'",
+			expectError:   true,
+			errorMsg:      "headerInjection must not be set when type is 'unauthenticated'",
+			expectWarning: true,
+			warningMsg:    "'unauthenticated' type disables authentication to the backend. Only use for backends on trusted networks or when authentication is handled by network-level security.",
 		},
 		{
 			name: "valid tokenExchange",
@@ -198,8 +206,13 @@ func TestMCPExternalAuthConfig_ValidateCreate(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			// Warnings should always be nil for now
-			assert.Nil(t, warnings)
+			// Check warnings
+			if tt.expectWarning {
+				require.Len(t, warnings, 1, "expected exactly one warning")
+				assert.Equal(t, tt.warningMsg, string(warnings[0]))
+			} else {
+				assert.Nil(t, warnings, "expected no warnings")
+			}
 		})
 	}
 }
@@ -220,7 +233,9 @@ func TestMCPExternalAuthConfig_ValidateUpdate(t *testing.T) {
 	// ValidateUpdate should use the same logic as ValidateCreate
 	warnings, err := config.ValidateUpdate(context.Background(), nil, config)
 	require.NoError(t, err)
-	assert.Nil(t, warnings)
+	// Should have warning for unauthenticated type
+	require.Len(t, warnings, 1, "expected exactly one warning")
+	assert.Equal(t, "'unauthenticated' type disables authentication to the backend. Only use for backends on trusted networks or when authentication is handled by network-level security.", string(warnings[0]))
 
 	// Test invalid update
 	invalidConfig := &MCPExternalAuthConfig{
@@ -239,7 +254,9 @@ func TestMCPExternalAuthConfig_ValidateUpdate(t *testing.T) {
 	warnings, err = invalidConfig.ValidateUpdate(context.Background(), nil, invalidConfig)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tokenExchange must not be set when type is 'unauthenticated'")
-	assert.Nil(t, warnings)
+	// Should still have warning for unauthenticated type even when validation fails
+	require.Len(t, warnings, 1, "expected exactly one warning")
+	assert.Equal(t, "'unauthenticated' type disables authentication to the backend. Only use for backends on trusted networks or when authentication is handled by network-level security.", string(warnings[0]))
 }
 
 func TestMCPExternalAuthConfig_ValidateDelete(t *testing.T) {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,14 +93,17 @@ func (f *fileStatusManager) isRemoteWorkload(ctx context.Context, workloadName s
 	}
 	defer reader.Close()
 
-	// Read the configuration data
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return false, err
-	}
+    // Parse the JSON to check for remote_url field
+	var config struct {
+        RemoteURL string `json:"remote_url"`
+    }
+    decoder := json.NewDecoder(reader)
+    if err := decoder.Decode(&config); err != nil {
+        return false, err
+    }
 
-	// Check if the JSON contains "remote_url" field
-	return strings.Contains(string(data), `"remote_url"`), nil
+    // Check if the remote_url field is set
+    return strings.TrimSpace(config.RemoteURL) != "", nil
 }
 
 // remoteWorkloadConfig is a minimal struct to parse only the fields we need from RunConfig

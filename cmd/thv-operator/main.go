@@ -215,6 +215,11 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 	if err := (&mcpv1alpha1.VirtualMCPCompositeToolDefinition{}).SetupWebhookWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create webhook VirtualMCPCompositeToolDefinition: %w", err)
 	}
+
+	// Set up MCPExternalAuthConfig webhook
+	if err := (&mcpv1alpha1.MCPExternalAuthConfig{}).SetupWebhookWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create webhook MCPExternalAuthConfig: %w", err)
+	}
 	//+kubebuilder:scaffold:builder
 
 	return nil

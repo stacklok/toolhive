@@ -243,7 +243,7 @@ func TestVMCPServer_CompositeToolNonStringArguments(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 
 	// Setup: Create a backend server with a tool that echoes back the received arguments
 	// This allows us to verify that non-string types are preserved through the pipeline

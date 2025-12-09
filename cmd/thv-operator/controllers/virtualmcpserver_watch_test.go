@@ -1050,7 +1050,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 			t.Parallel()
 
 			r := &VirtualMCPServerReconciler{}
-			result := r.vmcpReferencesExternalAuthConfig(tt.vmcp, tt.authConfigName)
+			result := r.vmcpReferencesExternalAuthConfig(context.Background(), tt.vmcp, tt.authConfigName)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

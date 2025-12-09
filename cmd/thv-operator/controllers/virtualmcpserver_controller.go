@@ -1742,7 +1742,8 @@ func (r *VirtualMCPServerReconciler) mapExternalAuthConfigToVirtualMCPServer(
 	var requests []reconcile.Request
 	for _, vmcp := range vmcpList.Items {
 		// Only reconcile VirtualMCPServers that actually reference this ExternalAuthConfig
-		if r.vmcpReferencesExternalAuthConfig(&vmcp, externalAuthConfig.Name) {
+		// This includes both inline references and discovered references (via MCPServers)
+		if r.vmcpReferencesExternalAuthConfig(ctx, &vmcp, externalAuthConfig.Name) {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      vmcp.Name,
@@ -1798,8 +1799,10 @@ func (*VirtualMCPServerReconciler) vmcpReferencesToolConfig(vmcp *mcpv1alpha1.Vi
 	return false
 }
 
-// vmcpReferencesExternalAuthConfig checks if a VirtualMCPServer references the given MCPExternalAuthConfig
-func (*VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
+// vmcpReferencesExternalAuthConfig checks if a VirtualMCPServer references the given MCPExternalAuthConfig.
+// It checks both inline references (in outgoingAuth spec) and discovered references (via MCPServers in the group).
+func (r *VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
+	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	authConfigName string,
 ) bool {
@@ -1807,6 +1810,7 @@ func (*VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
 		return false
 	}
 
+	// Check inline references in outgoing auth configuration
 	// Check default backend auth configuration
 	if vmcp.Spec.OutgoingAuth.Default != nil &&
 		vmcp.Spec.OutgoingAuth.Default.ExternalAuthConfigRef != nil &&
@@ -1818,6 +1822,60 @@ func (*VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
 	for _, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
 		if backendAuth.ExternalAuthConfigRef != nil &&
 			backendAuth.ExternalAuthConfigRef.Name == authConfigName {
+			return true
+		}
+	}
+
+	// Check discovered references when source is "discovered"
+	// When using discovered mode, auth configs are referenced through MCPServers, not inline
+	if vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceDiscovered {
+		if r.mcpGroupBackendsReferenceExternalAuthConfig(ctx, vmcp, authConfigName) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// mcpGroupBackendsReferenceExternalAuthConfig checks if any MCPServers in the VirtualMCPServer's group
+// reference the given MCPExternalAuthConfig
+func (r *VirtualMCPServerReconciler) mcpGroupBackendsReferenceExternalAuthConfig(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	authConfigName string,
+) bool {
+	// Get the MCPGroup to verify it exists
+	mcpGroup := &mcpv1alpha1.MCPGroup{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      vmcp.Spec.GroupRef.Name,
+		Namespace: vmcp.Namespace,
+	}, mcpGroup)
+	if err != nil {
+		// If we can't get the group, we can't determine if it references the auth config
+		// Return false to avoid false positives
+		log.FromContext(ctx).Error(err, "Failed to get MCPGroup for ExternalAuthConfig reference check",
+			"group", vmcp.Spec.GroupRef.Name,
+			"vmcp", vmcp.Name)
+		return false
+	}
+
+	// List all MCPServers in the group using field selector (same as MCPGroup controller)
+	mcpServerList := &mcpv1alpha1.MCPServerList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(vmcp.Namespace),
+		client.MatchingFields{"spec.groupRef": mcpGroup.Name},
+	}
+	err = r.List(ctx, mcpServerList, listOpts...)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPServers for ExternalAuthConfig reference check",
+			"group", mcpGroup.Name)
+		return false
+	}
+
+	// Check if any MCPServer references the ExternalAuthConfig
+	for _, mcpServer := range mcpServerList.Items {
+		if mcpServer.Spec.ExternalAuthConfigRef != nil &&
+			mcpServer.Spec.ExternalAuthConfigRef.Name == authConfigName {
 			return true
 		}
 	}

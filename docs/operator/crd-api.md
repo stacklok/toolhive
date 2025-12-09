@@ -360,6 +360,7 @@ _Appears in:_
 | --- | --- |
 | `tokenExchange` | ExternalAuthTypeTokenExchange is the type for RFC-8693 token exchange<br /> |
 | `headerInjection` | ExternalAuthTypeHeaderInjection is the type for custom header injection<br /> |
+| `unauthenticated` | ExternalAuthTypeUnauthenticated is the type for no authentication<br />This should only be used for backends on trusted networks (e.g., localhost, VPC)<br />or when authentication is handled by network-level security<br /> |
 
 
 #### FailureHandlingConfig
@@ -580,7 +581,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[ExternalAuthType](#externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection] <br />Required: \{\} <br /> |
+| `type` _[ExternalAuthType](#externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection unauthenticated] <br />Required: \{\} <br /> |
 | `tokenExchange` _[TokenExchangeConfig](#tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  |  |
 | `headerInjection` _[HeaderInjectionConfig](#headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  |  |
 
@@ -1295,6 +1296,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `logLevel` _string_ | LogLevel sets the logging level for the Virtual MCP server.<br />Set to "debug" to enable debug logging. When not set, defaults to info level. |  | Enum: [debug] <br /> |
 | `timeouts` _[TimeoutConfig](#timeoutconfig)_ | Timeouts configures timeout settings |  |  |
 | `failureHandling` _[FailureHandlingConfig](#failurehandlingconfig)_ | FailureHandling configures failure handling behavior |  |  |
 
@@ -1696,6 +1698,7 @@ TelemetryConfig defines observability configuration for the MCP server
 _Appears in:_
 - [MCPRemoteProxySpec](#mcpremoteproxyspec)
 - [MCPServerSpec](#mcpserverspec)
+- [VirtualMCPServerSpec](#virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1974,6 +1977,7 @@ _Appears in:_
 | `operational` _[OperationalConfig](#operationalconfig)_ | Operational defines operational settings like timeouts and health checks |  |  |
 | `serviceType` _string_ | ServiceType specifies the Kubernetes service type for the Virtual MCP server | ClusterIP | Enum: [ClusterIP NodePort LoadBalancer] <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br /> |
+| `telemetry` _[TelemetryConfig](#telemetryconfig)_ | Telemetry configures OpenTelemetry-based observability for the Virtual MCP server<br />including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint |  |  |
 
 
 #### VirtualMCPServerStatus

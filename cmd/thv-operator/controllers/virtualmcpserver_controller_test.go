@@ -1401,10 +1401,74 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+									Args: reconciler.buildContainerArgsForVmcp(vmcp),
+									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
 								},
 							},
 							ServiceAccountName: "wrong-service-account",
+						},
+					},
+				},
+			},
+			vmcp:           vmcp,
+			expectedUpdate: true,
+		},
+		{
+			name: "log level change to debug needs update",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: getVmcpImage(),
+									Ports: []corev1.ContainerPort{
+										{ContainerPort: 4483},
+									},
+									Args: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483"},
+									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+								},
+							},
+							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+						},
+					},
+				},
+			},
+			vmcp: &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testVmcpName,
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: testGroupName,
+					},
+					Operational: &mcpv1alpha1.OperationalConfig{
+						LogLevel: "debug",
+					},
+				},
+			},
+			expectedUpdate: true,
+		},
+		{
+			name: "log level removed from debug needs update",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "vmcp",
+									Image: getVmcpImage(),
+									Ports: []corev1.ContainerPort{
+										{ContainerPort: 4483},
+									},
+									Args: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483", "--debug"},
+									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+								},
+							},
+							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
 						},
 					},
 				},
@@ -1425,7 +1489,8 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+									Args: reconciler.buildContainerArgsForVmcp(vmcp),
+									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1786,7 +1851,8 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+									Args: reconciler.buildContainerArgsForVmcp(vmcp),
+									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1817,7 +1883,8 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Env: reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
+									Args: reconciler.buildContainerArgsForVmcp(vmcp),
+									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []string{}),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),

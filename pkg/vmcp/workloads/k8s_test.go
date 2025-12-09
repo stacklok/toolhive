@@ -94,7 +94,10 @@ func TestDiscoverAuth_TokenExchange(t *testing.T) {
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
 
 	ctx := context.Background()
-	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, "test-server")
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, TypedWorkload{
+		Name: "test-server",
+		Type: WorkloadTypeMCPServer,
+	})
 
 	require.NoError(t, err)
 	require.NotNil(t, backend)
@@ -171,7 +174,10 @@ func TestDiscoverAuth_HeaderInjection(t *testing.T) {
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
 
 	ctx := context.Background()
-	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, "test-server")
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, TypedWorkload{
+		Name: "test-server",
+		Type: WorkloadTypeMCPServer,
+	})
 
 	require.NoError(t, err)
 	require.NotNil(t, backend)
@@ -214,7 +220,10 @@ func TestDiscoverAuth_NoAuthConfig(t *testing.T) {
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
 
 	ctx := context.Background()
-	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, "test-server")
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, TypedWorkload{
+		Name: "test-server",
+		Type: WorkloadTypeMCPServer,
+	})
 
 	require.NoError(t, err)
 	require.NotNil(t, backend)
@@ -252,7 +261,10 @@ func TestDiscoverAuth_AuthConfigNotFound(t *testing.T) {
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
 
 	ctx := context.Background()
-	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, "test-server")
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, TypedWorkload{
+		Name: "test-server",
+		Type: WorkloadTypeMCPServer,
+	})
 
 	// Should return nil backend when auth config is referenced but not found
 	// This is security-critical: fail closed rather than allowing unauthorized access
@@ -308,7 +320,10 @@ func TestDiscoverAuth_SecretNotFound(t *testing.T) {
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
 
 	ctx := context.Background()
-	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, "test-server")
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, TypedWorkload{
+		Name: "test-server",
+		Type: WorkloadTypeMCPServer,
+	})
 
 	// Should return nil backend when secret is missing
 	// This is security-critical: fail closed rather than allowing unauthorized access
@@ -474,11 +489,20 @@ func TestListWorkloadsInGroup(t *testing.T) {
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
 
 	ctx := context.Background()
-	workloads, err := discoverer.ListWorkloadsInGroup(ctx, "group-a")
+	workloadList, err := discoverer.ListWorkloadsInGroup(ctx, "group-a")
 
 	require.NoError(t, err)
-	assert.Len(t, workloads, 2)
-	assert.Contains(t, workloads, "server1")
-	assert.Contains(t, workloads, "server2")
-	assert.NotContains(t, workloads, "server3")
+	assert.Len(t, workloadList, 2)
+	assert.Contains(t, workloadList, TypedWorkload{
+		Name: "server1",
+		Type: WorkloadTypeMCPServer,
+	})
+	assert.Contains(t, workloadList, TypedWorkload{
+		Name: "server2",
+		Type: WorkloadTypeMCPServer,
+	})
+	assert.NotContains(t, workloadList, TypedWorkload{
+		Name: "server3",
+		Type: WorkloadTypeMCPServer,
+	})
 }

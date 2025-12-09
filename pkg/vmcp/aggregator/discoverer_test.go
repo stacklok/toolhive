@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 	discoverermocks "github.com/stacklok/toolhive/pkg/vmcp/workloads/mocks"
 )
 
@@ -55,9 +56,24 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
-			Return([]string{"workload1", "workload2"}, nil)
-		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), "workload1").Return(backend1, nil)
-		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), "workload2").Return(backend2, nil)
+			Return([]workloads.TypedWorkload{
+				{Name: "workload1", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "workload2", Type: workloads.WorkloadTypeMCPServer},
+			}, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "workload1",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+		).Return(backend1, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "workload2",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+		).Return(backend2, nil)
 
 		discoverer := NewUnifiedBackendDiscoverer(mockWorkloadDiscoverer, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)
@@ -100,9 +116,12 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
-			Return([]string{"healthy-workload", "unhealthy-workload"}, nil)
-		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), "healthy-workload").Return(healthyBackend, nil)
-		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), "unhealthy-workload").Return(unhealthyBackend, nil)
+			Return([]workloads.TypedWorkload{
+				{Name: "healthy-workload", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "unhealthy-workload", Type: workloads.WorkloadTypeMCPServer},
+			}, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), workloads.TypedWorkload{Name: "healthy-workload", Type: workloads.WorkloadTypeMCPServer}).Return(healthyBackend, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), workloads.TypedWorkload{Name: "unhealthy-workload", Type: workloads.WorkloadTypeMCPServer}).Return(unhealthyBackend, nil)
 
 		discoverer := NewUnifiedBackendDiscoverer(mockWorkloadDiscoverer, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)
@@ -135,10 +154,19 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
-			Return([]string{"workload1", "workload2"}, nil)
-		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), "workload1").Return(backendWithURL, nil)
+			Return([]workloads.TypedWorkload{
+				{Name: "workload1", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "workload2", Type: workloads.WorkloadTypeMCPServer},
+			}, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), workloads.TypedWorkload{Name: "workload1", Type: workloads.WorkloadTypeMCPServer}).Return(backendWithURL, nil)
 		// workload2 has no URL, so GetWorkload returns nil
-		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), "workload2").Return(nil, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "workload2",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+		).Return(nil, nil)
 
 		discoverer := NewUnifiedBackendDiscoverer(mockWorkloadDiscoverer, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)
@@ -158,9 +186,24 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
-			Return([]string{"workload1", "workload2"}, nil)
-		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), "workload1").Return(nil, nil)
-		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), "workload2").Return(nil, nil)
+			Return([]workloads.TypedWorkload{
+				{Name: "workload1", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "workload2", Type: workloads.WorkloadTypeMCPServer},
+			}, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "workload1",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+		).Return(nil, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "workload2",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+		).Return(nil, nil)
 
 		discoverer := NewUnifiedBackendDiscoverer(mockWorkloadDiscoverer, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)
@@ -214,7 +257,9 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		mockGroups := mocks.NewMockManager(ctrl)
 
 		mockGroups.EXPECT().Exists(gomock.Any(), "empty-group").Return(true, nil)
-		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), "empty-group").Return([]string{}, nil)
+		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(
+			gomock.Any(), "empty-group",
+		).Return([]workloads.TypedWorkload{}, nil)
 
 		discoverer := NewUnifiedBackendDiscoverer(mockWorkloadDiscoverer, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), "empty-group")
@@ -242,10 +287,24 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
-			Return([]string{"good-workload", "failing-workload"}, nil)
-		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), "good-workload").Return(goodBackend, nil)
-		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), "failing-workload").
-			Return(nil, errors.New("workload query failed"))
+			Return([]workloads.TypedWorkload{
+				{Name: "good-workload", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "failing-workload", Type: workloads.WorkloadTypeMCPServer},
+			}, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "good-workload",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+		).Return(goodBackend, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "failing-workload",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+		).Return(nil, errors.New("workload query failed"))
 
 		discoverer := NewUnifiedBackendDiscoverer(mockWorkloadDiscoverer, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)
@@ -306,8 +365,16 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
-			Return([]string{"workload1"}, nil)
-		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), "workload1").Return(backend, nil)
+			Return([]workloads.TypedWorkload{
+				{Name: "workload1", Type: workloads.WorkloadTypeMCPServer},
+			}, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "workload1",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+		).Return(backend, nil)
 
 		discoverer := NewUnifiedBackendDiscoverer(mockWorkloadDiscoverer, mockGroups, authConfig)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)
@@ -342,8 +409,16 @@ func TestCLIWorkloadDiscoverer(t *testing.T) {
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockManager.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
-			Return([]string{"workload1"}, nil)
-		mockManager.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), "workload1").Return(backend, nil)
+			Return([]workloads.TypedWorkload{
+				{Name: "workload1", Type: workloads.WorkloadTypeMCPServer},
+			}, nil)
+		mockManager.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "workload1",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+		).Return(backend, nil)
 
 		discoverer := NewUnifiedBackendDiscoverer(mockManager, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)
@@ -380,10 +455,25 @@ func TestCLIWorkloadDiscoverer(t *testing.T) {
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
-			Return([]string{"running-workload", "stopped-workload"}, nil)
+			Return([]workloads.TypedWorkload{
+				{Name: "running-workload", Type: workloads.WorkloadTypeMCPServer},
+				{Name: "stopped-workload", Type: workloads.WorkloadTypeMCPServer},
+			}, nil)
 		// The discoverer iterates through all workloads in order
-		mockDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), "running-workload").Return(runningBackend, nil)
-		mockDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), "stopped-workload").Return(stoppedBackend, nil)
+		mockDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "running-workload",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+		).Return(runningBackend, nil)
+		mockDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "stopped-workload",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+		).Return(stoppedBackend, nil)
 
 		discoverer := NewUnifiedBackendDiscoverer(mockDiscoverer, mockGroups, nil)
 		backends, err := discoverer.Discover(context.Background(), testGroupName)

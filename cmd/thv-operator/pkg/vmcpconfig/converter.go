@@ -723,6 +723,19 @@ func (*Converter) convertWorkflowSteps(
 			step.OnError = stepError
 		}
 
+		// Convert elicitation response handlers
+		if crdStep.OnDecline != nil {
+			step.OnDecline = &vmcpconfig.ElicitationResponseConfig{
+				Action: crdStep.OnDecline.Action,
+			}
+		}
+
+		if crdStep.OnCancel != nil {
+			step.OnCancel = &vmcpconfig.ElicitationResponseConfig{
+				Action: crdStep.OnCancel.Action,
+			}
+		}
+
 		workflowSteps = append(workflowSteps, step)
 	}
 

@@ -50,8 +50,8 @@ require (
 	golang.org/x/exp/jsonrpc2 v0.0.0-20251125195548-87e1e737ad39
 	golang.org/x/mod v0.31.0
 	golang.org/x/net v0.47.0
-	golang.org/x/oauth2 v0.33.0
-	golang.org/x/sync v0.18.0
+	golang.org/x/oauth2 v0.34.0
+	golang.org/x/sync v0.19.0
 	golang.org/x/term v0.38.0
 	golang.org/x/time v0.14.0
 	gopkg.in/yaml.v3 v3.0.1

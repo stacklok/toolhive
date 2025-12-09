@@ -15,8 +15,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -78,7 +80,11 @@ func (c *Converter) Convert(
 
 	// Convert OutgoingAuth - always set with defaults if not specified
 	if vmcp.Spec.OutgoingAuth != nil {
-		config.OutgoingAuth = c.convertOutgoingAuth(ctx, vmcp)
+		outgoingAuth, err := c.convertOutgoingAuth(ctx, vmcp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert outgoing auth: %w", err)
+		}
+		config.OutgoingAuth = outgoingAuth
 	} else {
 		// Provide default outgoing auth config
 		config.OutgoingAuth = &vmcpconfig.OutgoingAuthConfig{
@@ -227,9 +233,9 @@ func mapResolvedOIDCToVmcpConfig(
 
 // convertOutgoingAuth converts OutgoingAuthConfig from CRD to vmcp config
 func (c *Converter) convertOutgoingAuth(
-	_ context.Context,
+	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) *vmcpconfig.OutgoingAuthConfig {
+) (*vmcpconfig.OutgoingAuthConfig, error) {
 	outgoing := &vmcpconfig.OutgoingAuthConfig{
 		Source:   vmcp.Spec.OutgoingAuth.Source,
 		Backends: make(map[string]*authtypes.BackendAuthStrategy),
@@ -237,32 +243,98 @@ func (c *Converter) convertOutgoingAuth(
 
 	// Convert Default
 	if vmcp.Spec.OutgoingAuth.Default != nil {
-		outgoing.Default = c.convertBackendAuthConfig(vmcp.Spec.OutgoingAuth.Default)
+		defaultStrategy, err := c.convertBackendAuthConfig(ctx, vmcp, "default", vmcp.Spec.OutgoingAuth.Default)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert default backend auth: %w", err)
+		}
+		outgoing.Default = defaultStrategy
 	}
 
 	// Convert per-backend overrides
 	for backendName, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
-		outgoing.Backends[backendName] = c.convertBackendAuthConfig(&backendAuth)
+		strategy, err := c.convertBackendAuthConfig(ctx, vmcp, backendName, &backendAuth)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert backend auth for %s: %w", backendName, err)
+		}
+		outgoing.Backends[backendName] = strategy
 	}
 
-	return outgoing
+	return outgoing, nil
 }
 
 // convertBackendAuthConfig converts BackendAuthConfig from CRD to vmcp config
-func (*Converter) convertBackendAuthConfig(
+func (c *Converter) convertBackendAuthConfig(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	backendName string,
 	crdConfig *mcpv1alpha1.BackendAuthConfig,
-) *authtypes.BackendAuthStrategy {
-	strategy := &authtypes.BackendAuthStrategy{
-		Type: crdConfig.Type,
+) (*authtypes.BackendAuthStrategy, error) {
+	// If type is "discovered", return unauthenticated strategy
+	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeDiscovered {
+		return &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeUnauthenticated,
+		}, nil
 	}
 
-	// Note: When Type is "external_auth_config_ref", the actual MCPExternalAuthConfig
-	// resource should be resolved at runtime and its configuration (TokenExchange or
-	// HeaderInjection) should be populated into the corresponding typed fields.
-	// This conversion happens during server initialization when the referenced
-	// MCPExternalAuthConfig can be looked up.
+	// If type is "external_auth_config_ref", resolve the MCPExternalAuthConfig
+	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef {
+		if crdConfig.ExternalAuthConfigRef == nil {
+			return nil, fmt.Errorf("backend %s: external_auth_config_ref type requires externalAuthConfigRef field", backendName)
+		}
 
-	return strategy
+		// Fetch the MCPExternalAuthConfig resource
+		externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+		err := c.k8sClient.Get(ctx, types.NamespacedName{
+			Name:      crdConfig.ExternalAuthConfigRef.Name,
+			Namespace: vmcp.Namespace,
+		}, externalAuthConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s/%s: %w",
+				vmcp.Namespace, crdConfig.ExternalAuthConfigRef.Name, err)
+		}
+
+		// Convert the external auth config to backend auth strategy
+		return c.convertExternalAuthConfigToStrategy(ctx, externalAuthConfig)
+	}
+
+	// Unknown type
+	return nil, fmt.Errorf("backend %s: unknown auth type %q", backendName, crdConfig.Type)
+}
+
+// convertExternalAuthConfigToStrategy converts MCPExternalAuthConfig to BackendAuthStrategy.
+// This uses the converter registry to consolidate conversion logic and apply token type normalization consistently.
+// The registry pattern makes adding new auth types easier and ensures conversion happens in one place.
+func (*Converter) convertExternalAuthConfigToStrategy(
+	_ context.Context,
+	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+) (*authtypes.BackendAuthStrategy, error) {
+	// Use the converter registry to convert to typed strategy
+	registry := converters.DefaultRegistry()
+	converter, err := registry.GetConverter(externalAuthConfig.Spec.Type)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to typed BackendAuthStrategy (applies token type normalization)
+	strategy, err := converter.ConvertToStrategy(externalAuthConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert external auth config to strategy: %w", err)
+	}
+
+	// Enrich with unique env var names per ExternalAuthConfig to avoid conflicts
+	// when multiple configs of the same type reference different secrets
+	if strategy.TokenExchange != nil &&
+		externalAuthConfig.Spec.TokenExchange != nil &&
+		externalAuthConfig.Spec.TokenExchange.ClientSecretRef != nil {
+		strategy.TokenExchange.ClientSecretEnv = controllerutil.GenerateUniqueTokenExchangeEnvVarName(externalAuthConfig.Name)
+	}
+	if strategy.HeaderInjection != nil &&
+		externalAuthConfig.Spec.HeaderInjection != nil &&
+		externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
+		strategy.HeaderInjection.HeaderValueEnv = controllerutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
+	}
+
+	return strategy, nil
 }
 
 // convertAggregation converts AggregationConfig from CRD to vmcp config

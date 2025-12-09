@@ -1869,56 +1869,60 @@ func TestFileStatusManager_ListWorkloads_PIDMigration(t *testing.T) {
 }
 
 func TestFileStatusManager_IsRemoteWorkload_EdgeCases(t *testing.T) {
-    tests := []struct {
-        name       string
-        configJSON string
-        expected   bool
-    }{
-        {
-            name:       "remote workload with URL",
-            configJSON: `{"remote_url": "https://example.com"}`,
-            expected:   true,
-        },
-        {
-            name:       "local workload without remote_url field",
-            configJSON: `{"name": "test-workload"}`,
-            expected:   false,
-        },
-        {
-            name:       "edge case - remote_url in string value (false positive with old implementation)",
-            configJSON: `{"description": "Set \"remote_url\" in config to enable remote mode"}`,
-            expected:   false,
-        },
-        {
-            name:       "remote_url field is empty string",
-            configJSON: `{"remote_url": ""}`,
-            expected:   false,
-        },
-        {
-            name:       "remote_url field with whitespace only",
-            configJSON: `{"remote_url": "   "}`,
-            expected:   false,
-        },
-    }
+	t.Parallel()
 
-    for _, tt := range tests {
-        t.Run(tt.name, func(t *testing.T) {
-            // Test the JSON parsing logic directly
-            var config struct {
-                RemoteURL string `json:"remote_url"`
-            }
+	tests := []struct {
+		name       string
+		configJSON string
+		expected   bool
+	}{
+		{
+			name:       "remote workload with URL",
+			configJSON: `{"remote_url": "https://example.com"}`,
+			expected:   true,
+		},
+		{
+			name:       "local workload without remote_url field",
+			configJSON: `{"name": "test-workload"}`,
+			expected:   false,
+		},
+		{
+			name:       "edge case - remote_url in string value (false positive with old implementation)",
+			configJSON: `{"description": "Set \"remote_url\" in config to enable remote mode"}`,
+			expected:   false,
+		},
+		{
+			name:       "remote_url field is empty string",
+			configJSON: `{"remote_url": ""}`,
+			expected:   false,
+		},
+		{
+			name:       "remote_url field with whitespace only",
+			configJSON: `{"remote_url": "   "}`,
+			expected:   false,
+		},
+	}
 
-            err := json.Unmarshal([]byte(tt.configJSON), &config)
-            if err != nil {
-                t.Fatalf("failed to parse JSON: %v", err)
-            }
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-            // Match the implementation: trim whitespace before checking
-            result := strings.TrimSpace(config.RemoteURL) != ""
+			// Test the JSON parsing logic directly
+			var config struct {
+				RemoteURL string `json:"remote_url"`
+			}
 
-            if result != tt.expected {
-                t.Errorf("expected %v, got %v for JSON: %s", tt.expected, result, tt.configJSON)
-            }
-        })
-    }
+			err := json.Unmarshal([]byte(tt.configJSON), &config)
+			if err != nil {
+				t.Fatalf("failed to parse JSON: %v", err)
+			}
+
+			result := strings.TrimSpace(config.RemoteURL) != ""
+
+			if result != tt.expected {
+				t.Errorf("expected %v, got %v for JSON: %s", tt.expected, result, tt.configJSON)
+			}
+		})
+	}
 }

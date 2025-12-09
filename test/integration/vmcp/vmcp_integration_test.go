@@ -320,6 +320,7 @@ func TestVMCPServer_CompositeToolNonStringArguments(t *testing.T) {
 
 	// Verify the composite tool is listed
 	t.Run("ListTools", func(t *testing.T) {
+		t.Parallel()
 		toolsResp := client.ListTools(ctx)
 		toolNames := helpers.GetToolNames(toolsResp)
 
@@ -329,6 +330,7 @@ func TestVMCPServer_CompositeToolNonStringArguments(t *testing.T) {
 
 	// Call the composite tool with no arguments and verify static values were passed
 	t.Run("CallWithStaticNonStringArgs", func(t *testing.T) {
+		t.Parallel()
 		// Call composite tool with empty arguments (all args are static in the workflow)
 		resp := client.CallTool(ctx, "static_args_tool", map[string]any{})
 		text := helpers.AssertToolCallSuccess(t, resp)

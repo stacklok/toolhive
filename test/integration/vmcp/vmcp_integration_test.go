@@ -319,30 +319,24 @@ func TestVMCPServer_CompositeToolNonStringArguments(t *testing.T) {
 	defer client.Close()
 
 	// Verify the composite tool is listed
-	t.Run("ListTools", func(t *testing.T) {
-		t.Parallel()
-		toolsResp := client.ListTools(ctx)
-		toolNames := helpers.GetToolNames(toolsResp)
 
-		assert.Contains(t, toolNames, "static_args_tool", "Should have composite tool")
-		assert.Contains(t, toolNames, "echoargs_echo_args", "Should have backend tool")
-	})
+	toolsResp := client.ListTools(ctx)
+	toolNames := helpers.GetToolNames(toolsResp)
 
-	// Call the composite tool with no arguments and verify static values were passed
-	t.Run("CallWithStaticNonStringArgs", func(t *testing.T) {
-		t.Parallel()
-		// Call composite tool with empty arguments (all args are static in the workflow)
-		resp := client.CallTool(ctx, "static_args_tool", map[string]any{})
-		text := helpers.AssertToolCallSuccess(t, resp)
+	assert.Contains(t, toolNames, "static_args_tool", "Should have composite tool")
+	assert.Contains(t, toolNames, "echoargs_echo_args", "Should have backend tool")
 
-		// Verify the backend received the integer and boolean values correctly
-		// The handler returns "42" and "true" if the types were correct
-		helpers.AssertTextContains(t, text, "count", "42")
-		helpers.AssertTextContains(t, text, "enabled", "true")
+	// Call composite tool with empty arguments (all args are static in the workflow)
+	resp := client.CallTool(ctx, "static_args_tool", map[string]any{})
+	text := helpers.AssertToolCallSuccess(t, resp)
 
-		// Verify no type conversion errors occurred
-		helpers.AssertTextNotContains(t, text, "wrong_type", "missing")
-	})
+	// Verify the backend received the integer and boolean values correctly
+	// The handler returns "42" and "true" if the types were correct
+	helpers.AssertTextContains(t, text, "count", "42")
+	helpers.AssertTextContains(t, text, "enabled", "true")
+
+	// Verify no type conversion errors occurred
+	helpers.AssertTextNotContains(t, text, "wrong_type", "missing")
 }
 
 // TestVMCPServer_Telemetry_CompositeToolMetrics verifies that vMCP exposes

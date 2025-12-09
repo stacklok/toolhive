@@ -52,9 +52,7 @@ func newTestConverter(t *testing.T, resolver *oidcmocks.MockResolver) *vmcpconfi
 	t.Helper()
 	scheme := runtime.NewScheme()
 	_ = mcpv1alpha1.AddToScheme(scheme)
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		Build()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	converter, err := vmcpconfig.NewConverter(resolver, fakeClient)
 	require.NoError(t, err)
 	return converter

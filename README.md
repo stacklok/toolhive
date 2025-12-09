@@ -18,6 +18,9 @@
 
 # ToolHive - simplify and secure MCP servers
 
+[![Run in Smithery](https://smithery.ai/badge/skills/stacklok)](https://smithery.ai/skills?ns=stacklok&utm_source=github&utm_medium=badge)
+
+
 **Run any Model Context Protocol (MCP) server: securely, instantly, anywhere.**
 
 ToolHive includes everything you need to use MCP servers in production. Rather than build or combine components yourself, use ToolHive's Registry Server, Runtime, Gateway, and Portal to get up and running quickly and safely.

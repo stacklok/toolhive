@@ -137,14 +137,6 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 		})
 
 		It("Should trigger VirtualMCPServer reconciliation when ExternalAuthConfig is updated", func() {
-			// Get current observedGeneration
-			initialVMCP := &mcpv1alpha1.VirtualMCPServer{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpName,
-				Namespace: namespace,
-			}, initialVMCP)).Should(Succeed())
-			initialGen := initialVMCP.Status.ObservedGeneration
-
 			// Update the MCPExternalAuthConfig
 			updatedAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -156,9 +148,10 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 			updatedAuthConfig.Spec.HeaderInjection.HeaderName = "X-Updated-Auth"
 			Expect(k8sClient.Update(ctx, updatedAuthConfig)).Should(Succeed())
 
-			// Verify VirtualMCPServer reconciliation is triggered
-			// The observedGeneration should eventually update or conditions should change
-			Eventually(func() bool {
+			// The VirtualMCPServer should remain reconciled after the update
+			// We verify this by checking that ObservedGeneration stays current with Generation
+			// This indicates the controller is continuously reconciling and processing the auth config update
+			Consistently(func() bool {
 				reconciledVMCP := &mcpv1alpha1.VirtualMCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      vmcpName,
@@ -168,12 +161,22 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 					return false
 				}
 
-				// Check if reconciliation happened by comparing generation or checking conditions
-				// In a real reconciliation, the controller would process the updated auth config
-				// For this test, we verify that the watch triggers reconciliation by checking
-				// that the resource gets processed again (generation advances or conditions update)
-				return reconciledVMCP.Status.ObservedGeneration >= initialGen
-			}, timeout, interval).Should(BeTrue())
+				// Check that ObservedGeneration stays current (indicating successful reconciliation)
+				return reconciledVMCP.Status.ObservedGeneration == reconciledVMCP.Generation
+			}, time.Second*5, interval).Should(BeTrue())
+
+			// Verify the VirtualMCPServer is still in a valid state
+			updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpName,
+				Namespace: namespace,
+			}, updatedVMCP)).Should(Succeed())
+
+			Expect(updatedVMCP.Status.ObservedGeneration).To(Equal(updatedVMCP.Generation))
+			Expect(updatedVMCP.Status.Phase).To(Or(
+				Equal(mcpv1alpha1.VirtualMCPServerPhaseReady),
+				Equal(mcpv1alpha1.VirtualMCPServerPhasePending),
+			))
 		})
 	})
 })

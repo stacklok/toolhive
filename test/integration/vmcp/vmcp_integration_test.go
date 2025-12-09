@@ -2,12 +2,19 @@ package vmcp_test
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/test/integration/vmcp/helpers"
 )
 
@@ -224,4 +231,127 @@ func TestVMCPServer_TwoBoundaryAuth_HeaderInjection(t *testing.T) {
 		helpers.AssertTextContains(t, text, "github", "repos", "auth", "success")
 		helpers.AssertTextNotContains(t, text, "error", "failed", "leakage")
 	})
+}
+
+// TestVMCPServer_Telemetry_CompositeToolMetrics verifies that vMCP exposes
+// Prometheus metrics for composite tool workflow executions and backend requests on /metrics.
+// This test creates a composite tool, executes it, and verifies the metrics
+// for both the workflow and the backend subtool calls are correctly exposed.
+//
+//nolint:paralleltest // safe to run in parallel with other tests
+func TestVMCPServer_Telemetry_CompositeToolMetrics(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup: Create a synthetic MCP backend server with a simple tool
+	echoServer := helpers.CreateBackendServer(t, []helpers.BackendTool{
+		helpers.NewBackendTool("echo", "Echo the input message",
+			func(_ context.Context, args map[string]any) string {
+				msg, _ := args["message"].(string)
+				return `{"echoed": "` + msg + `"}`
+			}),
+	}, helpers.WithBackendName("echo-mcp"))
+	defer echoServer.Close()
+
+	// Configure backend pointing to test server
+	backends := []vmcp.Backend{
+		helpers.NewBackend("echo",
+			helpers.WithURL(echoServer.URL+"/mcp"),
+			helpers.WithMetadata("group", "test-group"),
+		),
+	}
+
+	// Create composite tool workflow definition that calls the echo tool
+	workflowDefs := map[string]*composer.WorkflowDefinition{
+		"echo_workflow": {
+			Name:        "echo_workflow",
+			Description: "A composite tool that echoes a message",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"message": map[string]any{
+						"type":        "string",
+						"description": "The message to echo",
+					},
+				},
+				"required": []string{"message"},
+			},
+			Steps: []composer.WorkflowStep{
+				{
+					ID:   "echo_step",
+					Type: "tool",
+					Tool: "echo_echo", // prefixed with backend name
+					Arguments: map[string]any{
+						"message": "{{.params.message}}",
+					},
+				},
+			},
+			Timeout: 30 * time.Second,
+		},
+	}
+
+	// Create telemetry provider with Prometheus enabled
+	telemetryConfig := telemetry.Config{
+		ServiceName:                 "vmcp-telemetry-test",
+		ServiceVersion:              "1.0.0",
+		EnablePrometheusMetricsPath: true,
+	}
+	telemetryProvider, err := telemetry.NewProvider(ctx, telemetryConfig)
+	require.NoError(t, err, "failed to create telemetry provider")
+	defer telemetryProvider.Shutdown(ctx)
+
+	// Create vMCP server with composite tool and telemetry
+	vmcpServer := helpers.NewVMCPServer(ctx, t, backends,
+		helpers.WithPrefixConflictResolution("{workload}_"),
+		helpers.WithWorkflowDefinitions(workflowDefs),
+		helpers.WithTelemetryProvider(telemetryProvider),
+	)
+
+	// Create and initialize MCP client
+	vmcpURL := "http://" + vmcpServer.Address() + "/mcp"
+	client := helpers.NewMCPClient(ctx, t, vmcpURL)
+	defer client.Close()
+
+	// Call the composite tool
+	resp := client.CallTool(ctx, "echo_workflow", map[string]any{"message": "hello world"})
+	text := helpers.AssertToolCallSuccess(t, resp)
+	helpers.AssertTextContains(t, text, "echoed", "hello world")
+
+	// Fetch metrics from /metrics endpoint
+	metricsURL := "http://" + vmcpServer.Address() + "/metrics"
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	metricsResp, err := httpClient.Get(metricsURL)
+	require.NoError(t, err, "failed to fetch metrics")
+	defer metricsResp.Body.Close()
+
+	require.Equal(t, http.StatusOK, metricsResp.StatusCode, "metrics endpoint should return 200")
+
+	body, err := io.ReadAll(metricsResp.Body)
+	require.NoError(t, err, "failed to read metrics body")
+	metricsContent := string(body)
+
+	// Log metrics for debugging
+	t.Logf("Metrics content:\n%s", metricsContent)
+
+	// Verify workflow execution metrics are present (composite tool).
+	assert.True(t, strings.Contains(metricsContent, "toolhive_vmcp_workflow_executions_total"),
+		"Should contain workflow executions total metric")
+	assert.True(t, strings.Contains(metricsContent, "toolhive_vmcp_workflow_duration_seconds"),
+		"Should contain workflow duration metric")
+	assert.True(t, strings.Contains(metricsContent, `workflow_name="echo_workflow"`),
+		"Should contain workflow name label")
+
+	// Verify backend metrics are present.
+	assert.True(t, strings.Contains(metricsContent, "toolhive_vmcp_backend_requests_total"),
+		"Should contain backend requests total metric")
+	assert.True(t, strings.Contains(metricsContent, "toolhive_vmcp_backend_requests_duration"),
+		"Should contain backend requests duration metric")
+
+	// Verify HTTP middleware metrics are present (incoming MCP requests).
+	assert.True(t, strings.Contains(metricsContent, "toolhive_mcp_requests_total"),
+		"Should contain HTTP middleware requests total metric")
+	assert.True(t, strings.Contains(metricsContent, "toolhive_mcp_request_duration_seconds"),
+		"Should contain HTTP middleware request duration metric")
 }

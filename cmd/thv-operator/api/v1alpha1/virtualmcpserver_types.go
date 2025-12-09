@@ -54,6 +54,11 @@ type VirtualMCPServerSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
+
+	// Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
+	// including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint
+	// +optional
+	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
 }
 
 // GroupRef references an MCPGroup resource
@@ -330,6 +335,12 @@ type ErrorHandling struct {
 
 // OperationalConfig defines operational settings
 type OperationalConfig struct {
+	// LogLevel sets the logging level for the Virtual MCP server.
+	// Set to "debug" to enable debug logging. When not set, defaults to info level.
+	// +kubebuilder:validation:Enum=debug
+	// +optional
+	LogLevel string `json:"logLevel,omitempty"`
+
 	// Timeouts configures timeout settings
 	// +optional
 	Timeouts *TimeoutConfig `json:"timeouts,omitempty"`
@@ -518,6 +529,10 @@ const (
 
 	// ConditionReasonCompositeToolRefNotFound indicates a referenced VirtualMCPCompositeToolDefinition was not found
 	ConditionReasonCompositeToolRefNotFound = "CompositeToolRefNotFound"
+
+	// ConditionReasonCompositeToolRefInvalid indicates a referenced VirtualMCPCompositeToolDefinition is invalid
+	ConditionReasonCompositeToolRefInvalid = "CompositeToolRefInvalid"
+
 	// ConditionReasonVirtualMCPServerPodTemplateSpecValid indicates PodTemplateSpec validation succeeded
 	ConditionReasonVirtualMCPServerPodTemplateSpecValid = "PodTemplateSpecValid"
 

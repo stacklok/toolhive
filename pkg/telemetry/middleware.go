@@ -46,7 +46,7 @@ type HTTPMiddleware struct {
 
 // NewHTTPMiddleware creates a new HTTP middleware for OpenTelemetry instrumentation.
 // serverName is the name of the MCP server (e.g., "github", "fetch")
-// transport is the backend transport type ("stdio" or "sse")
+// transport is the backend transport type ("stdio", "sse", or "streamable-http").
 func NewHTTPMiddleware(
 	config Config,
 	tracerProvider trace.TracerProvider,

@@ -66,6 +66,10 @@ type VirtualMCPServerReconciler struct {
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 }
 
+var (
+	envVarSanitizeRegex = regexp.MustCompile(`[^A-Z0-9_]`)
+)
+
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpgroups,verbs=get;list;watch
@@ -329,6 +333,29 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 		} else if err != nil {
 			ctxLogger.Error(err, "Failed to get VirtualMCPCompositeToolDefinition", "name", ref.Name)
 			return err
+		}
+
+		// Check that the composite tool definition is validated and valid
+		if compositeToolDef.Status.ValidationStatus == mcpv1alpha1.ValidationStatusInvalid {
+			message := fmt.Sprintf("Referenced VirtualMCPCompositeToolDefinition %s is invalid", ref.Name)
+			if len(compositeToolDef.Status.ValidationErrors) > 0 {
+				message = fmt.Sprintf("%s: %s", message, strings.Join(compositeToolDef.Status.ValidationErrors, "; "))
+			}
+			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetCompositeToolRefsValidatedCondition(
+				mcpv1alpha1.ConditionReasonCompositeToolRefInvalid,
+				message,
+				metav1.ConditionFalse,
+			)
+			return fmt.Errorf("referenced VirtualMCPCompositeToolDefinition %s is invalid", ref.Name)
+		}
+
+		// If ValidationStatus is Unknown, we still allow it (validation might be in progress)
+		// but log a warning
+		if compositeToolDef.Status.ValidationStatus == mcpv1alpha1.ValidationStatusUnknown {
+			ctxLogger.V(1).Info("Referenced composite tool definition validation status is Unknown, proceeding",
+				"name", ref.Name, "namespace", vmcp.Namespace)
 		}
 	}
 
@@ -805,6 +832,12 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 
 	// Check if port has changed
 	if len(container.Ports) > 0 && container.Ports[0].ContainerPort != vmcpDefaultPort {
+		return true
+	}
+
+	// Check if container args have changed (includes --debug flag from logLevel)
+	expectedArgs := r.buildContainerArgsForVmcp(vmcp)
+	if !reflect.DeepEqual(container.Args, expectedArgs) {
 		return true
 	}
 
@@ -1288,7 +1321,7 @@ func generateUniqueTokenExchangeEnvVarName(configName string) string {
 	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
 	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
 	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
+	sanitized = envVarSanitizeRegex.ReplaceAllString(sanitized, "_")
 	return fmt.Sprintf("TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_%s", sanitized)
 }
 
@@ -1298,7 +1331,7 @@ func generateUniqueHeaderInjectionEnvVarName(configName string) string {
 	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
 	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
 	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
+	sanitized = envVarSanitizeRegex.ReplaceAllString(sanitized, "_")
 	return fmt.Sprintf("TOOLHIVE_HEADER_INJECTION_VALUE_%s", sanitized)
 }
 

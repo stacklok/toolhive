@@ -13,7 +13,7 @@ require (
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/docker/go-connections v0.6.0
 	github.com/go-chi/chi/v5 v5.2.3
-	github.com/go-git/go-billy/v5 v5.6.2
+	github.com/go-git/go-billy/v5 v5.7.0
 	github.com/go-git/go-git/v5 v5.16.4
 	github.com/go-logr/zapr v1.3.0
 	github.com/gofrs/flock v0.13.0
@@ -46,7 +46,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.38.0
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.27.1
-	golang.ngrok.com/ngrok/v2 v2.1.0
+	golang.ngrok.com/ngrok/v2 v2.1.1
 	golang.org/x/exp/jsonrpc2 v0.0.0-20251125195548-87e1e737ad39
 	golang.org/x/mod v0.30.0
 	golang.org/x/net v0.47.0
@@ -329,6 +329,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.38.0
 	golang.org/x/crypto v0.45.0 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
-	golang.org/x/sys v0.38.0
+	golang.org/x/sys v0.39.0
 	k8s.io/client-go v0.34.2
 )

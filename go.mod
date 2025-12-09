@@ -48,7 +48,7 @@ require (
 	go.uber.org/zap v1.27.1
 	golang.ngrok.com/ngrok/v2 v2.1.1
 	golang.org/x/exp/jsonrpc2 v0.0.0-20251125195548-87e1e737ad39
-	golang.org/x/mod v0.30.0
+	golang.org/x/mod v0.31.0
 	golang.org/x/net v0.47.0
 	golang.org/x/oauth2 v0.33.0
 	golang.org/x/sync v0.18.0

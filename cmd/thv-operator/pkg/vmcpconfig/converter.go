@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -300,53 +301,37 @@ func (c *Converter) convertBackendAuthConfig(
 	return nil, fmt.Errorf("backend %s: unknown auth type %q", backendName, crdConfig.Type)
 }
 
-// convertExternalAuthConfigToStrategy converts MCPExternalAuthConfig to BackendAuthStrategy
+// convertExternalAuthConfigToStrategy converts MCPExternalAuthConfig to BackendAuthStrategy.
+// This uses the converter registry to consolidate conversion logic and apply token type normalization consistently.
+// The registry pattern makes adding new auth types easier and ensures conversion happens in one place.
 func (*Converter) convertExternalAuthConfigToStrategy(
 	_ context.Context,
 	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
-	strategy := &authtypes.BackendAuthStrategy{}
+	// Use the converter registry to convert to typed strategy
+	registry := converters.DefaultRegistry()
+	converter, err := registry.GetConverter(externalAuthConfig.Spec.Type)
+	if err != nil {
+		return nil, err
+	}
 
-	switch externalAuthConfig.Spec.Type {
-	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
-		strategy.Type = authtypes.StrategyTypeUnauthenticated
+	// Convert to typed BackendAuthStrategy (applies token type normalization)
+	strategy, err := converter.ConvertToStrategy(externalAuthConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert external auth config to strategy: %w", err)
+	}
 
-	case mcpv1alpha1.ExternalAuthTypeHeaderInjection:
-		if externalAuthConfig.Spec.HeaderInjection == nil {
-			return nil, fmt.Errorf("headerInjection config is required when type is headerInjection")
-		}
-
-		strategy.Type = authtypes.StrategyTypeHeaderInjection
-		strategy.HeaderInjection = &authtypes.HeaderInjectionConfig{
-			HeaderName: externalAuthConfig.Spec.HeaderInjection.HeaderName,
-			// The secret value will be mounted as an environment variable by the deployment controller
-			// Use the same env var naming convention as the deployment controller
-			HeaderValueEnv: controllerutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name),
-		}
-
-	case mcpv1alpha1.ExternalAuthTypeTokenExchange:
-		if externalAuthConfig.Spec.TokenExchange == nil {
-			return nil, fmt.Errorf("tokenExchange config is required when type is tokenExchange")
-		}
-
-		strategy.Type = authtypes.StrategyTypeTokenExchange
-		strategy.TokenExchange = &authtypes.TokenExchangeConfig{
-			TokenURL:         externalAuthConfig.Spec.TokenExchange.TokenURL,
-			ClientID:         externalAuthConfig.Spec.TokenExchange.ClientID,
-			Audience:         externalAuthConfig.Spec.TokenExchange.Audience,
-			Scopes:           externalAuthConfig.Spec.TokenExchange.Scopes,
-			SubjectTokenType: externalAuthConfig.Spec.TokenExchange.SubjectTokenType,
-		}
-
-		// If client secret ref is set, use an environment variable
-		if externalAuthConfig.Spec.TokenExchange.ClientSecretRef != nil {
-			// The secret value will be mounted as an environment variable by the deployment controller
-			// Use the same env var naming convention as the deployment controller
-			strategy.TokenExchange.ClientSecretEnv = controllerutil.GenerateUniqueTokenExchangeEnvVarName(externalAuthConfig.Name)
-		}
-
-	default:
-		return nil, fmt.Errorf("unknown external auth type: %s", externalAuthConfig.Spec.Type)
+	// Enrich with unique env var names per ExternalAuthConfig to avoid conflicts
+	// when multiple configs of the same type reference different secrets
+	if strategy.TokenExchange != nil &&
+		externalAuthConfig.Spec.TokenExchange != nil &&
+		externalAuthConfig.Spec.TokenExchange.ClientSecretRef != nil {
+		strategy.TokenExchange.ClientSecretEnv = controllerutil.GenerateUniqueTokenExchangeEnvVarName(externalAuthConfig.Name)
+	}
+	if strategy.HeaderInjection != nil &&
+		externalAuthConfig.Spec.HeaderInjection != nil &&
+		externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
+		strategy.HeaderInjection.HeaderValueEnv = controllerutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
 	}
 
 	return strategy, nil

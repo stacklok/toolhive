@@ -24,14 +24,26 @@ var _ webhook.CustomValidator = &MCPExternalAuthConfig{}
 
 // ValidateCreate implements webhook.CustomValidator
 func (r *MCPExternalAuthConfig) ValidateCreate(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
-	return nil, r.validate()
+	var warnings admission.Warnings
+	if r.Spec.Type == ExternalAuthTypeUnauthenticated {
+		warnings = append(warnings,
+			"'unauthenticated' type disables authentication to the backend. "+
+				"Only use for backends on trusted networks or when authentication is handled by network-level security.")
+	}
+	return warnings, r.validate()
 }
 
 // ValidateUpdate implements webhook.CustomValidator
 func (r *MCPExternalAuthConfig) ValidateUpdate(
 	_ context.Context, _ runtime.Object, _ runtime.Object,
 ) (admission.Warnings, error) {
-	return nil, r.validate()
+	var warnings admission.Warnings
+	if r.Spec.Type == ExternalAuthTypeUnauthenticated {
+		warnings = append(warnings,
+			"'unauthenticated' type disables authentication to the backend. "+
+				"Only use for backends on trusted networks or when authentication is handled by network-level security.")
+	}
+	return warnings, r.validate()
 }
 
 // ValidateDelete implements webhook.CustomValidator

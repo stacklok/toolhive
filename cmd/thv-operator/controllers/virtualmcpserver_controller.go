@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -63,10 +64,6 @@ type VirtualMCPServerReconciler struct {
 	Recorder         record.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 }
-
-var (
-	envVarSanitizeRegex = regexp.MustCompile(`[^A-Z0-9_]`)
-)
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers/status,verbs=get;update;patch

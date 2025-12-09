@@ -229,9 +229,19 @@ func (*VirtualMCPCompositeToolDefinition) validateStepType(index int, step Workf
 
 // validateStepTemplates validates all template fields in a step
 func (*VirtualMCPCompositeToolDefinition) validateStepTemplates(index int, step WorkflowStep) error {
-	for argName, argValue := range step.Arguments {
-		if err := validateTemplate(argValue); err != nil {
-			return fmt.Errorf("spec.steps[%d].arguments[%s]: invalid template: %v", index, argName, err)
+	// Validate template syntax in arguments (only for string values)
+	if step.Arguments != nil && len(step.Arguments.Raw) > 0 {
+		var args map[string]any
+		if err := json.Unmarshal(step.Arguments.Raw, &args); err != nil {
+			return fmt.Errorf("spec.steps[%d].arguments: invalid JSON: %v", index, err)
+		}
+		for argName, argValue := range args {
+			// Only validate template syntax for string values
+			if strValue, ok := argValue.(string); ok {
+				if err := validateTemplate(strValue); err != nil {
+					return fmt.Errorf("spec.steps[%d].arguments[%s]: invalid template: %v", index, argName, err)
+				}
+			}
 		}
 	}
 

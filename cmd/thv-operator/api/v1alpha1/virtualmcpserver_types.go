@@ -280,10 +280,14 @@ type WorkflowStep struct {
 	// +optional
 	Tool string `json:"tool,omitempty"`
 
-	// Arguments is a map of argument templates
-	// Supports Go template syntax with .params and .steps
+	// Arguments is a map of argument values with template expansion support.
+	// Supports Go template syntax with .params and .steps for string values.
+	// Non-string values (integers, booleans, arrays, objects) are passed as-is.
+	// Note: the templating is only supported on the first level of the key-value pairs.
 	// +optional
-	Arguments map[string]string `json:"arguments,omitempty"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	Arguments *runtime.RawExtension `json:"arguments,omitempty"`
 
 	// Message is the elicitation message
 	// Only used when Type is "elicitation"

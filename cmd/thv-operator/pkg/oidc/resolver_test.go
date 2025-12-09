@@ -262,6 +262,114 @@ func TestResolve_ConfigMapType(t *testing.T) {
 			},
 		},
 		{
+			name: "configmap with scopes",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "scopes-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Port: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+							Name: "scopes-config",
+						},
+					},
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "scopes-config",
+					Namespace: "test-ns",
+				},
+				Data: map[string]string{
+					"issuer":   "https://auth.example.com",
+					"audience": "test-audience",
+					"scopes":   "https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/documents.readonly",
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer:      "https://auth.example.com",
+				Audience:    "test-audience",
+				ResourceURL: "http://scopes-server.test-ns.svc.cluster.local:8080",
+				Scopes: []string{
+					"https://www.googleapis.com/auth/drive.readonly",
+					"https://www.googleapis.com/auth/documents.readonly",
+				},
+			},
+		},
+		{
+			name: "configmap with scopes containing whitespace",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "whitespace-scopes-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Port: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+							Name: "whitespace-scopes-config",
+						},
+					},
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "whitespace-scopes-config",
+					Namespace: "test-ns",
+				},
+				Data: map[string]string{
+					"issuer":   "https://auth.example.com",
+					"audience": "test-audience",
+					"scopes":   "scope1 , scope2,  scope3  ",
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer:      "https://auth.example.com",
+				Audience:    "test-audience",
+				ResourceURL: "http://whitespace-scopes-server.test-ns.svc.cluster.local:8080",
+				Scopes:      []string{"scope1", "scope2", "scope3"},
+			},
+		},
+		{
+			name: "configmap with empty scopes",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "empty-scopes-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Port: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeConfigMap,
+						ConfigMap: &mcpv1alpha1.ConfigMapOIDCRef{
+							Name: "empty-scopes-config",
+						},
+					},
+				},
+			},
+			configMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "empty-scopes-config",
+					Namespace: "test-ns",
+				},
+				Data: map[string]string{
+					"issuer":   "https://auth.example.com",
+					"audience": "test-audience",
+					"scopes":   "",
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer:      "https://auth.example.com",
+				Audience:    "test-audience",
+				ResourceURL: "http://empty-scopes-server.test-ns.svc.cluster.local:8080",
+				Scopes:      nil,
+			},
+		},
+		{
 			name: "configmap not found",
 			mcpServer: &mcpv1alpha1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -428,6 +536,32 @@ func TestResolve_InlineType(t *testing.T) {
 				ResourceURL:        "http://insecure-inline-server.test-ns.svc.cluster.local:8080",
 				JWKSAllowPrivateIP: true,
 				InsecureAllowHTTP:  true,
+			},
+		},
+		{
+			name: "inline with scopes",
+			mcpServer: &mcpv1alpha1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "scopes-inline-server",
+					Namespace: "test-ns",
+				},
+				Spec: mcpv1alpha1.MCPServerSpec{
+					Port: 8080,
+					OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+						Type: mcpv1alpha1.OIDCConfigTypeInline,
+						Inline: &mcpv1alpha1.InlineOIDCConfig{
+							Issuer:   "https://auth.example.com",
+							Audience: "test-audience",
+							Scopes:   []string{"openid", "profile", "email"},
+						},
+					},
+				},
+			},
+			expected: &OIDCConfig{
+				Issuer:      "https://auth.example.com",
+				Audience:    "test-audience",
+				ResourceURL: "http://scopes-inline-server.test-ns.svc.cluster.local:8080",
+				Scopes:      []string{"openid", "profile", "email"},
 			},
 		},
 		{
@@ -616,6 +750,65 @@ func TestResolve_InlineWithClientSecretRef(t *testing.T) {
 			config, err := resolver.Resolve(context.Background(), tt.mcpServer)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, config)
+		})
+	}
+}
+
+func TestParseCommaSeparatedList(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			name:     "empty string",
+			input:    "",
+			expected: nil,
+		},
+		{
+			name:     "single value",
+			input:    "scope1",
+			expected: []string{"scope1"},
+		},
+		{
+			name:     "multiple values",
+			input:    "scope1,scope2,scope3",
+			expected: []string{"scope1", "scope2", "scope3"},
+		},
+		{
+			name:     "values with whitespace",
+			input:    " scope1 , scope2 , scope3 ",
+			expected: []string{"scope1", "scope2", "scope3"},
+		},
+		{
+			name:     "values with URLs",
+			input:    "https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/documents.readonly",
+			expected: []string{"https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/documents.readonly"},
+		},
+		{
+			name:     "empty values filtered out",
+			input:    "scope1,,scope2,  ,scope3",
+			expected: []string{"scope1", "scope2", "scope3"},
+		},
+		{
+			name:     "only commas and whitespace",
+			input:    ", , ,  ",
+			expected: nil,
+		},
+		{
+			name:     "single whitespace-only value",
+			input:    "   ",
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := parseCommaSeparatedList(tt.input)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }

@@ -153,6 +153,21 @@ func (mr *MockManagerMockRecorder) ListWorkloadsInGroup(ctx, groupName any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWorkloadsInGroup", reflect.TypeOf((*MockManager)(nil).ListWorkloadsInGroup), ctx, groupName)
 }
 
+// ListWorkloadsUsingSecret mocks base method.
+func (m *MockManager) ListWorkloadsUsingSecret(ctx context.Context, secretName string) ([]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ListWorkloadsUsingSecret", ctx, secretName)
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ListWorkloadsUsingSecret indicates an expected call of ListWorkloadsUsingSecret.
+func (mr *MockManagerMockRecorder) ListWorkloadsUsingSecret(ctx, secretName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWorkloadsUsingSecret", reflect.TypeOf((*MockManager)(nil).ListWorkloadsUsingSecret), ctx, secretName)
+}
+
 // MoveToGroup mocks base method.
 func (m *MockManager) MoveToGroup(ctx context.Context, workloadNames []string, groupFrom, groupTo string) error {
 	m.ctrl.T.Helper()

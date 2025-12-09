@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const testAPIEndpoint = "/v0.1/servers"
+
 func TestDetectRegistryType(t *testing.T) { //nolint:tparallel,paralleltest // Cannot use t.Parallel() on subtests using t.Setenv()
 	tests := []struct {
 		name              string
@@ -45,7 +47,8 @@ func TestDetectRegistryType(t *testing.T) { //nolint:tparallel,paralleltest // C
 			expectedType:    RegistryTypeURL,
 			setupMockServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path == "/" {
+					switch r.URL.Path {
+					case "/":
 						// Return valid ToolHive registry JSON
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(map[string]interface{}{
@@ -56,25 +59,28 @@ func TestDetectRegistryType(t *testing.T) { //nolint:tparallel,paralleltest // C
 								},
 							},
 						})
-					} else {
-						http.NotFound(w, r)
+					default:
+						// Return 404 for API endpoint and any other path
+						w.WriteHeader(http.StatusNotFound)
 					}
 				}))
 			},
 		},
 		{
-			name:            "URL without .json but has openapi.yaml (API endpoint)",
+			name:            "URL without .json but has /v0.1/servers (API endpoint)",
 			allowPrivateIPs: true,
 			expectedType:    RegistryTypeAPI,
 			setupMockServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					switch r.URL.Path {
-					case "/openapi.yaml":
-						// Return OpenAPI spec for both GET and HEAD requests
-						w.Header().Set("Content-Type", "text/yaml")
+					case testAPIEndpoint:
+						// Return success for MCP Registry API endpoint
+						w.Header().Set("Content-Type", "application/json")
 						w.WriteHeader(http.StatusOK)
 						if r.Method == http.MethodGet {
-							w.Write([]byte("openapi: 3.0.0\n"))
+							json.NewEncoder(w).Encode(map[string]interface{}{
+								"servers": []interface{}{},
+							})
 						}
 					case "/":
 						// Return non-JSON response
@@ -106,7 +112,8 @@ func TestDetectRegistryType(t *testing.T) { //nolint:tparallel,paralleltest // C
 			expectedType:    RegistryTypeURL,
 			setupMockServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path == "/" {
+					switch r.URL.Path {
+					case "/":
 						// Return valid ToolHive registry JSON with remoteServers
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(map[string]interface{}{
@@ -117,8 +124,9 @@ func TestDetectRegistryType(t *testing.T) { //nolint:tparallel,paralleltest // C
 								},
 							},
 						})
-					} else {
-						http.NotFound(w, r)
+					default:
+						// Return 404 for API endpoint and any other path
+						w.WriteHeader(http.StatusNotFound)
 					}
 				}))
 			},
@@ -275,30 +283,41 @@ func TestProbeRegistryURL(t *testing.T) { //nolint:tparallel,paralleltest // Can
 			allowPrivateIPs: true,
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path == "/" {
+					switch r.URL.Path {
+					case "/":
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(map[string]interface{}{
 							"servers": map[string]interface{}{},
 						})
+					default:
+						// Return 404 for API endpoint and any other path
+						w.WriteHeader(http.StatusNotFound)
 					}
 				}))
 			},
 			expectedType: RegistryTypeURL,
 		},
 		{
-			name:            "API with openapi.yaml - should return RegistryTypeAPI",
+			name:            "API with /v0.1/servers - should return RegistryTypeAPI",
 			allowPrivateIPs: true,
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					switch r.URL.Path {
-					case "/openapi.yaml":
+					case testAPIEndpoint:
 						// Support both HEAD and GET
 						w.WriteHeader(http.StatusOK)
-						w.Write([]byte("openapi: 3.0.0\n"))
+						if r.Method == http.MethodGet {
+							w.Header().Set("Content-Type", "application/json")
+							json.NewEncoder(w).Encode(map[string]interface{}{
+								"servers": []interface{}{},
+							})
+						}
 					case "/":
-						// Return invalid JSON to trigger openapi.yaml check
+						// Return invalid JSON to trigger API endpoint check
 						w.Header().Set("Content-Type", "text/html")
 						w.Write([]byte("<html>API</html>"))
+					default:
+						http.NotFound(w, r)
 					}
 				}))
 			},

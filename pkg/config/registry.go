@@ -44,7 +44,7 @@ func DetectRegistryType(input string, allowPrivateIPs bool) (registryType string
 }
 
 // probeRegistryURL attempts to determine if a URL is a static JSON file or an API endpoint
-// by checking if the URL returns valid ToolHive registry JSON or has an /openapi.yaml endpoint.
+// by checking if the MCP Registry API endpoint (/v0.1/servers) exists.
 func probeRegistryURL(url string, allowPrivateIPs bool) string {
 	// Create HTTP client for probing with user's private IP preference
 	client, err := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateIPs).Build()
@@ -53,22 +53,25 @@ func probeRegistryURL(url string, allowPrivateIPs bool) string {
 		return RegistryTypeURL
 	}
 
-	// First, try to fetch and parse as ToolHive registry JSON
-	if isValidRegistryJSON(client, url) {
-		return RegistryTypeURL
-	}
-
-	// If not valid JSON, check for /openapi.yaml endpoint (MCP Registry API)
-	openapiURL, err := neturl.JoinPath(url, "openapi.yaml")
+	// Check if the MCP Registry API endpoint exists
+	apiURL, err := neturl.JoinPath(url, "/v0.1/servers")
 	if err == nil {
-		resp, err := client.Head(openapiURL)
+		resp, err := client.Head(apiURL)
 		if err == nil {
 			_ = resp.Body.Close()
-			// If openapi.yaml exists (200 OK), treat as API endpoint
-			if resp.StatusCode == http.StatusOK {
+			// If API endpoint returns 2xx or 401/403 (auth errors), it's an API
+			// 404 means endpoint doesn't exist, 5xx means server error
+			if (resp.StatusCode >= 200 && resp.StatusCode < 300) ||
+				resp.StatusCode == http.StatusUnauthorized ||
+				resp.StatusCode == http.StatusForbidden {
 				return RegistryTypeAPI
 			}
 		}
+	}
+
+	// If no API endpoint found, check if it's valid registry JSON
+	if isValidRegistryJSON(client, url) {
+		return RegistryTypeURL
 	}
 
 	// Default to static JSON file (validation will catch errors later)
@@ -181,19 +184,14 @@ func setRegistryAPI(provider Provider, apiURL string, allowPrivateRegistryIp boo
 		}
 	}
 
+	// Validate that the URL is accessible if not allowing private IPs
 	if !allowPrivateRegistryIp {
 		registryClient, err := networking.NewHttpClientBuilder().Build()
 		if err != nil {
 			return fmt.Errorf("failed to create HTTP client: %w", err)
 		}
-		// Try to fetch the /openapi.yaml endpoint to validate
-		// Use JoinPath for safe URL construction
-		openapiURL, err := neturl.JoinPath(apiURL, "openapi.yaml")
-		if err != nil {
-			return fmt.Errorf("failed to construct OpenAPI URL: %w", err)
-		}
-		// #nosec G107 -- URL is validated above and path is a constant
-		_, err = registryClient.Get(openapiURL)
+		// Just check the base URL is accessible (don't require specific endpoints)
+		_, err = registryClient.Head(apiURL)
 		if err != nil && strings.Contains(fmt.Sprint(err), networking.ErrPrivateIpAddress) {
 			return err
 		}

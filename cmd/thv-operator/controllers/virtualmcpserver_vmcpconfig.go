@@ -25,7 +25,7 @@ import (
 func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	workloadInfos []workloads.TypedWorkload,
+	typedWorkloads []workloads.TypedWorkload,
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
@@ -47,7 +47,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	// ExternalAuthConfig from MCPServers in the ConfigMap
 	if config.OutgoingAuth != nil && config.OutgoingAuth.Source == "discovered" {
 		// Build discovered OutgoingAuthConfig using the provided workload infos
-		discoveredAuthConfig, err := r.buildOutgoingAuthConfig(ctx, vmcp, workloadInfos)
+		discoveredAuthConfig, err := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
 		if err != nil {
 			ctxLogger.V(1).Info("Failed to build discovered auth config, using spec-only config",
 				"error", err)

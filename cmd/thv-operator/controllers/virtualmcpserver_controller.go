@@ -811,7 +811,7 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	workloadInfos []workloads.TypedWorkload,
+	typedWorkloads []workloads.TypedWorkload,
 ) bool {
 	if deployment == nil || vmcp == nil || len(deployment.Spec.Template.Spec.Containers) == 0 {
 		return true
@@ -837,7 +837,7 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	}
 
 	// Check if environment variables have changed
-	expectedEnv := r.buildEnvVarsForVmcp(ctx, vmcp, workloadInfos)
+	expectedEnv := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
 	if !reflect.DeepEqual(container.Env, expectedEnv) {
 		return true
 	}
@@ -917,7 +917,7 @@ func (r *VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	workloadInfos []workloads.TypedWorkload,
+	typedWorkloads []workloads.TypedWorkload,
 ) bool {
 	if deployment == nil || vmcp == nil {
 		return true
@@ -936,7 +936,7 @@ func (r *VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 	}
 
 	// Generate a fresh deployment with PodTemplateSpec applied
-	expectedDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, workloadInfos)
+	expectedDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, typedWorkloads)
 	if expectedDeployment == nil {
 		// If we can't generate expected deployment, assume update is needed
 		return true
@@ -1342,40 +1342,63 @@ func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
 	}, nil
 }
 
+// listMCPServersAsMap lists all MCPServers in the namespace and returns a map by name.
+func (r *VirtualMCPServerReconciler) listMCPServersAsMap(
+	ctx context.Context,
+	namespace string,
+) (map[string]*mcpv1alpha1.MCPServer, error) {
+	mcpServerList := &mcpv1alpha1.MCPServerList{}
+	if err := r.List(ctx, mcpServerList, client.InNamespace(namespace)); err != nil {
+		return nil, err
+	}
+	mcpServerMap := make(map[string]*mcpv1alpha1.MCPServer, len(mcpServerList.Items))
+	for i := range mcpServerList.Items {
+		mcpServerMap[mcpServerList.Items[i].Name] = &mcpServerList.Items[i]
+	}
+	return mcpServerMap, nil
+}
+
+// listMCPRemoteProxiesAsMap lists all MCPRemoteProxies in the namespace and returns a map by name.
+func (r *VirtualMCPServerReconciler) listMCPRemoteProxiesAsMap(
+	ctx context.Context,
+	namespace string,
+) (map[string]*mcpv1alpha1.MCPRemoteProxy, error) {
+	mcpRemoteProxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+	if err := r.List(ctx, mcpRemoteProxyList, client.InNamespace(namespace)); err != nil {
+		return nil, err
+	}
+	mcpRemoteProxyMap := make(map[string]*mcpv1alpha1.MCPRemoteProxy, len(mcpRemoteProxyList.Items))
+	for i := range mcpRemoteProxyList.Items {
+		mcpRemoteProxyMap[mcpRemoteProxyList.Items[i].Name] = &mcpRemoteProxyList.Items[i]
+	}
+	return mcpRemoteProxyMap, nil
+}
+
 // discovers ExternalAuthConfig from workloads and adds them to the outgoing config
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	workloadInfos []workloads.TypedWorkload,
+	typedWorkloads []workloads.TypedWorkload,
 	outgoing *vmcpconfig.OutgoingAuthConfig,
 ) {
 	ctxLogger := log.FromContext(ctx)
 
-	for _, workloadInfo := range workloadInfos {
-		var externalAuthConfigName string
+	mcpServerMap, err := r.listMCPServersAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list MCPServers")
+		return
+	}
 
-		switch workloadInfo.Type {
-		case workloads.WorkloadTypeMCPServer:
-			mcpServer := &mcpv1alpha1.MCPServer{}
-			if err := r.Get(ctx, types.NamespacedName{Name: workloadInfo.Name, Namespace: vmcp.Namespace}, mcpServer); err != nil {
-				continue
-			}
-			if mcpServer.Spec.ExternalAuthConfigRef == nil {
-				continue
-			}
-			externalAuthConfigName = mcpServer.Spec.ExternalAuthConfigRef.Name
+	mcpRemoteProxyMap, err := r.listMCPRemoteProxiesAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list MCPRemoteProxies")
+		return
+	}
 
-		case workloads.WorkloadTypeMCPRemoteProxy:
-			mcpRemoteProxy := &mcpv1alpha1.MCPRemoteProxy{}
-			if err := r.Get(ctx, types.NamespacedName{Name: workloadInfo.Name, Namespace: vmcp.Namespace}, mcpRemoteProxy); err != nil {
-				continue
-			}
-			if mcpRemoteProxy.Spec.ExternalAuthConfigRef == nil {
-				continue
-			}
-			externalAuthConfigName = mcpRemoteProxy.Spec.ExternalAuthConfigRef.Name
-
-		default:
+	for _, workloadInfo := range typedWorkloads {
+		externalAuthConfigName := r.getExternalAuthConfigNameFromWorkload(
+			workloadInfo, mcpServerMap, mcpRemoteProxyMap)
+		if externalAuthConfigName == "" {
 			continue
 		}
 
@@ -1410,12 +1433,38 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 	}
 }
 
+// getExternalAuthConfigNameFromWorkload extracts the ExternalAuthConfigRef name from a workload.
+func (*VirtualMCPServerReconciler) getExternalAuthConfigNameFromWorkload(
+	workloadInfo workloads.TypedWorkload,
+	mcpServerMap map[string]*mcpv1alpha1.MCPServer,
+	mcpRemoteProxyMap map[string]*mcpv1alpha1.MCPRemoteProxy,
+) string {
+	switch workloadInfo.Type {
+	case workloads.WorkloadTypeMCPServer:
+		mcpServer, found := mcpServerMap[workloadInfo.Name]
+		if !found || mcpServer.Spec.ExternalAuthConfigRef == nil {
+			return ""
+		}
+		return mcpServer.Spec.ExternalAuthConfigRef.Name
+
+	case workloads.WorkloadTypeMCPRemoteProxy:
+		mcpRemoteProxy, found := mcpRemoteProxyMap[workloadInfo.Name]
+		if !found || mcpRemoteProxy.Spec.ExternalAuthConfigRef == nil {
+			return ""
+		}
+		return mcpRemoteProxy.Spec.ExternalAuthConfigRef.Name
+
+	default:
+		return ""
+	}
+}
+
 // buildOutgoingAuthConfig builds an OutgoingAuthConfig from the VirtualMCPServer spec,
 // discovering ExternalAuthConfig from MCPServers when source is "discovered".
 func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	workloadInfos []workloads.TypedWorkload,
+	typedWorkloads []workloads.TypedWorkload,
 ) (*vmcpconfig.OutgoingAuthConfig, error) {
 	// Determine source - default to "discovered" if not specified
 	source := OutgoingAuthSourceDiscovered
@@ -1439,7 +1488,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 
 	// Discover ExternalAuthConfig from MCPServers if source is "discovered"
 	if source == OutgoingAuthSourceDiscovered {
-		r.discoverExternalAuthConfigs(ctx, vmcp, workloadInfos, outgoing)
+		r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
 	}
 
 	// Apply inline overrides (works for all source modes)
@@ -1508,6 +1557,17 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 		discoveredBackendMap[backends[i].Name] = &backends[i]
 	}
 
+	// Build maps of MCPServers and MCPRemoteProxies for efficient lookup
+	mcpServerMap, err := r.listMCPServersAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
+	}
+
+	mcpRemoteProxyMap, err := r.listMCPRemoteProxiesAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
+	}
+
 	discoveredBackends := make([]mcpv1alpha1.DiscoveredBackend, 0, len(typedWorkloads))
 	now := metav1.Now()
 
@@ -1541,13 +1601,12 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 		}
 
 		// Extract auth config reference and check workload phase based on workload type
-		// (Backend.AuthMetadata is populated later by aggregator, so we query the CRD directly)
+		// Using pre-fetched maps instead of individual Get calls
 		authConfigRef := ""
 		authType := ""
 		switch workloadInfo.Type {
 		case workloads.WorkloadTypeMCPServer:
-			mcpServer := &mcpv1alpha1.MCPServer{}
-			if err := r.Get(ctx, types.NamespacedName{Name: workloadInfo.Name, Namespace: vmcp.Namespace}, mcpServer); err == nil {
+			if mcpServer, found := mcpServerMap[workloadInfo.Name]; found {
 				if mcpServer.Spec.ExternalAuthConfigRef != nil {
 					authConfigRef = mcpServer.Spec.ExternalAuthConfigRef.Name
 					authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef
@@ -1563,8 +1622,7 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 				}
 			}
 		case workloads.WorkloadTypeMCPRemoteProxy:
-			mcpRemoteProxy := &mcpv1alpha1.MCPRemoteProxy{}
-			if err := r.Get(ctx, types.NamespacedName{Name: workloadInfo.Name, Namespace: vmcp.Namespace}, mcpRemoteProxy); err == nil {
+			if mcpRemoteProxy, found := mcpRemoteProxyMap[workloadInfo.Name]; found {
 				if mcpRemoteProxy.Spec.ExternalAuthConfigRef != nil {
 					authConfigRef = mcpRemoteProxy.Spec.ExternalAuthConfigRef.Name
 					authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef

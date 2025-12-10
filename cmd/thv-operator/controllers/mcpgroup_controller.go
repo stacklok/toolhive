@@ -130,6 +130,9 @@ func (r *MCPGroupReconciler) updateGroupMemberStatus(
 		return ctrl.Result{}, err
 	}
 
+	ctxLogger.Info("Successfully reconciled MCPGroup",
+		"serverCount", mcpGroup.Status.ServerCount,
+		"remoteProxyCount", mcpGroup.Status.RemoteProxyCount)
 	return ctrl.Result{}, nil
 }
 

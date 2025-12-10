@@ -421,7 +421,9 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 	return nil
 }
 
-// validateGroupRef validates the GroupRef field of the MCPRemoteProxy
+// validateGroupRef validates the GroupRef field of the MCPRemoteProxy.
+// This function only sets conditions on the proxy object - the caller is responsible
+// for persisting the status update to avoid multiple conflicting status updates.
 func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) {
 	if proxy.Spec.GroupRef == "" {
 		// No group reference, nothing to validate
@@ -457,10 +459,6 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", proxy.Spec.GroupRef),
 			ObservedGeneration: proxy.Generation,
 		})
-	}
-
-	if err := r.Status().Update(ctx, proxy); err != nil {
-		ctxLogger.Error(err, "Failed to update MCPRemoteProxy status after GroupRef validation")
 	}
 }
 

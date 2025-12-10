@@ -44,7 +44,7 @@ func DetectRegistryType(input string, allowPrivateIPs bool) (registryType string
 }
 
 // probeRegistryURL attempts to determine if a URL is a static JSON file or an API endpoint
-// by checking if the MCP Registry API endpoint (/v0.1/servers) exists.
+// by checking if the MCP Registry API endpoint (/v0.1/servers) exists and returns valid API responses.
 func probeRegistryURL(url string, allowPrivateIPs bool) string {
 	// Create HTTP client for probing with user's private IP preference
 	client, err := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateIPs).Build()
@@ -53,17 +53,28 @@ func probeRegistryURL(url string, allowPrivateIPs bool) string {
 		return RegistryTypeURL
 	}
 
-	// Check if the MCP Registry API endpoint exists
+	// Check if the MCP Registry API endpoint exists by trying a lightweight GET request
+	// Note: We use GET instead of HEAD because some API implementations don't support HEAD
 	apiURL, err := neturl.JoinPath(url, "/v0.1/servers")
 	if err == nil {
-		resp, err := client.Head(apiURL)
+		// Add query parameters to minimize response size
+		params := neturl.Values{}
+		params.Add("limit", "1")
+		params.Add("version", "latest")
+		fullAPIURL := fmt.Sprintf("%s?%s", apiURL, params.Encode())
+
+		resp, err := client.Get(fullAPIURL)
 		if err == nil {
-			_ = resp.Body.Close()
+			defer resp.Body.Close()
 			// If API endpoint returns 2xx or 401/403 (auth errors), it's an API
-			// 404 means endpoint doesn't exist, 5xx means server error
-			if (resp.StatusCode >= 200 && resp.StatusCode < 300) ||
-				resp.StatusCode == http.StatusUnauthorized ||
-				resp.StatusCode == http.StatusForbidden {
+			// 404 means endpoint doesn't exist, 405 means method not supported, 5xx means server error
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				// Verify the response looks like an API response
+				if isValidAPIResponse(resp) {
+					return RegistryTypeAPI
+				}
+			} else if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+				// Auth errors indicate an API endpoint (it exists but requires auth)
 				return RegistryTypeAPI
 			}
 		}
@@ -76,6 +87,43 @@ func probeRegistryURL(url string, allowPrivateIPs bool) string {
 
 	// Default to static JSON file (validation will catch errors later)
 	return RegistryTypeURL
+}
+
+// isValidAPIResponse checks if an HTTP response contains a valid MCP Registry API response
+// by verifying the JSON structure matches the expected API format (ServerListResponse).
+func isValidAPIResponse(resp *http.Response) bool {
+	// Check Content-Type header
+	contentType := resp.Header.Get("Content-Type")
+	if !strings.Contains(contentType, "application/json") {
+		return false
+	}
+
+	// Try to parse as MCP Registry API response structure
+	var data map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return false
+	}
+
+	// Check for API-specific structure (servers array and metadata object)
+	servers, hasServers := data["servers"]
+	metadata, hasMetadata := data["metadata"]
+
+	// Valid API response should have both 'servers' (array) and 'metadata' (object)
+	if !hasServers || !hasMetadata {
+		return false
+	}
+
+	// Verify servers is an array
+	if _, ok := servers.([]interface{}); !ok {
+		return false
+	}
+
+	// Verify metadata is an object
+	if _, ok := metadata.(map[string]interface{}); !ok {
+		return false
+	}
+
+	return true
 }
 
 // isValidRegistryJSON checks if a URL returns valid ToolHive registry JSON

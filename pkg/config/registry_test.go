@@ -78,8 +78,12 @@ func TestDetectRegistryType(t *testing.T) { //nolint:tparallel,paralleltest // C
 						w.Header().Set("Content-Type", "application/json")
 						w.WriteHeader(http.StatusOK)
 						if r.Method == http.MethodGet {
+							// Return proper MCP Registry API response structure
 							json.NewEncoder(w).Encode(map[string]interface{}{
 								"servers": []interface{}{},
+								"metadata": map[string]interface{}{
+									"nextCursor": "",
+								},
 							})
 						}
 					case "/":
@@ -304,17 +308,24 @@ func TestProbeRegistryURL(t *testing.T) { //nolint:tparallel,paralleltest // Can
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					switch r.URL.Path {
 					case testAPIEndpoint:
-						// Support both HEAD and GET
-						w.WriteHeader(http.StatusOK)
+						// Support GET with proper API response structure
 						if r.Method == http.MethodGet {
 							w.Header().Set("Content-Type", "application/json")
+							w.WriteHeader(http.StatusOK)
+							// Return proper MCP Registry API response structure
 							json.NewEncoder(w).Encode(map[string]interface{}{
 								"servers": []interface{}{},
+								"metadata": map[string]interface{}{
+									"nextCursor": "",
+								},
 							})
+						} else {
+							w.WriteHeader(http.StatusMethodNotAllowed)
 						}
 					case "/":
 						// Return invalid JSON to trigger API endpoint check
 						w.Header().Set("Content-Type", "text/html")
+						w.WriteHeader(http.StatusOK)
 						w.Write([]byte("<html>API</html>"))
 					default:
 						http.NotFound(w, r)

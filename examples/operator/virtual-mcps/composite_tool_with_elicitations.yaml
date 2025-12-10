@@ -1,0 +1,361 @@
+# Example: VirtualMCPCompositeToolDefinition with Elicitations
+#
+# This example demonstrates a composite tool workflow with elicitation steps:
+# - User interaction via elicitation steps (prompt for input/confirmation)
+# - OnDecline and OnCancel handlers for user responses
+# - Conditional execution based on user choices
+# - Integration of user input into subsequent tool calls
+#
+# Use case: Deploy an application with user confirmation and environment selection
+#
+# Workflow:
+# 1. Build the application
+# 2. Ask user to confirm deployment (with OnDecline handler)
+# 3. Ask user to select environment (with OnCancel handler)
+# 4. Deploy to selected environment
+# 5. Send notification
+#
+# Prerequisites:
+# - None! All required backend MCPServers are included in this file
+#
+# Usage:
+#   kubectl apply -f composite_tool_with_elicitations.yaml
+
+---
+# Create MCPGroup
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: deployment-services
+  namespace: default
+spec:
+  description: Services for deployment workflows with user interaction
+
+---
+# Backend MCP Server: Yardstick Streamable (provides echo tool)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: yardstick-streamable
+  namespace: default
+spec:
+  groupRef: deployment-services
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: streamable-http
+  env:
+  - name: TRANSPORT
+    value: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Composite Tool Definition with Elicitations
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPCompositeToolDefinition
+metadata:
+  name: interactive-deploy
+  namespace: default
+spec:
+  name: interactive_deployment
+  description: |
+    Interactive deployment workflow with user confirmations:
+    - Build the application
+    - Request user confirmation to proceed
+    - Allow user to select target environment
+    - Deploy to selected environment
+    - Send deployment notification
+
+  # Total workflow timeout (including time for user responses)
+  timeout: 30m
+
+  # Abort on first failure for safety
+  failureMode: abort
+
+  # Input parameters schema (for demonstration purposes only)
+  parameters:
+    type: object
+    properties:
+      confirm:
+        type: boolean
+        description: Dummy parameter to trigger workflow
+        default: true
+
+  steps:
+    # ============================================
+    # Step 1: Build Application
+    # ============================================
+    - id: build_app
+      type: tool
+      tool: yardstick-streamable_echo
+      arguments:
+        input: "BuildingApplicationNow"
+      timeout: 5m
+      onError:
+        action: abort
+
+    # ============================================
+    # Step 2: Elicitation - Confirm Deployment
+    # ============================================
+    # Ask user if they want to proceed with deployment
+    - id: confirm_deployment
+      type: elicitation
+      message: "Application built successfully. Do you want to proceed with deployment?"
+
+      # Schema for user response (boolean confirmation)
+      schema:
+        type: object
+        properties:
+          proceed:
+            type: boolean
+            description: Confirm deployment
+        required:
+          - proceed
+
+      dependsOn:
+        - build_app
+
+      timeout: 10m
+
+      # If user declines, skip remaining deployment steps
+      onDecline:
+        action: skip_remaining
+
+      # If user cancels, abort the entire workflow
+      onCancel:
+        action: abort
+
+    # ============================================
+    # Step 3: Elicitation - Select Environment
+    # ============================================
+    # Ask user to select the deployment environment
+    - id: select_environment
+      type: elicitation
+      message: "Please select the target deployment environment (staging or production)"
+
+      # Schema for environment selection
+      schema:
+        type: object
+        properties:
+          environment:
+            type: string
+            enum:
+              - staging
+              - production
+            description: Target deployment environment
+        required:
+          - environment
+
+      dependsOn:
+        - confirm_deployment
+
+      timeout: 5m
+
+      # If user declines environment selection, continue with default (staging)
+      onDecline:
+        action: continue
+
+      # If user cancels, abort the workflow
+      onCancel:
+        action: abort
+
+    # ============================================
+    # Step 4: Deploy Application
+    # ============================================
+    # Deploy to the selected environment using user's choice
+    - id: deploy_app
+      type: tool
+      tool: yardstick-streamable_echo
+      arguments:
+        input: "DeployingToEnvironmentNow"
+      dependsOn:
+        - select_environment
+      timeout: 15m
+      onError:
+        action: retry
+        maxRetries: 2
+        retryDelay: 30s
+
+    # ============================================
+    # Step 5: Send Notification
+    # ============================================
+    # Notify about successful deployment
+    - id: send_notification
+      type: tool
+      tool: yardstick-streamable_echo
+      arguments:
+        input: "DeploymentCompletedSuccessfully"
+      dependsOn:
+        - deploy_app
+      timeout: 1m
+
+---
+# VirtualMCPServer using the interactive composite tool
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: vmcp-interactive-deploy
+  namespace: default
+spec:
+  groupRef:
+    name: deployment-services
+
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          # Allow any principal to use the interactive deployment tool
+          - 'permit(principal, action, resource);'
+
+  outgoingAuth:
+    source: discovered
+
+  # Reference the composite tool definition with elicitations
+  compositeToolRefs:
+    - name: interactive-deploy
+
+  # Conflict resolution for backend tools
+  aggregation:
+    conflictResolution: prefix
+    conflictResolutionConfig:
+      prefixFormat: "{workload}_"
+
+  operational:
+    timeouts:
+      default: 30m
+    failureHandling:
+      healthCheckInterval: 30s
+      unhealthyThreshold: 3
+      partialFailureMode: fail
+
+---
+# Example usage from MCP client:
+#
+# 1. Initial call to start the composite tool:
+# {
+#   "jsonrpc": "2.0",
+#   "method": "tools/call",
+#   "params": {
+#     "name": "interactive_deployment",
+#     "arguments": {
+#       "application_name": "my-api",
+#       "version": "v1.2.3"
+#     }
+#   },
+#   "id": 1
+# }
+#
+# 2. Virtual MCP will execute the build step, then return an elicitation request:
+# {
+#   "jsonrpc": "2.0",
+#   "result": {
+#     "type": "elicitation",
+#     "stepId": "confirm_deployment",
+#     "message": "Application my-api v1.2.3 has been built successfully...",
+#     "schema": {
+#       "type": "object",
+#       "properties": {
+#         "proceed": {
+#           "type": "boolean",
+#           "description": "Confirm deployment"
+#         }
+#       }
+#     }
+#   },
+#   "id": 1
+# }
+#
+# 3. Client responds to elicitation (accept):
+# {
+#   "jsonrpc": "2.0",
+#   "method": "tools/elicitation/response",
+#   "params": {
+#     "stepId": "confirm_deployment",
+#     "action": "accept",
+#     "content": {
+#       "proceed": true
+#     }
+#   },
+#   "id": 2
+# }
+#
+# 4. Virtual MCP continues with next elicitation (environment selection):
+# {
+#   "jsonrpc": "2.0",
+#   "result": {
+#     "type": "elicitation",
+#     "stepId": "select_environment",
+#     "message": "Please select the target environment...",
+#     "schema": {
+#       "type": "object",
+#       "properties": {
+#         "environment": {
+#           "type": "string",
+#           "enum": ["staging", "production"]
+#         }
+#       }
+#     }
+#   },
+#   "id": 2
+# }
+#
+# 5. Client responds with environment choice:
+# {
+#   "jsonrpc": "2.0",
+#   "method": "tools/elicitation/response",
+#   "params": {
+#     "stepId": "select_environment",
+#     "action": "accept",
+#     "content": {
+#       "environment": "staging"
+#     }
+#   },
+#   "id": 3
+# }
+#
+# 6. Virtual MCP completes deployment and returns final result:
+# {
+#   "jsonrpc": "2.0",
+#   "result": {
+#     "content": [
+#       {
+#         "type": "text",
+#         "text": "✓ Deployment Successful\n\nApplication: my-api\nVersion: v1.2.3\nEnvironment: staging\n..."
+#       }
+#     ],
+#     "isError": false
+#   },
+#   "id": 3
+# }
+#
+# Note: User can also respond with "decline" or "cancel" actions:
+#
+# Decline example (triggers onDecline handler):
+# {
+#   "jsonrpc": "2.0",
+#   "method": "tools/elicitation/response",
+#   "params": {
+#     "stepId": "confirm_deployment",
+#     "action": "decline"
+#   },
+#   "id": 2
+# }
+#
+# Cancel example (triggers onCancel handler):
+# {
+#   "jsonrpc": "2.0",
+#   "method": "tools/elicitation/response",
+#   "params": {
+#     "stepId": "select_environment",
+#     "action": "cancel"
+#   },
+#   "id": 3
+# }

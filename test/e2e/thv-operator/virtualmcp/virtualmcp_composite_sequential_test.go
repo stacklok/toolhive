@@ -212,6 +212,8 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 			Expect(err).ToNot(HaveOccurred(), "Composite tool call should succeed")
 			Expect(result).ToNot(BeNil())
 			Expect(result.Content).ToNot(BeEmpty(), "Should have content in response")
+			Expect(result.Content).ToNot(ContainSubstring("<no value>"))
+			Expect(result.Content).To(ContainSubstring(testMessage))
 
 			// The result should reflect the sequential execution
 			// First echo: echoes testMessage

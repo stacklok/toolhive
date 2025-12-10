@@ -517,8 +517,9 @@ func TestAddMetadata(t *testing.T) {
 		ResponseWriter: httptest.NewRecorder(),
 		body:           bytes.NewBufferString("test response"),
 	}
+	req := httptest.NewRequest("GET", "/test", nil)
 
-	auditor.addMetadata(event, duration, rw)
+	auditor.addMetadata(event, req, duration, rw)
 
 	require.NotNil(t, event.Metadata.Extra)
 	assert.Equal(t, int64(150), event.Metadata.Extra[MetadataExtraKeyDuration])

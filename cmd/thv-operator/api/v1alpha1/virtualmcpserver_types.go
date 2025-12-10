@@ -296,6 +296,16 @@ type WorkflowStep struct {
 	// +kubebuilder:validation:Type=object
 	Schema *runtime.RawExtension `json:"schema,omitempty"`
 
+	// OnDecline defines the action to take when the user explicitly declines the elicitation
+	// Only used when Type is "elicitation"
+	// +optional
+	OnDecline *ElicitationResponseHandler `json:"onDecline,omitempty"`
+
+	// OnCancel defines the action to take when the user cancels/dismisses the elicitation
+	// Only used when Type is "elicitation"
+	// +optional
+	OnCancel *ElicitationResponseHandler `json:"onCancel,omitempty"`
+
 	// DependsOn lists step IDs that must complete before this step
 	// +optional
 	DependsOn []string `json:"dependsOn,omitempty"`
@@ -331,6 +341,18 @@ type ErrorHandling struct {
 	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ms|s|m))+$`
 	// +optional
 	RetryDelay string `json:"retryDelay,omitempty"`
+}
+
+// ElicitationResponseHandler defines how to handle user responses to elicitation requests
+type ElicitationResponseHandler struct {
+	// Action defines the action to take when the user declines or cancels
+	// - skip_remaining: Skip remaining steps in the workflow
+	// - abort: Abort the entire workflow execution
+	// - continue: Continue to the next step
+	// +kubebuilder:validation:Enum=skip_remaining;abort;continue
+	// +kubebuilder:default=abort
+	// +optional
+	Action string `json:"action,omitempty"`
 }
 
 // OperationalConfig defines operational settings

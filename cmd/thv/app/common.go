@@ -20,6 +20,8 @@ func AddOIDCFlags(cmd *cobra.Command) {
 	cmd.Flags().String("oidc-introspection-url", "", "URL for token introspection endpoint")
 	cmd.Flags().String("oidc-client-id", "", "OIDC client ID")
 	cmd.Flags().String("oidc-client-secret", "", "OIDC client secret (optional, for introspection)")
+	cmd.Flags().StringSlice("oidc-scopes", nil,
+		"OAuth scopes to advertise in the well-known endpoint (RFC 9728, defaults to 'openid' if not specified)")
 }
 
 // GetStringFlagOrEmpty tries to get the string value of the given flag.

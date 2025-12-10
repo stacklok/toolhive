@@ -105,6 +105,7 @@ thv proxy [flags] SERVER_NAME
       --oidc-introspection-url string              URL for token introspection endpoint
       --oidc-issuer string                         OIDC issuer URL (e.g., https://accounts.google.com)
       --oidc-jwks-url string                       URL to fetch the JWKS from
+      --oidc-scopes strings                        OAuth scopes to advertise in the well-known endpoint (RFC 9728, defaults to 'openid' if not specified)
       --port int                                   Port for the HTTP proxy to listen on (host port)
       --remote-auth                                Enable OAuth/OIDC authentication to remote MCP server
       --remote-auth-authorize-url string           OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)

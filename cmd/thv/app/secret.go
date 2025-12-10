@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
 func newSecretCommand() *cobra.Command {
@@ -180,6 +182,9 @@ Note that some providers (like 1Password) are read-only and do not support setti
 				return
 			}
 			fmt.Printf("Secret %s set successfully\n", name)
+
+			// Warn if any workloads use this secret
+			warnWorkloadsUsingSecret(ctx, name)
 		},
 	}
 }
@@ -258,6 +263,9 @@ If your provider is read-only or doesn't support deletion, this command returns 
 				fmt.Fprintf(os.Stderr, "Error: The %s secrets provider does not support deleting secrets\n", providerType)
 				return
 			}
+
+			// Warn about affected workloads before deleting
+			warnWorkloadsUsingSecret(ctx, name)
 
 			err = manager.DeleteSecret(ctx, name)
 			if err != nil {
@@ -450,4 +458,28 @@ This provider is read-only and suitable for CI/CD and containerized environments
 	}
 
 	return nil
+}
+
+// warnWorkloadsUsingSecret checks if any workloads use the specified secret
+// and prints a warning message if so.
+func warnWorkloadsUsingSecret(ctx context.Context, secretName string) {
+	manager, err := workloads.NewManager(ctx)
+	if err != nil {
+		// If we can't create the manager, skip the warning silently
+		// This can happen if no container runtime is available
+		return
+	}
+
+	affectedWorkloads, err := manager.ListWorkloadsUsingSecret(ctx, secretName)
+	if err != nil {
+		// If we can't list workloads, skip the warning silently
+		return
+	}
+
+	if len(affectedWorkloads) > 0 {
+		fmt.Fprintf(os.Stderr, "\nWarning: The following MCP servers use this secret and may need to be restarted:\n")
+		for _, name := range affectedWorkloads {
+			fmt.Fprintf(os.Stderr, "  - %s\n", name)
+		}
+	}
 }

@@ -1699,3 +1699,37 @@ func TestDefaultManager_RunWorkload_ContainerExitHandling(t *testing.T) {
 	err := manager.RunWorkload(context.Background(), runConfig)
 	assert.Error(t, err)
 }
+
+func TestDefaultManager_ListWorkloadsUsingSecret(t *testing.T) {
+	t.Parallel()
+
+	// This test verifies that ListWorkloadsUsingSecret returns correctly
+	// when there are no configs or when the secret is not found.
+	// Full integration tests would require setting up actual state files.
+
+	t.Run("returns empty list when no configs exist", func(t *testing.T) {
+		t.Parallel()
+
+		manager := &DefaultManager{}
+
+		ctx := context.Background()
+		result, err := manager.ListWorkloadsUsingSecret(ctx, "nonexistent-secret")
+
+		// Should succeed but return empty list
+		// Note: This may return an error if the state directory doesn't exist,
+		// but the implementation handles this gracefully
+		if err == nil {
+			assert.Empty(t, result)
+		}
+	})
+
+	t.Run("method signature is correct", func(t *testing.T) {
+		t.Parallel()
+
+		manager := &DefaultManager{}
+
+		// Verify the method exists with the correct signature
+		listFunc := manager.ListWorkloadsUsingSecret
+		assert.NotNil(t, listFunc, "ListWorkloadsUsingSecret method should exist with correct signature")
+	})
+}

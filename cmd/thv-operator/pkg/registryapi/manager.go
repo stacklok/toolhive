@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
@@ -17,9 +18,9 @@ import (
 
 // manager implements the Manager interface
 type manager struct {
-	client              client.Client
-	scheme              *runtime.Scheme
-	pgpassSecretManager PGPassSecretManager
+	client     client.Client
+	scheme     *runtime.Scheme
+	kubeClient *kubernetes.Client
 }
 
 // NewManager creates a new registry API manager
@@ -27,24 +28,10 @@ func NewManager(
 	k8sClient client.Client,
 	scheme *runtime.Scheme,
 ) Manager {
-	return NewManagerWithPGPassSecretManager(
-		k8sClient,
-		scheme,
-		NewPGPassSecretManager(k8sClient),
-	)
-}
-
-// NewManagerWithPGPassSecretManager creates a new registry API manager with a custom PGPassSecretManager.
-// This constructor is primarily intended for testing to allow injection of mock implementations.
-func NewManagerWithPGPassSecretManager(
-	k8sClient client.Client,
-	scheme *runtime.Scheme,
-	pgpassSecretManager PGPassSecretManager,
-) Manager {
 	return &manager{
-		client:              k8sClient,
-		scheme:              scheme,
-		pgpassSecretManager: pgpassSecretManager,
+		client:     k8sClient,
+		scheme:     scheme,
+		kubeClient: kubernetes.NewClient(k8sClient, scheme),
 	}
 }
 
@@ -93,7 +80,7 @@ func (m *manager) ReconcileAPIService(
 	}
 
 	// Ensure pgpass secret for PostgreSQL authentication
-	err = m.pgpassSecretManager.EnsurePGPassSecret(ctx, mcpRegistry)
+	err = m.ensurePGPassSecret(ctx, mcpRegistry)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to ensure pgpass secret")
 		return &mcpregistrystatus.Error{

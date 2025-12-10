@@ -155,10 +155,9 @@ func (*manager) buildRegistryAPIDeployment(
 	}
 
 	// Add pgpass mount if databaseConfig is specified
-	if mcpRegistry.Spec.DatabaseConfig != nil {
+	if mcpRegistry.HasDatabaseConfig() {
 		secretName := mcpRegistry.GetPGPassSecretName()
 		opts = append(opts, WithPGPassMount(registryAPIContainerName, secretName))
-		ctxLogger.V(1).Info("Adding pgpass secret mount", "secretName", secretName)
 	}
 
 	// Build PodTemplateSpec with defaults and user customizations merged

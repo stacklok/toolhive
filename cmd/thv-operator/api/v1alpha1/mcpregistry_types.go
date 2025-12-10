@@ -594,3 +594,8 @@ func (r *MCPRegistry) GetPodTemplateSpecRaw() *runtime.RawExtension {
 func (r *MCPRegistry) GetPGPassSecretName() string {
 	return fmt.Sprintf("%s-db-pgpass", r.Name)
 }
+
+// HasDatabaseConfig returns true if the MCPRegistry has a database configuration specified
+func (r *MCPRegistry) HasDatabaseConfig() bool {
+	return r.Spec.DatabaseConfig != nil
+}

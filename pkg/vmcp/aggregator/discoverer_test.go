@@ -500,10 +500,6 @@ func TestCLIWorkloadDiscoverer(t *testing.T) {
 					Name: "stopped-workload",
 					Type: workloads.WorkloadTypeMCPServer,
 				},
-				{
-					Name: "stopped-workload",
-					Type: workloads.WorkloadTypeMCPServer,
-				},
 			}, nil)
 		// The discoverer iterates through all workloads in order
 		mockDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(

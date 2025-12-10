@@ -168,12 +168,13 @@ spec:
                   description: WorkflowStep defines a step in a composite tool workflow
                   properties:
                     arguments:
-                      additionalProperties:
-                        type: string
                       description: |-
-                        Arguments is a map of argument templates
-                        Supports Go template syntax with .params and .steps
+                        Arguments is a map of argument values with template expansion support.
+                        Supports Go template syntax with .params and .steps for string values.
+                        Non-string values (integers, booleans, arrays, objects) are passed as-is.
+                        Note: the templating is only supported on the first level of the key-value pairs.
                       type: object
+                      x-kubernetes-preserve-unknown-fields: true
                     condition:
                       description: Condition is a template expression that determines
                         if the step should execute
@@ -192,6 +193,42 @@ spec:
                         Message is the elicitation message
                         Only used when Type is "elicitation"
                       type: string
+                    onCancel:
+                      description: |-
+                        OnCancel defines the action to take when the user cancels/dismisses the elicitation
+                        Only used when Type is "elicitation"
+                      properties:
+                        action:
+                          default: abort
+                          description: |-
+                            Action defines the action to take when the user declines or cancels
+                            - skip_remaining: Skip remaining steps in the workflow
+                            - abort: Abort the entire workflow execution
+                            - continue: Continue to the next step
+                          enum:
+                          - skip_remaining
+                          - abort
+                          - continue
+                          type: string
+                      type: object
+                    onDecline:
+                      description: |-
+                        OnDecline defines the action to take when the user explicitly declines the elicitation
+                        Only used when Type is "elicitation"
+                      properties:
+                        action:
+                          default: abort
+                          description: |-
+                            Action defines the action to take when the user declines or cancels
+                            - skip_remaining: Skip remaining steps in the workflow
+                            - abort: Abort the entire workflow execution
+                            - continue: Continue to the next step
+                          enum:
+                          - skip_remaining
+                          - abort
+                          - continue
+                          type: string
+                      type: object
                     onError:
                       description: OnError defines error handling behavior
                       properties:

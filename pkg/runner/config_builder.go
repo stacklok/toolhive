@@ -323,6 +323,7 @@ func WithOIDCConfig(
 	resourceURL string,
 	jwksAllowPrivateIP bool,
 	insecureAllowHTTP bool,
+	scopes []string,
 ) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
@@ -336,6 +337,7 @@ func WithOIDCConfig(
 				ClientSecret:      oidcClientSecret,
 				AllowPrivateIP:    jwksAllowPrivateIP,
 				InsecureAllowHTTP: insecureAllowHTTP,
+				Scopes:            scopes,
 			}
 		}
 

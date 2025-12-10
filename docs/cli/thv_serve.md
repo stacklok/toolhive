@@ -35,6 +35,7 @@ thv serve [flags]
       --oidc-introspection-url string   URL for token introspection endpoint
       --oidc-issuer string              OIDC issuer URL (e.g., https://accounts.google.com)
       --oidc-jwks-url string            URL to fetch the JWKS from
+      --oidc-scopes strings             OAuth scopes to advertise in the well-known endpoint (RFC 9728, defaults to 'openid' if not specified)
       --openapi                         Enable OpenAPI documentation endpoints (/api/openapi.json and /api/doc)
       --port int                        Port to bind the server to (default 8080)
       --socket string                   UNIX socket path to bind the server to (overrides host and port if provided)

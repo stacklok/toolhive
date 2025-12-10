@@ -139,6 +139,8 @@ type oidcOptions struct {
 	ClientID string `json:"client_id"`
 	// OAuth2 client secret
 	ClientSecret string `json:"client_secret"`
+	// OAuth scopes to advertise in well-known endpoint (RFC 9728)
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // createWorkloadResponse represents the response for workload creation
@@ -196,6 +198,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			IntrospectionURL: runConfig.OIDCConfig.IntrospectionURL,
 			ClientID:         runConfig.OIDCConfig.ClientID,
 			ClientSecret:     runConfig.OIDCConfig.ClientSecret,
+			Scopes:           runConfig.OIDCConfig.Scopes,
 		}
 	}
 

@@ -233,12 +233,116 @@ func TestVMCPServer_TwoBoundaryAuth_HeaderInjection(t *testing.T) {
 	})
 }
 
+// TestVMCPServer_CompositeToolNonStringArguments verifies that composite tools
+// correctly pass non-string argument types (integers, booleans, arrays, objects)
+// to backend tools. This tests the fix for issue #2921 where Arguments was
+// defined as map[string]string instead of map[string]any.
+//
+//nolint:paralleltest // safe to run in parallel with other tests
+func TestVMCPServer_CompositeToolNonStringArguments(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// Setup: Create a backend server with a tool that echoes back the received arguments
+	// This allows us to verify that non-string types are preserved through the pipeline
+	echoArgsServer := helpers.CreateBackendServer(t, []helpers.BackendTool{
+		helpers.NewBackendTool("echo_args", "Echo back received arguments with their types",
+			func(_ context.Context, args map[string]any) string {
+				// Verify count is a number (JSON unmarshals numbers as float64)
+				count, hasCount := args["count"]
+				countResult := "missing"
+				if hasCount {
+					if countFloat, ok := count.(float64); ok && countFloat == 42 {
+						countResult = "42"
+					} else {
+						countResult = "wrong_type_or_value"
+					}
+				}
+
+				// Verify enabled is a boolean
+				enabled, hasEnabled := args["enabled"]
+				enabledResult := "missing"
+				if hasEnabled {
+					if enabledBool, ok := enabled.(bool); ok && enabledBool {
+						enabledResult = "true"
+					} else {
+						enabledResult = "wrong_type_or_value"
+					}
+				}
+
+				return `{"count": "` + countResult + `", "enabled": "` + enabledResult + `"}`
+			}),
+	}, helpers.WithBackendName("echo-args-mcp"))
+	defer echoArgsServer.Close()
+
+	// Configure backend
+	backends := []vmcp.Backend{
+		helpers.NewBackend("echoargs",
+			helpers.WithURL(echoArgsServer.URL+"/mcp"),
+			helpers.WithMetadata("group", "test-group"),
+		),
+	}
+
+	// Create composite tool with static non-string arguments (no templates, no parameters)
+	// The key test is that these non-string values flow through correctly
+	workflowDefs := map[string]*composer.WorkflowDefinition{
+		"static_args_tool": {
+			Name:        "static_args_tool",
+			Description: "A composite tool with static non-string arguments",
+			Parameters:  map[string]any{}, // No input parameters - all args are static
+			Steps: []composer.WorkflowStep{
+				{
+					ID:   "call_with_static_args",
+					Type: "tool",
+					Tool: "echoargs_echo_args", // prefixed with backend name
+					Arguments: map[string]any{
+						"count":   42,
+						"enabled": true,
+					},
+				},
+			},
+			Timeout: 30 * time.Second,
+		},
+	}
+
+	// Create vMCP server with composite tool
+	vmcpServer := helpers.NewVMCPServer(ctx, t, backends,
+		helpers.WithPrefixConflictResolution("{workload}_"),
+		helpers.WithWorkflowDefinitions(workflowDefs),
+	)
+
+	// Create and initialize MCP client
+	vmcpURL := "http://" + vmcpServer.Address() + "/mcp"
+	client := helpers.NewMCPClient(ctx, t, vmcpURL)
+	defer client.Close()
+
+	// Verify the composite tool is listed
+
+	toolsResp := client.ListTools(ctx)
+	toolNames := helpers.GetToolNames(toolsResp)
+
+	assert.Contains(t, toolNames, "static_args_tool", "Should have composite tool")
+	assert.Contains(t, toolNames, "echoargs_echo_args", "Should have backend tool")
+
+	// Call composite tool with empty arguments (all args are static in the workflow)
+	resp := client.CallTool(ctx, "static_args_tool", map[string]any{})
+	text := helpers.AssertToolCallSuccess(t, resp)
+
+	// Verify the backend received the integer and boolean values correctly
+	// The handler returns "42" and "true" if the types were correct
+	helpers.AssertTextContains(t, text, "count", "42")
+	helpers.AssertTextContains(t, text, "enabled", "true")
+
+	// Verify no type conversion errors occurred
+	helpers.AssertTextNotContains(t, text, "wrong_type", "missing")
+}
+
 // TestVMCPServer_Telemetry_CompositeToolMetrics verifies that vMCP exposes
 // Prometheus metrics for composite tool workflow executions and backend requests on /metrics.
 // This test creates a composite tool, executes it, and verifies the metrics
 // for both the workflow and the backend subtool calls are correctly exposed.
-//
-//nolint:paralleltest // safe to run in parallel with other tests
 func TestVMCPServer_Telemetry_CompositeToolMetrics(t *testing.T) {
 	t.Parallel()
 

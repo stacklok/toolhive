@@ -420,9 +420,9 @@ func TestUpsert(t *testing.T) {
 					"team":        "platform",
 				},
 				Annotations: map[string]string{
-					"description":   "test secret",
-					"created-by":    "test-suite",
-					"version":       "1.0",
+					"description": "test secret",
+					"created-by":  "test-suite",
+					"version":     "1.0",
 				},
 			},
 			Data: map[string][]byte{
@@ -480,6 +480,7 @@ func TestUpsert(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
 				secret := &corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      tc.name,

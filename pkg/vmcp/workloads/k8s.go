@@ -124,12 +124,12 @@ func (d *k8sDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workload T
 }
 
 // getMCPServerAsBackend retrieves an MCPServer and converts it to a vmcp.Backend.
-func (d *k8sDiscoverer) getMCPServerAsBackend(ctx context.Context, serverName string) (*vmcp.Backend, error) {
+func (d *k8sDiscoverer) getMCPServerAsBackend(ctx context.Context, workloadName string) (*vmcp.Backend, error) {
 	mcpServer := &mcpv1alpha1.MCPServer{}
-	key := client.ObjectKey{Name: serverName, Namespace: d.namespace}
+	key := client.ObjectKey{Name: workloadName, Namespace: d.namespace}
 	if err := d.k8sClient.Get(ctx, key, mcpServer); err != nil {
 		if errors.IsNotFound(err) {
-			return nil, fmt.Errorf("MCPServer %s not found", serverName)
+			return nil, fmt.Errorf("MCPServer %s not found", workloadName)
 		}
 		return nil, fmt.Errorf("failed to get MCPServer: %w", err)
 	}
@@ -139,13 +139,13 @@ func (d *k8sDiscoverer) getMCPServerAsBackend(ctx context.Context, serverName st
 
 	// If auth discovery failed, mcpServerToBackend returns nil
 	if backend == nil {
-		logger.Warnf("Skipping workload %s due to auth discovery failure", serverName)
+		logger.Warnf("Skipping workload %s due to auth discovery failure", workloadName)
 		return nil, nil
 	}
 
 	// Skip workloads without a URL (not accessible)
 	if backend.BaseURL == "" {
-		logger.Debugf("Skipping workload %s without URL", serverName)
+		logger.Debugf("Skipping workload %s without URL", workloadName)
 		return nil, nil
 	}
 

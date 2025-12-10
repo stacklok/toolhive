@@ -57,8 +57,14 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
 			Return([]workloads.TypedWorkload{
-				{Name: "workload1", Type: workloads.WorkloadTypeMCPServer},
-				{Name: "workload2", Type: workloads.WorkloadTypeMCPServer},
+				{
+					Name: "workload1",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+				{
+					Name: "workload2",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
 			}, nil)
 		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
 			gomock.Any(),
@@ -117,8 +123,14 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
 			Return([]workloads.TypedWorkload{
-				{Name: "healthy-workload", Type: workloads.WorkloadTypeMCPServer},
-				{Name: "unhealthy-workload", Type: workloads.WorkloadTypeMCPServer},
+				{
+					Name: "healthy-workload",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+				{
+					Name: "unhealthy-workload",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
 			}, nil)
 		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), workloads.TypedWorkload{Name: "healthy-workload", Type: workloads.WorkloadTypeMCPServer}).Return(healthyBackend, nil)
 		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), workloads.TypedWorkload{Name: "unhealthy-workload", Type: workloads.WorkloadTypeMCPServer}).Return(unhealthyBackend, nil)
@@ -155,8 +167,14 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
 			Return([]workloads.TypedWorkload{
-				{Name: "workload1", Type: workloads.WorkloadTypeMCPServer},
-				{Name: "workload2", Type: workloads.WorkloadTypeMCPServer},
+				{
+					Name: "workload1",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+				{
+					Name: "workload2",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
 			}, nil)
 		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(gomock.Any(), workloads.TypedWorkload{Name: "workload1", Type: workloads.WorkloadTypeMCPServer}).Return(backendWithURL, nil)
 		// workload2 has no URL, so GetWorkload returns nil
@@ -187,8 +205,14 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
 			Return([]workloads.TypedWorkload{
-				{Name: "workload1", Type: workloads.WorkloadTypeMCPServer},
-				{Name: "workload2", Type: workloads.WorkloadTypeMCPServer},
+				{
+					Name: "workload1",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+				{
+					Name: "workload2",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
 			}, nil)
 		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
 			gomock.Any(),
@@ -288,8 +312,14 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
 			Return([]workloads.TypedWorkload{
-				{Name: "good-workload", Type: workloads.WorkloadTypeMCPServer},
-				{Name: "failing-workload", Type: workloads.WorkloadTypeMCPServer},
+				{
+					Name: "good-workload",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+				{
+					Name: "failing-workload",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
 			}, nil)
 		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
 			gomock.Any(),
@@ -366,7 +396,10 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
 			Return([]workloads.TypedWorkload{
-				{Name: "workload1", Type: workloads.WorkloadTypeMCPServer},
+				{
+					Name: "workload1",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
 			}, nil)
 		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
 			gomock.Any(),
@@ -410,7 +443,10 @@ func TestCLIWorkloadDiscoverer(t *testing.T) {
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockManager.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
 			Return([]workloads.TypedWorkload{
-				{Name: "workload1", Type: workloads.WorkloadTypeMCPServer},
+				{
+					Name: "workload1",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
 			}, nil)
 		mockManager.EXPECT().GetWorkloadAsVMCPBackend(
 			gomock.Any(),
@@ -456,8 +492,18 @@ func TestCLIWorkloadDiscoverer(t *testing.T) {
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
 		mockDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
 			Return([]workloads.TypedWorkload{
-				{Name: "running-workload", Type: workloads.WorkloadTypeMCPServer},
-				{Name: "stopped-workload", Type: workloads.WorkloadTypeMCPServer},
+				{
+					Name: "running-workload",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+				{
+					Name: "stopped-workload",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+				{
+					Name: "stopped-workload",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
 			}, nil)
 		// The discoverer iterates through all workloads in order
 		mockDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(

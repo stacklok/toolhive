@@ -1668,6 +1668,7 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Watches(&mcpv1alpha1.MCPGroup{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPGroupToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPServer{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToVirtualMCPServer)).
+		Watches(&mcpv1alpha1.MCPRemoteProxy{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapExternalAuthConfigToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPToolConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapToolConfigToVirtualMCPServer)).
 		Watches(
@@ -1779,6 +1780,87 @@ func (r *VirtualMCPServerReconciler) mapMCPServerToVirtualMCPServer(ctx context.
 
 	ctxLogger.V(1).Info("Mapped MCPServer to VirtualMCPServers",
 		"mcpServer", mcpServer.Name,
+		"affectedGroups", len(affectedGroups),
+		"virtualMCPServers", len(requests))
+
+	return requests
+}
+
+// mapMCPRemoteProxyToVirtualMCPServer maps MCPRemoteProxy changes to VirtualMCPServer reconciliation requests.
+// This function implements the same optimization as mapMCPServerToVirtualMCPServer to only reconcile
+// VirtualMCPServers that are actually affected by the MCPRemoteProxy change.
+//
+// The optimization works by:
+// 1. Finding all MCPGroups that include the changed MCPRemoteProxy (via Status.RemoteProxies)
+// 2. Finding all VirtualMCPServers that reference those MCPGroups
+// 3. Only reconciling those specific VirtualMCPServers
+func (r *VirtualMCPServerReconciler) mapMCPRemoteProxyToVirtualMCPServer(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
+	mcpRemoteProxy, ok := obj.(*mcpv1alpha1.MCPRemoteProxy)
+	if !ok {
+		return nil
+	}
+
+	ctxLogger := log.FromContext(ctx)
+
+	// Step 1: Find all MCPGroups that include this MCPRemoteProxy
+	// MCPGroups track their member remote proxies in Status.RemoteProxies (populated by MCPGroup controller)
+	mcpGroupList := &mcpv1alpha1.MCPGroupList{}
+	if err := r.List(ctx, mcpGroupList, client.InNamespace(mcpRemoteProxy.Namespace)); err != nil {
+		ctxLogger.Error(err, "Failed to list MCPGroups for MCPRemoteProxy watch")
+		return nil
+	}
+
+	// Track which MCPGroups include this MCPRemoteProxy
+	affectedGroups := make(map[string]bool)
+	for _, group := range mcpGroupList.Items {
+		// Check if this MCPRemoteProxy is in the group's remote proxy list
+		for _, proxyName := range group.Status.RemoteProxies {
+			if proxyName == mcpRemoteProxy.Name {
+				affectedGroups[group.Name] = true
+				ctxLogger.V(1).Info("MCPRemoteProxy is member of MCPGroup",
+					"mcpRemoteProxy", mcpRemoteProxy.Name,
+					"mcpGroup", group.Name)
+				break // No need to check other proxies in this group
+			}
+		}
+	}
+
+	// If no groups include this MCPRemoteProxy, no VirtualMCPServers need reconciliation
+	if len(affectedGroups) == 0 {
+		ctxLogger.V(1).Info("MCPRemoteProxy not a member of any MCPGroup, skipping VirtualMCPServer reconciliation",
+			"mcpRemoteProxy", mcpRemoteProxy.Name)
+		return nil
+	}
+
+	// Step 2: Find VirtualMCPServers that reference the affected MCPGroups
+	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(mcpRemoteProxy.Namespace)); err != nil {
+		ctxLogger.Error(err, "Failed to list VirtualMCPServers for MCPRemoteProxy watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, vmcp := range vmcpList.Items {
+		// Only reconcile if this VirtualMCPServer references an affected MCPGroup
+		if affectedGroups[vmcp.Spec.GroupRef.Name] {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      vmcp.Name,
+					Namespace: vmcp.Namespace,
+				},
+			})
+			ctxLogger.V(1).Info("Queuing VirtualMCPServer for reconciliation due to MCPRemoteProxy change",
+				"virtualMCPServer", vmcp.Name,
+				"mcpGroup", vmcp.Spec.GroupRef.Name,
+				"mcpRemoteProxy", mcpRemoteProxy.Name)
+		}
+	}
+
+	ctxLogger.V(1).Info("Mapped MCPRemoteProxy to VirtualMCPServers",
+		"mcpRemoteProxy", mcpRemoteProxy.Name,
 		"affectedGroups", len(affectedGroups),
 		"virtualMCPServers", len(requests))
 
@@ -1899,13 +1981,15 @@ func (r *VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
 	return false
 }
 
-// mcpGroupBackendsReferenceExternalAuthConfig checks if any MCPServers in the VirtualMCPServer's group
-// reference the given MCPExternalAuthConfig
+// mcpGroupBackendsReferenceExternalAuthConfig checks if any MCPServers or MCPRemoteProxies
+// in the VirtualMCPServer's group reference the given MCPExternalAuthConfig
 func (r *VirtualMCPServerReconciler) mcpGroupBackendsReferenceExternalAuthConfig(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	authConfigName string,
 ) bool {
+	ctxLogger := log.FromContext(ctx)
+
 	// Get the MCPGroup to verify it exists
 	mcpGroup := &mcpv1alpha1.MCPGroup{}
 	err := r.Get(ctx, types.NamespacedName{
@@ -1915,21 +1999,22 @@ func (r *VirtualMCPServerReconciler) mcpGroupBackendsReferenceExternalAuthConfig
 	if err != nil {
 		// If we can't get the group, we can't determine if it references the auth config
 		// Return false to avoid false positives
-		log.FromContext(ctx).Error(err, "Failed to get MCPGroup for ExternalAuthConfig reference check",
+		ctxLogger.Error(err, "Failed to get MCPGroup for ExternalAuthConfig reference check",
 			"group", vmcp.Spec.GroupRef.Name,
 			"vmcp", vmcp.Name)
 		return false
 	}
 
-	// List all MCPServers in the group using field selector (same as MCPGroup controller)
-	mcpServerList := &mcpv1alpha1.MCPServerList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(vmcp.Namespace),
 		client.MatchingFields{"spec.groupRef": mcpGroup.Name},
 	}
+
+	// List all MCPServers in the group using field selector (same as MCPGroup controller)
+	mcpServerList := &mcpv1alpha1.MCPServerList{}
 	err = r.List(ctx, mcpServerList, listOpts...)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "Failed to list MCPServers for ExternalAuthConfig reference check",
+		ctxLogger.Error(err, "Failed to list MCPServers for ExternalAuthConfig reference check",
 			"group", mcpGroup.Name)
 		return false
 	}
@@ -1938,6 +2023,23 @@ func (r *VirtualMCPServerReconciler) mcpGroupBackendsReferenceExternalAuthConfig
 	for _, mcpServer := range mcpServerList.Items {
 		if mcpServer.Spec.ExternalAuthConfigRef != nil &&
 			mcpServer.Spec.ExternalAuthConfigRef.Name == authConfigName {
+			return true
+		}
+	}
+
+	// List all MCPRemoteProxies in the group
+	mcpRemoteProxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+	err = r.List(ctx, mcpRemoteProxyList, listOpts...)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list MCPRemoteProxies for ExternalAuthConfig reference check",
+			"group", mcpGroup.Name)
+		return false
+	}
+
+	// Check if any MCPRemoteProxy references the ExternalAuthConfig
+	for _, mcpRemoteProxy := range mcpRemoteProxyList.Items {
+		if mcpRemoteProxy.Spec.ExternalAuthConfigRef != nil &&
+			mcpRemoteProxy.Spec.ExternalAuthConfigRef.Name == authConfigName {
 			return true
 		}
 	}

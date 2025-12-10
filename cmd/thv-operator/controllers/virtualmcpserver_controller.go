@@ -299,6 +299,7 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 	// If no composite tool refs, nothing to validate
 	if len(vmcp.Spec.CompositeToolRefs) == 0 {
 		// Set condition to indicate validation passed (no refs to validate)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 		statusManager.SetCompositeToolRefsValidatedCondition(
 			mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
 			"No composite tool references to validate",
@@ -317,6 +318,7 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 
 		if errors.IsNotFound(err) {
 			message := fmt.Sprintf("Referenced VirtualMCPCompositeToolDefinition %s not found", ref.Name)
+			statusManager.SetObservedGeneration(vmcp.Generation)
 			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
 			statusManager.SetMessage(message)
 			statusManager.SetCompositeToolRefsValidatedCondition(
@@ -336,6 +338,7 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 			if len(compositeToolDef.Status.ValidationErrors) > 0 {
 				message = fmt.Sprintf("%s: %s", message, strings.Join(compositeToolDef.Status.ValidationErrors, "; "))
 			}
+			statusManager.SetObservedGeneration(vmcp.Generation)
 			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
 			statusManager.SetMessage(message)
 			statusManager.SetCompositeToolRefsValidatedCondition(
@@ -355,6 +358,7 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 	}
 
 	// All composite tool refs are valid
+	statusManager.SetObservedGeneration(vmcp.Generation)
 	statusManager.SetCompositeToolRefsValidatedCondition(
 		mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
 		fmt.Sprintf("All %d composite tool references are valid", len(vmcp.Spec.CompositeToolRefs)),

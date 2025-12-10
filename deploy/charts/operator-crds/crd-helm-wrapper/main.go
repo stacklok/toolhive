@@ -58,7 +58,7 @@ func main() {
 	}
 
 	if err := run(*sourceDir, *targetDir, *verbose); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -81,7 +81,7 @@ func run(sourceDir, targetDir string, verbose bool) error {
 		return fmt.Errorf("no YAML files found in %s", sourceDir)
 	}
 
-	fmt.Printf("Found %d CRD files to process\n", len(files))
+	fmt.Printf("📦 Found %d CRD files to process\n", len(files))
 
 	for _, file := range files {
 		if err := wrapCRDFile(file, sourceDir, targetDir, templates, verbose); err != nil {
@@ -89,7 +89,7 @@ func run(sourceDir, targetDir string, verbose bool) error {
 		}
 	}
 
-	fmt.Println("CRD wrapping completed successfully!")
+	fmt.Println("✅ CRD wrapping completed successfully!")
 	return nil
 }
 
@@ -131,19 +131,25 @@ func wrapCRDFile(sourcePath, sourceDir, targetDir string, templates map[string]s
 		fmt.Printf("  CRD name: %s\n", crdName)
 	}
 
-	featureFlags := getFeatureFlags(crdName)
-	if verbose && len(featureFlags) > 0 {
+	featureFlags, err := getFeatureFlags(crdName)
+	if err != nil {
+		return fmt.Errorf("failed to get feature flags: %w", err)
+	}
+	if verbose {
 		fmt.Printf("  Feature flags: %v\n", featureFlags)
 	}
 
-	wrapped := wrapContent(content, templates, featureFlags)
+	wrapped, err := wrapContent(content, templates, featureFlags)
+	if err != nil {
+		return fmt.Errorf("failed to wrap content: %w", err)
+	}
 
 	targetPath := filepath.Join(targetDir, filename)
 	if err := os.WriteFile(targetPath, wrapped, 0600); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
-	fmt.Printf("  Created: %s\n", targetPath)
+	fmt.Printf("  ✅ Created: %s\n", targetPath)
 	return nil
 }
 
@@ -167,12 +173,19 @@ func extractCRDName(content []byte) (string, error) {
 	return crd.Metadata.Name, nil
 }
 
-func getFeatureFlags(crdName string) []string {
+func getFeatureFlags(crdName string) ([]string, error) {
 	// CRD names are "plural.group" (e.g., mcpservers.toolhive.stacklok.dev)
-	if idx := strings.Index(crdName, "."); idx > 0 {
-		return crdFeatureFlags[crdName[:idx]]
+	idx := strings.Index(crdName, ".")
+	if idx <= 0 {
+		return nil, fmt.Errorf("invalid CRD name format: %s", crdName)
 	}
-	return nil
+	plural := crdName[:idx]
+
+	flags, ok := crdFeatureFlags[plural]
+	if !ok {
+		return nil, fmt.Errorf("CRD %q not in crdFeatureFlags map - please add it", crdName)
+	}
+	return flags, nil
 }
 
 func buildFeatureCondition(flags []string) string {
@@ -191,7 +204,7 @@ func buildFeatureCondition(flags []string) string {
 	return "or " + strings.Join(refs, " ")
 }
 
-func wrapContent(content []byte, templates map[string]string, featureFlags []string) []byte {
+func wrapContent(content []byte, templates map[string]string, featureFlags []string) ([]byte, error) {
 	var buf bytes.Buffer
 
 	// Write header with feature flag conditional
@@ -225,8 +238,12 @@ func wrapContent(content []byte, templates map[string]string, featureFlags []str
 		buf.WriteString(escapeTemplateDelimiters(line) + "\n")
 	}
 
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error scanning content: %w", err)
+	}
+
 	buf.WriteString(templates["footer"])
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 // escapeTemplateDelimiters escapes {{ and }} in CRD content to prevent Helm

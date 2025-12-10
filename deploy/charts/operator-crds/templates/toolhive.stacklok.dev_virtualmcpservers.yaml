@@ -1,8 +1,11 @@
----
+{{- if .Values.crds.install.virtualMcp }}
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
+    {{- if .Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
     controller-gen.kubebuilder.io/version: v0.17.3
   name: virtualmcpservers.toolhive.stacklok.dev
 spec:
@@ -220,7 +223,7 @@ spec:
                               value:
                                 description: |-
                                   Value is a template string for constructing the runtime value
-                                  Supports template syntax: {{.steps.step_id.output.field}}, {{.params.param_name}}
+                                  Supports template syntax: {{ "{{" }}.steps.step_id.output.field{{ "}}" }}, {{ "{{" }}.params.param_name{{ "}}" }}
                                   For object types, this can be a JSON string that will be deserialized
                                 type: string
                             required:
@@ -260,12 +263,13 @@ spec:
                           workflow
                         properties:
                           arguments:
-                            additionalProperties:
-                              type: string
                             description: |-
-                              Arguments is a map of argument templates
-                              Supports Go template syntax with .params and .steps
+                              Arguments is a map of argument values with template expansion support.
+                              Supports Go template syntax with .params and .steps for string values.
+                              Non-string values (integers, booleans, arrays, objects) are passed as-is.
+                              Note: the templating is only supported on the first level of the key-value pairs.
                             type: object
+                            x-kubernetes-preserve-unknown-fields: true
                           condition:
                             description: Condition is a template expression that determines
                               if the step should execute
@@ -964,3 +968,4 @@ spec:
     storage: true
     subresources:
       status: {}
+{{- end }}

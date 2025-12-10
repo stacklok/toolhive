@@ -2341,10 +2341,8 @@ func (in *WorkflowStep) DeepCopyInto(out *WorkflowStep) {
 	*out = *in
 	if in.Arguments != nil {
 		in, out := &in.Arguments, &out.Arguments
-		*out = make(map[string]string, len(*in))
-		for key, val := range *in {
-			(*out)[key] = val
-		}
+		*out = new(runtime.RawExtension)
+		(*in).DeepCopyInto(*out)
 	}
 	if in.Schema != nil {
 		in, out := &in.Schema, &out.Schema

@@ -126,9 +126,8 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 						{
 							ID:   "deploy",
 							Tool: "kubectl.apply",
-							Arguments: map[string]string{
-								"namespace": "{{.params.environment}}",
-								"replicas":  "{{.params.replicas}}",
+							Arguments: &runtime.RawExtension{
+								Raw: []byte(`{"namespace": "{{.params.environment}}", "replicas": "{{.params.replicas}}"}`),
 							},
 						},
 					},
@@ -515,8 +514,8 @@ func TestVirtualMCPCompositeToolDefinitionValidate(t *testing.T) {
 						{
 							ID:   "deploy",
 							Tool: "kubectl.apply",
-							Arguments: map[string]string{
-								"namespace": "{{.params.env",
+							Arguments: &runtime.RawExtension{
+								Raw: []byte(`{"namespace": "{{.params.env"}`),
 							},
 						},
 					},

@@ -73,10 +73,8 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 						Type: "tool",
 						// Use dot notation for tool references: backend.toolname
 						Tool: fmt.Sprintf("%s.echo", backendName),
-						Arguments: map[string]string{
-							// Template expansion: use input parameter
-							"input": "{{ .params.message }}",
-						},
+						// Template expansion: use input parameter
+						Arguments: &runtime.RawExtension{Raw: []byte(`{"input": "{{ .params.message }}"}`)},
 					},
 					{
 						ID:   "second_echo",
@@ -84,10 +82,8 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 						// Use dot notation for tool references: backend.toolname
 						Tool:      fmt.Sprintf("%s.echo", backendName),
 						DependsOn: []string{"first_echo"},
-						Arguments: map[string]string{
-							// Template expansion: use output from previous step
-							"input": "{{ .steps.first_echo.result }}",
-						},
+						// Template expansion: use output from previous step
+						Arguments: &runtime.RawExtension{Raw: []byte(`{"input": "{{ .steps.first_echo.result }}"}`)},
 					},
 				},
 				Timeout: "30s",
@@ -284,9 +280,14 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 			Expect(step2.ID).To(Equal("second_echo"))
 			Expect(step2.DependsOn).To(ContainElement("first_echo"))
 
-			// Verify template usage in arguments
-			Expect(step1.Arguments["input"]).To(ContainSubstring(".params.message"))
-			Expect(step2.Arguments["input"]).To(ContainSubstring(".steps.first_echo"))
+			// Verify template usage in arguments (unmarshal from RawExtension)
+			var step1Args map[string]any
+			Expect(json.Unmarshal(step1.Arguments.Raw, &step1Args)).To(Succeed())
+			Expect(step1Args["input"]).To(ContainSubstring(".params.message"))
+
+			var step2Args map[string]any
+			Expect(json.Unmarshal(step2.Arguments.Raw, &step2Args)).To(Succeed())
+			Expect(step2Args["input"]).To(ContainSubstring(".steps.first_echo"))
 
 			// Note: ValidationStatus is not set because there's no controller for VirtualMCPCompositeToolDefinition
 			// If the resource exists, it means webhook validation passed

@@ -47,7 +47,12 @@ func DetectRegistryType(input string, allowPrivateIPs bool) (registryType string
 // by checking if the MCP Registry API endpoint (/v0.1/servers) exists and returns valid API responses.
 func probeRegistryURL(url string, allowPrivateIPs bool) string {
 	// Create HTTP client for probing with user's private IP preference
-	client, err := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateIPs).Build()
+	// If private IPs are allowed, also allow HTTP (for localhost testing)
+	builder := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateIPs)
+	if allowPrivateIPs {
+		builder = builder.WithInsecureAllowHTTP(true)
+	}
+	client, err := builder.Build()
 	if err != nil {
 		// If we can't create a client, default to static JSON
 		return RegistryTypeURL

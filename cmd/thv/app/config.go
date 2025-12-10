@@ -219,7 +219,7 @@ func getRegistryCmdFunc(_ *cobra.Command, _ []string) error {
 	case config.RegistryTypeAPI:
 		fmt.Printf("Current registry: %s (API endpoint)\n", url)
 	case config.RegistryTypeURL:
-		fmt.Printf("Current registry: %s (remote URL)\n", url)
+		fmt.Printf("Current registry: %s (remote file)\n", url)
 	case config.RegistryTypeFile:
 		fmt.Printf("Current registry: %s (local file)\n", localPath)
 		// Check if the file still exists

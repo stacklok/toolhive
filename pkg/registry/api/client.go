@@ -55,9 +55,12 @@ type mcpRegistryClient struct {
 // NewClient creates a new MCP Registry API client
 func NewClient(baseURL string, allowPrivateIp bool) (Client, error) {
 	// Build HTTP client with security controls
-	httpClient, err := networking.NewHttpClientBuilder().
-		WithPrivateIPs(allowPrivateIp).
-		Build()
+	// If private IPs are allowed, also allow HTTP (for localhost testing)
+	builder := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateIp)
+	if allowPrivateIp {
+		builder = builder.WithInsecureAllowHTTP(true)
+	}
+	httpClient, err := builder.Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build HTTP client: %w", err)
 	}

@@ -202,7 +202,7 @@ tasks:
       - $(go env GOPATH)/bin/controller-gen rbac:roleName=toolhive-operator-manager-role paths="{{.CONTROLLER_GEN_PATHS}}" output:rbac:artifacts:config={{.PROJECT_ROOT}}/deploy/charts/operator/templates/clusterrole
       - $(go env GOPATH)/bin/controller-gen crd webhook paths="{{.CONTROLLER_GEN_PATHS}}" output:crd:artifacts:config={{.PROJECT_ROOT}}/deploy/charts/operator-crds/files/crds
       # Wrap CRDs with Helm templates for conditional installation
-      - go run {{.PROJECT_ROOT}}/deploy/charts/operator-crds/crd-helm-wrapper/main.go -source deploy/charts/operator-crds/files/crds -target deploy/charts/operator-crds/templates
+      - go run {{.PROJECT_ROOT}}/deploy/charts/operator-crds/crd-helm-wrapper/main.go -source {{.PROJECT_ROOT}}/deploy/charts/operator-crds/files/crds -target {{.PROJECT_ROOT}}/deploy/charts/operator-crds/templates
       #  - "{{.PROJECT_ROOT}}/deploy/charts/operator-crds/scripts/wrap-crds.sh"
 
   operator-test:

@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -28,7 +31,13 @@ import (
 
 // WaitForVirtualMCPServerReady waits for a VirtualMCPServer to reach Ready status
 // and ensures the associated pods are actually running and ready
-func WaitForVirtualMCPServerReady(ctx context.Context, c client.Client, name, namespace string, timeout time.Duration) {
+func WaitForVirtualMCPServerReady(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	timeout time.Duration,
+	pollingInterval time.Duration,
+) {
 	vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 
 	gomega.Eventually(func() error {
@@ -56,7 +65,7 @@ func WaitForVirtualMCPServerReady(ctx context.Context, c client.Client, name, na
 			}
 		}
 		return fmt.Errorf("ready condition not found")
-	}, timeout, 5*time.Second).Should(gomega.Succeed())
+	}, timeout, pollingInterval).Should(gomega.Succeed())
 }
 
 // checkPodsReady checks if all pods matching the given labels are ready
@@ -216,10 +225,17 @@ func GetVirtualMCPServerPods(ctx context.Context, c client.Client, vmcpServerNam
 }
 
 // WaitForPodsReady waits for all pods matching labels to be ready
-func WaitForPodsReady(ctx context.Context, c client.Client, namespace string, labels map[string]string, timeout time.Duration) {
+func WaitForPodsReady(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	labels map[string]string,
+	timeout time.Duration,
+	pollingInterval time.Duration,
+) {
 	gomega.Eventually(func() error {
 		return checkPodsReady(ctx, c, namespace, labels)
-	}, timeout, 5*time.Second).Should(gomega.Succeed())
+	}, timeout, pollingInterval).Should(gomega.Succeed())
 }
 
 // GetMCPGroupBackends returns the list of backend MCPServers in an MCPGroup
@@ -285,6 +301,7 @@ func WaitForCondition(
 	conditionType string,
 	expectedStatus string,
 	timeout time.Duration,
+	pollingInterval time.Duration,
 ) {
 	gomega.Eventually(func() error {
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
@@ -300,7 +317,7 @@ func WaitForCondition(
 		}
 
 		return fmt.Errorf("condition %s not found with status %s", conditionType, expectedStatus)
-	}, timeout, 5*time.Second).Should(gomega.Succeed())
+	}, timeout, pollingInterval).Should(gomega.Succeed())
 }
 
 // OIDC Testing Helpers
@@ -696,8 +713,8 @@ func CreateMCPServerAndWait(
 	return backend
 }
 
-// GetVMCPNodePort waits for the VirtualMCPServer service to have a NodePort assigned,
-// verifies the port is accessible, and waits for the MCP endpoint to be ready.
+// GetVMCPNodePort waits for the VirtualMCPServer service to have a NodePort assigned
+// and verifies the port is accessible.
 func GetVMCPNodePort(
 	ctx context.Context,
 	c client.Client,
@@ -721,62 +738,111 @@ func GetVMCPNodePort(
 		}
 		nodePort = service.Spec.Ports[0].NodePort
 
-		// Verify the MCP endpoint is actually ready to accept requests
-		if err := checkMCPEndpointReady(nodePort, 5*time.Second); err != nil {
-			return fmt.Errorf("nodePort %d assigned but MCP endpoint not ready: %w", nodePort, err)
+		// Verify the TCP port is accessible
+		if err := checkPortAccessible(nodePort, 1*time.Second); err != nil {
+			return fmt.Errorf("nodePort %d assigned but not accessible: %w", nodePort, err)
+		}
+
+		// Verify the HTTP server is ready to handle requests
+		if err := checkHTTPHealthReady(nodePort, 2*time.Second); err != nil {
+			return fmt.Errorf("nodePort %d accessible but HTTP server not ready: %w", nodePort, err)
 		}
 
 		return nil
-	}, timeout, pollingInterval).Should(gomega.Succeed(), "NodePort should be assigned and MCP endpoint ready")
+	}, timeout, pollingInterval).Should(gomega.Succeed(), "NodePort should be assigned and HTTP server ready")
 
 	return nodePort
 }
 
-// checkPortOpen attempts to establish a TCP connection to verify a port is accessible
-func checkPortOpen(host string, port int32, timeout time.Duration) error {
-	address := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+// checkPortAccessible verifies that the port is open and accepting TCP connections.
+// This is a lightweight check that completes in milliseconds instead of the seconds
+// required for a full MCP session initialization.
+func checkPortAccessible(nodePort int32, timeout time.Duration) error {
+	address := fmt.Sprintf("localhost:%d", nodePort)
 	conn, err := net.DialTimeout("tcp", address, timeout)
 	if err != nil {
-		return fmt.Errorf("failed to connect to %s: %w", address, err)
+		return fmt.Errorf("port %d not accessible: %w", nodePort, err)
 	}
+	// Port is accessible - close connection (ignore errors as port accessibility is confirmed)
 	_ = conn.Close()
 	return nil
 }
 
-// checkMCPEndpointReady verifies that the MCP endpoint is ready to accept and handle requests
-// by attempting to create a client and initialize an MCP session
-func checkMCPEndpointReady(nodePort int32, timeout time.Duration) error {
-	serverURL := fmt.Sprintf("http://localhost:%d/mcp", nodePort)
+// checkHTTPHealthReady verifies the HTTP server is ready by checking the /health endpoint.
+// This is more reliable than just TCP check as it ensures the application is serving requests.
+func checkHTTPHealthReady(nodePort int32, timeout time.Duration) error {
+	httpClient := &http.Client{Timeout: timeout}
+	url := fmt.Sprintf("http://localhost:%d/health", nodePort)
 
-	// Try to create an MCP client
-	mcpClient, err := mcpclient.NewStreamableHttpClient(serverURL)
+	resp, err := httpClient.Get(url)
 	if err != nil {
-		return fmt.Errorf("failed to create MCP client: %w", err)
+		return fmt.Errorf("health check failed for port %d: %w", nodePort, err)
 	}
-	defer mcpClient.Close()
+	defer resp.Body.Close()
 
-	// Create a context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// Try to start the client transport
-	if err := mcpClient.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start MCP client: %w", err)
-	}
-
-	// Try to initialize the MCP session
-	initRequest := mcp.InitializeRequest{}
-	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initRequest.Params.ClientInfo = mcp.Implementation{
-		Name:    "readiness-check",
-		Version: "1.0.0",
-	}
-
-	if _, err := mcpClient.Initialize(ctx, initRequest); err != nil {
-		return fmt.Errorf("failed to initialize MCP session: %w", err)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("health check returned status %d for port %d", resp.StatusCode, nodePort)
 	}
 
 	return nil
+}
+
+// TestToolListingAndCall is a shared helper that creates an MCP client, lists tools,
+// finds a tool matching the pattern, calls it, and verifies the response.
+// This eliminates the duplicate "create client → list → call" pattern found in most tests.
+func TestToolListingAndCall(vmcpNodePort int32, clientName string, toolNamePattern string, testInput string) {
+	ginkgo.By("Creating and initializing MCP client")
+	mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, clientName, 30*time.Second)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	defer mcpClient.Close()
+
+	ginkgo.By("Listing tools from VirtualMCPServer")
+	listRequest := mcp.ListToolsRequest{}
+	tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	gomega.Expect(tools.Tools).ToNot(gomega.BeEmpty())
+
+	// Find a tool matching the pattern
+	var targetToolName string
+	for _, tool := range tools.Tools {
+		if strings.Contains(tool.Name, toolNamePattern) {
+			targetToolName = tool.Name
+			break
+		}
+	}
+	gomega.Expect(targetToolName).ToNot(gomega.BeEmpty(), fmt.Sprintf("Should find a tool matching pattern: %s", toolNamePattern))
+
+	ginkgo.By(fmt.Sprintf("Calling tool: %s", targetToolName))
+	callRequest := mcp.CallToolRequest{}
+	callRequest.Params.Name = targetToolName
+	callRequest.Params.Arguments = map[string]any{
+		"input": testInput,
+	}
+
+	result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "Should successfully call tool")
+	gomega.Expect(result).ToNot(gomega.BeNil())
+	gomega.Expect(result.Content).ToNot(gomega.BeEmpty(), "Should have content in response")
+
+	fmt.Fprintf(ginkgo.GinkgoWriter, "✓ Successfully called tool %s\n", targetToolName)
+}
+
+// TestToolListing is a shared helper that creates an MCP client and lists tools.
+// Returns the list of tools for further assertions.
+func TestToolListing(vmcpNodePort int32, clientName string) []mcp.Tool {
+	ginkgo.By("Creating and initializing MCP client")
+	mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, clientName, 30*time.Second)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	defer mcpClient.Close()
+
+	ginkgo.By("Listing tools from VirtualMCPServer")
+	listRequest := mcp.ListToolsRequest{}
+	toolsResult, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	gomega.Expect(toolsResult.Tools).ToNot(gomega.BeEmpty())
+
+	fmt.Fprintf(ginkgo.GinkgoWriter, "Listed %d tools from VirtualMCPServer\n", len(toolsResult.Tools))
+	return toolsResult.Tools
 }
 
 // InstrumentedBackendScript is an instrumented backend script that tracks Bearer tokens

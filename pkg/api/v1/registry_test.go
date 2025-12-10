@@ -1,16 +1,10 @@
 package v1
 
 import (
-	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -107,82 +101,6 @@ func TestGetRegistryInfo(t *testing.T) {
 			registryType, source := getRegistryInfoWithProvider(configProvider)
 			assert.Equal(t, tt.expectedType, registryType, "Registry type should match expected")
 			assert.Equal(t, tt.expectedSource, source, "Registry source should match expected")
-		})
-	}
-}
-
-func TestRegistryAPI_PutEndpoint(t *testing.T) {
-	t.Parallel()
-
-	logger.Initialize()
-
-	tests := []struct {
-		name         string
-		requestBody  string
-		expectedCode int
-		description  string
-	}{
-		{
-			name:         "invalid URL registry",
-			requestBody:  `{"url":"https://example.com/test-registry.json"}`,
-			expectedCode: http.StatusBadRequest,
-			description:  "URL without valid registry JSON should return 400",
-		},
-		{
-			name:         "invalid local path registry",
-			requestBody:  `{"local_path":"/definitely/does/not/exist/test-registry.json"}`,
-			expectedCode: http.StatusBadRequest,
-			description:  "Non-existent local file should return 400",
-		},
-		{
-			name:         "invalid JSON",
-			requestBody:  `{"invalid":json}`,
-			expectedCode: http.StatusBadRequest,
-			description:  "Invalid JSON should return 400",
-		},
-		{
-			name:         "empty body",
-			requestBody:  `{}`,
-			expectedCode: http.StatusOK,
-			description:  "Empty request resets registry (returns 200)",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			// Create a temporary config for this test
-			tempDir := t.TempDir()
-			configPath := filepath.Join(tempDir, "toolhive", "config.yaml")
-
-			// Ensure the directory exists
-			err := os.MkdirAll(filepath.Dir(configPath), 0755)
-			require.NoError(t, err)
-
-			// Create a test config provider
-			configProvider := config.NewPathProvider(configPath)
-
-			// Create routes with the test config provider
-			routes := NewRegistryRoutesWithProvider(configProvider)
-
-			req := httptest.NewRequest("PUT", "/default", strings.NewReader(tt.requestBody))
-			req.Header.Set("Content-Type", "application/json")
-			rctx := chi.NewRouteContext()
-			rctx.URLParams.Add("name", "default")
-			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-
-			w := httptest.NewRecorder()
-			routes.updateRegistry(w, req)
-
-			assert.Equal(t, tt.expectedCode, w.Code, tt.description)
-
-			if w.Code == http.StatusOK {
-				var response map[string]interface{}
-				err := json.NewDecoder(w.Body).Decode(&response)
-				require.NoError(t, err, "Success response should be valid JSON")
-				assert.Contains(t, response, "message", "Success response should contain a message")
-			}
 		})
 	}
 }

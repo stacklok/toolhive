@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/go-chi/chi/v5"
 
@@ -310,17 +311,17 @@ func (rr *RegistryRoutes) handleRegistryReset() (string, string, error) {
 }
 
 // handleRegistryURL updates the registry URL
-func (rr *RegistryRoutes) handleRegistryURL(url string, allowPrivateIP *bool) (string, string, error) {
+func (rr *RegistryRoutes) handleRegistryURL(registryURL string, allowPrivateIP *bool) (string, string, error) {
 	allow := false
 	if allowPrivateIP != nil {
 		allow = *allowPrivateIP
 	}
 
-	if err := rr.configProvider.SetRegistryURL(url, allow); err != nil {
+	if err := rr.configProvider.SetRegistryURL(registryURL, allow); err != nil {
 		logger.Errorf("Failed to set registry URL: %v", err)
 		return "", "", fmt.Errorf("failed to set registry URL: %v", err)
 	}
-	return "url", fmt.Sprintf("Successfully set registry URL: %s", url), nil
+	return "url", fmt.Sprintf("Successfully set registry URL: %s", registryURL), nil
 }
 
 // handleRegistryAPIURL updates the registry API URL
@@ -440,6 +441,14 @@ func (rr *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	registryName := chi.URLParam(r, "name")
 	serverName := chi.URLParam(r, "serverName")
 
+	// URL-decode the server name to handle special characters like forward slashes
+	// Chi should decode automatically, but we do it explicitly for safety
+	decodedServerName, err := url.QueryUnescape(serverName)
+	if err != nil {
+		// If decoding fails, use the original name
+		decodedServerName = serverName
+	}
+
 	// Only "default" registry is supported currently
 	if registryName != defaultRegistryName {
 		http.Error(w, "Registry not found", http.StatusNotFound)
@@ -452,9 +461,9 @@ func (rr *RegistryRoutes) getServer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try to get the server (could be container or remote)
-	server, err := provider.GetServer(serverName)
+	server, err := provider.GetServer(decodedServerName)
 	if err != nil {
-		logger.Errorf("Failed to get server '%s': %v", serverName, err)
+		logger.Errorf("Failed to get server '%s': %v", decodedServerName, err)
 		http.Error(w, "Server not found", http.StatusNotFound)
 		return
 	}

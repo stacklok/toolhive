@@ -780,6 +780,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		auditLog := readAuditLog()
 		assert.Contains(t, auditLog, "\"method\":\"tools/call\"", "Should log tools/call method in request data")
 		assert.Contains(t, auditLog, "get_weather", "Should capture tool name in request data")
+		assert.Contains(t, auditLog, "San Francisco", "Should capture tool arguments in request data")
 		assert.Contains(t, auditLog, "vmcp-server-test", "Should contain component name")
 	})
 

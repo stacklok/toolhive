@@ -1,3 +1,4 @@
+// Package virtualmcp provides helper functions for VirtualMCP E2E tests.
 package virtualmcp
 
 import (
@@ -5,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 )
 
 // WaitForVirtualMCPServerReady waits for a VirtualMCPServer to reach Ready status
+// and ensures the associated pods are actually running and ready
 func WaitForVirtualMCPServerReady(ctx context.Context, c client.Client, name, namespace string, timeout time.Duration) {
 	vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 
@@ -39,6 +42,14 @@ func WaitForVirtualMCPServerReady(ctx context.Context, c client.Client, name, na
 		for _, condition := range vmcpServer.Status.Conditions {
 			if condition.Type == "Ready" {
 				if condition.Status == "True" {
+					// Also check that the pods are actually running and ready
+					labels := map[string]string{
+						"app.kubernetes.io/name":     "virtualmcpserver",
+						"app.kubernetes.io/instance": name,
+					}
+					if err := checkPodsReady(ctx, c, namespace, labels); err != nil {
+						return fmt.Errorf("VirtualMCPServer ready but pods not ready: %w", err)
+					}
 					return nil
 				}
 				return fmt.Errorf("ready condition is %s: %s", condition.Status, condition.Message)
@@ -46,6 +57,48 @@ func WaitForVirtualMCPServerReady(ctx context.Context, c client.Client, name, na
 		}
 		return fmt.Errorf("ready condition not found")
 	}, timeout, 5*time.Second).Should(gomega.Succeed())
+}
+
+// checkPodsReady checks if all pods matching the given labels are ready
+func checkPodsReady(ctx context.Context, c client.Client, namespace string, labels map[string]string) error {
+	podList := &corev1.PodList{}
+	if err := c.List(ctx, podList,
+		client.InNamespace(namespace),
+		client.MatchingLabels(labels)); err != nil {
+		return fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	if len(podList.Items) == 0 {
+		return fmt.Errorf("no pods found with labels %v", labels)
+	}
+
+	for _, pod := range podList.Items {
+		if pod.Status.Phase != corev1.PodRunning {
+			return fmt.Errorf("pod %s is in phase %s", pod.Name, pod.Status.Phase)
+		}
+
+		containerReady := false
+		podReady := false
+
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.ContainersReady {
+				containerReady = condition.Status == corev1.ConditionTrue
+			}
+
+			if condition.Type == corev1.PodReady {
+				podReady = condition.Status == corev1.ConditionTrue
+			}
+		}
+
+		if !containerReady {
+			return fmt.Errorf("pod %s containers not ready", pod.Name)
+		}
+
+		if !podReady {
+			return fmt.Errorf("pod %s not ready", pod.Name)
+		}
+	}
+	return nil
 }
 
 // InitializedMCPClient holds an initialized MCP client with its associated context
@@ -165,44 +218,7 @@ func GetVirtualMCPServerPods(ctx context.Context, c client.Client, vmcpServerNam
 // WaitForPodsReady waits for all pods matching labels to be ready
 func WaitForPodsReady(ctx context.Context, c client.Client, namespace string, labels map[string]string, timeout time.Duration) {
 	gomega.Eventually(func() error {
-		podList := &corev1.PodList{}
-		if err := c.List(ctx, podList,
-			client.InNamespace(namespace),
-			client.MatchingLabels(labels)); err != nil {
-			return err
-		}
-
-		if len(podList.Items) == 0 {
-			return fmt.Errorf("no pods found with labels %v", labels)
-		}
-
-		for _, pod := range podList.Items {
-			if pod.Status.Phase != corev1.PodRunning {
-				return fmt.Errorf("pod %s is in phase %s", pod.Name, pod.Status.Phase)
-			}
-
-			containerReady := false
-			podReady := false
-
-			for _, condition := range pod.Status.Conditions {
-				if condition.Type == corev1.ContainersReady {
-					containerReady = condition.Status == corev1.ConditionTrue
-				}
-
-				if condition.Type == corev1.PodReady {
-					podReady = condition.Status == corev1.ConditionTrue
-				}
-			}
-
-			if !containerReady {
-				return fmt.Errorf("pod %s containers not ready", pod.Name)
-			}
-
-			if !podReady {
-				return fmt.Errorf("pod %s not ready", pod.Name)
-			}
-		}
-		return nil
+		return checkPodsReady(ctx, c, namespace, labels)
 	}, timeout, 5*time.Second).Should(gomega.Succeed())
 }
 
@@ -680,7 +696,8 @@ func CreateMCPServerAndWait(
 	return backend
 }
 
-// GetVMCPNodePort waits for the VirtualMCPServer service to have a NodePort assigned and returns it.
+// GetVMCPNodePort waits for the VirtualMCPServer service to have a NodePort assigned,
+// verifies the port is accessible, and waits for the MCP endpoint to be ready.
 func GetVMCPNodePort(
 	ctx context.Context,
 	c client.Client,
@@ -703,10 +720,63 @@ func GetVMCPNodePort(
 			return fmt.Errorf("nodePort not assigned for vmcp service %s", serviceName)
 		}
 		nodePort = service.Spec.Ports[0].NodePort
+
+		// Verify the MCP endpoint is actually ready to accept requests
+		if err := checkMCPEndpointReady(nodePort, 5*time.Second); err != nil {
+			return fmt.Errorf("nodePort %d assigned but MCP endpoint not ready: %w", nodePort, err)
+		}
+
 		return nil
-	}, timeout, pollingInterval).Should(gomega.Succeed(), "NodePort should be assigned")
+	}, timeout, pollingInterval).Should(gomega.Succeed(), "NodePort should be assigned and MCP endpoint ready")
 
 	return nodePort
+}
+
+// checkPortOpen attempts to establish a TCP connection to verify a port is accessible
+func checkPortOpen(host string, port int32, timeout time.Duration) error {
+	address := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	conn, err := net.DialTimeout("tcp", address, timeout)
+	if err != nil {
+		return fmt.Errorf("failed to connect to %s: %w", address, err)
+	}
+	_ = conn.Close()
+	return nil
+}
+
+// checkMCPEndpointReady verifies that the MCP endpoint is ready to accept and handle requests
+// by attempting to create a client and initialize an MCP session
+func checkMCPEndpointReady(nodePort int32, timeout time.Duration) error {
+	serverURL := fmt.Sprintf("http://localhost:%d/mcp", nodePort)
+
+	// Try to create an MCP client
+	mcpClient, err := mcpclient.NewStreamableHttpClient(serverURL)
+	if err != nil {
+		return fmt.Errorf("failed to create MCP client: %w", err)
+	}
+	defer mcpClient.Close()
+
+	// Create a context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// Try to start the client transport
+	if err := mcpClient.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start MCP client: %w", err)
+	}
+
+	// Try to initialize the MCP session
+	initRequest := mcp.InitializeRequest{}
+	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initRequest.Params.ClientInfo = mcp.Implementation{
+		Name:    "readiness-check",
+		Version: "1.0.0",
+	}
+
+	if _, err := mcpClient.Initialize(ctx, initRequest); err != nil {
+		return fmt.Errorf("failed to initialize MCP session: %w", err)
+	}
+
+	return nil
 }
 
 // InstrumentedBackendScript is an instrumented backend script that tracks Bearer tokens

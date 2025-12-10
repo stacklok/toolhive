@@ -1,6 +1,8 @@
 package secrets
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -8,7 +10,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func TestGet(t *testing.T) {
@@ -711,7 +715,7 @@ func TestUpsertWithOwnerReference(t *testing.T) {
 			WithObjects(owner, existingSecret).
 			Build()
 
-		client := NewClient(fakeClient, scheme)
+		secretsClient := NewClient(fakeClient, scheme)
 
 		// Update with new data and owner reference
 		updatedSecret := &corev1.Secret{
@@ -727,13 +731,13 @@ func TestUpsertWithOwnerReference(t *testing.T) {
 			},
 		}
 
-		result, err := client.UpsertWithOwnerReference(ctx, updatedSecret, owner)
+		result, err := secretsClient.UpsertWithOwnerReference(ctx, updatedSecret, owner)
 
 		require.NoError(t, err)
 		assert.Equal(t, "updated", string(result))
 
 		// Verify the secret was updated correctly
-		retrieved, err := client.Get(ctx, "update-test-secret", "default")
+		retrieved, err := secretsClient.Get(ctx, "update-test-secret", "default")
 		require.NoError(t, err)
 
 		// Data should be replaced with new data
@@ -746,5 +750,139 @@ func TestUpsertWithOwnerReference(t *testing.T) {
 		// Owner reference should be set
 		require.Len(t, retrieved.OwnerReferences, 1)
 		assert.Equal(t, "owner-cm", retrieved.OwnerReferences[0].Name)
+	})
+
+	t.Run("returns error when create fails", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		owner := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "owner-cm",
+				Namespace: "default",
+				UID:       "owner-uid",
+			},
+		}
+
+		// Use interceptor to simulate create failure
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Create: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
+					return errors.New("permission denied")
+				},
+			}).
+			Build()
+
+		secretsClient := NewClient(fakeClient, scheme)
+
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-secret",
+				Namespace: "default",
+			},
+			Data: map[string][]byte{
+				"key": []byte("value"),
+			},
+		}
+
+		result, err := secretsClient.UpsertWithOwnerReference(ctx, secret, owner)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to upsert secret test-secret in namespace default")
+		assert.Contains(t, err.Error(), "permission denied")
+		assert.Equal(t, "unchanged", string(result))
+	})
+
+	t.Run("returns error when update fails", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		owner := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "owner-cm",
+				Namespace: "default",
+				UID:       "owner-uid",
+			},
+		}
+
+		existingSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "existing-secret",
+				Namespace: "default",
+			},
+			Data: map[string][]byte{
+				"key": []byte("old-value"),
+			},
+		}
+
+		// Use interceptor to simulate update failure
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(existingSecret).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Update: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.UpdateOption) error {
+					return errors.New("conflict error")
+				},
+			}).
+			Build()
+
+		secretsClient := NewClient(fakeClient, scheme)
+
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "existing-secret",
+				Namespace: "default",
+			},
+			Data: map[string][]byte{
+				"key": []byte("new-value"),
+			},
+		}
+
+		result, err := secretsClient.UpsertWithOwnerReference(ctx, secret, owner)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to upsert secret existing-secret in namespace default")
+		assert.Contains(t, err.Error(), "conflict error")
+		assert.Equal(t, "unchanged", string(result))
+	})
+
+	t.Run("returns error when owner is in different namespace", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := t.Context()
+
+		// Owner in different namespace than secret
+		owner := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "owner-cm",
+				Namespace: "other-namespace",
+				UID:       "owner-uid",
+			},
+		}
+
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			Build()
+
+		secretsClient := NewClient(fakeClient, scheme)
+
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-secret",
+				Namespace: "default",
+			},
+			Data: map[string][]byte{
+				"key": []byte("value"),
+			},
+		}
+
+		result, err := secretsClient.UpsertWithOwnerReference(ctx, secret, owner)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to set controller reference")
+		assert.Equal(t, "unchanged", string(result))
 	})
 }

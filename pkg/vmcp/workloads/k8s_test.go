@@ -366,6 +366,7 @@ func TestMCPServerToBackend_BasicFields(t *testing.T) {
 	assert.Equal(t, "streamable-http", backend.TransportType)
 	assert.Equal(t, vmcp.BackendHealthy, backend.HealthStatus)
 	assert.Equal(t, "mcp", backend.Metadata["tool_type"])
+	assert.Equal(t, "mcp_server", backend.Metadata["workload_type"])
 	assert.Equal(t, string(mcpv1alpha1.MCPServerPhaseRunning), backend.Metadata["workload_status"])
 	assert.Equal(t, namespace, backend.Metadata["namespace"])
 }
@@ -682,6 +683,7 @@ func TestMCPRemoteProxyToBackend_BasicFields(t *testing.T) {
 	assert.Equal(t, "streamable-http", backend.TransportType)
 	assert.Equal(t, vmcp.BackendHealthy, backend.HealthStatus)
 	assert.Equal(t, "mcp", backend.Metadata["tool_type"])
+	assert.Equal(t, "remote_proxy", backend.Metadata["workload_type"])
 	assert.Equal(t, string(mcpv1alpha1.MCPRemoteProxyPhaseReady), backend.Metadata["workload_status"])
 	assert.Equal(t, namespace, backend.Metadata["namespace"])
 }

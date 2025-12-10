@@ -249,6 +249,7 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 
 	// Set system metadata (these override user labels to prevent conflicts)
 	backend.Metadata["tool_type"] = "mcp"
+	backend.Metadata["workload_type"] = "mcp_server"
 	backend.Metadata["workload_status"] = string(mcpServer.Status.Phase)
 	if mcpServer.Namespace != "" {
 		backend.Metadata["namespace"] = mcpServer.Namespace

@@ -48,6 +48,14 @@ To uninstall/delete the `toolhive-operator-crds` deployment:
 helm uninstall <release_name>
 ```
 
+## Why CRDs in templates/?
+
+Helm does not upgrade CRDs placed in the `crds/` directory during `helm upgrade` operations. This is a [known Helm limitation](https://helm.sh/docs/chart_best_practices/custom_resource_definitions/#some-caveats-and-explanations) to prevent accidental data loss. As a result, users running `helm upgrade` would silently have stale CRDs.
+
+To ensure CRDs are upgraded alongside the chart, this chart places CRDs in `templates/` with Helm conditionals. This follows the pattern used by several popular projects.
+
+However, placing CRDs in `templates/` means they would be deleted when the Helm release is uninstalled, which could result in data loss. To prevent this, CRDs are annotated with `helm.sh/resource-policy: keep` by default (controlled by `crds.keep`). This ensures CRDs persist even after uninstalling the chart.
+
 {{ template "chart.requirementsSection" . }}
 
 {{ template "chart.valuesSection" . }}

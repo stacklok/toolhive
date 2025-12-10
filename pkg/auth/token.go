@@ -403,6 +403,10 @@ type TokenValidatorConfig struct {
 
 	// ResourceURL is the explicit resource URL for OAuth discovery (RFC 9728)
 	ResourceURL string
+
+	// Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
+	// If empty, defaults to ["openid"]
+	Scopes []string
 }
 
 // discoverOIDCConfiguration discovers OIDC configuration from the issuer's well-known endpoint

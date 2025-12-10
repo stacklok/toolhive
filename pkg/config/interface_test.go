@@ -270,8 +270,6 @@ func TestProviderRegistryOperations(t *testing.T) {
 	t.Parallel()
 	logger.Initialize()
 
-	tempDir := t.TempDir()
-
 	t.Run("DefaultProvider_RegistryOperations", func(t *testing.T) {
 		t.Parallel()
 
@@ -284,23 +282,26 @@ func TestProviderRegistryOperations(t *testing.T) {
 		_, err := pathProvider.LoadOrCreateConfig()
 		require.NoError(t, err)
 
-		// Test SetRegistryURL
+		// Test SetRegistryURL with invalid URL (validation will fail)
 		err = pathProvider.SetRegistryURL("https://example.com", true)
-		assert.NoError(t, err)
+		// URL validation now checks that the URL returns valid ToolHive registry JSON
+		// This will fail for non-existent URLs
+		assert.Error(t, err, "Non-existent URL should fail validation")
 
-		// Test GetRegistryConfig after setting URL
-		url, localPath, allowPrivateIP, registryType := pathProvider.GetRegistryConfig()
-		assert.Equal(t, "https://example.com", url)
-		assert.Equal(t, "", localPath)
-		assert.True(t, allowPrivateIP)
-		assert.Equal(t, "url", registryType)
-
-		// Test SetRegistryFile (must be a JSON file)
+		// Test SetRegistryFile (must be a JSON file with valid registry structure)
 		registryFilePath := filepath.Join(tempDir, "registry.json")
-		err = os.WriteFile(registryFilePath, []byte(`{"test": "registry"}`), 0600)
+		validRegistryJSON := `{"servers": {"test-server": {"command": ["test"], "args": []}}}`
+		err = os.WriteFile(registryFilePath, []byte(validRegistryJSON), 0600)
 		require.NoError(t, err)
 		err = pathProvider.SetRegistryFile(registryFilePath)
 		assert.NoError(t, err)
+
+		// Test GetRegistryConfig after setting file
+		url, localPath, allowPrivateIP, registryType := pathProvider.GetRegistryConfig()
+		assert.Equal(t, "", url)
+		assert.NotEmpty(t, localPath) // Should have the absolute path
+		assert.False(t, allowPrivateIP)
+		assert.Equal(t, "file", registryType)
 
 		// Test UnsetRegistry
 		err = pathProvider.UnsetRegistry()
@@ -309,6 +310,7 @@ func TestProviderRegistryOperations(t *testing.T) {
 
 	t.Run("PathProvider_RegistryOperations", func(t *testing.T) {
 		t.Parallel()
+		tempDir := t.TempDir() // Use separate temp dir for this test
 		configPath := filepath.Join(tempDir, "path_config.yaml")
 		provider := NewPathProvider(configPath)
 
@@ -316,28 +318,30 @@ func TestProviderRegistryOperations(t *testing.T) {
 		_, err := provider.LoadOrCreateConfig()
 		require.NoError(t, err)
 
-		// Test SetRegistryURL
+		// Test SetRegistryURL with invalid URL (validation will fail)
 		err = provider.SetRegistryURL("https://path-example.com", false)
-		assert.NoError(t, err)
+		// URL validation now checks that the URL returns valid ToolHive registry JSON
+		assert.Error(t, err, "Non-existent URL should fail validation")
 
-		// Test GetRegistryConfig after setting URL
-		url, localPath, allowPrivateIP, registryType := provider.GetRegistryConfig()
-		assert.Equal(t, "https://path-example.com", url)
-		assert.Equal(t, "", localPath)
-		assert.False(t, allowPrivateIP)
-		assert.Equal(t, "url", registryType)
-
-		// Test SetRegistryFile (must be a JSON file)
-		registryFilePath := filepath.Join(tempDir, "path_registry.json")
-		err = os.WriteFile(registryFilePath, []byte(`{"test": "registry"}`), 0600)
+		// Test SetRegistryFile with invalid structure (should fail)
+		invalidFilePath := filepath.Join(tempDir, "invalid_registry.json")
+		err = os.WriteFile(invalidFilePath, []byte(`{"test": "registry"}`), 0600)
 		require.NoError(t, err)
-		err = provider.SetRegistryFile(registryFilePath)
+		err = provider.SetRegistryFile(invalidFilePath)
+		assert.Error(t, err, "Invalid registry structure should fail validation")
+
+		// Test SetRegistryFile with valid structure (should succeed)
+		validFilePath := filepath.Join(tempDir, "path_registry.json")
+		validRegistryJSON := `{"servers": {"test-server": {"command": ["test"], "args": []}}}`
+		err = os.WriteFile(validFilePath, []byte(validRegistryJSON), 0600)
+		require.NoError(t, err)
+		err = provider.SetRegistryFile(validFilePath)
 		assert.NoError(t, err)
 
 		// Test GetRegistryConfig after setting file
-		url, localPath, allowPrivateIP, registryType = provider.GetRegistryConfig()
+		url, localPath, allowPrivateIP, registryType := provider.GetRegistryConfig()
 		assert.Equal(t, "", url)
-		assert.Equal(t, registryFilePath, localPath)
+		assert.NotEmpty(t, localPath) // Should have the absolute path
 		assert.False(t, allowPrivateIP)
 		assert.Equal(t, "file", registryType)
 

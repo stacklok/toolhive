@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	neturl "net/url"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -160,16 +161,27 @@ func setRegistryURL(provider Provider, registryURL string, allowPrivateRegistryI
 		return fmt.Errorf("invalid registry URL: %w", err)
 	}
 
+	// Build HTTP client with appropriate security settings
+	builder := networking.NewHttpClientBuilder().WithPrivateIPs(allowPrivateRegistryIp)
+	if allowPrivateRegistryIp {
+		builder = builder.WithInsecureAllowHTTP(true)
+	}
+	registryClient, err := builder.Build()
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP client: %w", err)
+	}
+
 	// Check for private IP addresses if not allowed
 	if !allowPrivateRegistryIp {
-		registryClient, err := networking.NewHttpClientBuilder().Build()
-		if err != nil {
-			return fmt.Errorf("failed to create HTTP client: %w", err)
-		}
 		_, err = registryClient.Get(registryURL)
 		if err != nil && strings.Contains(fmt.Sprint(err), networking.ErrPrivateIpAddress) {
 			return err
 		}
+	}
+
+	// Validate that the URL returns valid ToolHive registry JSON
+	if !isValidRegistryJSON(registryClient, registryURL) {
+		return fmt.Errorf("registry URL does not contain valid ToolHive registry format (expected 'servers' or 'remoteServers' fields)")
 	}
 
 	// Update the configuration
@@ -199,6 +211,11 @@ func setRegistryFile(provider Provider, registryPath string) error {
 		return fmt.Errorf("registry file: %w", err)
 	}
 
+	// Validate registry structure
+	if err := validateRegistryFileStructure(cleanPath); err != nil {
+		return fmt.Errorf("registry file: %w", err)
+	}
+
 	// Make the path absolute
 	absPath, err := makeAbsolutePath(cleanPath)
 	if err != nil {
@@ -213,6 +230,32 @@ func setRegistryFile(provider Provider, registryPath string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("failed to update configuration: %w", err)
+	}
+
+	return nil
+}
+
+// validateRegistryFileStructure checks if a file contains valid ToolHive registry structure
+func validateRegistryFileStructure(path string) error {
+	// Read file content
+	// #nosec G304: File path is user-provided but validated by caller
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Parse as JSON
+	var registryData map[string]interface{}
+	if err := json.Unmarshal(data, &registryData); err != nil {
+		return fmt.Errorf("invalid JSON format: %w", err)
+	}
+
+	// Check for ToolHive registry structure (servers or remoteServers fields)
+	_, hasServers := registryData["servers"]
+	_, hasRemoteServers := registryData["remoteServers"]
+
+	if !hasServers && !hasRemoteServers {
+		return fmt.Errorf("does not contain valid ToolHive registry format (expected 'servers' or 'remoteServers' fields)")
 	}
 
 	return nil

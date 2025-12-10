@@ -123,14 +123,14 @@ func TestRegistryAPI_PutEndpoint(t *testing.T) {
 		description  string
 	}{
 		{
-			name:         "valid URL registry",
+			name:         "invalid URL registry",
 			requestBody:  `{"url":"https://example.com/test-registry.json"}`,
-			expectedCode: http.StatusOK,
-			description:  "Valid HTTPS URL should be accepted",
+			expectedCode: http.StatusBadRequest,
+			description:  "URL without valid registry JSON should return 400",
 		},
 		{
 			name:         "invalid local path registry",
-			requestBody:  `{"local_path":"/tmp/test-registry.json"}`,
+			requestBody:  `{"local_path":"/definitely/does/not/exist/test-registry.json"}`,
 			expectedCode: http.StatusBadRequest,
 			description:  "Non-existent local file should return 400",
 		},

@@ -173,7 +173,7 @@ func setRegistryCmdFunc(_ *cobra.Command, args []string) error {
 		}
 		// Reset the cached provider so it re-initializes with the new config
 		registry.ResetDefaultProvider()
-		fmt.Printf("Successfully set static registry file: %s\n", cleanPath)
+		fmt.Printf("Successfully set a remote registry file: %s\n", cleanPath)
 		if allowPrivateRegistryIp {
 			fmt.Print("Successfully enabled use of private IP addresses for the remote registry\n")
 			fmt.Print("Caution: allowing registry URLs containing private IP addresses may decrease your security.\n" +

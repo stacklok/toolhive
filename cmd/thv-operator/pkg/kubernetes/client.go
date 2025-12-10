@@ -3,27 +3,20 @@ package kubernetes
 import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/secrets"
 )
 
-// Client provides a wrapper around the controller-runtime client with
-// convenience methods for common Kubernetes operations.
+// Client provides a unified interface for Kubernetes resource operations.
+// It composes domain-specific clients for different resource types.
 type Client struct {
-	client client.Client
-	scheme *runtime.Scheme
+	// Secrets provides operations for Kubernetes Secrets.
+	Secrets *secrets.Client
 }
 
-// NewClient creates a new Client instance with the provided controller-runtime client and scheme.
-// The scheme is required for operations that need to set owner references.
+// NewClient creates a new Kubernetes Client with all sub-clients initialized.
 func NewClient(c client.Client, scheme *runtime.Scheme) *Client {
 	return &Client{
-		client: c,
-		scheme: scheme,
+		Secrets: secrets.NewClient(c, scheme),
 	}
-}
-
-// GetClient returns the underlying controller-runtime client.
-// This is useful when you need direct access to the client for operations
-// not covered by the convenience methods.
-func (c *Client) GetClient() client.Client {
-	return c.client
 }

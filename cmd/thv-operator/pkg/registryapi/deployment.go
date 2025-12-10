@@ -156,7 +156,7 @@ func (*manager) buildRegistryAPIDeployment(
 
 	// Add pgpass mount if databaseConfig is specified
 	if mcpRegistry.HasDatabaseConfig() {
-		secretName := mcpRegistry.GetPGPassSecretName()
+		secretName := mcpRegistry.BuildPGPassSecretName()
 		opts = append(opts, WithPGPassMount(registryAPIContainerName, secretName))
 	}
 

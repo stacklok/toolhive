@@ -20,7 +20,7 @@ import (
 type manager struct {
 	client     client.Client
 	scheme     *runtime.Scheme
-	kubeClient *kubernetes.Client
+	kubeHelper *kubernetes.Client
 }
 
 // NewManager creates a new registry API manager
@@ -31,7 +31,7 @@ func NewManager(
 	return &manager{
 		client:     k8sClient,
 		scheme:     scheme,
-		kubeClient: kubernetes.NewClient(k8sClient, scheme),
+		kubeHelper: kubernetes.NewClient(k8sClient, scheme),
 	}
 }
 

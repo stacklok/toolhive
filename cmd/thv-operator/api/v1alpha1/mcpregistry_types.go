@@ -591,11 +591,66 @@ func (r *MCPRegistry) GetPodTemplateSpecRaw() *runtime.RawExtension {
 }
 
 // GetPGPassSecretName returns the name of the generated pgpass secret for this registry
-func (r *MCPRegistry) GetPGPassSecretName() string {
+func (r *MCPRegistry) BuildPGPassSecretName() string {
 	return fmt.Sprintf("%s-db-pgpass", r.Name)
 }
 
-// HasDatabaseConfig returns true if the MCPRegistry has a database configuration specified
+// HasDatabaseConfig returns true if the MCPRegistry has a valid database configuration.
+// A valid configuration requires:
+// - DatabaseConfig to be non-nil
+// - Host to be specified
+// - Database to be specified
+// - User to be specified
+// - MigrationUser to be specified
+// - DBAppUserPasswordSecretRef.Name to be specified
+// - DBMigrationUserPasswordSecretRef.Name to be specified
 func (r *MCPRegistry) HasDatabaseConfig() bool {
-	return r.Spec.DatabaseConfig != nil
+	if r.Spec.DatabaseConfig == nil {
+		return false
+	}
+
+	dbConfig := r.Spec.DatabaseConfig
+
+	// All required fields must be specified
+	if dbConfig.Host == "" {
+		return false
+	}
+	if dbConfig.Database == "" {
+		return false
+	}
+	if dbConfig.User == "" {
+		return false
+	}
+	if dbConfig.MigrationUser == "" {
+		return false
+	}
+	if dbConfig.DBAppUserPasswordSecretRef.Name == "" {
+		return false
+	}
+	if dbConfig.DBMigrationUserPasswordSecretRef.Name == "" {
+		return false
+	}
+
+	return true
+}
+
+// GetDatabaseConfig returns the database configuration.
+// Callers should check HasDatabaseConfig() before calling this method.
+func (r *MCPRegistry) GetDatabaseConfig() *MCPRegistryDatabaseConfig {
+	return r.Spec.DatabaseConfig
+}
+
+// GetDatabasePort returns the database port.
+// If the port is not specified, it returns 5432.
+// We do this because its likely to be 5432 due to
+// it being the default port for PostgreSQL.
+func (r *MCPRegistry) GetDatabasePort() int {
+	if r.Spec.DatabaseConfig == nil {
+		return 5432
+	}
+
+	if r.Spec.DatabaseConfig.Port == 0 {
+		return 5432
+	}
+	return r.Spec.DatabaseConfig.Port
 }

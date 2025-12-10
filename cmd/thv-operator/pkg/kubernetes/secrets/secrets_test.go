@@ -1,4 +1,4 @@
-package kubernetes
+package secrets
 
 import (
 	"testing"
@@ -11,7 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func TestGetSecret(t *testing.T) {
+func TestGet(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
@@ -38,8 +38,8 @@ func TestGetSecret(t *testing.T) {
 			WithObjects(secret).
 			Build()
 
-		kubeClient := NewClient(fakeClient, scheme)
-		retrieved, err := kubeClient.GetSecret(ctx, "test-secret", "default")
+		client := NewClient(fakeClient, scheme)
+		retrieved, err := client.Get(ctx, "test-secret", "default")
 
 		require.NoError(t, err)
 		assert.NotNil(t, retrieved)
@@ -58,8 +58,8 @@ func TestGetSecret(t *testing.T) {
 			WithScheme(scheme).
 			Build()
 
-		kubeClient := NewClient(fakeClient, scheme)
-		retrieved, err := kubeClient.GetSecret(ctx, "non-existent", "default")
+		client := NewClient(fakeClient, scheme)
+		retrieved, err := client.Get(ctx, "non-existent", "default")
 
 		require.Error(t, err)
 		assert.Nil(t, retrieved)
@@ -96,8 +96,8 @@ func TestGetSecret(t *testing.T) {
 			WithObjects(secret1, secret2).
 			Build()
 
-		kubeClient := NewClient(fakeClient, scheme)
-		retrieved, err := kubeClient.GetSecret(ctx, "test-secret", "namespace2")
+		client := NewClient(fakeClient, scheme)
+		retrieved, err := client.Get(ctx, "test-secret", "namespace2")
 
 		require.NoError(t, err)
 		assert.Equal(t, "namespace2", retrieved.Namespace)
@@ -105,7 +105,7 @@ func TestGetSecret(t *testing.T) {
 	})
 }
 
-func TestGetSecretValue(t *testing.T) {
+func TestGetValue(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
@@ -132,7 +132,7 @@ func TestGetSecretValue(t *testing.T) {
 			WithObjects(secret).
 			Build()
 
-		kubeClient := NewClient(fakeClient, scheme)
+		client := NewClient(fakeClient, scheme)
 		secretRef := corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{
 				Name: "test-secret",
@@ -140,7 +140,7 @@ func TestGetSecretValue(t *testing.T) {
 			Key: "password",
 		}
 
-		value, err := kubeClient.GetSecretValue(ctx, "default", secretRef)
+		value, err := client.GetValue(ctx, "default", secretRef)
 
 		require.NoError(t, err)
 		assert.Equal(t, "super-secret-password", value)
@@ -155,7 +155,7 @@ func TestGetSecretValue(t *testing.T) {
 			WithScheme(scheme).
 			Build()
 
-		kubeClient := NewClient(fakeClient, scheme)
+		client := NewClient(fakeClient, scheme)
 		secretRef := corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{
 				Name: "non-existent-secret",
@@ -163,7 +163,7 @@ func TestGetSecretValue(t *testing.T) {
 			Key: "password",
 		}
 
-		value, err := kubeClient.GetSecretValue(ctx, "default", secretRef)
+		value, err := client.GetValue(ctx, "default", secretRef)
 
 		require.Error(t, err)
 		assert.Empty(t, value)
@@ -190,7 +190,7 @@ func TestGetSecretValue(t *testing.T) {
 			WithObjects(secret).
 			Build()
 
-		kubeClient := NewClient(fakeClient, scheme)
+		client := NewClient(fakeClient, scheme)
 		secretRef := corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{
 				Name: "test-secret",
@@ -198,7 +198,7 @@ func TestGetSecretValue(t *testing.T) {
 			Key: "non-existent-key",
 		}
 
-		value, err := kubeClient.GetSecretValue(ctx, "default", secretRef)
+		value, err := client.GetValue(ctx, "default", secretRef)
 
 		require.Error(t, err)
 		assert.Empty(t, value)
@@ -235,7 +235,7 @@ func TestGetSecretValue(t *testing.T) {
 			WithObjects(secret1, secret2).
 			Build()
 
-		kubeClient := NewClient(fakeClient, scheme)
+		client := NewClient(fakeClient, scheme)
 		secretRef := corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{
 				Name: "test-secret",
@@ -243,7 +243,7 @@ func TestGetSecretValue(t *testing.T) {
 			Key: "password",
 		}
 
-		value, err := kubeClient.GetSecretValue(ctx, "namespace2", secretRef)
+		value, err := client.GetValue(ctx, "namespace2", secretRef)
 
 		require.NoError(t, err)
 		assert.Equal(t, "password2", value)
@@ -269,7 +269,7 @@ func TestGetSecretValue(t *testing.T) {
 			WithObjects(secret).
 			Build()
 
-		kubeClient := NewClient(fakeClient, scheme)
+		client := NewClient(fakeClient, scheme)
 		secretRef := corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{
 				Name: "test-secret",
@@ -277,7 +277,7 @@ func TestGetSecretValue(t *testing.T) {
 			Key: "empty-key",
 		}
 
-		value, err := kubeClient.GetSecretValue(ctx, "default", secretRef)
+		value, err := client.GetValue(ctx, "default", secretRef)
 
 		require.NoError(t, err)
 		assert.Empty(t, value)
@@ -295,9 +295,8 @@ func TestNewClient(t *testing.T) {
 			WithScheme(scheme).
 			Build()
 
-		kubeClient := NewClient(fakeClient, scheme)
+		client := NewClient(fakeClient, scheme)
 
-		assert.NotNil(t, kubeClient)
-		assert.Equal(t, fakeClient, kubeClient.GetClient())
+		assert.NotNil(t, client)
 	})
 }

@@ -1,18 +1,34 @@
-package kubernetes
+package secrets
 
 import (
 	"context"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-// GetSecret retrieves a Kubernetes Secret by name and namespace.
+// Client provides convenience methods for working with Kubernetes Secrets.
+type Client struct {
+	client client.Client
+	scheme *runtime.Scheme
+}
+
+// NewClient creates a new secrets Client instance.
+// The scheme is required for operations that need to set owner references.
+func NewClient(c client.Client, scheme *runtime.Scheme) *Client {
+	return &Client{
+		client: c,
+		scheme: scheme,
+	}
+}
+
+// Get retrieves a Kubernetes Secret by name and namespace.
 // Returns the secret if found, or an error if not found or on failure.
-func (c *Client) GetSecret(ctx context.Context, name, namespace string) (*corev1.Secret, error) {
+func (c *Client) Get(ctx context.Context, name, namespace string) (*corev1.Secret, error) {
 	secret := &corev1.Secret{}
 	err := c.client.Get(ctx, client.ObjectKey{
 		Name:      name,
@@ -26,11 +42,11 @@ func (c *Client) GetSecret(ctx context.Context, name, namespace string) (*corev1
 	return secret, nil
 }
 
-// GetSecretValue retrieves a specific key's value from a Kubernetes Secret.
+// GetValue retrieves a specific key's value from a Kubernetes Secret.
 // Uses a SecretKeySelector to identify the secret name and key.
 // Returns the value as a string, or an error if the secret or key is not found.
-func (c *Client) GetSecretValue(ctx context.Context, namespace string, secretRef corev1.SecretKeySelector) (string, error) {
-	secret, err := c.GetSecret(ctx, secretRef.Name, namespace)
+func (c *Client) GetValue(ctx context.Context, namespace string, secretRef corev1.SecretKeySelector) (string, error) {
+	secret, err := c.Get(ctx, secretRef.Name, namespace)
 	if err != nil {
 		return "", err
 	}
@@ -43,31 +59,31 @@ func (c *Client) GetSecretValue(ctx context.Context, namespace string, secretRef
 	return string(value), nil
 }
 
-// UpsertSecretWithOwnerReference creates or updates a Kubernetes Secret with an owner reference.
+// UpsertWithOwnerReference creates or updates a Kubernetes Secret with an owner reference.
 // The owner reference ensures the secret is garbage collected when the owner is deleted.
 // Uses retry logic to handle conflicts from concurrent modifications.
 // Returns the operation result (Created, Updated, or Unchanged) and any error.
-func (c *Client) UpsertSecretWithOwnerReference(
+func (c *Client) UpsertWithOwnerReference(
 	ctx context.Context,
 	secret *corev1.Secret,
 	owner client.Object,
 ) (controllerutil.OperationResult, error) {
-	return c.upsertSecret(ctx, secret, owner)
+	return c.upsert(ctx, secret, owner)
 }
 
-// UpsertSecret creates or updates a Kubernetes Secret without an owner reference.
+// Upsert creates or updates a Kubernetes Secret without an owner reference.
 // Uses retry logic to handle conflicts from concurrent modifications.
 // Returns the operation result (Created, Updated, or Unchanged) and any error.
-func (c *Client) UpsertSecret(ctx context.Context, secret *corev1.Secret) (controllerutil.OperationResult, error) {
-	return c.upsertSecret(ctx, secret, nil)
+func (c *Client) Upsert(ctx context.Context, secret *corev1.Secret) (controllerutil.OperationResult, error) {
+	return c.upsert(ctx, secret, nil)
 }
 
-// upsertSecret creates or updates a Kubernetes Secret using retry logic for conflict handling.
+// upsert creates or updates a Kubernetes Secret using retry logic for conflict handling.
 // If owner is provided, sets a controller reference to establish ownership.
 // This ensures the secret is garbage collected when the owner is deleted.
 // Uses controllerutil.CreateOrUpdate with retry.RetryOnConflict for safe concurrent access.
 // Returns the operation result (Created, Updated, or Unchanged) and any error.
-func (c *Client) upsertSecret(
+func (c *Client) upsert(
 	ctx context.Context,
 	secret *corev1.Secret,
 	owner client.Object,

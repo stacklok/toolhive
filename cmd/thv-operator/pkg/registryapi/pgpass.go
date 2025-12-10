@@ -27,11 +27,6 @@ func (m *manager) ensurePGPassSecret(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
 ) error {
-	// Skip pgpass secret generation if DatabaseConfig is not valid.
-	// HasDatabaseConfig validates all required fields are present.
-	if !mcpRegistry.HasDatabaseConfig() {
-		return fmt.Errorf("database config is missing required fields")
-	}
 	dbConfig := mcpRegistry.GetDatabaseConfig()
 
 	// Read app user password from secret

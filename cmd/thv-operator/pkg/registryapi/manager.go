@@ -79,15 +79,17 @@ func (m *manager) ReconcileAPIService(
 		}
 	}
 
-	// Ensure pgpass secret for PostgreSQL authentication
-	err = m.ensurePGPassSecret(ctx, mcpRegistry)
-	if err != nil {
-		ctxLogger.Error(err, "Failed to ensure pgpass secret")
-		return &mcpregistrystatus.Error{
-			Err:             err,
-			Message:         fmt.Sprintf("Failed to ensure pgpass secret: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionAPIReady,
-			ConditionReason: "PGPassSecretFailed",
+	// Ensure pgpass secret for PostgreSQL authentication if dbConfig provided.
+	if mcpRegistry.HasDatabaseConfig() {
+		err = m.ensurePGPassSecret(ctx, mcpRegistry)
+		if err != nil {
+			ctxLogger.Error(err, "Failed to ensure pgpass secret")
+			return &mcpregistrystatus.Error{
+				Err:             err,
+				Message:         fmt.Sprintf("Failed to ensure pgpass secret: %v", err),
+				ConditionType:   mcpv1alpha1.ConditionAPIReady,
+				ConditionReason: "PGPassSecretFailed",
+			}
 		}
 	}
 

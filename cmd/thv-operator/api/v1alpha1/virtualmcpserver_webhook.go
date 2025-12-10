@@ -274,7 +274,13 @@ func validateCompositeToolStep(
 	}
 
 	// Validate elicitation response handlers
-	return validateStepElicitationResponseHandlers(toolIndex, stepIndex, step)
+	if err := validateStepElicitationResponseHandlers(toolIndex, stepIndex, step); err != nil {
+		return err
+	}
+
+	// Validate templates in arguments and other fields
+	pathPrefix := fmt.Sprintf("spec.compositeTools[%d].steps", toolIndex)
+	return validateWorkflowStepTemplates(pathPrefix, stepIndex, step)
 }
 
 // validateStepType validates the step type and type-specific requirements

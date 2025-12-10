@@ -58,6 +58,22 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 		paramSchemaBytes, err := json.Marshal(parameterSchema)
 		Expect(err).ToNot(HaveOccurred())
 
+		// Build arguments as JSON for runtime.RawExtension
+		backend1Args, err := json.Marshal(map[string]any{
+			"input": "backend1: {{ .params.message }}",
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		backend2Args, err := json.Marshal(map[string]any{
+			"input": "backend2: {{ .params.message }}",
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		combineArgs, err := json.Marshal(map[string]any{
+			"input": "Combined: [{{ .steps.echo_backend1.result }}] + [{{ .steps.echo_backend2.result }}]",
+		})
+		Expect(err).ToNot(HaveOccurred())
+
 		By("Creating VirtualMCPServer with composite parallel workflow")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
@@ -89,8 +105,8 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 								ID:   "echo_backend1",
 								Type: "tool",
 								Tool: fmt.Sprintf("%s.echo", backend1Name),
-								Arguments: map[string]string{
-									"input": "backend1: {{ .params.message }}",
+								Arguments: &runtime.RawExtension{
+									Raw: backend1Args,
 								},
 							},
 							{
@@ -98,8 +114,8 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 								ID:   "echo_backend2",
 								Type: "tool",
 								Tool: fmt.Sprintf("%s.echo", backend2Name),
-								Arguments: map[string]string{
-									"input": "backend2: {{ .params.message }}",
+								Arguments: &runtime.RawExtension{
+									Raw: backend2Args,
 								},
 							},
 							{
@@ -108,9 +124,8 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 								Type:      "tool",
 								Tool:      fmt.Sprintf("%s.echo", backend1Name),
 								DependsOn: []string{"echo_backend1", "echo_backend2"},
-								Arguments: map[string]string{
-									// Combine outputs from both parallel steps
-									"input": "Combined: [{{ .steps.echo_backend1.result }}] + [{{ .steps.echo_backend2.result }}]",
+								Arguments: &runtime.RawExtension{
+									Raw: combineArgs,
 								},
 							},
 						},
@@ -257,9 +272,11 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 			Expect(step3.ID).To(Equal("combine_results"))
 			Expect(step3.DependsOn).To(ContainElements("echo_backend1", "echo_backend2"))
 
-			// Verify template usage combines outputs from parallel steps
-			Expect(step3.Arguments["input"]).To(ContainSubstring(".steps.echo_backend1"))
-			Expect(step3.Arguments["input"]).To(ContainSubstring(".steps.echo_backend2"))
+			// Verify template usage combines outputs from parallel steps (unmarshal from RawExtension)
+			var step3Args map[string]any
+			Expect(json.Unmarshal(step3.Arguments.Raw, &step3Args)).To(Succeed())
+			Expect(step3Args["input"]).To(ContainSubstring(".steps.echo_backend1"))
+			Expect(step3Args["input"]).To(ContainSubstring(".steps.echo_backend2"))
 		})
 
 		It("should target different backends in parallel steps", func() {

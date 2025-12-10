@@ -275,11 +275,36 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 //   - Returns nil error if auth config is discovered and successfully populated into backend
 //   - Returns error if auth config exists but discovery/resolution fails (e.g., missing secret, invalid config)
 func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer, backend *vmcp.Backend) error {
-	// Discover and resolve auth using the converters package
-	strategy, err := converters.DiscoverAndResolveAuth(
+	return d.discoverAuthConfigFromRef(
 		ctx,
 		mcpServer.Spec.ExternalAuthConfigRef,
 		mcpServer.Namespace,
+		mcpServer.Name,
+		"MCPServer",
+		backend,
+	)
+}
+
+// discoverAuthConfigFromRef is a helper that discovers and populates authentication configuration
+// from an ExternalAuthConfigRef. This consolidates auth discovery logic for both MCPServer and MCPRemoteProxy.
+//
+// Return behavior:
+//   - Returns nil error if authConfigRef is nil (no auth config) - this is expected behavior
+//   - Returns nil error if auth config is discovered and successfully populated into backend
+//   - Returns error if auth config exists but discovery/resolution fails (e.g., missing secret, invalid config)
+func (d *k8sDiscoverer) discoverAuthConfigFromRef(
+	ctx context.Context,
+	authConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	namespace string,
+	resourceName string,
+	resourceKind string,
+	backend *vmcp.Backend,
+) error {
+	// Discover and resolve auth using the converters package
+	strategy, err := converters.DiscoverAndResolveAuth(
+		ctx,
+		authConfigRef,
+		namespace,
 		d.k8sClient,
 	)
 	if err != nil {
@@ -288,14 +313,14 @@ func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1
 
 	// If no auth was discovered, nothing to populate
 	if strategy == nil {
-		logger.Debugf("MCPServer %s has no ExternalAuthConfigRef, no auth config to discover", mcpServer.Name)
+		logger.Debugf("%s %s has no ExternalAuthConfigRef, no auth config to discover", resourceKind, resourceName)
 		return nil
 	}
 
 	// Populate backend auth fields with typed strategy
 	backend.AuthConfig = strategy
 
-	logger.Debugf("Discovered auth config for MCPServer %s: strategy=%s", mcpServer.Name, strategy.Type)
+	logger.Debugf("Discovered auth config for %s %s: strategy=%s", resourceKind, resourceName, strategy.Type)
 	return nil
 }
 
@@ -409,28 +434,14 @@ func (d *k8sDiscoverer) discoverRemoteProxyAuthConfig(
 	proxy *mcpv1alpha1.MCPRemoteProxy,
 	backend *vmcp.Backend,
 ) error {
-	// Discover and resolve auth using the converters package
-	strategy, err := converters.DiscoverAndResolveAuth(
+	return d.discoverAuthConfigFromRef(
 		ctx,
 		proxy.Spec.ExternalAuthConfigRef,
 		proxy.Namespace,
-		d.k8sClient,
+		proxy.Name,
+		"MCPRemoteProxy",
+		backend,
 	)
-	if err != nil {
-		return err
-	}
-
-	// If no auth was discovered, nothing to populate
-	if strategy == nil {
-		logger.Debugf("MCPRemoteProxy %s has no ExternalAuthConfigRef, no auth config to discover", proxy.Name)
-		return nil
-	}
-
-	// Populate backend auth fields with typed strategy
-	backend.AuthConfig = strategy
-
-	logger.Debugf("Discovered auth config for MCPRemoteProxy %s: strategy=%s", proxy.Name, strategy.Type)
-	return nil
 }
 
 // getEffectiveProxyMode calculates the effective proxy mode based on transport type and configured proxy mode.

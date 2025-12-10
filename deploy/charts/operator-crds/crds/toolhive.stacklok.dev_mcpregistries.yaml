@@ -85,6 +85,60 @@ spec:
                     default: registry
                     description: Database is the database name
                     type: string
+                  dbAppUserPasswordSecretRef:
+                    description: |-
+                      DBAppUserPasswordSecretRef references a Kubernetes Secret containing the password for the application database user.
+                      The operator will use this password along with DBMigrationUserPasswordSecretRef to generate a pgpass file
+                      that is mounted to the registry API container.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  dbMigrationUserPasswordSecretRef:
+                    description: |-
+                      DBMigrationUserPasswordSecretRef references a Kubernetes Secret containing the password for the migration database user.
+                      The operator will use this password along with DBAppUserPasswordSecretRef to generate a pgpass file
+                      that is mounted to the registry API container.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
                   host:
                     default: postgres
                     description: Host is the database server hostname
@@ -108,40 +162,6 @@ spec:
                       Used for running database schema migrations
                       Credentials should be provided via pgpass file or environment variables
                     type: string
-                  pgPassSecretRef:
-                    description: |-
-                      PGPassSecretRef references a Kubernetes Secret containing a .pgpass file for PostgreSQL authentication.
-                      The secret should contain a key with the pgpass file contents in the standard PostgreSQL pgpass format:
-                      hostname:port:database:username:password
-
-                      The operator will:
-                      1. Mount the secret to an init container
-                      2. Copy the pgpass file to a shared volume with correct permissions (600)
-                      3. Set ownership to the application user (65532:65532)
-                      4. Mount the prepared pgpass file to the registry-api container at /home/appuser/.pgpass
-                      5. Set the PGPASSFILE environment variable to point to the mounted file
-                    properties:
-                      key:
-                        description: The key of the secret to select from.  Must be
-                          a valid secret key.
-                        type: string
-                      name:
-                        default: ""
-                        description: |-
-                          Name of the referent.
-                          This field is effectively required, but due to backwards compatibility is
-                          allowed to be empty. Instances of this type with an empty value here are
-                          almost certainly wrong.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                      optional:
-                        description: Specify whether the Secret or its key must be
-                          defined
-                        type: boolean
-                    required:
-                    - key
-                    type: object
-                    x-kubernetes-map-type: atomic
                   port:
                     default: 5432
                     description: Port is the database server port
@@ -168,7 +188,8 @@ spec:
                       Credentials should be provided via pgpass file or environment variables
                     type: string
                 required:
-                - pgPassSecretRef
+                - dbAppUserPasswordSecretRef
+                - dbMigrationUserPasswordSecretRef
                 type: object
               displayName:
                 description: DisplayName is a human-readable name for the registry

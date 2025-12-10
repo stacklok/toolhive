@@ -17,8 +17,9 @@ import (
 
 // manager implements the Manager interface
 type manager struct {
-	client client.Client
-	scheme *runtime.Scheme
+	client              client.Client
+	scheme              *runtime.Scheme
+	pgpassSecretManager PGPassSecretManager
 }
 
 // NewManager creates a new registry API manager
@@ -26,9 +27,24 @@ func NewManager(
 	k8sClient client.Client,
 	scheme *runtime.Scheme,
 ) Manager {
+	return NewManagerWithPGPassSecretManager(
+		k8sClient,
+		scheme,
+		NewPGPassSecretManager(k8sClient),
+	)
+}
+
+// NewManagerWithPGPassSecretManager creates a new registry API manager with a custom PGPassSecretManager.
+// This constructor is primarily intended for testing to allow injection of mock implementations.
+func NewManagerWithPGPassSecretManager(
+	k8sClient client.Client,
+	scheme *runtime.Scheme,
+	pgpassSecretManager PGPassSecretManager,
+) Manager {
 	return &manager{
-		client: k8sClient,
-		scheme: scheme,
+		client:              k8sClient,
+		scheme:              scheme,
+		pgpassSecretManager: pgpassSecretManager,
 	}
 }
 
@@ -73,6 +89,18 @@ func (m *manager) ReconcileAPIService(
 			Message:         fmt.Sprintf("Failed to ensure RBAC resources: %v", err),
 			ConditionType:   mcpv1alpha1.ConditionAPIReady,
 			ConditionReason: "RBACFailed",
+		}
+	}
+
+	// Ensure pgpass secret for PostgreSQL authentication
+	err = m.pgpassSecretManager.EnsurePGPassSecret(ctx, mcpRegistry)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to ensure pgpass secret")
+		return &mcpregistrystatus.Error{
+			Err:             err,
+			Message:         fmt.Sprintf("Failed to ensure pgpass secret: %v", err),
+			ConditionType:   mcpv1alpha1.ConditionAPIReady,
+			ConditionReason: "PGPassSecretFailed",
 		}
 	}
 

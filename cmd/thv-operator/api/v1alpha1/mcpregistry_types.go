@@ -291,19 +291,19 @@ type MCPRegistryDatabaseConfig struct {
 	// +optional
 	ConnMaxLifetime string `json:"connMaxLifetime,omitempty"`
 
-	// PGPassSecretRef references a Kubernetes Secret containing a .pgpass file for PostgreSQL authentication.
-	// The secret should contain a key with the pgpass file contents in the standard PostgreSQL pgpass format:
-	// hostname:port:database:username:password
-	//
-	// The operator will:
-	// 1. Mount the secret to an init container
-	// 2. Copy the pgpass file to a shared volume with correct permissions (600)
-	// 3. Set ownership to the application user (65532:65532)
-	// 4. Mount the prepared pgpass file to the registry-api container at /home/appuser/.pgpass
-	// 5. Set the PGPASSFILE environment variable to point to the mounted file
+	// DBAppUserPasswordSecretRef references a Kubernetes Secret containing the password for the application database user.
+	// The operator will use this password along with DBMigrationUserPasswordSecretRef to generate a pgpass file
+	// that is mounted to the registry API container.
 	//
 	// +kubebuilder:validation:Required
-	PGPassSecretRef corev1.SecretKeySelector `json:"pgPassSecretRef"`
+	DBAppUserPasswordSecretRef corev1.SecretKeySelector `json:"dbAppUserPasswordSecretRef"`
+
+	// DBMigrationUserPasswordSecretRef references a Kubernetes Secret containing the password for the migration database user.
+	// The operator will use this password along with DBAppUserPasswordSecretRef to generate a pgpass file
+	// that is mounted to the registry API container.
+	//
+	// +kubebuilder:validation:Required
+	DBMigrationUserPasswordSecretRef corev1.SecretKeySelector `json:"dbMigrationUserPasswordSecretRef"`
 }
 
 // MCPRegistryStatus defines the observed state of MCPRegistry
@@ -588,4 +588,9 @@ func (r *MCPRegistry) HasPodTemplateSpec() bool {
 // GetPodTemplateSpecRaw returns the raw PodTemplateSpec
 func (r *MCPRegistry) GetPodTemplateSpecRaw() *runtime.RawExtension {
 	return r.Spec.PodTemplateSpec
+}
+
+// GetPGPassSecretName returns the name of the generated pgpass secret for this registry
+func (r *MCPRegistry) GetPGPassSecretName() string {
+	return fmt.Sprintf("%s-db-pgpass", r.Name)
 }

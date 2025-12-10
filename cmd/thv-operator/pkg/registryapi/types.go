@@ -63,13 +63,15 @@ const (
 	pgpassSecretVolumeName = "pgpass-secret"
 	// pgpassVolumeName is the name of the emptyDir volume for the prepared pgpass file
 	pgpassVolumeName = "pgpass"
-	// pgpassInitContainerName is the name of the init container that prepares the pgpass file
+	// pgpassInitContainerName is the name of the init container that sets up the pgpass file
 	pgpassInitContainerName = "setup-pgpass"
-	// pgpassInitContainerImage is the image used for the pgpass init container
+	// pgpassInitContainerImage is the image used by the init container
 	pgpassInitContainerImage = "busybox:latest"
 	// pgpassSecretMountPath is the path where the secret is mounted in the init container
+	// nolint:gosec // G101: This is a file path, not a credential
 	pgpassSecretMountPath = "/secret"
-	// pgpassEmptyDirMountPath is the path where the emptyDir is mounted in the init container
+	// pgpassEmptyDirMountPath is the path where the emptyDir is mounted
+	// nolint:gosec // G101: This is a file path, not a credential
 	pgpassEmptyDirMountPath = "/pgpass"
 	// pgpassAppUserMountPath is the path where the pgpass file is mounted in the app container
 	// nolint:gosec // G101: This is a file path, not a credential

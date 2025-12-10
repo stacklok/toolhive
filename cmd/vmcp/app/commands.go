@@ -327,6 +327,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuthMiddleware:    authMiddleware,
 		AuthInfoHandler:   authInfoHandler,
 		TelemetryProvider: telemetryProvider,
+		AuditConfig:       cfg.Audit,
 	}
 
 	// Convert composite tool configurations to workflow definitions

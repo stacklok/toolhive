@@ -508,6 +508,66 @@ aggregation:
 			wantErr: true,
 			errMsg:  "environment variable EMPTY_TOKEN not set or empty",
 		},
+		{
+			name: "valid audit configuration",
+			yaml: `
+name: test-vmcp
+group: test-group
+
+incoming_auth:
+  type: anonymous
+
+outgoing_auth:
+  source: inline
+  default:
+    type: unauthenticated
+
+aggregation:
+  conflict_resolution: prefix
+  conflict_resolution_config:
+    prefix_format: "{workload}_"
+
+audit:
+  component: "vmcp-server"
+  event_types:
+    - "mcp_initialize"
+    - "mcp_tool_call"
+  exclude_event_types:
+    - "mcp_ping"
+  include_request_data: true
+  include_response_data: false
+  max_data_size: 10000
+  log_file: "/var/log/vmcp/audit.log"
+`,
+			want: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				if cfg.Audit == nil {
+					t.Fatal("Audit should not be nil")
+				}
+				if cfg.Audit.Component != "vmcp-server" {
+					t.Errorf("Audit.Component = %v, want vmcp-server", cfg.Audit.Component)
+				}
+				if len(cfg.Audit.EventTypes) != 2 {
+					t.Errorf("Audit.EventTypes length = %v, want 2", len(cfg.Audit.EventTypes))
+				}
+				if len(cfg.Audit.ExcludeEventTypes) != 1 {
+					t.Errorf("Audit.ExcludeEventTypes length = %v, want 1", len(cfg.Audit.ExcludeEventTypes))
+				}
+				if !cfg.Audit.IncludeRequestData {
+					t.Error("Audit.IncludeRequestData = false, want true")
+				}
+				if cfg.Audit.IncludeResponseData {
+					t.Error("Audit.IncludeResponseData = true, want false")
+				}
+				if cfg.Audit.MaxDataSize != 10000 {
+					t.Errorf("Audit.MaxDataSize = %v, want 10000", cfg.Audit.MaxDataSize)
+				}
+				if cfg.Audit.LogFile != "/var/log/vmcp/audit.log" {
+					t.Errorf("Audit.LogFile = %v, want /var/log/vmcp/audit.log", cfg.Audit.LogFile)
+				}
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

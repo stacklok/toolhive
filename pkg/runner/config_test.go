@@ -608,7 +608,7 @@ func TestRunConfigBuilder(t *testing.T) {
 		WithAuditEnabled(false, ""),
 		WithLabels(nil),
 		WithGroup(""),
-		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, "", oidcClientID, "", "", "", "", false, false),
+		WithOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, "", oidcClientID, "", "", "", "", false, false, nil),
 		WithTelemetryConfigFromFlags("", false, false, false, "", 0.1, nil, false, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
@@ -652,6 +652,100 @@ func TestRunConfigBuilder(t *testing.T) {
 
 	// Check that user args override registry defaults (metadata args should not be present)
 	assert.NotContains(t, config.CmdArgs, "--metadata-arg", "User args should override registry defaults")
+}
+
+// TestRunConfigBuilder_OIDCScopes tests that OIDC scopes are correctly stored in OIDCConfig
+func TestRunConfigBuilder_OIDCScopes(t *testing.T) {
+	t.Parallel()
+
+	logger.Initialize()
+
+	tests := []struct {
+		name           string
+		scopes         []string
+		expectedScopes []string
+	}{
+		{
+			name:           "standard OIDC scopes",
+			scopes:         []string{"openid", "profile", "email"},
+			expectedScopes: []string{"openid", "profile", "email"},
+		},
+		{
+			name:           "custom scopes",
+			scopes:         []string{"openid", "api:read", "api:write"},
+			expectedScopes: []string{"openid", "api:read", "api:write"},
+		},
+		{
+			name:           "single scope",
+			scopes:         []string{"openid"},
+			expectedScopes: []string{"openid"},
+		},
+		{
+			name:           "nil scopes",
+			scopes:         nil,
+			expectedScopes: nil,
+		},
+		{
+			name:           "empty scopes",
+			scopes:         []string{},
+			expectedScopes: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runtime := &runtimemocks.MockRuntime{}
+			validator := &mockEnvVarValidator{}
+
+			config, err := NewRunConfigBuilder(context.Background(), nil, nil, validator,
+				WithRuntime(runtime),
+				WithCmdArgs(nil),
+				WithName("test-server"),
+				WithImage("test-image"),
+				WithHost(localhostStr),
+				WithTargetHost(localhostStr),
+				WithDebug(false),
+				WithVolumes(nil),
+				WithSecrets(nil),
+				WithAuthzConfigPath(""),
+				WithAuditConfigPath(""),
+				WithPermissionProfileNameOrPath(permissions.ProfileNone),
+				WithNetworkIsolation(false),
+				WithK8sPodPatch(""),
+				WithProxyMode(types.ProxyModeSSE),
+				WithTransportAndPorts("sse", 0, 9000),
+				WithAuditEnabled(false, ""),
+				WithLabels(nil),
+				WithGroup(""),
+				WithOIDCConfig(
+					"https://issuer.example.com",
+					"test-audience",
+					"https://issuer.example.com/.well-known/jwks.json",
+					"",
+					"test-client-id",
+					"",
+					"",
+					"",
+					"",
+					false,
+					false,
+					tt.scopes,
+				),
+				WithTelemetryConfigFromFlags("", false, false, false, "", 0, nil, false, nil),
+				WithToolsFilter(nil),
+				WithIgnoreConfig(&ignore.Config{
+					LoadGlobal:    false,
+					PrintOverlays: false,
+				}),
+			)
+
+			require.NoError(t, err)
+			require.NotNil(t, config.OIDCConfig, "OIDCConfig should be initialized")
+			assert.Equal(t, tt.expectedScopes, config.OIDCConfig.Scopes, "OIDCConfig.Scopes should match expected values")
+		})
+	}
 }
 
 func TestRunConfig_WriteJSON_ReadJSON(t *testing.T) {
@@ -856,7 +950,7 @@ func TestRunConfigBuilder_MetadataOverrides(t *testing.T) {
 				WithAuditEnabled(false, ""),
 				WithLabels(nil),
 				WithGroup(""),
-				WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false),
+				WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false, nil),
 				WithTelemetryConfigFromFlags("", false, false, false, "", 0, nil, false, nil),
 				WithToolsFilter(nil),
 				WithIgnoreConfig(&ignore.Config{
@@ -903,7 +997,7 @@ func TestRunConfigBuilder_EnvironmentVariableTransportDependency(t *testing.T) {
 		WithAuditEnabled(false, ""),
 		WithLabels(nil),
 		WithGroup(""),
-		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false),
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false, nil),
 		WithTelemetryConfigFromFlags("", false, false, false, "", 0, nil, false, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
@@ -956,7 +1050,7 @@ func TestRunConfigBuilder_CmdArgsMetadataOverride(t *testing.T) {
 		WithAuditEnabled(false, ""),
 		WithLabels(nil),
 		WithGroup(""),
-		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false),
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false, nil),
 		WithTelemetryConfigFromFlags("", false, false, false, "", 0, nil, false, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
@@ -1011,7 +1105,7 @@ func TestRunConfigBuilder_CmdArgsMetadataDefaults(t *testing.T) {
 		WithAuditEnabled(false, ""),
 		WithLabels(nil),
 		WithGroup(""),
-		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false),
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false, nil),
 		WithTelemetryConfigFromFlags("", false, false, false, "", 0, nil, false, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
@@ -1062,7 +1156,7 @@ func TestRunConfigBuilder_VolumeProcessing(t *testing.T) {
 		WithAuditEnabled(false, ""),
 		WithLabels(nil),
 		WithGroup(""),
-		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false),
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false, nil),
 		WithTelemetryConfigFromFlags("", false, false, false, "", 0, nil, false, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{
@@ -1135,7 +1229,7 @@ func TestRunConfigBuilder_FilesystemMCPScenario(t *testing.T) {
 		WithAuditEnabled(false, ""),
 		WithLabels(nil),
 		WithGroup(""),
-		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false),
+		WithOIDCConfig("", "", "", "", "", "", "", "", "", false, false, nil),
 		WithTelemetryConfigFromFlags("", false, false, false, "", 0, nil, false, nil),
 		WithToolsFilter(nil),
 		WithIgnoreConfig(&ignore.Config{

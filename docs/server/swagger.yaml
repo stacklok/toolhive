@@ -80,6 +80,13 @@ components:
           description: ResourceURL is the explicit resource URL for OAuth discovery
             (RFC 9728)
           type: string
+        scopes:
+          description: |-
+            Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
+            If empty, defaults to ["openid"]
+          items:
+            type: string
+          type: array
       type: object
     authz.CedarConfig:
       description: |-
@@ -1452,6 +1459,12 @@ components:
         jwks_url:
           description: JWKS URL for key verification
           type: string
+        scopes:
+          description: OAuth scopes to advertise in well-known endpoint (RFC 9728)
+          items:
+            type: string
+          type: array
+          uniqueItems: false
       type: object
     v1.providerCapabilitiesResponse:
       description: Capabilities of the secrets provider

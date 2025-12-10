@@ -269,7 +269,18 @@ func validateCompositeToolStep(
 	}
 
 	// Validate error handling
-	return validateStepErrorHandling(toolIndex, stepIndex, step)
+	if err := validateStepErrorHandling(toolIndex, stepIndex, step); err != nil {
+		return err
+	}
+
+	// Validate elicitation response handlers
+	if err := validateStepElicitationResponseHandlers(toolIndex, stepIndex, step); err != nil {
+		return err
+	}
+
+	// Validate templates in arguments and other fields
+	pathPrefix := fmt.Sprintf("spec.compositeTools[%d].steps", toolIndex)
+	return validateWorkflowStepTemplates(pathPrefix, stepIndex, step)
 }
 
 // validateStepType validates the step type and type-specific requirements
@@ -342,6 +353,33 @@ func validateStepErrorHandling(toolIndex, stepIndex int, step WorkflowStep) erro
 		if err := validateDuration(step.OnError.RetryDelay); err != nil {
 			return fmt.Errorf("spec.compositeTools[%d].steps[%d].onError.retryDelay: %w",
 				toolIndex, stepIndex, err)
+		}
+	}
+
+	return nil
+}
+
+// validateStepElicitationResponseHandlers validates elicitation response handler configuration for a step
+func validateStepElicitationResponseHandlers(toolIndex, stepIndex int, step WorkflowStep) error {
+	validActions := map[string]bool{
+		"skip_remaining": true,
+		"abort":          true,
+		"continue":       true,
+	}
+
+	// Validate OnDecline action
+	if step.OnDecline != nil && step.OnDecline.Action != "" {
+		if !validActions[step.OnDecline.Action] {
+			return fmt.Errorf("spec.compositeTools[%d].steps[%d].onDecline.action must be one of: skip_remaining, abort, continue",
+				toolIndex, stepIndex)
+		}
+	}
+
+	// Validate OnCancel action
+	if step.OnCancel != nil && step.OnCancel.Action != "" {
+		if !validActions[step.OnCancel.Action] {
+			return fmt.Errorf("spec.compositeTools[%d].steps[%d].onCancel.action must be one of: skip_remaining, abort, continue",
+				toolIndex, stepIndex)
 		}
 	}
 

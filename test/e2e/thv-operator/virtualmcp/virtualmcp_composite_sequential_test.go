@@ -54,6 +54,17 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 		paramSchemaBytes, err := json.Marshal(parameterSchema)
 		Expect(err).ToNot(HaveOccurred())
 
+		// Build arguments as JSON for runtime.RawExtension
+		firstEchoArgs, err := json.Marshal(map[string]any{
+			"input": "{{ .params.message }}",
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		secondEchoArgs, err := json.Marshal(map[string]any{
+			"input": "{{ .steps.first_echo.result }}",
+		})
+		Expect(err).ToNot(HaveOccurred())
+
 		By("Creating VirtualMCPServer with composite sequential workflow")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
@@ -83,9 +94,8 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 								ID:   "first_echo",
 								Type: "tool",
 								Tool: fmt.Sprintf("%s.echo", backendName),
-								Arguments: map[string]string{
-									// Template expansion: use input parameter
-									"input": "{{ .params.message }}",
+								Arguments: &runtime.RawExtension{
+									Raw: firstEchoArgs,
 								},
 							},
 							{
@@ -93,9 +103,8 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 								Type:      "tool",
 								Tool:      fmt.Sprintf("%s.echo", backendName),
 								DependsOn: []string{"first_echo"},
-								Arguments: map[string]string{
-									// Template expansion: use output from previous step
-									"input": "{{ .steps.first_echo.result }}",
+								Arguments: &runtime.RawExtension{
+									Raw: secondEchoArgs,
 								},
 							},
 						},
@@ -235,9 +244,14 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 			Expect(step2.ID).To(Equal("second_echo"))
 			Expect(step2.DependsOn).To(ContainElement("first_echo"))
 
-			// Verify template usage in arguments
-			Expect(step1.Arguments["input"]).To(ContainSubstring(".params.message"))
-			Expect(step2.Arguments["input"]).To(ContainSubstring(".steps.first_echo"))
+			// Verify template usage in arguments (unmarshal from RawExtension)
+			var step1Args map[string]any
+			Expect(json.Unmarshal(step1.Arguments.Raw, &step1Args)).To(Succeed())
+			Expect(step1Args["input"]).To(ContainSubstring(".params.message"))
+
+			var step2Args map[string]any
+			Expect(json.Unmarshal(step2.Arguments.Raw, &step2Args)).To(Succeed())
+			Expect(step2Args["input"]).To(ContainSubstring(".steps.first_echo"))
 		})
 	})
 })

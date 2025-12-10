@@ -32,6 +32,7 @@ func AddOIDCConfigOptions(
 	}
 
 	// Add OIDC config to options
+	// Note: Scopes are passed as nil until the operator CRD supports them
 	*options = append(*options, runner.WithOIDCConfig(
 		oidcConfig.Issuer,
 		oidcConfig.Audience,
@@ -44,6 +45,7 @@ func AddOIDCConfigOptions(
 		oidcConfig.ResourceURL,
 		oidcConfig.JWKSAllowPrivateIP,
 		oidcConfig.InsecureAllowHTTP,
+		nil, // Scopes - TODO: add operator CRD support
 	))
 
 	return nil

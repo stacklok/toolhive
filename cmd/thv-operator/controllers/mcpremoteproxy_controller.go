@@ -426,7 +426,9 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 // for persisting the status update to avoid multiple conflicting status updates.
 func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) {
 	if proxy.Spec.GroupRef == "" {
-		// No group reference, nothing to validate
+		// No group reference - remove any existing GroupRefValidated condition
+		// to avoid showing stale info from a previous reconciliation
+		meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyGroupRefValidated)
 		return
 	}
 

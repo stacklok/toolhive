@@ -155,13 +155,11 @@ func (r *MCPGroupReconciler) handleListFailure(
 		ObservedGeneration: mcpGroup.Generation,
 	})
 
-	if resourceType == "MCPServers" {
-		mcpGroup.Status.ServerCount = 0
-		mcpGroup.Status.Servers = nil
-	} else {
-		mcpGroup.Status.RemoteProxyCount = 0
-		mcpGroup.Status.RemoteProxies = nil
-	}
+	// Clear both resource types' status fields to avoid stale data when entering Failed state
+	mcpGroup.Status.ServerCount = 0
+	mcpGroup.Status.Servers = nil
+	mcpGroup.Status.RemoteProxyCount = 0
+	mcpGroup.Status.RemoteProxies = nil
 
 	if updateErr := r.Status().Update(ctx, mcpGroup); updateErr != nil {
 		if errors.IsConflict(updateErr) {

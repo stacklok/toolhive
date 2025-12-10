@@ -3,6 +3,7 @@ package vmcpconfig
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -301,7 +302,8 @@ func TestConvertCompositeTools_Parameters(t *testing.T) {
 			ctx := log.IntoContext(context.Background(), logr.Discard())
 
 			// Convert
-			result := converter.convertCompositeTools(ctx, vmcpServer)
+			result, err := converter.convertCompositeTools(ctx, vmcpServer)
+			require.NoError(t, err)
 
 			// Assertions
 			require.Len(t, result, 1, "Should have one composite tool")
@@ -382,7 +384,8 @@ func TestConvertCompositeTools_Timeout(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			ctx := log.IntoContext(context.Background(), logr.Discard())
 
-			result := converter.convertCompositeTools(ctx, vmcpServer)
+			result, err := converter.convertCompositeTools(ctx, vmcpServer)
+			require.NoError(t, err)
 
 			require.Len(t, result, 1)
 			assert.Equal(t, tt.expectedTimeout, int64(result[0].Timeout), tt.description)
@@ -742,6 +745,168 @@ func TestConverter_ConvertCompositeTools_StepTimeout(t *testing.T) {
 
 	require.Len(t, tool.Steps, 1)
 	assert.Equal(t, vmcpconfig.Duration(10*time.Second), tool.Steps[0].Timeout)
+}
+
+func TestConvertCompositeTools_NonStringArguments(t *testing.T) {
+	t.Parallel()
+
+	// Test cases with valid JSON - use round-trip testing where input JSON is parsed
+	// and compared with output to verify types are preserved correctly
+	validJSONTests := []struct {
+		name          string
+		argumentsJSON string
+		description   string
+	}{
+		{
+			name:          "integer arguments",
+			argumentsJSON: `{"max_results": 5, "query": "test"}`,
+			description:   "Should correctly parse integer arguments (as float64)",
+		},
+		{
+			name:          "boolean arguments",
+			argumentsJSON: `{"enabled": true, "verbose": false}`,
+			description:   "Should correctly parse boolean arguments",
+		},
+		{
+			name:          "array arguments",
+			argumentsJSON: `{"tags": ["tag1", "tag2"], "ids": [1, 2, 3]}`,
+			description:   "Should correctly parse array arguments",
+		},
+		{
+			name:          "object arguments",
+			argumentsJSON: `{"config": {"timeout": 30, "retries": 3}}`,
+			description:   "Should correctly parse nested object arguments",
+		},
+		{
+			name:          "mixed types with template strings",
+			argumentsJSON: `{"input": "{{ .params.message }}", "count": 10, "enabled": true}`,
+			description:   "Should preserve template strings alongside non-string types",
+		},
+	}
+
+	for _, tt := range validJSONTests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Parse the expected args from the input JSON (round-trip test)
+			var expectedArgs map[string]any
+			require.NoError(t, json.Unmarshal([]byte(tt.argumentsJSON), &expectedArgs),
+				"Test setup: input JSON should be valid")
+
+			arguments := &runtime.RawExtension{Raw: []byte(tt.argumentsJSON)}
+
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "A test composite tool",
+							Steps: []mcpv1alpha1.WorkflowStep{
+								{
+									ID:        "step1",
+									Type:      "tool",
+									Tool:      "backend.some-tool",
+									Arguments: arguments,
+								},
+							},
+						},
+					},
+				},
+			}
+
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+
+			result, err := converter.convertCompositeTools(ctx, vmcpServer)
+			require.NoError(t, err, tt.description)
+			require.Len(t, result, 1, "Should have one composite tool")
+			require.Len(t, result[0].Steps, 1, "Should have one step")
+
+			stepArgs := result[0].Steps[0].Arguments
+			require.NotNil(t, stepArgs, tt.description)
+			assert.Equal(t, expectedArgs, stepArgs, tt.description)
+		})
+	}
+
+	t.Run("nil arguments returns empty map", func(t *testing.T) {
+		t.Parallel()
+
+		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-vmcp",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+				CompositeTools: []mcpv1alpha1.CompositeToolSpec{
+					{
+						Name:        "test-tool",
+						Description: "A test composite tool",
+						Steps: []mcpv1alpha1.WorkflowStep{
+							{
+								ID:        "step1",
+								Type:      "tool",
+								Tool:      "backend.some-tool",
+								Arguments: nil, // No arguments
+							},
+						},
+					},
+				},
+			},
+		}
+
+		converter := newTestConverter(t, newNoOpMockResolver(t))
+		ctx := log.IntoContext(context.Background(), logr.Discard())
+
+		result, err := converter.convertCompositeTools(ctx, vmcpServer)
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		require.Len(t, result[0].Steps, 1)
+
+		stepArgs := result[0].Steps[0].Arguments
+		assert.NotNil(t, stepArgs, "Should return empty map, not nil")
+		assert.Empty(t, stepArgs, "Should be empty map")
+	})
+
+	t.Run("invalid JSON returns error", func(t *testing.T) {
+		t.Parallel()
+
+		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-vmcp",
+				Namespace: "default",
+			},
+			Spec: mcpv1alpha1.VirtualMCPServerSpec{
+				GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+				CompositeTools: []mcpv1alpha1.CompositeToolSpec{
+					{
+						Name:        "test-tool",
+						Description: "A test composite tool",
+						Steps: []mcpv1alpha1.WorkflowStep{
+							{
+								ID:        "step1",
+								Type:      "tool",
+								Tool:      "backend.some-tool",
+								Arguments: &runtime.RawExtension{Raw: []byte(`{invalid json}`)},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		converter := newTestConverter(t, newNoOpMockResolver(t))
+		ctx := log.IntoContext(context.Background(), logr.Discard())
+
+		_, err := converter.convertCompositeTools(ctx, vmcpServer)
+		require.Error(t, err, "Should return error for invalid JSON")
+		assert.Contains(t, err.Error(), "failed to unmarshal arguments")
+	})
 }
 
 // validateOutputProperties is a recursive helper function to validate output properties at any nesting level

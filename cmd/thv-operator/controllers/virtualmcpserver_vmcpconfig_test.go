@@ -703,8 +703,8 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 					ID:   "step1",
 					Type: "tool",
 					Tool: "backend.echo",
-					Arguments: map[string]string{
-						"input": "{{ .params.message }}",
+					Arguments: &runtime.RawExtension{
+						Raw: []byte(`{"input": "{{ .params.message }}"}`),
 					},
 				},
 			},

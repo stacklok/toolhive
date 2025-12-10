@@ -229,28 +229,45 @@ func (*VirtualMCPCompositeToolDefinition) validateStepType(index int, step Workf
 
 // validateStepTemplates validates all template fields in a step
 func (*VirtualMCPCompositeToolDefinition) validateStepTemplates(index int, step WorkflowStep) error {
-	for argName, argValue := range step.Arguments {
-		if err := validateTemplate(argValue); err != nil {
-			return fmt.Errorf("spec.steps[%d].arguments[%s]: invalid template: %v", index, argName, err)
+	return validateWorkflowStepTemplates("spec.steps", index, step)
+}
+
+// validateWorkflowStepTemplates validates all template fields in a workflow step.
+// This is a shared validation function used by both VirtualMCPServer and VirtualMCPCompositeToolDefinition webhooks.
+// The pathPrefix parameter allows customizing error message paths (e.g., "spec.steps" or "spec.compositeTools[0].steps").
+func validateWorkflowStepTemplates(pathPrefix string, index int, step WorkflowStep) error {
+	// Validate template syntax in arguments (only for string values)
+	if step.Arguments != nil && len(step.Arguments.Raw) > 0 {
+		var args map[string]any
+		if err := json.Unmarshal(step.Arguments.Raw, &args); err != nil {
+			return fmt.Errorf("%s[%d].arguments: invalid JSON: %v", pathPrefix, index, err)
+		}
+		for argName, argValue := range args {
+			// Only validate template syntax for string values
+			if strValue, ok := argValue.(string); ok {
+				if err := validateTemplate(strValue); err != nil {
+					return fmt.Errorf("%s[%d].arguments[%s]: invalid template: %v", pathPrefix, index, argName, err)
+				}
+			}
 		}
 	}
 
 	if step.Condition != "" {
 		if err := validateTemplate(step.Condition); err != nil {
-			return fmt.Errorf("spec.steps[%d].condition: invalid template: %v", index, err)
+			return fmt.Errorf("%s[%d].condition: invalid template: %v", pathPrefix, index, err)
 		}
 	}
 
 	if step.Message != "" {
 		if err := validateTemplate(step.Message); err != nil {
-			return fmt.Errorf("spec.steps[%d].message: invalid template: %v", index, err)
+			return fmt.Errorf("%s[%d].message: invalid template: %v", pathPrefix, index, err)
 		}
 	}
 
 	// Validate JSON Schema for elicitation steps
 	if step.Schema != nil {
 		if err := validateJSONSchema(step.Schema.Raw); err != nil {
-			return fmt.Errorf("spec.steps[%d].schema: invalid JSON Schema: %v", index, err)
+			return fmt.Errorf("%s[%d].schema: invalid JSON Schema: %v", pathPrefix, index, err)
 		}
 	}
 

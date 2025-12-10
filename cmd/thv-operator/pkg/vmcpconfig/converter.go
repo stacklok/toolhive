@@ -518,17 +518,20 @@ func (c *Converter) resolveMCPToolConfig(
 func (c *Converter) convertCompositeTools(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) []*vmcpconfig.CompositeToolConfig {
+) ([]*vmcpconfig.CompositeToolConfig, error) {
 	compositeTools := make([]*vmcpconfig.CompositeToolConfig, 0, len(vmcp.Spec.CompositeTools))
 
 	for _, crdTool := range vmcp.Spec.CompositeTools {
-		tool := c.convertCompositeToolSpec(
+		tool, err := c.convertCompositeToolSpec(
 			ctx, crdTool.Name, crdTool.Description, crdTool.Timeout,
 			crdTool.Parameters, crdTool.Steps, crdTool.Output, crdTool.Name)
+		if err != nil {
+			return nil, err
+		}
 		compositeTools = append(compositeTools, tool)
 	}
 
-	return compositeTools
+	return compositeTools, nil
 }
 
 // convertAllCompositeTools converts both inline CompositeTools and referenced CompositeToolRefs,
@@ -538,12 +541,14 @@ func (c *Converter) convertAllCompositeTools(
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 ) ([]*vmcpconfig.CompositeToolConfig, error) {
 	// Convert inline composite tools
-	inlineTools := c.convertCompositeTools(ctx, vmcp)
+	inlineTools, err := c.convertCompositeTools(ctx, vmcp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert inline composite tools: %w", err)
+	}
 
 	// Convert referenced composite tools
 	var referencedTools []*vmcpconfig.CompositeToolConfig
 	if len(vmcp.Spec.CompositeToolRefs) > 0 {
-		var err error
 		referencedTools, err = c.convertReferencedCompositeTools(ctx, vmcp)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert referenced composite tools: %w", err)
@@ -587,7 +592,10 @@ func (c *Converter) convertReferencedCompositeTools(
 		}
 
 		// Convert the referenced definition to CompositeToolConfig
-		tool := c.convertCompositeToolDefinition(ctx, compositeToolDef)
+		tool, err := c.convertCompositeToolDefinition(ctx, compositeToolDef)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert referenced tool %q: %w", ref.Name, err)
+		}
 		referencedTools = append(referencedTools, tool)
 	}
 
@@ -598,7 +606,7 @@ func (c *Converter) convertReferencedCompositeTools(
 func (c *Converter) convertCompositeToolDefinition(
 	ctx context.Context,
 	def *mcpv1alpha1.VirtualMCPCompositeToolDefinition,
-) *vmcpconfig.CompositeToolConfig {
+) (*vmcpconfig.CompositeToolConfig, error) {
 	return c.convertCompositeToolSpec(
 		ctx, def.Spec.Name, def.Spec.Description, def.Spec.Timeout,
 		def.Spec.Parameters, def.Spec.Steps, def.Spec.Output, def.Name)
@@ -613,7 +621,7 @@ func (c *Converter) convertCompositeToolSpec(
 	steps []mcpv1alpha1.WorkflowStep,
 	output *mcpv1alpha1.OutputSpec,
 	toolNameForLogging string,
-) *vmcpconfig.CompositeToolConfig {
+) (*vmcpconfig.CompositeToolConfig, error) {
 	tool := &vmcpconfig.CompositeToolConfig{
 		Name:        name,
 		Description: description,
@@ -650,14 +658,18 @@ func (c *Converter) convertCompositeToolSpec(
 	}
 
 	// Convert steps
-	tool.Steps = c.convertWorkflowSteps(ctx, steps, toolNameForLogging)
+	workflowSteps, err := c.convertWorkflowSteps(ctx, steps, toolNameForLogging)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert steps for tool %q: %w", toolNameForLogging, err)
+	}
+	tool.Steps = workflowSteps
 
 	// Convert output configuration
 	if output != nil {
 		tool.Output = convertOutputSpec(ctx, output)
 	}
 
-	return tool
+	return tool, nil
 }
 
 // convertWorkflowSteps converts a slice of WorkflowStep CRD objects to WorkflowStepConfig.
@@ -665,15 +677,20 @@ func (*Converter) convertWorkflowSteps(
 	ctx context.Context,
 	steps []mcpv1alpha1.WorkflowStep,
 	toolNameForLogging string,
-) []*vmcpconfig.WorkflowStepConfig {
+) ([]*vmcpconfig.WorkflowStepConfig, error) {
 	workflowSteps := make([]*vmcpconfig.WorkflowStepConfig, 0, len(steps))
 
 	for _, crdStep := range steps {
+		args, err := convertArguments(crdStep.Arguments)
+		if err != nil {
+			return nil, fmt.Errorf("step %q: %w", crdStep.ID, err)
+		}
+
 		step := &vmcpconfig.WorkflowStepConfig{
 			ID:        crdStep.ID,
 			Type:      crdStep.Type,
 			Tool:      crdStep.Tool,
-			Arguments: convertArguments(crdStep.Arguments),
+			Arguments: args,
 			Message:   crdStep.Message,
 			Condition: crdStep.Condition,
 			DependsOn: crdStep.DependsOn,
@@ -739,7 +756,7 @@ func (*Converter) convertWorkflowSteps(
 		workflowSteps = append(workflowSteps, step)
 	}
 
-	return workflowSteps
+	return workflowSteps, nil
 }
 
 // validateCompositeToolNames checks for duplicate tool names across all composite tools.
@@ -754,13 +771,19 @@ func validateCompositeToolNames(tools []*vmcpconfig.CompositeToolConfig) error {
 	return nil
 }
 
-// convertArguments converts string arguments to any type for template expansion
-func convertArguments(args map[string]string) map[string]any {
-	result := make(map[string]any, len(args))
-	for k, v := range args {
-		result[k] = v
+// convertArguments converts arguments from runtime.RawExtension to map[string]any.
+// This preserves the original types (integers, booleans, arrays, objects) from the CRD.
+// Returns an empty map if no arguments are specified.
+// Returns an error if the JSON fails to unmarshal.
+func convertArguments(args *runtime.RawExtension) (map[string]any, error) {
+	if args == nil || len(args.Raw) == 0 {
+		return make(map[string]any), nil
 	}
-	return result
+	var result map[string]any
+	if err := json.Unmarshal(args.Raw, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal arguments: %w", err)
+	}
+	return result, nil
 }
 
 // convertOutputSpec converts OutputSpec from CRD to vmcp config OutputConfig

@@ -154,8 +154,8 @@ func (*manager) buildRegistryAPIDeployment(
 		WithRegistryStorageMount(registryAPIContainerName),
 	}
 
-	// Add pgpass mount if configured in databaseConfig
-	if mcpRegistry.Spec.DatabaseConfig != nil && mcpRegistry.Spec.DatabaseConfig.PGPassSecretRef != nil {
+	// Add pgpass mount if databaseConfig is specified (pgPassSecretRef is required within databaseConfig)
+	if mcpRegistry.Spec.DatabaseConfig != nil {
 		secretRef := mcpRegistry.Spec.DatabaseConfig.PGPassSecretRef
 		opts = append(opts, WithPGPassMount(registryAPIContainerName, secretRef.Name, secretRef.Key))
 		ctxLogger.V(1).Info("Adding pgpass secret mount",

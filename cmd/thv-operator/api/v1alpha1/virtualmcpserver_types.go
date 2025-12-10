@@ -325,6 +325,13 @@ type WorkflowStep struct {
 	// Timeout is the maximum execution time for this step
 	// +optional
 	Timeout string `json:"timeout,omitempty"`
+
+	// DefaultResults provides fallback output values when this step is skipped
+	// (due to condition evaluating to false) or fails (when onError.action is "continue").
+	// Each key corresponds to an output field name referenced by downstream steps.
+	// Required if the step may be skipped AND downstream steps reference this step's output.
+	// +optional
+	DefaultResults map[string]runtime.RawExtension `json:"defaultResults,omitempty"`
 }
 
 // ErrorHandling defines error handling behavior for workflow steps

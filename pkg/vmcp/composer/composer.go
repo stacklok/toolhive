@@ -109,6 +109,10 @@ type WorkflowStep struct {
 
 	// Metadata stores additional step information.
 	Metadata map[string]string
+
+	// DefaultResults provides fallback output values when this step is skipped
+	// (due to condition evaluating to false) or fails (when onError.action is "continue").
+	DefaultResults map[string]any
 }
 
 // StepType defines the type of workflow step.

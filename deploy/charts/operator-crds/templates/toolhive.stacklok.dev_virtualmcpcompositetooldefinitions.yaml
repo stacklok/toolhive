@@ -195,6 +195,42 @@ spec:
                         Message is the elicitation message
                         Only used when Type is "elicitation"
                       type: string
+                    onCancel:
+                      description: |-
+                        OnCancel defines the action to take when the user cancels/dismisses the elicitation
+                        Only used when Type is "elicitation"
+                      properties:
+                        action:
+                          default: abort
+                          description: |-
+                            Action defines the action to take when the user declines or cancels
+                            - skip_remaining: Skip remaining steps in the workflow
+                            - abort: Abort the entire workflow execution
+                            - continue: Continue to the next step
+                          enum:
+                          - skip_remaining
+                          - abort
+                          - continue
+                          type: string
+                      type: object
+                    onDecline:
+                      description: |-
+                        OnDecline defines the action to take when the user explicitly declines the elicitation
+                        Only used when Type is "elicitation"
+                      properties:
+                        action:
+                          default: abort
+                          description: |-
+                            Action defines the action to take when the user declines or cancels
+                            - skip_remaining: Skip remaining steps in the workflow
+                            - abort: Abort the entire workflow execution
+                            - continue: Continue to the next step
+                          enum:
+                          - skip_remaining
+                          - abort
+                          - continue
+                          type: string
+                      type: object
                     onError:
                       description: OnError defines error handling behavior
                       properties:

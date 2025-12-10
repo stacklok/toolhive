@@ -288,6 +288,22 @@ _Appears in:_
 | `url` _string_ | URL is the URL of the backend MCPServer |  |  |
 
 
+#### ElicitationResponseHandler
+
+
+
+ElicitationResponseHandler defines how to handle user responses to elicitation requests
+
+
+
+_Appears in:_
+- [WorkflowStep](#workflowstep)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `action` _string_ | Action defines the action to take when the user declines or cancels<br />- skip_remaining: Skip remaining steps in the workflow<br />- abort: Abort the entire workflow execution<br />- continue: Continue to the next step | abort | Enum: [skip_remaining abort continue] <br /> |
+
+
 
 
 #### EnvVar
@@ -2044,6 +2060,8 @@ _Appears in:_
 | `arguments` _object (keys:string, values:string)_ | Arguments is a map of argument templates<br />Supports Go template syntax with .params and .steps |  |  |
 | `message` _string_ | Message is the elicitation message<br />Only used when Type is "elicitation" |  |  |
 | `schema` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Schema defines the expected response schema for elicitation |  | Type: object <br /> |
+| `onDecline` _[ElicitationResponseHandler](#elicitationresponsehandler)_ | OnDecline defines the action to take when the user explicitly declines the elicitation<br />Only used when Type is "elicitation" |  |  |
+| `onCancel` _[ElicitationResponseHandler](#elicitationresponsehandler)_ | OnCancel defines the action to take when the user cancels/dismisses the elicitation<br />Only used when Type is "elicitation" |  |  |
 | `dependsOn` _string array_ | DependsOn lists step IDs that must complete before this step |  |  |
 | `condition` _string_ | Condition is a template expression that determines if the step should execute |  |  |
 | `onError` _[ErrorHandling](#errorhandling)_ | OnError defines error handling behavior |  |  |

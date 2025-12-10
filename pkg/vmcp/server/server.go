@@ -17,6 +17,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -87,6 +88,11 @@ type Config struct {
 	// TelemetryProvider is the optional telemetry provider.
 	// If nil, no telemetry is recorded.
 	TelemetryProvider *telemetry.Provider
+
+	// AuditConfig is the optional audit configuration.
+	// If nil, no audit logging is performed.
+	// Component should be set to "vmcp-server" to distinguish vMCP audit logs.
+	AuditConfig *audit.Config
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -386,7 +392,7 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/")
 	}
 
-	// MCP endpoint - apply middleware chain: auth → discovery → telemetry
+	// MCP endpoint - apply middleware chain: auth → audit → discovery → telemetry
 	var mcpHandler http.Handler = streamableServer
 
 	if s.config.TelemetryProvider != nil {
@@ -394,11 +400,24 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Info("Telemetry middleware enabled for MCP endpoints")
 	}
 
-	// Apply discovery middleware (runs after auth middleware)
+	// Apply discovery middleware (runs after audit/auth middleware)
 	// Discovery middleware performs per-request capability aggregation with user context
 	// Pass sessionManager to enable session-based capability retrieval for subsequent requests
 	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backends, s.sessionManager)(mcpHandler)
 	logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
+
+	// Apply audit middleware if configured (runs after auth, before discovery)
+	if s.config.AuditConfig != nil {
+		auditor, err := audit.NewAuditorWithTransport(
+			s.config.AuditConfig,
+			"streamable-http", // vMCP uses streamable HTTP transport
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create auditor: %w", err)
+		}
+		mcpHandler = auditor.Middleware(mcpHandler)
+		logger.Info("Audit middleware enabled for MCP endpoints")
+	}
 
 	// Apply authentication middleware if configured (runs first in chain)
 	if s.config.AuthMiddleware != nil {

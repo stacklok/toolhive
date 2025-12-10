@@ -564,6 +564,143 @@ func TestConverter_ConvertCompositeTools_NoErrorHandling(t *testing.T) {
 	assert.Nil(t, step.OnError)
 }
 
+func TestConverter_ConvertCompositeTools_ElicitationResponseHandlers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                    string
+		onDecline               *mcpv1alpha1.ElicitationResponseHandler
+		onCancel                *mcpv1alpha1.ElicitationResponseHandler
+		expectedOnDeclineAction string
+		expectedOnCancelAction  string
+		expectOnDeclineNil      bool
+		expectOnCancelNil       bool
+	}{
+		{
+			name:                    "with OnDecline skip_remaining",
+			onDecline:               &mcpv1alpha1.ElicitationResponseHandler{Action: "skip_remaining"},
+			onCancel:                nil,
+			expectedOnDeclineAction: "skip_remaining",
+			expectOnDeclineNil:      false,
+			expectOnCancelNil:       true,
+		},
+		{
+			name:                    "with OnDecline abort",
+			onDecline:               &mcpv1alpha1.ElicitationResponseHandler{Action: "abort"},
+			onCancel:                nil,
+			expectedOnDeclineAction: "abort",
+			expectOnDeclineNil:      false,
+			expectOnCancelNil:       true,
+		},
+		{
+			name:                    "with OnDecline continue",
+			onDecline:               &mcpv1alpha1.ElicitationResponseHandler{Action: "continue"},
+			onCancel:                nil,
+			expectedOnDeclineAction: "continue",
+			expectOnDeclineNil:      false,
+			expectOnCancelNil:       true,
+		},
+		{
+			name:                   "with OnCancel skip_remaining",
+			onDecline:              nil,
+			onCancel:               &mcpv1alpha1.ElicitationResponseHandler{Action: "skip_remaining"},
+			expectedOnCancelAction: "skip_remaining",
+			expectOnDeclineNil:     true,
+			expectOnCancelNil:      false,
+		},
+		{
+			name:                   "with OnCancel abort",
+			onDecline:              nil,
+			onCancel:               &mcpv1alpha1.ElicitationResponseHandler{Action: "abort"},
+			expectedOnCancelAction: "abort",
+			expectOnDeclineNil:     true,
+			expectOnCancelNil:      false,
+		},
+		{
+			name:                   "with OnCancel continue",
+			onDecline:              nil,
+			onCancel:               &mcpv1alpha1.ElicitationResponseHandler{Action: "continue"},
+			expectedOnCancelAction: "continue",
+			expectOnDeclineNil:     true,
+			expectOnCancelNil:      false,
+		},
+		{
+			name:                    "with both OnDecline and OnCancel",
+			onDecline:               &mcpv1alpha1.ElicitationResponseHandler{Action: "skip_remaining"},
+			onCancel:                &mcpv1alpha1.ElicitationResponseHandler{Action: "abort"},
+			expectedOnDeclineAction: "skip_remaining",
+			expectedOnCancelAction:  "abort",
+			expectOnDeclineNil:      false,
+			expectOnCancelNil:       false,
+		},
+		{
+			name:               "with neither OnDecline nor OnCancel",
+			onDecline:          nil,
+			onCancel:           nil,
+			expectOnDeclineNil: true,
+			expectOnCancelNil:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vmcp",
+					Namespace: "default",
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{Name: "test-group"},
+					CompositeTools: []mcpv1alpha1.CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "A test composite tool",
+							Steps: []mcpv1alpha1.WorkflowStep{
+								{
+									ID:        "step1",
+									Type:      "elicitation",
+									Message:   "Please provide input",
+									OnDecline: tt.onDecline,
+									OnCancel:  tt.onCancel,
+								},
+							},
+						},
+					},
+				},
+			}
+
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			config, err := converter.Convert(ctx, vmcpServer)
+
+			require.NoError(t, err)
+			require.NotNil(t, config)
+			require.Len(t, config.CompositeTools, 1)
+			require.Len(t, config.CompositeTools[0].Steps, 1)
+
+			step := config.CompositeTools[0].Steps[0]
+
+			// Check OnDecline
+			if tt.expectOnDeclineNil {
+				assert.Nil(t, step.OnDecline)
+			} else {
+				require.NotNil(t, step.OnDecline)
+				assert.Equal(t, tt.expectedOnDeclineAction, step.OnDecline.Action)
+			}
+
+			// Check OnCancel
+			if tt.expectOnCancelNil {
+				assert.Nil(t, step.OnCancel)
+			} else {
+				require.NotNil(t, step.OnCancel)
+				assert.Equal(t, tt.expectedOnCancelAction, step.OnCancel.Action)
+			}
+		})
+	}
+}
+
 func TestConverter_ConvertCompositeTools_StepTimeout(t *testing.T) {
 	t.Parallel()
 

@@ -417,6 +417,257 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		assert.Equal(t, "header_injection", backends[0].AuthConfig.Type)
 		assert.Equal(t, "test-token", backends[0].AuthConfig.HeaderInjection.HeaderValue)
 	})
+
+	t.Run("successful discovery with MCPRemoteProxy backends", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockGroups := mocks.NewMockManager(ctrl)
+
+		proxy1 := &vmcp.Backend{
+			ID:            "proxy1",
+			Name:          "proxy1",
+			BaseURL:       "http://proxy1-service:8080",
+			TransportType: "streamable-http",
+			HealthStatus:  vmcp.BackendHealthy,
+			Metadata: map[string]string{
+				"tool_type":       "mcp",
+				"workload_status": "Ready",
+			},
+		}
+		proxy2 := &vmcp.Backend{
+			ID:            "proxy2",
+			Name:          "proxy2",
+			BaseURL:       "http://proxy2-service:8080",
+			TransportType: "sse",
+			HealthStatus:  vmcp.BackendHealthy,
+			Metadata: map[string]string{
+				"tool_type":       "mcp",
+				"workload_status": "Ready",
+			},
+		}
+
+		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
+		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
+			Return([]workloads.TypedWorkload{
+				{
+					Name: "proxy1",
+					Type: workloads.WorkloadTypeMCPRemoteProxy,
+				},
+				{
+					Name: "proxy2",
+					Type: workloads.WorkloadTypeMCPRemoteProxy,
+				},
+			}, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "proxy1",
+				Type: workloads.WorkloadTypeMCPRemoteProxy,
+			},
+		).Return(proxy1, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "proxy2",
+				Type: workloads.WorkloadTypeMCPRemoteProxy,
+			},
+		).Return(proxy2, nil)
+
+		discoverer := NewUnifiedBackendDiscoverer(mockWorkloadDiscoverer, mockGroups, nil)
+		backends, err := discoverer.Discover(context.Background(), testGroupName)
+
+		require.NoError(t, err)
+		require.Len(t, backends, 2)
+		assert.Equal(t, "proxy1", backends[0].ID)
+		assert.Equal(t, "http://proxy1-service:8080", backends[0].BaseURL)
+		assert.Equal(t, vmcp.BackendHealthy, backends[0].HealthStatus)
+		assert.Equal(t, "proxy2", backends[1].ID)
+		assert.Equal(t, "sse", backends[1].TransportType)
+	})
+
+	t.Run("successful discovery with mixed workload types", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockGroups := mocks.NewMockManager(ctrl)
+
+		server := &vmcp.Backend{
+			ID:            "server1",
+			Name:          "server1",
+			BaseURL:       "http://server1:8080/mcp",
+			TransportType: "streamable-http",
+			HealthStatus:  vmcp.BackendHealthy,
+			Metadata: map[string]string{
+				"tool_type":       "github",
+				"workload_status": "Running",
+			},
+		}
+		proxy := &vmcp.Backend{
+			ID:            "proxy1",
+			Name:          "proxy1",
+			BaseURL:       "http://proxy1-service:8080",
+			TransportType: "sse",
+			HealthStatus:  vmcp.BackendHealthy,
+			Metadata: map[string]string{
+				"tool_type":       "mcp",
+				"workload_status": "Ready",
+			},
+		}
+
+		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
+		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
+			Return([]workloads.TypedWorkload{
+				{
+					Name: "server1",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+				{
+					Name: "proxy1",
+					Type: workloads.WorkloadTypeMCPRemoteProxy,
+				},
+			}, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "server1",
+				Type: workloads.WorkloadTypeMCPServer,
+			},
+		).Return(server, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "proxy1",
+				Type: workloads.WorkloadTypeMCPRemoteProxy,
+			},
+		).Return(proxy, nil)
+
+		discoverer := NewUnifiedBackendDiscoverer(mockWorkloadDiscoverer, mockGroups, nil)
+		backends, err := discoverer.Discover(context.Background(), testGroupName)
+
+		require.NoError(t, err)
+		require.Len(t, backends, 2)
+
+		// Verify MCPServer backend
+		assert.Equal(t, "server1", backends[0].ID)
+		assert.Equal(t, "streamable-http", backends[0].TransportType)
+		assert.Equal(t, "github", backends[0].Metadata["tool_type"])
+
+		// Verify MCPRemoteProxy backend
+		assert.Equal(t, "proxy1", backends[1].ID)
+		assert.Equal(t, "sse", backends[1].TransportType)
+		assert.Equal(t, "mcp", backends[1].Metadata["tool_type"])
+	})
+
+	t.Run("applies authentication to MCPRemoteProxy backends", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockGroups := mocks.NewMockManager(ctrl)
+
+		proxy := &vmcp.Backend{
+			ID:            "proxy1",
+			Name:          "proxy1",
+			BaseURL:       "http://proxy1-service:8080",
+			TransportType: "streamable-http",
+			HealthStatus:  vmcp.BackendHealthy,
+			Metadata:      map[string]string{},
+		}
+
+		authConfig := &config.OutgoingAuthConfig{
+			Backends: map[string]*authtypes.BackendAuthStrategy{
+				"proxy1": {
+					Type: "token_exchange",
+					TokenExchange: &authtypes.TokenExchangeConfig{
+						TokenURL: "https://auth.example.com/token",
+						ClientID: "test-client",
+					},
+				},
+			},
+		}
+
+		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
+		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
+			Return([]workloads.TypedWorkload{
+				{
+					Name: "proxy1",
+					Type: workloads.WorkloadTypeMCPRemoteProxy,
+				},
+			}, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "proxy1",
+				Type: workloads.WorkloadTypeMCPRemoteProxy,
+			},
+		).Return(proxy, nil)
+
+		discoverer := NewUnifiedBackendDiscoverer(mockWorkloadDiscoverer, mockGroups, authConfig)
+		backends, err := discoverer.Discover(context.Background(), testGroupName)
+
+		require.NoError(t, err)
+		require.Len(t, backends, 1)
+		assert.Equal(t, "token_exchange", backends[0].AuthConfig.Type)
+		assert.Equal(t, "https://auth.example.com/token", backends[0].AuthConfig.TokenExchange.TokenURL)
+	})
+
+	t.Run("gracefully handles MCPRemoteProxy workload get failures", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		t.Cleanup(ctrl.Finish)
+
+		mockWorkloadDiscoverer := discoverermocks.NewMockDiscoverer(ctrl)
+		mockGroups := mocks.NewMockManager(ctrl)
+
+		goodProxy := &vmcp.Backend{
+			ID:            "good-proxy",
+			Name:          "good-proxy",
+			BaseURL:       "http://proxy-service:8080",
+			TransportType: "streamable-http",
+			HealthStatus:  vmcp.BackendHealthy,
+			Metadata:      map[string]string{},
+		}
+
+		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
+		mockWorkloadDiscoverer.EXPECT().ListWorkloadsInGroup(gomock.Any(), testGroupName).
+			Return([]workloads.TypedWorkload{
+				{
+					Name: "good-proxy",
+					Type: workloads.WorkloadTypeMCPRemoteProxy,
+				},
+				{
+					Name: "failing-proxy",
+					Type: workloads.WorkloadTypeMCPRemoteProxy,
+				},
+			}, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "good-proxy",
+				Type: workloads.WorkloadTypeMCPRemoteProxy,
+			},
+		).Return(goodProxy, nil)
+		mockWorkloadDiscoverer.EXPECT().GetWorkloadAsVMCPBackend(
+			gomock.Any(),
+			workloads.TypedWorkload{
+				Name: "failing-proxy",
+				Type: workloads.WorkloadTypeMCPRemoteProxy,
+			},
+		).Return(nil, errors.New("proxy query failed"))
+
+		discoverer := NewUnifiedBackendDiscoverer(mockWorkloadDiscoverer, mockGroups, nil)
+		backends, err := discoverer.Discover(context.Background(), testGroupName)
+
+		require.NoError(t, err)
+		require.Len(t, backends, 1)
+		assert.Equal(t, "good-proxy", backends[0].ID)
+	})
 }
 
 // TestCLIWorkloadDiscoverer tests the CLI workload discoverer implementation

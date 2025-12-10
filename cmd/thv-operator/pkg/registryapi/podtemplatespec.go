@@ -192,6 +192,113 @@ func WithRegistryStorageMount(containerName string) PodTemplateSpecOption {
 	}
 }
 
+// WithInitContainer adds an init container to the PodSpec.
+func WithInitContainer(container corev1.Container) PodTemplateSpecOption {
+	return func(pts *corev1.PodTemplateSpec) {
+		pts.Spec.InitContainers = append(pts.Spec.InitContainers, container)
+	}
+}
+
+// WithEnvVar adds an environment variable to a specific container by name.
+func WithEnvVar(containerName string, envVar corev1.EnvVar) PodTemplateSpecOption {
+	return func(pts *corev1.PodTemplateSpec) {
+		container := findContainerByName(pts.Spec.Containers, containerName)
+		if container != nil {
+			// Check if env var with this name already exists for idempotency
+			for i, existing := range container.Env {
+				if existing.Name == envVar.Name {
+					container.Env[i] = envVar
+					return
+				}
+			}
+			container.Env = append(container.Env, envVar)
+		}
+	}
+}
+
+// WithPGPassMount configures the pgpass secret mounting for PostgreSQL authentication.
+// This function adds:
+// 1. A volume from the secret containing the pgpass file
+// 2. An emptyDir volume for the prepared pgpass file (with correct permissions)
+// 3. An init container that copies and sets permissions on the pgpass file
+// 4. A volume mount in the registry-api container for the prepared pgpass file
+// 5. The PGPASSFILE environment variable pointing to the mounted file
+//
+// The init container copies the pgpass file from the secret, sets permissions to 600,
+// and sets ownership to the application user (65532:65532).
+func WithPGPassMount(containerName, secretName, secretKey string) PodTemplateSpecOption {
+	return func(pts *corev1.PodTemplateSpec) {
+		// Add the secret volume (contains the pgpass file from the secret)
+		WithVolume(corev1.Volume{
+			Name: pgpassSecretVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: secretName,
+					Items: []corev1.KeyToPath{
+						{
+							Key:  secretKey,
+							Path: pgpassFileName,
+						},
+					},
+				},
+			},
+		})(pts)
+
+		// Add the emptyDir volume (for the prepared pgpass file with correct permissions)
+		WithVolume(corev1.Volume{
+			Name: pgpassVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})(pts)
+
+		// Add the init container that prepares the pgpass file
+		// This container copies the file and sets correct permissions (600) and ownership
+		WithInitContainer(corev1.Container{
+			Name:  pgpassInitContainerName,
+			Image: pgpassInitContainerImage,
+			Command: []string{
+				"/bin/sh",
+				"-c",
+				fmt.Sprintf(
+					"cp %s/%s %s/%s && chmod 600 %s/%s && chown %d:%d %s/%s",
+					pgpassSecretMountPath, pgpassFileName,
+					pgpassEmptyDirMountPath, pgpassFileName,
+					pgpassEmptyDirMountPath, pgpassFileName,
+					pgpassAppUserUID, pgpassAppUserGID,
+					pgpassEmptyDirMountPath, pgpassFileName,
+				),
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      pgpassSecretVolumeName,
+					MountPath: pgpassSecretMountPath,
+					ReadOnly:  true,
+				},
+				{
+					Name:      pgpassVolumeName,
+					MountPath: pgpassEmptyDirMountPath,
+				},
+			},
+		})(pts)
+
+		// Add the volume mount to the registry-api container
+		// Uses subPath to mount just the .pgpass file, not the entire directory
+		WithVolumeMount(containerName, corev1.VolumeMount{
+			Name:      pgpassVolumeName,
+			MountPath: pgpassAppUserMountPath,
+			SubPath:   pgpassFileName,
+			ReadOnly:  true,
+		})(pts)
+
+		// Add the PGPASSFILE environment variable
+		WithEnvVar(containerName, corev1.EnvVar{
+			Name:  "PGPASSFILE",
+			Value: pgpassAppUserMountPath,
+		})(pts)
+	}
+}
+
 // WithRegistrySourceMounts creates volumes and mounts for all registry sources (ConfigMap and PVC).
 // Each registry source (ConfigMap or PVC) gets its own volume and mount point
 // at /config/registry/{registryName}/. Multiple registries can share the same PVC

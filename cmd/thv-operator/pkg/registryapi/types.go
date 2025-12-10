@@ -57,6 +57,29 @@ const (
 
 	// DefaultReplicas is the default number of replicas for the registry API deployment
 	DefaultReplicas = 1
+
+	// PGPass volume and path constants
+	// pgpassSecretVolumeName is the name of the volume for the pgpass secret
+	pgpassSecretVolumeName = "pgpass-secret"
+	// pgpassVolumeName is the name of the emptyDir volume for the prepared pgpass file
+	pgpassVolumeName = "pgpass"
+	// pgpassInitContainerName is the name of the init container that prepares the pgpass file
+	pgpassInitContainerName = "setup-pgpass"
+	// pgpassInitContainerImage is the image used for the pgpass init container
+	pgpassInitContainerImage = "busybox:latest"
+	// pgpassSecretMountPath is the path where the secret is mounted in the init container
+	pgpassSecretMountPath = "/secret"
+	// pgpassEmptyDirMountPath is the path where the emptyDir is mounted in the init container
+	pgpassEmptyDirMountPath = "/pgpass"
+	// pgpassAppUserMountPath is the path where the pgpass file is mounted in the app container
+	// nolint:gosec // G101: This is a file path, not a credential
+	pgpassAppUserMountPath = "/home/appuser/.pgpass"
+	// pgpassFileName is the name of the pgpass file
+	pgpassFileName = ".pgpass"
+	// pgpassAppUserUID is the UID of the application user
+	pgpassAppUserUID = 65532
+	// pgpassAppUserGID is the GID of the application user
+	pgpassAppUserGID = 65532
 )
 
 //go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=types.go Manager

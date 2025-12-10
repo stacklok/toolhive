@@ -141,9 +141,8 @@ func (*manager) buildRegistryAPIDeployment(
 		}
 	}
 
-	// Build PodTemplateSpec with defaults and user customizations merged
-	builder := NewPodTemplateSpecBuilderFrom(userPTS)
-	podTemplateSpec := builder.Apply(
+	// Build list of options for PodTemplateSpec
+	opts := []PodTemplateSpecOption{
 		WithLabels(labels),
 		WithAnnotations(map[string]string{
 			"toolhive.stacklok.dev/config-hash": "hash-dummy-value",
@@ -153,7 +152,20 @@ func (*manager) buildRegistryAPIDeployment(
 		WithRegistryServerConfigMount(registryAPIContainerName, configManager.GetRegistryServerConfigMapName()),
 		WithRegistrySourceMounts(registryAPIContainerName, mcpRegistry.Spec.Registries),
 		WithRegistryStorageMount(registryAPIContainerName),
-	).Build()
+	}
+
+	// Add pgpass mount if configured in databaseConfig
+	if mcpRegistry.Spec.DatabaseConfig != nil && mcpRegistry.Spec.DatabaseConfig.PGPassSecretRef != nil {
+		secretRef := mcpRegistry.Spec.DatabaseConfig.PGPassSecretRef
+		opts = append(opts, WithPGPassMount(registryAPIContainerName, secretRef.Name, secretRef.Key))
+		ctxLogger.V(1).Info("Adding pgpass secret mount",
+			"secretName", secretRef.Name,
+			"secretKey", secretRef.Key)
+	}
+
+	// Build PodTemplateSpec with defaults and user customizations merged
+	builder := NewPodTemplateSpecBuilderFrom(userPTS)
+	podTemplateSpec := builder.Apply(opts...).Build()
 
 	// Create basic deployment specification with named container
 	deployment := &appsv1.Deployment{

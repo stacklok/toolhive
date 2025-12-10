@@ -691,6 +691,236 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			wantErr: true,
 			errMsg:  "spec.compositeTools[0].steps[0].dependsOn references unknown step \"unknown-step\"",
 		},
+		{
+			name: "valid elicitation with OnDecline skip_remaining",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnDecline: &ElicitationResponseHandler{
+										Action: "skip_remaining",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid elicitation with OnDecline abort",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnDecline: &ElicitationResponseHandler{
+										Action: "abort",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid elicitation with OnDecline continue",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnDecline: &ElicitationResponseHandler{
+										Action: "continue",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid elicitation with OnCancel skip_remaining",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnCancel: &ElicitationResponseHandler{
+										Action: "skip_remaining",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid elicitation with OnCancel abort",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnCancel: &ElicitationResponseHandler{
+										Action: "abort",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid elicitation with OnCancel continue",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnCancel: &ElicitationResponseHandler{
+										Action: "continue",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid elicitation with both OnDecline and OnCancel",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnDecline: &ElicitationResponseHandler{
+										Action: "skip_remaining",
+									},
+									OnCancel: &ElicitationResponseHandler{
+										Action: "abort",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid elicitation - OnDecline with invalid action",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnDecline: &ElicitationResponseHandler{
+										Action: "invalid-action",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.compositeTools[0].steps[0].onDecline.action must be one of: skip_remaining, abort, continue",
+		},
+		{
+			name: "invalid elicitation - OnCancel with invalid action",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnCancel: &ElicitationResponseHandler{
+										Action: "invalid-action",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.compositeTools[0].steps[0].onCancel.action must be one of: skip_remaining, abort, continue",
+		},
 	}
 
 	for _, tt := range tests {

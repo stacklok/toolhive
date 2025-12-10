@@ -17,8 +17,10 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -82,6 +84,15 @@ type Config struct {
 	// AuthInfoHandler is the optional handler for /.well-known/oauth-protected-resource endpoint.
 	// Exposes OIDC discovery information about the protected resource.
 	AuthInfoHandler http.Handler
+
+	// TelemetryProvider is the optional telemetry provider.
+	// If nil, no telemetry is recorded.
+	TelemetryProvider *telemetry.Provider
+
+	// AuditConfig is the optional audit configuration.
+	// If nil, no audit logging is performed.
+	// Component should be set to "vmcp-server" to distinguish vMCP audit logs.
+	AuditConfig *audit.Config
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -147,6 +158,7 @@ type Server struct {
 //
 //nolint:gocyclo // Complexity from hook logic is acceptable
 func New(
+	ctx context.Context,
 	cfg *Config,
 	rt router.Router,
 	backendClient vmcp.BackendClient,
@@ -194,6 +206,23 @@ func New(
 	// This provides SDK-agnostic elicitation with security validation
 	elicitationHandler := composer.NewDefaultElicitationHandler(sdkElicitationRequester)
 
+	// Decorate backend client with telemetry if provider is configured
+	// This must happen BEFORE creating the workflow engine so that workflow
+	// backend calls are instrumented when they occur during workflow execution.
+	if cfg.TelemetryProvider != nil {
+		var err error
+		backendClient, err = monitorBackends(
+			ctx,
+			cfg.TelemetryProvider.MeterProvider(),
+			cfg.TelemetryProvider.TracerProvider(),
+			backends,
+			backendClient,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to monitor backends: %w", err)
+		}
+	}
+
 	// Create workflow engine (composer) for executing composite tools
 	// The composer orchestrates multi-step workflows across backends
 	// Use in-memory state store with 5-minute cleanup interval and 1-hour max age for completed workflows
@@ -204,6 +233,18 @@ func New(
 	workflowDefs, workflowExecutors, err := validateAndCreateExecutors(workflowComposer, workflowDefs)
 	if err != nil {
 		return nil, fmt.Errorf("workflow validation failed: %w", err)
+	}
+
+	// Decorate workflow executors with telemetry if provider is configured
+	if cfg.TelemetryProvider != nil {
+		workflowExecutors, err = monitorWorkflowExecutors(
+			cfg.TelemetryProvider.MeterProvider(),
+			cfg.TelemetryProvider.TracerProvider(),
+			workflowExecutors,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to monitor workflow executors: %w", err)
+		}
 	}
 
 	// Create session manager with VMCPSession factory
@@ -334,6 +375,16 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/ping", s.handleHealth)
 
+	// Optional Prometheus metrics endpoint (unauthenticated)
+	if s.config.TelemetryProvider != nil {
+		if prometheusHandler := s.config.TelemetryProvider.PrometheusHandler(); prometheusHandler != nil {
+			mux.Handle("/metrics", prometheusHandler)
+			logger.Info("Prometheus metrics endpoint enabled at /metrics")
+		} else {
+			logger.Warn("Prometheus metrics endpoint is not enabled, but telemetry provider is configured")
+		}
+	}
+
 	// Optional .well-known discovery endpoints (unauthenticated, RFC 9728 compliant)
 	// Handles /.well-known/oauth-protected-resource and subpaths (e.g., /mcp)
 	if wellKnownHandler := auth.NewWellKnownHandler(s.config.AuthInfoHandler); wellKnownHandler != nil {
@@ -341,14 +392,32 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Info("RFC 9728 OAuth discovery endpoints enabled at /.well-known/")
 	}
 
-	// MCP endpoint - apply middleware chain: auth → discovery
+	// MCP endpoint - apply middleware chain: auth → audit → discovery → telemetry
 	var mcpHandler http.Handler = streamableServer
 
-	// Apply discovery middleware (runs after auth middleware)
+	if s.config.TelemetryProvider != nil {
+		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)
+		logger.Info("Telemetry middleware enabled for MCP endpoints")
+	}
+
+	// Apply discovery middleware (runs after audit/auth middleware)
 	// Discovery middleware performs per-request capability aggregation with user context
 	// Pass sessionManager to enable session-based capability retrieval for subsequent requests
 	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backends, s.sessionManager)(mcpHandler)
 	logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
+
+	// Apply audit middleware if configured (runs after auth, before discovery)
+	if s.config.AuditConfig != nil {
+		auditor, err := audit.NewAuditorWithTransport(
+			s.config.AuditConfig,
+			"streamable-http", // vMCP uses streamable HTTP transport
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create auditor: %w", err)
+		}
+		mcpHandler = auditor.Middleware(mcpHandler)
+		logger.Info("Audit middleware enabled for MCP endpoints")
+	}
 
 	// Apply authentication middleware if configured (runs first in chain)
 	if s.config.AuthMiddleware != nil {

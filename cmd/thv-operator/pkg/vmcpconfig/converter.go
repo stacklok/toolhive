@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -14,7 +15,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -39,7 +43,8 @@ type Converter struct {
 // NewConverter creates a new Converter instance.
 // oidcResolver is required and used to resolve OIDC configuration from various sources
 // (kubernetes, configMap, inline). Use a mock resolver in tests.
-// k8sClient is required and used to fetch referenced VirtualMCPCompositeToolDefinition resources.
+// k8sClient is required for resolving MCPToolConfig references and fetching referenced
+// VirtualMCPCompositeToolDefinition resources.
 // Returns an error if oidcResolver or k8sClient is nil.
 func NewConverter(oidcResolver oidc.Resolver, k8sClient client.Client) (*Converter, error) {
 	if oidcResolver == nil {
@@ -75,7 +80,11 @@ func (c *Converter) Convert(
 
 	// Convert OutgoingAuth - always set with defaults if not specified
 	if vmcp.Spec.OutgoingAuth != nil {
-		config.OutgoingAuth = c.convertOutgoingAuth(ctx, vmcp)
+		outgoingAuth, err := c.convertOutgoingAuth(ctx, vmcp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert outgoing auth: %w", err)
+		}
+		config.OutgoingAuth = outgoingAuth
 	} else {
 		// Provide default outgoing auth config
 		config.OutgoingAuth = &vmcpconfig.OutgoingAuthConfig{
@@ -85,7 +94,11 @@ func (c *Converter) Convert(
 
 	// Convert Aggregation - always set with defaults if not specified
 	if vmcp.Spec.Aggregation != nil {
-		config.Aggregation = c.convertAggregation(ctx, vmcp)
+		agg, err := c.convertAggregation(ctx, vmcp)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert aggregation config: %w", err)
+		}
+		config.Aggregation = agg
 	} else {
 		// Provide default aggregation config with prefix conflict resolution
 		config.Aggregation = &vmcpconfig.AggregationConfig{
@@ -109,6 +122,8 @@ func (c *Converter) Convert(
 	if vmcp.Spec.Operational != nil {
 		config.Operational = c.convertOperational(ctx, vmcp)
 	}
+
+	config.Telemetry = spectoconfig.ConvertTelemetryConfig(ctx, vmcp.Spec.Telemetry, vmcp.Name)
 
 	// Apply operational defaults (fills missing values)
 	config.EnsureOperationalDefaults()
@@ -218,9 +233,9 @@ func mapResolvedOIDCToVmcpConfig(
 
 // convertOutgoingAuth converts OutgoingAuthConfig from CRD to vmcp config
 func (c *Converter) convertOutgoingAuth(
-	_ context.Context,
+	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) *vmcpconfig.OutgoingAuthConfig {
+) (*vmcpconfig.OutgoingAuthConfig, error) {
 	outgoing := &vmcpconfig.OutgoingAuthConfig{
 		Source:   vmcp.Spec.OutgoingAuth.Source,
 		Backends: make(map[string]*authtypes.BackendAuthStrategy),
@@ -228,41 +243,120 @@ func (c *Converter) convertOutgoingAuth(
 
 	// Convert Default
 	if vmcp.Spec.OutgoingAuth.Default != nil {
-		outgoing.Default = c.convertBackendAuthConfig(vmcp.Spec.OutgoingAuth.Default)
+		defaultStrategy, err := c.convertBackendAuthConfig(ctx, vmcp, "default", vmcp.Spec.OutgoingAuth.Default)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert default backend auth: %w", err)
+		}
+		outgoing.Default = defaultStrategy
 	}
 
 	// Convert per-backend overrides
 	for backendName, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
-		outgoing.Backends[backendName] = c.convertBackendAuthConfig(&backendAuth)
+		strategy, err := c.convertBackendAuthConfig(ctx, vmcp, backendName, &backendAuth)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert backend auth for %s: %w", backendName, err)
+		}
+		outgoing.Backends[backendName] = strategy
 	}
 
-	return outgoing
+	return outgoing, nil
 }
 
 // convertBackendAuthConfig converts BackendAuthConfig from CRD to vmcp config
-func (*Converter) convertBackendAuthConfig(
+func (c *Converter) convertBackendAuthConfig(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	backendName string,
 	crdConfig *mcpv1alpha1.BackendAuthConfig,
-) *authtypes.BackendAuthStrategy {
-	strategy := &authtypes.BackendAuthStrategy{
-		Type: crdConfig.Type,
+) (*authtypes.BackendAuthStrategy, error) {
+	// If type is "discovered", return unauthenticated strategy
+	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeDiscovered {
+		return &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeUnauthenticated,
+		}, nil
 	}
 
-	// Note: When Type is "external_auth_config_ref", the actual MCPExternalAuthConfig
-	// resource should be resolved at runtime and its configuration (TokenExchange or
-	// HeaderInjection) should be populated into the corresponding typed fields.
-	// This conversion happens during server initialization when the referenced
-	// MCPExternalAuthConfig can be looked up.
+	// If type is "external_auth_config_ref", resolve the MCPExternalAuthConfig
+	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef {
+		if crdConfig.ExternalAuthConfigRef == nil {
+			return nil, fmt.Errorf("backend %s: external_auth_config_ref type requires externalAuthConfigRef field", backendName)
+		}
 
-	return strategy
+		// Fetch the MCPExternalAuthConfig resource
+		externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+		err := c.k8sClient.Get(ctx, types.NamespacedName{
+			Name:      crdConfig.ExternalAuthConfigRef.Name,
+			Namespace: vmcp.Namespace,
+		}, externalAuthConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s/%s: %w",
+				vmcp.Namespace, crdConfig.ExternalAuthConfigRef.Name, err)
+		}
+
+		// Convert the external auth config to backend auth strategy
+		return c.convertExternalAuthConfigToStrategy(ctx, externalAuthConfig)
+	}
+
+	// Unknown type
+	return nil, fmt.Errorf("backend %s: unknown auth type %q", backendName, crdConfig.Type)
+}
+
+// convertExternalAuthConfigToStrategy converts MCPExternalAuthConfig to BackendAuthStrategy.
+// This uses the converter registry to consolidate conversion logic and apply token type normalization consistently.
+// The registry pattern makes adding new auth types easier and ensures conversion happens in one place.
+func (*Converter) convertExternalAuthConfigToStrategy(
+	_ context.Context,
+	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+) (*authtypes.BackendAuthStrategy, error) {
+	// Use the converter registry to convert to typed strategy
+	registry := converters.DefaultRegistry()
+	converter, err := registry.GetConverter(externalAuthConfig.Spec.Type)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to typed BackendAuthStrategy (applies token type normalization)
+	strategy, err := converter.ConvertToStrategy(externalAuthConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert external auth config to strategy: %w", err)
+	}
+
+	// Enrich with unique env var names per ExternalAuthConfig to avoid conflicts
+	// when multiple configs of the same type reference different secrets
+	if strategy.TokenExchange != nil &&
+		externalAuthConfig.Spec.TokenExchange != nil &&
+		externalAuthConfig.Spec.TokenExchange.ClientSecretRef != nil {
+		strategy.TokenExchange.ClientSecretEnv = controllerutil.GenerateUniqueTokenExchangeEnvVarName(externalAuthConfig.Name)
+	}
+	if strategy.HeaderInjection != nil &&
+		externalAuthConfig.Spec.HeaderInjection != nil &&
+		externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
+		strategy.HeaderInjection.HeaderValueEnv = controllerutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
+	}
+
+	return strategy, nil
 }
 
 // convertAggregation converts AggregationConfig from CRD to vmcp config
-func (*Converter) convertAggregation(
-	_ context.Context,
+func (c *Converter) convertAggregation(
+	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-) *vmcpconfig.AggregationConfig {
+) (*vmcpconfig.AggregationConfig, error) {
 	agg := &vmcpconfig.AggregationConfig{}
 
+	c.convertConflictResolution(vmcp, agg)
+	if err := c.convertToolConfigs(ctx, vmcp, agg); err != nil {
+		return nil, err
+	}
+
+	return agg, nil
+}
+
+// convertConflictResolution converts conflict resolution strategy and config
+func (*Converter) convertConflictResolution(
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	agg *vmcpconfig.AggregationConfig,
+) {
 	// Convert conflict resolution strategy
 	switch vmcp.Spec.Aggregation.ConflictResolution {
 	case mcpv1alpha1.ConflictResolutionPrefix:
@@ -287,32 +381,137 @@ func (*Converter) convertAggregation(
 			PrefixFormat: "{workload}_",
 		}
 	}
+}
 
-	// Convert per-workload tool configs
-	if len(vmcp.Spec.Aggregation.Tools) > 0 {
-		agg.Tools = make([]*vmcpconfig.WorkloadToolConfig, 0, len(vmcp.Spec.Aggregation.Tools))
-		for _, toolConfig := range vmcp.Spec.Aggregation.Tools {
-			wtc := &vmcpconfig.WorkloadToolConfig{
-				Workload: toolConfig.Workload,
-				Filter:   toolConfig.Filter,
-			}
-
-			// Convert overrides
-			if len(toolConfig.Overrides) > 0 {
-				wtc.Overrides = make(map[string]*vmcpconfig.ToolOverride)
-				for toolName, override := range toolConfig.Overrides {
-					wtc.Overrides[toolName] = &vmcpconfig.ToolOverride{
-						Name:        override.Name,
-						Description: override.Description,
-					}
-				}
-			}
-
-			agg.Tools = append(agg.Tools, wtc)
-		}
+// convertToolConfigs converts per-workload tool configurations
+func (c *Converter) convertToolConfigs(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	agg *vmcpconfig.AggregationConfig,
+) error {
+	if len(vmcp.Spec.Aggregation.Tools) == 0 {
+		return nil
 	}
 
-	return agg
+	ctxLogger := log.FromContext(ctx)
+	agg.Tools = make([]*vmcpconfig.WorkloadToolConfig, 0, len(vmcp.Spec.Aggregation.Tools))
+
+	for _, toolConfig := range vmcp.Spec.Aggregation.Tools {
+		wtc := &vmcpconfig.WorkloadToolConfig{
+			Workload: toolConfig.Workload,
+			Filter:   toolConfig.Filter,
+		}
+
+		if err := c.applyToolConfigRef(ctx, ctxLogger, vmcp, toolConfig, wtc); err != nil {
+			return err
+		}
+		c.applyInlineOverrides(toolConfig, wtc)
+
+		agg.Tools = append(agg.Tools, wtc)
+	}
+	return nil
+}
+
+// applyToolConfigRef resolves and applies MCPToolConfig reference
+func (c *Converter) applyToolConfigRef(
+	ctx context.Context,
+	ctxLogger logr.Logger,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	toolConfig mcpv1alpha1.WorkloadToolConfig,
+	wtc *vmcpconfig.WorkloadToolConfig,
+) error {
+	if toolConfig.ToolConfigRef == nil {
+		return nil
+	}
+
+	resolvedConfig, err := c.resolveMCPToolConfig(ctx, vmcp.Namespace, toolConfig.ToolConfigRef.Name)
+	if err != nil {
+		ctxLogger.Error(err, "failed to resolve MCPToolConfig reference",
+			"workload", toolConfig.Workload,
+			"toolConfigRef", toolConfig.ToolConfigRef.Name)
+		// Fail closed: return error when MCPToolConfig is configured but resolution fails
+		// This prevents deploying without tool filtering when explicit configuration is requested
+		return fmt.Errorf("MCPToolConfig resolution failed for %q: %w",
+			toolConfig.ToolConfigRef.Name, err)
+	}
+
+	// Note: resolveMCPToolConfig never returns (nil, nil) - it either succeeds with
+	// (toolConfig, nil) or fails with (nil, error), so no nil check needed here
+
+	c.mergeToolConfigFilter(wtc, resolvedConfig)
+	c.mergeToolConfigOverrides(wtc, resolvedConfig)
+	return nil
+}
+
+// mergeToolConfigFilter merges filter from MCPToolConfig
+func (*Converter) mergeToolConfigFilter(
+	wtc *vmcpconfig.WorkloadToolConfig,
+	resolvedConfig *mcpv1alpha1.MCPToolConfig,
+) {
+	if len(wtc.Filter) == 0 && len(resolvedConfig.Spec.ToolsFilter) > 0 {
+		wtc.Filter = resolvedConfig.Spec.ToolsFilter
+	}
+}
+
+// mergeToolConfigOverrides merges overrides from MCPToolConfig
+func (*Converter) mergeToolConfigOverrides(
+	wtc *vmcpconfig.WorkloadToolConfig,
+	resolvedConfig *mcpv1alpha1.MCPToolConfig,
+) {
+	if len(resolvedConfig.Spec.ToolsOverride) == 0 {
+		return
+	}
+
+	if wtc.Overrides == nil {
+		wtc.Overrides = make(map[string]*vmcpconfig.ToolOverride)
+	}
+
+	for toolName, override := range resolvedConfig.Spec.ToolsOverride {
+		if _, exists := wtc.Overrides[toolName]; !exists {
+			wtc.Overrides[toolName] = &vmcpconfig.ToolOverride{
+				Name:        override.Name,
+				Description: override.Description,
+			}
+		}
+	}
+}
+
+// applyInlineOverrides applies inline tool overrides
+func (*Converter) applyInlineOverrides(
+	toolConfig mcpv1alpha1.WorkloadToolConfig,
+	wtc *vmcpconfig.WorkloadToolConfig,
+) {
+	if len(toolConfig.Overrides) == 0 {
+		return
+	}
+
+	if wtc.Overrides == nil {
+		wtc.Overrides = make(map[string]*vmcpconfig.ToolOverride)
+	}
+
+	for toolName, override := range toolConfig.Overrides {
+		wtc.Overrides[toolName] = &vmcpconfig.ToolOverride{
+			Name:        override.Name,
+			Description: override.Description,
+		}
+	}
+}
+
+// resolveMCPToolConfig fetches an MCPToolConfig resource by name and namespace
+func (c *Converter) resolveMCPToolConfig(
+	ctx context.Context,
+	namespace string,
+	name string,
+) (*mcpv1alpha1.MCPToolConfig, error) {
+	toolConfig := &mcpv1alpha1.MCPToolConfig{}
+	err := c.k8sClient.Get(ctx, types.NamespacedName{
+		Name:      name,
+		Namespace: namespace,
+	}, toolConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MCPToolConfig %s/%s: %w", namespace, name, err)
+	}
+	return toolConfig, nil
 }
 
 // convertCompositeTools converts CompositeToolSpec from CRD to vmcp config
@@ -522,6 +721,19 @@ func (*Converter) convertWorkflowSteps(
 				}
 			}
 			step.OnError = stepError
+		}
+
+		// Convert elicitation response handlers
+		if crdStep.OnDecline != nil {
+			step.OnDecline = &vmcpconfig.ElicitationResponseConfig{
+				Action: crdStep.OnDecline.Action,
+			}
+		}
+
+		if crdStep.OnCancel != nil {
+			step.OnCancel = &vmcpconfig.ElicitationResponseConfig{
+				Action: crdStep.OnCancel.Action,
+			}
 		}
 
 		workflowSteps = append(workflowSteps, step)

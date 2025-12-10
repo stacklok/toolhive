@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"regexp"
 	"strings"
 	"time"
 
@@ -65,10 +64,6 @@ type VirtualMCPServerReconciler struct {
 	Recorder         record.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 }
-
-var (
-	envVarSanitizeRegex = regexp.MustCompile(`[^A-Z0-9_]`)
-)
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers/status,verbs=get;update;patch
@@ -333,6 +328,29 @@ func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
 		} else if err != nil {
 			ctxLogger.Error(err, "Failed to get VirtualMCPCompositeToolDefinition", "name", ref.Name)
 			return err
+		}
+
+		// Check that the composite tool definition is validated and valid
+		if compositeToolDef.Status.ValidationStatus == mcpv1alpha1.ValidationStatusInvalid {
+			message := fmt.Sprintf("Referenced VirtualMCPCompositeToolDefinition %s is invalid", ref.Name)
+			if len(compositeToolDef.Status.ValidationErrors) > 0 {
+				message = fmt.Sprintf("%s: %s", message, strings.Join(compositeToolDef.Status.ValidationErrors, "; "))
+			}
+			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetCompositeToolRefsValidatedCondition(
+				mcpv1alpha1.ConditionReasonCompositeToolRefInvalid,
+				message,
+				metav1.ConditionFalse,
+			)
+			return fmt.Errorf("referenced VirtualMCPCompositeToolDefinition %s is invalid", ref.Name)
+		}
+
+		// If ValidationStatus is Unknown, we still allow it (validation might be in progress)
+		// but log a warning
+		if compositeToolDef.Status.ValidationStatus == mcpv1alpha1.ValidationStatusUnknown {
+			ctxLogger.V(1).Info("Referenced composite tool definition validation status is Unknown, proceeding",
+				"name", ref.Name, "namespace", vmcp.Namespace)
 		}
 	}
 
@@ -1281,35 +1299,15 @@ func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 	if strategy.TokenExchange != nil &&
 		externalAuthConfig.Spec.TokenExchange != nil &&
 		externalAuthConfig.Spec.TokenExchange.ClientSecretRef != nil {
-		strategy.TokenExchange.ClientSecretEnv = generateUniqueTokenExchangeEnvVarName(externalAuthConfig.Name)
+		strategy.TokenExchange.ClientSecretEnv = ctrlutil.GenerateUniqueTokenExchangeEnvVarName(externalAuthConfig.Name)
 	}
 	if strategy.HeaderInjection != nil &&
 		externalAuthConfig.Spec.HeaderInjection != nil &&
 		externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
-		strategy.HeaderInjection.HeaderValueEnv = generateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
+		strategy.HeaderInjection.HeaderValueEnv = ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
 	}
 
 	return strategy, nil
-}
-
-// generateUniqueTokenExchangeEnvVarName generates a unique environment variable name for token exchange
-// client secrets, incorporating the ExternalAuthConfig name to ensure uniqueness.
-func generateUniqueTokenExchangeEnvVarName(configName string) string {
-	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
-	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
-	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = envVarSanitizeRegex.ReplaceAllString(sanitized, "_")
-	return fmt.Sprintf("TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_%s", sanitized)
-}
-
-// generateUniqueHeaderInjectionEnvVarName generates a unique environment variable name for header injection
-// values, incorporating the ExternalAuthConfig name to ensure uniqueness.
-func generateUniqueHeaderInjectionEnvVarName(configName string) string {
-	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
-	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
-	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = envVarSanitizeRegex.ReplaceAllString(sanitized, "_")
-	return fmt.Sprintf("TOOLHIVE_HEADER_INJECTION_VALUE_%s", sanitized)
 }
 
 // convertBackendAuthConfigToVMCP converts a BackendAuthConfig from CRD to vmcp config.
@@ -1719,7 +1717,8 @@ func (r *VirtualMCPServerReconciler) mapExternalAuthConfigToVirtualMCPServer(
 	var requests []reconcile.Request
 	for _, vmcp := range vmcpList.Items {
 		// Only reconcile VirtualMCPServers that actually reference this ExternalAuthConfig
-		if r.vmcpReferencesExternalAuthConfig(&vmcp, externalAuthConfig.Name) {
+		// This includes both inline references and discovered references (via MCPServers)
+		if r.vmcpReferencesExternalAuthConfig(ctx, &vmcp, externalAuthConfig.Name) {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      vmcp.Name,
@@ -1775,8 +1774,10 @@ func (*VirtualMCPServerReconciler) vmcpReferencesToolConfig(vmcp *mcpv1alpha1.Vi
 	return false
 }
 
-// vmcpReferencesExternalAuthConfig checks if a VirtualMCPServer references the given MCPExternalAuthConfig
-func (*VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
+// vmcpReferencesExternalAuthConfig checks if a VirtualMCPServer references the given MCPExternalAuthConfig.
+// It checks both inline references (in outgoingAuth spec) and discovered references (via MCPServers in the group).
+func (r *VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
+	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	authConfigName string,
 ) bool {
@@ -1784,6 +1785,7 @@ func (*VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
 		return false
 	}
 
+	// Check inline references in outgoing auth configuration
 	// Check default backend auth configuration
 	if vmcp.Spec.OutgoingAuth.Default != nil &&
 		vmcp.Spec.OutgoingAuth.Default.ExternalAuthConfigRef != nil &&
@@ -1795,6 +1797,60 @@ func (*VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
 	for _, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
 		if backendAuth.ExternalAuthConfigRef != nil &&
 			backendAuth.ExternalAuthConfigRef.Name == authConfigName {
+			return true
+		}
+	}
+
+	// Check discovered references when source is "discovered"
+	// When using discovered mode, auth configs are referenced through MCPServers, not inline
+	if vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceDiscovered {
+		if r.mcpGroupBackendsReferenceExternalAuthConfig(ctx, vmcp, authConfigName) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// mcpGroupBackendsReferenceExternalAuthConfig checks if any MCPServers in the VirtualMCPServer's group
+// reference the given MCPExternalAuthConfig
+func (r *VirtualMCPServerReconciler) mcpGroupBackendsReferenceExternalAuthConfig(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	authConfigName string,
+) bool {
+	// Get the MCPGroup to verify it exists
+	mcpGroup := &mcpv1alpha1.MCPGroup{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      vmcp.Spec.GroupRef.Name,
+		Namespace: vmcp.Namespace,
+	}, mcpGroup)
+	if err != nil {
+		// If we can't get the group, we can't determine if it references the auth config
+		// Return false to avoid false positives
+		log.FromContext(ctx).Error(err, "Failed to get MCPGroup for ExternalAuthConfig reference check",
+			"group", vmcp.Spec.GroupRef.Name,
+			"vmcp", vmcp.Name)
+		return false
+	}
+
+	// List all MCPServers in the group using field selector (same as MCPGroup controller)
+	mcpServerList := &mcpv1alpha1.MCPServerList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(vmcp.Namespace),
+		client.MatchingFields{"spec.groupRef": mcpGroup.Name},
+	}
+	err = r.List(ctx, mcpServerList, listOpts...)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPServers for ExternalAuthConfig reference check",
+			"group", mcpGroup.Name)
+		return false
+	}
+
+	// Check if any MCPServer references the ExternalAuthConfig
+	for _, mcpServer := range mcpServerList.Items {
+		if mcpServer.Spec.ExternalAuthConfigRef != nil &&
+			mcpServer.Spec.ExternalAuthConfigRef.Name == authConfigName {
 			return true
 		}
 	}

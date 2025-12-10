@@ -84,3 +84,10 @@ The telemetry middleware:
 
 This provides end-to-end visibility across the entire request lifecycle while
 maintaining the modular architecture of ToolHive's middleware system.
+
+## Virtual MCP Server Telemetry
+
+For observability in the Virtual MCP Server (vMCP), including backend request
+metrics, workflow execution telemetry, and distributed tracing, see the
+dedicated [Virtual MCP Server Observability](./operator/virtualmcpserver-observability.md)
+documentation.

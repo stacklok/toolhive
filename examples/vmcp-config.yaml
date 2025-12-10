@@ -187,3 +187,14 @@ operational:
 #           environment: "{{.steps.confirm_deploy.content.environment}}"
 #         depends_on: ["confirm_deploy"]
 #         condition: "{{.steps.confirm_deploy.action == 'accept'}}"
+
+# ===== OBSERVABILITY =====
+# OpenTelemetry-based metrics and tracing for backend operations and workflows
+telemetry:
+  endpoint: "localhost:4317"  # OTLP collector endpoint
+  servicename: "engineering-vmcp"
+  tracingenabled: true
+  metricsenabled: true
+  samplingrate: 0.1  # 10% sampling
+  insecure: true  # Use HTTP instead of HTTPS
+  enableprometheusmetricspath: true  # Expose /metrics endpoint

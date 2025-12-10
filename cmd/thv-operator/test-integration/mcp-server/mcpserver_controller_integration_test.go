@@ -82,6 +82,16 @@ var _ = Describe("MCPServer Controller Integration Tests", func() {
 							Memory: "128Mi",
 						},
 					},
+					ProxyRunnerResources: mcpv1alpha1.ResourceRequirements{
+						Limits: mcpv1alpha1.ResourceList{
+							CPU:    "500m",
+							Memory: "1Gi",
+						},
+						Requests: mcpv1alpha1.ResourceList{
+							CPU:    "100m",
+							Memory: "128Mi",
+						},
+					},
 					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
 						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
 							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{

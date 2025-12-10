@@ -1075,6 +1075,7 @@ _Appears in:_
 | `env` _[EnvVar](#envvar) array_ | Env are environment variables to set in the MCP server container |  |  |
 | `volumes` _[Volume](#volume) array_ | Volumes are volumes to mount in the MCP server container |  |  |
 | `resources` _[ResourceRequirements](#resourcerequirements)_ | Resources defines the resource requirements for the MCP server container |  |  |
+| `proxyRunnerResources` _[ResourceRequirements](#resourcerequirements)_ | ProxyRunnerResources defines the resource requirements for the ToolHive proxy runner container.<br />The proxy runner is the infrastructure container that manages the MCP server container.<br />If not specified, defaults to 50m/200m CPU and 64Mi/256Mi memory (lighter than MCP server defaults). |  |  |
 | `secrets` _[SecretRef](#secretref) array_ | Secrets are references to secrets to mount in the MCP server container |  |  |
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the MCP server.<br />If not specified, a ServiceAccount will be created automatically and used by the MCP server. |  |  |
 | `permissionProfile` _[PermissionProfileRef](#permissionprofileref)_ | PermissionProfile defines the permission profile to use |  |  |

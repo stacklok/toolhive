@@ -1146,6 +1146,7 @@ func (in *MCPServerSpec) DeepCopyInto(out *MCPServerSpec) {
 		copy(*out, *in)
 	}
 	out.Resources = in.Resources
+	out.ProxyRunnerResources = in.ProxyRunnerResources
 	if in.Secrets != nil {
 		in, out := &in.Secrets, &out.Secrets
 		*out = make([]SecretRef, len(*in))

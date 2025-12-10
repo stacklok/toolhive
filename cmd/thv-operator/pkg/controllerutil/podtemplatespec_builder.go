@@ -106,6 +106,39 @@ func (b *PodTemplateSpecBuilder) WithSecrets(secrets []mcpv1alpha1.SecretRef) *P
 	return b
 }
 
+// WithResources adds resource requirements to the target container.
+// The target container is specified by containerName in the constructor.
+// The resources parameter should already be validated and converted to proper K8s format by the controller.
+func (b *PodTemplateSpecBuilder) WithResources(k8sResources corev1.ResourceRequirements) *PodTemplateSpecBuilder {
+	// Check if resources are empty
+	if len(k8sResources.Limits) == 0 && len(k8sResources.Requests) == 0 {
+		return b
+	}
+
+	// Find existing container or create new one
+	containerIndex := -1
+	for i, container := range b.spec.Spec.Containers {
+		if container.Name == b.containerName {
+			containerIndex = i
+			break
+		}
+	}
+
+	if containerIndex >= 0 {
+		// Merge resources with existing container (existing takes precedence)
+		existingResources := b.spec.Spec.Containers[containerIndex].Resources
+		mergedResources := MergeResourceRequirements(k8sResources, existingResources)
+		b.spec.Spec.Containers[containerIndex].Resources = mergedResources
+	} else {
+		// Add new container with resources
+		b.spec.Spec.Containers = append(b.spec.Spec.Containers, corev1.Container{
+			Name:      b.containerName,
+			Resources: k8sResources,
+		})
+	}
+	return b
+}
+
 // Build returns the final PodTemplateSpec, or nil if no customizations were made.
 func (b *PodTemplateSpecBuilder) Build() *corev1.PodTemplateSpec {
 	if b.isEmpty() {

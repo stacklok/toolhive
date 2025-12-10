@@ -849,7 +849,9 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 		return true
 	}
 
-	return false
+	// Check if resources have changed (important for upgrades adding default resources)
+	expectedResources := r.buildMergedResourcesForVmcp(vmcp)
+	return !reflect.DeepEqual(container.Resources, expectedResources)
 }
 
 // deploymentMetadataNeedsUpdate checks if deployment-level metadata has changed

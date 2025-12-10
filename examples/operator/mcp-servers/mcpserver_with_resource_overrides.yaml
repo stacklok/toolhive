@@ -15,6 +15,7 @@ spec:
       value: https://api.github.com
     - name: LOG_LEVEL
       value: info
+  # Resource requirements for the MCP server container (the actual workload)
   resources:
     limits:
       cpu: "200m"
@@ -22,6 +23,18 @@ spec:
     requests:
       cpu: "100m"
       memory: "128Mi"
+
+  # Resource requirements for the ToolHive proxy runner container (infrastructure)
+  # The proxy runner is lighter weight and typically needs fewer resources
+  # Defaults: 50m/200m CPU, 64Mi/256Mi memory
+  proxyRunnerResources:
+    limits:
+      cpu: "150m"      # Override default limit of 200m
+      memory: "192Mi"  # Override default limit of 256Mi
+    requests:
+      cpu: "75m"       # Override default request of 50m
+      memory: "96Mi"   # Override default request of 64Mi
+
   resourceOverrides:
     proxyDeployment:
       # Annotations and labels for the proxy deployment

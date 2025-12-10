@@ -107,6 +107,12 @@ type MCPServerSpec struct {
 	// +optional
 	Resources ResourceRequirements `json:"resources,omitempty"`
 
+	// ProxyRunnerResources defines the resource requirements for the ToolHive proxy runner container.
+	// The proxy runner is the infrastructure container that manages the MCP server container.
+	// If not specified, defaults to 50m/200m CPU and 64Mi/256Mi memory (lighter than MCP server defaults).
+	// +optional
+	ProxyRunnerResources ResourceRequirements `json:"proxyRunnerResources,omitempty"`
+
 	// Secrets are references to secrets to mount in the MCP server container
 	// +optional
 	Secrets []SecretRef `json:"secrets,omitempty"`

@@ -12,6 +12,62 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
+const (
+	// DefaultCPURequest is the default CPU request for MCP server containers.
+	// These values provide reasonable limits to prevent resource monopolization
+	// while allowing sufficient resources for typical MCP server workloads.
+	DefaultCPURequest = "100m"
+	// DefaultCPULimit is the default CPU limit for MCP server containers.
+	DefaultCPULimit = "500m"
+	// DefaultMemoryRequest is the default memory request for MCP server containers.
+	DefaultMemoryRequest = "128Mi"
+	// DefaultMemoryLimit is the default memory limit for MCP server containers.
+	DefaultMemoryLimit = "512Mi"
+
+	// DefaultProxyRunnerCPURequest is the default CPU request for proxy runner containers.
+	// The proxy runner is a lightweight Go process that manages the connection
+	// to the MCP server container, so it needs fewer resources.
+	DefaultProxyRunnerCPURequest = "50m"
+	// DefaultProxyRunnerCPULimit is the default CPU limit for proxy runner containers.
+	DefaultProxyRunnerCPULimit = "200m"
+	// DefaultProxyRunnerMemoryRequest is the default memory request for proxy runner containers.
+	DefaultProxyRunnerMemoryRequest = "64Mi"
+	// DefaultProxyRunnerMemoryLimit is the default memory limit for proxy runner containers.
+	DefaultProxyRunnerMemoryLimit = "256Mi"
+)
+
+// BuildDefaultResourceRequirements returns standard default resource requirements
+// for MCP server containers (MCPServer, VirtualMCPServer, MCPRemoteProxy).
+// These defaults prevent resource monopolization while allowing user customization.
+func BuildDefaultResourceRequirements() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(DefaultCPULimit),
+			corev1.ResourceMemory: resource.MustParse(DefaultMemoryLimit),
+		},
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(DefaultCPURequest),
+			corev1.ResourceMemory: resource.MustParse(DefaultMemoryRequest),
+		},
+	}
+}
+
+// BuildDefaultProxyRunnerResourceRequirements returns default resource requirements
+// for the ToolHive proxy runner container (the container running `thv run`).
+// The proxy runner is lighter weight than the MCP server container it manages.
+func BuildDefaultProxyRunnerResourceRequirements() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(DefaultProxyRunnerCPULimit),
+			corev1.ResourceMemory: resource.MustParse(DefaultProxyRunnerMemoryLimit),
+		},
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(DefaultProxyRunnerCPURequest),
+			corev1.ResourceMemory: resource.MustParse(DefaultProxyRunnerMemoryRequest),
+		},
+	}
+}
+
 // BuildResourceRequirements builds Kubernetes resource requirements from CRD spec
 // Shared between MCPServer and MCPRemoteProxy
 func BuildResourceRequirements(resourceSpec mcpv1alpha1.ResourceRequirements) corev1.ResourceRequirements {
@@ -38,6 +94,70 @@ func BuildResourceRequirements(resourceSpec mcpv1alpha1.ResourceRequirements) co
 	}
 
 	return resources
+}
+
+// MergeResourceRequirements intelligently merges user-provided resources with default resources.
+// For each resource type (CPU, Memory), handles request and limit independently:
+// - If user provides both → use user values
+// - If user provides limit only:
+//   - If limit >= default request → use default request + user limit
+//   - If limit < default request → use user limit for both
+//
+// - If user provides request only:
+//   - If request >= default limit → use user request for both
+//   - If request < default limit → use user request + default limit
+//
+// - If user provides neither → use defaults
+func MergeResourceRequirements(defaults, user corev1.ResourceRequirements) corev1.ResourceRequirements {
+	result := corev1.ResourceRequirements{
+		Requests: defaults.Requests.DeepCopy(),
+		Limits:   defaults.Limits.DeepCopy(),
+	}
+
+	mergeResourceType(corev1.ResourceCPU, &result, defaults, user)
+	mergeResourceType(corev1.ResourceMemory, &result, defaults, user)
+
+	return result
+}
+
+// mergeResourceType handles merging logic for a single resource type (CPU or Memory)
+func mergeResourceType(
+	resourceName corev1.ResourceName,
+	result *corev1.ResourceRequirements,
+	defaults, user corev1.ResourceRequirements,
+) {
+	userLimit, hasUserLimit := user.Limits[resourceName]
+	userRequest, hasUserRequest := user.Requests[resourceName]
+	defaultRequest := defaults.Requests[resourceName]
+	defaultLimit := defaults.Limits[resourceName]
+
+	// Process user-provided limit
+	if hasUserLimit {
+		result.Limits[resourceName] = userLimit.DeepCopy()
+		// If no request provided, check against default request
+		if !hasUserRequest {
+			if userLimit.Cmp(defaultRequest) >= 0 {
+				// User limit >= default request, use default request
+				result.Requests[resourceName] = defaultRequest.DeepCopy()
+			} else {
+				// User limit < default request, use user limit for both
+				result.Requests[resourceName] = userLimit.DeepCopy()
+			}
+		}
+	}
+
+	// Process user-provided request
+	if hasUserRequest {
+		result.Requests[resourceName] = userRequest.DeepCopy()
+		// If no limit provided, compare request with default limit
+		if !hasUserLimit {
+			if userRequest.Cmp(defaultLimit) >= 0 {
+				result.Limits[resourceName] = userRequest.DeepCopy()
+			} else {
+				result.Limits[resourceName] = defaultLimit.DeepCopy()
+			}
+		}
+	}
 }
 
 // BuildHealthProbe builds a Kubernetes health probe configuration

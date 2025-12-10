@@ -1504,8 +1504,9 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Args: reconciler.buildContainerArgsForVmcp(vmcp),
-									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+									Args:      reconciler.buildContainerArgsForVmcp(vmcp),
+									Env:       reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+									Resources: reconciler.buildMergedResourcesForVmcp(vmcp),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
@@ -1898,8 +1899,9 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 									Ports: []corev1.ContainerPort{
 										{ContainerPort: 4483},
 									},
-									Args: reconciler.buildContainerArgsForVmcp(vmcp),
-									Env:  reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+									Args:      reconciler.buildContainerArgsForVmcp(vmcp),
+									Env:       reconciler.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{}),
+									Resources: reconciler.buildMergedResourcesForVmcp(vmcp),
 								},
 							},
 							ServiceAccountName: vmcpServiceAccountName(vmcp.Name),

@@ -547,11 +547,11 @@ audit:
 				if cfg.Audit.Component != "vmcp-server" {
 					t.Errorf("Audit.Component = %v, want vmcp-server", cfg.Audit.Component)
 				}
-				if len(cfg.Audit.EventTypes) != 2 {
-					t.Errorf("Audit.EventTypes length = %v, want 2", len(cfg.Audit.EventTypes))
+				if len(cfg.Audit.EventTypes) != 2 || cfg.Audit.EventTypes[0] != "mcp_initialize" || cfg.Audit.EventTypes[1] != "mcp_tool_call" {
+					t.Errorf("Audit.EventTypes = %v, want [mcp_initialize mcp_tool_call]", cfg.Audit.EventTypes)
 				}
-				if len(cfg.Audit.ExcludeEventTypes) != 1 {
-					t.Errorf("Audit.ExcludeEventTypes length = %v, want 1", len(cfg.Audit.ExcludeEventTypes))
+				if len(cfg.Audit.ExcludeEventTypes) != 1 || cfg.Audit.ExcludeEventTypes[0] != "mcp_ping" {
+					t.Errorf("Audit.ExcludeEventTypes = %v, want [mcp_ping]", cfg.Audit.ExcludeEventTypes)
 				}
 				if !cfg.Audit.IncludeRequestData {
 					t.Error("Audit.IncludeRequestData = false, want true")

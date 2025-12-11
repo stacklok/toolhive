@@ -673,6 +673,7 @@ func (c *Converter) convertCompositeToolSpec(
 }
 
 // convertWorkflowSteps converts a slice of WorkflowStep CRD objects to WorkflowStepConfig.
+// nolint:gocyclo // the workflow steps contain a lot of information that needs to be converted to the vmcp config.
 func (*Converter) convertWorkflowSteps(
 	ctx context.Context,
 	steps []mcpv1alpha1.WorkflowStep,

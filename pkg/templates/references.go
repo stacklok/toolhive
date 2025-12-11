@@ -22,8 +22,8 @@ func ExtractReferencesFromTemplate(tmpl *template.Template) []string {
 	references := make(map[string]bool)
 
 	for _, t := range tmpl.Templates() {
-		if t.Tree != nil {
-			walkNode(t.Tree.Root, references)
+		if t.Root != nil {
+			walkNode(t.Root, references)
 		}
 	}
 
@@ -35,6 +35,7 @@ func ExtractReferencesFromTemplate(tmpl *template.Template) []string {
 	return result
 }
 
+//nolint:gocyclo // walkNode has to reason about many potential node types from the underlying template package.
 func walkNode(node parse.Node, refs map[string]bool) {
 	if node == nil {
 		return

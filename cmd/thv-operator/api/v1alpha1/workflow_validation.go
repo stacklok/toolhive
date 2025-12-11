@@ -20,6 +20,7 @@ type stepFieldRef struct {
 //
 // This is a shared validation function used by both VirtualMCPServer and VirtualMCPCompositeToolDefinition webhooks.
 // The pathPrefix parameter allows customizing error message paths (e.g., "spec.steps" or "spec.compositeTools[0].steps").
+// nolint:gocyclo // multiple passes of the workflow are required to validate references are safe.
 func validateDefaultResultsForSteps(pathPrefix string, steps []WorkflowStep, output *OutputSpec) error {
 	// 1. Compute all skippable step IDs
 	skippableStepIDs := make(map[string]struct{})

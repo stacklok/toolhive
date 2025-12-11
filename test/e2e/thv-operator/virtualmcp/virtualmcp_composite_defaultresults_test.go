@@ -96,7 +96,7 @@ var _ = Describe("VirtualMCPServer Composite Tool DefaultResults", Ordered, func
 							{
 								ID:   "conditional_step",
 								Type: "tool",
-								Tool: fmt.Sprintf("%s.echo", backendName),
+								Tool: fmt.Sprintf("%s_echo", backendName),
 								// Only run when run_step=true
 								Condition: "{{.params.run_step}}",
 								Arguments: &runtime.RawExtension{
@@ -165,6 +165,46 @@ var _ = Describe("VirtualMCPServer Composite Tool DefaultResults", Ordered, func
 		_ = k8sClient.Delete(ctx, mcpGroup)
 	})
 
+	Context("when tools are listed", func() {
+		It("should expose the composite tool and backend tools", func() {
+			By("Creating and initializing MCP client for VirtualMCPServer")
+			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-defaults-test", 30*time.Second)
+			Expect(err).ToNot(HaveOccurred())
+			defer mcpClient.Close()
+
+			By("Listing tools to trigger backend discovery")
+			listRequest := mcp.ListToolsRequest{}
+			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
+			Expect(err).ToNot(HaveOccurred())
+
+			By(fmt.Sprintf("VirtualMCPServer exposes %d tools", len(tools.Tools)))
+			for _, tool := range tools.Tools {
+				GinkgoWriter.Printf("  Tool: %s - %s\n", tool.Name, tool.Description)
+			}
+
+			// Should find the composite tool
+			var foundComposite bool
+			for _, tool := range tools.Tools {
+				if tool.Name == compositeToolName {
+					foundComposite = true
+					break
+				}
+			}
+			Expect(foundComposite).To(BeTrue(), "Should find composite tool: %s", compositeToolName)
+
+			// Should also have the backend's native echo tool (with prefix)
+			var foundBackendTool bool
+			expectedBackendTool := fmt.Sprintf("%s_echo", backendName)
+			for _, tool := range tools.Tools {
+				if tool.Name == expectedBackendTool {
+					foundBackendTool = true
+					break
+				}
+			}
+			Expect(foundBackendTool).To(BeTrue(), "Should find backend native tool: %s", expectedBackendTool)
+		})
+	})
+
 	Context("when conditional step is skipped", func() {
 		It("should use defaultResults in the workflow output", func() {
 			By("Creating and initializing MCP client for VirtualMCPServer")
@@ -218,7 +258,7 @@ var _ = Describe("VirtualMCPServer Composite Tool DefaultResults", Ordered, func
 			callRequest.Params.Name = compositeToolName
 			callRequest.Params.Arguments = map[string]any{
 				"run_step": true,
-				"message":  "actual_step_output",
+				"message":  "actualstepoutput123", // yardstick requires alphanumeric only
 			}
 
 			result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
@@ -237,8 +277,8 @@ var _ = Describe("VirtualMCPServer Composite Tool DefaultResults", Ordered, func
 
 			GinkgoWriter.Printf("Workflow result when step runs: %s\n", resultText)
 
-			// The output should contain the actual echoed message
-			Expect(resultText).To(ContainSubstring("actual_step_output"),
+			// The output should contain the actual echoed message (yardstick wraps in JSON)
+			Expect(resultText).To(ContainSubstring("actualstepoutput123"),
 				"Output should contain actual step output when step runs")
 
 			// The output should NOT contain the default value

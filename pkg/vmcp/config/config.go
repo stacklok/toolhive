@@ -353,7 +353,7 @@ type WorkflowStepConfig struct {
 	// DefaultResults provides fallback output values when this step is skipped
 	// (due to condition evaluating to false) or fails (when onError.action is "continue").
 	// Each key corresponds to an output field name referenced by downstream steps.
-	DefaultResults map[string]any `json:"default_results,omitempty"`
+	DefaultResults map[string]any `json:"default_results,omitempty" yaml:"default_results,omitempty"`
 }
 
 // StepErrorHandling defines error handling for a workflow step.

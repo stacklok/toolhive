@@ -331,6 +331,8 @@ type WorkflowStep struct {
 	// Each key corresponds to an output field name referenced by downstream steps.
 	// Required if the step may be skipped AND downstream steps reference this step's output.
 	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
 	DefaultResults map[string]runtime.RawExtension `json:"defaultResults,omitempty"`
 }
 

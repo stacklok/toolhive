@@ -856,3 +856,157 @@ func TestVMCPServer_StructuredContent(t *testing.T) {
 	helpers.AssertTextContains(t, text, "score_high")      // score=95.5 > 90.0
 	helpers.AssertTextContains(t, text, "logins_frequent") // login_count=42 >= 10
 }
+
+// TestVMCPServer_DefaultResults_NestedStructure verifies that defaultResults can
+// contain nested structures and that downstream steps can access nested fields
+// from the default values when a step is skipped.
+//
+// This is important for composite tools where a conditional step may be skipped
+// but downstream templates still need to access structured data from that step.
+func TestVMCPServer_DefaultResults_NestedStructure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup: Create a backend server with a tool that returns structured content
+	structuredServer := helpers.CreateBackendServer(t, []helpers.BackendTool{
+		helpers.NewBackendToolWithStructuredResponse("get_config", "Get configuration with nested data",
+			func(_ context.Context, _ map[string]any) map[string]any {
+				return map[string]any{
+					"settings": map[string]any{
+						"theme":    "dark",
+						"language": "en",
+					},
+					"features": map[string]any{
+						"beta_enabled": true,
+						"max_items":    100.0,
+					},
+					"version": "2.0.0",
+				}
+			}),
+	}, helpers.WithBackendName("config-mcp"))
+	defer structuredServer.Close()
+
+	// Configure backend
+	backends := []vmcp.Backend{
+		helpers.NewBackend("config",
+			helpers.WithURL(structuredServer.URL+"/mcp"),
+			helpers.WithMetadata("group", "test-group"),
+		),
+	}
+
+	// Create composite tool with:
+	// - A conditional step that may be skipped
+	// - Nested defaultResults that provide fallback structured data
+	// - Output that references nested fields from both executed and skipped scenarios
+	workflowDefs := map[string]*composer.WorkflowDefinition{
+		"nested_defaults_test": {
+			Name:        "nested_defaults_test",
+			Description: "Tests nested defaultResults when a conditional step is skipped",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"fetch_config": map[string]any{
+						"type":        "boolean",
+						"description": "Whether to fetch the config",
+					},
+				},
+				"required": []string{"fetch_config"},
+			},
+			Steps: []composer.WorkflowStep{
+				{
+					ID:        "get_config_step",
+					Type:      "tool",
+					Tool:      "config_get_config",
+					Condition: "{{.params.fetch_config}}",
+					Arguments: map[string]any{},
+					// Nested defaultResults - used when step is skipped
+					DefaultResults: map[string]any{
+						"settings": map[string]any{
+							"theme":    "light",
+							"language": "default",
+						},
+						"features": map[string]any{
+							"beta_enabled": false,
+							"max_items":    50.0,
+						},
+						"version": "1.0.0",
+					},
+				},
+			},
+			// Output references nested fields - works for both real and default results
+			Output: &vmcpconfig.OutputConfig{
+				Properties: map[string]vmcpconfig.OutputProperty{
+					"theme": {
+						Type:        "string",
+						Description: "The theme setting",
+						Value:       "{{.steps.get_config_step.output.settings.theme}}",
+					},
+					"language": {
+						Type:        "string",
+						Description: "The language setting",
+						Value:       "{{.steps.get_config_step.output.settings.language}}",
+					},
+					"beta_enabled": {
+						Type:        "string",
+						Description: "Whether beta is enabled",
+						Value:       `{{if .steps.get_config_step.output.features.beta_enabled}}beta_on{{else}}beta_off{{end}}`,
+					},
+					"max_items": {
+						Type:        "string",
+						Description: "Max items threshold check",
+						Value:       `{{if gt .steps.get_config_step.output.features.max_items 75.0}}items_high{{else}}items_low{{end}}`,
+					},
+					"version": {
+						Type:        "string",
+						Description: "The version",
+						Value:       "{{.steps.get_config_step.output.version}}",
+					},
+				},
+			},
+			Timeout: 30 * time.Second,
+		},
+	}
+
+	// Create vMCP server
+	vmcpServer := helpers.NewVMCPServer(ctx, t, backends,
+		helpers.WithPrefixConflictResolution("{workload}_"),
+		helpers.WithWorkflowDefinitions(workflowDefs),
+	)
+
+	// Create and initialize MCP client
+	vmcpURL := "http://" + vmcpServer.Address() + "/mcp"
+	client := helpers.NewMCPClient(ctx, t, vmcpURL)
+	defer client.Close()
+
+	// Test 1: fetch_config=false - step is skipped, uses nested defaultResults
+	resp := client.CallTool(ctx, "nested_defaults_test", map[string]any{"fetch_config": false})
+	text := helpers.AssertToolCallSuccess(t, resp)
+
+	// Verify default nested values are used
+	helpers.AssertTextContains(t, text, "light")     // settings.theme default
+	helpers.AssertTextContains(t, text, "default")   // settings.language default
+	helpers.AssertTextContains(t, text, "beta_off")  // features.beta_enabled=false
+	helpers.AssertTextContains(t, text, "items_low") // features.max_items=50 < 75
+	helpers.AssertTextContains(t, text, "1.0.0")     // version default
+
+	// Verify real values are NOT present
+	helpers.AssertTextNotContains(t, text, "dark")
+	helpers.AssertTextNotContains(t, text, "2.0.0")
+
+	// Test 2: fetch_config=true - step executes, uses real structured content
+	resp = client.CallTool(ctx, "nested_defaults_test", map[string]any{"fetch_config": true})
+	text = helpers.AssertToolCallSuccess(t, resp)
+
+	// Verify real nested values are used
+	helpers.AssertTextContains(t, text, "dark")       // settings.theme from tool
+	helpers.AssertTextContains(t, text, "en")         // settings.language from tool
+	helpers.AssertTextContains(t, text, "beta_on")    // features.beta_enabled=true
+	helpers.AssertTextContains(t, text, "items_high") // features.max_items=100 > 75
+	helpers.AssertTextContains(t, text, "2.0.0")      // version from tool
+
+	// Verify default values are NOT present
+	helpers.AssertTextNotContains(t, text, "light")
+	helpers.AssertTextNotContains(t, text, "1.0.0")
+}

@@ -211,6 +211,8 @@ type ProxyMode string
 
 const (
 	// ProxyModeSSE is the proxy mode for SSE.
+	// Deprecated: SSE proxy mode is deprecated and will be removed in a future release.
+	// Use ProxyModeStreamableHTTP instead.
 	ProxyModeSSE ProxyMode = "sse"
 	// ProxyModeStreamableHTTP is the proxy mode for streamable HTTP.
 	ProxyModeStreamableHTTP ProxyMode = "streamable-http"

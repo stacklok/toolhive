@@ -1,7 +1,6 @@
 package v1alpha1
 
 import (
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -332,7 +331,9 @@ type WorkflowStep struct {
 	// Each key corresponds to an output field name referenced by downstream steps.
 	// Required if the step may be skipped AND downstream steps reference this step's output.
 	// +optional
-	DefaultResults map[string]apiextensionsv1.JSON `json:"defaultResults,omitempty"`
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
+	DefaultResults map[string]runtime.RawExtension `json:"defaultResults,omitempty"`
 }
 
 // ErrorHandling defines error handling behavior for workflow steps

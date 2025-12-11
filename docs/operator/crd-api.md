@@ -2064,7 +2064,7 @@ _Appears in:_
 | `condition` _string_ | Condition is a template expression that determines if the step should execute |  |  |
 | `onError` _[ErrorHandling](#errorhandling)_ | OnError defines error handling behavior |  |  |
 | `timeout` _string_ | Timeout is the maximum execution time for this step |  |  |
-| `defaultResults` _object (keys:string, values:[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#json-v1-apiextensions-k8s-io))_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps.<br />Required if the step may be skipped AND downstream steps reference this step's output. |  |  |
+| `defaultResults` _object (keys:string, values:[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg))_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps.<br />Required if the step may be skipped AND downstream steps reference this step's output. |  | Schemaless: \{\} <br /> |
 
 
 #### WorkloadToolConfig

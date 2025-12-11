@@ -754,13 +754,13 @@ func (*Converter) convertWorkflowSteps(
 			}
 		}
 
-		// Convert default results from map[string]apiextensionsv1.JSON to map[string]any
+		// Convert default results from map[string]runtime.RawExtension to map[string]any
 		if len(crdStep.DefaultResults) > 0 {
 			step.DefaultResults = make(map[string]any, len(crdStep.DefaultResults))
-			for key, jsonVal := range crdStep.DefaultResults {
-				if len(jsonVal.Raw) > 0 {
+			for key, rawExt := range crdStep.DefaultResults {
+				if len(rawExt.Raw) > 0 {
 					var value any
-					if err := json.Unmarshal(jsonVal.Raw, &value); err != nil {
+					if err := json.Unmarshal(rawExt.Raw, &value); err != nil {
 						return nil, fmt.Errorf("failed to unmarshal default result %q: %w", key, err)
 					}
 					step.DefaultResults[key] = value

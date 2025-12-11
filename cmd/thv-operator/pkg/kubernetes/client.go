@@ -4,6 +4,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/secrets"
 )
 
@@ -12,11 +13,14 @@ import (
 type Client struct {
 	// Secrets provides operations for Kubernetes Secrets.
 	Secrets *secrets.Client
+	// ConfigMaps provides operations for Kubernetes ConfigMaps.
+	ConfigMaps *configmaps.Client
 }
 
 // NewClient creates a new Kubernetes Client with all sub-clients initialized.
 func NewClient(c client.Client, scheme *runtime.Scheme) *Client {
 	return &Client{
-		Secrets: secrets.NewClient(c, scheme),
+		Secrets:    secrets.NewClient(c, scheme),
+		ConfigMaps: configmaps.NewClient(c, scheme),
 	}
 }

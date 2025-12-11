@@ -98,7 +98,14 @@ curl http://127.0.0.1:4483/health
 #### Start the Server
 
 ```bash
+# Basic usage
 vmcp serve --config /path/to/vmcp-config.yaml
+
+# With audit logging enabled (uses default configuration)
+vmcp serve --config /path/to/vmcp-config.yaml --enable-audit
+
+# Customize host and port
+vmcp serve --config /path/to/vmcp-config.yaml --host 0.0.0.0 --port 8080
 ```
 
 #### Validate Configuration
@@ -123,6 +130,7 @@ vmcp uses a YAML configuration file to define:
 4. **Tool Aggregation**: Conflict resolution and filtering strategies
 5. **Operational Settings**: Timeouts, health checks, circuit breakers
 6. **Telemetry**: OpenTelemetry metrics/tracing and Prometheus endpoint
+7. **Audit Logging**: MCP operation audit logs (optional, can be enabled via `--enable-audit` flag for quick setup)
 
 See [examples/vmcp-config.yaml](../../examples/vmcp-config.yaml) for a complete example.
 

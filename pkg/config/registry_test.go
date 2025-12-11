@@ -257,6 +257,69 @@ func TestIsValidRegistryJSON(t *testing.T) {
 			},
 			expectedResult: false,
 		},
+		{
+			name: "invalid structure - servers as string instead of map",
+			setupServer: func() *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					// This would pass weak validation but fails strong type validation
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"version": "1.0.0",
+						"servers": "not-a-map",
+					})
+				}))
+			},
+			expectedResult: false,
+		},
+		{
+			name: "invalid structure - remote_servers as array instead of map",
+			setupServer: func() *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					// This would pass weak validation but fails strong type validation
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"version":        "1.0.0",
+						"remote_servers": []string{"wrong", "type"},
+					})
+				}))
+			},
+			expectedResult: false,
+		},
+		{
+			name: "empty registry - has fields but no servers",
+			setupServer: func() *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"version":        "1.0.0",
+						"servers":        map[string]interface{}{},
+						"remote_servers": map[string]interface{}{},
+					})
+				}))
+			},
+			expectedResult: false,
+		},
+		{
+			name: "valid registry with groups only",
+			setupServer: func() *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]interface{}{
+						"version": "1.0.0",
+						"groups": []map[string]interface{}{
+							{
+								"name":        "test-group",
+								"description": "Test group",
+								"servers": map[string]interface{}{
+									"grouped-server": map[string]interface{}{"image": "test:latest"},
+								},
+							},
+						},
+					})
+				}))
+			},
+			expectedResult: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -291,7 +354,10 @@ func TestProbeRegistryURL(t *testing.T) { //nolint:tparallel,paralleltest // Can
 					case "/":
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(map[string]interface{}{
-							"servers": map[string]interface{}{},
+							"version": "1.0.0",
+							"servers": map[string]interface{}{
+								"test-server": map[string]interface{}{"image": "test:latest"},
+							},
 						})
 					default:
 						// Return 404 for API endpoint and any other path

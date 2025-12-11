@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/stacklok/toolhive/pkg/networking"
+	registrytypes "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
 const (
@@ -133,6 +134,7 @@ func isValidAPIResponse(resp *http.Response) bool {
 }
 
 // isValidRegistryJSON checks if a URL returns valid ToolHive registry JSON
+// by attempting to parse it into the actual Registry type
 func isValidRegistryJSON(client *http.Client, url string) bool {
 	resp, err := client.Get(url)
 	if err != nil {
@@ -140,17 +142,14 @@ func isValidRegistryJSON(client *http.Client, url string) bool {
 	}
 	defer resp.Body.Close()
 
-	// Try to parse as JSON with registry structure
-	// We just check for basic registry fields to avoid pulling in the full types package
-	var data map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	// Parse into the actual Registry type for strong validation
+	registry := &registrytypes.Registry{}
+	if err := json.NewDecoder(resp.Body).Decode(registry); err != nil {
 		return false
 	}
 
-	// Check if it has registry-like structure (servers or remote_servers fields)
-	_, hasServers := data["servers"]
-	_, hasRemoteServers := data["remote_servers"]
-	return hasServers || hasRemoteServers
+	// Verify registry contains at least one server (in top-level or groups)
+	return registryHasServers(registry)
 }
 
 // setRegistryURL validates and sets a registry URL using the provided provider
@@ -236,7 +235,26 @@ func setRegistryFile(provider Provider, registryPath string) error {
 	return nil
 }
 
+// registryHasServers checks if a registry contains at least one server
+// (either in top-level servers/remote_servers or within groups)
+func registryHasServers(registry *registrytypes.Registry) bool {
+	// Check top-level servers
+	if len(registry.Servers) > 0 || len(registry.RemoteServers) > 0 {
+		return true
+	}
+
+	// Check servers within groups
+	for _, group := range registry.Groups {
+		if group != nil && (len(group.Servers) > 0 || len(group.RemoteServers) > 0) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // validateRegistryFileStructure checks if a file contains valid ToolHive registry structure
+// by parsing it into the actual Registry type
 func validateRegistryFileStructure(path string) error {
 	// Read file content
 	// #nosec G304: File path is user-provided but validated by caller
@@ -245,18 +263,15 @@ func validateRegistryFileStructure(path string) error {
 		return fmt.Errorf("failed to read file: %w", err)
 	}
 
-	// Parse as JSON
-	var registryData map[string]interface{}
-	if err := json.Unmarshal(data, &registryData); err != nil {
-		return fmt.Errorf("invalid JSON format: %w", err)
+	// Parse into the actual Registry type for strong validation
+	registry := &registrytypes.Registry{}
+	if err := json.Unmarshal(data, registry); err != nil {
+		return fmt.Errorf("invalid registry format: %w", err)
 	}
 
-	// Check for ToolHive registry structure (servers or remote_servers fields)
-	_, hasServers := registryData["servers"]
-	_, hasRemoteServers := registryData["remote_servers"]
-
-	if !hasServers && !hasRemoteServers {
-		return fmt.Errorf("does not contain valid ToolHive registry format (expected 'servers' or 'remote_servers' fields)")
+	// Verify registry contains at least one server (in top-level or groups)
+	if !registryHasServers(registry) {
+		return fmt.Errorf("registry contains no servers (expected at least one server in 'servers', 'remote_servers', or 'groups')")
 	}
 
 	return nil

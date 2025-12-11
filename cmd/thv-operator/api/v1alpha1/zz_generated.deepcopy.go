@@ -22,6 +22,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -2371,7 +2372,7 @@ func (in *WorkflowStep) DeepCopyInto(out *WorkflowStep) {
 	}
 	if in.DefaultResults != nil {
 		in, out := &in.DefaultResults, &out.DefaultResults
-		*out = make(map[string]runtime.RawExtension, len(*in))
+		*out = make(map[string]apiextensionsv1.JSON, len(*in))
 		for key, val := range *in {
 			(*out)[key] = *val.DeepCopy()
 		}

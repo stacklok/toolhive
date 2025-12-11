@@ -183,12 +183,14 @@ spec:
                         if the step should execute
                       type: string
                     defaultResults:
+                      additionalProperties:
+                        x-kubernetes-preserve-unknown-fields: true
                       description: |-
                         DefaultResults provides fallback output values when this step is skipped
                         (due to condition evaluating to false) or fails (when onError.action is "continue").
                         Each key corresponds to an output field name referenced by downstream steps.
                         Required if the step may be skipped AND downstream steps reference this step's output.
-                      x-kubernetes-preserve-unknown-fields: true
+                      type: object
                     dependsOn:
                       description: DependsOn lists step IDs that must complete before
                         this step

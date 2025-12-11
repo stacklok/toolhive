@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -33,7 +34,7 @@ func TestValidateDefaultResultsForSteps(t *testing.T) {
 				{
 					ID:             "step1",
 					Condition:      "{{.params.runStep1}}",
-					DefaultResults: map[string]runtime.RawExtension{"result": {}},
+					DefaultResults: map[string]apiextensionsv1.JSON{"result": {}},
 				},
 				{ID: "step2", Arguments: rawExtensionFromMap(map[string]any{"input": "{{.steps.step1.output.result}}"})},
 			},
@@ -79,7 +80,7 @@ func TestValidateDefaultResultsForSteps(t *testing.T) {
 				{
 					ID:             "step1",
 					OnError:        &ErrorHandling{Action: ErrorActionContinue},
-					DefaultResults: map[string]runtime.RawExtension{"result": {}},
+					DefaultResults: map[string]apiextensionsv1.JSON{"result": {}},
 				},
 				{ID: "step2", Arguments: rawExtensionFromMap(map[string]any{"input": "{{.steps.step1.output.result}}"})},
 			},
@@ -114,7 +115,7 @@ func TestValidateDefaultResultsForSteps(t *testing.T) {
 				{
 					ID:             "step1",
 					Condition:      "{{.params.runStep1}}",
-					DefaultResults: map[string]runtime.RawExtension{"data": {}},
+					DefaultResults: map[string]apiextensionsv1.JSON{"data": {}},
 				},
 			},
 			output: &OutputSpec{
@@ -146,7 +147,7 @@ func TestValidateDefaultResultsForSteps(t *testing.T) {
 				{
 					ID:             "step1",
 					Condition:      "{{.params.runStep1}}",
-					DefaultResults: map[string]runtime.RawExtension{"success": {}},
+					DefaultResults: map[string]apiextensionsv1.JSON{"success": {}},
 				},
 				{
 					ID:        "step2",
@@ -161,7 +162,7 @@ func TestValidateDefaultResultsForSteps(t *testing.T) {
 				{
 					ID:             "step1",
 					Condition:      "{{.params.runStep1}}",
-					DefaultResults: map[string]runtime.RawExtension{"summary": {}},
+					DefaultResults: map[string]apiextensionsv1.JSON{"summary": {}},
 				},
 				{
 					ID:      "step2",

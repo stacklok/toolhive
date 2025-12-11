@@ -8,6 +8,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -103,7 +104,7 @@ var _ = Describe("VirtualMCPServer Composite Tool DefaultResults", Ordered, func
 								},
 								// When skipped, use this default value
 								// Uses "text" key to match backend output format
-								DefaultResults: map[string]runtime.RawExtension{
+								DefaultResults: map[string]apiextensionsv1.JSON{
 									"text": {Raw: defaultResultsBytes},
 								},
 							},

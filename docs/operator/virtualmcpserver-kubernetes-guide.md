@@ -1,582 +1,21 @@
 # VirtualMCPServer Kubernetes Guide
 
-This comprehensive guide covers deploying, configuring, and troubleshooting Virtual MCP Servers in Kubernetes. For detailed API field definitions, see the [VirtualMCPServer API Reference](virtualmcpserver-api.md).
+This guide provides specialized content for migrating to Kubernetes and troubleshooting VirtualMCPServer deployments.
+
+**For general VirtualMCPServer documentation**, see the [ToolHive Documentation Website](https://docs.stacklok.com/toolhive/):
+- [Introduction to Virtual MCP Servers](https://docs.stacklok.com/toolhive/guides-vmcp/intro)
+- [Configuration Guide](https://docs.stacklok.com/toolhive/guides-vmcp/configuration)
+- [Authentication Patterns](https://docs.stacklok.com/toolhive/guides-vmcp/authentication)
+- [Tool Aggregation](https://docs.stacklok.com/toolhive/guides-vmcp/tool-aggregation)
+- [Quickstart Tutorial](https://docs.stacklok.com/toolhive/tutorials/quickstart-vmcp)
+
+**For API field definitions**, see the [VirtualMCPServer API Reference](virtualmcpserver-api.md).
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Deployment Guide](#deployment-guide)
-- [Common Deployment Patterns](#common-deployment-patterns)
+- [Migration Guide: CLI to Kubernetes](#migration-guide-cli-to-kubernetes)
 - [Troubleshooting](#troubleshooting)
-
-## Overview
-
-VirtualMCPServer is a Kubernetes Custom Resource that enables aggregation of multiple backend MCP servers into a unified virtual endpoint. This allows clients to interact with multiple MCP servers through a single interface with:
-
-- **Unified authentication**: Single authentication point for clients
-- **Backend discovery**: Automatic discovery of backend authentication configurations
-- **Tool aggregation**: Intelligent conflict resolution when multiple backends expose tools with the same name
-- **Composite tools**: Multi-step workflows that orchestrate calls across multiple backends
-- **Token caching**: Efficient token exchange and caching for improved performance
-
-## Architecture
-
-VirtualMCPServer aggregates multiple backend MCP servers into a unified virtual endpoint. For detailed architecture diagrams and component interactions, see [Operator Architecture: VirtualMCPServer](../arch/09-operator-architecture.md#virtualmcpserver).
-
-### Key Components
-
-- **VirtualMCPServer**: Main CRD that defines the aggregation configuration
-- **MCPGroup**: Logical collection of backend MCPServers
-- **Backend MCPServers**: Individual MCP server instances providing tools/resources
-- **VirtualMCP Proxy**: Kubernetes Deployment that handles request routing, auth, and aggregation
-- **Service**: Kubernetes Service exposing the VirtualMCP endpoint
-
-### Request Flow
-
-1. Client sends MCP request to VirtualMCPServer service
-2. VirtualMCP proxy authenticates the client (OIDC, anonymous, etc.)
-3. Proxy authorizes the request (Cedar policies)
-4. Proxy resolves tool name to appropriate backend server
-5. Proxy forwards request to backend (with token exchange if needed)
-6. Backend processes request and returns response
-7. Proxy aggregates and returns response to client
-
-## Deployment Guide
-
-### Prerequisites
-
-Before deploying a VirtualMCPServer, ensure you have:
-
-1. **Kubernetes Cluster**: v1.24+ with kubectl configured
-2. **Helm** (optional but recommended): For operator installation
-3. **ToolHive Operator**: The operator must be installed in your cluster
-
-### Quick Start
-
-```bash
-# Install the operator
-helm install toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-operator-crds
-helm install toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-operator \
-  -n toolhive-system --create-namespace
-
-# Deploy a simple Virtual MCP Server
-kubectl apply -f https://raw.githubusercontent.com/stacklok/toolhive/main/examples/operator/virtual-mcps/vmcp_simple_discovered.yaml
-
-# Check status
-kubectl get virtualmcpserver simple-vmcp
-```
-
-### Step-by-Step Deployment
-
-#### Step 1: Install the Operator
-
-**Using Helm (Recommended):**
-
-```bash
-# Install CRDs
-helm install toolhive-operator-crds \
-  oci://ghcr.io/stacklok/toolhive/toolhive-operator-crds
-
-# Install operator
-helm install toolhive-operator \
-  oci://ghcr.io/stacklok/toolhive/toolhive-operator \
-  -n toolhive-system \
-  --create-namespace
-```
-
-**Verify Installation:**
-
-```bash
-# Check operator pod status
-kubectl get pods -n toolhive-system
-
-# Verify CRDs are installed
-kubectl get crds | grep toolhive.stacklok.dev
-```
-
-You should see CRDs including:
-- `virtualmcpservers.toolhive.stacklok.dev`
-- `mcpgroups.toolhive.stacklok.dev`
-- `mcpservers.toolhive.stacklok.dev`
-- `mcpexternalauthconfigs.toolhive.stacklok.dev`
-- `virtualmcpcompositetooldefinitions.toolhive.stacklok.dev`
-
-For detailed operator installation instructions, see [Deploying ToolHive Operator](../kind/deploying-toolhive-operator.md).
-
-#### Step 2: Create Backend MCP Servers
-
-Create the backend MCP servers that the VirtualMCPServer will aggregate:
-
-```yaml
-# backend-servers.yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPServer
-metadata:
-  name: yardstick-server
-  namespace: default
-spec:
-  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
-  transport: streamable-http
-  env:
-    - name: TRANSPORT
-      value: streamable-http
-  proxyPort: 8080
-  mcpPort: 8080
-  resources:
-    requests:
-      cpu: "50m"
-      memory: "64Mi"
-    limits:
-      cpu: "100m"
-      memory: "128Mi"
-
----
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPServer
-metadata:
-  name: fetch-server
-  namespace: default
-spec:
-  image: ghcr.io/stackloklabs/gofetch/server
-  transport: streamable-http
-  proxyPort: 8080
-  mcpPort: 8080
-  resources:
-    requests:
-      cpu: "50m"
-      memory: "64Mi"
-    limits:
-      cpu: "100m"
-      memory: "128Mi"
-```
-
-Apply and verify:
-
-```bash
-kubectl apply -f backend-servers.yaml
-kubectl get mcpservers
-```
-
-#### Step 3: Create an MCPGroup
-
-MCPGroups organize backend MCPServers into logical collections:
-
-```yaml
-# mcp-group.yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPGroup
-metadata:
-  name: my-services
-  namespace: default
-spec:
-  description: Backend services for Virtual MCP Server
-```
-
-Link backend servers to the group by adding `groupRef: my-services` to each MCPServer spec:
-
-```bash
-kubectl apply -f mcp-group.yaml
-
-# Update backend servers with groupRef
-kubectl patch mcpserver yardstick-server -p '{"spec":{"groupRef":"my-services"}}'
-kubectl patch mcpserver fetch-server -p '{"spec":{"groupRef":"my-services"}}'
-```
-
-Verify group membership:
-
-```bash
-kubectl get mcpgroup my-services -o yaml
-kubectl get mcpserver -o custom-columns=NAME:.metadata.name,GROUP:.spec.groupRef
-```
-
-#### Step 4: Deploy VirtualMCPServer
-
-Create the VirtualMCPServer that aggregates your backend servers:
-
-```yaml
-# virtual-mcp-server.yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: VirtualMCPServer
-metadata:
-  name: my-vmcp
-  namespace: default
-spec:
-  # Reference to the MCPGroup
-  groupRef:
-    name: my-services
-
-  # Incoming authentication (client -> Virtual MCP)
-  incomingAuth:
-    type: anonymous  # For testing; use OIDC in production
-    authzConfig:
-      type: inline
-      inline:
-        policies:
-          - 'permit(principal, action, resource);'
-
-  # Outgoing authentication (Virtual MCP -> backends)
-  outgoingAuth:
-    source: discovered
-
-  # Tool aggregation and conflict resolution
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
-```
-
-Apply and verify:
-
-```bash
-kubectl apply -f virtual-mcp-server.yaml
-kubectl get virtualmcpserver my-vmcp
-```
-
-For all available configuration fields, see the [VirtualMCPServer API Reference](virtualmcpserver-api.md).
-
-#### Step 5: Verify Deployment
-
-Check the VirtualMCPServer status:
-
-```bash
-# Get overall status
-kubectl get virtualmcpserver my-vmcp
-
-# Detailed status with conditions
-kubectl get virtualmcpserver my-vmcp -o yaml | grep -A 20 status
-```
-
-Look for:
-- `phase: Ready`
-- `conditions` with `Ready: True`
-- `discoveredBackends` showing all backends
-- `capabilities` summary
-
-Check created resources:
-
-```bash
-# Deployment for Virtual MCP proxy
-kubectl get deployment my-vmcp
-
-# Service exposing Virtual MCP
-kubectl get service my-vmcp
-
-# Pods
-kubectl get pods -l app.kubernetes.io/name=my-vmcp
-```
-
-#### Step 6: Access the Virtual MCP Server
-
-There are several ways to access your VirtualMCPServer:
-
-**Option 1: Port Forward (Development)**
-
-```bash
-kubectl port-forward service/my-vmcp 8080:8080
-# Access at http://localhost:8080
-```
-
-**Option 2: ClusterIP Service (In-cluster)**
-
-Other applications in the cluster can access via:
-- `my-vmcp.default.svc.cluster.local:8080`
-- `my-vmcp:8080` (same namespace)
-
-**Option 3: LoadBalancer Service (Production)**
-
-Update the VirtualMCPServer spec:
-
-```yaml
-spec:
-  serviceType: LoadBalancer
-```
-
-Get the external IP:
-
-```bash
-kubectl apply -f virtual-mcp-server.yaml
-kubectl get service my-vmcp
-```
-
-**Option 4: Ingress (Production with TLS)**
-
-Create an Ingress resource:
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: my-vmcp-ingress
-  namespace: default
-  annotations:
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
-spec:
-  tls:
-    - hosts:
-        - vmcp.example.com
-      secretName: vmcp-tls
-  rules:
-    - host: vmcp.example.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: my-vmcp
-                port:
-                  number: 8080
-```
-
-## Common Deployment Patterns
-
-### Pattern 1: Simple Aggregation (Development)
-
-**Use Case**: Local testing with minimal security
-
-```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: VirtualMCPServer
-metadata:
-  name: dev-vmcp
-  namespace: default
-spec:
-  groupRef:
-    name: dev-services
-  incomingAuth:
-    type: anonymous
-    authzConfig:
-      type: inline
-      inline:
-        policies:
-          - 'permit(principal, action, resource);'
-  outgoingAuth:
-    source: discovered
-  aggregation:
-    conflictResolution: prefix
-    conflictResolutionConfig:
-      prefixFormat: "{workload}_"
-```
-
-**When to Use**:
-- Development and testing
-- Internal tools without sensitive data
-- Proof-of-concept deployments
-
-**Considerations**:
-- No authentication - anyone in cluster can access
-- Use prefix strategy to avoid tool conflicts
-- **Not suitable for production**
-
-**Example**: See [vmcp_simple_discovered.yaml](../../examples/operator/virtual-mcps/vmcp_simple_discovered.yaml)
-
-### Pattern 2: Production with OIDC Authentication
-
-**Use Case**: Production deployment with user authentication
-
-**Step 1: Create OIDC Secret**
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: oidc-client-secret
-  namespace: default
-type: Opaque
-stringData:
-  clientSecret: "YOUR_CLIENT_SECRET"
-```
-
-**Step 2: Deploy VirtualMCPServer**
-
-For the complete production configuration with OIDC, see: [vmcp_production_full.yaml](../../examples/operator/virtual-mcps/vmcp_production_full.yaml)
-
-Key configuration highlights:
-
-- OIDC authentication for client requests
-- Cedar policies for role-based authorization
-- Priority-based conflict resolution
-- LoadBalancer service type
-- Resource limits and operational settings
-
-**When to Use**:
-- Production environments
-- Multi-tenant deployments
-- When user authentication is required
-
-**Considerations**:
-- Requires OIDC provider setup
-- Use role-based authorization with Cedar policies
-- Configure appropriate resource limits
-- Use `degrade` mode to continue serving healthy backends
-
-**Complete Example**: [vmcp_production_full.yaml](../../examples/operator/virtual-mcps/vmcp_production_full.yaml)
-
-### Pattern 3: Multi-Backend with Token Exchange
-
-**Use Case**: Aggregating backends with different authentication mechanisms
-
-**Step 1: Create MCPExternalAuthConfig**
-
-```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPExternalAuthConfig
-metadata:
-  name: backend-token-exchange
-  namespace: default
-spec:
-  type: tokenExchange
-  tokenExchange:
-    token_url: https://auth.example.com/token
-    client_id: toolhive-client
-    client_secret_ref:
-      name: oauth-secret
-      key: client-secret
-    audience: backend-api
-    scope: "openid profile"
-```
-
-**Step 2: Link to Backend MCPServer**
-
-```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: MCPServer
-metadata:
-  name: authenticated-backend
-  namespace: default
-spec:
-  image: ghcr.io/example/backend-server
-  transport: streamable-http
-  groupRef: prod-services
-  externalAuthConfigRef:
-    name: backend-token-exchange
-  proxyPort: 8080
-  mcpPort: 8080
-```
-
-**Step 3: Deploy VirtualMCPServer**
-
-```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: VirtualMCPServer
-metadata:
-  name: multi-auth-vmcp
-  namespace: default
-spec:
-  groupRef:
-    name: prod-services
-  incomingAuth:
-    type: oidc
-    # ... OIDC config
-  outgoingAuth:
-    source: discovered  # Automatically discovers token exchange configs
-  aggregation:
-    conflictResolution: prefix
-```
-
-**When to Use**:
-- Backends require different authentication
-- Token exchange scenarios
-- External API integration
-
-**Considerations**:
-- Each backend can have its own auth config
-- VirtualMCPServer automatically discovers auth requirements
-- Test each backend auth independently first
-
-**Complete Example**: [complete_example.yaml](../../examples/operator/external-auth/complete_example.yaml)
-
-### Pattern 4: Tool Filtering and Customization
-
-**Use Case**: Expose only specific tools from backends, with custom naming
-
-```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: VirtualMCPServer
-metadata:
-  name: filtered-vmcp
-  namespace: default
-spec:
-  groupRef:
-    name: services
-  incomingAuth:
-    type: anonymous
-    authzConfig:
-      type: inline
-      inline:
-        policies:
-          - 'permit(principal, action, resource);'
-  outgoingAuth:
-    source: discovered
-  aggregation:
-    conflictResolution: manual
-    tools:
-      - workload: github-backend
-        filter: ["create_pr", "merge_pr", "list_repos"]
-        overrides:
-          create_pr:
-            name: github_create_pr
-            description: "Create a GitHub pull request"
-      - workload: jira-backend
-        filter: ["create_issue", "update_issue"]
-        overrides:
-          create_issue:
-            name: jira_create_issue
-            description: "Create a Jira issue"
-      - workload: slack-backend
-        filter: ["send_message"]
-```
-
-**When to Use**:
-- Limit tool exposure for security
-- Custom tool naming for clarity
-- Prevent tool name conflicts explicitly
-- Multi-team environments with different tool access needs
-
-**Considerations**:
-- Manual strategy requires explicit tool mapping for all backends
-- Use `filter` to allowlist specific tools
-- `overrides` provide custom names and descriptions
-- Must resolve all tool conflicts manually
-
-**Complete Example**: [vmcp_conflict_resolution.yaml](../../examples/operator/virtual-mcps/vmcp_conflict_resolution.yaml) (shows all three conflict resolution strategies)
-
-### Pattern 5: Composite Workflows
-
-**Use Case**: Multi-step workflows that orchestrate multiple backends
-
-**Step 1: Create VirtualMCPCompositeToolDefinition**
-
-See complete workflow examples:
-
-- Simple workflow: [composite_tool_simple.yaml](../../examples/operator/virtual-mcps/composite_tool_simple.yaml)
-- Complex workflow: [composite_tool_complex.yaml](../../examples/operator/virtual-mcps/composite_tool_complex.yaml)
-
-**Step 2: Reference in VirtualMCPServer**
-
-Add `compositeToolRefs` to your VirtualMCPServer spec:
-
-```yaml
-spec:
-  compositeToolRefs:
-    - name: deploy-and-notify
-```
-
-**When to Use**:
-- Orchestrate multi-backend operations
-- Create reusable workflows
-- Automate complex multi-step tasks
-- Standardize procedures across teams
-
-**Considerations**:
-- Workflows can span multiple backends
-- Use `dependsOn` for sequential execution
-- Independent steps run in parallel (DAG execution)
-- Configure appropriate timeouts per step
-- Use error handling strategies (`abort`, `continue`, `retry`)
-
-For detailed workflow documentation and more examples, see [VirtualMCPCompositeToolDefinition Guide](virtualmcpcompositetooldefinition-guide.md).
+- [Related Resources](#related-resources)
 
 ## Migration Guide: CLI to Kubernetes
 
@@ -703,9 +142,7 @@ thv run github --image ghcr.io/example/github-mcp
 thv run jira --image ghcr.io/example/jira-mcp
 thv run slack --image ghcr.io/example/slack-mcp
 
-# CLI: Creating a group
-thv group create my-services
-thv group add my-services github jira slack
+# Note: CLI grouping works differently - backends reference groups via config
 ```
 
 **Kubernetes Equivalent**: VirtualMCPServer + MCPGroup + MCPServers
@@ -815,9 +252,6 @@ Check that the VirtualMCPServer discovered all backends:
 # Check discovered backends
 kubectl get virtualmcpserver my-vmcp -o jsonpath='{.status.discoveredBackends}' | jq
 
-# Check aggregated capabilities
-kubectl get virtualmcpserver my-vmcp -o jsonpath='{.status.capabilities}' | jq
-
 # Test connectivity
 kubectl port-forward service/my-vmcp 8080:8080
 # Test with MCP client at http://localhost:8080
@@ -907,7 +341,7 @@ Export and adjust URLs for cluster context. See example configurations:
 thv run backend1 --image ghcr.io/example/backend1
 thv run backend2 --image ghcr.io/example/backend2
 thv group create services
-thv group add services backend1 backend2
+# Note: In CLI, workloads are linked to groups via their configuration
 ```
 
 **Kubernetes**:
@@ -1080,10 +514,10 @@ Check your configuration:
 spec:
   operational:
     failureHandling:
-      partialFailureMode: degrade  # vs fail
+      partialFailureMode: best_effort  # vs fail
 ```
 
-**Solution**: If using `degrade` mode, this is expected behavior when some backends are down. VirtualMCPServer continues serving healthy backends.
+**Solution**: If using `best_effort` mode, this is expected behavior when some backends are down. VirtualMCPServer continues serving healthy backends.
 
 To require all backends to be healthy, use `partialFailureMode: fail`.
 
@@ -1293,11 +727,7 @@ steps:
 
 **Solution**: Use correct format: `<workload>.<tool_name>`
 
-Check available tools:
-
-```bash
-kubectl get virtualmcpserver <name> -o jsonpath='{.status.capabilities}' | jq
-```
+Check available tools from the backend MCPServers directly or test the VirtualMCPServer endpoint.
 
 **3. Missing Step Dependencies**
 
@@ -1404,9 +834,6 @@ kubectl get virtualmcpserver <name> -o jsonpath='{.status.conditions}' | jq
 
 # Backend health
 kubectl get virtualmcpserver <name> -o jsonpath='{.status.discoveredBackends}' | jq
-
-# Capabilities summary
-kubectl get virtualmcpserver <name> -o jsonpath='{.status.capabilities}' | jq
 ```
 
 #### Testing Connectivity

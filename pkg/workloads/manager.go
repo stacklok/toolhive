@@ -540,6 +540,10 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	// The config has already been saved to disk, so restart can load it
 	detachedArgs := []string{"restart", runConfig.BaseName, "--foreground"}
 
+	if runConfig.Debug {
+		detachedArgs = append(detachedArgs, "--debug")
+	}
+
 	// Create a new command
 	// #nosec G204 - This is safe as execPath is the path to the current binary
 	detachedCmd := exec.Command(execPath, detachedArgs...)

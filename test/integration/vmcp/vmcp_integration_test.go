@@ -694,3 +694,165 @@ func TestVMCPServer_DefaultResults_ContinueOnError(t *testing.T) {
 	// And NOT the default value
 	helpers.AssertTextNotContains(t, text, "default_from_error")
 }
+
+// TestVMCPServer_StructuredContent verifies that when a backend tool returns
+// structured content (via StructuredContent field), composite tool steps can
+// access nested fields directly via templates like {{.steps.stepID.output.field}}.
+//
+// This tests the fix for issue #2994 where StructuredContent was ignored and only
+// Content array was processed, limiting step chaining to {{.steps.stepID.output.text}}.
+//
+// The test also verifies conditional expressions work correctly with different
+// types from structured content (bool, string equality, numeric comparison).
+func TestVMCPServer_StructuredContent(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup: Create a backend server with a tool that returns structured content
+	// including various types for conditional expression testing
+	structuredServer := helpers.CreateBackendServer(t, []helpers.BackendTool{
+		helpers.NewBackendToolWithStructuredResponse("get_user", "Get user information with nested data",
+			func(_ context.Context, args map[string]any) map[string]any {
+				userID, _ := args["user_id"].(string)
+				return map[string]any{
+					"id":   userID,
+					"name": "Alice",
+					"role": "admin",
+					"profile": map[string]any{
+						"email":    "alice@example.com",
+						"verified": true,
+					},
+					"score":       95.5,
+					"login_count": 42,
+					"active":      true,
+					"tags":        []string{"admin", "developer"},
+				}
+			}),
+	}, helpers.WithBackendName("structured-mcp"))
+	defer structuredServer.Close()
+
+	// Configure backend
+	backends := []vmcp.Backend{
+		helpers.NewBackend("users",
+			helpers.WithURL(structuredServer.URL+"/mcp"),
+			helpers.WithMetadata("group", "test-group"),
+		),
+	}
+
+	// Create composite tool that tests:
+	// - Direct field access (string, nested object)
+	// - Conditional expressions with boolean fields
+	// - Conditional expressions with string equality
+	// - Conditional expressions with numeric comparison
+	workflowDefs := map[string]*composer.WorkflowDefinition{
+		"structured_content_test": {
+			Name:        "structured_content_test",
+			Description: "Tests structured content access and conditional expressions with various types",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"user_id": map[string]any{
+						"type":        "string",
+						"description": "The user ID to fetch",
+					},
+				},
+				"required": []string{"user_id"},
+			},
+			Steps: []composer.WorkflowStep{
+				{
+					ID:   "fetch_user",
+					Type: "tool",
+					Tool: "users_get_user",
+					Arguments: map[string]any{
+						"user_id": "{{.params.user_id}}",
+					},
+				},
+			},
+			Output: &vmcpconfig.OutputConfig{
+				Properties: map[string]vmcpconfig.OutputProperty{
+					// Direct field access
+					"user_name": {
+						Type:        "string",
+						Description: "The user's name",
+						Value:       "{{.steps.fetch_user.output.name}}",
+					},
+					"user_email": {
+						Type:        "string",
+						Description: "The user's email from nested profile",
+						Value:       "{{.steps.fetch_user.output.profile.email}}",
+					},
+					"user_id": {
+						Type:        "string",
+						Description: "The user's ID",
+						Value:       "{{.steps.fetch_user.output.id}}",
+					},
+					// Boolean conditional: check if user is active
+					"is_active_user": {
+						Type:        "string",
+						Description: "Whether user is active (boolean conditional)",
+						Value:       `{{if .steps.fetch_user.output.active}}active_yes{{else}}active_no{{end}}`,
+					},
+					// Nested boolean conditional: check if profile is verified
+					"is_verified": {
+						Type:        "string",
+						Description: "Whether profile is verified (nested boolean)",
+						Value:       `{{if .steps.fetch_user.output.profile.verified}}verified_yes{{else}}verified_no{{end}}`,
+					},
+					// String equality conditional: check role
+					"is_admin": {
+						Type:        "string",
+						Description: "Whether user is admin (string equality)",
+						Value:       `{{if eq .steps.fetch_user.output.role "admin"}}role_admin{{else}}role_other{{end}}`,
+					},
+					// Numeric comparison: check if score is above threshold
+					"high_score": {
+						Type:        "string",
+						Description: "Whether score is high (float comparison)",
+						Value:       `{{if gt .steps.fetch_user.output.score 90.0}}score_high{{else}}score_low{{end}}`,
+					},
+					// Integer comparison: check login count
+					// Note: JSON unmarshals all numbers as float64, so comparison uses float
+					"frequent_user": {
+						Type:        "string",
+						Description: "Whether user logs in frequently (int comparison)",
+						Value:       `{{if ge .steps.fetch_user.output.login_count 10.0}}logins_frequent{{else}}logins_rare{{end}}`,
+					},
+				},
+			},
+			Timeout: 30 * time.Second,
+		},
+	}
+
+	// Create vMCP server
+	vmcpServer := helpers.NewVMCPServer(ctx, t, backends,
+		helpers.WithPrefixConflictResolution("{workload}_"),
+		helpers.WithWorkflowDefinitions(workflowDefs),
+	)
+
+	// Create and initialize MCP client
+	vmcpURL := "http://" + vmcpServer.Address() + "/mcp"
+	client := helpers.NewMCPClient(ctx, t, vmcpURL)
+	defer client.Close()
+
+	// Call the composite tool
+	resp := client.CallTool(ctx, "structured_content_test", map[string]any{"user_id": "user-123"})
+	text := helpers.AssertToolCallSuccess(t, resp)
+
+	// Verify direct field access
+	helpers.AssertTextContains(t, text, "Alice")             // name field
+	helpers.AssertTextContains(t, text, "alice@example.com") // profile.email field
+	helpers.AssertTextContains(t, text, "user-123")          // id field (passed through)
+
+	// Verify boolean conditionals
+	helpers.AssertTextContains(t, text, "active_yes")   // active=true
+	helpers.AssertTextContains(t, text, "verified_yes") // profile.verified=true
+
+	// Verify string equality conditional
+	helpers.AssertTextContains(t, text, "role_admin") // role="admin"
+
+	// Verify numeric comparisons
+	helpers.AssertTextContains(t, text, "score_high")      // score=95.5 > 90.0
+	helpers.AssertTextContains(t, text, "logins_frequent") // login_count=42 >= 10
+}

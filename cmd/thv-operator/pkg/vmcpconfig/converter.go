@@ -204,7 +204,7 @@ func mapResolvedOIDCToVmcpConfig(
 		Resource:                        resolved.ResourceURL,
 		ProtectedResourceAllowPrivateIP: resolved.JWKSAllowPrivateIP,
 		InsecureAllowHTTP:               resolved.InsecureAllowHTTP,
-		// Scopes are not currently in oidc.OIDCConfig - should be added later
+		Scopes:                          resolved.Scopes,
 	}
 
 	// Handle client secret - the deployment controller mounts secrets as environment variables

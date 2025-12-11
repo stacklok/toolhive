@@ -1,25 +1,25 @@
----
+{{- if .Values.crds.install.server }}
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
+    {{- if .Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
     controller-gen.kubebuilder.io/version: v0.17.3
-  name: mcpremoteproxies.toolhive.stacklok.dev
+  name: mcpservers.toolhive.stacklok.dev
 spec:
   group: toolhive.stacklok.dev
   names:
-    kind: MCPRemoteProxy
-    listKind: MCPRemoteProxyList
-    plural: mcpremoteproxies
-    singular: mcpremoteproxy
+    kind: MCPServer
+    listKind: MCPServerList
+    plural: mcpservers
+    singular: mcpserver
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.phase
-      name: Phase
-      type: string
-    - jsonPath: .spec.remoteURL
-      name: Remote URL
+      name: Status
       type: string
     - jsonPath: .status.url
       name: URL
@@ -30,9 +30,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: |-
-          MCPRemoteProxy is the Schema for the mcpremoteproxies API
-          It enables proxying remote MCP servers with authentication, authorization, audit logging, and tool filtering
+        description: MCPServer is the Schema for the mcpservers API
         properties:
           apiVersion:
             description: |-
@@ -52,10 +50,16 @@ spec:
           metadata:
             type: object
           spec:
-            description: MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
+            description: MCPServerSpec defines the desired state of MCPServer
             properties:
+              args:
+                description: Args are additional arguments to pass to the MCP server
+                items:
+                  type: string
+                type: array
               audit:
-                description: Audit defines audit logging configuration for the proxy
+                description: Audit defines audit logging configuration for the MCP
+                  server
                 properties:
                   enabled:
                     default: false
@@ -66,7 +70,7 @@ spec:
                 type: object
               authzConfig:
                 description: AuthzConfig defines authorization policy configuration
-                  for the proxy
+                  for the MCP server
                 properties:
                   configMap:
                     description: |-
@@ -113,11 +117,27 @@ spec:
                 required:
                 - type
                 type: object
+              env:
+                description: Env are environment variables to set in the MCP server
+                  container
+                items:
+                  description: EnvVar represents an environment variable in a container
+                  properties:
+                    name:
+                      description: Name of the environment variable
+                      type: string
+                    value:
+                      description: Value of the environment variable
+                      type: string
+                  required:
+                  - name
+                  - value
+                  type: object
+                type: array
               externalAuthConfigRef:
                 description: |-
-                  ExternalAuthConfigRef references a MCPExternalAuthConfig resource for token exchange.
-                  When specified, the proxy will exchange validated incoming tokens for remote service tokens.
-                  The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPRemoteProxy.
+                  ExternalAuthConfigRef references a MCPExternalAuthConfig resource for external authentication.
+                  The referenced MCPExternalAuthConfig must exist in the same namespace as this MCPServer.
                 properties:
                   name:
                     description: Name is the name of the MCPExternalAuthConfig resource
@@ -125,10 +145,23 @@ spec:
                 required:
                 - name
                 type: object
-              oidcConfig:
+              groupRef:
                 description: |-
-                  OIDCConfig defines OIDC authentication configuration for the proxy
-                  This validates incoming tokens from clients. Required for proxy mode.
+                  GroupRef is the name of the MCPGroup this server belongs to
+                  Must reference an existing MCPGroup in the same namespace
+                type: string
+              image:
+                description: Image is the container image for the MCP server
+                type: string
+              mcpPort:
+                description: McpPort is the port that MCP server listens to
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+              oidcConfig:
+                description: OIDCConfig defines OIDC authentication configuration
+                  for the MCP server
                 properties:
                   configMap:
                     description: |-
@@ -211,6 +244,13 @@ spec:
                           ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses
                           Use with caution - only enable for trusted internal IDPs or testing
                         type: boolean
+                      scopes:
+                        description: |-
+                          Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
+                          If empty, defaults to ["openid"]
+                        items:
+                          type: string
+                        type: array
                       thvCABundlePath:
                         description: |-
                           ThvCABundlePath is the path to CA certificate bundle file for HTTPS requests
@@ -276,17 +316,65 @@ spec:
                 required:
                 - type
                 type: object
+              permissionProfile:
+                description: PermissionProfile defines the permission profile to use
+                properties:
+                  key:
+                    description: |-
+                      Key is the key in the ConfigMap that contains the permission profile
+                      Only used when Type is "configmap"
+                    type: string
+                  name:
+                    description: |-
+                      Name is the name of the permission profile
+                      If Type is "builtin", Name must be one of: "none", "network"
+                      If Type is "configmap", Name is the name of the ConfigMap
+                    type: string
+                  type:
+                    default: builtin
+                    description: Type is the type of permission profile reference
+                    enum:
+                    - builtin
+                    - configmap
+                    type: string
+                required:
+                - name
+                - type
+                type: object
+              podTemplateSpec:
+                description: |-
+                  PodTemplateSpec defines the pod template to use for the MCP server
+                  This allows for customizing the pod configuration beyond what is provided by the other fields.
+                  Note that to modify the specific container the MCP server runs in, you must specify
+                  the `mcp` container name in the PodTemplateSpec.
+                  This field accepts a PodTemplateSpec object as JSON/YAML.
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
               port:
                 default: 8080
-                description: Port is the port to expose the MCP proxy on
+                description: |-
+                  Port is the port to expose the MCP server on
+                  Deprecated: Use ProxyPort instead
                 format: int32
                 maximum: 65535
                 minimum: 1
                 type: integer
-              remoteURL:
-                description: RemoteURL is the URL of the remote MCP server to proxy
-                pattern: ^https?://
+              proxyMode:
+                default: streamable-http
+                description: |-
+                  ProxyMode is the proxy mode for stdio transport (sse or streamable-http)
+                  This setting is only used when Transport is "stdio"
+                enum:
+                - sse
+                - streamable-http
                 type: string
+              proxyPort:
+                default: 8080
+                description: ProxyPort is the port to expose the proxy runner on
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
               resourceOverrides:
                 description: ResourceOverrides allows overriding annotations and labels
                   for resources created by the operator
@@ -358,8 +446,8 @@ spec:
                     type: object
                 type: object
               resources:
-                description: Resources defines the resource requirements for the proxy
-                  container
+                description: Resources defines the resource requirements for the MCP
+                  server container
                 properties:
                   limits:
                     description: Limits describes the maximum amount of compute resources
@@ -388,9 +476,44 @@ spec:
                         type: string
                     type: object
                 type: object
+              secrets:
+                description: Secrets are references to secrets to mount in the MCP
+                  server container
+                items:
+                  description: SecretRef is a reference to a secret
+                  properties:
+                    key:
+                      description: Key is the key in the secret itself
+                      type: string
+                    name:
+                      description: Name is the name of the secret
+                      type: string
+                    targetEnvName:
+                      description: |-
+                        TargetEnvName is the environment variable to be used when setting up the secret in the MCP server
+                        If left unspecified, it defaults to the key
+                      type: string
+                  required:
+                  - key
+                  - name
+                  type: object
+                type: array
+              serviceAccount:
+                description: |-
+                  ServiceAccount is the name of an already existing service account to use by the MCP server.
+                  If not specified, a ServiceAccount will be created automatically and used by the MCP server.
+                type: string
+              targetPort:
+                description: |-
+                  TargetPort is the port that MCP server listens to
+                  Deprecated: Use McpPort instead
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
               telemetry:
                 description: Telemetry defines observability configuration for the
-                  proxy
+                  MCP server
                 properties:
                   openTelemetry:
                     description: OpenTelemetry defines OpenTelemetry configuration
@@ -457,9 +580,9 @@ spec:
               toolConfigRef:
                 description: |-
                   ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.
-                  The referenced MCPToolConfig must exist in the same namespace as this MCPRemoteProxy.
+                  The referenced MCPToolConfig must exist in the same namespace as this MCPServer.
                   Cross-namespace references are not supported for security and isolation reasons.
-                  If specified, this allows filtering and overriding tools from the remote MCP server.
+                  If specified, this takes precedence over the inline ToolsFilter field.
                 properties:
                   name:
                     description: Name is the name of the MCPToolConfig resource in
@@ -468,13 +591,21 @@ spec:
                 required:
                 - name
                 type: object
+              tools:
+                description: |-
+                  ToolsFilter is the filter on tools applied to the MCP server
+                  Deprecated: Use ToolConfigRef instead
+                items:
+                  type: string
+                type: array
               transport:
-                default: streamable-http
-                description: Transport is the transport method for the remote proxy
-                  (sse or streamable-http)
+                default: stdio
+                description: Transport is the transport method for the MCP server
+                  (stdio, streamable-http or sse)
                 enum:
-                - sse
+                - stdio
                 - streamable-http
+                - sse
                 type: string
               trustProxyHeaders:
                 default: false
@@ -483,16 +614,41 @@ spec:
                   When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,
                   and X-Forwarded-Prefix headers to construct endpoint URLs
                 type: boolean
+              volumes:
+                description: Volumes are volumes to mount in the MCP server container
+                items:
+                  description: Volume represents a volume to mount in a container
+                  properties:
+                    hostPath:
+                      description: HostPath is the path on the host to mount
+                      type: string
+                    mountPath:
+                      description: MountPath is the path in the container to mount
+                        to
+                      type: string
+                    name:
+                      description: Name is the name of the volume
+                      type: string
+                    readOnly:
+                      default: false
+                      description: ReadOnly specifies whether the volume should be
+                        mounted read-only
+                      type: boolean
+                  required:
+                  - hostPath
+                  - mountPath
+                  - name
+                  type: object
+                type: array
             required:
-            - oidcConfig
-            - remoteURL
+            - image
             type: object
           status:
-            description: MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
+            description: MCPServerStatus defines the observed state of MCPServer
             properties:
               conditions:
                 description: Conditions represent the latest available observations
-                  of the MCPRemoteProxy's state
+                  of the MCPServer's state
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -552,24 +708,15 @@ spec:
                 description: ExternalAuthConfigHash is the hash of the referenced
                   MCPExternalAuthConfig spec
                 type: string
-              externalURL:
-                description: ExternalURL is the external URL where the proxy can be
-                  accessed (if exposed externally)
-                type: string
               message:
                 description: Message provides additional information about the current
                   phase
                 type: string
-              observedGeneration:
-                description: ObservedGeneration reflects the generation of the most
-                  recently observed MCPRemoteProxy
-                format: int64
-                type: integer
               phase:
-                description: Phase is the current phase of the MCPRemoteProxy
+                description: Phase is the current phase of the MCPServer
                 enum:
                 - Pending
-                - Ready
+                - Running
                 - Failed
                 - Terminating
                 type: string
@@ -578,8 +725,7 @@ spec:
                   for change detection
                 type: string
               url:
-                description: URL is the internal cluster URL where the proxy can be
-                  accessed
+                description: URL is the URL where the MCP server can be accessed
                 type: string
             type: object
         type: object
@@ -587,3 +733,4 @@ spec:
     storage: true
     subresources:
       status: {}
+{{- end }}

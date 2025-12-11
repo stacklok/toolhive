@@ -3,6 +3,7 @@ package workloads
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -178,12 +179,9 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 	}
 
 	// Copy user labels to metadata first
-	for k, v := range userLabels {
-		backend.Metadata[k] = v
-	}
+	maps.Copy(backend.Metadata, userLabels)
 
 	// Set system metadata (these override user labels to prevent conflicts)
-	backend.Metadata["tool_type"] = "mcp"
 	backend.Metadata["workload_status"] = string(mcpServer.Status.Phase)
 	if mcpServer.Namespace != "" {
 		backend.Metadata["namespace"] = mcpServer.Namespace

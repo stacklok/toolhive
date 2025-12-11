@@ -162,7 +162,6 @@ func (f *fileStatusManager) populateRemoteWorkloadData(ctx context.Context, work
 	workload.Port = config.Port
 	workload.TransportType = transportType
 	workload.ProxyMode = effectiveProxyMode
-	workload.ToolType = "remote"
 	workload.Group = config.Group
 	workload.Labels = config.ContainerLabels
 	workload.Remote = true

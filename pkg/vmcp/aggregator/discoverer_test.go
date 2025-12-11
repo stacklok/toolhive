@@ -36,7 +36,6 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 			TransportType: "streamable-http",
 			HealthStatus:  vmcp.BackendHealthy,
 			Metadata: map[string]string{
-				"tool_type":       "github",
 				"workload_status": "running",
 				"env":             "prod",
 			},
@@ -48,7 +47,6 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 			TransportType: "sse",
 			HealthStatus:  vmcp.BackendHealthy,
 			Metadata: map[string]string{
-				"tool_type":       "jira",
 				"workload_status": "running",
 			},
 		}
@@ -67,7 +65,6 @@ func TestBackendDiscoverer_Discover(t *testing.T) {
 		assert.Equal(t, "workload1", backends[0].ID)
 		assert.Equal(t, "http://localhost:8080/mcp", backends[0].BaseURL)
 		assert.Equal(t, vmcp.BackendHealthy, backends[0].HealthStatus)
-		assert.Equal(t, "github", backends[0].Metadata["tool_type"])
 		assert.Equal(t, "prod", backends[0].Metadata["env"])
 		assert.Equal(t, "workload2", backends[1].ID)
 		assert.Equal(t, "sse", backends[1].TransportType)
@@ -337,7 +334,7 @@ func TestCLIWorkloadDiscoverer(t *testing.T) {
 			Name:         "workload1",
 			BaseURL:      "http://localhost:8080/mcp",
 			HealthStatus: vmcp.BackendHealthy,
-			Metadata:     map[string]string{"tool_type": "github", "env": "prod"},
+			Metadata:     map[string]string{"env": "prod"},
 		}
 
 		mockGroups.EXPECT().Exists(gomock.Any(), testGroupName).Return(true, nil)
@@ -353,7 +350,6 @@ func TestCLIWorkloadDiscoverer(t *testing.T) {
 		assert.Equal(t, "workload1", backends[0].ID)
 		assert.Equal(t, "http://localhost:8080/mcp", backends[0].BaseURL)
 		assert.Equal(t, vmcp.BackendHealthy, backends[0].HealthStatus)
-		assert.Equal(t, "github", backends[0].Metadata["tool_type"])
 		assert.Equal(t, "prod", backends[0].Metadata["env"])
 	})
 

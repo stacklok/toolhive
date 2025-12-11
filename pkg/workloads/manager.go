@@ -208,7 +208,6 @@ func (d *DefaultManager) GetWorkloadAsVMCPBackend(ctx context.Context, workloadN
 	}
 
 	// Set system metadata (these override user labels to prevent conflicts)
-	backend.Metadata["tool_type"] = workload.ToolType
 	backend.Metadata["workload_status"] = string(workload.Status)
 
 	return backend, nil
@@ -1496,7 +1495,6 @@ func (d *DefaultManager) getRemoteWorkloadsFromState(
 			Port:          runConfig.Port,
 			TransportType: transportType,
 			ProxyMode:     effectiveProxyMode,
-			ToolType:      "remote",
 			Group:         runConfig.Group,
 			CreatedAt:     workloadStatus.CreatedAt,
 			Labels:        runConfig.ContainerLabels,

@@ -126,8 +126,8 @@ func TestGetValue(t *testing.T) {
 				Namespace: "default",
 			},
 			Data: map[string]string{
-				"password": "super-secret-password",
-				"username": "admin",
+				"foo1": "bar1",
+				"foo2": "bar2",
 			},
 		}
 
@@ -141,13 +141,13 @@ func TestGetValue(t *testing.T) {
 			LocalObjectReference: corev1.LocalObjectReference{
 				Name: "test-configmap",
 			},
-			Key: "password",
+			Key: "foo1",
 		}
 
 		value, err := client.GetValue(ctx, "default", configMapRef)
 
 		require.NoError(t, err)
-		assert.Equal(t, "super-secret-password", value)
+		assert.Equal(t, "bar1", value)
 	})
 
 	t.Run("returns error when configmap does not exist", func(t *testing.T) {
@@ -164,7 +164,7 @@ func TestGetValue(t *testing.T) {
 			LocalObjectReference: corev1.LocalObjectReference{
 				Name: "non-existent-configmap",
 			},
-			Key: "password",
+			Key: "foo1",
 		}
 
 		value, err := client.GetValue(ctx, "default", configMapRef)
@@ -185,7 +185,7 @@ func TestGetValue(t *testing.T) {
 				Namespace: "default",
 			},
 			Data: map[string]string{
-				"password": "super-secret-password",
+				"foo1": "bar1",
 			},
 		}
 
@@ -220,7 +220,7 @@ func TestGetValue(t *testing.T) {
 				Namespace: "namespace1",
 			},
 			Data: map[string]string{
-				"password": "password1",
+				"foo1": "bar1",
 			},
 		}
 
@@ -230,7 +230,7 @@ func TestGetValue(t *testing.T) {
 				Namespace: "namespace2",
 			},
 			Data: map[string]string{
-				"password": "password2",
+				"foo2": "bar2",
 			},
 		}
 
@@ -244,13 +244,13 @@ func TestGetValue(t *testing.T) {
 			LocalObjectReference: corev1.LocalObjectReference{
 				Name: "test-configmap",
 			},
-			Key: "password",
+			Key: "foo2",
 		}
 
 		value, err := client.GetValue(ctx, "namespace2", configMapRef)
 
 		require.NoError(t, err)
-		assert.Equal(t, "password2", value)
+		assert.Equal(t, "bar2", value)
 	})
 
 	t.Run("handles empty configmap value", func(t *testing.T) {
@@ -334,8 +334,8 @@ func TestUpsert(t *testing.T) {
 				},
 			},
 			Data: map[string]string{
-				"username": "admin",
-				"password": "secret123",
+				"foo1": "bar1",
+				"foo2": "bar2",
 			},
 		}
 
@@ -349,8 +349,8 @@ func TestUpsert(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "new-configmap", retrieved.Name)
 		assert.Equal(t, "default", retrieved.Namespace)
-		assert.Equal(t, "admin", retrieved.Data["username"])
-		assert.Equal(t, "secret123", retrieved.Data["password"])
+		assert.Equal(t, "bar1", retrieved.Data["foo1"])
+		assert.Equal(t, "bar2", retrieved.Data["foo2"])
 	})
 
 	t.Run("successfully updates an existing configmap", func(t *testing.T) {

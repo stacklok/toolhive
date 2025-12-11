@@ -76,7 +76,7 @@ var _ = Describe("VirtualMCPServer Tool Overrides", Ordered, func() {
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
@@ -166,28 +166,8 @@ var _ = Describe("VirtualMCPServer Tool Overrides", Ordered, func() {
 		})
 
 		It("should allow calling the renamed tool", func() {
-			By("Creating and initializing MCP client for VirtualMCPServer")
-			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-overrides-test", 30*time.Second)
-			Expect(err).ToNot(HaveOccurred())
-			defer mcpClient.Close()
-
-			renamedToolFullName := fmt.Sprintf("%s_%s", backendName, renamedToolName)
-			By(fmt.Sprintf("Calling renamed tool: %s", renamedToolFullName))
-
-			testInput := "override_test_123"
-			callRequest := mcp.CallToolRequest{}
-			callRequest.Params.Name = renamedToolFullName
-			callRequest.Params.Arguments = map[string]any{
-				"input": testInput,
-			}
-
-			result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
-			Expect(err).ToNot(HaveOccurred(), "Should be able to call renamed tool")
-			Expect(result).ToNot(BeNil())
-			Expect(result.Content).ToNot(BeEmpty(), "Should have content in response")
-
-			// Yardstick echo tool echoes back the input
-			GinkgoWriter.Printf("Renamed tool call result: %+v\n", result.Content)
+			// Use shared helper to test tool listing and calling
+			TestToolListingAndCall(vmcpNodePort, "toolhive-overrides-test", renamedToolName, "override_test_123")
 		})
 	})
 

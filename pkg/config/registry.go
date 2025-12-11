@@ -147,9 +147,9 @@ func isValidRegistryJSON(client *http.Client, url string) bool {
 		return false
 	}
 
-	// Check if it has registry-like structure (servers or remoteServers fields)
+	// Check if it has registry-like structure (servers or remote_servers fields)
 	_, hasServers := data["servers"]
-	_, hasRemoteServers := data["remoteServers"]
+	_, hasRemoteServers := data["remote_servers"]
 	return hasServers || hasRemoteServers
 }
 
@@ -181,7 +181,8 @@ func setRegistryURL(provider Provider, registryURL string, allowPrivateRegistryI
 
 	// Validate that the URL returns valid ToolHive registry JSON
 	if !isValidRegistryJSON(registryClient, registryURL) {
-		return fmt.Errorf("registry URL does not contain valid ToolHive registry format (expected 'servers' or 'remoteServers' fields)")
+		return fmt.Errorf("registry URL does not contain valid ToolHive registry format " +
+			"(expected 'servers' or 'remote_servers' fields)")
 	}
 
 	// Update the configuration
@@ -250,12 +251,12 @@ func validateRegistryFileStructure(path string) error {
 		return fmt.Errorf("invalid JSON format: %w", err)
 	}
 
-	// Check for ToolHive registry structure (servers or remoteServers fields)
+	// Check for ToolHive registry structure (servers or remote_servers fields)
 	_, hasServers := registryData["servers"]
-	_, hasRemoteServers := registryData["remoteServers"]
+	_, hasRemoteServers := registryData["remote_servers"]
 
 	if !hasServers && !hasRemoteServers {
-		return fmt.Errorf("does not contain valid ToolHive registry format (expected 'servers' or 'remoteServers' fields)")
+		return fmt.Errorf("does not contain valid ToolHive registry format (expected 'servers' or 'remote_servers' fields)")
 	}
 
 	return nil

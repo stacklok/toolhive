@@ -111,18 +111,18 @@ func TestDetectRegistryType(t *testing.T) { //nolint:tparallel,paralleltest // C
 			},
 		},
 		{
-			name:            "URL with remoteServers field (valid registry JSON)",
+			name:            "URL with remote_servers field (valid registry JSON)",
 			allowPrivateIPs: true,
 			expectedType:    RegistryTypeURL,
 			setupMockServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					switch r.URL.Path {
 					case "/":
-						// Return valid ToolHive registry JSON with remoteServers
+						// Return valid ToolHive registry JSON with remote_servers
 						w.Header().Set("Content-Type", "application/json")
 						json.NewEncoder(w).Encode(map[string]interface{}{
 							"version": "1.0.0",
-							"remoteServers": map[string]interface{}{
+							"remote_servers": map[string]interface{}{
 								"remote-server": map[string]interface{}{
 									"url": "https://remote.example.com",
 								},
@@ -193,13 +193,13 @@ func TestIsValidRegistryJSON(t *testing.T) {
 			expectedResult: true,
 		},
 		{
-			name: "valid registry JSON with remoteServers field",
+			name: "valid registry JSON with remote_servers field",
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(map[string]interface{}{
 						"version": "1.0.0",
-						"remoteServers": map[string]interface{}{
+						"remote_servers": map[string]interface{}{
 							"remote": map[string]interface{}{"url": "https://example.com"},
 						},
 					})
@@ -208,7 +208,7 @@ func TestIsValidRegistryJSON(t *testing.T) {
 			expectedResult: true,
 		},
 		{
-			name: "valid registry JSON with both servers and remoteServers",
+			name: "valid registry JSON with both servers and remote_servers",
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
@@ -217,7 +217,7 @@ func TestIsValidRegistryJSON(t *testing.T) {
 						"servers": map[string]interface{}{
 							"test": map[string]interface{}{"image": "test:latest"},
 						},
-						"remoteServers": map[string]interface{}{
+						"remote_servers": map[string]interface{}{
 							"remote": map[string]interface{}{"url": "https://example.com"},
 						},
 					})
@@ -232,7 +232,7 @@ func TestIsValidRegistryJSON(t *testing.T) {
 					w.Header().Set("Content-Type", "application/json")
 					json.NewEncoder(w).Encode(map[string]interface{}{
 						"version": "1.0.0",
-						// Missing servers and remoteServers
+						// Missing servers and remote_servers
 					})
 				}))
 			},

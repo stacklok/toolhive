@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/integration/vmcp/helpers"
 )
 
@@ -458,4 +459,238 @@ func TestVMCPServer_Telemetry_CompositeToolMetrics(t *testing.T) {
 		"Should contain HTTP middleware requests total metric")
 	assert.True(t, strings.Contains(metricsContent, "toolhive_mcp_request_duration_seconds"),
 		"Should contain HTTP middleware request duration metric")
+}
+
+// TestVMCPServer_DefaultResults_ConditionalSkip verifies that when a conditional step
+// is skipped (condition evaluates to false), the step's defaultResults are used
+// in the workflow output.
+//
+// Note on output format: Real backend tool calls store text content under a "text" key
+// (see pkg/vmcp/client/client.go:474-500). The defaultResults should use the same format
+// for consistency, using "text" as the key when the value represents tool output text.
+func TestVMCPServer_DefaultResults_ConditionalSkip(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup: Create a backend server with an echo tool
+	echoServer := helpers.CreateBackendServer(t, []helpers.BackendTool{
+		helpers.NewBackendTool("echo", "Echo the input message",
+			func(_ context.Context, args map[string]any) string {
+				msg, _ := args["message"].(string)
+				return `{"echoed": "` + msg + `"}`
+			}),
+	}, helpers.WithBackendName("echo-mcp"))
+	defer echoServer.Close()
+
+	// Configure backend
+	backends := []vmcp.Backend{
+		helpers.NewBackend("echo",
+			helpers.WithURL(echoServer.URL+"/mcp"),
+			helpers.WithMetadata("group", "test-group"),
+		),
+	}
+
+	// Create composite tool with:
+	// - A conditional step that provides defaultResults
+	// - Output configuration that references the conditional step's output
+	// When skipped, the output should contain the default value
+	//
+	// The defaultResults uses "text" key to match the format returned by real backend
+	// tool calls (which store TextContent under "text" key).
+	workflowDefs := map[string]*composer.WorkflowDefinition{
+		"conditional_default_test": {
+			Name:        "conditional_default_test",
+			Description: "Tests defaultResults when a conditional step is skipped",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run_optional": map[string]any{
+						"type":        "boolean",
+						"description": "Whether to run the optional step",
+					},
+				},
+				"required": []string{"run_optional"},
+			},
+			Steps: []composer.WorkflowStep{
+				{
+					ID:        "optional_step",
+					Type:      "tool",
+					Tool:      "echo_echo",
+					Condition: "{{.params.run_optional}}", // Only run when run_optional=true
+					Arguments: map[string]any{
+						"message": "step_executed",
+					},
+					// When skipped, this value is used as the step's output.
+					// Uses "text" key to match real backend client output format.
+					DefaultResults: map[string]any{
+						"text": "default_from_skip",
+					},
+				},
+			},
+			// Output references the conditional step's output.text
+			// Real backend tool calls store text content under "text" key.
+			Output: &vmcpconfig.OutputConfig{
+				Properties: map[string]vmcpconfig.OutputProperty{
+					"step_result": {
+						Type:        "string",
+						Description: "Result from optional step",
+						Value:       "{{.steps.optional_step.output.text}}",
+						Default:     "fallback_not_used", // Shouldn't be used since defaultResults provides value
+					},
+				},
+			},
+			Timeout: 30 * time.Second,
+		},
+	}
+
+	// Create vMCP server
+	vmcpServer := helpers.NewVMCPServer(ctx, t, backends,
+		helpers.WithPrefixConflictResolution("{workload}_"),
+		helpers.WithWorkflowDefinitions(workflowDefs),
+	)
+
+	// Create and initialize MCP client
+	vmcpURL := "http://" + vmcpServer.Address() + "/mcp"
+	client := helpers.NewMCPClient(ctx, t, vmcpURL)
+	defer client.Close()
+
+	// Test 1: Call with run_optional=false - step is skipped, output uses defaultResults
+	resp := client.CallTool(ctx, "conditional_default_test", map[string]any{"run_optional": false})
+	text := helpers.AssertToolCallSuccess(t, resp)
+	// Verify the output contains the default value from defaultResults
+	helpers.AssertTextContains(t, text, "default_from_skip")
+	// Ensure it's NOT using the fallback from Output (which would indicate defaultResults wasn't used)
+	helpers.AssertTextNotContains(t, text, "fallback_not_used")
+
+	// Test 2: Call with run_optional=true - step runs, output uses actual step result
+	resp = client.CallTool(ctx, "conditional_default_test", map[string]any{"run_optional": true})
+	text = helpers.AssertToolCallSuccess(t, resp)
+	// When step runs, output should contain the actual echo result (JSON with "echoed" key)
+	// and NOT the default value
+	helpers.AssertTextContains(t, text, "step_executed")
+	helpers.AssertTextNotContains(t, text, "default_from_skip")
+}
+
+// TestVMCPServer_DefaultResults_ContinueOnError verifies that when a step fails
+// with continue-on-error, the step's defaultResults are used in the workflow output.
+// Also verifies that when the step succeeds, the actual result is used (not the default).
+//
+// Note on output format: Real backend tool calls store text content under a "text" key
+// (see pkg/vmcp/client/client.go:474-500). The defaultResults should use the same format
+// for consistency.
+func TestVMCPServer_DefaultResults_ContinueOnError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup: Create a backend server with a tool that can optionally fail
+	flakyServer := helpers.CreateBackendServer(t, []helpers.BackendTool{
+		helpers.NewBackendTool("maybe_fail", "A tool that optionally fails based on input",
+			func(_ context.Context, args map[string]any) string {
+				// Check for both boolean and string "true" since templates render as strings
+				shouldFail := false
+				if v, ok := args["fail"].(string); ok {
+					shouldFail = v == "true"
+				}
+				if shouldFail {
+					// Panic causes HTTP 500 which triggers error handling in workflow
+					panic("intentional failure for testing")
+				}
+				return "success_from_tool"
+			}),
+	}, helpers.WithBackendName("flaky-mcp"))
+	defer flakyServer.Close()
+
+	// Configure backend
+	backends := []vmcp.Backend{
+		helpers.NewBackend("flaky",
+			helpers.WithURL(flakyServer.URL+"/mcp"),
+			helpers.WithMetadata("group", "test-group"),
+		),
+	}
+
+	// Create composite tool where:
+	// - Step 1: Calls maybe_fail tool with continue-on-error=true and defaultResults
+	// - Output references the step's output
+	// - When step fails, output uses defaultResults; when succeeds, uses actual result
+	//
+	// The defaultResults uses "text" key to match the format returned by real backend
+	// tool calls (which store TextContent under "text" key).
+	workflowDefs := map[string]*composer.WorkflowDefinition{
+		"continue_on_error_test": {
+			Name:        "continue_on_error_test",
+			Description: "Tests defaultResults when a step fails with continue-on-error",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"fail": map[string]any{
+						"type":        "boolean",
+						"description": "Whether the tool should fail",
+					},
+				},
+				"required": []string{"fail"},
+			},
+			Steps: []composer.WorkflowStep{
+				{
+					ID:   "maybe_failing_step",
+					Type: "tool",
+					Tool: "flaky_maybe_fail",
+					Arguments: map[string]any{
+						"fail": "{{.params.fail}}",
+					},
+					OnError: &composer.ErrorHandler{
+						ContinueOnError: true,
+					},
+					// When step fails but continues, this value is used as the step's output.
+					// Uses "text" key to match real backend client output format.
+					DefaultResults: map[string]any{
+						"text": "default_from_error",
+					},
+				},
+			},
+			// Output references the step's output.text
+			// Real backend tool calls store text content under "text" key.
+			Output: &vmcpconfig.OutputConfig{
+				Properties: map[string]vmcpconfig.OutputProperty{
+					"step_result": {
+						Type:        "string",
+						Description: "Result from step",
+						Value:       "{{.steps.maybe_failing_step.output.text}}",
+						Default:     "fallback_not_used", // Shouldn't be used since defaultResults provides value
+					},
+				},
+			},
+			Timeout: 30 * time.Second,
+		},
+	}
+
+	// Create vMCP server
+	vmcpServer := helpers.NewVMCPServer(ctx, t, backends,
+		helpers.WithPrefixConflictResolution("{workload}_"),
+		helpers.WithWorkflowDefinitions(workflowDefs),
+	)
+
+	// Create and initialize MCP client
+	vmcpURL := "http://" + vmcpServer.Address() + "/mcp"
+	client := helpers.NewMCPClient(ctx, t, vmcpURL)
+	defer client.Close()
+
+	// Test 1: Call with fail=true - step fails but continues, output uses defaultResults
+	resp := client.CallTool(ctx, "continue_on_error_test", map[string]any{"fail": true})
+	text := helpers.AssertToolCallSuccess(t, resp)
+	// Verify the output contains the default value from defaultResults
+	helpers.AssertTextContains(t, text, "default_from_error")
+	// Ensure it's NOT using the fallback from Output
+	helpers.AssertTextNotContains(t, text, "fallback_not_used")
+
+	// Test 2: Call with fail=false - step succeeds, output uses actual result
+	resp = client.CallTool(ctx, "continue_on_error_test", map[string]any{"fail": false})
+	text = helpers.AssertToolCallSuccess(t, resp)
+	// When step succeeds, output should contain the actual tool result
+	helpers.AssertTextContains(t, text, "success_from_tool")
+	// And NOT the default value
+	helpers.AssertTextNotContains(t, text, "default_from_error")
 }

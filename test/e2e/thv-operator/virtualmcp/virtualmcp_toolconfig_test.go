@@ -23,8 +23,8 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 		toolConfigName  = "test-tool-config"
 		backend1Name    = "gofetch-toolconfig-a"
 		backend2Name    = "gofetch-toolconfig-b"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 3 * time.Minute
+		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 	)
 
@@ -33,13 +33,11 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, testNamespace,
 			"Test MCP Group for MCPToolConfig E2E tests", timeout, pollingInterval)
 
-		By("Creating first gofetch backend MCPServer")
-		CreateMCPServerAndWait(ctx, k8sClient, backend1Name, testNamespace, mcpGroupName,
-			images.GofetchServerImage, timeout, pollingInterval)
-
-		By("Creating second gofetch backend MCPServer")
-		CreateMCPServerAndWait(ctx, k8sClient, backend2Name, testNamespace, mcpGroupName,
-			images.GofetchServerImage, timeout, pollingInterval)
+		By("Creating gofetch backend MCPServers in parallel")
+		CreateMultipleMCPServersInParallel(ctx, k8sClient, []BackendConfig{
+			{Name: backend1Name, Namespace: testNamespace, GroupRef: mcpGroupName, Image: images.GofetchServerImage},
+			{Name: backend2Name, Namespace: testNamespace, GroupRef: mcpGroupName, Image: images.GofetchServerImage},
+		}, timeout, pollingInterval)
 
 		By("Creating MCPToolConfig for filtering and overriding tools")
 		toolConfig := &mcpv1alpha1.MCPToolConfig{
@@ -359,8 +357,8 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 		vmcpServerName  = "test-vmcp-toolconfig-update"
 		toolConfigName  = "test-tool-config-update"
 		backendName     = "gofetch-toolconfig-update"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 3 * time.Minute
+		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 	)
 

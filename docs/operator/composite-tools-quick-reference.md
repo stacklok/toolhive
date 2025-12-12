@@ -141,6 +141,31 @@ steps:
       maxRetries: 3             # Max 3 retries (4 total attempts)
 ```
 
+## Default Results
+
+Provide fallback values when a step may be skipped (condition) or fail (continue-on-error):
+
+```yaml
+steps:
+  - id: optional_step
+    tool: enrichment.api
+    condition: "{{.params.enable_enrichment}}"
+    defaultResults:
+      text: "fallback value"    # Used when step is skipped
+
+  - id: unreliable_step
+    tool: external.api
+    on_error:
+      action: continue
+    defaultResults:
+      text: "{\"status\": \"unavailable\"}"  # Used when step fails
+```
+
+**Notes**:
+- Keys in `defaultResults` must match output fields referenced by downstream templates
+- Backend tools return text under `text` key, so use `defaultResults.text` for text output
+- Required when skippable steps are referenced by downstream templates
+
 ## Timeouts
 
 ```yaml

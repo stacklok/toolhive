@@ -35,11 +35,11 @@ func setupConflictResolutionTest(setup conflictResolutionTestSetup) int32 {
 		fmt.Sprintf("Test MCP Group for %s conflict resolution", setup.aggregation.ConflictResolution),
 		setup.timeout, setup.pollingInterval)
 
-	By(fmt.Sprintf("Creating backend MCPServers: %s, %s", setup.backend1Name, setup.backend2Name))
-	CreateMCPServerAndWait(ctx, k8sClient, setup.backend1Name, setup.namespace, setup.groupName,
-		images.YardstickServerImage, setup.timeout, setup.pollingInterval)
-	CreateMCPServerAndWait(ctx, k8sClient, setup.backend2Name, setup.namespace, setup.groupName,
-		images.YardstickServerImage, setup.timeout, setup.pollingInterval)
+	By(fmt.Sprintf("Creating backend MCPServers in parallel: %s, %s", setup.backend1Name, setup.backend2Name))
+	CreateMultipleMCPServersInParallel(ctx, k8sClient, []BackendConfig{
+		{Name: setup.backend1Name, Namespace: setup.namespace, GroupRef: setup.groupName, Image: images.YardstickServerImage},
+		{Name: setup.backend2Name, Namespace: setup.namespace, GroupRef: setup.groupName, Image: images.YardstickServerImage},
+	}, setup.timeout, setup.pollingInterval)
 
 	By(fmt.Sprintf("Creating VirtualMCPServer: %s with %s conflict resolution", setup.vmcpName, setup.aggregation.ConflictResolution))
 	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
@@ -105,8 +105,8 @@ func cleanupConflictResolutionTest(groupName, vmcpName, backend1Name, backend2Na
 var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 	var (
 		testNamespace   = "default"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 3 * time.Minute
+		pollingInterval = 1 * time.Second
 	)
 
 	Describe("Prefix Strategy", Ordered, func() {

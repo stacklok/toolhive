@@ -1050,7 +1050,9 @@ components:
           type: string
       type: object
     types.ProxyMode:
-      description: ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+      description: |-
+        ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+        Note: "sse" is deprecated; use "streamable-http" instead.
       type: string
       x-enum-varnames:
       - ProxyModeSSE

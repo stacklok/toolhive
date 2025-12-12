@@ -290,7 +290,7 @@ func (e *workflowEngine) executeStep(
 		}
 		if !shouldExecute {
 			logger.Debugf("Step %s skipped due to condition", step.ID)
-			workflowCtx.RecordStepSkipped(step.ID)
+			workflowCtx.RecordStepSkipped(step.ID, step.DefaultResults)
 			return nil
 		}
 	}
@@ -428,6 +428,9 @@ func (*workflowEngine) handleToolStepFailure(
 	// Check if we should continue on error
 	if step.OnError != nil && step.OnError.ContinueOnError {
 		logger.Warnf("Continuing workflow despite step %s failure (continue_on_error=true)", step.ID)
+		if result, exists := workflowCtx.GetStepResult(step.ID); exists && step.DefaultResults != nil {
+			result.Output = step.DefaultResults
+		}
 		return nil
 	}
 

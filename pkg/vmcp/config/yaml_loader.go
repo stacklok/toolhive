@@ -142,18 +142,19 @@ type rawCompositeTool struct {
 }
 
 type rawWorkflowStep struct {
-	ID        string                  `yaml:"id"`
-	Type      string                  `yaml:"type"`
-	Tool      string                  `yaml:"tool"`
-	Arguments map[string]any          `yaml:"arguments"`
-	Condition string                  `yaml:"condition"`
-	DependsOn []string                `yaml:"depends_on"`
-	OnError   *rawStepErrorHandling   `yaml:"on_error"`
-	Message   string                  `yaml:"message"`
-	Schema    map[string]any          `yaml:"schema"`
-	Timeout   string                  `yaml:"timeout"`
-	OnDecline *rawElicitationResponse `yaml:"on_decline"`
-	OnCancel  *rawElicitationResponse `yaml:"on_cancel"`
+	ID             string                  `yaml:"id"`
+	Type           string                  `yaml:"type"`
+	Tool           string                  `yaml:"tool"`
+	Arguments      map[string]any          `yaml:"arguments"`
+	Condition      string                  `yaml:"condition"`
+	DependsOn      []string                `yaml:"depends_on"`
+	OnError        *rawStepErrorHandling   `yaml:"on_error"`
+	Message        string                  `yaml:"message"`
+	Schema         map[string]any          `yaml:"schema"`
+	Timeout        string                  `yaml:"timeout"`
+	OnDecline      *rawElicitationResponse `yaml:"on_decline"`
+	OnCancel       *rawElicitationResponse `yaml:"on_cancel"`
+	DefaultResults map[string]any          `yaml:"default_results"`
 }
 
 type rawStepErrorHandling struct {
@@ -494,6 +495,8 @@ func (*YAMLLoader) transformWorkflowStep(raw *rawWorkflowStep) (*WorkflowStepCon
 			Action: raw.OnCancel.Action,
 		}
 	}
+
+	step.DefaultResults = raw.DefaultResults
 
 	return step, nil
 }

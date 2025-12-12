@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -1009,4 +1010,102 @@ func TestVMCPServer_DefaultResults_NestedStructure(t *testing.T) {
 	// Verify default values are NOT present
 	helpers.AssertTextNotContains(t, text, "light")
 	helpers.AssertTextNotContains(t, text, "1.0.0")
+}
+
+// TestVMCPServer_StructuredContent_IntegerComparisonError documents that using
+// integer literals in template comparisons with JSON numeric values produces an error.
+//
+// JSON unmarshals all numbers as float64. Go templates require matching types for
+// comparison functions (eq, ne, lt, le, gt, ge). Using an integer literal like "10"
+// instead of a float literal like "10.0" causes a type mismatch error.
+//
+// This test documents the expected error behavior to help users understand why
+// they must use float literals in numeric comparisons.
+func TestVMCPServer_StructuredContent_IntegerComparisonError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup: Create a backend server that returns a numeric value
+	numericServer := helpers.CreateBackendServer(t, []helpers.BackendTool{
+		helpers.NewBackendToolWithStructuredResponse("get_count", "Get a count value",
+			func(_ context.Context, _ map[string]any) map[string]any {
+				return map[string]any{
+					"count": 42, // JSON will unmarshal this as float64
+				}
+			}),
+	}, helpers.WithBackendName("numeric-mcp"))
+	defer numericServer.Close()
+
+	// Configure backend
+	backends := []vmcp.Backend{
+		helpers.NewBackend("numeric",
+			helpers.WithURL(numericServer.URL+"/mcp"),
+			helpers.WithMetadata("group", "test-group"),
+		),
+	}
+
+	// Create composite tool that uses INTEGER literal in comparison (incorrect)
+	// This should produce an error because JSON numbers are float64
+	workflowDefs := map[string]*composer.WorkflowDefinition{
+		"integer_comparison_test": {
+			Name:        "integer_comparison_test",
+			Description: "Tests that integer comparison produces type mismatch error",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+			Steps: []composer.WorkflowStep{
+				{
+					ID:        "get_count_step",
+					Type:      "tool",
+					Tool:      "numeric_get_count",
+					Arguments: map[string]any{},
+				},
+			},
+			Output: &vmcpconfig.OutputConfig{
+				Properties: map[string]vmcpconfig.OutputProperty{
+					// INCORRECT: Using integer literal "10" instead of float "10.0"
+					// This will cause: "error calling ge: incompatible types for comparison"
+					"is_high": {
+						Type:        "string",
+						Description: "Check if count is high (uses integer literal - will fail)",
+						Value:       `{{if ge .steps.get_count_step.output.count 10}}high{{else}}low{{end}}`,
+					},
+				},
+			},
+			Timeout: 30 * time.Second,
+		},
+	}
+
+	// Create vMCP server
+	vmcpServer := helpers.NewVMCPServer(ctx, t, backends,
+		helpers.WithPrefixConflictResolution("{workload}_"),
+		helpers.WithWorkflowDefinitions(workflowDefs),
+	)
+
+	// Create and initialize MCP client
+	vmcpURL := "http://" + vmcpServer.Address() + "/mcp"
+	client := helpers.NewMCPClient(ctx, t, vmcpURL)
+	defer client.Close()
+
+	// Call the composite tool - expect it to return an error result
+	resp := client.CallTool(ctx, "integer_comparison_test", map[string]any{})
+
+	// The tool call should return an error (IsError=true) with type mismatch message
+	require.NotNil(t, resp, "tool call result should not be nil")
+	assert.True(t, resp.IsError, "tool call should return an error due to type mismatch")
+
+	// Extract error message from content
+	var errorText string
+	if len(resp.Content) > 0 {
+		if textContent, ok := mcp.AsTextContent(resp.Content[0]); ok {
+			errorText = textContent.Text
+		}
+	}
+
+	// Verify the error message indicates type incompatibility
+	assert.Contains(t, errorText, "incompatible types for comparison",
+		"Error should mention incompatible types. Got: %s", errorText)
 }

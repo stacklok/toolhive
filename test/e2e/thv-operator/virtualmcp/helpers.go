@@ -969,18 +969,18 @@ if __name__ == '__main__':
 PYTHON_SCRIPT
 `
 
-// HttpLoggerOption returns a transport.StreamableHTTPCOption that logs to GinkgoLogr.
+// WithHttpLoggerOption returns a transport.StreamableHTTPCOption that logs to GinkgoLogr.
 // This is useful for debugging HTTP requests and responses.
 func WithHttpLoggerOption() transport.StreamableHTTPCOption {
-	return transport.WithHTTPLogger(&gingkoHttpLogger{})
+	return transport.WithHTTPLogger(gingkoHttpLogger{})
 }
 
 type gingkoHttpLogger struct{}
 
-func (l *gingkoHttpLogger) Infof(format string, v ...any) {
+func (gingkoHttpLogger) Infof(format string, v ...any) {
 	ginkgo.GinkgoLogr.Info("INFO: "+format, v...)
 }
 
-func (l *gingkoHttpLogger) Errorf(format string, v ...any) {
+func (gingkoHttpLogger) Errorf(format string, v ...any) {
 	ginkgo.GinkgoLogr.Error(errors.New("http error"), "ERROR: "+format, v...)
 }

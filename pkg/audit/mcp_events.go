@@ -30,6 +30,24 @@ const (
 	// EventTypeMCPRootsListChanged represents an MCP roots list changed notification
 	EventTypeMCPRootsListChanged = "mcp_roots_list_changed"
 
+	// Workflow-specific event types for vMCP composite workflow execution
+	// EventTypeWorkflowStarted represents workflow execution start
+	EventTypeWorkflowStarted = "vmcp_workflow_started"
+	// EventTypeWorkflowCompleted represents successful workflow completion
+	EventTypeWorkflowCompleted = "vmcp_workflow_completed"
+	// EventTypeWorkflowFailed represents workflow failure
+	EventTypeWorkflowFailed = "vmcp_workflow_failed"
+	// EventTypeWorkflowTimedOut represents workflow timeout
+	EventTypeWorkflowTimedOut = "vmcp_workflow_timed_out"
+	// EventTypeWorkflowStepStarted represents workflow step execution start
+	EventTypeWorkflowStepStarted = "vmcp_workflow_step_started"
+	// EventTypeWorkflowStepCompleted represents successful step completion
+	EventTypeWorkflowStepCompleted = "vmcp_workflow_step_completed"
+	// EventTypeWorkflowStepFailed represents step failure
+	EventTypeWorkflowStepFailed = "vmcp_workflow_step_failed"
+	// EventTypeWorkflowStepSkipped represents conditional step skip
+	EventTypeWorkflowStepSkipped = "vmcp_workflow_step_skipped"
+
 	// Fallback event types for unrecognized or generic requests
 	// EventTypeMCPRequest represents a generic MCP request when specific type cannot be determined
 	EventTypeMCPRequest = "mcp_request"
@@ -47,6 +65,10 @@ const (
 	TargetTypePrompt = "prompt"
 	// TargetTypeServer represents a server target
 	TargetTypeServer = "server"
+	// TargetTypeWorkflow represents a workflow target
+	TargetTypeWorkflow = "workflow"
+	// TargetTypeWorkflowStep represents a workflow step target
+	TargetTypeWorkflowStep = "workflow_step"
 )
 
 // MCP-specific target field keys
@@ -61,6 +83,18 @@ const (
 	TargetKeyMethod = "method"
 	// TargetKeyEndpoint is the key for the endpoint in the target map
 	TargetKeyEndpoint = "endpoint"
+	// TargetKeyWorkflowID is the key for the unique workflow execution ID
+	TargetKeyWorkflowID = "workflow_id"
+	// TargetKeyWorkflowName is the key for the workflow definition name
+	TargetKeyWorkflowName = "workflow_name"
+	// TargetKeyStepID is the key for the step identifier
+	TargetKeyStepID = "step_id"
+	// TargetKeyStepType is the key for the step type (tool, elicitation)
+	TargetKeyStepType = "step_type"
+	// TargetKeyToolName is the key for the tool being called (for tool steps)
+	TargetKeyToolName = "tool_name"
+	// TargetKeyBackendID is the key for the backend target (for tool steps)
+	TargetKeyBackendID = "backend_id"
 )
 
 // MCP-specific subject field keys
@@ -95,4 +129,10 @@ const (
 	MetadataExtraKeyDuration = "duration_ms"
 	// MetadataExtraKeyResponseSize is the key for the response size in the metadata extra map
 	MetadataExtraKeyResponseSize = "response_size_bytes"
+	// MetadataExtraKeyRetryCount is the key for the number of retries performed
+	MetadataExtraKeyRetryCount = "retry_count"
+	// MetadataExtraKeyStepCount is the key for the total number of steps in a workflow
+	MetadataExtraKeyStepCount = "step_count"
+	// MetadataExtraKeyParallelSteps is the key for the number of parallel steps
+	MetadataExtraKeyParallelSteps = "parallel_steps"
 )

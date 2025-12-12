@@ -123,6 +123,18 @@ with socketserver.TCPServer(("", PORT), SimpleHandler) as httpd:
 								Protocol:      corev1.ProtocolTCP,
 							},
 						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								TCPSocket: &corev1.TCPSocketAction{
+									Port: intstr.FromInt(8080),
+								},
+							},
+							InitialDelaySeconds: 2,
+							PeriodSeconds:       2,
+							TimeoutSeconds:      5,
+							SuccessThreshold:    1,
+							FailureThreshold:    15,
+						},
 						VolumeMounts: []corev1.VolumeMount{
 							{
 								Name:      "server-code",
@@ -283,6 +295,18 @@ with socketserver.TCPServer(("", PORT), AuthHandler) as httpd:
 								ContainerPort: 8080,
 								Protocol:      corev1.ProtocolTCP,
 							},
+						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								TCPSocket: &corev1.TCPSocketAction{
+									Port: intstr.FromInt(8080),
+								},
+							},
+							InitialDelaySeconds: 2,
+							PeriodSeconds:       2,
+							TimeoutSeconds:      5,
+							SuccessThreshold:    1,
+							FailureThreshold:    15,
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{
@@ -527,6 +551,22 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 								ContainerPort: 8080,
 								Protocol:      corev1.ProtocolTCP,
 							},
+						},
+						// Readiness probe ensures the HTTP server is actually listening
+						// before the pod is considered ready. This is important because
+						// pip install runs first and takes time.
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								HTTPGet: &corev1.HTTPGetAction{
+									Path: "/.well-known/openid-configuration",
+									Port: intstr.FromInt(8080),
+								},
+							},
+							InitialDelaySeconds: 5,
+							PeriodSeconds:       2,
+							TimeoutSeconds:      5,
+							SuccessThreshold:    1,
+							FailureThreshold:    30, // Allow up to 60s for pip install
 						},
 						VolumeMounts: []corev1.VolumeMount{
 							{

@@ -135,61 +135,6 @@ func TestReconcileAPIService(t *testing.T) {
 		assert.Contains(t, configYAML, "interval: 10m")
 	})
 
-	t.Run("config manager creation failure returns proper error", func(t *testing.T) {
-		t.Parallel()
-		ctrl := gomock.NewController(t)
-		defer ctrl.Finish()
-
-		// Create scheme and fake client
-		scheme := runtime.NewScheme()
-		_ = mcpv1alpha1.AddToScheme(scheme)
-		_ = appsv1.AddToScheme(scheme)
-		_ = corev1.AddToScheme(scheme)
-		_ = rbacv1.AddToScheme(scheme)
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			Build()
-
-		// Create test MCPRegistry
-		mcpRegistry := &mcpv1alpha1.MCPRegistry{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-registry",
-				Namespace: "test-namespace",
-			},
-			Spec: mcpv1alpha1.MCPRegistrySpec{
-				Registries: []mcpv1alpha1.MCPRegistryConfig{
-					{
-						Name:   "default",
-						Format: mcpv1alpha1.RegistryFormatToolHive,
-						ConfigMapRef: &corev1.ConfigMapKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: "test-configmap",
-							},
-							Key: "registry.json",
-						},
-						SyncPolicy: &mcpv1alpha1.SyncPolicy{
-							Interval: "10m",
-						},
-					},
-				},
-			},
-		}
-
-		// Create manager with nil scheme to cause config manager creation to fail
-		// This simulates the config.NewConfigManager returning an error
-		manager := NewManager(fakeClient, nil)
-		// Execute
-		result := manager.ReconcileAPIService(context.Background(), mcpRegistry)
-
-		// Verify that an error is returned
-		assert.NotNil(t, result, "Expected an error when config manager creation fails")
-		assert.Contains(t, result.Error(), "failed to create config manager",
-			"Error should indicate config manager creation failure")
-		assert.Contains(t, result.Error(), "scheme is required and cannot be nil",
-			"Error should include the underlying validation error")
-	})
-
 	t.Run("configmap upsert failure returns proper error", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)

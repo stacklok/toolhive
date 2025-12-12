@@ -139,7 +139,7 @@ func (w *WorkflowAuditor) LogWorkflowFailed(
 	workflowName string,
 	duration time.Duration,
 	stepCount int,
-	err error,
+	_ error,
 ) {
 	if !w.config.ShouldAuditEvent(EventTypeWorkflowFailed) {
 		return
@@ -293,7 +293,7 @@ func (w *WorkflowAuditor) LogStepFailed(
 	stepID string,
 	duration time.Duration,
 	retryCount int,
-	err error,
+	_ error,
 ) {
 	if !w.config.ShouldAuditEvent(EventTypeWorkflowStepFailed) {
 		return

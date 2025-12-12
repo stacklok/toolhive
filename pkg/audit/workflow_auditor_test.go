@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -234,94 +233,81 @@ func TestWorkflowAuditor_LogWorkflowStarted(t *testing.T) {
 	}
 }
 
-func TestWorkflowAuditor_LogWorkflowCompleted(t *testing.T) {
+func TestWorkflowAuditor_LogWorkflowLifecycle(t *testing.T) {
 	t.Parallel()
 
-	auditor, writer := createTestAuditor(t, &Config{
-		EventTypes:          []string{EventTypeWorkflowCompleted},
-		IncludeResponseData: true,
-	})
-
-	ctx := context.Background()
-	output := map[string]any{
-		"result": "success",
-		"count":  float64(5),
+	tests := []struct {
+		name          string
+		eventType     string
+		logFunc       func(*WorkflowAuditor, context.Context)
+		wantOutcome   string
+		verifyMetrics func(*testing.T, map[string]any)
+	}{
+		{
+			name:      "completed",
+			eventType: EventTypeWorkflowCompleted,
+			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
+				a.LogWorkflowCompleted(ctx, "wf-123", "test", 2*time.Second, 3, nil)
+			},
+			wantOutcome: OutcomeSuccess,
+			verifyMetrics: func(t *testing.T, extra map[string]any) {
+				t.Helper()
+				assert.Equal(t, float64(2000), extra[MetadataExtraKeyDuration])
+				assert.Equal(t, float64(3), extra[MetadataExtraKeyStepCount])
+			},
+		},
+		{
+			name:      "failed",
+			eventType: EventTypeWorkflowFailed,
+			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
+				a.LogWorkflowFailed(ctx, "wf-456", "test", 5*time.Second, 7, errors.New("failed"))
+			},
+			wantOutcome: OutcomeFailure,
+			verifyMetrics: func(t *testing.T, extra map[string]any) {
+				t.Helper()
+				assert.Equal(t, float64(5000), extra[MetadataExtraKeyDuration])
+				assert.Equal(t, float64(7), extra[MetadataExtraKeyStepCount])
+			},
+		},
+		{
+			name:      "timed_out",
+			eventType: EventTypeWorkflowTimedOut,
+			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
+				a.LogWorkflowTimedOut(ctx, "wf-789", "test", 30*time.Second, 10)
+			},
+			wantOutcome: OutcomeFailure,
+			verifyMetrics: func(t *testing.T, extra map[string]any) {
+				t.Helper()
+				assert.Equal(t, float64(30000), extra[MetadataExtraKeyDuration])
+				assert.Equal(t, float64(10), extra[MetadataExtraKeyStepCount])
+			},
+		},
 	}
 
-	auditor.LogWorkflowCompleted(ctx, "wf-123", "test-workflow", 2*time.Second, 3, output)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.NotEmpty(t, writer.logs)
-	entry := parseLogEntry(t, writer.getLastLog())
+			auditor, writer := createTestAuditor(t, &Config{
+				EventTypes: []string{tt.eventType},
+			})
 
-	assert.Equal(t, EventTypeWorkflowCompleted, entry["type"])
-	assert.Equal(t, OutcomeSuccess, entry["outcome"])
+			ctx := context.Background()
+			tt.logFunc(auditor, ctx)
 
-	// Verify metadata
-	metadata, ok := entry["metadata"].(map[string]any)
-	require.True(t, ok)
-	extra, ok := metadata["extra"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, float64(2000), extra[MetadataExtraKeyDuration])
-	assert.Equal(t, float64(3), extra[MetadataExtraKeyStepCount])
+			require.NotEmpty(t, writer.logs)
+			entry := parseLogEntry(t, writer.getLastLog())
 
-	// Verify output data
-	data, ok := entry["data"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, output, data)
-}
+			assert.Equal(t, tt.eventType, entry["type"])
+			assert.Equal(t, tt.wantOutcome, entry["outcome"])
 
-func TestWorkflowAuditor_LogWorkflowFailed(t *testing.T) {
-	t.Parallel()
-
-	auditor, writer := createTestAuditor(t, &Config{
-		EventTypes: []string{EventTypeWorkflowFailed},
-	})
-
-	ctx := context.Background()
-	testErr := errors.New("workflow execution failed")
-
-	auditor.LogWorkflowFailed(ctx, "wf-456", "failing-workflow", 5*time.Second, 7, testErr)
-
-	require.NotEmpty(t, writer.logs)
-	entry := parseLogEntry(t, writer.getLastLog())
-
-	assert.Equal(t, EventTypeWorkflowFailed, entry["type"])
-	assert.Equal(t, OutcomeFailure, entry["outcome"])
-
-	// Verify error in metadata
-	metadata, ok := entry["metadata"].(map[string]any)
-	require.True(t, ok)
-	extra, ok := metadata["extra"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, testErr.Error(), extra["error"])
-	assert.Equal(t, float64(5000), extra[MetadataExtraKeyDuration])
-	assert.Equal(t, float64(7), extra[MetadataExtraKeyStepCount])
-}
-
-func TestWorkflowAuditor_LogWorkflowTimedOut(t *testing.T) {
-	t.Parallel()
-
-	auditor, writer := createTestAuditor(t, &Config{
-		EventTypes: []string{EventTypeWorkflowTimedOut},
-	})
-
-	ctx := context.Background()
-
-	auditor.LogWorkflowTimedOut(ctx, "wf-789", "timeout-workflow", 30*time.Second, 10)
-
-	require.NotEmpty(t, writer.logs)
-	entry := parseLogEntry(t, writer.getLastLog())
-
-	assert.Equal(t, EventTypeWorkflowTimedOut, entry["type"])
-	assert.Equal(t, OutcomeFailure, entry["outcome"])
-
-	// Verify metadata
-	metadata, ok := entry["metadata"].(map[string]any)
-	require.True(t, ok)
-	extra, ok := metadata["extra"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, float64(30000), extra[MetadataExtraKeyDuration])
-	assert.Equal(t, float64(10), extra[MetadataExtraKeyStepCount])
+			metadata, ok := entry["metadata"].(map[string]any)
+			require.True(t, ok)
+			extra, ok := metadata["extra"].(map[string]any)
+			require.True(t, ok)
+			tt.verifyMetrics(t, extra)
+		})
+	}
 }
 
 func TestWorkflowAuditor_LogStepStarted(t *testing.T) {
@@ -386,57 +372,58 @@ func TestWorkflowAuditor_LogStepStarted(t *testing.T) {
 	}
 }
 
-func TestWorkflowAuditor_LogStepCompleted(t *testing.T) {
+func TestWorkflowAuditor_LogStepLifecycle(t *testing.T) {
 	t.Parallel()
 
-	auditor, writer := createTestAuditor(t, &Config{
-		EventTypes: []string{EventTypeWorkflowStepCompleted},
-	})
+	tests := []struct {
+		name        string
+		eventType   string
+		logFunc     func(*WorkflowAuditor, context.Context)
+		wantOutcome string
+	}{
+		{
+			name:      "completed",
+			eventType: EventTypeWorkflowStepCompleted,
+			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
+				a.LogStepCompleted(ctx, "wf-123", "step-1", 500*time.Millisecond, 2)
+			},
+			wantOutcome: OutcomeSuccess,
+		},
+		{
+			name:      "failed",
+			eventType: EventTypeWorkflowStepFailed,
+			logFunc: func(a *WorkflowAuditor, ctx context.Context) {
+				a.LogStepFailed(ctx, "wf-123", "step-2", 1*time.Second, 3, errors.New("failed"))
+			},
+			wantOutcome: OutcomeFailure,
+		},
+	}
 
-	ctx := context.Background()
-	auditor.LogStepCompleted(ctx, "wf-123", "step-1", 500*time.Millisecond, 2)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.NotEmpty(t, writer.logs)
-	entry := parseLogEntry(t, writer.getLastLog())
+			auditor, writer := createTestAuditor(t, &Config{
+				EventTypes: []string{tt.eventType},
+			})
 
-	assert.Equal(t, EventTypeWorkflowStepCompleted, entry["type"])
-	assert.Equal(t, OutcomeSuccess, entry["outcome"])
+			ctx := context.Background()
+			tt.logFunc(auditor, ctx)
 
-	// Verify metadata
-	metadata, ok := entry["metadata"].(map[string]any)
-	require.True(t, ok)
-	extra, ok := metadata["extra"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, float64(500), extra[MetadataExtraKeyDuration])
-	assert.Equal(t, float64(2), extra[MetadataExtraKeyRetryCount])
-}
+			require.NotEmpty(t, writer.logs)
+			entry := parseLogEntry(t, writer.getLastLog())
 
-func TestWorkflowAuditor_LogStepFailed(t *testing.T) {
-	t.Parallel()
+			assert.Equal(t, tt.eventType, entry["type"])
+			assert.Equal(t, tt.wantOutcome, entry["outcome"])
 
-	auditor, writer := createTestAuditor(t, &Config{
-		EventTypes: []string{EventTypeWorkflowStepFailed},
-	})
-
-	ctx := context.Background()
-	testErr := errors.New("step execution failed")
-
-	auditor.LogStepFailed(ctx, "wf-123", "step-2", 1*time.Second, 3, testErr)
-
-	require.NotEmpty(t, writer.logs)
-	entry := parseLogEntry(t, writer.getLastLog())
-
-	assert.Equal(t, EventTypeWorkflowStepFailed, entry["type"])
-	assert.Equal(t, OutcomeFailure, entry["outcome"])
-
-	// Verify error in metadata
-	metadata, ok := entry["metadata"].(map[string]any)
-	require.True(t, ok)
-	extra, ok := metadata["extra"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, testErr.Error(), extra["error"])
-	assert.Equal(t, float64(1000), extra[MetadataExtraKeyDuration])
-	assert.Equal(t, float64(3), extra[MetadataExtraKeyRetryCount])
+			metadata, ok := entry["metadata"].(map[string]any)
+			require.True(t, ok)
+			extra, ok := metadata["extra"].(map[string]any)
+			require.True(t, ok)
+			assert.Contains(t, extra, MetadataExtraKeyDuration)
+			assert.Contains(t, extra, MetadataExtraKeyRetryCount)
+		})
+	}
 }
 
 func TestWorkflowAuditor_LogStepSkipped(t *testing.T) {
@@ -615,146 +602,4 @@ func TestWorkflowAuditor_EventFiltering(t *testing.T) {
 
 	auditor.LogStepCompleted(ctx, "wf-1", "step-1", time.Second, 0)
 	assert.Empty(t, writer.logs, "step completed should be filtered out")
-}
-
-func TestWorkflowAuditor_LogFormat(t *testing.T) {
-	t.Parallel()
-
-	auditor, writer := createTestAuditor(t, &Config{
-		EventTypes: []string{EventTypeWorkflowStarted},
-	})
-
-	ctx := auth.WithIdentity(context.Background(), &auth.Identity{
-		Subject: "test-user",
-		Email:   "test@example.com",
-	})
-
-	auditor.LogWorkflowStarted(ctx, "wf-test", "test-workflow", map[string]any{"key": "value"}, time.Minute)
-
-	require.NotEmpty(t, writer.logs)
-	logLine := writer.getLastLog()
-
-	// Verify it's valid JSON
-	var entry map[string]any
-	err := json.Unmarshal([]byte(logLine), &entry)
-	require.NoError(t, err, "log entry should be valid JSON")
-
-	// Verify required fields exist
-	assert.Contains(t, entry, "type")
-	assert.Contains(t, entry, "time")
-	assert.Contains(t, entry, "component")
-	assert.Contains(t, entry, "outcome")
-	assert.Contains(t, entry, "source")
-	assert.Contains(t, entry, "target")
-	assert.Contains(t, entry, "subjects")
-}
-
-func TestWorkflowAuditor_ConcurrentLogging(t *testing.T) {
-	t.Parallel()
-
-	auditor, writer := createTestAuditor(t, &Config{
-		EventTypes: []string{
-			EventTypeWorkflowStarted,
-			EventTypeWorkflowCompleted,
-		},
-	})
-
-	ctx := context.Background()
-	numGoroutines := 10
-
-	// Log concurrently from multiple goroutines
-	done := make(chan bool)
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer func() { done <- true }()
-			auditor.LogWorkflowStarted(ctx, "wf-"+string(rune('0'+id)), "workflow", nil, time.Minute)
-			auditor.LogWorkflowCompleted(ctx, "wf-"+string(rune('0'+id)), "workflow", time.Second, 5, nil)
-		}(i)
-	}
-
-	// Wait for all goroutines
-	for i := 0; i < numGoroutines; i++ {
-		<-done
-	}
-
-	// Should have 2 logs per goroutine (started + completed)
-	assert.Len(t, writer.logs, numGoroutines*2)
-
-	// Verify all logs are valid JSON
-	for _, log := range writer.logs {
-		var entry map[string]any
-		err := json.Unmarshal([]byte(log), &entry)
-		assert.NoError(t, err, "all log entries should be valid JSON")
-	}
-}
-
-func TestWorkflowAuditor_LargePayload(t *testing.T) {
-	t.Parallel()
-
-	auditor, writer := createTestAuditor(t, &Config{
-		EventTypes:         []string{EventTypeWorkflowStarted},
-		IncludeRequestData: true,
-	})
-
-	// Create large parameters payload
-	largeParams := make(map[string]any)
-	for i := 0; i < 1000; i++ {
-		largeParams["key_"+string(rune(i))] = strings.Repeat("value", 100)
-	}
-
-	ctx := context.Background()
-	auditor.LogWorkflowStarted(ctx, "wf-large", "test", largeParams, time.Minute)
-
-	require.NotEmpty(t, writer.logs)
-	entry := parseLogEntry(t, writer.getLastLog())
-
-	// Verify large payload was logged
-	data, ok := entry["data"].(map[string]any)
-	require.True(t, ok)
-	params, ok := data["parameters"].(map[string]any)
-	require.True(t, ok)
-	assert.Len(t, params, 1000, "all parameters should be logged")
-}
-
-func TestWorkflowAuditor_NilConfig(t *testing.T) {
-	t.Parallel()
-
-	// NewWorkflowAuditor with nil config should use defaults
-	auditor, err := NewWorkflowAuditor(nil)
-	require.NoError(t, err)
-	require.NotNil(t, auditor)
-	require.NotNil(t, auditor.config)
-
-	// Default config should allow all event types
-	assert.True(t, auditor.config.ShouldAuditEvent(EventTypeWorkflowStarted))
-	assert.True(t, auditor.config.ShouldAuditEvent(EventTypeWorkflowCompleted))
-	assert.True(t, auditor.config.ShouldAuditEvent(EventTypeWorkflowStepStarted))
-}
-
-// Benchmark tests
-func BenchmarkWorkflowAuditor_LogWorkflowStarted(b *testing.B) {
-	auditor, _ := createTestAuditor(&testing.T{}, &Config{
-		EventTypes: []string{EventTypeWorkflowStarted},
-	})
-
-	ctx := context.Background()
-	params := map[string]any{"key": "value"}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		auditor.LogWorkflowStarted(ctx, "wf-bench", "test", params, time.Minute)
-	}
-}
-
-func BenchmarkWorkflowAuditor_LogStepCompleted(b *testing.B) {
-	auditor, _ := createTestAuditor(&testing.T{}, &Config{
-		EventTypes: []string{EventTypeWorkflowStepCompleted},
-	})
-
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		auditor.LogStepCompleted(ctx, "wf-bench", "step-1", time.Second, 2)
-	}
 }

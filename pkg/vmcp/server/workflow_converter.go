@@ -119,16 +119,17 @@ func convertSingleStep(index int, cs *config.WorkflowStepConfig) (composer.Workf
 
 	// Create workflow step
 	return composer.WorkflowStep{
-		ID:          cs.ID,
-		Type:        stepType,
-		Tool:        cs.Tool,
-		Arguments:   cs.Arguments,
-		Condition:   cs.Condition,
-		DependsOn:   cs.DependsOn,
-		OnError:     onError,
-		Elicitation: elicitation,
-		Timeout:     stepTimeout,
-		Metadata:    make(map[string]string),
+		ID:             cs.ID,
+		Type:           stepType,
+		Tool:           cs.Tool,
+		Arguments:      cs.Arguments,
+		Condition:      cs.Condition,
+		DependsOn:      cs.DependsOn,
+		OnError:        onError,
+		Elicitation:    elicitation,
+		Timeout:        stepTimeout,
+		Metadata:       make(map[string]string),
+		DefaultResults: cs.DefaultResults,
 	}, nil
 }
 

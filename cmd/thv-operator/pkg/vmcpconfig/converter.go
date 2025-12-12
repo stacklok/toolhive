@@ -673,6 +673,7 @@ func (c *Converter) convertCompositeToolSpec(
 }
 
 // convertWorkflowSteps converts a slice of WorkflowStep CRD objects to WorkflowStepConfig.
+// nolint:gocyclo // the workflow steps contain a lot of information that needs to be converted to the vmcp config.
 func (*Converter) convertWorkflowSteps(
 	ctx context.Context,
 	steps []mcpv1alpha1.WorkflowStep,
@@ -750,6 +751,20 @@ func (*Converter) convertWorkflowSteps(
 		if crdStep.OnCancel != nil {
 			step.OnCancel = &vmcpconfig.ElicitationResponseConfig{
 				Action: crdStep.OnCancel.Action,
+			}
+		}
+
+		// Convert default results from map[string]runtime.RawExtension to map[string]any
+		if len(crdStep.DefaultResults) > 0 {
+			step.DefaultResults = make(map[string]any, len(crdStep.DefaultResults))
+			for key, rawExt := range crdStep.DefaultResults {
+				if len(rawExt.Raw) > 0 {
+					var value any
+					if err := json.Unmarshal(rawExt.Raw, &value); err != nil {
+						return nil, fmt.Errorf("failed to unmarshal default result %q: %w", key, err)
+					}
+					step.DefaultResults[key] = value
+				}
 			}
 		}
 

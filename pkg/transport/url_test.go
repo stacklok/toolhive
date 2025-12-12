@@ -167,7 +167,7 @@ func TestGenerateMCPServerURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			url := GenerateMCPServerURL(tt.transportType, tt.proxyMode, tt.host, tt.port, tt.containerName, tt.targetURI) // ✅ ADD proxyMode parameter
+			url := GenerateMCPServerURL(tt.transportType, tt.proxyMode, tt.host, tt.port, tt.containerName, tt.targetURI)
 			if url != tt.expected {
 				t.Errorf("GenerateMCPServerURL() = %v, want %v", url, tt.expected)
 			}

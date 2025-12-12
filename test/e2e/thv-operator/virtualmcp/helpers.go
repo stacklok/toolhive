@@ -496,6 +496,17 @@ func int32Ptr(i int32) *int32 {
 	return &i
 }
 
+// WaitForPodDeletion waits for a pod to be fully deleted from the cluster.
+// This is useful in AfterAll cleanup to ensure pods are gone before tests repeat.
+func WaitForPodDeletion(ctx context.Context, c client.Client, name, namespace string, timeout, pollingInterval time.Duration) {
+	gomega.Eventually(func() bool {
+		pod := &corev1.Pod{}
+		err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, pod)
+		// Pod is deleted when we get a NotFound error
+		return client.IgnoreNotFound(err) == nil && err != nil
+	}, timeout, pollingInterval).Should(gomega.BeTrue(), "Pod %s should be deleted", name)
+}
+
 // GetServiceStats queries the /stats endpoint of a service and returns the stats
 func GetServiceStats(ctx context.Context, c client.Client, namespace, serviceName string, port int) (string, error) {
 	// Create a unique pod name to avoid conflicts

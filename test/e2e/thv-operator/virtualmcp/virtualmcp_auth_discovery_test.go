@@ -837,6 +837,9 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 	})
 
 	AfterAll(func() {
+		// Use a shorter timeout for cleanup - pods should delete quickly
+		cleanupTimeout := 60 * time.Second
+
 		By("Cleaning up mock HTTP server")
 		_ = k8sClient.Delete(ctx, &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
@@ -896,6 +899,11 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				Namespace: testNamespace,
 			},
 		})
+
+		By("Waiting for mock server pods to be fully deleted")
+		WaitForPodDeletion(ctx, k8sClient, "mock-http-server", testNamespace, cleanupTimeout, pollingInterval)
+		WaitForPodDeletion(ctx, k8sClient, "mock-auth-server", testNamespace, cleanupTimeout, pollingInterval)
+		WaitForPodDeletion(ctx, k8sClient, "mock-oidc-server", testNamespace, cleanupTimeout, pollingInterval)
 
 		By("Cleaning up VirtualMCPServer")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{

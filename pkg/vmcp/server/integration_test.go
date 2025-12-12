@@ -691,6 +691,9 @@ func TestIntegration_AuditLogging(t *testing.T) {
 
 	baseURL := "http://" + srv.Address()
 
+	// Capture session ID for subsequent requests
+	var sessionID string
+
 	// Test 1: Initialize request should be logged
 	t.Run("initialize request is logged", func(t *testing.T) {
 		initReq := map[string]any{
@@ -714,6 +717,10 @@ func TestIntegration_AuditLogging(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 
+		// Capture session ID for subsequent tests
+		sessionID = resp.Header.Get("Mcp-Session-Id")
+		require.NotEmpty(t, sessionID, "Session ID should be returned")
+
 		// Wait for audit event to be written
 		time.Sleep(500 * time.Millisecond)
 
@@ -726,6 +733,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 
 	// Test 2: Tool list request should be logged
 	t.Run("tools/list request is logged", func(t *testing.T) {
+		require.NotEmpty(t, sessionID, "Session ID must be set from initialize test")
 
 		toolsReq := map[string]any{
 			"method": "tools/list",
@@ -737,6 +745,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		req, err := http.NewRequest("POST", baseURL+"/mcp", bytes.NewReader(reqBody))
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Mcp-Session-Id", sessionID)
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
@@ -752,11 +761,12 @@ func TestIntegration_AuditLogging(t *testing.T) {
 
 	// Test 3: Tool call should be logged
 	t.Run("tool call is logged", func(t *testing.T) {
+		require.NotEmpty(t, sessionID, "Session ID must be set from initialize test")
 
 		toolCallReq := map[string]any{
 			"method": "tools/call",
 			"params": map[string]any{
-				"name": "get_weather",
+				"name": "weather-service_get_weather", // Prefix added by aggregator
 				"arguments": map[string]any{
 					"location": "San Francisco",
 				},
@@ -769,10 +779,16 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		req, err := http.NewRequest("POST", baseURL+"/mcp", bytes.NewReader(reqBody))
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Mcp-Session-Id", sessionID)
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		defer resp.Body.Close()
+
+		// Check response
+		require.Equal(t, http.StatusOK, resp.StatusCode, "HTTP request should succeed")
+		body, _ := io.ReadAll(resp.Body)
+		t.Logf("tools/call response: %s", string(body))
 
 		// Wait for audit event
 		time.Sleep(500 * time.Millisecond)
@@ -782,10 +798,12 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		assert.Contains(t, auditLog, "get_weather", "Should capture tool name in request data")
 		assert.Contains(t, auditLog, "San Francisco", "Should capture tool arguments in request data")
 		assert.Contains(t, auditLog, "vmcp-server-test", "Should contain component name")
+		assert.Contains(t, auditLog, "\"backend_name\":\"Weather Service\"", "Should capture backend routing decision")
 	})
 
 	// Test 4: Resource read should be logged
 	t.Run("resource read is logged", func(t *testing.T) {
+		require.NotEmpty(t, sessionID, "Session ID must be set from initialize test")
 
 		resourceReq := map[string]any{
 			"method": "resources/read",
@@ -800,6 +818,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		req, err := http.NewRequest("POST", baseURL+"/mcp", bytes.NewReader(reqBody))
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Mcp-Session-Id", sessionID)
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
@@ -812,6 +831,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		assert.Contains(t, auditLog, "\"method\":\"resources/read\"", "Should log resources/read method in request data")
 		assert.Contains(t, auditLog, "weather://current", "Should capture resource URI in request data")
 		assert.Contains(t, auditLog, "vmcp-server-test", "Should contain component name")
+		assert.Contains(t, auditLog, "\"backend_name\":\"Weather Service\"", "Should capture backend routing decision")
 	})
 
 	// Test 5: Verify audit events have required fields

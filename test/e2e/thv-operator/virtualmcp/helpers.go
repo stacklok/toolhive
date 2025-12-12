@@ -4,6 +4,7 @@ package virtualmcp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -496,6 +498,17 @@ func int32Ptr(i int32) *int32 {
 	return &i
 }
 
+// WaitForPodDeletion waits for a pod to be fully deleted from the cluster.
+// This is useful in AfterAll cleanup to ensure pods are gone before tests repeat.
+func WaitForPodDeletion(ctx context.Context, c client.Client, name, namespace string, timeout, pollingInterval time.Duration) {
+	gomega.Eventually(func() bool {
+		pod := &corev1.Pod{}
+		err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, pod)
+		// Pod is deleted when we get a NotFound error
+		return client.IgnoreNotFound(err) == nil && err != nil
+	}, timeout, pollingInterval).Should(gomega.BeTrue(), "Pod %s should be deleted", name)
+}
+
 // GetServiceStats queries the /stats endpoint of a service and returns the stats
 func GetServiceStats(ctx context.Context, c client.Client, namespace, serviceName string, port int) (string, error) {
 	// Create a unique pod name to avoid conflicts
@@ -955,3 +968,19 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
 PYTHON_SCRIPT
 `
+
+// WithHttpLoggerOption returns a transport.StreamableHTTPCOption that logs to GinkgoLogr.
+// This is useful for debugging HTTP requests and responses.
+func WithHttpLoggerOption() transport.StreamableHTTPCOption {
+	return transport.WithHTTPLogger(gingkoHttpLogger{})
+}
+
+type gingkoHttpLogger struct{}
+
+func (gingkoHttpLogger) Infof(format string, v ...any) {
+	ginkgo.GinkgoLogr.Info("INFO: "+format, v...)
+}
+
+func (gingkoHttpLogger) Errorf(format string, v ...any) {
+	ginkgo.GinkgoLogr.Error(errors.New("http error"), "ERROR: "+format, v...)
+}

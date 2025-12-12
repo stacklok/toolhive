@@ -163,11 +163,10 @@ func (w *WorkflowAuditor) LogWorkflowFailed(
 	}
 	event.WithTarget(target)
 
-	// Add metadata with error details
+	// Add metadata
 	event.Metadata.Extra = map[string]any{
 		MetadataExtraKeyDuration:  duration.Milliseconds(),
 		MetadataExtraKeyStepCount: stepCount,
-		"error":                   err.Error(),
 	}
 
 	event.LogTo(ctx, w.auditLogger, LevelAudit)
@@ -321,7 +320,6 @@ func (w *WorkflowAuditor) LogStepFailed(
 	event.Metadata.Extra = map[string]any{
 		MetadataExtraKeyDuration:   duration.Milliseconds(),
 		MetadataExtraKeyRetryCount: retryCount,
-		"error":                    err.Error(),
 	}
 
 	event.LogTo(ctx, w.auditLogger, LevelAudit)

@@ -146,6 +146,15 @@ func (c *Config) Validate() error {
 		EventTypeMCPLogging:          true,
 		EventTypeMCPCompletion:       true,
 		EventTypeMCPRootsListChanged: true,
+		// Workflow event types for vMCP composite workflows
+		EventTypeWorkflowStarted:       true,
+		EventTypeWorkflowCompleted:     true,
+		EventTypeWorkflowFailed:        true,
+		EventTypeWorkflowTimedOut:      true,
+		EventTypeWorkflowStepStarted:   true,
+		EventTypeWorkflowStepCompleted: true,
+		EventTypeWorkflowStepFailed:    true,
+		EventTypeWorkflowStepSkipped:   true,
 		// Fallback event types that can also be emitted by the middleware
 		EventTypeMCPRequest:  true,
 		EventTypeHTTPRequest: true,

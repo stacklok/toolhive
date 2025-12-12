@@ -27,6 +27,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -562,12 +563,8 @@ func (r *VirtualMCPServerReconciler) getVmcpConfigChecksum(
 	}
 
 	configMapName := vmcpConfigMapName(vmcp.Name)
-	configMap := &corev1.ConfigMap{}
-	err := r.Get(ctx, types.NamespacedName{
-		Name:      configMapName,
-		Namespace: vmcp.Namespace,
-	}, configMap)
-
+	configMapsClient := configmaps.NewClient(r.Client, nil)
+	configMap, err := configMapsClient.Get(ctx, configMapName, vmcp.Namespace)
 	if err != nil {
 		// Preserve error type for IsNotFound checks
 		return "", fmt.Errorf("failed to get vmcp Config ConfigMap %s/%s: %w",

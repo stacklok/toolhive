@@ -7,12 +7,11 @@ import (
 	"fmt"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 )
 
 const (
@@ -162,12 +161,9 @@ func (r *resolver) resolveConfigMapConfig(
 		return nil, fmt.Errorf("kubernetes client is required for ConfigMap OIDC resolution")
 	}
 
-	// Read the ConfigMap
-	configMap := &corev1.ConfigMap{}
-	err := r.client.Get(ctx, types.NamespacedName{
-		Name:      configRef.Name,
-		Namespace: namespace,
-	}, configMap)
+	// Read the ConfigMap using the configmaps client
+	configMapsClient := configmaps.NewClient(r.client, nil)
+	configMap, err := configMapsClient.Get(ctx, configRef.Name, namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get OIDC ConfigMap %s/%s: %w",
 			namespace, configRef.Name, err)

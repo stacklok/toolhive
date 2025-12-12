@@ -7,12 +7,12 @@ import (
 	"errors"
 	"fmt"
 
-	corev1 "k8s.io/api/core/v1"
 	k8serr "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	regtypes "github.com/stacklok/toolhive/pkg/registry/registry"
 )
 
@@ -201,16 +201,14 @@ func (v *RegistryEnforcingValidator) checkImageInRegistry(
 
 	// Get the ConfigMap containing the registry data
 	configMapName := mcpRegistry.GetStorageName()
-	configMap := &corev1.ConfigMap{}
-	if err := v.client.Get(ctx, client.ObjectKey{
-		Name:      configMapName,
-		Namespace: v.namespace,
-	}, configMap); err != nil {
+	configMapsClient := configmaps.NewClient(v.client, nil)
+	configMap, err := configMapsClient.Get(ctx, configMapName, v.namespace)
+	if err != nil {
 		if k8serr.IsNotFound(err) {
 			// ConfigMap not found, registry data not available
 			return false, nil
 		}
-		return false, fmt.Errorf("failed to get ConfigMap %s: %w", configMapName, err)
+		return false, err
 	}
 
 	// Get the registry data from the ConfigMap

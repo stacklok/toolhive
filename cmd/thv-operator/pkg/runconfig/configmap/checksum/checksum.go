@@ -9,8 +9,9 @@ import (
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 )
 
 const (
@@ -137,8 +138,8 @@ func (f *RunConfigChecksumFetcher) GetRunConfigChecksum(
 	}
 
 	configMapName := fmt.Sprintf("%s-runconfig", resourceName)
-	configMap := &corev1.ConfigMap{}
-	err := f.client.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: namespace}, configMap)
+	configMapsClient := configmaps.NewClient(f.client, nil)
+	configMap, err := configMapsClient.Get(ctx, configMapName, namespace)
 	if err != nil {
 		// Return the specific error type so caller can check for IsNotFound
 		return "", fmt.Errorf("failed to get RunConfig ConfigMap %s/%s: %w", namespace, configMapName, err)

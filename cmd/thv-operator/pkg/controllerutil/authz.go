@@ -10,7 +10,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
@@ -212,12 +211,10 @@ func AddAuthzConfigOptions(
 			return fmt.Errorf("kubernetes client is not configured for ConfigMap authz resolution")
 		}
 
-		// Fetch the ConfigMap
-		var cm corev1.ConfigMap
-		if err := c.Get(ctx, types.NamespacedName{
-			Namespace: namespace,
-			Name:      authzRef.ConfigMap.Name,
-		}, &cm); err != nil {
+		// Fetch the ConfigMap using the configmaps client
+		configMapsClient := configmaps.NewClient(c, nil)
+		cm, err := configMapsClient.Get(ctx, authzRef.ConfigMap.Name, namespace)
+		if err != nil {
 			return fmt.Errorf("failed to get Authz ConfigMap %s/%s: %w", namespace, authzRef.ConfigMap.Name, err)
 		}
 

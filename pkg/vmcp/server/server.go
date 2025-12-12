@@ -223,11 +223,22 @@ func New(
 		}
 	}
 
+	// Create workflow auditor if audit config is provided
+	var workflowAuditor *audit.WorkflowAuditor
+	if cfg.AuditConfig != nil {
+		var err error
+		workflowAuditor, err = audit.NewWorkflowAuditor(cfg.AuditConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create workflow auditor: %w", err)
+		}
+		logger.Info("Workflow audit logging enabled")
+	}
+
 	// Create workflow engine (composer) for executing composite tools
 	// The composer orchestrates multi-step workflows across backends
 	// Use in-memory state store with 5-minute cleanup interval and 1-hour max age for completed workflows
 	stateStore := composer.NewInMemoryStateStore(5*time.Minute, 1*time.Hour)
-	workflowComposer := composer.NewWorkflowEngine(rt, backendClient, elicitationHandler, stateStore)
+	workflowComposer := composer.NewWorkflowEngine(rt, backendClient, elicitationHandler, stateStore, workflowAuditor)
 
 	// Validate workflows and create executors (fail fast on invalid workflows)
 	workflowDefs, workflowExecutors, err := validateAndCreateExecutors(workflowComposer, workflowDefs)

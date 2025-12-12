@@ -31,7 +31,7 @@ func TestWorkflowEngine_ExecuteElicitationStep_Accept(t *testing.T) {
 
 	handler := NewDefaultElicitationHandler(mockSDK)
 	stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
-	engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore)
+	engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore, nil)
 
 	workflow := &WorkflowDefinition{
 		Name: "deployment-workflow",
@@ -141,7 +141,7 @@ func TestWorkflowEngine_ExecuteElicitationStep_Decline(t *testing.T) {
 
 			handler := NewDefaultElicitationHandler(mockSDK)
 			stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
-			engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore)
+			engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore, nil)
 
 			workflow := &WorkflowDefinition{
 				Name: "test-workflow",
@@ -218,7 +218,7 @@ func TestWorkflowEngine_ExecuteElicitationStep_Cancel(t *testing.T) {
 
 			handler := NewDefaultElicitationHandler(mockSDK)
 			stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
-			engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore)
+			engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore, nil)
 
 			workflow := &WorkflowDefinition{
 				Name: "test-workflow",
@@ -265,7 +265,7 @@ func TestWorkflowEngine_ExecuteElicitationStep_Timeout(t *testing.T) {
 
 	handler := NewDefaultElicitationHandler(mockSDK)
 	stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
-	engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore)
+	engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore, nil)
 
 	workflow := &WorkflowDefinition{
 		Name: "test-workflow",
@@ -299,7 +299,7 @@ func TestWorkflowEngine_ExecuteElicitationStep_NoHandler(t *testing.T) {
 
 	te := newTestEngine(t)
 	// Create engine WITHOUT elicitation handler
-	engine := NewWorkflowEngine(te.Router, te.Backend, nil, nil)
+	engine := NewWorkflowEngine(te.Router, te.Backend, nil, nil, nil)
 
 	workflow := &WorkflowDefinition{
 		Name: "test-workflow",
@@ -338,7 +338,7 @@ func TestWorkflowEngine_MultiStepWithElicitation(t *testing.T) {
 
 	handler := NewDefaultElicitationHandler(mockSDK)
 	stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
-	engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore)
+	engine := NewWorkflowEngine(te.Router, te.Backend, handler, stateStore, nil)
 
 	workflow := &WorkflowDefinition{
 		Name: "multi-step-workflow",

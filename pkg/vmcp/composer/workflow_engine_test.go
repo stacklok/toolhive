@@ -288,7 +288,7 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 	mockRouter := routermocks.NewMockRouter(ctrl)
 	mockBackend := mocks.NewMockBackendClient(ctrl)
 	stateStore := NewInMemoryStateStore(1*time.Minute, 1*time.Hour)
-	engine := NewWorkflowEngine(mockRouter, mockBackend, nil, stateStore)
+	engine := NewWorkflowEngine(mockRouter, mockBackend, nil, stateStore, nil)
 
 	// Track execution timing to verify parallel execution
 	var executionMu sync.Mutex

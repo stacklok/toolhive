@@ -80,6 +80,7 @@ func newOIDCAuthMiddleware(
 		ResourceURL:       oidcCfg.Resource,
 		AllowPrivateIP:    oidcCfg.ProtectedResourceAllowPrivateIP,
 		InsecureAllowHTTP: oidcCfg.InsecureAllowHTTP,
+		Scopes:            oidcCfg.Scopes,
 	}
 
 	// pkg/auth.GetAuthenticationMiddleware now returns middleware that creates Identity

@@ -125,6 +125,11 @@ spec:
                 required:
                 - name
                 type: object
+              groupRef:
+                description: |-
+                  GroupRef is the name of the MCPGroup this proxy belongs to
+                  Must reference an existing MCPGroup in the same namespace
+                type: string
               oidcConfig:
                 description: |-
                   OIDCConfig defines OIDC authentication configuration for the proxy

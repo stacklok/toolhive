@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -91,6 +92,9 @@ type Config struct {
 
 	// Telemetry configures telemetry settings.
 	Telemetry *telemetry.Config `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+
+	// Audit configures audit logging settings.
+	Audit *audit.Config `json:"audit,omitempty" yaml:"audit,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.

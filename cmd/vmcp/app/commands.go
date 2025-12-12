@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -92,6 +93,7 @@ from all configured backend MCP servers.`,
 	// Add serve-specific flags
 	cmd.Flags().String("host", "127.0.0.1", "Host address to bind to")
 	cmd.Flags().Int("port", 4483, "Port to listen on")
+	cmd.Flags().Bool("enable-audit", false, "Enable audit logging with default configuration")
 
 	return cmd
 }
@@ -265,6 +267,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// Check if --enable-audit flag is set
+	enableAudit, _ := cmd.Flags().GetBool("enable-audit")
+	if enableAudit && cfg.Audit == nil {
+		// Create default audit config with reasonable defaults
+		cfg.Audit = audit.DefaultConfig()
+		cfg.Audit.Component = "vmcp-server"
+		logger.Info("Audit logging enabled with default configuration")
+	}
+
 	// Discover backends and create client
 	backends, backendClient, err := discoverBackends(ctx, cfg)
 	if err != nil {
@@ -327,6 +338,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuthMiddleware:    authMiddleware,
 		AuthInfoHandler:   authInfoHandler,
 		TelemetryProvider: telemetryProvider,
+		AuditConfig:       cfg.Audit,
 	}
 
 	// Convert composite tool configurations to workflow definitions

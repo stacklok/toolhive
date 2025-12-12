@@ -44,6 +44,7 @@ type CachedAPIRegistryProvider struct {
 
 // NewCachedAPIRegistryProvider creates a new cached API registry provider.
 // If usePersistent is true, it will use a file cache in ~/.toolhive/cache/
+// The validation happens in NewAPIRegistryProvider by actually trying to use the API.
 func NewCachedAPIRegistryProvider(apiURL string, allowPrivateIp bool, usePersistent bool) (*CachedAPIRegistryProvider, error) {
 	base, err := NewAPIRegistryProvider(apiURL, allowPrivateIp)
 	if err != nil {

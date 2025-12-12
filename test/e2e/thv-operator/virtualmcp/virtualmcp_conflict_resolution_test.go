@@ -61,7 +61,7 @@ func setupConflictResolutionTest(setup conflictResolutionTestSetup) int32 {
 	Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 	By("Waiting for VirtualMCPServer to be ready")
-	WaitForVirtualMCPServerReady(ctx, k8sClient, setup.vmcpName, setup.namespace, setup.timeout)
+	WaitForVirtualMCPServerReady(ctx, k8sClient, setup.vmcpName, setup.namespace, setup.timeout, setup.pollingInterval)
 
 	By("Getting NodePort for VirtualMCPServer")
 	vmcpNodePort := GetVMCPNodePort(ctx, k8sClient, setup.vmcpName, setup.namespace, setup.timeout, setup.pollingInterval)
@@ -176,41 +176,8 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 			})
 
 			It("should be able to call prefixed tools successfully", func() {
-				By("Creating and initializing MCP client for VirtualMCPServer")
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-prefix-test", 30*time.Second)
-				Expect(err).ToNot(HaveOccurred())
-				defer mcpClient.Close()
-
-				By("Listing available tools")
-				listRequest := mcp.ListToolsRequest{}
-				tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-				Expect(err).ToNot(HaveOccurred())
-
-				// Find a prefixed tool to call (e.g., echo tool)
-				var targetToolName string
-				for _, tool := range tools.Tools {
-					if (strings.HasPrefix(tool.Name, backend1Name+"_") || strings.HasPrefix(tool.Name, backend2Name+"_")) &&
-						strings.Contains(tool.Name, "echo") {
-						targetToolName = tool.Name
-						break
-					}
-				}
-				Expect(targetToolName).ToNot(BeEmpty(), "Should find a prefixed echo tool")
-
-				By(fmt.Sprintf("Calling prefixed tool: %s", targetToolName))
-				testInput := "prefix-test-123"
-				callRequest := mcp.CallToolRequest{}
-				callRequest.Params.Name = targetToolName
-				callRequest.Params.Arguments = map[string]any{
-					"input": testInput,
-				}
-
-				result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to call prefixed tool")
-				Expect(result).ToNot(BeNil())
-				Expect(result.Content).ToNot(BeEmpty(), "Should have content in response")
-
-				GinkgoWriter.Printf("Prefixed tool call successful: %s\n", targetToolName)
+				// Use shared helper to test tool listing and calling
+				TestToolListingAndCall(vmcpNodePort, "toolhive-prefix-test", "echo", "prefix-test-123")
 			})
 
 			It("should expose tools from both backends with different prefixes", func() {
@@ -363,40 +330,8 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 			})
 
 			It("should be able to call tools successfully with priority resolution", func() {
-				By("Creating and initializing MCP client for VirtualMCPServer")
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-priority-test", 30*time.Second)
-				Expect(err).ToNot(HaveOccurred())
-				defer mcpClient.Close()
-
-				By("Listing available tools")
-				listRequest := mcp.ListToolsRequest{}
-				tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-				Expect(err).ToNot(HaveOccurred())
-
-				// Find an echo tool (should be from backend1 due to priority)
-				var targetToolName string
-				for _, tool := range tools.Tools {
-					if strings.Contains(tool.Name, "echo") {
-						targetToolName = tool.Name
-						break
-					}
-				}
-				Expect(targetToolName).ToNot(BeEmpty(), "Should find an echo tool")
-
-				By(fmt.Sprintf("Calling tool with priority resolution: %s", targetToolName))
-				testInput := "priority-test-123"
-				callRequest := mcp.CallToolRequest{}
-				callRequest.Params.Name = targetToolName
-				callRequest.Params.Arguments = map[string]any{
-					"input": testInput,
-				}
-
-				result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to call tool with priority resolution")
-				Expect(result).ToNot(BeNil())
-				Expect(result.Content).ToNot(BeEmpty(), "Should have content in response")
-
-				GinkgoWriter.Printf("Priority tool call successful: %s\n", targetToolName)
+				// Use shared helper to test tool listing and calling
+				TestToolListingAndCall(vmcpNodePort, "toolhive-priority-test", "echo", "priority-test-123")
 			})
 
 			It("should resolve conflicts by using highest priority backend", func() {
@@ -542,38 +477,9 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 			})
 
 			It("should be able to call manually overridden tools successfully", func() {
-				By("Creating and initializing MCP client for VirtualMCPServer")
-				mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-manual-test", 30*time.Second)
-				Expect(err).ToNot(HaveOccurred())
-				defer mcpClient.Close()
-
-				By("Calling manually overridden tool from backend1")
-				testInput := "manual-test-backend1"
-				callRequest := mcp.CallToolRequest{}
-				callRequest.Params.Name = "echo_backend1"
-				callRequest.Params.Arguments = map[string]any{
-					"input": testInput,
-				}
-
-				result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to call manually overridden tool from backend1")
-				Expect(result).ToNot(BeNil())
-				Expect(result.Content).ToNot(BeEmpty(), "Should have content in response")
-
-				By("Calling manually overridden tool from backend2")
-				testInput2 := "manual-test-backend2"
-				callRequest2 := mcp.CallToolRequest{}
-				callRequest2.Params.Name = "echo_backend2"
-				callRequest2.Params.Arguments = map[string]any{
-					"input": testInput2,
-				}
-
-				result2, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest2)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to call manually overridden tool from backend2")
-				Expect(result2).ToNot(BeNil())
-				Expect(result2.Content).ToNot(BeEmpty(), "Should have content in response")
-
-				GinkgoWriter.Printf("Manual tool calls successful: echo_backend1 and echo_backend2\n")
+				// Use shared helper to test calling both manually overridden tools
+				TestToolListingAndCall(vmcpNodePort, "toolhive-manual-test", "echo_backend1", "manual-test-backend1")
+				TestToolListingAndCall(vmcpNodePort, "toolhive-manual-test", "echo_backend2", "manual-test-backend2")
 			})
 
 			It("should have correct manual configuration with overrides", func() {

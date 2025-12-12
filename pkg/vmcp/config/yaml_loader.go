@@ -7,6 +7,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/env"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -61,6 +62,7 @@ type rawConfig struct {
 	CompositeTools []*rawCompositeTool `yaml:"composite_tools"`
 
 	Telemetry *telemetry.Config `yaml:"telemetry"`
+	Audit     *audit.Config     `yaml:"audit"`
 }
 
 type rawIncomingAuth struct {
@@ -219,6 +221,7 @@ func (l *YAMLLoader) transformToConfig(raw *rawConfig) (*Config, error) {
 	}
 
 	cfg.Telemetry = raw.Telemetry
+	cfg.Audit = raw.Audit
 
 	// Apply operational defaults (fills missing values)
 	cfg.EnsureOperationalDefaults()

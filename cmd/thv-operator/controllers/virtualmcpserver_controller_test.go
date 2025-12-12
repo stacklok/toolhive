@@ -268,6 +268,20 @@ func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 	assert.Equal(t, vmcpServiceAccountName(vmcp.Name), role.Name)
 	assert.NotEmpty(t, role.Rules)
 
+	// Verify Role includes required ToolHive resources (mcpgroups, mcpservers, mcpremoteproxies, mcpexternalauthconfigs)
+	var toolhiveRule *rbacv1.PolicyRule
+	for i := range role.Rules {
+		if len(role.Rules[i].APIGroups) > 0 && role.Rules[i].APIGroups[0] == "toolhive.stacklok.dev" {
+			toolhiveRule = &role.Rules[i]
+			break
+		}
+	}
+	require.NotNil(t, toolhiveRule, "Role should have a rule for toolhive.stacklok.dev API group")
+	assert.Contains(t, toolhiveRule.Resources, "mcpgroups", "Role should allow listing mcpgroups")
+	assert.Contains(t, toolhiveRule.Resources, "mcpservers", "Role should allow listing mcpservers")
+	assert.Contains(t, toolhiveRule.Resources, "mcpremoteproxies", "Role should allow listing mcpremoteproxies")
+	assert.Contains(t, toolhiveRule.Resources, "mcpexternalauthconfigs", "Role should allow listing mcpexternalauthconfigs")
+
 	// Verify RoleBinding was created
 	rb := &rbacv1.RoleBinding{}
 	err = fakeClient.Get(context.Background(), types.NamespacedName{

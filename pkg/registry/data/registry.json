@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-12-11T00:19:20Z",
+  "last_updated": "2025-12-12T00:19:12Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1034,7 +1034,8 @@
         "get_test",
         "get_test_run",
         "list_annotations",
-        "list_artifacts",
+        "list_artifacts_for_build",
+        "list_artifacts_for_job",
         "list_builds",
         "list_cluster_queues",
         "list_clusters",
@@ -1064,7 +1065,7 @@
         "devops",
         "testing"
       ],
-      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.7.4",
+      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.8.0",
       "permissions": {
         "network": {
           "outbound": {

@@ -22,8 +22,8 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 		vmcpServerName  = "test-vmcp-filtering"
 		backend1Name    = "yardstick-filter-a"
 		backend2Name    = "yardstick-filter-b"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 3 * time.Minute
+		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 	)
 
@@ -32,13 +32,11 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, testNamespace,
 			"Test MCP Group for tool filtering E2E tests", timeout, pollingInterval)
 
-		By("Creating first yardstick backend MCPServer")
-		CreateMCPServerAndWait(ctx, k8sClient, backend1Name, testNamespace, mcpGroupName,
-			images.YardstickServerImage, timeout, pollingInterval)
-
-		By("Creating second yardstick backend MCPServer")
-		CreateMCPServerAndWait(ctx, k8sClient, backend2Name, testNamespace, mcpGroupName,
-			images.YardstickServerImage, timeout, pollingInterval)
+		By("Creating yardstick backend MCPServers in parallel")
+		CreateMultipleMCPServersInParallel(ctx, k8sClient, []BackendConfig{
+			{Name: backend1Name, Namespace: testNamespace, GroupRef: mcpGroupName, Image: images.YardstickServerImage},
+			{Name: backend2Name, Namespace: testNamespace, GroupRef: mcpGroupName, Image: images.YardstickServerImage},
+		}, timeout, pollingInterval)
 
 		By("Creating VirtualMCPServer with tool filtering - only expose tools from backend1")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
@@ -76,7 +74,7 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
@@ -159,40 +157,8 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 		})
 
 		It("should still allow calling filtered tools", func() {
-			By("Creating and initializing MCP client for VirtualMCPServer")
-			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-filtering-test", 30*time.Second)
-			Expect(err).ToNot(HaveOccurred())
-			defer mcpClient.Close()
-
-			By("Listing available tools")
-			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-			Expect(err).ToNot(HaveOccurred())
-
-			// Find the backend1 echo tool
-			var targetToolName string
-			for _, tool := range tools.Tools {
-				if strings.Contains(tool.Name, backend1Name) && strings.Contains(tool.Name, "echo") {
-					targetToolName = tool.Name
-					break
-				}
-			}
-			Expect(targetToolName).ToNot(BeEmpty(), "Should find echo tool from backend1")
-
-			By(fmt.Sprintf("Calling filtered echo tool: %s", targetToolName))
-			testInput := "filtered123"
-			callRequest := mcp.CallToolRequest{}
-			callRequest.Params.Name = targetToolName
-			callRequest.Params.Arguments = map[string]any{
-				"input": testInput,
-			}
-
-			result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
-			Expect(err).ToNot(HaveOccurred(), "Should be able to call filtered tool")
-			Expect(result).ToNot(BeNil())
-			Expect(result.Content).ToNot(BeEmpty(), "Should have content in response")
-
-			GinkgoWriter.Printf("Filtered tool call successful: %s\n", targetToolName)
+			// Use shared helper to test tool listing and calling
+			TestToolListingAndCall(vmcpNodePort, "toolhive-filtering-test", "echo", "filtered123")
 		})
 	})
 

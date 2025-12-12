@@ -273,7 +273,7 @@ tasks:
       - echo "Running Ginkgo E2E tests..."
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
       - |
-        KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v \
+        KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v --fail-fast \
           {{.ROOT_DIR}}/test/e2e/thv-operator/...
 
   operator-run:

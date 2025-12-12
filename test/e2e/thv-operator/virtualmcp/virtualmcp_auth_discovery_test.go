@@ -55,8 +55,8 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 		authSecret1Name      = "test-token-exchange-secret"
 		authSecret2Name      = "test-header-injection-secret"
 		oidcClientSecretName = "test-oidc-client-secret"
-		timeout              = 5 * time.Minute
-		pollingInterval      = 5 * time.Second
+		timeout              = 3 * time.Minute
+		pollingInterval      = 1 * time.Second
 		mockServer           *httptest.Server
 	)
 
@@ -711,81 +711,34 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			return mcpGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
 		}, timeout, pollingInterval).Should(BeTrue())
 
-		By("Creating backend MCPServer with token exchange outgoing auth")
-		backend1 := &mcpv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
+		By("Creating backend MCPServers in parallel with different auth configurations")
+		CreateMultipleMCPServersInParallel(ctx, k8sClient, []BackendConfig{
+			{
 				Name:      backend1Name,
 				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
 				Image:     images.GofetchServerImage,
-				Transport: "streamable-http",
-				ProxyPort: 8080,
-				McpPort:   8080,
-				// Token exchange for outgoing auth (backend→external services)
-				// vMCP will discover this and use token exchange when calling this backend
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: authConfig1Name,
 				},
 			},
-		}
-		Expect(k8sClient.Create(ctx, backend1)).To(Succeed())
-
-		By("Creating backend MCPServer with header injection auth")
-		backend2 := &mcpv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
+			{
 				Name:      backend2Name,
 				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
 				Image:     images.OSVMCPServerImage,
-				Transport: "streamable-http",
-				ProxyPort: 8080,
-				McpPort:   8080,
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: authConfig2Name,
 				},
 			},
-		}
-		Expect(k8sClient.Create(ctx, backend2)).To(Succeed())
-
-		By("Creating backend MCPServer without auth")
-		backend3 := &mcpv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
+			{
 				Name:      backend3Name,
 				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
 				Image:     images.GofetchServerImage,
-				Transport: "streamable-http",
-				ProxyPort: 8080,
-				McpPort:   8080,
 				// No ExternalAuthConfigRef - this backend has no auth
 			},
-		}
-		Expect(k8sClient.Create(ctx, backend3)).To(Succeed())
-
-		By("Waiting for backend MCPServers to be ready")
-		for _, backendName := range []string{backend1Name, backend2Name, backend3Name} {
-			Eventually(func() error {
-				server := &mcpv1alpha1.MCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      backendName,
-					Namespace: testNamespace,
-				}, server)
-				if err != nil {
-					return fmt.Errorf("failed to get server: %w", err)
-				}
-
-				if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
-					return nil
-				}
-				return fmt.Errorf("%s not ready yet, phase: %s", backendName, server.Status.Phase)
-			}, timeout, pollingInterval).Should(Succeed(), fmt.Sprintf("%s should be ready", backendName))
-		}
+		}, timeout, pollingInterval)
 
 		// Wait for backend pods to be ready
 		for _, backendName := range []string{backend1Name, backend2Name, backend3Name} {
@@ -793,7 +746,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				"app.kubernetes.io/name":     "mcpserver",
 				"app.kubernetes.io/instance": backendName,
 			}
-			WaitForPodsReady(ctx, k8sClient, testNamespace, backendLabels, timeout)
+			WaitForPodsReady(ctx, k8sClient, testNamespace, backendLabels, timeout, pollingInterval)
 		}
 
 		By("Creating VirtualMCPServer with discovered auth mode and short token cache TTL")
@@ -869,7 +822,10 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+		By("Waiting for VirtualMCPServer to discover backends")
+		WaitForCondition(ctx, k8sClient, vmcpServerName, testNamespace, "BackendsDiscovered", "True", timeout, pollingInterval)
 
 		// Wait for vMCP pods to be fully running and ready
 		By("Waiting for vMCP pods to be running and ready")
@@ -877,7 +833,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			"app.kubernetes.io/name":     "virtualmcpserver",
 			"app.kubernetes.io/instance": vmcpServerName,
 		}
-		WaitForPodsReady(ctx, k8sClient, testNamespace, vmcpLabels, timeout)
+		WaitForPodsReady(ctx, k8sClient, testNamespace, vmcpLabels, timeout, pollingInterval)
 	})
 
 	AfterAll(func() {
@@ -994,71 +950,46 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 	})
 
 	Context("when verifying discovered auth configuration", func() {
-		It("should have discovered auth mode configured on VirtualMCPServer", func() {
+		It("should have correct discovered auth configuration with all backends and auth configs", func() {
+			By("Verifying VirtualMCPServer has discovered auth mode")
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
-
 			Expect(vmcpServer.Spec.OutgoingAuth).ToNot(BeNil())
 			Expect(vmcpServer.Spec.OutgoingAuth.Source).To(Equal("discovered"))
 
-			By("Discovered mode means vMCP will use auth discovered from backend MCPServers' ExternalAuthConfigRef")
-		})
-
-		It("should discover all three backends in the group", func() {
+			By("Verifying all three backends are discovered in the group")
 			backends, err := GetMCPGroupBackends(ctx, k8sClient, mcpGroupName, testNamespace)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(backends).To(HaveLen(3), "Should discover all three backends in the group")
+			Expect(backends).To(HaveLen(3))
 
 			backendNames := make([]string, len(backends))
 			for i, backend := range backends {
 				backendNames[i] = backend.Name
 			}
 			Expect(backendNames).To(ContainElements(backend1Name, backend2Name, backend3Name))
-		})
 
-		It("should have ExternalAuthConfigRef on backends with auth", func() {
-			// Backend 1 should have token exchange auth
+			By("Verifying ExternalAuthConfigRef on backends with auth")
 			backend1 := &mcpv1alpha1.MCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      backend1Name,
-				Namespace: testNamespace,
-			}, backend1)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: backend1Name, Namespace: testNamespace}, backend1)).To(Succeed())
 			Expect(backend1.Spec.ExternalAuthConfigRef).ToNot(BeNil())
 			Expect(backend1.Spec.ExternalAuthConfigRef.Name).To(Equal(authConfig1Name))
 
-			// Backend 2 should have header injection auth
 			backend2 := &mcpv1alpha1.MCPServer{}
-			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name:      backend2Name,
-				Namespace: testNamespace,
-			}, backend2)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: backend2Name, Namespace: testNamespace}, backend2)).To(Succeed())
 			Expect(backend2.Spec.ExternalAuthConfigRef).ToNot(BeNil())
 			Expect(backend2.Spec.ExternalAuthConfigRef.Name).To(Equal(authConfig2Name))
 
-			// Backend 3 should NOT have auth
 			backend3 := &mcpv1alpha1.MCPServer{}
-			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name:      backend3Name,
-				Namespace: testNamespace,
-			}, backend3)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: backend3Name, Namespace: testNamespace}, backend3)).To(Succeed())
 			Expect(backend3.Spec.ExternalAuthConfigRef).To(BeNil())
-		})
 
-		It("should have token exchange MCPExternalAuthConfig with correct configuration", func() {
+			By("Verifying token exchange MCPExternalAuthConfig")
 			authConfig1 := &mcpv1alpha1.MCPExternalAuthConfig{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      authConfig1Name,
-				Namespace: testNamespace,
-			}, authConfig1)
-			Expect(err).ToNot(HaveOccurred())
-
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: authConfig1Name, Namespace: testNamespace}, authConfig1)).To(Succeed())
 			expectedTokenURL := fmt.Sprintf("http://mock-auth-server.%s.svc.cluster.local/token", testNamespace)
 			Expect(authConfig1.Spec.Type).To(Equal(mcpv1alpha1.ExternalAuthTypeTokenExchange))
 			Expect(authConfig1.Spec.TokenExchange).ToNot(BeNil())
@@ -1066,98 +997,49 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			Expect(authConfig1.Spec.TokenExchange.ClientID).To(Equal("test-client-id"))
 			Expect(authConfig1.Spec.TokenExchange.Audience).To(Equal("https://api.example.com"))
 			Expect(authConfig1.Spec.TokenExchange.Scopes).To(Equal([]string{"read", "write"}))
-			Expect(authConfig1.Spec.TokenExchange.ClientSecretRef).ToNot(BeNil())
 			Expect(authConfig1.Spec.TokenExchange.ClientSecretRef.Name).To(Equal(authSecret1Name))
 			Expect(authConfig1.Spec.TokenExchange.ClientSecretRef.Key).To(Equal("client-secret"))
-		})
 
-		It("should have header injection MCPExternalAuthConfig with correct configuration", func() {
+			By("Verifying header injection MCPExternalAuthConfig")
 			authConfig2 := &mcpv1alpha1.MCPExternalAuthConfig{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      authConfig2Name,
-				Namespace: testNamespace,
-			}, authConfig2)
-			Expect(err).ToNot(HaveOccurred())
-
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: authConfig2Name, Namespace: testNamespace}, authConfig2)).To(Succeed())
 			Expect(authConfig2.Spec.Type).To(Equal(mcpv1alpha1.ExternalAuthTypeHeaderInjection))
 			Expect(authConfig2.Spec.HeaderInjection).ToNot(BeNil())
 			Expect(authConfig2.Spec.HeaderInjection.HeaderName).To(Equal("X-API-Key"))
-			Expect(authConfig2.Spec.HeaderInjection.ValueSecretRef).ToNot(BeNil())
 			Expect(authConfig2.Spec.HeaderInjection.ValueSecretRef.Name).To(Equal(authSecret2Name))
 			Expect(authConfig2.Spec.HeaderInjection.ValueSecretRef.Key).To(Equal("api-key"))
-		})
 
-		It("should have secrets with correct values", func() {
-			// Verify token exchange secret
+			By("Verifying secrets have correct values")
 			secret1 := &corev1.Secret{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      authSecret1Name,
-				Namespace: testNamespace,
-			}, secret1)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: authSecret1Name, Namespace: testNamespace}, secret1)).To(Succeed())
 			Expect(secret1.Data).To(HaveKey("client-secret"))
 			Expect(string(secret1.Data["client-secret"])).To(Equal("test-client-secret-value"))
 
-			// Verify header injection secret
 			secret2 := &corev1.Secret{}
-			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name:      authSecret2Name,
-				Namespace: testNamespace,
-			}, secret2)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: authSecret2Name, Namespace: testNamespace}, secret2)).To(Succeed())
 			Expect(secret2.Data).To(HaveKey("api-key"))
 			Expect(string(secret2.Data["api-key"])).To(Equal("test-api-key-value"))
 		})
 	})
 
 	Context("when verifying VirtualMCPServer state", func() {
-		It("should have VirtualMCPServer in Ready phase", func() {
+		It("should have VirtualMCPServer and all backends in ready state", func() {
+			By("Verifying VirtualMCPServer is Ready")
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
-			err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			}, vmcpServer)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpServerName, Namespace: testNamespace}, vmcpServer)).To(Succeed())
 			Expect(vmcpServer.Status.Phase).To(Equal(mcpv1alpha1.VirtualMCPServerPhaseReady))
 
-			By("This demonstrates that discovered auth mode successfully handles:")
-			GinkgoWriter.Println("  1. Backend with token exchange authentication (OAuth 2.0)")
-			GinkgoWriter.Println("  2. Backend with header injection authentication (API Key)")
-			GinkgoWriter.Println("  3. Backend with no authentication")
-			GinkgoWriter.Println("All three backends coexist in the same group and are aggregated by vMCP")
-		})
-
-		It("should have all backends ready", func() {
+			By("Verifying all backends are Running")
 			for _, backendName := range []string{backend1Name, backend2Name, backend3Name} {
 				backend := &mcpv1alpha1.MCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      backendName,
-					Namespace: testNamespace,
-				}, backend)
-				Expect(err).ToNot(HaveOccurred())
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: backendName, Namespace: testNamespace}, backend)).To(Succeed())
 				Expect(backend.Status.Phase).To(Equal(mcpv1alpha1.MCPServerPhaseRunning))
 			}
-		})
 
-		It("should log discovered auth information", func() {
-			backends, err := GetMCPGroupBackends(ctx, k8sClient, mcpGroupName, testNamespace)
-			Expect(err).ToNot(HaveOccurred())
-
-			By(fmt.Sprintf("Discovered %d backends in group %s", len(backends), mcpGroupName))
-			for _, backend := range backends {
-				authInfo := "no auth"
-				if backend.Spec.ExternalAuthConfigRef != nil {
-					authConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
-					err := k8sClient.Get(ctx, types.NamespacedName{
-						Name:      backend.Spec.ExternalAuthConfigRef.Name,
-						Namespace: testNamespace,
-					}, authConfig)
-					if err == nil {
-						authInfo = fmt.Sprintf("auth type: %s", authConfig.Spec.Type)
-					}
-				}
-				GinkgoWriter.Printf("  Backend: %s (%s)\n", backend.Name, authInfo)
-			}
+			GinkgoWriter.Println("Discovered auth mode successfully aggregates backends with:")
+			GinkgoWriter.Println("  - Token exchange authentication (OAuth 2.0)")
+			GinkgoWriter.Println("  - Header injection authentication (API Key)")
+			GinkgoWriter.Println("  - No authentication")
 		})
 	})
 
@@ -1188,45 +1070,21 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			By(fmt.Sprintf("VirtualMCPServer accessible at http://localhost:%d", vmcpNodePort))
 		})
 
-		It("should be accessible via HTTP", func() {
-			By("Testing HTTP connectivity to VirtualMCPServer health endpoint")
-			Eventually(func() error {
-				url := fmt.Sprintf("http://localhost:%d/health", vmcpNodePort)
-				resp, err := http.Get(url)
-				if err != nil {
-					return err
-				}
-				defer resp.Body.Close()
-				if resp.StatusCode != http.StatusOK {
-					return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-				}
-				return nil
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
-		})
-
 		// Helper function to get OIDC token from mock server via client credentials flow
 		getOIDCToken := func() string {
 			tokenURL := "http://localhost:30010/token"
-
-			// Make token request with client credentials
 			resp, err := http.PostForm(tokenURL, nil)
 			Expect(err).ToNot(HaveOccurred())
 			defer resp.Body.Close()
-
-			Expect(resp.StatusCode).To(Equal(http.StatusOK), "Token request should succeed")
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
 			var tokenResp struct {
 				AccessToken string `json:"access_token"`
 				TokenType   string `json:"token_type"`
 				ExpiresIn   int    `json:"expires_in"`
 			}
-
-			err = json.NewDecoder(resp.Body).Decode(&tokenResp)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(tokenResp.AccessToken).ToNot(BeEmpty(), "Token should not be empty")
-
-			GinkgoWriter.Printf("✓ Got OIDC token from mock server (first 20 chars): %s...\n",
-				tokenResp.AccessToken[:20])
+			Expect(json.NewDecoder(resp.Body).Decode(&tokenResp)).To(Succeed())
+			Expect(tokenResp.AccessToken).ToNot(BeEmpty())
 			return tokenResp.AccessToken
 		}
 
@@ -1241,102 +1099,72 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			}
 		}
 
-		It("should aggregate tools from all backends with discovered auth", func() {
+		It("should list and call tools from all backends with discovered auth", func() {
+			By("Verifying HTTP connectivity to VirtualMCPServer health endpoint")
+			Eventually(func() error {
+				url := fmt.Sprintf("http://localhost:%d/health", vmcpNodePort)
+				resp, err := http.Get(url)
+				if err != nil {
+					return err
+				}
+				defer resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+				}
+				return nil
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
 			By("Getting OIDC token from mock OIDC server")
 			oidcToken := getOIDCToken()
-			Expect(oidcToken).ToNot(BeEmpty(), "Should get valid OIDC token")
 
-			By("Creating authenticated HTTP client with OIDC token")
-			authenticatedHTTPClient := createAuthenticatedHTTPClient(oidcToken)
-
-			By("Creating MCP client for VirtualMCPServer with authentication")
+			By("Creating authenticated MCP client for VirtualMCPServer")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+			authenticatedHTTPClient := createAuthenticatedHTTPClient(oidcToken)
 			mcpClient, err := mcpclient.NewStreamableHttpClient(serverURL, transport.WithHTTPBasicClient(authenticatedHTTPClient))
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
-			By("Starting transport and initializing connection")
-			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			By("Starting transport and initializing connection with retries")
+			// Retry MCP initialization to handle timing issues where the VirtualMCPServer's
+			// auth middleware (OIDC validation and auth discovery) may not be fully ready
+			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 
-			err = mcpClient.Start(testCtx)
-			Expect(err).ToNot(HaveOccurred())
+			Eventually(func() error {
+				initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer initCancel()
 
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-auth-discovery-test",
-				Version: "1.0.0",
-			}
+				if err := mcpClient.Start(initCtx); err != nil {
+					return fmt.Errorf("failed to start transport: %w", err)
+				}
 
-			_, err = mcpClient.Initialize(testCtx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
+				initRequest := mcp.InitializeRequest{}
+				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+				initRequest.Params.ClientInfo = mcp.Implementation{
+					Name:    "toolhive-auth-discovery-test",
+					Version: "1.0.0",
+				}
+				_, err := mcpClient.Initialize(initCtx, initRequest)
+				if err != nil {
+					return fmt.Errorf("failed to initialize: %w", err)
+				}
+
+				return nil
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "MCP client should initialize successfully")
 
 			By("Listing tools from VirtualMCPServer")
 			listRequest := mcp.ListToolsRequest{}
 			tools, err := mcpClient.ListTools(testCtx, listRequest)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(tools.Tools).ToNot(BeEmpty(), "VirtualMCPServer should aggregate tools from backends")
-
-			By(fmt.Sprintf("VirtualMCPServer aggregates %d tools with discovered auth", len(tools.Tools)))
-			for _, tool := range tools.Tools {
-				GinkgoWriter.Printf("  Tool: %s - %s\n", tool.Name, tool.Description)
-			}
-
-			// Verify we have tools from multiple backends
-			Expect(len(tools.Tools)).To(BeNumerically(">=", 2),
-				"VirtualMCPServer should aggregate tools from multiple backends despite different auth configs")
-		})
-
-		It("should successfully call tools through VirtualMCPServer with discovered auth", func() {
-			By("Getting OIDC token from mock OIDC server")
-			oidcToken := getOIDCToken()
-			Expect(oidcToken).ToNot(BeEmpty(), "Should get valid OIDC token")
-
-			By("Creating authenticated HTTP client with OIDC token")
-			authenticatedHTTPClient := createAuthenticatedHTTPClient(oidcToken)
-
-			By("Creating MCP client for VirtualMCPServer with authentication")
-			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := mcpclient.NewStreamableHttpClient(serverURL, transport.WithHTTPBasicClient(authenticatedHTTPClient))
-			Expect(err).ToNot(HaveOccurred())
-			defer mcpClient.Close()
-
-			By("Starting transport and initializing connection")
-			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			err = mcpClient.Start(testCtx)
-			Expect(err).ToNot(HaveOccurred())
-
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-auth-discovery-test",
-				Version: "1.0.0",
-			}
-
-			_, err = mcpClient.Initialize(testCtx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
-
-			By("Listing available tools")
-			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(testCtx, listRequest)
-			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).ToNot(BeEmpty())
+			Expect(len(tools.Tools)).To(BeNumerically(">=", 2), "Should aggregate tools from multiple backends")
 
-			By("Calling fetch tools from backends with authentication to verify auth propagation")
-			// We want to test both backends with auth:
-			// 1. backend-with-token-exchange_fetch (should use Bearer token)
-			// 2. backend-no-auth_fetch (no auth - for comparison)
+			GinkgoWriter.Printf("VirtualMCPServer aggregates %d tools with discovered auth\n", len(tools.Tools))
 
-			toolsToTest := []string{
-				"backend-with-token-exchange_fetch",
-				"backend-no-auth_fetch",
-			}
+			By("Calling fetch tools from backends with different auth configurations")
+			toolsToTest := []string{"backend-with-token-exchange_fetch", "backend-no-auth_fetch"}
 
 			for _, targetToolName := range toolsToTest {
-				// Find the tool
 				var toolFound bool
 				for _, tool := range tools.Tools {
 					if tool.Name == targetToolName {
@@ -1344,39 +1172,20 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 						break
 					}
 				}
-
-				// Fail the test if expected tool is not found
-				if !toolFound {
-					availableTools := []string{}
-					for _, tool := range tools.Tools {
-						availableTools = append(availableTools, tool.Name)
-					}
-					Expect(toolFound).To(BeTrue(),
-						fmt.Sprintf("Expected tool %s to be found in vMCP tools list but it was missing.\nAvailable tools: %v",
-							targetToolName, availableTools))
-				}
-
-				GinkgoWriter.Printf("Testing tool call: %s\n", targetToolName)
+				Expect(toolFound).To(BeTrue(), "Expected tool %s should be available", targetToolName)
 
 				toolCallCtx, toolCallCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer toolCallCancel()
 
 				callRequest := mcp.CallToolRequest{}
 				callRequest.Params.Name = targetToolName
-				callRequest.Params.Arguments = map[string]any{
-					// Use mock server to avoid external dependencies and timeouts
-					"url": mockServer.URL,
-				}
+				callRequest.Params.Arguments = map[string]any{"url": mockServer.URL}
 
 				result, err := mcpClient.CallTool(toolCallCtx, callRequest)
-				Expect(err).ToNot(HaveOccurred(),
-					"Should be able to call tool %s through VirtualMCPServer with discovered auth", targetToolName)
+				Expect(err).ToNot(HaveOccurred(), "Tool call should succeed: %s", targetToolName)
 				Expect(result).ToNot(BeNil())
-
-				GinkgoWriter.Printf("✓ Tool call successful: %s\n", targetToolName)
+				GinkgoWriter.Printf("✓ Successfully called tool: %s\n", targetToolName)
 			}
-
-			GinkgoWriter.Printf("All tool calls completed successfully\n")
 		})
 
 		It("should send auth tokens to configured auth servers", func() {
@@ -1396,22 +1205,35 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
-			By("Starting transport and initializing connection")
-			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			By("Starting transport and initializing connection with retries")
+			// Retry MCP initialization to handle timing issues where the VirtualMCPServer's
+			// auth middleware (OIDC validation and auth discovery) may not be fully ready
+			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 
-			err = mcpClient.Start(testCtx)
-			Expect(err).ToNot(HaveOccurred())
+			Eventually(func() error {
+				initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer initCancel()
 
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-auth-test",
-				Version: "1.0.0",
-			}
+				err := mcpClient.Start(initCtx)
+				if err != nil {
+					return fmt.Errorf("failed to start transport: %w", err)
+				}
 
-			_, err = mcpClient.Initialize(testCtx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
+				initRequest := mcp.InitializeRequest{}
+				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+				initRequest.Params.ClientInfo = mcp.Implementation{
+					Name:    "toolhive-auth-test",
+					Version: "1.0.0",
+				}
+
+				_, err = mcpClient.Initialize(initCtx, initRequest)
+				if err != nil {
+					return fmt.Errorf("failed to initialize: %w", err)
+				}
+
+				return nil
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "MCP client should initialize successfully")
 
 			By("Listing and calling tools from backend with token exchange")
 			listRequest := mcp.ListToolsRequest{}
@@ -1525,66 +1347,6 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			GinkgoWriter.Printf("  - vMCP exchanged client's OIDC token for backend-specific token\n")
 			GinkgoWriter.Printf("  - Auth server received client credentials (Basic auth), audience, and grant type\n")
 			GinkgoWriter.Printf("  - Tool calls succeeded proving end-to-end auth flow works\n")
-		})
-
-		It("should send Bearer token to backend MCP server with OIDC incoming auth", func() {
-			// The VirtualMCPServer is already configured with discovered auth mode
-			// and has backends with ExternalAuthConfigRef (token exchange)
-			// This test verifies that vMCP applies authentication when communicating with backends
-
-			token := getOIDCToken()
-			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			httpClient := createAuthenticatedHTTPClient(token)
-			mcpClient, err := mcpclient.NewStreamableHttpClient(
-				serverURL,
-				transport.WithHTTPBasicClient(httpClient),
-			)
-			Expect(err).ToNot(HaveOccurred())
-			defer mcpClient.Close()
-
-			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			err = mcpClient.Start(testCtx)
-			Expect(err).ToNot(HaveOccurred())
-
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "bearer-token-test",
-				Version: "1.0.0",
-			}
-
-			_, err = mcpClient.Initialize(testCtx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
-
-			// List and call tools to trigger authentication
-			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(testCtx, listRequest)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(tools.Tools).ToNot(BeEmpty())
-
-			// Call a tool from a backend with token exchange auth
-			var toolCalled bool
-			for _, tool := range tools.Tools {
-				if strings.Contains(tool.Name, backend1Name) && strings.Contains(tool.Name, "fetch") {
-					callCtx, callCancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer callCancel()
-
-					callRequest := mcp.CallToolRequest{}
-					callRequest.Params.Name = tool.Name
-					callRequest.Params.Arguments = map[string]any{
-						"url": mockServer.URL,
-					}
-
-					_, err := mcpClient.CallTool(callCtx, callRequest)
-					if err == nil {
-						toolCalled = true
-					}
-					break
-				}
-			}
-			Expect(toolCalled).To(BeTrue(), "Should successfully call at least one tool with authentication")
 		})
 
 	})

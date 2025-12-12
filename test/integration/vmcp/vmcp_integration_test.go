@@ -695,6 +695,7 @@ func TestVMCPServer_DefaultResults_ContinueOnError(t *testing.T) {
 	// And NOT the default value
 	helpers.AssertTextNotContains(t, text, "default_from_error")
 }
+<<<<<<< HEAD
 
 // TestVMCPServer_StructuredContent verifies that when a backend tool returns
 // structured content (via StructuredContent field), composite tool steps can
@@ -1109,3 +1110,5 @@ func TestVMCPServer_StructuredContent_IntegerComparisonError(t *testing.T) {
 	assert.Contains(t, errorText, "incompatible types for comparison",
 		"Error should mention incompatible types. Got: %s", errorText)
 }
+=======
+>>>>>>> main

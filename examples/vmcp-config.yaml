@@ -198,3 +198,17 @@ telemetry:
   samplingrate: 0.1  # 10% sampling
   insecure: true  # Use HTTP instead of HTTPS
   enableprometheusmetricspath: true  # Expose /metrics endpoint
+
+# ===== AUDIT LOGGING =====
+# Audit logging for MCP operations (optional)
+# audit:
+#   component: "vmcp-server"  # Component name in audit events
+#   event_types:  # Specific event types to audit (empty = audit all)
+#     - "mcp_initialize"
+#     - "mcp_tool_call"
+#   # exclude_event_types:  # Event types to exclude (takes precedence over event_types)
+#   #   - "mcp_ping"
+#   include_request_data: true  # Include request data in audit logs
+#   include_response_data: false  # Include response data in audit logs
+#   max_data_size: 10000  # Max size of request/response data (bytes)
+#   log_file: "/var/log/vmcp/audit.log"  # Log file path (empty = stdout)

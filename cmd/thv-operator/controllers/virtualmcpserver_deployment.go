@@ -21,6 +21,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
 const (
@@ -58,7 +59,7 @@ var vmcpRBACRules = []rbacv1.PolicyRule{
 	},
 	{
 		APIGroups: []string{"toolhive.stacklok.dev"},
-		Resources: []string{"mcpgroups", "mcpservers", "mcpexternalauthconfigs"},
+		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs"},
 		Verbs:     []string{"get", "list", "watch"},
 	},
 }
@@ -68,7 +69,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	vmcpConfigChecksum string,
-	workloadNames []string,
+	typedWorkloads []workloads.TypedWorkload,
 ) *appsv1.Deployment {
 	ls := labelsForVirtualMCPServer(vmcp.Name)
 	replicas := int32(1)
@@ -76,7 +77,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	// Build deployment components using helper functions
 	args := r.buildContainerArgsForVmcp(vmcp)
 	volumeMounts, volumes := r.buildVolumesForVmcp(vmcp)
-	env := r.buildEnvVarsForVmcp(ctx, vmcp, workloadNames)
+	env := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContextsForVmcp(ctx, vmcp)
@@ -199,7 +200,7 @@ func (*VirtualMCPServerReconciler) buildVolumesForVmcp(
 func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	workloadNames []string,
+	typedWorkloads []workloads.TypedWorkload,
 ) []corev1.EnvVar {
 	env := []corev1.EnvVar{}
 
@@ -218,7 +219,7 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	env = append(env, r.buildOIDCEnvVars(vmcp)...)
 
 	// Mount outgoing auth secrets
-	env = append(env, r.buildOutgoingAuthEnvVars(ctx, vmcp, workloadNames)...)
+	env = append(env, r.buildOutgoingAuthEnvVars(ctx, vmcp, typedWorkloads)...)
 
 	// Note: Other secrets (Redis passwords, service account credentials) may be added here in the future
 	// following the same pattern of mounting from Kubernetes Secrets as environment variables.
@@ -280,7 +281,7 @@ func (*VirtualMCPServerReconciler) buildOIDCEnvVars(vmcp *mcpv1alpha1.VirtualMCP
 func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	workloadNames []string,
+	typedWorkloads []workloads.TypedWorkload,
 ) []corev1.EnvVar {
 	var env []corev1.EnvVar
 
@@ -290,7 +291,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 
 	// Mount secrets from discovered ExternalAuthConfigs (discovered mode)
 	if vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceDiscovered {
-		discoveredSecrets := r.discoverExternalAuthConfigSecrets(ctx, vmcp, workloadNames)
+		discoveredSecrets := r.discoverExternalAuthConfigSecrets(ctx, vmcp, typedWorkloads)
 		env = append(env, discoveredSecrets...)
 	}
 
@@ -316,35 +317,38 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 	return env
 }
 
-// discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs from MCPServers in the group
+// discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs from workloads in the group
 // and returns environment variables for their client secrets. This is used for discovered mode.
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	workloadNames []string,
+	typedWorkloads []workloads.TypedWorkload,
 ) []corev1.EnvVar {
 	ctxLogger := log.FromContext(ctx)
 	var envVars []corev1.EnvVar
 	seenConfigs := make(map[string]bool) // Track which ExternalAuthConfigs we've already processed
 
-	// Discover ExternalAuthConfigs from MCPServers
-	// TODO: Optimize this by doing a List operation with a label selector or field selector
-	// to fetch all MCPServers in the namespace at once, then filter by names, rather than
-	// doing N Get calls. This would reduce API calls and improve performance for groups
-	// with many workloads.
-	for _, workloadName := range workloadNames {
-		mcpServer := &mcpv1alpha1.MCPServer{}
-		if err := r.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: vmcp.Namespace}, mcpServer); err != nil {
-			// Skip if MCPServer not found
+	// Build maps of MCPServers and MCPRemoteProxies for efficient lookup
+	mcpServerMap, err := r.listMCPServersAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list MCPServers")
+		return envVars
+	}
+
+	mcpRemoteProxyMap, err := r.listMCPRemoteProxiesAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list MCPRemoteProxies")
+		return envVars
+	}
+
+	// Discover ExternalAuthConfigs from workloads (MCPServers and MCPRemoteProxies)
+	for _, workloadInfo := range typedWorkloads {
+		configName := r.getExternalAuthConfigNameFromWorkload(
+			workloadInfo, mcpServerMap, mcpRemoteProxyMap)
+		if configName == "" {
 			continue
 		}
 
-		// Only process if MCPServer has ExternalAuthConfigRef
-		if mcpServer.Spec.ExternalAuthConfigRef == nil {
-			continue
-		}
-
-		configName := mcpServer.Spec.ExternalAuthConfigRef.Name
 		// Skip if we've already processed this ExternalAuthConfig
 		if seenConfigs[configName] {
 			continue

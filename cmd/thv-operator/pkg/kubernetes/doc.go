@@ -7,6 +7,7 @@
 // Sub-packages:
 //
 //   - secrets: Operations for Kubernetes Secrets (Get, GetValue, Upsert)
+//   - configmaps: Operations for Kubernetes ConfigMaps (Get, GetValue, Upsert)
 //
 // Example usage:
 //
@@ -20,4 +21,10 @@
 //
 //	// Upsert a secret with owner reference
 //	result, err := kubeClient.Secrets.UpsertWithOwnerReference(ctx, secret, ownerObject)
+//
+//	// Access configmaps operations via the ConfigMaps field
+//	value, err := kubeClient.ConfigMaps.GetValue(ctx, "default", configMapKeySelector)
+//
+//	// Upsert a configmap with owner reference
+//	result, err := kubeClient.ConfigMaps.UpsertWithOwnerReference(ctx, configMap, ownerObject)
 package kubernetes

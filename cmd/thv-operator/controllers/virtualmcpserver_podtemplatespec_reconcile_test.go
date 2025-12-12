@@ -14,6 +14,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
 const (
@@ -82,8 +83,8 @@ func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 	}
 
 	// Generate deployment twice with same input
-	dep1 := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []string{})
-	dep2 := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []string{})
+	dep1 := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []workloads.TypedWorkload{})
+	dep2 := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []workloads.TypedWorkload{})
 
 	// Both should be non-nil
 	assert.NotNil(t, dep1, "First deployment should not be nil")
@@ -159,7 +160,7 @@ func TestVirtualMCPServerPodTemplateSpecPreservesContainer(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	dep := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []string{})
+	dep := reconciler.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []workloads.TypedWorkload{})
 
 	// Verify deployment was created
 	assert.NotNil(t, dep, "Deployment should not be nil")
@@ -280,7 +281,7 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 			}
 
 			// Generate existing deployment using the reconciler (this ensures we have a real deployment structure)
-			existingDeployment := reconciler.deploymentForVirtualMCPServer(context.Background(), initialVmcp, "test-checksum", []string{})
+			existingDeployment := reconciler.deploymentForVirtualMCPServer(context.Background(), initialVmcp, "test-checksum", []workloads.TypedWorkload{})
 			assert.NotNil(t, existingDeployment, "Should generate existing deployment")
 
 			// Create VirtualMCPServer with new PodTemplateSpec
@@ -298,7 +299,7 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 			}
 
 			// Check if update is needed
-			needsUpdate := reconciler.podTemplateSpecNeedsUpdate(context.Background(), existingDeployment, newVmcp, []string{})
+			needsUpdate := reconciler.podTemplateSpecNeedsUpdate(context.Background(), existingDeployment, newVmcp, []workloads.TypedWorkload{})
 			assert.Equal(t, tt.expectUpdate, needsUpdate,
 				"PodTemplateSpec update detection should match expected value")
 		})

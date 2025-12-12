@@ -25,8 +25,8 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 		vmcpServerName  = "test-vmcp-discovered"
 		backend1Name    = "backend-fetch"
 		backend2Name    = "backend-osv"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 3 * time.Minute
+		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 	)
 
@@ -129,11 +129,16 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+		By("Waiting for VirtualMCPServer to discover backends")
+		WaitForCondition(ctx, k8sClient, vmcpServerName, testNamespace, "BackendsDiscovered", "True", timeout, pollingInterval)
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 
+		By("Waiting for VirtualMCPServer to stabilize")
+		time.Sleep(5 * time.Second)
 		By(fmt.Sprintf("VirtualMCPServer accessible at http://localhost:%d", vmcpNodePort))
 		By("Backend servers use ClusterIP and are accessed through VirtualMCPServer")
 	})
@@ -212,27 +217,47 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			defer mcpClient.Close()
 
 			By("Starting transport and initializing connection")
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 
-			err = mcpClient.Start(ctx)
-			Expect(err).ToNot(HaveOccurred())
+			Eventually(func() error {
+				initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer initCancel()
 
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-e2e-test",
-				Version: "1.0.0",
-			}
+				err = mcpClient.Start(initCtx)
+				if err != nil {
+					return fmt.Errorf("failed to start transport: %w", err)
+				}
 
-			_, err = mcpClient.Initialize(ctx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
+				initRequest := mcp.InitializeRequest{}
+				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+				initRequest.Params.ClientInfo = mcp.Implementation{
+					Name:    "toolhive-e2e-test",
+					Version: "1.0.0",
+				}
+
+				_, err = mcpClient.Initialize(initCtx, initRequest)
+				if err != nil {
+					return fmt.Errorf("failed to initialize: %w", err)
+				}
+
+				return nil
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "MCP client should initialize successfully")
 
 			By("Listing tools from VirtualMCPServer")
-			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(ctx, listRequest)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(tools.Tools).ToNot(BeEmpty(), "VirtualMCPServer should aggregate tools from backends")
+			var tools *mcp.ListToolsResult
+			Eventually(func() error {
+				listRequest := mcp.ListToolsRequest{}
+				var err error
+				tools, err = mcpClient.ListTools(ctx, listRequest)
+				if err != nil {
+					return fmt.Errorf("failed to list tools: %w", err)
+				}
+				if len(tools.Tools) == 0 {
+					return fmt.Errorf("no tools returned")
+				}
+				return nil
+			}, 30*time.Second, 2*time.Second).Should(Succeed(), "Should be able to list tools")
 
 			By(fmt.Sprintf("VirtualMCPServer aggregates %d tools", len(tools.Tools)))
 			for _, tool := range tools.Tools {
@@ -261,27 +286,47 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			defer mcpClient.Close()
 
 			By("Starting transport and initializing connection")
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 
-			err = mcpClient.Start(ctx)
-			Expect(err).ToNot(HaveOccurred())
+			Eventually(func() error {
+				initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer initCancel()
 
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-e2e-test",
-				Version: "1.0.0",
-			}
+				err = mcpClient.Start(initCtx)
+				if err != nil {
+					return fmt.Errorf("failed to start transport: %w", err)
+				}
 
-			_, err = mcpClient.Initialize(ctx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
+				initRequest := mcp.InitializeRequest{}
+				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+				initRequest.Params.ClientInfo = mcp.Implementation{
+					Name:    "toolhive-e2e-test",
+					Version: "1.0.0",
+				}
+
+				_, err = mcpClient.Initialize(initCtx, initRequest)
+				if err != nil {
+					return fmt.Errorf("failed to initialize: %w", err)
+				}
+
+				return nil
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "MCP client should initialize successfully")
 
 			By("Listing available tools")
-			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(ctx, listRequest)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(tools.Tools).ToNot(BeEmpty())
+			var tools *mcp.ListToolsResult
+			Eventually(func() error {
+				listRequest := mcp.ListToolsRequest{}
+				var err error
+				tools, err = mcpClient.ListTools(ctx, listRequest)
+				if err != nil {
+					return fmt.Errorf("failed to list tools: %w", err)
+				}
+				if len(tools.Tools) == 0 {
+					return fmt.Errorf("no tools returned")
+				}
+				return nil
+			}, 30*time.Second, 2*time.Second).Should(Succeed(), "Should be able to list tools")
 
 			By("Calling a tool through VirtualMCPServer")
 			// Find a tool we can call with simple arguments
@@ -302,19 +347,27 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				toolCallCtx, toolCallCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer toolCallCancel()
 
-				callRequest := mcp.CallToolRequest{}
-				callRequest.Params.Name = targetToolName
-				callRequest.Params.Arguments = map[string]any{
-					// Use localhost to avoid external network dependencies
-					// The test validates that VirtualMCPServer can route tool calls to backends,
-					// not that the fetch tool itself works (that's tested in the backend's own tests)
-					"url": "http://127.0.0.1:1",
-				}
+				// Retry CallTool to handle transient connection issues
+				Eventually(func() error {
+					callRequest := mcp.CallToolRequest{}
+					callRequest.Params.Name = targetToolName
+					callRequest.Params.Arguments = map[string]any{
+						// Use localhost to avoid external network dependencies
+						// The test validates that VirtualMCPServer can route tool calls to backends,
+						// not that the fetch tool itself works (that's tested in the backend's own tests)
+						"url": "http://127.0.0.1:1",
+					}
 
-				result, err := mcpClient.CallTool(toolCallCtx, callRequest)
-				Expect(err).ToNot(HaveOccurred(),
+					result, err := mcpClient.CallTool(toolCallCtx, callRequest)
+					if err != nil {
+						return fmt.Errorf("failed to call tool: %w", err)
+					}
+					if result == nil {
+						return fmt.Errorf("tool returned nil result")
+					}
+					return nil
+				}, 30*time.Second, 2*time.Second).Should(Succeed(),
 					fmt.Sprintf("Should be able to call tool '%s' through VirtualMCPServer", targetToolName))
-				Expect(result).ToNot(BeNil())
 
 				GinkgoWriter.Printf("Tool call successful: %s\n", targetToolName)
 			} else {

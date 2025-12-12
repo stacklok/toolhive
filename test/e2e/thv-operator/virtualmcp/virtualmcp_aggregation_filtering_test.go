@@ -22,8 +22,8 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 		vmcpServerName  = "test-vmcp-filtering"
 		backend1Name    = "yardstick-filter-a"
 		backend2Name    = "yardstick-filter-b"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 3 * time.Minute
+		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 	)
 
@@ -32,13 +32,11 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, testNamespace,
 			"Test MCP Group for tool filtering E2E tests", timeout, pollingInterval)
 
-		By("Creating first yardstick backend MCPServer")
-		CreateMCPServerAndWait(ctx, k8sClient, backend1Name, testNamespace, mcpGroupName,
-			images.YardstickServerImage, timeout, pollingInterval)
-
-		By("Creating second yardstick backend MCPServer")
-		CreateMCPServerAndWait(ctx, k8sClient, backend2Name, testNamespace, mcpGroupName,
-			images.YardstickServerImage, timeout, pollingInterval)
+		By("Creating yardstick backend MCPServers in parallel")
+		CreateMultipleMCPServersInParallel(ctx, k8sClient, []BackendConfig{
+			{Name: backend1Name, Namespace: testNamespace, GroupRef: mcpGroupName, Image: images.YardstickServerImage},
+			{Name: backend2Name, Namespace: testNamespace, GroupRef: mcpGroupName, Image: images.YardstickServerImage},
+		}, timeout, pollingInterval)
 
 		By("Creating VirtualMCPServer with tool filtering - only expose tools from backend1")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{

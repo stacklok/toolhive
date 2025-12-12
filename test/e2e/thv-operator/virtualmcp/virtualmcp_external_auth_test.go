@@ -99,7 +99,7 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 					Source: "discovered", // Will discover unauthenticated from backend
 				},
-				ServiceType: "NodePort",
+				Servi9ceType: "NodePort",
 			},
 		}
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
@@ -159,7 +159,7 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 
 			By("Creating MCP client and connecting")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			mcpClient, err := client.NewStreamableHttpClient(serverURL, WithHttpLoggerOption())
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 

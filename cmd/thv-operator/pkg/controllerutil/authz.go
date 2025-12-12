@@ -5,20 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -119,7 +116,6 @@ func EnsureAuthzConfigMap(
 	authzConfig *mcpv1alpha1.AuthzConfigRef,
 	labels map[string]string,
 ) error {
-	ctxLogger := log.FromContext(ctx)
 	if authzConfig == nil || authzConfig.Type != mcpv1alpha1.AuthzConfigTypeInline ||
 		authzConfig.Inline == nil {
 		return nil
@@ -157,30 +153,10 @@ func EnsureAuthzConfigMap(
 		},
 	}
 
-	if err := controllerutil.SetControllerReference(owner, configMap, scheme); err != nil {
-		return fmt.Errorf("failed to set controller reference for authorization ConfigMap: %w", err)
-	}
-
-	existingConfigMap := &corev1.ConfigMap{}
-	err = c.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: namespace}, existingConfigMap)
-	if err != nil && errors.IsNotFound(err) {
-		ctxLogger.Info("Creating authorization ConfigMap", "ConfigMap.Namespace", configMap.Namespace, "ConfigMap.Name", configMap.Name)
-		if err := c.Create(ctx, configMap); err != nil {
-			return fmt.Errorf("failed to create authorization ConfigMap: %w", err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("failed to get authorization ConfigMap: %w", err)
-	} else {
-		// ConfigMap exists, check if it needs to be updated
-		if !reflect.DeepEqual(existingConfigMap.Data, configMap.Data) {
-			ctxLogger.Info("Updating authorization ConfigMap",
-				"ConfigMap.Namespace", configMap.Namespace,
-				"ConfigMap.Name", configMap.Name)
-			existingConfigMap.Data = configMap.Data
-			if err := c.Update(ctx, existingConfigMap); err != nil {
-				return fmt.Errorf("failed to update authorization ConfigMap: %w", err)
-			}
-		}
+	// Use the kubernetes configmaps client for upsert operations
+	configMapsClient := configmaps.NewClient(c, scheme)
+	if _, err := configMapsClient.UpsertWithOwnerReference(ctx, configMap, owner); err != nil {
+		return fmt.Errorf("failed to upsert authorization ConfigMap: %w", err)
 	}
 
 	return nil

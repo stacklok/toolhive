@@ -10,9 +10,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
 // manager implements the Manager interface
@@ -41,19 +41,11 @@ func (m *manager) ReconcileAPIService(
 	ctxLogger := log.FromContext(ctx).WithValues("mcpregistry", mcpRegistry.Name)
 	ctxLogger.Info("Reconciling API service")
 
-	// Create ConfigManager locally to avoid concurrency issues
-	configManager, err := config.NewConfigManager(m.client, m.scheme, checksum.NewRunConfigConfigMapChecksum(), mcpRegistry)
-	if err != nil {
-		return &mcpregistrystatus.Error{
-			Err:             err,
-			Message:         fmt.Sprintf("failed to create config manager: %v", err),
-			ConditionType:   mcpv1alpha1.ConditionAPIReady,
-			ConditionReason: "ConfigManagerFailed",
-		}
-	}
+	// Create ConfigManager for building configuration
+	configManager := config.NewConfigManager(mcpRegistry)
 
-	// Pass configManager to methods that need it
-	err = m.ensureRegistryServerConfigConfigMap(ctx, mcpRegistry, configManager)
+	// Ensure registry server config ConfigMap exists
+	err := m.ensureRegistryServerConfigConfigMap(ctx, mcpRegistry, configManager)
 	if err != nil {
 		ctxLogger.Error(err, "Failed to ensure registry server config config map")
 		return &mcpregistrystatus.Error{
@@ -153,7 +145,7 @@ func labelsForRegistryAPI(mcpRegistry *mcpv1alpha1.MCPRegistry, resourceName str
 	}
 }
 
-func (*manager) ensureRegistryServerConfigConfigMap(
+func (m *manager) ensureRegistryServerConfigConfigMap(
 	ctx context.Context,
 	mcpRegistry *mcpv1alpha1.MCPRegistry,
 	configManager config.ConfigManager,
@@ -168,9 +160,11 @@ func (*manager) ensureRegistryServerConfigConfigMap(
 		return fmt.Errorf("failed to create config map: %w", err)
 	}
 
-	err = configManager.UpsertConfigMap(ctx, mcpRegistry, configMap)
-	if err != nil {
+	// Use the kubernetes configmaps client for upsert operations
+	configMapsClient := configmaps.NewClient(m.client, m.scheme)
+	if _, err := configMapsClient.UpsertWithOwnerReference(ctx, configMap, mcpRegistry); err != nil {
 		return fmt.Errorf("failed to upsert registry server config config map: %w", err)
 	}
+
 	return nil
 }

@@ -36,7 +36,7 @@ func TestBuildConfig_EmptyRegistryName(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManagerForTesting(mcpRegistry)
+	manager := NewConfigManager(mcpRegistry)
 	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
@@ -56,7 +56,7 @@ func TestBuildConfig_NoRegistries(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManagerForTesting(mcpRegistry)
+	manager := NewConfigManager(mcpRegistry)
 	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
@@ -82,7 +82,7 @@ func TestBuildConfig_MissingSource(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManagerForTesting(mcpRegistry)
+	manager := NewConfigManager(mcpRegistry)
 	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
@@ -113,7 +113,7 @@ func TestBuildConfig_EmptyRegistryNameInConfig(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManagerForTesting(mcpRegistry)
+	manager := NewConfigManager(mcpRegistry)
 	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
@@ -154,7 +154,7 @@ func TestBuildConfig_DuplicateRegistryNames(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManagerForTesting(mcpRegistry)
+	manager := NewConfigManager(mcpRegistry)
 	config, err := manager.BuildConfig()
 
 	require.Error(t, err)
@@ -191,7 +191,7 @@ func TestBuildConfig_ConfigMapSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -235,7 +235,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
@@ -262,7 +262,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
@@ -291,7 +291,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
@@ -318,7 +318,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
@@ -350,7 +350,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -398,7 +398,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -446,7 +446,7 @@ func TestBuildConfig_GitSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -492,7 +492,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
@@ -519,7 +519,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
@@ -549,7 +549,7 @@ func TestBuildConfig_APISource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -602,7 +602,7 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -643,7 +643,7 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.Error(t, err)
@@ -676,7 +676,7 @@ func TestBuildConfig_SyncPolicy(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -725,7 +725,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -772,7 +772,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -822,7 +822,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -874,7 +874,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -931,7 +931,7 @@ func TestBuildConfig_Filter(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -1079,7 +1079,7 @@ func TestBuildConfig_MultipleRegistries(t *testing.T) {
 		},
 	}
 
-	manager := NewConfigManagerForTesting(mcpRegistry)
+	manager := NewConfigManager(mcpRegistry)
 	config, err := manager.BuildConfig()
 
 	require.NoError(t, err)
@@ -1137,7 +1137,7 @@ func TestBuildConfig_PVCSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -1180,7 +1180,7 @@ func TestBuildConfig_PVCSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -1229,7 +1229,7 @@ func TestBuildConfig_PVCSource(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -1277,7 +1277,7 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -1330,7 +1330,7 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)
@@ -1377,7 +1377,7 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 			},
 		}
 
-		manager := NewConfigManagerForTesting(mcpRegistry)
+		manager := NewConfigManager(mcpRegistry)
 		config, err := manager.BuildConfig()
 
 		require.NoError(t, err)

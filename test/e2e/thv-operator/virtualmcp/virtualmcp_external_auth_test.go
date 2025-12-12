@@ -99,7 +99,7 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
 					Source: "discovered", // Will discover unauthenticated from backend
 				},
-				Servi9ceType: "NodePort",
+				ServiceType: "NodePort",
 			},
 		}
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())

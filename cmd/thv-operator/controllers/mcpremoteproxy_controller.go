@@ -28,6 +28,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
@@ -467,60 +468,58 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 	}
 }
 
-// ensureRBACResources ensures that the RBAC resources are in place for the remote proxy
-// TODO: This uses EnsureRBACResource which only creates RBAC but never updates them.
-// Consider adopting the MCPRegistry pattern (pkg/registryapi/rbac.go) which uses
-// CreateOrUpdate + RetryOnConflict to automatically update RBAC rules during operator upgrades.
+// ensureRBACResources ensures that the RBAC resources are in place for the remote proxy.
+// Uses the RBAC client (pkg/kubernetes/rbac) which creates or updates RBAC resources
+// automatically during operator upgrades.
 func (r *MCPRemoteProxyReconciler) ensureRBACResources(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) error {
+	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	proxyRunnerNameForRBAC := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
 
 	// Ensure Role with minimal permissions for remote proxies
 	// Remote proxies only need ConfigMap and Secret read access (no StatefulSet/Pod management)
-	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "Role", func() client.Object {
-		return &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: proxy.Namespace,
-			},
-			Rules: remoteProxyRBACRules,
-		}
-	}); err != nil {
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      proxyRunnerNameForRBAC,
+			Namespace: proxy.Namespace,
+		},
+		Rules: remoteProxyRBACRules,
+	}
+	if _, err := rbacClient.UpsertRoleWithOwnerReference(ctx, role, proxy); err != nil {
 		return err
 	}
 
 	// Ensure ServiceAccount
-	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "ServiceAccount", func() client.Object {
-		return &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      proxyRunnerNameForRBAC,
-				Namespace: proxy.Namespace,
-			},
-		}
-	}); err != nil {
+	serviceAccount := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      proxyRunnerNameForRBAC,
+			Namespace: proxy.Namespace,
+		},
+	}
+	if _, err := rbacClient.UpsertServiceAccountWithOwnerReference(ctx, serviceAccount, proxy); err != nil {
 		return err
 	}
 
 	// Ensure RoleBinding
-	return ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, proxy, "RoleBinding", func() client.Object {
-		return &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
+	roleBinding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      proxyRunnerNameForRBAC,
+			Namespace: proxy.Namespace,
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     proxyRunnerNameForRBAC,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
 				Name:      proxyRunnerNameForRBAC,
 				Namespace: proxy.Namespace,
 			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     proxyRunnerNameForRBAC,
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      proxyRunnerNameForRBAC,
-					Namespace: proxy.Namespace,
-				},
-			},
-		}
-	})
+		},
+	}
+	_, err := rbacClient.UpsertRoleBindingWithOwnerReference(ctx, roleBinding, proxy)
+	return err
 }
 
 // updateMCPRemoteProxyStatus updates the status of the MCPRemoteProxy

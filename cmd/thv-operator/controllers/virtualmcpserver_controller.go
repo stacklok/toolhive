@@ -30,6 +30,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -57,7 +58,7 @@ const (
 //   - Deployment (owned)
 //   - Service (owned)
 //   - ConfigMap for vmcp config (owned)
-//   - ServiceAccount, Role, RoleBinding via ctrlutil.EnsureRBACResource (owned)
+//   - ServiceAccount, Role, RoleBinding via rbac.Client (owned)
 //
 // This differs from MCPServer which uses finalizers to explicitly delete resources that
 // may not have owner references (StatefulSet, headless Service, RunConfig ConfigMap).
@@ -504,9 +505,8 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 // resources are NOT deleted - they persist until VirtualMCPServer deletion via owner references.
 // This follows standard Kubernetes garbage collection patterns.
 //
-// TODO: This uses EnsureRBACResource which only creates RBAC but never updates them.
-// Consider adopting the MCPRegistry pattern (pkg/registryapi/rbac.go) which uses
-// CreateOrUpdate + RetryOnConflict to automatically update RBAC rules during operator upgrades.
+// Uses the RBAC client (pkg/kubernetes/rbac) which creates or updates RBAC resources
+// automatically during operator upgrades.
 func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -521,54 +521,53 @@ func (r *VirtualMCPServerReconciler) ensureRBACResources(
 	}
 
 	// Dynamic mode (discovered): Ensure RBAC resources exist
+	rbacClient := rbac.NewClient(r.Client, r.Scheme)
 	serviceAccountName := vmcpServiceAccountName(vmcp.Name)
 
 	// Ensure Role with permissions to discover backends and update status
-	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, vmcp, "Role", func() client.Object {
-		return &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      serviceAccountName,
-				Namespace: vmcp.Namespace,
-			},
-			Rules: vmcpRBACRules,
-		}
-	}); err != nil {
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceAccountName,
+			Namespace: vmcp.Namespace,
+		},
+		Rules: vmcpRBACRules,
+	}
+	if _, err := rbacClient.UpsertRoleWithOwnerReference(ctx, role, vmcp); err != nil {
 		return err
 	}
 
 	// Ensure ServiceAccount
-	if err := ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, vmcp, "ServiceAccount", func() client.Object {
-		return &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      serviceAccountName,
-				Namespace: vmcp.Namespace,
-			},
-		}
-	}); err != nil {
+	serviceAccount := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceAccountName,
+			Namespace: vmcp.Namespace,
+		},
+	}
+	if _, err := rbacClient.UpsertServiceAccountWithOwnerReference(ctx, serviceAccount, vmcp); err != nil {
 		return err
 	}
 
 	// Ensure RoleBinding
-	return ctrlutil.EnsureRBACResource(ctx, r.Client, r.Scheme, vmcp, "RoleBinding", func() client.Object {
-		return &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
+	roleBinding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      serviceAccountName,
+			Namespace: vmcp.Namespace,
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     serviceAccountName,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
 				Name:      serviceAccountName,
 				Namespace: vmcp.Namespace,
 			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: "rbac.authorization.k8s.io",
-				Kind:     "Role",
-				Name:     serviceAccountName,
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      serviceAccountName,
-					Namespace: vmcp.Namespace,
-				},
-			},
-		}
-	})
+		},
+	}
+	_, err := rbacClient.UpsertRoleBindingWithOwnerReference(ctx, roleBinding, vmcp)
+	return err
 }
 
 // getVmcpConfigChecksum fetches the vmcp Config ConfigMap checksum annotation.

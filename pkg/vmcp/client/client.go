@@ -415,6 +415,8 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 }
 
 // CallTool invokes a tool on the backend MCP server.
+//
+//nolint:gocyclo // this function is complex because it handles tool calls with various content types and error handling.
 func (h *httpBackendClient) CallTool(
 	ctx context.Context,
 	target *vmcp.BackendTarget,

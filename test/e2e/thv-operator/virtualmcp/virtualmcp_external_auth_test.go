@@ -24,8 +24,8 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 		vmcpServerName         = "test-vmcp-unauthenticated"
 		backendName            = "backend-fetch-unauthenticated"
 		externalAuthConfigName = "test-unauthenticated-auth-config"
-		timeout                = 5 * time.Minute
-		pollingInterval        = 5 * time.Second
+		timeout                = 2 * time.Minute
+		pollingInterval        = 1 * time.Second
 		vmcpNodePort           int32
 	)
 
@@ -203,8 +203,8 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 		vmcpServerName         = "test-vmcp-inline-unauth"
 		backendName            = "backend-inline-unauth"
 		externalAuthConfigName = "test-inline-unauth-config"
-		timeout                = 5 * time.Minute
-		pollingInterval        = 5 * time.Second
+		timeout                = 2 * time.Minute
+		pollingInterval        = 1 * time.Second
 		vmcpNodePort           int32
 	)
 
@@ -363,8 +363,8 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 		backendName            = "backend-fetch-headerinjection"
 		externalAuthConfigName = "test-headerinjection-auth-config"
 		secretName             = "test-headerinjection-secret"
-		timeout                = 5 * time.Minute
-		pollingInterval        = 5 * time.Second
+		timeout                = 2 * time.Minute
+		pollingInterval        = 1 * time.Second
 		vmcpNodePort           int32
 	)
 
@@ -567,8 +567,8 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 		backendName            = "backend-inline-headerinjection"
 		externalAuthConfigName = "test-inline-headerinjection-config"
 		secretName             = "test-inline-headerinjection-secret"
-		timeout                = 5 * time.Minute
-		pollingInterval        = 5 * time.Second
+		timeout                = 2 * time.Minute
+		pollingInterval        = 1 * time.Second
 		vmcpNodePort           int32
 	)
 

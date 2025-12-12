@@ -378,7 +378,7 @@ func DeployMockOIDCServerHTTP(ctx context.Context, c client.Client, namespace, s
 		dep := &appsv1.Deployment{}
 		err := c.Get(ctx, types.NamespacedName{Name: serverName, Namespace: namespace}, dep)
 		return err == nil && dep.Status.ReadyReplicas > 0
-	}, 3*time.Minute, 5*time.Second).Should(gomega.BeTrue(), "Mock OIDC server should be ready")
+	}, 2*time.Minute, 1*time.Second).Should(gomega.BeTrue(), "Mock OIDC server should be ready")
 }
 
 // DeployInstrumentedBackendServer deploys a backend server that logs all headers
@@ -437,7 +437,7 @@ func DeployInstrumentedBackendServer(ctx context.Context, c client.Client, names
 		dep := &appsv1.Deployment{}
 		err := c.Get(ctx, types.NamespacedName{Name: serverName, Namespace: namespace}, dep)
 		return err == nil && dep.Status.ReadyReplicas > 0
-	}, 3*time.Minute, 5*time.Second).Should(gomega.BeTrue(), "Instrumented backend should be ready")
+	}, 2*time.Minute, 1*time.Second).Should(gomega.BeTrue(), "Instrumented backend should be ready")
 }
 
 // CleanupMockServer cleans up a mock server deployment, service, and optionally its TLS secret
@@ -711,6 +711,71 @@ func CreateMCPServerAndWait(
 	}, timeout, pollingInterval).Should(gomega.Succeed(), fmt.Sprintf("MCPServer %s should be ready", name))
 
 	return backend
+}
+
+// BackendConfig holds configuration for creating an MCPServer
+type BackendConfig struct {
+	Name                  string
+	Namespace             string
+	GroupRef              string
+	Image                 string
+	ExternalAuthConfigRef *mcpv1alpha1.ExternalAuthConfigRef
+}
+
+// CreateMultipleMCPServersInParallel creates multiple MCPServers concurrently and waits for all to be running.
+// This significantly reduces test setup time compared to sequential creation.
+func CreateMultipleMCPServersInParallel(
+	ctx context.Context,
+	c client.Client,
+	backends []BackendConfig,
+	timeout, pollingInterval time.Duration,
+) []*mcpv1alpha1.MCPServer {
+	results := make([]*mcpv1alpha1.MCPServer, len(backends))
+
+	// Create all backends concurrently
+	for i := range backends {
+		idx := i // Capture loop variable
+		backend := &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      backends[idx].Name,
+				Namespace: backends[idx].Namespace,
+			},
+			Spec: mcpv1alpha1.MCPServerSpec{
+				GroupRef:              backends[idx].GroupRef,
+				Image:                 backends[idx].Image,
+				Transport:             "streamable-http",
+				ProxyPort:             8080,
+				McpPort:               8080,
+				ExternalAuthConfigRef: backends[idx].ExternalAuthConfigRef,
+				Env: []mcpv1alpha1.EnvVar{
+					{Name: "TRANSPORT", Value: "streamable-http"},
+				},
+			},
+		}
+		gomega.Expect(c.Create(ctx, backend)).To(gomega.Succeed())
+		results[idx] = backend
+	}
+
+	// Wait for all backends to be ready in parallel (single Eventually checking all)
+	gomega.Eventually(func() error {
+		for _, cfg := range backends {
+			server := &mcpv1alpha1.MCPServer{}
+			err := c.Get(ctx, types.NamespacedName{
+				Name:      cfg.Name,
+				Namespace: cfg.Namespace,
+			}, server)
+			if err != nil {
+				return fmt.Errorf("failed to get server %s: %w", cfg.Name, err)
+			}
+			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+				return fmt.Errorf("%s not ready yet, phase: %s", cfg.Name, server.Status.Phase)
+			}
+		}
+		// All backends are ready
+		return nil
+	}, timeout, pollingInterval).Should(gomega.Succeed(), "All MCPServers should be ready")
+
+	return results
 }
 
 // GetVMCPNodePort waits for the VirtualMCPServer service to have a NodePort assigned

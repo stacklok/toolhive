@@ -55,8 +55,8 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 		authSecret1Name      = "test-token-exchange-secret"
 		authSecret2Name      = "test-header-injection-secret"
 		oidcClientSecretName = "test-oidc-client-secret"
-		timeout              = 5 * time.Minute
-		pollingInterval      = 5 * time.Second
+		timeout              = 2 * time.Minute
+		pollingInterval      = 1 * time.Second
 		mockServer           *httptest.Server
 	)
 
@@ -711,81 +711,34 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			return mcpGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
 		}, timeout, pollingInterval).Should(BeTrue())
 
-		By("Creating backend MCPServer with token exchange outgoing auth")
-		backend1 := &mcpv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
+		By("Creating backend MCPServers in parallel with different auth configurations")
+		CreateMultipleMCPServersInParallel(ctx, k8sClient, []BackendConfig{
+			{
 				Name:      backend1Name,
 				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
 				Image:     images.GofetchServerImage,
-				Transport: "streamable-http",
-				ProxyPort: 8080,
-				McpPort:   8080,
-				// Token exchange for outgoing auth (backend→external services)
-				// vMCP will discover this and use token exchange when calling this backend
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: authConfig1Name,
 				},
 			},
-		}
-		Expect(k8sClient.Create(ctx, backend1)).To(Succeed())
-
-		By("Creating backend MCPServer with header injection auth")
-		backend2 := &mcpv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
+			{
 				Name:      backend2Name,
 				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
 				Image:     images.OSVMCPServerImage,
-				Transport: "streamable-http",
-				ProxyPort: 8080,
-				McpPort:   8080,
 				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
 					Name: authConfig2Name,
 				},
 			},
-		}
-		Expect(k8sClient.Create(ctx, backend2)).To(Succeed())
-
-		By("Creating backend MCPServer without auth")
-		backend3 := &mcpv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
+			{
 				Name:      backend3Name,
 				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.MCPServerSpec{
 				GroupRef:  mcpGroupName,
 				Image:     images.GofetchServerImage,
-				Transport: "streamable-http",
-				ProxyPort: 8080,
-				McpPort:   8080,
 				// No ExternalAuthConfigRef - this backend has no auth
 			},
-		}
-		Expect(k8sClient.Create(ctx, backend3)).To(Succeed())
-
-		By("Waiting for backend MCPServers to be ready")
-		for _, backendName := range []string{backend1Name, backend2Name, backend3Name} {
-			Eventually(func() error {
-				server := &mcpv1alpha1.MCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      backendName,
-					Namespace: testNamespace,
-				}, server)
-				if err != nil {
-					return fmt.Errorf("failed to get server: %w", err)
-				}
-
-				if server.Status.Phase == mcpv1alpha1.MCPServerPhaseRunning {
-					return nil
-				}
-				return fmt.Errorf("%s not ready yet, phase: %s", backendName, server.Status.Phase)
-			}, timeout, pollingInterval).Should(Succeed(), fmt.Sprintf("%s should be ready", backendName))
-		}
+		}, timeout, pollingInterval)
 
 		// Wait for backend pods to be ready
 		for _, backendName := range []string{backend1Name, backend2Name, backend3Name} {

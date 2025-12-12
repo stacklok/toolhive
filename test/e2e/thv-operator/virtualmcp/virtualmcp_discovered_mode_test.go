@@ -25,8 +25,8 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 		vmcpServerName  = "test-vmcp-discovered"
 		backend1Name    = "backend-fetch"
 		backend2Name    = "backend-osv"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 2 * time.Minute
+		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 	)
 

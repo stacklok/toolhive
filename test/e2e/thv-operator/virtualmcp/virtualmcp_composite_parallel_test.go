@@ -23,8 +23,8 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 		vmcpServerName  = "test-vmcp-composite-par"
 		backend1Name    = "yardstick-par-a"
 		backend2Name    = "yardstick-par-b"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 2 * time.Minute
+		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 
 		// Composite tool name
@@ -36,13 +36,11 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, testNamespace,
 			"Test MCP Group for composite parallel E2E tests", timeout, pollingInterval)
 
-		By("Creating first yardstick backend MCPServer")
-		CreateMCPServerAndWait(ctx, k8sClient, backend1Name, testNamespace, mcpGroupName,
-			images.YardstickServerImage, timeout, pollingInterval)
-
-		By("Creating second yardstick backend MCPServer")
-		CreateMCPServerAndWait(ctx, k8sClient, backend2Name, testNamespace, mcpGroupName,
-			images.YardstickServerImage, timeout, pollingInterval)
+		By("Creating yardstick backend MCPServers in parallel")
+		CreateMultipleMCPServersInParallel(ctx, k8sClient, []BackendConfig{
+			{Name: backend1Name, Namespace: testNamespace, GroupRef: mcpGroupName, Image: images.YardstickServerImage},
+			{Name: backend2Name, Namespace: testNamespace, GroupRef: mcpGroupName, Image: images.YardstickServerImage},
+		}, timeout, pollingInterval)
 
 		// JSON Schema for composite tool parameters
 		parameterSchema := map[string]interface{}{

@@ -23,8 +23,8 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 		toolConfigName  = "test-tool-config"
 		backend1Name    = "gofetch-toolconfig-a"
 		backend2Name    = "gofetch-toolconfig-b"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 2 * time.Minute
+		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 	)
 
@@ -359,8 +359,8 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 		vmcpServerName  = "test-vmcp-toolconfig-update"
 		toolConfigName  = "test-tool-config-update"
 		backendName     = "gofetch-toolconfig-update"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 2 * time.Minute
+		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 	)
 

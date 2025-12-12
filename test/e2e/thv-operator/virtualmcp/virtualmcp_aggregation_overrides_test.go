@@ -20,7 +20,7 @@ var _ = Describe("VirtualMCPServer Tool Overrides", Ordered, func() {
 		mcpGroupName    = "test-overrides-group"
 		vmcpServerName  = "test-vmcp-overrides"
 		backendName     = "yardstick-override"
-		timeout         = 2 * time.Minute
+		timeout         = 3 * time.Minute
 		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 

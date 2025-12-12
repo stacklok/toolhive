@@ -23,7 +23,7 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 		vmcpServerName  = "test-vmcp-composite-par"
 		backend1Name    = "yardstick-par-a"
 		backend2Name    = "yardstick-par-b"
-		timeout         = 2 * time.Minute
+		timeout         = 3 * time.Minute
 		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 

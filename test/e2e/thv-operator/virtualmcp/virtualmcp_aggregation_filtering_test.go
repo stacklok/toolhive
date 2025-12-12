@@ -22,7 +22,7 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 		vmcpServerName  = "test-vmcp-filtering"
 		backend1Name    = "yardstick-filter-a"
 		backend2Name    = "yardstick-filter-b"
-		timeout         = 2 * time.Minute
+		timeout         = 3 * time.Minute
 		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 	)

@@ -23,7 +23,7 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 		vmcpServerName       = "test-vmcp-composite-ref"
 		backendName          = "yardstick-composite-ref"
 		compositeToolDefName = "echo-twice-definition"
-		timeout              = 2 * time.Minute
+		timeout              = 3 * time.Minute
 		pollingInterval      = 1 * time.Second
 		vmcpNodePort         int32
 

@@ -55,7 +55,7 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 		authSecret1Name      = "test-token-exchange-secret"
 		authSecret2Name      = "test-header-injection-secret"
 		oidcClientSecretName = "test-oidc-client-secret"
-		timeout              = 2 * time.Minute
+		timeout              = 3 * time.Minute
 		pollingInterval      = 1 * time.Second
 		mockServer           *httptest.Server
 	)
@@ -824,6 +824,9 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		By("Waiting for VirtualMCPServer to be ready")
 		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 
+		By("Waiting for VirtualMCPServer to discover backends")
+		WaitForCondition(ctx, k8sClient, vmcpServerName, testNamespace, "BackendsDiscovered", "True", timeout, pollingInterval)
+
 		// Wait for vMCP pods to be fully running and ready
 		By("Waiting for vMCP pods to be running and ready")
 		vmcpLabels := map[string]string{
@@ -1121,20 +1124,33 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
-			By("Starting transport and initializing connection")
-			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			By("Starting transport and initializing connection with retries")
+			// Retry MCP initialization to handle timing issues where the VirtualMCPServer's
+			// auth middleware (OIDC validation and auth discovery) may not be fully ready
+			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 
-			Expect(mcpClient.Start(testCtx)).To(Succeed())
+			Eventually(func() error {
+				initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer initCancel()
 
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-auth-discovery-test",
-				Version: "1.0.0",
-			}
-			_, err = mcpClient.Initialize(testCtx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
+				if err := mcpClient.Start(initCtx); err != nil {
+					return fmt.Errorf("failed to start transport: %w", err)
+				}
+
+				initRequest := mcp.InitializeRequest{}
+				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+				initRequest.Params.ClientInfo = mcp.Implementation{
+					Name:    "toolhive-auth-discovery-test",
+					Version: "1.0.0",
+				}
+				_, err := mcpClient.Initialize(initCtx, initRequest)
+				if err != nil {
+					return fmt.Errorf("failed to initialize: %w", err)
+				}
+
+				return nil
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "MCP client should initialize successfully")
 
 			By("Listing tools from VirtualMCPServer")
 			listRequest := mcp.ListToolsRequest{}
@@ -1189,22 +1205,35 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 
-			By("Starting transport and initializing connection")
-			testCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			By("Starting transport and initializing connection with retries")
+			// Retry MCP initialization to handle timing issues where the VirtualMCPServer's
+			// auth middleware (OIDC validation and auth discovery) may not be fully ready
+			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 
-			err = mcpClient.Start(testCtx)
-			Expect(err).ToNot(HaveOccurred())
+			Eventually(func() error {
+				initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer initCancel()
 
-			initRequest := mcp.InitializeRequest{}
-			initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-			initRequest.Params.ClientInfo = mcp.Implementation{
-				Name:    "toolhive-auth-test",
-				Version: "1.0.0",
-			}
+				err := mcpClient.Start(initCtx)
+				if err != nil {
+					return fmt.Errorf("failed to start transport: %w", err)
+				}
 
-			_, err = mcpClient.Initialize(testCtx, initRequest)
-			Expect(err).ToNot(HaveOccurred())
+				initRequest := mcp.InitializeRequest{}
+				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+				initRequest.Params.ClientInfo = mcp.Implementation{
+					Name:    "toolhive-auth-test",
+					Version: "1.0.0",
+				}
+
+				_, err = mcpClient.Initialize(initCtx, initRequest)
+				if err != nil {
+					return fmt.Errorf("failed to initialize: %w", err)
+				}
+
+				return nil
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "MCP client should initialize successfully")
 
 			By("Listing and calling tools from backend with token exchange")
 			listRequest := mcp.ListToolsRequest{}

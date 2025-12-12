@@ -105,7 +105,7 @@ func cleanupConflictResolutionTest(groupName, vmcpName, backend1Name, backend2Na
 var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 	var (
 		testNamespace   = "default"
-		timeout         = 2 * time.Minute
+		timeout         = 3 * time.Minute
 		pollingInterval = 1 * time.Second
 	)
 

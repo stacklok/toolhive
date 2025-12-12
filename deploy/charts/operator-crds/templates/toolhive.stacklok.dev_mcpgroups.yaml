@@ -121,11 +121,19 @@ spec:
                 - Pending
                 - Failed
                 type: string
+              remoteProxies:
+                description: RemoteProxies lists MCPRemoteProxy names in this group
+                items:
+                  type: string
+                type: array
+              remoteProxyCount:
+                description: RemoteProxyCount is the number of MCPRemoteProxies
+                type: integer
               serverCount:
-                description: ServerCount is the number of servers
+                description: ServerCount is the number of MCPServers
                 type: integer
               servers:
-                description: Servers lists server names in this group
+                description: Servers lists MCPServer names in this group
                 items:
                   type: string
                 type: array

@@ -726,6 +726,11 @@ func (in *MCPGroupStatus) DeepCopyInto(out *MCPGroupStatus) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.RemoteProxies != nil {
+		in, out := &in.RemoteProxies, &out.RemoteProxies
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

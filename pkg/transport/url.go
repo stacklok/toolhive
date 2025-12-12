@@ -25,11 +25,11 @@ func GenerateMCPServerURL(transportType string, proxyMode string, host string, p
 		// Default to streamable-http if proxyMode is empty (matches CRD default)
 		effectiveProxyMode := proxyMode
 		if effectiveProxyMode == "" {
-			effectiveProxyMode = "streamable-http"
+			effectiveProxyMode = types.ProxyModeStreamableHTTP.String()
 		}
 
 		// Map proxy mode to endpoint type
-		if effectiveProxyMode == "sse" {
+		if effectiveProxyMode == types.ProxyModeSSE.String() {
 			isSSE = true
 		} else {
 			// streamable-http or any other value

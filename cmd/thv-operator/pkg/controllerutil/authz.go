@@ -211,16 +211,17 @@ func AddAuthzConfigOptions(
 			return fmt.Errorf("kubernetes client is not configured for ConfigMap authz resolution")
 		}
 
-		// Fetch the ConfigMap using the configmaps client
+		// Fetch the ConfigMap value using the configmaps client
 		configMapsClient := configmaps.NewClient(c, nil)
-		cm, err := configMapsClient.Get(ctx, authzRef.ConfigMap.Name, namespace)
-		if err != nil {
-			return fmt.Errorf("failed to get Authz ConfigMap %s/%s: %w", namespace, authzRef.ConfigMap.Name, err)
+		configMapRef := corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: authzRef.ConfigMap.Name,
+			},
+			Key: key,
 		}
-
-		raw, ok := cm.Data[key]
-		if !ok {
-			return fmt.Errorf("authz ConfigMap %s/%s is missing key %q", namespace, authzRef.ConfigMap.Name, key)
+		raw, err := configMapsClient.GetValue(ctx, namespace, configMapRef)
+		if err != nil {
+			return fmt.Errorf("failed to get Authz ConfigMap %s/%s key %q: %w", namespace, authzRef.ConfigMap.Name, key, err)
 		}
 		if len(strings.TrimSpace(raw)) == 0 {
 			return fmt.Errorf("authz ConfigMap %s/%s key %q is empty", namespace, authzRef.ConfigMap.Name, key)

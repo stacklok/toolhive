@@ -159,7 +159,7 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 
 			By("Creating MCP client and connecting")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
+			mcpClient, err := client.NewStreamableHttpClient(serverURL, WithHttpLoggerOption())
 			Expect(err).ToNot(HaveOccurred())
 			defer mcpClient.Close()
 

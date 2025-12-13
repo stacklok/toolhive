@@ -6,25 +6,24 @@ import (
 
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
+	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
 // ensureVmcpConfigConfigMap ensures the vmcp Config ConfigMap exists and is up to date
-// workloadNames is the list of workload names in the group, passed in to ensure consistency
+// workloadInfos is the list of workloads in the group, passed in to ensure consistency
 // across multiple calls that need the same workload list.
 func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	workloadNames []string,
+	typedWorkloads []workloads.TypedWorkload,
 ) error {
 	ctxLogger := log.FromContext(ctx)
 
@@ -45,8 +44,8 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	// If OutgoingAuth source is "discovered", we need to discover and include
 	// ExternalAuthConfig from MCPServers in the ConfigMap
 	if config.OutgoingAuth != nil && config.OutgoingAuth.Source == "discovered" {
-		// Build discovered OutgoingAuthConfig using the provided workload names
-		discoveredAuthConfig, err := r.buildOutgoingAuthConfig(ctx, vmcp, workloadNames)
+		// Build discovered OutgoingAuthConfig using the provided workload infos
+		discoveredAuthConfig, err := r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
 		if err != nil {
 			ctxLogger.V(1).Info("Failed to build discovered auth config, using spec-only config",
 				"error", err)
@@ -90,55 +89,10 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		checksum.ContentChecksumAnnotation: checksumValue,
 	}
 
-	return r.ensureVmcpConfigConfigMapResource(ctx, vmcp, configMap)
-}
-
-// ensureVmcpConfigConfigMapResource ensures the vmcp Config ConfigMap exists and is up to date
-func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMapResource(
-	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-	desired *corev1.ConfigMap,
-) error {
-	ctxLogger := log.FromContext(ctx)
-	current := &corev1.ConfigMap{}
-	objectKey := types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}
-	err := r.Get(ctx, objectKey, current)
-
-	if errors.IsNotFound(err) {
-		if err := controllerutil.SetControllerReference(vmcp, desired, r.Scheme); err != nil {
-			return fmt.Errorf("failed to set controller reference for vmcp Config ConfigMap: %w", err)
-		}
-
-		ctxLogger.Info("vmcp Config ConfigMap does not exist, creating", "ConfigMap.Name", desired.Name)
-		if err := r.Create(ctx, desired); err != nil {
-			return fmt.Errorf("failed to create vmcp Config ConfigMap: %w", err)
-		}
-		ctxLogger.Info("vmcp Config ConfigMap created", "ConfigMap.Name", desired.Name)
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("failed to get vmcp Config ConfigMap: %w", err)
-	}
-
-	// ConfigMap exists, check if content has changed by comparing checksums
-	currentChecksum := current.Annotations[checksum.ContentChecksumAnnotation]
-	desiredChecksum := desired.Annotations[checksum.ContentChecksumAnnotation]
-
-	if currentChecksum != desiredChecksum {
-		desired.ResourceVersion = current.ResourceVersion
-		desired.UID = current.UID
-
-		if err := controllerutil.SetControllerReference(vmcp, desired, r.Scheme); err != nil {
-			return fmt.Errorf("failed to set controller reference for vmcp Config ConfigMap: %w", err)
-		}
-
-		ctxLogger.Info("vmcp Config ConfigMap content changed, updating",
-			"ConfigMap.Name", desired.Name,
-			"oldChecksum", currentChecksum,
-			"newChecksum", desiredChecksum)
-		if err := r.Update(ctx, desired); err != nil {
-			return fmt.Errorf("failed to update vmcp Config ConfigMap: %w", err)
-		}
-		ctxLogger.Info("vmcp Config ConfigMap updated", "ConfigMap.Name", desired.Name)
+	// Use the kubernetes configmaps client for upsert operations
+	configMapsClient := configmaps.NewClient(r.Client, r.Scheme)
+	if _, err := configMapsClient.UpsertWithOwnerReference(ctx, configMap, vmcp); err != nil {
+		return fmt.Errorf("failed to upsert vmcp Config ConfigMap: %w", err)
 	}
 
 	return nil

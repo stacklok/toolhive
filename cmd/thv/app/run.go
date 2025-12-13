@@ -496,5 +496,12 @@ func validateRunFlags(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Show deprecation warning if --proxy-mode is explicitly set to SSE
+	proxyModeFlag := cmd.Flags().Lookup("proxy-mode")
+	if proxyModeFlag != nil && proxyModeFlag.Changed && proxyModeFlag.Value.String() == "sse" {
+		logger.Warn("The 'sse' proxy mode is deprecated and will be removed in a future release. " +
+			"Please migrate to 'streamable-http' (the new default).")
+	}
+
 	return nil
 }

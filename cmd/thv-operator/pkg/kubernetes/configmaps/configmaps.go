@@ -6,7 +6,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -61,8 +60,8 @@ func (c *Client) GetValue(ctx context.Context, namespace string, configMapRef co
 
 // UpsertWithOwnerReference creates or updates a Kubernetes ConfigMap with an owner reference.
 // The owner reference ensures the configmap is garbage collected when the owner is deleted.
-// Uses retry logic to handle conflicts from concurrent modifications.
 // Returns the operation result (Created, Updated, or Unchanged) and any error.
+// Callers should return errors to let the controller work queue handle retries.
 func (c *Client) UpsertWithOwnerReference(
 	ctx context.Context,
 	configMap *corev1.ConfigMap,
@@ -72,16 +71,15 @@ func (c *Client) UpsertWithOwnerReference(
 }
 
 // Upsert creates or updates a Kubernetes ConfigMap without an owner reference.
-// Uses retry logic to handle conflicts from concurrent modifications.
 // Returns the operation result (Created, Updated, or Unchanged) and any error.
+// Callers should return errors to let the controller work queue handle retries.
 func (c *Client) Upsert(ctx context.Context, configMap *corev1.ConfigMap) (controllerutil.OperationResult, error) {
 	return c.upsert(ctx, configMap, nil)
 }
 
-// upsert creates or updates a Kubernetes ConfigMap using retry logic for conflict handling.
+// upsert creates or updates a Kubernetes ConfigMap.
 // If owner is provided, sets a controller reference to establish ownership.
 // This ensures the configmap is garbage collected when the owner is deleted.
-// Uses controllerutil.CreateOrUpdate with retry.RetryOnConflict for safe concurrent access.
 // Returns the operation result (Created, Updated, or Unchanged) and any error.
 func (c *Client) upsert(
 	ctx context.Context,
@@ -104,31 +102,20 @@ func (c *Client) upsert(
 	existing.Name = configMap.Name
 	existing.Namespace = configMap.Namespace
 
-	var operationResult controllerutil.OperationResult
+	result, err := controllerutil.CreateOrUpdate(ctx, c.client, existing, func() error {
+		// Set the desired state
+		existing.Data = desiredData
+		existing.BinaryData = desiredBinaryData
+		existing.Labels = desiredLabels
+		existing.Annotations = desiredAnnotations
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		result, err := controllerutil.CreateOrUpdate(ctx, c.client, existing, func() error {
-			// Set the desired state
-			existing.Data = desiredData
-			existing.BinaryData = desiredBinaryData
-			existing.Labels = desiredLabels
-			existing.Annotations = desiredAnnotations
-
-			// Set owner reference if provided
-			if owner != nil {
-				if err := controllerutil.SetControllerReference(owner, existing, c.scheme); err != nil {
-					return fmt.Errorf("failed to set controller reference: %w", err)
-				}
+		// Set owner reference if provided
+		if owner != nil {
+			if err := controllerutil.SetControllerReference(owner, existing, c.scheme); err != nil {
+				return fmt.Errorf("failed to set controller reference: %w", err)
 			}
-
-			return nil
-		})
-
-		if err != nil {
-			return err
 		}
 
-		operationResult = result
 		return nil
 	})
 
@@ -137,5 +124,5 @@ func (c *Client) upsert(
 			configMap.Name, configMap.Namespace, err)
 	}
 
-	return operationResult, nil
+	return result, nil
 }

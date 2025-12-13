@@ -1315,6 +1315,29 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 			},
 			description: "Should correctly convert OIDC auth config",
 		},
+		{
+			name: "oidc auth with scopes",
+			incomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+				Type: "oidc",
+				OIDCConfig: &mcpv1alpha1.OIDCConfigRef{
+					Type: "inline",
+					Inline: &mcpv1alpha1.InlineOIDCConfig{
+						Issuer:   "https://accounts.google.com",
+						ClientID: "google-client",
+						Audience: "google-audience",
+						Scopes:   []string{"https://www.googleapis.com/auth/drive.readonly", "openid"},
+					},
+				},
+			},
+			expectedAuthType: "oidc",
+			expectedOIDCConfig: &vmcpconfig.OIDCConfig{
+				Issuer:   "https://accounts.google.com",
+				ClientID: "google-client",
+				Audience: "google-audience",
+				Scopes:   []string{"https://www.googleapis.com/auth/drive.readonly", "openid"},
+			},
+			description: "Should correctly convert OIDC auth config with scopes",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1342,6 +1365,7 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 					Issuer:   tt.expectedOIDCConfig.Issuer,
 					ClientID: tt.expectedOIDCConfig.ClientID,
 					Audience: tt.expectedOIDCConfig.Audience,
+					Scopes:   tt.expectedOIDCConfig.Scopes,
 				}, nil)
 			} else {
 				mockResolver.EXPECT().Resolve(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
@@ -1365,6 +1389,7 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 					assert.Equal(t, tt.expectedOIDCConfig.Issuer, config.IncomingAuth.OIDC.Issuer, tt.description)
 					assert.Equal(t, tt.expectedOIDCConfig.ClientID, config.IncomingAuth.OIDC.ClientID, tt.description)
 					assert.Equal(t, tt.expectedOIDCConfig.Audience, config.IncomingAuth.OIDC.Audience, tt.description)
+					assert.Equal(t, tt.expectedOIDCConfig.Scopes, config.IncomingAuth.OIDC.Scopes, tt.description)
 				} else {
 					assert.Nil(t, config.IncomingAuth.OIDC, tt.description)
 				}

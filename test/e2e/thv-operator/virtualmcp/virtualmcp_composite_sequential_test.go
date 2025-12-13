@@ -22,8 +22,8 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 		mcpGroupName    = "test-composite-seq-group"
 		vmcpServerName  = "test-vmcp-composite-seq"
 		backendName     = "yardstick-composite-seq"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 3 * time.Minute
+		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 
 		// Composite tool names
@@ -117,7 +117,7 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)

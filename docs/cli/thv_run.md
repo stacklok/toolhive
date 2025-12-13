@@ -127,7 +127,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --otel-tracing-enabled                       Enable distributed tracing (when OTLP endpoint is configured) (default true)
       --permission-profile string                  Permission profile to use (none, network, or path to JSON file)
       --print-resolved-overlays                    Debug: show resolved container paths for tmpfs overlays
-      --proxy-mode string                          Proxy mode for stdio (streamable-http or sse) (default "streamable-http")
+      --proxy-mode string                          Proxy mode for stdio (streamable-http or sse (deprecated, will be removed)) (default "streamable-http")
       --proxy-port int                             Port for the HTTP proxy to listen on (host port)
       --remote-auth                                Enable OAuth/OIDC authentication to remote MCP server
       --remote-auth-authorize-url string           OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)

@@ -712,8 +712,10 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `phase` _[MCPGroupPhase](#mcpgroupphase)_ | Phase indicates current state | Pending | Enum: [Ready Pending Failed] <br /> |
-| `servers` _string array_ | Servers lists server names in this group |  |  |
-| `serverCount` _integer_ | ServerCount is the number of servers |  |  |
+| `servers` _string array_ | Servers lists MCPServer names in this group |  |  |
+| `serverCount` _integer_ | ServerCount is the number of MCPServers |  |  |
+| `remoteProxies` _string array_ | RemoteProxies lists MCPRemoteProxy names in this group |  |  |
+| `remoteProxyCount` _integer_ | RemoteProxyCount is the number of MCPRemoteProxies |  |  |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent observations |  |  |
 
 
@@ -959,6 +961,7 @@ _Appears in:_
 | `resources` _[ResourceRequirements](#resourcerequirements)_ | Resources defines the resource requirements for the proxy container |  |  |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false |  |
 | `resourceOverrides` _[ResourceOverrides](#resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  |  |
+| `groupRef` _string_ | GroupRef is the name of the MCPGroup this proxy belongs to<br />Must reference an existing MCPGroup in the same namespace |  |  |
 
 
 #### MCPRemoteProxyStatus
@@ -2064,6 +2067,7 @@ _Appears in:_
 | `condition` _string_ | Condition is a template expression that determines if the step should execute |  |  |
 | `onError` _[ErrorHandling](#errorhandling)_ | OnError defines error handling behavior |  |  |
 | `timeout` _string_ | Timeout is the maximum execution time for this step |  |  |
+| `defaultResults` _object (keys:string, values:[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg))_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps.<br />Required if the step may be skipped AND downstream steps reference this step's output. |  | Schemaless: \{\} <br /> |
 
 
 #### WorkloadToolConfig

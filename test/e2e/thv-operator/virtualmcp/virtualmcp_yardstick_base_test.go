@@ -25,8 +25,8 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		vmcpServerName  = "test-vmcp-yardstick"
 		backend1Name    = "yardstick-a"
 		backend2Name    = "yardstick-b"
-		timeout         = 5 * time.Minute
-		pollingInterval = 5 * time.Second
+		timeout         = 3 * time.Minute
+		pollingInterval = 1 * time.Second
 		vmcpNodePort    int32
 	)
 
@@ -35,13 +35,71 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, testNamespace,
 			"Test MCP Group for yardstick-based E2E tests", timeout, pollingInterval)
 
-		By("Creating first yardstick backend MCPServer")
-		CreateMCPServerAndWait(ctx, k8sClient, backend1Name, testNamespace, mcpGroupName,
-			images.YardstickServerImage, timeout, pollingInterval)
+		By("Creating yardstick backend MCPServers in parallel")
+		// Create both MCPServer resources without waiting
+		backend1 := &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      backend1Name,
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.MCPServerSpec{
+				GroupRef:  mcpGroupName,
+				Image:     images.YardstickServerImage,
+				Transport: "streamable-http",
+				ProxyPort: 8080,
+				McpPort:   8080,
+				Env: []mcpv1alpha1.EnvVar{
+					{Name: "TRANSPORT", Value: "streamable-http"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, backend1)).To(Succeed())
 
-		By("Creating second yardstick backend MCPServer")
-		CreateMCPServerAndWait(ctx, k8sClient, backend2Name, testNamespace, mcpGroupName,
-			images.YardstickServerImage, timeout, pollingInterval)
+		backend2 := &mcpv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      backend2Name,
+				Namespace: testNamespace,
+			},
+			Spec: mcpv1alpha1.MCPServerSpec{
+				GroupRef:  mcpGroupName,
+				Image:     images.YardstickServerImage,
+				Transport: "streamable-http",
+				ProxyPort: 8080,
+				McpPort:   8080,
+				Env: []mcpv1alpha1.EnvVar{
+					{Name: "TRANSPORT", Value: "streamable-http"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, backend2)).To(Succeed())
+
+		// Wait for both backends to be running in parallel
+		By("Waiting for both backend MCPServers to be running")
+		Eventually(func() error {
+			server1 := &mcpv1alpha1.MCPServer{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      backend1Name,
+				Namespace: testNamespace,
+			}, server1); err != nil {
+				return fmt.Errorf("backend1: failed to get server: %w", err)
+			}
+			if server1.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+				return fmt.Errorf("backend1 not ready yet, phase: %s", server1.Status.Phase)
+			}
+
+			server2 := &mcpv1alpha1.MCPServer{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      backend2Name,
+				Namespace: testNamespace,
+			}, server2); err != nil {
+				return fmt.Errorf("backend2: failed to get server: %w", err)
+			}
+			if server2.Status.Phase != mcpv1alpha1.MCPServerPhaseRunning {
+				return fmt.Errorf("backend2 not ready yet, phase: %s", server2.Status.Phase)
+			}
+
+			return nil
+		}, timeout, pollingInterval).Should(Succeed(), "Both MCPServers should be running")
 
 		By("Creating VirtualMCPServer with prefix conflict resolution")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
@@ -65,7 +123,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout)
+		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
@@ -120,7 +178,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 					return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 				}
 				return nil
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+			}, 2*time.Minute, pollingInterval).Should(Succeed())
 		})
 
 		It("should aggregate echo tools from both yardstick backends", func() {
@@ -168,45 +226,8 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		})
 
 		It("should successfully call echo tool through VirtualMCPServer", func() {
-			By("Creating and initializing MCP client for VirtualMCPServer")
-			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-yardstick-test", 30*time.Second)
-			Expect(err).ToNot(HaveOccurred())
-			defer mcpClient.Close()
-
-			By("Listing available tools")
-			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(tools.Tools).ToNot(BeEmpty())
-
-			By("Finding an echo tool to call")
-			var targetToolName string
-			for _, tool := range tools.Tools {
-				// Look for any echo tool (may have prefix)
-				if strings.Contains(tool.Name, "echo") {
-					targetToolName = tool.Name
-					break
-				}
-			}
-			Expect(targetToolName).ToNot(BeEmpty(), "Should find an echo tool")
-
-			By(fmt.Sprintf("Calling echo tool: %s", targetToolName))
-			// Yardstick echo tool requires alphanumeric input
-			testInput := "hello123"
-			callRequest := mcp.CallToolRequest{}
-			callRequest.Params.Name = targetToolName
-			callRequest.Params.Arguments = map[string]any{
-				"input": testInput,
-			}
-
-			result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
-			Expect(err).ToNot(HaveOccurred(),
-				fmt.Sprintf("Should be able to call tool '%s' through VirtualMCPServer", targetToolName))
-			Expect(result).ToNot(BeNil())
-
-			// Verify the echo response contains our input
-			GinkgoWriter.Printf("Tool call result: %+v\n", result)
-			Expect(result.Content).ToNot(BeEmpty(), "Should have content in response")
+			// Use shared helper to test tool listing and calling
+			TestToolListingAndCall(vmcpNodePort, "toolhive-yardstick-test", "echo", "hello123")
 		})
 	})
 

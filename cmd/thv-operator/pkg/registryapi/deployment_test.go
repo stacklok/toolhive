@@ -176,7 +176,7 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 
 			manager := &manager{}
 
-			configManager := config.NewConfigManagerForTesting(tt.mcpRegistry)
+			configManager := config.NewConfigManager(tt.mcpRegistry)
 			deployment := manager.buildRegistryAPIDeployment(context.Background(), tt.mcpRegistry, configManager)
 			tt.validateResult(t, deployment)
 		})

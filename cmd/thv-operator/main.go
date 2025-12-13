@@ -124,7 +124,23 @@ func setupControllersAndWebhooks(mgr ctrl.Manager) error {
 			return []string{mcpServer.Spec.GroupRef}
 		},
 	); err != nil {
-		return fmt.Errorf("unable to create field index for spec.groupRef: %w", err)
+		return fmt.Errorf("unable to create field index for MCPServer spec.groupRef: %w", err)
+	}
+
+	// Set up field indexing for MCPRemoteProxy.Spec.GroupRef
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mcpv1alpha1.MCPRemoteProxy{},
+		"spec.groupRef",
+		func(obj client.Object) []string {
+			mcpRemoteProxy := obj.(*mcpv1alpha1.MCPRemoteProxy)
+			if mcpRemoteProxy.Spec.GroupRef == "" {
+				return nil
+			}
+			return []string{mcpRemoteProxy.Spec.GroupRef}
+		},
+	); err != nil {
+		return fmt.Errorf("unable to create field index for MCPRemoteProxy spec.groupRef: %w", err)
 	}
 
 	// Create a shared platform detector for all controllers

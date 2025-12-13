@@ -18,13 +18,21 @@ type MCPGroupStatus struct {
 	// +kubebuilder:default=Pending
 	Phase MCPGroupPhase `json:"phase,omitempty"`
 
-	// Servers lists server names in this group
+	// Servers lists MCPServer names in this group
 	// +optional
 	Servers []string `json:"servers"`
 
-	// ServerCount is the number of servers
+	// ServerCount is the number of MCPServers
 	// +optional
 	ServerCount int `json:"serverCount"`
+
+	// RemoteProxies lists MCPRemoteProxy names in this group
+	// +optional
+	RemoteProxies []string `json:"remoteProxies,omitempty"`
+
+	// RemoteProxyCount is the number of MCPRemoteProxies
+	// +optional
+	RemoteProxyCount int `json:"remoteProxyCount,omitempty"`
 
 	// Conditions represent observations
 	// +optional

@@ -203,6 +203,42 @@ Workflows use Go's [text/template](https://pkg.go.dev/text/template) with these 
     data: "{{json .steps.fetch_data.output}}"
 ```
 
+### Step Output Format
+
+Backend tools can return results in two formats:
+
+**Structured Content (Object Response)**: When a tool returns structured content (an object), fields are directly accessible via `.steps.<id>.output.<field>`:
+
+```yaml
+# Tool returns: {"user": {"name": "Alice", "email": "alice@example.com"}, "status": "active"}
+arguments:
+  name: "{{.steps.get_user.output.user.name}}"
+  email: "{{.steps.get_user.output.user.email}}"
+  status: "{{.steps.get_user.output.status}}"
+```
+
+**Unstructured Content (Text Response)**: When a tool returns text content, it is stored under the `text` key:
+
+```yaml
+# Tool returns: "Operation completed successfully"
+arguments:
+  result: "{{.steps.run_command.output.text}}"
+```
+
+> **Note**: Structured content must be an object. Arrays, primitives, or other non-object types fall back to unstructured content handling.
+
+### Numeric Comparisons
+
+All numeric values from JSON are `float64`. Use float literals in comparisons:
+
+```yaml
+# Correct: float literal
+condition: '{{if gt .steps.get_count.output.total 100.0}}true{{else}}false{{end}}'
+
+# Incorrect: integer literal causes type mismatch
+condition: '{{if gt .steps.get_count.output.total 100}}true{{else}}false{{end}}'
+```
+
 ---
 
 ## Advanced Error Handling

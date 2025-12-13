@@ -14,8 +14,13 @@ import (
 // BackendTool defines a tool for MCP backend servers.
 // It provides a simplified interface for creating tools with handlers in tests.
 //
-// The handler function receives a context and arguments map, and returns a string
-// result. The result should typically be valid JSON matching the tool's output schema.
+// Tools can return results in two formats:
+//   - Text content (Handler): Returns a string, stored under "text" key in step output.
+//     Templates access via {{.steps.stepID.output.text}}
+//   - Structured content (StructuredHandler): Returns a map, fields accessible directly.
+//     Templates access via {{.steps.stepID.output.fieldName}}
+//
+// Only one handler should be set. If both are set, StructuredHandler takes precedence.
 type BackendTool struct {
 	// Name is the unique identifier for the tool
 	Name string
@@ -27,10 +32,18 @@ type BackendTool struct {
 	// The schema validates the arguments passed to the tool.
 	InputSchema mcp.ToolInputSchema
 
-	// Handler processes tool calls and returns results.
+	// Handler processes tool calls and returns text content results.
 	// The handler receives the tool arguments as a map and should return
 	// a string representation of the result (typically JSON).
+	// The result is wrapped in TextContent and accessible via {{.steps.stepID.output.text}}.
 	Handler func(ctx context.Context, args map[string]any) string
+
+	// StructuredHandler processes tool calls and returns structured content results.
+	// The handler receives the tool arguments as a map and should return
+	// a map[string]any that becomes the step's output directly.
+	// Fields are accessible via {{.steps.stepID.output.fieldName}}.
+	// Takes precedence over Handler if both are set.
+	StructuredHandler func(ctx context.Context, args map[string]any) map[string]any
 }
 
 // NewBackendTool creates a new BackendTool with sensible defaults.
@@ -55,6 +68,47 @@ func NewBackendTool(name, description string, handler func(ctx context.Context, 
 			Properties: map[string]any{},
 		},
 		Handler: handler,
+	}
+}
+
+// NewBackendToolWithStructuredResponse creates a new BackendTool that returns structured content.
+// Unlike NewBackendTool which returns text content (accessible via {{.steps.stepID.output.text}}),
+// this returns structured content where fields are directly accessible via {{.steps.stepID.output.fieldName}}.
+//
+// Use this when testing composite tool step chaining that requires access to nested fields.
+//
+// Example:
+//
+//	tool := helpers.NewBackendToolWithStructuredResponse(
+//	    "get_user",
+//	    "Get user information",
+//	    func(ctx context.Context, args map[string]any) map[string]any {
+//	        return map[string]any{
+//	            "id": 123,
+//	            "name": "Alice",
+//	            "profile": map[string]any{
+//	                "email": "alice@example.com",
+//	            },
+//	        }
+//	    },
+//	)
+//
+// In a composite tool step, access fields via:
+//
+//	{{.steps.get_user_step.output.name}}           // "Alice"
+//	{{.steps.get_user_step.output.profile.email}}  // "alice@example.com"
+func NewBackendToolWithStructuredResponse(
+	name, description string,
+	handler func(ctx context.Context, args map[string]any) map[string]any,
+) BackendTool {
+	return BackendTool{
+		Name:        name,
+		Description: description,
+		InputSchema: mcp.ToolInputSchema{
+			Type:       "object",
+			Properties: map[string]any{},
+		},
+		StructuredHandler: handler,
 	}
 }
 
@@ -198,10 +252,15 @@ func CreateBackendServer(tb testing.TB, tools []BackendTool, opts ...BackendServ
 					args = make(map[string]any)
 				}
 
-				// Invoke the tool handler
+				if tool.StructuredHandler != nil {
+					result := tool.StructuredHandler(ctx, args)
+					return mcp.NewToolResultStructuredOnly(result), nil
+				}
+
+				// Fall back to text handler
 				result := tool.Handler(ctx, args)
 
-				// Return successful result with text content
+				// Return successful result with text content - accessible via {{.steps.stepID.output.text}}
 				return &mcp.CallToolResult{
 					Content: []mcp.Content{
 						mcp.NewTextContent(result),

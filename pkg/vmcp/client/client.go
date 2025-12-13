@@ -415,6 +415,8 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 }
 
 // CallTool invokes a tool on the backend MCP server.
+//
+//nolint:gocyclo // this function is complex because it handles tool calls with various content types and error handling.
 func (h *httpBackendClient) CallTool(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -471,8 +473,22 @@ func (h *httpBackendClient) CallTool(
 		return nil, fmt.Errorf("%w: %s on backend %s: %s", vmcp.ErrToolExecutionFailed, toolName, target.WorkloadID, errorMsg)
 	}
 
-	// Convert result contents to a map
-	// MCP tools return an array of Content interface (TextContent, ImageContent, etc.)
+	// Check for structured content first (preferred for composite tool step chaining).
+	// StructuredContent allows templates to access nested fields directly via {{.steps.stepID.output.field}}.
+	// Note: StructuredContent must be an object (map). Arrays or primitives are not supported.
+	if result.StructuredContent != nil {
+		if structuredMap, ok := result.StructuredContent.(map[string]any); ok {
+			logger.Debugf("Using structured content from tool %s on backend %s", toolName, target.WorkloadID)
+			return structuredMap, nil
+		}
+		// StructuredContent is not an object - fall through to Content processing
+		logger.Debugf("StructuredContent from tool %s on backend %s is not an object, falling back to Content",
+			toolName, target.WorkloadID)
+	}
+
+	// Fallback: Convert result contents to a map.
+	// MCP tools return an array of Content interface (TextContent, ImageContent, etc.).
+	// Text content is stored under "text" key, accessible via {{.steps.stepID.output.text}}.
 	resultMap := make(map[string]any)
 	if len(result.Content) > 0 {
 		textIndex := 0

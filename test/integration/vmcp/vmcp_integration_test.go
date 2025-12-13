@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -693,4 +694,418 @@ func TestVMCPServer_DefaultResults_ContinueOnError(t *testing.T) {
 	helpers.AssertTextContains(t, text, "success_from_tool")
 	// And NOT the default value
 	helpers.AssertTextNotContains(t, text, "default_from_error")
+}
+
+// TestVMCPServer_StructuredContent verifies that when a backend tool returns
+// structured content (via StructuredContent field), composite tool steps can
+// access nested fields directly via templates like {{.steps.stepID.output.field}}.
+//
+// This tests the fix for issue #2994 where StructuredContent was ignored and only
+// Content array was processed, limiting step chaining to {{.steps.stepID.output.text}}.
+//
+// The test also verifies conditional expressions work correctly with different
+// types from structured content (bool, string equality, numeric comparison).
+func TestVMCPServer_StructuredContent(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup: Create a backend server with a tool that returns structured content
+	// including various types for conditional expression testing
+	structuredServer := helpers.CreateBackendServer(t, []helpers.BackendTool{
+		helpers.NewBackendToolWithStructuredResponse("get_user", "Get user information with nested data",
+			func(_ context.Context, args map[string]any) map[string]any {
+				userID, _ := args["user_id"].(string)
+				return map[string]any{
+					"id":   userID,
+					"name": "Alice",
+					"role": "admin",
+					"profile": map[string]any{
+						"email":    "alice@example.com",
+						"verified": true,
+					},
+					"score":       95.5,
+					"login_count": 42,
+					"active":      true,
+					"tags":        []string{"admin", "developer"},
+				}
+			}),
+	}, helpers.WithBackendName("structured-mcp"))
+	defer structuredServer.Close()
+
+	// Configure backend
+	backends := []vmcp.Backend{
+		helpers.NewBackend("users",
+			helpers.WithURL(structuredServer.URL+"/mcp"),
+			helpers.WithMetadata("group", "test-group"),
+		),
+	}
+
+	// Create composite tool that tests:
+	// - Direct field access (string, nested object)
+	// - Conditional expressions with boolean fields
+	// - Conditional expressions with string equality
+	// - Conditional expressions with numeric comparison
+	workflowDefs := map[string]*composer.WorkflowDefinition{
+		"structured_content_test": {
+			Name:        "structured_content_test",
+			Description: "Tests structured content access and conditional expressions with various types",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"user_id": map[string]any{
+						"type":        "string",
+						"description": "The user ID to fetch",
+					},
+				},
+				"required": []string{"user_id"},
+			},
+			Steps: []composer.WorkflowStep{
+				{
+					ID:   "fetch_user",
+					Type: "tool",
+					Tool: "users_get_user",
+					Arguments: map[string]any{
+						"user_id": "{{.params.user_id}}",
+					},
+				},
+			},
+			Output: &vmcpconfig.OutputConfig{
+				Properties: map[string]vmcpconfig.OutputProperty{
+					// Direct field access
+					"user_name": {
+						Type:        "string",
+						Description: "The user's name",
+						Value:       "{{.steps.fetch_user.output.name}}",
+					},
+					"user_email": {
+						Type:        "string",
+						Description: "The user's email from nested profile",
+						Value:       "{{.steps.fetch_user.output.profile.email}}",
+					},
+					"user_id": {
+						Type:        "string",
+						Description: "The user's ID",
+						Value:       "{{.steps.fetch_user.output.id}}",
+					},
+					// Boolean conditional: check if user is active
+					"is_active_user": {
+						Type:        "string",
+						Description: "Whether user is active (boolean conditional)",
+						Value:       `{{if .steps.fetch_user.output.active}}active_yes{{else}}active_no{{end}}`,
+					},
+					// Nested boolean conditional: check if profile is verified
+					"is_verified": {
+						Type:        "string",
+						Description: "Whether profile is verified (nested boolean)",
+						Value:       `{{if .steps.fetch_user.output.profile.verified}}verified_yes{{else}}verified_no{{end}}`,
+					},
+					// String equality conditional: check role
+					"is_admin": {
+						Type:        "string",
+						Description: "Whether user is admin (string equality)",
+						Value:       `{{if eq .steps.fetch_user.output.role "admin"}}role_admin{{else}}role_other{{end}}`,
+					},
+					// Numeric comparison: check if score is above threshold
+					"high_score": {
+						Type:        "string",
+						Description: "Whether score is high (float comparison)",
+						Value:       `{{if gt .steps.fetch_user.output.score 90.0}}score_high{{else}}score_low{{end}}`,
+					},
+					// Integer comparison: check login count
+					// Note: JSON unmarshals all numbers as float64, so comparison uses float
+					"frequent_user": {
+						Type:        "string",
+						Description: "Whether user logs in frequently (int comparison)",
+						Value:       `{{if ge .steps.fetch_user.output.login_count 10.0}}logins_frequent{{else}}logins_rare{{end}}`,
+					},
+				},
+			},
+			Timeout: 30 * time.Second,
+		},
+	}
+
+	// Create vMCP server
+	vmcpServer := helpers.NewVMCPServer(ctx, t, backends,
+		helpers.WithPrefixConflictResolution("{workload}_"),
+		helpers.WithWorkflowDefinitions(workflowDefs),
+	)
+
+	// Create and initialize MCP client
+	vmcpURL := "http://" + vmcpServer.Address() + "/mcp"
+	client := helpers.NewMCPClient(ctx, t, vmcpURL)
+	defer client.Close()
+
+	// Call the composite tool
+	resp := client.CallTool(ctx, "structured_content_test", map[string]any{"user_id": "user-123"})
+	text := helpers.AssertToolCallSuccess(t, resp)
+
+	// Verify direct field access
+	helpers.AssertTextContains(t, text, "Alice")             // name field
+	helpers.AssertTextContains(t, text, "alice@example.com") // profile.email field
+	helpers.AssertTextContains(t, text, "user-123")          // id field (passed through)
+
+	// Verify boolean conditionals
+	helpers.AssertTextContains(t, text, "active_yes")   // active=true
+	helpers.AssertTextContains(t, text, "verified_yes") // profile.verified=true
+
+	// Verify string equality conditional
+	helpers.AssertTextContains(t, text, "role_admin") // role="admin"
+
+	// Verify numeric comparisons
+	helpers.AssertTextContains(t, text, "score_high")      // score=95.5 > 90.0
+	helpers.AssertTextContains(t, text, "logins_frequent") // login_count=42 >= 10
+}
+
+// TestVMCPServer_DefaultResults_NestedStructure verifies that defaultResults can
+// contain nested structures and that downstream steps can access nested fields
+// from the default values when a step is skipped.
+//
+// This is important for composite tools where a conditional step may be skipped
+// but downstream templates still need to access structured data from that step.
+func TestVMCPServer_DefaultResults_NestedStructure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup: Create a backend server with a tool that returns structured content
+	structuredServer := helpers.CreateBackendServer(t, []helpers.BackendTool{
+		helpers.NewBackendToolWithStructuredResponse("get_config", "Get configuration with nested data",
+			func(_ context.Context, _ map[string]any) map[string]any {
+				return map[string]any{
+					"settings": map[string]any{
+						"theme":    "dark",
+						"language": "en",
+					},
+					"features": map[string]any{
+						"beta_enabled": true,
+						"max_items":    100.0,
+					},
+					"version": "2.0.0",
+				}
+			}),
+	}, helpers.WithBackendName("config-mcp"))
+	defer structuredServer.Close()
+
+	// Configure backend
+	backends := []vmcp.Backend{
+		helpers.NewBackend("config",
+			helpers.WithURL(structuredServer.URL+"/mcp"),
+			helpers.WithMetadata("group", "test-group"),
+		),
+	}
+
+	// Create composite tool with:
+	// - A conditional step that may be skipped
+	// - Nested defaultResults that provide fallback structured data
+	// - Output that references nested fields from both executed and skipped scenarios
+	workflowDefs := map[string]*composer.WorkflowDefinition{
+		"nested_defaults_test": {
+			Name:        "nested_defaults_test",
+			Description: "Tests nested defaultResults when a conditional step is skipped",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"fetch_config": map[string]any{
+						"type":        "boolean",
+						"description": "Whether to fetch the config",
+					},
+				},
+				"required": []string{"fetch_config"},
+			},
+			Steps: []composer.WorkflowStep{
+				{
+					ID:        "get_config_step",
+					Type:      "tool",
+					Tool:      "config_get_config",
+					Condition: "{{.params.fetch_config}}",
+					Arguments: map[string]any{},
+					// Nested defaultResults - used when step is skipped
+					DefaultResults: map[string]any{
+						"settings": map[string]any{
+							"theme":    "light",
+							"language": "default",
+						},
+						"features": map[string]any{
+							"beta_enabled": false,
+							"max_items":    50.0,
+						},
+						"version": "1.0.0",
+					},
+				},
+			},
+			// Output references nested fields - works for both real and default results
+			Output: &vmcpconfig.OutputConfig{
+				Properties: map[string]vmcpconfig.OutputProperty{
+					"theme": {
+						Type:        "string",
+						Description: "The theme setting",
+						Value:       "{{.steps.get_config_step.output.settings.theme}}",
+					},
+					"language": {
+						Type:        "string",
+						Description: "The language setting",
+						Value:       "{{.steps.get_config_step.output.settings.language}}",
+					},
+					"beta_enabled": {
+						Type:        "string",
+						Description: "Whether beta is enabled",
+						Value:       `{{if .steps.get_config_step.output.features.beta_enabled}}beta_on{{else}}beta_off{{end}}`,
+					},
+					"max_items": {
+						Type:        "string",
+						Description: "Max items threshold check",
+						Value:       `{{if gt .steps.get_config_step.output.features.max_items 75.0}}items_high{{else}}items_low{{end}}`,
+					},
+					"version": {
+						Type:        "string",
+						Description: "The version",
+						Value:       "{{.steps.get_config_step.output.version}}",
+					},
+				},
+			},
+			Timeout: 30 * time.Second,
+		},
+	}
+
+	// Create vMCP server
+	vmcpServer := helpers.NewVMCPServer(ctx, t, backends,
+		helpers.WithPrefixConflictResolution("{workload}_"),
+		helpers.WithWorkflowDefinitions(workflowDefs),
+	)
+
+	// Create and initialize MCP client
+	vmcpURL := "http://" + vmcpServer.Address() + "/mcp"
+	client := helpers.NewMCPClient(ctx, t, vmcpURL)
+	defer client.Close()
+
+	// Test 1: fetch_config=false - step is skipped, uses nested defaultResults
+	resp := client.CallTool(ctx, "nested_defaults_test", map[string]any{"fetch_config": false})
+	text := helpers.AssertToolCallSuccess(t, resp)
+
+	// Verify default nested values are used
+	helpers.AssertTextContains(t, text, "light")     // settings.theme default
+	helpers.AssertTextContains(t, text, "default")   // settings.language default
+	helpers.AssertTextContains(t, text, "beta_off")  // features.beta_enabled=false
+	helpers.AssertTextContains(t, text, "items_low") // features.max_items=50 < 75
+	helpers.AssertTextContains(t, text, "1.0.0")     // version default
+
+	// Verify real values are NOT present
+	helpers.AssertTextNotContains(t, text, "dark")
+	helpers.AssertTextNotContains(t, text, "2.0.0")
+
+	// Test 2: fetch_config=true - step executes, uses real structured content
+	resp = client.CallTool(ctx, "nested_defaults_test", map[string]any{"fetch_config": true})
+	text = helpers.AssertToolCallSuccess(t, resp)
+
+	// Verify real nested values are used
+	helpers.AssertTextContains(t, text, "dark")       // settings.theme from tool
+	helpers.AssertTextContains(t, text, "en")         // settings.language from tool
+	helpers.AssertTextContains(t, text, "beta_on")    // features.beta_enabled=true
+	helpers.AssertTextContains(t, text, "items_high") // features.max_items=100 > 75
+	helpers.AssertTextContains(t, text, "2.0.0")      // version from tool
+
+	// Verify default values are NOT present
+	helpers.AssertTextNotContains(t, text, "light")
+	helpers.AssertTextNotContains(t, text, "1.0.0")
+}
+
+// TestVMCPServer_StructuredContent_IntegerComparisonError documents that using
+// integer literals in template comparisons with JSON numeric values produces an error.
+//
+// JSON unmarshals all numbers as float64. Go templates require matching types for
+// comparison functions (eq, ne, lt, le, gt, ge). Using an integer literal like "10"
+// instead of a float literal like "10.0" causes a type mismatch error.
+//
+// This test documents the expected error behavior to help users understand why
+// they must use float literals in numeric comparisons.
+func TestVMCPServer_StructuredContent_IntegerComparisonError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup: Create a backend server that returns a numeric value
+	numericServer := helpers.CreateBackendServer(t, []helpers.BackendTool{
+		helpers.NewBackendToolWithStructuredResponse("get_count", "Get a count value",
+			func(_ context.Context, _ map[string]any) map[string]any {
+				return map[string]any{
+					"count": 42, // JSON will unmarshal this as float64
+				}
+			}),
+	}, helpers.WithBackendName("numeric-mcp"))
+	defer numericServer.Close()
+
+	// Configure backend
+	backends := []vmcp.Backend{
+		helpers.NewBackend("numeric",
+			helpers.WithURL(numericServer.URL+"/mcp"),
+			helpers.WithMetadata("group", "test-group"),
+		),
+	}
+
+	// Create composite tool that uses INTEGER literal in comparison (incorrect)
+	// This should produce an error because JSON numbers are float64
+	workflowDefs := map[string]*composer.WorkflowDefinition{
+		"integer_comparison_test": {
+			Name:        "integer_comparison_test",
+			Description: "Tests that integer comparison produces type mismatch error",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+			Steps: []composer.WorkflowStep{
+				{
+					ID:        "get_count_step",
+					Type:      "tool",
+					Tool:      "numeric_get_count",
+					Arguments: map[string]any{},
+				},
+			},
+			Output: &vmcpconfig.OutputConfig{
+				Properties: map[string]vmcpconfig.OutputProperty{
+					// INCORRECT: Using integer literal "10" instead of float "10.0"
+					// This will cause: "error calling ge: incompatible types for comparison"
+					"is_high": {
+						Type:        "string",
+						Description: "Check if count is high (uses integer literal - will fail)",
+						Value:       `{{if ge .steps.get_count_step.output.count 10}}high{{else}}low{{end}}`,
+					},
+				},
+			},
+			Timeout: 30 * time.Second,
+		},
+	}
+
+	// Create vMCP server
+	vmcpServer := helpers.NewVMCPServer(ctx, t, backends,
+		helpers.WithPrefixConflictResolution("{workload}_"),
+		helpers.WithWorkflowDefinitions(workflowDefs),
+	)
+
+	// Create and initialize MCP client
+	vmcpURL := "http://" + vmcpServer.Address() + "/mcp"
+	client := helpers.NewMCPClient(ctx, t, vmcpURL)
+	defer client.Close()
+
+	// Call the composite tool - expect it to return an error result
+	resp := client.CallTool(ctx, "integer_comparison_test", map[string]any{})
+
+	// The tool call should return an error (IsError=true) with type mismatch message
+	require.NotNil(t, resp, "tool call result should not be nil")
+	assert.True(t, resp.IsError, "tool call should return an error due to type mismatch")
+
+	// Extract error message from content
+	var errorText string
+	if len(resp.Content) > 0 {
+		if textContent, ok := mcp.AsTextContent(resp.Content[0]); ok {
+			errorText = textContent.Text
+		}
+	}
+
+	// Verify the error message indicates type incompatibility
+	assert.Contains(t, errorText, "incompatible types for comparison",
+		"Error should mention incompatible types. Got: %s", errorText)
 }

@@ -394,6 +394,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		host := fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, mcpServer.Namespace)
 		mcpServer.Status.URL = transport.GenerateMCPServerURL(
 			mcpServer.Spec.Transport,
+			mcpServer.Spec.ProxyMode,
 			host,
 			int(mcpServer.GetProxyPort()),
 			mcpServer.Name,

@@ -1476,6 +1476,7 @@ func (d *DefaultManager) getRemoteWorkloadsFromState(
 		if runConfig.Port > 0 {
 			proxyURL = transport.GenerateMCPServerURL(
 				transportType.String(),
+				string(runConfig.ProxyMode),
 				transport.LocalhostIPv4,
 				runConfig.Port,
 				name,

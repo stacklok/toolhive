@@ -282,6 +282,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportType := labels.GetTransportType(r.Config.ContainerLabels)
 	serverURL := transport.GenerateMCPServerURL(
 		transportType,
+		string(r.Config.ProxyMode),
 		"localhost",
 		r.Config.Port,
 		r.Config.ContainerName,

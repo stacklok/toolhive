@@ -205,7 +205,6 @@ func (d *DefaultManager) GetWorkloadAsVMCPBackend(ctx context.Context, workloadN
 	}
 
 	// Set system metadata (these override user labels to prevent conflicts)
-	backend.Metadata["tool_type"] = workload.ToolType
 	backend.Metadata["workload_status"] = string(workload.Status)
 
 	return backend, nil
@@ -537,6 +536,10 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	// Use the restart command to start the detached process
 	// The config has already been saved to disk, so restart can load it
 	detachedArgs := []string{"restart", runConfig.BaseName, "--foreground"}
+
+	if runConfig.Debug {
+		detachedArgs = append(detachedArgs, "--debug")
+	}
 
 	// Create a new command
 	// #nosec G204 - This is safe as execPath is the path to the current binary
@@ -1414,7 +1417,6 @@ func (d *DefaultManager) getRemoteWorkloadsFromState(
 			Port:          runConfig.Port,
 			TransportType: transportType,
 			ProxyMode:     effectiveProxyMode,
-			ToolType:      "remote",
 			Group:         runConfig.Group,
 			CreatedAt:     workloadStatus.CreatedAt,
 			Labels:        runConfig.ContainerLabels,

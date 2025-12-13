@@ -22,6 +22,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
 
+const sseSuffix = "sse"
+
 var (
 	inspectorUIPort       int
 	inspectorMCPProxyPort int
@@ -163,8 +165,8 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 		var suffix string
 		var transportTypeStr string
 		if transportType == types.TransportTypeSSE || transportType == types.TransportTypeStdio {
-			suffix = "sse"
-			transportTypeStr = "sse"
+			suffix = sseSuffix
+			transportTypeStr = sseSuffix
 		} else {
 			suffix = "mcp"
 			transportTypeStr = "streamable-http"

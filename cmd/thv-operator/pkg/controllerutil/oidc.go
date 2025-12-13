@@ -44,6 +44,7 @@ func AddOIDCConfigOptions(
 		oidcConfig.ResourceURL,
 		oidcConfig.JWKSAllowPrivateIP,
 		oidcConfig.InsecureAllowHTTP,
+		oidcConfig.Scopes,
 	))
 
 	return nil

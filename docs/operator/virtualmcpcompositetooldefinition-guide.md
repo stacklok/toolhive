@@ -201,6 +201,63 @@ Configure how steps handle errors:
 - `continue`: Continue to next step, ignoring error
 - `retry`: Retry the step up to `maxRetries` times
 
+### Default Results
+
+When a step may be skipped (due to a condition) or may fail with `continue` error handling, you can specify `defaultResults` to provide fallback output values for downstream steps:
+
+```yaml
+- id: optional_enrichment
+  type: tool_call
+  tool: enrichment.service
+  condition: "{{.params.enable_enrichment}}"
+  arguments:
+    data: "{{.params.input}}"
+  # When skipped, use these default values as the step's output
+  defaultResults:
+    text: "no enrichment performed"
+
+- id: use_result
+  type: tool_call
+  tool: processor.handle
+  dependsOn:
+    - optional_enrichment
+  arguments:
+    # This template works whether optional_enrichment ran or was skipped
+    enriched_data: "{{.steps.optional_enrichment.output.text}}"
+```
+
+**When to Use `defaultResults`**:
+- Step has a `condition` that may evaluate to false
+- Step has `onError.action: continue` and may fail
+- Downstream steps reference this step's output in templates
+
+**Key Points**:
+- `defaultResults` is a map where keys correspond to output field names
+- Values must match the expected output structure from the backend tool
+- Backend tool calls store text content under the `text` key, so use `defaultResults.text` for text outputs
+- Validation will error if a skippable step's output is referenced but `defaultResults` is not specified for that field
+- `defaultResults` do not need to be specified for outputs that are not referenced in the composite tool definition.
+
+**Example with error handling**:
+
+```yaml
+- id: external_lookup
+  type: tool_call
+  tool: external.api
+  onError:
+    action: continue  # Continue workflow even if this fails
+  defaultResults:
+    text: "{\"status\": \"unavailable\", \"data\": null}"
+
+- id: process_result
+  type: tool_call
+  tool: internal.process
+  dependsOn:
+    - external_lookup
+  arguments:
+    lookup_result: "{{.steps.external_lookup.output.text}}"
+```
+
 ### Timeouts
 
 Configure timeouts at workflow and step level:

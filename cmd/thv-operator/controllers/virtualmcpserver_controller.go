@@ -4,10 +4,10 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"reflect"
-	"regexp"
 	"strings"
 	"time"
 
@@ -101,11 +101,30 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// Create status manager for batched updates
 	statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
 
+	// Validate PodTemplateSpec early - before other validations
+	if !r.validateAndUpdatePodTemplateStatus(ctx, vmcp, statusManager) {
+		// Invalid PodTemplateSpec - apply status updates and return without error to avoid infinite retries
+		// The user must fix the spec and the next reconciliation will retry
+		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+			ctxLogger.Error(err, "Failed to apply status updates after PodTemplateSpec validation error")
+		}
+		return ctrl.Result{}, nil
+	}
+
 	// Validate GroupRef
 	if err := r.validateGroupRef(ctx, vmcp, statusManager); err != nil {
 		// Apply status changes before returning error
 		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
 			ctxLogger.Error(err, "Failed to apply status updates after GroupRef validation error")
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Validate CompositeToolRefs
+	if err := r.validateCompositeToolRefs(ctx, vmcp, statusManager); err != nil {
+		// Apply status changes before returning error
+		if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+			ctxLogger.Error(err, "Failed to apply status updates after CompositeToolRefs validation error")
 		}
 		return ctrl.Result{}, err
 	}
@@ -125,30 +144,42 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		ctxLogger.Error(err, "Failed to discover backends")
 		// Don't fail reconciliation if backend discovery fails, but log the error
 		statusManager.SetCondition(
-			"BackendsDiscovered",
-			"BackendDiscoveryFailed",
+			mcpv1alpha1.ConditionTypeVirtualMCPServerBackendsDiscovered,
+			mcpv1alpha1.ConditionReasonVirtualMCPServerBackendDiscoveryFailed,
 			fmt.Sprintf("Failed to discover backends: %v", err),
 			metav1.ConditionFalse,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 	} else {
 		statusManager.SetDiscoveredBackends(discoveredBackends)
 		statusManager.SetCondition(
-			"BackendsDiscovered",
-			"BackendsDiscoveredSuccessfully",
+			mcpv1alpha1.ConditionTypeVirtualMCPServerBackendsDiscovered,
+			mcpv1alpha1.ConditionReasonVirtualMCPServerBackendsDiscoveredSuccessfully,
 			fmt.Sprintf("Discovered %d backends", len(discoveredBackends)),
 			metav1.ConditionTrue,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 		ctxLogger.Info("Discovered backends", "count", len(discoveredBackends))
 	}
 
-	// Update status based on pod health
-	if err := r.updateVirtualMCPServerStatus(ctx, vmcp, statusManager); err != nil {
+	// Fetch the latest version before updating status to ensure we use the current Generation
+	latestVMCP := &mcpv1alpha1.VirtualMCPServer{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      vmcp.Name,
+		Namespace: vmcp.Namespace,
+	}, latestVMCP); err != nil {
+		ctxLogger.Error(err, "Failed to get latest VirtualMCPServer before status update")
+		return ctrl.Result{}, err
+	}
+
+	// Update status based on pod health using the latest Generation
+	if err := r.updateVirtualMCPServerStatus(ctx, latestVMCP, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to update VirtualMCPServer status")
 		return ctrl.Result{}, err
 	}
 
 	// Apply all collected status changes in a single batch update
-	if err := r.applyStatusUpdates(ctx, vmcp, statusManager); err != nil {
+	if err := r.applyStatusUpdates(ctx, latestVMCP, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to apply final status updates")
 		return ctrl.Result{}, err
 	}
@@ -223,6 +254,7 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 			message,
 			metav1.ConditionFalse,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 		return err
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get MCPGroup")
@@ -240,6 +272,7 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 			message,
 			metav1.ConditionFalse,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 		// Requeue to check again later
 		return fmt.Errorf("MCPGroup %s is not ready", vmcp.Spec.GroupRef.Name)
 	}
@@ -250,8 +283,136 @@ func (r *VirtualMCPServerReconciler) validateGroupRef(
 		fmt.Sprintf("MCPGroup %s is valid and ready", vmcp.Spec.GroupRef.Name),
 		metav1.ConditionTrue,
 	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
 
 	return nil
+}
+
+// validateCompositeToolRefs validates that all referenced VirtualMCPCompositeToolDefinition resources exist
+func (r *VirtualMCPServerReconciler) validateCompositeToolRefs(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	// If no composite tool refs, nothing to validate
+	if len(vmcp.Spec.CompositeToolRefs) == 0 {
+		// Set condition to indicate validation passed (no refs to validate)
+		statusManager.SetCompositeToolRefsValidatedCondition(
+			mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
+			"No composite tool references to validate",
+			metav1.ConditionTrue,
+		)
+		return nil
+	}
+
+	// Validate each referenced composite tool definition exists
+	for _, ref := range vmcp.Spec.CompositeToolRefs {
+		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
+		err := r.Get(ctx, types.NamespacedName{
+			Name:      ref.Name,
+			Namespace: vmcp.Namespace,
+		}, compositeToolDef)
+
+		if errors.IsNotFound(err) {
+			message := fmt.Sprintf("Referenced VirtualMCPCompositeToolDefinition %s not found", ref.Name)
+			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetCompositeToolRefsValidatedCondition(
+				mcpv1alpha1.ConditionReasonCompositeToolRefNotFound,
+				message,
+				metav1.ConditionFalse,
+			)
+			return err
+		} else if err != nil {
+			ctxLogger.Error(err, "Failed to get VirtualMCPCompositeToolDefinition", "name", ref.Name)
+			return err
+		}
+
+		// Check that the composite tool definition is validated and valid
+		if compositeToolDef.Status.ValidationStatus == mcpv1alpha1.ValidationStatusInvalid {
+			message := fmt.Sprintf("Referenced VirtualMCPCompositeToolDefinition %s is invalid", ref.Name)
+			if len(compositeToolDef.Status.ValidationErrors) > 0 {
+				message = fmt.Sprintf("%s: %s", message, strings.Join(compositeToolDef.Status.ValidationErrors, "; "))
+			}
+			statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetCompositeToolRefsValidatedCondition(
+				mcpv1alpha1.ConditionReasonCompositeToolRefInvalid,
+				message,
+				metav1.ConditionFalse,
+			)
+			return fmt.Errorf("referenced VirtualMCPCompositeToolDefinition %s is invalid", ref.Name)
+		}
+
+		// If ValidationStatus is Unknown, we still allow it (validation might be in progress)
+		// but log a warning
+		if compositeToolDef.Status.ValidationStatus == mcpv1alpha1.ValidationStatusUnknown {
+			ctxLogger.V(1).Info("Referenced composite tool definition validation status is Unknown, proceeding",
+				"name", ref.Name, "namespace", vmcp.Namespace)
+		}
+	}
+
+	// All composite tool refs are valid
+	statusManager.SetCompositeToolRefsValidatedCondition(
+		mcpv1alpha1.ConditionReasonCompositeToolRefsValid,
+		fmt.Sprintf("All %d composite tool references are valid", len(vmcp.Spec.CompositeToolRefs)),
+		metav1.ConditionTrue,
+	)
+
+	return nil
+}
+
+// validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and uses StatusManager to collect
+// status changes. Returns true if validation passes, false otherwise.
+// The caller is responsible for applying status updates via applyStatusUpdates().
+func (r *VirtualMCPServerReconciler) validateAndUpdatePodTemplateStatus(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) bool {
+	ctxLogger := log.FromContext(ctx)
+
+	// Only validate if PodTemplateSpec is provided
+	if vmcp.Spec.PodTemplateSpec == nil || vmcp.Spec.PodTemplateSpec.Raw == nil {
+		// No PodTemplateSpec provided, validation passes
+		return true
+	}
+
+	_, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp")
+	if err != nil {
+		// Record event for invalid PodTemplateSpec
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "InvalidPodTemplateSpec",
+				"Failed to parse PodTemplateSpec: %v. Deployment blocked until PodTemplateSpec is fixed.", err)
+		}
+
+		// Use StatusManager to collect status changes
+		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
+		statusManager.SetMessage(fmt.Sprintf("Invalid PodTemplateSpec: %v", err))
+		statusManager.SetCondition(
+			mcpv1alpha1.ConditionTypeVirtualMCPServerPodTemplateSpecValid,
+			mcpv1alpha1.ConditionReasonVirtualMCPServerPodTemplateSpecInvalid,
+			fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+
+		ctxLogger.Error(err, "PodTemplateSpec validation failed")
+		return false
+	}
+
+	// Use StatusManager to collect status changes for valid PodTemplateSpec
+	statusManager.SetCondition(
+		mcpv1alpha1.ConditionTypeVirtualMCPServerPodTemplateSpecValid,
+		mcpv1alpha1.ConditionReasonVirtualMCPServerPodTemplateSpecValid,
+		"PodTemplateSpec is valid",
+		metav1.ConditionTrue,
+	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+
+	return true
 }
 
 // ensureAllResources ensures all Kubernetes resources for the VirtualMCPServer
@@ -272,6 +433,7 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 			fmt.Sprintf("Authentication configuration is invalid: %v", err),
 			metav1.ConditionFalse,
 		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
 		// Record event for secret validation failure
 		if r.Recorder != nil {
 			r.Recorder.Eventf(vmcp, corev1.EventTypeWarning, "SecretValidationFailed",
@@ -286,6 +448,7 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 		"Authentication configuration is valid",
 		metav1.ConditionTrue,
 	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
 
 	// List workloads once and pass to functions that need them
 	// This ensures consistency - all functions use the same workload list
@@ -432,7 +595,7 @@ func (r *VirtualMCPServerReconciler) getVmcpConfigChecksum(
 func (r *VirtualMCPServerReconciler) ensureDeployment(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	workloadNames []string,
+	typedWorkloads []workloads.TypedWorkload,
 ) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -452,7 +615,7 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 	err = r.Get(ctx, types.NamespacedName{Name: vmcp.Name, Namespace: vmcp.Namespace}, deployment)
 
 	if errors.IsNotFound(err) {
-		dep := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, workloadNames)
+		dep := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, typedWorkloads)
 		if dep == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create Deployment object")
 		}
@@ -481,8 +644,8 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 
 	// Deployment exists - check if it needs to be updated
 	// deploymentNeedsUpdate performs a detailed comparison to avoid unnecessary updates
-	if r.deploymentNeedsUpdate(ctx, deployment, vmcp, vmcpConfigChecksum, workloadNames) {
-		newDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, workloadNames)
+	if r.deploymentNeedsUpdate(ctx, deployment, vmcp, vmcpConfigChecksum, typedWorkloads) {
+		newDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, typedWorkloads)
 		if newDeployment == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create updated Deployment object")
 		}
@@ -614,7 +777,7 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	vmcpConfigChecksum string,
-	workloadNames []string,
+	typedWorkloads []workloads.TypedWorkload,
 ) bool {
 	if deployment == nil || vmcp == nil {
 		return true
@@ -624,7 +787,7 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	if r.containerNeedsUpdate(ctx, deployment, vmcp, workloadNames) {
+	if r.containerNeedsUpdate(ctx, deployment, vmcp, typedWorkloads) {
 		return true
 	}
 
@@ -636,6 +799,10 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
+	if r.podTemplateSpecNeedsUpdate(ctx, deployment, vmcp, typedWorkloads) {
+		return true
+	}
+
 	return false
 }
 
@@ -644,7 +811,7 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	workloadNames []string,
+	typedWorkloads []workloads.TypedWorkload,
 ) bool {
 	if deployment == nil || vmcp == nil || len(deployment.Spec.Template.Spec.Containers) == 0 {
 		return true
@@ -663,8 +830,14 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 		return true
 	}
 
+	// Check if container args have changed (includes --debug flag from logLevel)
+	expectedArgs := r.buildContainerArgsForVmcp(vmcp)
+	if !reflect.DeepEqual(container.Args, expectedArgs) {
+		return true
+	}
+
 	// Check if environment variables have changed
-	expectedEnv := r.buildEnvVarsForVmcp(ctx, vmcp, workloadNames)
+	expectedEnv := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
 	if !reflect.DeepEqual(container.Env, expectedEnv) {
 		return true
 	}
@@ -735,6 +908,53 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	}
 
 	return false
+}
+
+// podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed
+// This method compares the current deployment against a freshly generated deployment
+// that includes the PodTemplateSpec customizations.
+func (r *VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	typedWorkloads []workloads.TypedWorkload,
+) bool {
+	if deployment == nil || vmcp == nil {
+		return true
+	}
+
+	// If no PodTemplateSpec is provided, no update needed
+	if vmcp.Spec.PodTemplateSpec == nil || vmcp.Spec.PodTemplateSpec.Raw == nil {
+		return false
+	}
+
+	// Get the vmcp config checksum
+	vmcpConfigChecksum, err := r.getVmcpConfigChecksum(ctx, vmcp)
+	if err != nil {
+		// If we can't get the checksum, assume update is needed
+		return true
+	}
+
+	// Generate a fresh deployment with PodTemplateSpec applied
+	expectedDeployment := r.deploymentForVirtualMCPServer(ctx, vmcp, vmcpConfigChecksum, typedWorkloads)
+	if expectedDeployment == nil {
+		// If we can't generate expected deployment, assume update is needed
+		return true
+	}
+
+	// Compare the pod template specs
+	currentJSON, err := json.Marshal(deployment.Spec.Template)
+	if err != nil {
+		return true
+	}
+
+	expectedJSON, err := json.Marshal(expectedDeployment.Spec.Template)
+	if err != nil {
+		return true
+	}
+
+	// If the JSON representations differ, an update is needed
+	return string(currentJSON) != string(expectedJSON)
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated
@@ -813,8 +1033,142 @@ func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 // - Status depends on spec reconciliation (need deployment/service to exist first)
 // - Status updates are not frequent enough to warrant separate reconciliation
 // - Single reconcile loop is simpler and matches existing codebase patterns
-//
-//nolint:gocyclo // Status reconciliation requires multiple conditions for pod phases and backend health
+
+// statusDecision encapsulates the status update decision to reduce branching and repetition
+type statusDecision struct {
+	phase          mcpv1alpha1.VirtualMCPServerPhase
+	message        string
+	reason         string
+	conditionMsg   string
+	conditionState metav1.ConditionStatus
+}
+
+// countBackendHealth counts ready and unhealthy backends
+func countBackendHealth(ctx context.Context, backends []mcpv1alpha1.DiscoveredBackend) (ready, unhealthy int) {
+	ctxLogger := log.FromContext(ctx)
+
+	for _, backend := range backends {
+		switch backend.Status {
+		case mcpv1alpha1.BackendStatusReady:
+			ready++
+		case mcpv1alpha1.BackendStatusUnavailable,
+			mcpv1alpha1.BackendStatusDegraded,
+			mcpv1alpha1.BackendStatusUnknown:
+			unhealthy++
+		default:
+			ctxLogger.V(1).Info("Unexpected backend status, treating as unhealthy",
+				"backend", backend.Name, "status", backend.Status)
+			unhealthy++
+		}
+	}
+	return ready, unhealthy
+}
+
+// determineStatusFromBackends evaluates backend health to determine status
+func (*VirtualMCPServerReconciler) determineStatusFromBackends(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) statusDecision {
+	ctxLogger := log.FromContext(ctx)
+
+	ready, unhealthy := countBackendHealth(ctx, vmcp.Status.DiscoveredBackends)
+	total := ready + unhealthy
+
+	// All backends unhealthy
+	if ready == 0 && unhealthy > 0 {
+		return statusDecision{
+			phase:          mcpv1alpha1.VirtualMCPServerPhaseDegraded,
+			message:        fmt.Sprintf("Virtual MCP server is running but all %d backends are unhealthy", unhealthy),
+			reason:         "BackendsUnavailable",
+			conditionMsg:   "All backends are unhealthy",
+			conditionState: metav1.ConditionFalse,
+		}
+	}
+
+	// Some backends unhealthy
+	if unhealthy > 0 {
+		return statusDecision{
+			phase:          mcpv1alpha1.VirtualMCPServerPhaseDegraded,
+			message:        fmt.Sprintf("Virtual MCP server is running with %d/%d backends available", ready, total),
+			reason:         "BackendsDegraded",
+			conditionMsg:   "Some backends are unhealthy",
+			conditionState: metav1.ConditionFalse,
+		}
+	}
+
+	// All backends ready
+	if ready > 0 {
+		return statusDecision{
+			phase:          mcpv1alpha1.VirtualMCPServerPhaseReady,
+			message:        "Virtual MCP server is running",
+			reason:         "DeploymentReady",
+			conditionMsg:   "Deployment is ready",
+			conditionState: metav1.ConditionTrue,
+		}
+	}
+
+	// Edge case: backends exist but none counted
+	ctxLogger.V(1).Info("No backends were counted, treating as degraded",
+		"discoveredBackendsCount", len(vmcp.Status.DiscoveredBackends))
+	return statusDecision{
+		phase:          mcpv1alpha1.VirtualMCPServerPhaseDegraded,
+		message:        "Virtual MCP server is running but backend status cannot be determined",
+		reason:         "BackendsUnknown",
+		conditionMsg:   "Backend status unknown",
+		conditionState: metav1.ConditionFalse,
+	}
+}
+
+// determineStatusFromPods determines the appropriate status based on pod states.
+// The 'ready' parameter counts pods that have passed their readiness probes (PodReady condition is True),
+// not just pods in Running phase. This ensures the VirtualMCPServer is only marked Ready when
+// the underlying pods are actually ready to serve traffic.
+func (r *VirtualMCPServerReconciler) determineStatusFromPods(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	ready, pending, failed int,
+) statusDecision {
+	// Handle non-ready states first (early returns reduce nesting)
+	if ready == 0 {
+		if failed > 0 {
+			return statusDecision{
+				phase:          mcpv1alpha1.VirtualMCPServerPhaseFailed,
+				message:        "Virtual MCP server failed to start",
+				reason:         "DeploymentFailed",
+				conditionMsg:   "Deployment failed",
+				conditionState: metav1.ConditionFalse,
+			}
+		}
+		// pending > 0 or no pods at all
+		msg := "Virtual MCP server is starting"
+		if pending == 0 {
+			msg = "No pods found for Virtual MCP server"
+		}
+		return statusDecision{
+			phase:          mcpv1alpha1.VirtualMCPServerPhasePending,
+			message:        msg,
+			reason:         "DeploymentNotReady",
+			conditionMsg:   "Deployment is not yet ready",
+			conditionState: metav1.ConditionFalse,
+		}
+	}
+
+	// Pods are ready (passed readiness probes) - check backend health if backends exist
+	if len(vmcp.Status.DiscoveredBackends) == 0 {
+		// No backends discovered yet - pods ready is sufficient for Ready
+		return statusDecision{
+			phase:          mcpv1alpha1.VirtualMCPServerPhaseReady,
+			message:        "Virtual MCP server is running",
+			reason:         "DeploymentReady",
+			conditionMsg:   "Deployment is ready",
+			conditionState: metav1.ConditionTrue,
+		}
+	}
+
+	// Backends exist - determine health status
+	return r.determineStatusFromBackends(ctx, vmcp)
+}
+
 func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -830,43 +1184,42 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 		return err
 	}
 
-	// Update the status based on the pod status
-	var running, pending, failed int
+	// Count pod states based on actual readiness, not just phase.
+	// A pod in Running phase may not be ready to serve traffic if it hasn't
+	// passed its readiness probe yet. We must check the PodReady condition.
+	var ready, pending, failed int
 	for _, pod := range podList.Items {
-		switch pod.Status.Phase {
-		case corev1.PodRunning:
-			running++
-		case corev1.PodPending:
-			pending++
-		case corev1.PodFailed:
+		// Check for terminal failure states first
+		if pod.Status.Phase == corev1.PodFailed {
 			failed++
-		case corev1.PodSucceeded:
-			running++
-		case corev1.PodUnknown:
+			continue
+		}
+
+		// Check if pod is actually ready to serve traffic (passed readiness probes)
+		// This is the authoritative signal that the pod can handle requests
+		isPodReady := false
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+				isPodReady = true
+				break
+			}
+		}
+
+		if isPodReady {
+			ready++
+		} else {
+			// Pod exists but isn't ready yet (still starting, or readiness probe failing)
 			pending++
 		}
 	}
 
-	// Update the status based on pod health
-	if running > 0 {
-		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseReady)
-		statusManager.SetMessage("Virtual MCP server is running")
-		statusManager.SetReadyCondition("DeploymentReady", "Deployment is ready", metav1.ConditionTrue)
-	} else if pending > 0 {
-		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhasePending)
-		statusManager.SetMessage("Virtual MCP server is starting")
-		statusManager.SetReadyCondition("DeploymentNotReady", "Deployment is not yet ready", metav1.ConditionFalse)
-	} else if failed > 0 {
-		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed)
-		statusManager.SetMessage("Virtual MCP server failed to start")
-		statusManager.SetReadyCondition("DeploymentFailed", "Deployment failed", metav1.ConditionFalse)
-	} else {
-		statusManager.SetPhase(mcpv1alpha1.VirtualMCPServerPhasePending)
-		statusManager.SetMessage("No pods found for Virtual MCP server")
-		statusManager.SetReadyCondition("DeploymentNotReady", "No pods found", metav1.ConditionFalse)
-	}
+	// Determine status in one place (no branching/repetition)
+	decision := r.determineStatusFromPods(ctx, vmcp, ready, pending, failed)
 
-	// Update ObservedGeneration to reflect that we've processed this generation
+	// Apply all status updates at once
+	statusManager.SetPhase(decision.phase)
+	statusManager.SetMessage(decision.message)
+	statusManager.SetReadyCondition(decision.reason, decision.conditionMsg, decision.conditionState)
 	statusManager.SetObservedGeneration(vmcp.Generation)
 
 	return nil
@@ -946,35 +1299,15 @@ func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 	if strategy.TokenExchange != nil &&
 		externalAuthConfig.Spec.TokenExchange != nil &&
 		externalAuthConfig.Spec.TokenExchange.ClientSecretRef != nil {
-		strategy.TokenExchange.ClientSecretEnv = generateUniqueTokenExchangeEnvVarName(externalAuthConfig.Name)
+		strategy.TokenExchange.ClientSecretEnv = ctrlutil.GenerateUniqueTokenExchangeEnvVarName(externalAuthConfig.Name)
 	}
 	if strategy.HeaderInjection != nil &&
 		externalAuthConfig.Spec.HeaderInjection != nil &&
 		externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
-		strategy.HeaderInjection.HeaderValueEnv = generateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
+		strategy.HeaderInjection.HeaderValueEnv = ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
 	}
 
 	return strategy, nil
-}
-
-// generateUniqueTokenExchangeEnvVarName generates a unique environment variable name for token exchange
-// client secrets, incorporating the ExternalAuthConfig name to ensure uniqueness.
-func generateUniqueTokenExchangeEnvVarName(configName string) string {
-	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
-	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
-	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
-	return fmt.Sprintf("TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET_%s", sanitized)
-}
-
-// generateUniqueHeaderInjectionEnvVarName generates a unique environment variable name for header injection
-// values, incorporating the ExternalAuthConfig name to ensure uniqueness.
-func generateUniqueHeaderInjectionEnvVarName(configName string) string {
-	// Sanitize config name for use in env var (uppercase, replace invalid chars with underscore)
-	sanitized := strings.ToUpper(strings.ReplaceAll(configName, "-", "_"))
-	// Remove any remaining invalid characters (keep only alphanumeric and underscore)
-	sanitized = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(sanitized, "_")
-	return fmt.Sprintf("TOOLHIVE_HEADER_INJECTION_VALUE_%s", sanitized)
 }
 
 // convertBackendAuthConfigToVMCP converts a BackendAuthConfig from CRD to vmcp config.
@@ -1009,38 +1342,73 @@ func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
 	}, nil
 }
 
-// discovers ExternalAuthConfig from MCPServers and adds them to the outgoing config
+// listMCPServersAsMap lists all MCPServers in the namespace and returns a map by name.
+func (r *VirtualMCPServerReconciler) listMCPServersAsMap(
+	ctx context.Context,
+	namespace string,
+) (map[string]*mcpv1alpha1.MCPServer, error) {
+	mcpServerList := &mcpv1alpha1.MCPServerList{}
+	if err := r.List(ctx, mcpServerList, client.InNamespace(namespace)); err != nil {
+		return nil, err
+	}
+	mcpServerMap := make(map[string]*mcpv1alpha1.MCPServer, len(mcpServerList.Items))
+	for i := range mcpServerList.Items {
+		mcpServerMap[mcpServerList.Items[i].Name] = &mcpServerList.Items[i]
+	}
+	return mcpServerMap, nil
+}
+
+// listMCPRemoteProxiesAsMap lists all MCPRemoteProxies in the namespace and returns a map by name.
+func (r *VirtualMCPServerReconciler) listMCPRemoteProxiesAsMap(
+	ctx context.Context,
+	namespace string,
+) (map[string]*mcpv1alpha1.MCPRemoteProxy, error) {
+	mcpRemoteProxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+	if err := r.List(ctx, mcpRemoteProxyList, client.InNamespace(namespace)); err != nil {
+		return nil, err
+	}
+	mcpRemoteProxyMap := make(map[string]*mcpv1alpha1.MCPRemoteProxy, len(mcpRemoteProxyList.Items))
+	for i := range mcpRemoteProxyList.Items {
+		mcpRemoteProxyMap[mcpRemoteProxyList.Items[i].Name] = &mcpRemoteProxyList.Items[i]
+	}
+	return mcpRemoteProxyMap, nil
+}
+
+// discovers ExternalAuthConfig from workloads and adds them to the outgoing config
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	workloadNames []string,
+	typedWorkloads []workloads.TypedWorkload,
 	outgoing *vmcpconfig.OutgoingAuthConfig,
 ) {
 	ctxLogger := log.FromContext(ctx)
 
-	// TODO: Optimize this by doing a List operation with a label selector or field selector
-	// to fetch all MCPServers in the namespace at once, then filter by names, rather than
-	// doing N Get calls. This would reduce API calls and improve performance for groups
-	// with many workloads.
-	for _, workloadName := range workloadNames {
-		mcpServer := &mcpv1alpha1.MCPServer{}
-		if err := r.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: vmcp.Namespace}, mcpServer); err != nil {
-			// Skip if MCPServer not found (might be a different workload type)
-			continue
-		}
+	mcpServerMap, err := r.listMCPServersAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list MCPServers")
+		return
+	}
 
-		// Only process if MCPServer has ExternalAuthConfigRef
-		if mcpServer.Spec.ExternalAuthConfigRef == nil {
+	mcpRemoteProxyMap, err := r.listMCPRemoteProxiesAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list MCPRemoteProxies")
+		return
+	}
+
+	for _, workloadInfo := range typedWorkloads {
+		externalAuthConfigName := r.getExternalAuthConfigNameFromWorkload(
+			workloadInfo, mcpServerMap, mcpRemoteProxyMap)
+		if externalAuthConfigName == "" {
 			continue
 		}
 
 		// Fetch the MCPExternalAuthConfig
 		externalAuthConfig, err := ctrlutil.GetExternalAuthConfigByName(
-			ctx, r.Client, vmcp.Namespace, mcpServer.Spec.ExternalAuthConfigRef.Name)
+			ctx, r.Client, vmcp.Namespace, externalAuthConfigName)
 		if err != nil {
 			ctxLogger.V(1).Info("Failed to get MCPExternalAuthConfig for backend, skipping",
-				"backend", workloadName,
-				"externalAuthConfig", mcpServer.Spec.ExternalAuthConfigRef.Name,
+				"backend", workloadInfo.Name,
+				"externalAuthConfig", externalAuthConfigName,
 				"error", err)
 			continue
 		}
@@ -1049,7 +1417,7 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 		strategy, err := r.convertExternalAuthConfigToStrategy(externalAuthConfig)
 		if err != nil {
 			ctxLogger.V(1).Info("Failed to convert MCPExternalAuthConfig to strategy, skipping",
-				"backend", workloadName,
+				"backend", workloadInfo.Name,
 				"externalAuthConfig", externalAuthConfig.Name,
 				"error", err)
 			continue
@@ -1057,11 +1425,37 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 
 		// Only add if not already overridden in inline config
 		if vmcp.Spec.OutgoingAuth == nil || vmcp.Spec.OutgoingAuth.Backends == nil {
-			outgoing.Backends[workloadName] = strategy
-		} else if _, exists := vmcp.Spec.OutgoingAuth.Backends[workloadName]; !exists {
+			outgoing.Backends[workloadInfo.Name] = strategy
+		} else if _, exists := vmcp.Spec.OutgoingAuth.Backends[workloadInfo.Name]; !exists {
 			// Only add discovered config if not explicitly overridden
-			outgoing.Backends[workloadName] = strategy
+			outgoing.Backends[workloadInfo.Name] = strategy
 		}
+	}
+}
+
+// getExternalAuthConfigNameFromWorkload extracts the ExternalAuthConfigRef name from a workload.
+func (*VirtualMCPServerReconciler) getExternalAuthConfigNameFromWorkload(
+	workloadInfo workloads.TypedWorkload,
+	mcpServerMap map[string]*mcpv1alpha1.MCPServer,
+	mcpRemoteProxyMap map[string]*mcpv1alpha1.MCPRemoteProxy,
+) string {
+	switch workloadInfo.Type {
+	case workloads.WorkloadTypeMCPServer:
+		mcpServer, found := mcpServerMap[workloadInfo.Name]
+		if !found || mcpServer.Spec.ExternalAuthConfigRef == nil {
+			return ""
+		}
+		return mcpServer.Spec.ExternalAuthConfigRef.Name
+
+	case workloads.WorkloadTypeMCPRemoteProxy:
+		mcpRemoteProxy, found := mcpRemoteProxyMap[workloadInfo.Name]
+		if !found || mcpRemoteProxy.Spec.ExternalAuthConfigRef == nil {
+			return ""
+		}
+		return mcpRemoteProxy.Spec.ExternalAuthConfigRef.Name
+
+	default:
+		return ""
 	}
 }
 
@@ -1070,7 +1464,7 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
-	workloadNames []string,
+	typedWorkloads []workloads.TypedWorkload,
 ) (*vmcpconfig.OutgoingAuthConfig, error) {
 	// Determine source - default to "discovered" if not specified
 	source := OutgoingAuthSourceDiscovered
@@ -1094,7 +1488,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 
 	// Discover ExternalAuthConfig from MCPServers if source is "discovered"
 	if source == OutgoingAuthSourceDiscovered {
-		r.discoverExternalAuthConfigs(ctx, vmcp, workloadNames, outgoing)
+		r.discoverExternalAuthConfigs(ctx, vmcp, typedWorkloads, outgoing)
 	}
 
 	// Apply inline overrides (works for all source modes)
@@ -1114,6 +1508,8 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 // discoverBackends discovers all MCPServers in the referenced MCPGroup and returns
 // a list of DiscoveredBackend objects with their current status.
 // This reuses the existing workload discovery code from pkg/vmcp/workloads.
+//
+//nolint:gocyclo
 func (r *VirtualMCPServerReconciler) discoverBackends(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
@@ -1126,8 +1522,8 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 	// Create K8S workload discoverer for the VirtualMCPServer's namespace
 	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(r.Client, vmcp.Namespace)
 
-	// Get all workload names in the group
-	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.Spec.GroupRef.Name)
+	// Get all workloads in the group
+	typedWorkloads, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcp.Spec.GroupRef.Name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workloads in group: %w", err)
 	}
@@ -1137,7 +1533,7 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 	var authConfig *vmcpconfig.OutgoingAuthConfig
 	if vmcp.Spec.OutgoingAuth != nil {
 		var err error
-		authConfig, err = r.buildOutgoingAuthConfig(ctx, vmcp, workloadNames)
+		authConfig, err = r.buildOutgoingAuthConfig(ctx, vmcp, typedWorkloads)
 		if err != nil {
 			ctxLogger.V(1).Info("Failed to build outgoing auth config, continuing without auth",
 				"error", err)
@@ -1161,17 +1557,28 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 		discoveredBackendMap[backends[i].Name] = &backends[i]
 	}
 
-	discoveredBackends := make([]mcpv1alpha1.DiscoveredBackend, 0, len(workloadNames))
+	// Build maps of MCPServers and MCPRemoteProxies for efficient lookup
+	mcpServerMap, err := r.listMCPServersAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
+	}
+
+	mcpRemoteProxyMap, err := r.listMCPRemoteProxiesAsMap(ctx, vmcp.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
+	}
+
+	discoveredBackends := make([]mcpv1alpha1.DiscoveredBackend, 0, len(typedWorkloads))
 	now := metav1.Now()
 
 	// Convert vmcp.Backend to DiscoveredBackend for all workloads in the group
-	for _, workloadName := range workloadNames {
-		backend, found := discoveredBackendMap[workloadName]
+	for _, workloadInfo := range typedWorkloads {
+		backend, found := discoveredBackendMap[workloadInfo.Name]
 		if !found {
 			// Workload exists but is not accessible (no URL or error)
 			discoveredBackends = append(discoveredBackends, mcpv1alpha1.DiscoveredBackend{
-				Name:            workloadName,
-				Status:          "unavailable",
+				Name:            workloadInfo.Name,
+				Status:          mcpv1alpha1.BackendStatusUnavailable,
 				LastHealthCheck: now,
 			})
 			continue
@@ -1182,26 +1589,53 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 		var backendStatus string
 		switch backend.HealthStatus {
 		case vmcptypes.BackendHealthy:
-			backendStatus = "ready"
+			backendStatus = mcpv1alpha1.BackendStatusReady
 		case vmcptypes.BackendUnhealthy, vmcptypes.BackendUnauthenticated:
-			backendStatus = "unavailable"
+			backendStatus = mcpv1alpha1.BackendStatusUnavailable
 		case vmcptypes.BackendDegraded:
-			backendStatus = "degraded"
+			backendStatus = mcpv1alpha1.BackendStatusDegraded
 		case vmcptypes.BackendUnknown:
-			backendStatus = "unknown"
+			backendStatus = mcpv1alpha1.BackendStatusUnknown
 		default:
-			backendStatus = "unknown"
+			backendStatus = mcpv1alpha1.BackendStatusUnknown
 		}
 
-		// Extract auth config reference directly from MCPServer
-		// (Backend.AuthMetadata is populated later by aggregator, so we query MCPServer directly)
+		// Extract auth config reference and check workload phase based on workload type
+		// Using pre-fetched maps instead of individual Get calls
 		authConfigRef := ""
 		authType := ""
-		mcpServer := &mcpv1alpha1.MCPServer{}
-		if err := r.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: vmcp.Namespace}, mcpServer); err == nil {
-			if mcpServer.Spec.ExternalAuthConfigRef != nil {
-				authConfigRef = mcpServer.Spec.ExternalAuthConfigRef.Name
-				authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef
+		switch workloadInfo.Type {
+		case workloads.WorkloadTypeMCPServer:
+			if mcpServer, found := mcpServerMap[workloadInfo.Name]; found {
+				if mcpServer.Spec.ExternalAuthConfigRef != nil {
+					authConfigRef = mcpServer.Spec.ExternalAuthConfigRef.Name
+					authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef
+				}
+				// Override backend status based on MCPServer phase for non-ready states
+				if mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhasePending ||
+					mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhaseFailed ||
+					mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhaseTerminating {
+					backendStatus = mcpv1alpha1.BackendStatusUnavailable
+					ctxLogger.V(1).Info("Backend MCPServer not ready, marking as unavailable",
+						"name", workloadInfo.Name,
+						"phase", mcpServer.Status.Phase)
+				}
+			}
+		case workloads.WorkloadTypeMCPRemoteProxy:
+			if mcpRemoteProxy, found := mcpRemoteProxyMap[workloadInfo.Name]; found {
+				if mcpRemoteProxy.Spec.ExternalAuthConfigRef != nil {
+					authConfigRef = mcpRemoteProxy.Spec.ExternalAuthConfigRef.Name
+					authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef
+				}
+				// Override backend status based on MCPRemoteProxy phase for non-ready states
+				if mcpRemoteProxy.Status.Phase == mcpv1alpha1.MCPRemoteProxyPhasePending ||
+					mcpRemoteProxy.Status.Phase == mcpv1alpha1.MCPRemoteProxyPhaseFailed ||
+					mcpRemoteProxy.Status.Phase == mcpv1alpha1.MCPRemoteProxyPhaseTerminating {
+					backendStatus = mcpv1alpha1.BackendStatusUnavailable
+					ctxLogger.V(1).Info("Backend MCPRemoteProxy not ready, marking as unavailable",
+						"name", workloadInfo.Name,
+						"phase", mcpRemoteProxy.Status.Phase)
+				}
 			}
 		}
 
@@ -1234,6 +1668,7 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Watches(&mcpv1alpha1.MCPGroup{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPGroupToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPServer{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToVirtualMCPServer)).
+		Watches(&mcpv1alpha1.MCPRemoteProxy{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapExternalAuthConfigToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPToolConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapToolConfigToVirtualMCPServer)).
 		Watches(
@@ -1351,6 +1786,87 @@ func (r *VirtualMCPServerReconciler) mapMCPServerToVirtualMCPServer(ctx context.
 	return requests
 }
 
+// mapMCPRemoteProxyToVirtualMCPServer maps MCPRemoteProxy changes to VirtualMCPServer reconciliation requests.
+// This function implements the same optimization as mapMCPServerToVirtualMCPServer to only reconcile
+// VirtualMCPServers that are actually affected by the MCPRemoteProxy change.
+//
+// The optimization works by:
+// 1. Finding all MCPGroups that include the changed MCPRemoteProxy (via Status.RemoteProxies)
+// 2. Finding all VirtualMCPServers that reference those MCPGroups
+// 3. Only reconciling those specific VirtualMCPServers
+func (r *VirtualMCPServerReconciler) mapMCPRemoteProxyToVirtualMCPServer(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
+	mcpRemoteProxy, ok := obj.(*mcpv1alpha1.MCPRemoteProxy)
+	if !ok {
+		return nil
+	}
+
+	ctxLogger := log.FromContext(ctx)
+
+	// Step 1: Find all MCPGroups that include this MCPRemoteProxy
+	// MCPGroups track their member remote proxies in Status.RemoteProxies (populated by MCPGroup controller)
+	mcpGroupList := &mcpv1alpha1.MCPGroupList{}
+	if err := r.List(ctx, mcpGroupList, client.InNamespace(mcpRemoteProxy.Namespace)); err != nil {
+		ctxLogger.Error(err, "Failed to list MCPGroups for MCPRemoteProxy watch")
+		return nil
+	}
+
+	// Track which MCPGroups include this MCPRemoteProxy
+	affectedGroups := make(map[string]bool)
+	for _, group := range mcpGroupList.Items {
+		// Check if this MCPRemoteProxy is in the group's remote proxy list
+		for _, proxyName := range group.Status.RemoteProxies {
+			if proxyName == mcpRemoteProxy.Name {
+				affectedGroups[group.Name] = true
+				ctxLogger.V(1).Info("MCPRemoteProxy is member of MCPGroup",
+					"mcpRemoteProxy", mcpRemoteProxy.Name,
+					"mcpGroup", group.Name)
+				break // No need to check other proxies in this group
+			}
+		}
+	}
+
+	// If no groups include this MCPRemoteProxy, no VirtualMCPServers need reconciliation
+	if len(affectedGroups) == 0 {
+		ctxLogger.V(1).Info("MCPRemoteProxy not a member of any MCPGroup, skipping VirtualMCPServer reconciliation",
+			"mcpRemoteProxy", mcpRemoteProxy.Name)
+		return nil
+	}
+
+	// Step 2: Find VirtualMCPServers that reference the affected MCPGroups
+	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(mcpRemoteProxy.Namespace)); err != nil {
+		ctxLogger.Error(err, "Failed to list VirtualMCPServers for MCPRemoteProxy watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, vmcp := range vmcpList.Items {
+		// Only reconcile if this VirtualMCPServer references an affected MCPGroup
+		if affectedGroups[vmcp.Spec.GroupRef.Name] {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      vmcp.Name,
+					Namespace: vmcp.Namespace,
+				},
+			})
+			ctxLogger.V(1).Info("Queuing VirtualMCPServer for reconciliation due to MCPRemoteProxy change",
+				"virtualMCPServer", vmcp.Name,
+				"mcpGroup", vmcp.Spec.GroupRef.Name,
+				"mcpRemoteProxy", mcpRemoteProxy.Name)
+		}
+	}
+
+	ctxLogger.V(1).Info("Mapped MCPRemoteProxy to VirtualMCPServers",
+		"mcpRemoteProxy", mcpRemoteProxy.Name,
+		"affectedGroups", len(affectedGroups),
+		"virtualMCPServers", len(requests))
+
+	return requests
+}
+
 // mapExternalAuthConfigToVirtualMCPServer maps MCPExternalAuthConfig changes to VirtualMCPServer reconciliation requests
 func (r *VirtualMCPServerReconciler) mapExternalAuthConfigToVirtualMCPServer(
 	ctx context.Context,
@@ -1370,7 +1886,8 @@ func (r *VirtualMCPServerReconciler) mapExternalAuthConfigToVirtualMCPServer(
 	var requests []reconcile.Request
 	for _, vmcp := range vmcpList.Items {
 		// Only reconcile VirtualMCPServers that actually reference this ExternalAuthConfig
-		if r.vmcpReferencesExternalAuthConfig(&vmcp, externalAuthConfig.Name) {
+		// This includes both inline references and discovered references (via MCPServers)
+		if r.vmcpReferencesExternalAuthConfig(ctx, &vmcp, externalAuthConfig.Name) {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      vmcp.Name,
@@ -1426,8 +1943,10 @@ func (*VirtualMCPServerReconciler) vmcpReferencesToolConfig(vmcp *mcpv1alpha1.Vi
 	return false
 }
 
-// vmcpReferencesExternalAuthConfig checks if a VirtualMCPServer references the given MCPExternalAuthConfig
-func (*VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
+// vmcpReferencesExternalAuthConfig checks if a VirtualMCPServer references the given MCPExternalAuthConfig.
+// It checks both inline references (in outgoingAuth spec) and discovered references (via MCPServers in the group).
+func (r *VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
+	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	authConfigName string,
 ) bool {
@@ -1435,6 +1954,7 @@ func (*VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
 		return false
 	}
 
+	// Check inline references in outgoing auth configuration
 	// Check default backend auth configuration
 	if vmcp.Spec.OutgoingAuth.Default != nil &&
 		vmcp.Spec.OutgoingAuth.Default.ExternalAuthConfigRef != nil &&
@@ -1446,6 +1966,80 @@ func (*VirtualMCPServerReconciler) vmcpReferencesExternalAuthConfig(
 	for _, backendAuth := range vmcp.Spec.OutgoingAuth.Backends {
 		if backendAuth.ExternalAuthConfigRef != nil &&
 			backendAuth.ExternalAuthConfigRef.Name == authConfigName {
+			return true
+		}
+	}
+
+	// Check discovered references when source is "discovered"
+	// When using discovered mode, auth configs are referenced through MCPServers, not inline
+	if vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceDiscovered {
+		if r.mcpGroupBackendsReferenceExternalAuthConfig(ctx, vmcp, authConfigName) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// mcpGroupBackendsReferenceExternalAuthConfig checks if any MCPServers or MCPRemoteProxies
+// in the VirtualMCPServer's group reference the given MCPExternalAuthConfig
+func (r *VirtualMCPServerReconciler) mcpGroupBackendsReferenceExternalAuthConfig(
+	ctx context.Context,
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+	authConfigName string,
+) bool {
+	ctxLogger := log.FromContext(ctx)
+
+	// Get the MCPGroup to verify it exists
+	mcpGroup := &mcpv1alpha1.MCPGroup{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      vmcp.Spec.GroupRef.Name,
+		Namespace: vmcp.Namespace,
+	}, mcpGroup)
+	if err != nil {
+		// If we can't get the group, we can't determine if it references the auth config
+		// Return false to avoid false positives
+		ctxLogger.Error(err, "Failed to get MCPGroup for ExternalAuthConfig reference check",
+			"group", vmcp.Spec.GroupRef.Name,
+			"vmcp", vmcp.Name)
+		return false
+	}
+
+	listOpts := []client.ListOption{
+		client.InNamespace(vmcp.Namespace),
+		client.MatchingFields{"spec.groupRef": mcpGroup.Name},
+	}
+
+	// List all MCPServers in the group using field selector (same as MCPGroup controller)
+	mcpServerList := &mcpv1alpha1.MCPServerList{}
+	err = r.List(ctx, mcpServerList, listOpts...)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list MCPServers for ExternalAuthConfig reference check",
+			"group", mcpGroup.Name)
+		return false
+	}
+
+	// Check if any MCPServer references the ExternalAuthConfig
+	for _, mcpServer := range mcpServerList.Items {
+		if mcpServer.Spec.ExternalAuthConfigRef != nil &&
+			mcpServer.Spec.ExternalAuthConfigRef.Name == authConfigName {
+			return true
+		}
+	}
+
+	// List all MCPRemoteProxies in the group
+	mcpRemoteProxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+	err = r.List(ctx, mcpRemoteProxyList, listOpts...)
+	if err != nil {
+		ctxLogger.Error(err, "Failed to list MCPRemoteProxies for ExternalAuthConfig reference check",
+			"group", mcpGroup.Name)
+		return false
+	}
+
+	// Check if any MCPRemoteProxy references the ExternalAuthConfig
+	for _, mcpRemoteProxy := range mcpRemoteProxyList.Items {
+		if mcpRemoteProxy.Spec.ExternalAuthConfigRef != nil &&
+			mcpRemoteProxy.Spec.ExternalAuthConfigRef.Name == authConfigName {
 			return true
 		}
 	}

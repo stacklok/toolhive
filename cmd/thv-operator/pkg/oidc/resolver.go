@@ -5,6 +5,7 @@ package oidc
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -35,6 +36,7 @@ type OIDCConfig struct { //nolint:revive // Keeping OIDCConfig name for backward
 	ResourceURL        string
 	JWKSAllowPrivateIP bool
 	InsecureAllowHTTP  bool
+	Scopes             []string
 }
 
 // OIDCConfigurable is an interface for resources that have OIDC configuration
@@ -194,6 +196,9 @@ func (r *resolver) resolveConfigMapConfig(
 		config.InsecureAllowHTTP = true
 	}
 
+	// Handle scopes as comma-separated values
+	config.Scopes = parseCommaSeparatedList(getMapValue(configMap.Data, "scopes"))
+
 	return config, nil
 }
 
@@ -225,6 +230,7 @@ func (*resolver) resolveInlineConfig(
 		ResourceURL:        resourceURL,
 		JWKSAllowPrivateIP: config.JWKSAllowPrivateIP,
 		InsecureAllowHTTP:  config.InsecureAllowHTTP,
+		Scopes:             config.Scopes,
 	}, nil
 }
 
@@ -234,6 +240,28 @@ func getMapValue(data map[string]string, key string) string {
 		return v
 	}
 	return ""
+}
+
+// parseCommaSeparatedList parses a comma-separated string into a slice of strings.
+// It trims whitespace from each element and filters out empty strings.
+func parseCommaSeparatedList(value string) []string {
+	if value == "" {
+		return nil
+	}
+
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // createServiceURL creates a service URL from MCPServer details

@@ -164,7 +164,12 @@ func (r *VirtualMCPCompositeToolDefinition) validateSteps() error {
 	}
 
 	// Third pass: validate dependencies don't create cycles
-	return r.validateDependencyCycles()
+	if err := r.validateDependencyCycles(); err != nil {
+		return err
+	}
+
+	// Fourth pass: validate defaultResults for skippable steps
+	return validateDefaultResultsForSteps("spec.steps", r.Spec.Steps, r.Spec.Output)
 }
 
 // validateStep validates a single workflow step

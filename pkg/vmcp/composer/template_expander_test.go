@@ -162,7 +162,7 @@ func TestWorkflowContext_Lifecycle(t *testing.T) {
 	assert.True(t, ctx.HasStepFailed("s2"))
 
 	// Skipped
-	ctx.RecordStepSkipped("s3")
+	ctx.RecordStepSkipped("s3", nil)
 	assert.Equal(t, StepStatusSkipped, ctx.Steps["s3"].Status)
 
 	// Check completion status

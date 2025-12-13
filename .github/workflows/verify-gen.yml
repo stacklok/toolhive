@@ -20,7 +20,7 @@ jobs:
       # Cache Go tools (mockgen)
       - name: Cache Go tools
         id: cache-go-tools
-        uses: actions/cache@v4
+        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5
         with:
           path: ~/go/bin
           key: ${{ runner.os }}-go-codegen-tools-${{ hashFiles('go.mod') }}-mockgen

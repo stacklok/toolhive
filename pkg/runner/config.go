@@ -140,6 +140,7 @@ type RunConfig struct {
 	TrustProxyHeaders bool `json:"trust_proxy_headers,omitempty" yaml:"trust_proxy_headers,omitempty"`
 
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+	// Note: "sse" is deprecated; use "streamable-http" instead.
 	ProxyMode types.ProxyMode `json:"proxy_mode,omitempty" yaml:"proxy_mode,omitempty"`
 
 	// ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations

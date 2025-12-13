@@ -1,15 +1,13 @@
+// Package config provides management for the registry server configuration
 package config
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -17,56 +15,21 @@ import (
 )
 
 // ConfigManager provides methods to build registry server configuration from MCPRegistry resources
-// and its persistence into a ConfigMap
 //
 //nolint:revive
 type ConfigManager interface {
 	BuildConfig() (*Config, error)
-	UpsertConfigMap(ctx context.Context,
-		mcpRegistry *mcpv1alpha1.MCPRegistry,
-		desired *corev1.ConfigMap,
-	) error
 	GetRegistryServerConfigMapName() string
 }
 
-// NewConfigManager creates a new instance of ConfigManager with required dependencies
-func NewConfigManager(
-	k8sClient client.Client,
-	scheme *runtime.Scheme,
-	checksumManager checksum.RunConfigConfigMapChecksum,
-	mcpRegistry *mcpv1alpha1.MCPRegistry,
-) (ConfigManager, error) {
-	if k8sClient == nil {
-		return nil, fmt.Errorf("k8sClient is required and cannot be nil")
-	}
-	if scheme == nil {
-		return nil, fmt.Errorf("scheme is required and cannot be nil")
-	}
-	if checksumManager == nil {
-		return nil, fmt.Errorf("checksumManager is required and cannot be nil")
-	}
-
-	return &configManager{
-		client:      k8sClient,
-		scheme:      scheme,
-		checksum:    checksumManager,
-		mcpRegistry: mcpRegistry,
-	}, nil
-}
-
-// NewConfigManagerForTesting creates a ConfigManager for testing purposes only.
-// WARNING: This manager will panic if methods requiring dependencies are called.
-// Only use this for testing BuildConfig or other methods that don't use k8s client.
-func NewConfigManagerForTesting(mcpRegistry *mcpv1alpha1.MCPRegistry) ConfigManager {
+// NewConfigManager creates a new instance of ConfigManager
+func NewConfigManager(mcpRegistry *mcpv1alpha1.MCPRegistry) ConfigManager {
 	return &configManager{
 		mcpRegistry: mcpRegistry,
 	}
 }
 
 type configManager struct {
-	client      client.Client
-	scheme      *runtime.Scheme
-	checksum    checksum.RunConfigConfigMapChecksum
 	mcpRegistry *mcpv1alpha1.MCPRegistry
 }
 

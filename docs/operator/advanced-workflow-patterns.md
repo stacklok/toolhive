@@ -670,7 +670,61 @@ steps:
 
 **Use Cases**: High availability, disaster recovery, service degradation
 
-### Pattern 5: Parallel Validation
+### Pattern 5: Default Results for Skippable Steps
+
+Use `defaultResults` to provide fallback values when conditional or error-prone steps may not produce output.
+
+```yaml
+steps:
+  - id: fetch_core_data
+    type: tool
+    tool: db.query
+    arguments:
+      id: "{{.params.entity_id}}"
+
+  # Optional enrichment - may be skipped based on condition
+  - id: enrich_data
+    type: tool
+    tool: enrichment.service
+    dependsOn: [fetch_core_data]
+    condition: "{{.params.enable_enrichment}}"
+    arguments:
+      data: "{{.steps.fetch_core_data.output.text}}"
+    # Fallback when step is skipped
+    defaultResults:
+      text: "{\"enriched\": false, \"source\": \"none\"}"
+
+  # External API that may fail
+  - id: external_lookup
+    type: tool
+    tool: external.api
+    dependsOn: [fetch_core_data]
+    on_error:
+      action: continue
+    # Fallback when step fails
+    defaultResults:
+      text: "{\"available\": false}"
+
+  # Aggregate results - works regardless of whether optional steps ran
+  - id: aggregate
+    type: tool
+    tool: processor.combine
+    dependsOn: [fetch_core_data, enrich_data, external_lookup]
+    arguments:
+      core: "{{.steps.fetch_core_data.output.text}}"
+      enrichment: "{{.steps.enrich_data.output.text}}"
+      external: "{{.steps.external_lookup.output.text}}"
+```
+
+**Key Points**:
+- `defaultResults` provides fallback output when a step is skipped or fails with `continue`
+- Keys must match the output fields referenced by downstream templates
+- Backend tools return text under the `text` key
+- Validation ensures `defaultResults` is specified when required
+
+**Use Cases**: Graceful degradation, optional features, resilient pipelines
+
+### Pattern 6: Parallel Validation
 
 Validate multiple aspects concurrently before proceeding.
 

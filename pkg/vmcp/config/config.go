@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
@@ -87,6 +89,12 @@ type Config struct {
 
 	// Metadata stores additional configuration metadata.
 	Metadata map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+
+	// Telemetry configures telemetry settings.
+	Telemetry *telemetry.Config `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+
+	// Audit configures audit logging settings.
+	Audit *audit.Config `json:"audit,omitempty" yaml:"audit,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.
@@ -345,6 +353,11 @@ type WorkflowStepConfig struct {
 	// Elicitation response handlers.
 	OnDecline *ElicitationResponseConfig `json:"on_decline,omitempty"`
 	OnCancel  *ElicitationResponseConfig `json:"on_cancel,omitempty"`
+
+	// DefaultResults provides fallback output values when this step is skipped
+	// (due to condition evaluating to false) or fails (when onError.action is "continue").
+	// Each key corresponds to an output field name referenced by downstream steps.
+	DefaultResults map[string]any `json:"default_results,omitempty" yaml:"default_results,omitempty"`
 }
 
 // StepErrorHandling defines error handling for a workflow step.

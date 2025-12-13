@@ -80,10 +80,21 @@ jobs:
         echo "VMCP_IMAGE=${VMCP_IMAGE}" >> $GITHUB_ENV
         echo "Built and loaded vmcp image: ${VMCP_IMAGE}"
 
-        # Pull and load test server image
-        echo "Pulling and loading yardstick test server image..."
-        docker pull ${{ env.YARDSTICK_IMAGE }}
+        # Pull and load all test server images in parallel to speed up CI
+        echo "Pulling and loading test server images..."
+        docker pull ${{ env.YARDSTICK_IMAGE }} &
+        docker pull ghcr.io/stackloklabs/gofetch/server:1.0.1 &
+        docker pull ghcr.io/stackloklabs/osv-mcp/server:0.0.7 &
+        docker pull python:3.9-slim &
+        docker pull curlimages/curl:8.17.0 &
+        wait
+
+        # Load all images into kind
         kind load docker-image --name toolhive ${{ env.YARDSTICK_IMAGE }}
+        kind load docker-image --name toolhive ghcr.io/stackloklabs/gofetch/server:1.0.1
+        kind load docker-image --name toolhive ghcr.io/stackloklabs/osv-mcp/server:0.0.7
+        kind load docker-image --name toolhive python:3.9-slim
+        kind load docker-image --name toolhive curlimages/curl:8.17.0
 
     - name: Deploy operator with VMCP_IMAGE
       run: |

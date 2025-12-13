@@ -228,7 +228,13 @@ func (*VirtualMCPServer) validateCompositeTool(index int, tool CompositeToolSpec
 	toolNames[tool.Name] = true
 
 	// Validate steps
-	return validateCompositeToolSteps(index, tool.Steps)
+	if err := validateCompositeToolSteps(index, tool.Steps); err != nil {
+		return err
+	}
+
+	// Validate defaultResults for skippable steps
+	pathPrefix := fmt.Sprintf("spec.compositeTools[%d].steps", index)
+	return validateDefaultResultsForSteps(pathPrefix, tool.Steps, tool.Output)
 }
 
 // validateCompositeToolSteps validates all steps in a composite tool

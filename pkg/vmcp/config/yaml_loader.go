@@ -7,7 +7,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/env"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
@@ -58,6 +60,9 @@ type rawConfig struct {
 	Operational  *OperationalConfig `yaml:"operational"`
 
 	CompositeTools []*rawCompositeTool `yaml:"composite_tools"`
+
+	Telemetry *telemetry.Config `yaml:"telemetry"`
+	Audit     *audit.Config     `yaml:"audit"`
 }
 
 type rawIncomingAuth struct {
@@ -137,18 +142,19 @@ type rawCompositeTool struct {
 }
 
 type rawWorkflowStep struct {
-	ID        string                  `yaml:"id"`
-	Type      string                  `yaml:"type"`
-	Tool      string                  `yaml:"tool"`
-	Arguments map[string]any          `yaml:"arguments"`
-	Condition string                  `yaml:"condition"`
-	DependsOn []string                `yaml:"depends_on"`
-	OnError   *rawStepErrorHandling   `yaml:"on_error"`
-	Message   string                  `yaml:"message"`
-	Schema    map[string]any          `yaml:"schema"`
-	Timeout   string                  `yaml:"timeout"`
-	OnDecline *rawElicitationResponse `yaml:"on_decline"`
-	OnCancel  *rawElicitationResponse `yaml:"on_cancel"`
+	ID             string                  `yaml:"id"`
+	Type           string                  `yaml:"type"`
+	Tool           string                  `yaml:"tool"`
+	Arguments      map[string]any          `yaml:"arguments"`
+	Condition      string                  `yaml:"condition"`
+	DependsOn      []string                `yaml:"depends_on"`
+	OnError        *rawStepErrorHandling   `yaml:"on_error"`
+	Message        string                  `yaml:"message"`
+	Schema         map[string]any          `yaml:"schema"`
+	Timeout        string                  `yaml:"timeout"`
+	OnDecline      *rawElicitationResponse `yaml:"on_decline"`
+	OnCancel       *rawElicitationResponse `yaml:"on_cancel"`
+	DefaultResults map[string]any          `yaml:"default_results"`
 }
 
 type rawStepErrorHandling struct {
@@ -213,6 +219,9 @@ func (l *YAMLLoader) transformToConfig(raw *rawConfig) (*Config, error) {
 		}
 		cfg.CompositeTools = compositeTools
 	}
+
+	cfg.Telemetry = raw.Telemetry
+	cfg.Audit = raw.Audit
 
 	// Apply operational defaults (fills missing values)
 	cfg.EnsureOperationalDefaults()
@@ -486,6 +495,8 @@ func (*YAMLLoader) transformWorkflowStep(raw *rawWorkflowStep) (*WorkflowStepCon
 			Action: raw.OnCancel.Action,
 		}
 	}
+
+	step.DefaultResults = raw.DefaultResults
 
 	return step, nil
 }

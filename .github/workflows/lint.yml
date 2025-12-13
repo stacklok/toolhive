@@ -28,7 +28,7 @@ jobs:
 
       # Cache Go build cache for faster compilation during linting
       - name: Cache Go build cache
-        uses: actions/cache@v4
+        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5
         with:
           path: ~/.cache/go-build
           key: ${{ runner.os }}-go-build-lint-${{ hashFiles('**/go.sum') }}

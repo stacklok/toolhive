@@ -14,6 +14,7 @@ import (
 	reflect "reflect"
 
 	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
+	workloads "github.com/stacklok/toolhive/pkg/vmcp/workloads"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -42,25 +43,25 @@ func (m *MockDiscoverer) EXPECT() *MockDiscovererMockRecorder {
 }
 
 // GetWorkloadAsVMCPBackend mocks base method.
-func (m *MockDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workloadName string) (*vmcp.Backend, error) {
+func (m *MockDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workload workloads.TypedWorkload) (*vmcp.Backend, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetWorkloadAsVMCPBackend", ctx, workloadName)
+	ret := m.ctrl.Call(m, "GetWorkloadAsVMCPBackend", ctx, workload)
 	ret0, _ := ret[0].(*vmcp.Backend)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetWorkloadAsVMCPBackend indicates an expected call of GetWorkloadAsVMCPBackend.
-func (mr *MockDiscovererMockRecorder) GetWorkloadAsVMCPBackend(ctx, workloadName any) *gomock.Call {
+func (mr *MockDiscovererMockRecorder) GetWorkloadAsVMCPBackend(ctx, workload any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkloadAsVMCPBackend", reflect.TypeOf((*MockDiscoverer)(nil).GetWorkloadAsVMCPBackend), ctx, workloadName)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWorkloadAsVMCPBackend", reflect.TypeOf((*MockDiscoverer)(nil).GetWorkloadAsVMCPBackend), ctx, workload)
 }
 
 // ListWorkloadsInGroup mocks base method.
-func (m *MockDiscoverer) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error) {
+func (m *MockDiscoverer) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]workloads.TypedWorkload, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ListWorkloadsInGroup", ctx, groupName)
-	ret0, _ := ret[0].([]string)
+	ret0, _ := ret[0].([]workloads.TypedWorkload)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }

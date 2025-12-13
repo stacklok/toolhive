@@ -111,14 +111,16 @@ func (ctx *WorkflowContext) RecordStepFailure(stepID string, err error) {
 }
 
 // RecordStepSkipped records that a step was skipped (condition was false).
+// If defaultResults is provided, it will be used as the step's output for downstream templates.
 // Thread-safe for concurrent step execution.
-func (ctx *WorkflowContext) RecordStepSkipped(stepID string) {
+func (ctx *WorkflowContext) RecordStepSkipped(stepID string, defaultResults map[string]any) {
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
 
 	ctx.Steps[stepID] = &StepResult{
 		StepID:    stepID,
 		Status:    StepStatusSkipped,
+		Output:    defaultResults,
 		StartTime: time.Now(),
 		EndTime:   time.Now(),
 	}

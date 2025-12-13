@@ -28,6 +28,7 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
 // TestDeploymentForVirtualMCPServer tests Deployment creation
@@ -54,7 +55,7 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []string{})
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", []workloads.TypedWorkload{})
 
 	require.NotNil(t, deployment)
 	assert.Equal(t, vmcp.Name, deployment.Name)
@@ -134,7 +135,7 @@ func TestBuildEnvVarsForVmcp(t *testing.T) {
 	}
 
 	r := &VirtualMCPServerReconciler{}
-	env := r.buildEnvVarsForVmcp(context.Background(), vmcp, []string{})
+	env := r.buildEnvVarsForVmcp(context.Background(), vmcp, []workloads.TypedWorkload{})
 
 	// Should have VMCP_NAME and VMCP_NAMESPACE
 	foundName := false
@@ -344,7 +345,7 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	}
 
 	// Test nil inputs
-	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, "", []string{}))
+	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, "", []workloads.TypedWorkload{}))
 
 	vmcp := &mcpv1alpha1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -354,7 +355,7 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	}
 
 	// Test with nil deployment
-	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum", []string{}))
+	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum", []workloads.TypedWorkload{}))
 }
 
 // TestServiceNeedsUpdate tests service update detection

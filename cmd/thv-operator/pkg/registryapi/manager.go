@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/mcpregistrystatus"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
@@ -17,8 +18,9 @@ import (
 
 // manager implements the Manager interface
 type manager struct {
-	client client.Client
-	scheme *runtime.Scheme
+	client     client.Client
+	scheme     *runtime.Scheme
+	kubeHelper *kubernetes.Client
 }
 
 // NewManager creates a new registry API manager
@@ -27,8 +29,9 @@ func NewManager(
 	scheme *runtime.Scheme,
 ) Manager {
 	return &manager{
-		client: k8sClient,
-		scheme: scheme,
+		client:     k8sClient,
+		scheme:     scheme,
+		kubeHelper: kubernetes.NewClient(k8sClient, scheme),
 	}
 }
 
@@ -65,6 +68,20 @@ func (m *manager) ReconcileAPIService(
 			Message:         fmt.Sprintf("Failed to ensure RBAC resources: %v", err),
 			ConditionType:   mcpv1alpha1.ConditionAPIReady,
 			ConditionReason: "RBACFailed",
+		}
+	}
+
+	// Ensure pgpass secret for PostgreSQL authentication if dbConfig provided.
+	if mcpRegistry.HasDatabaseConfig() {
+		err = m.ensurePGPassSecret(ctx, mcpRegistry)
+		if err != nil {
+			ctxLogger.Error(err, "Failed to ensure pgpass secret")
+			return &mcpregistrystatus.Error{
+				Err:             err,
+				Message:         fmt.Sprintf("Failed to ensure pgpass secret: %v", err),
+				ConditionType:   mcpv1alpha1.ConditionAPIReady,
+				ConditionReason: "PGPassSecretFailed",
+			}
 		}
 	}
 

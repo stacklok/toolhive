@@ -8,6 +8,7 @@ rules:
   - ""
   resources:
   - configmaps
+  - secrets
   - serviceaccounts
   verbs:
   - create
@@ -28,7 +29,6 @@ rules:
   - ""
   resources:
   - pods
-  - secrets
   verbs:
   - get
   - list

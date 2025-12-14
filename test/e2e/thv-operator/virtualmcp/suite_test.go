@@ -3,7 +3,9 @@ package virtualmcp
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/onsi/ginkgo/v2"
@@ -99,3 +101,174 @@ var _ = ginkgo.AfterSuite(func() {
 	ginkgo.By("tearing down the test environment")
 	cancel()
 })
+
+// ReportAfterEach captures Kubernetes state when a test fails for debugging in CI
+var _ = ginkgo.ReportAfterEach(func(report ginkgo.SpecReport) {
+	if report.Failed() {
+		dumpK8sStateOnFailure(report)
+	}
+})
+
+// dumpK8sStateOnFailure captures and logs Kubernetes state for debugging failed tests
+func dumpK8sStateOnFailure(report ginkgo.SpecReport) {
+	ginkgo.GinkgoWriter.Println("\n" + strings.Repeat("=", 80))
+	ginkgo.GinkgoWriter.Println("🔴 TEST FAILED - CAPTURING KUBERNETES STATE FOR DEBUGGING")
+	ginkgo.GinkgoWriter.Println("Test: " + report.FullText())
+	ginkgo.GinkgoWriter.Println(strings.Repeat("=", 80))
+
+	namespace := "default"
+
+	// Dump VirtualMCPServer status
+	dumpVirtualMCPServers(namespace)
+
+	// Dump MCPServer status
+	dumpMCPServers(namespace)
+
+	// Dump pod status and logs
+	dumpPods(namespace)
+
+	// Dump services
+	dumpServices(namespace)
+
+	// Dump events (useful for seeing why pods failed)
+	dumpEvents(namespace)
+
+	ginkgo.GinkgoWriter.Println(strings.Repeat("=", 80))
+	ginkgo.GinkgoWriter.Println("END OF KUBERNETES STATE DUMP")
+	ginkgo.GinkgoWriter.Println(strings.Repeat("=", 80) + "\n")
+}
+
+func dumpVirtualMCPServers(namespace string) {
+	ginkgo.GinkgoWriter.Println("\n--- VirtualMCPServers ---")
+	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	if err := k8sClient.List(ctx, vmcpList, client.InNamespace(namespace)); err != nil {
+		ginkgo.GinkgoWriter.Printf("Failed to list VirtualMCPServers: %v\n", err)
+		return
+	}
+	for _, vmcp := range vmcpList.Items {
+		ginkgo.GinkgoWriter.Printf("  %s: Phase=%s\n", vmcp.Name, vmcp.Status.Phase)
+		for _, cond := range vmcp.Status.Conditions {
+			ginkgo.GinkgoWriter.Printf("    Condition %s: %s (%s)\n", cond.Type, cond.Status, cond.Message)
+		}
+	}
+}
+
+func dumpMCPServers(namespace string) {
+	ginkgo.GinkgoWriter.Println("\n--- MCPServers ---")
+	mcpList := &mcpv1alpha1.MCPServerList{}
+	if err := k8sClient.List(ctx, mcpList, client.InNamespace(namespace)); err != nil {
+		ginkgo.GinkgoWriter.Printf("Failed to list MCPServers: %v\n", err)
+		return
+	}
+	for _, mcp := range mcpList.Items {
+		ginkgo.GinkgoWriter.Printf("  %s: Phase=%s\n", mcp.Name, mcp.Status.Phase)
+	}
+}
+
+func dumpPods(namespace string) {
+	ginkgo.GinkgoWriter.Println("\n--- Pods ---")
+	podList := &corev1.PodList{}
+	if err := k8sClient.List(ctx, podList, client.InNamespace(namespace)); err != nil {
+		ginkgo.GinkgoWriter.Printf("Failed to list pods: %v\n", err)
+		return
+	}
+	for _, pod := range podList.Items {
+		// Focus on test-related pods
+		if !strings.Contains(pod.Name, "vmcp") &&
+			!strings.Contains(pod.Name, "backend") &&
+			!strings.Contains(pod.Name, "mock") &&
+			!strings.Contains(pod.Name, "yardstick") {
+			continue
+		}
+
+		ginkgo.GinkgoWriter.Printf("\n  Pod: %s\n", pod.Name)
+		ginkgo.GinkgoWriter.Printf("    Phase: %s\n", pod.Status.Phase)
+		ginkgo.GinkgoWriter.Printf("    Ready: %v\n", isPodReady(&pod))
+
+		// Container statuses
+		for _, cs := range pod.Status.ContainerStatuses {
+			ginkgo.GinkgoWriter.Printf("    Container %s: Ready=%v, RestartCount=%d\n",
+				cs.Name, cs.Ready, cs.RestartCount)
+			if cs.State.Waiting != nil {
+				ginkgo.GinkgoWriter.Printf("      Waiting: %s - %s\n",
+					cs.State.Waiting.Reason, cs.State.Waiting.Message)
+			}
+			if cs.State.Terminated != nil {
+				ginkgo.GinkgoWriter.Printf("      Terminated: %s (exit %d) - %s\n",
+					cs.State.Terminated.Reason, cs.State.Terminated.ExitCode, cs.State.Terminated.Message)
+			}
+		}
+
+		// Get pod logs (last 50 lines)
+		for _, container := range pod.Spec.Containers {
+			logs, err := getPodLogs(ctx, namespace, pod.Name, container.Name, true)
+			if err != nil {
+				ginkgo.GinkgoWriter.Printf("    Logs (%s): failed to get: %v\n", container.Name, err)
+			} else if logs != "" {
+				ginkgo.GinkgoWriter.Printf("    Logs (%s) [last 50 lines]:\n", container.Name)
+				// Indent logs
+				for _, line := range strings.Split(logs, "\n") {
+					if line != "" {
+						ginkgo.GinkgoWriter.Printf("      %s\n", line)
+					}
+				}
+			}
+		}
+	}
+}
+
+func dumpServices(namespace string) {
+	ginkgo.GinkgoWriter.Println("\n--- Services ---")
+	svcList := &corev1.ServiceList{}
+	if err := k8sClient.List(ctx, svcList, client.InNamespace(namespace)); err != nil {
+		ginkgo.GinkgoWriter.Printf("Failed to list services: %v\n", err)
+		return
+	}
+	for _, svc := range svcList.Items {
+		// Focus on test-related services
+		if !strings.Contains(svc.Name, "vmcp") &&
+			!strings.Contains(svc.Name, "backend") &&
+			!strings.Contains(svc.Name, "mock") {
+			continue
+		}
+		ports := []string{}
+		for _, p := range svc.Spec.Ports {
+			if p.NodePort > 0 {
+				ports = append(ports, fmt.Sprintf("%d->%d(NodePort:%d)", p.Port, p.TargetPort.IntValue(), p.NodePort))
+			} else {
+				ports = append(ports, fmt.Sprintf("%d->%d", p.Port, p.TargetPort.IntValue()))
+			}
+		}
+		ginkgo.GinkgoWriter.Printf("  %s: Type=%s, Ports=%s\n", svc.Name, svc.Spec.Type, strings.Join(ports, ", "))
+	}
+}
+
+func dumpEvents(namespace string) {
+	ginkgo.GinkgoWriter.Println("\n--- Recent Events (last 20) ---")
+	eventList := &corev1.EventList{}
+	if err := k8sClient.List(ctx, eventList, client.InNamespace(namespace)); err != nil {
+		ginkgo.GinkgoWriter.Printf("Failed to list events: %v\n", err)
+		return
+	}
+
+	// Get last 20 events
+	events := eventList.Items
+	if len(events) > 20 {
+		events = events[len(events)-20:]
+	}
+
+	for _, event := range events {
+		ginkgo.GinkgoWriter.Printf("  [%s] %s/%s: %s - %s\n",
+			event.Type, event.InvolvedObject.Kind, event.InvolvedObject.Name,
+			event.Reason, event.Message)
+	}
+}
+
+func isPodReady(pod *corev1.Pod) bool {
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}

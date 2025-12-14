@@ -109,6 +109,44 @@ var _ = ginkgo.ReportAfterEach(func(report ginkgo.SpecReport) {
 	}
 })
 
+// containerFailed tracks if any spec in the current container failed
+// Reset in BeforeAll, set in AfterEach, read in AfterAll
+// Safe because Ginkgo runs specs sequentially within a container
+var containerFailed bool
+
+// ResetContainerFailureTracking should be called in BeforeAll to reset tracking for this container
+func ResetContainerFailureTracking() {
+	containerFailed = false
+}
+
+// AfterEach tracks if the current spec failed (cumulative - doesn't reset between specs)
+var _ = ginkgo.AfterEach(func() {
+	if ginkgo.CurrentSpecReport().Failed() {
+		containerFailed = true
+	}
+})
+
+// CaptureStateBeforeCleanup should be called at the START of AfterAll to capture state before cleanup
+// Only captures state if a test in this container failed
+func CaptureStateBeforeCleanup() {
+	if containerFailed {
+		ginkgo.GinkgoWriter.Println("\n" + strings.Repeat("=", 80))
+		ginkgo.GinkgoWriter.Println("🔴 TEST FAILED - CAPTURING STATE BEFORE CLEANUP")
+		ginkgo.GinkgoWriter.Println(strings.Repeat("=", 80))
+
+		namespace := "default"
+		dumpVirtualMCPServers(namespace)
+		dumpMCPServers(namespace)
+		dumpPods(namespace)
+		dumpServices(namespace)
+		dumpEvents(namespace)
+
+		ginkgo.GinkgoWriter.Println(strings.Repeat("=", 80))
+		ginkgo.GinkgoWriter.Println("END OF PRE-CLEANUP STATE DUMP")
+		ginkgo.GinkgoWriter.Println(strings.Repeat("=", 80) + "\n")
+	}
+}
+
 // dumpK8sStateOnFailure captures and logs Kubernetes state for debugging failed tests
 func dumpK8sStateOnFailure(report ginkgo.SpecReport) {
 	ginkgo.GinkgoWriter.Println("\n" + strings.Repeat("=", 80))
@@ -199,13 +237,19 @@ func dumpPods(namespace string) {
 			}
 		}
 
-		// Get pod logs (last 50 lines)
+		// Get pod logs (last 50 lines) - try current first, then previous if container crashed
 		for _, container := range pod.Spec.Containers {
-			logs, err := getPodLogs(ctx, namespace, pod.Name, container.Name, true)
+			logs, err := getPodLogs(ctx, namespace, pod.Name, container.Name, false)
+			logType := "current"
+			if err != nil {
+				// Try previous logs if current fails (container may have crashed)
+				logs, err = getPodLogs(ctx, namespace, pod.Name, container.Name, true)
+				logType = "previous"
+			}
 			if err != nil {
 				ginkgo.GinkgoWriter.Printf("    Logs (%s): failed to get: %v\n", container.Name, err)
 			} else if logs != "" {
-				ginkgo.GinkgoWriter.Printf("    Logs (%s) [last 50 lines]:\n", container.Name)
+				ginkgo.GinkgoWriter.Printf("    Logs (%s) [%s, last 50 lines]:\n", container.Name, logType)
 				// Indent logs
 				for _, line := range strings.Split(logs, "\n") {
 					if line != "" {

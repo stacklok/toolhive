@@ -61,6 +61,7 @@ var _ = Describe("VirtualMCPServer Auth Discovery", Ordered, func() {
 	)
 
 	BeforeAll(func() {
+		ResetContainerFailureTracking()
 		By("Setting up mock HTTP server for fetch tool testing")
 		// Deploy as Kubernetes service instead of local httptest server
 		// so it's accessible from inside the cluster
@@ -877,6 +878,9 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 	})
 
 	AfterAll(func() {
+		// Capture Kubernetes state before cleanup if any test failed
+		CaptureStateBeforeCleanup()
+
 		// Use a shorter timeout for cleanup - pods should delete quickly
 		cleanupTimeout := 60 * time.Second
 

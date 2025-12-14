@@ -93,8 +93,6 @@ const (
 	TargetKeyStepType = "step_type"
 	// TargetKeyToolName is the key for the tool being called (for tool steps)
 	TargetKeyToolName = "tool_name"
-	// TargetKeyBackendID is the key for the backend target (for tool steps)
-	TargetKeyBackendID = "backend_id"
 )
 
 // MCP-specific subject field keys
@@ -133,6 +131,4 @@ const (
 	MetadataExtraKeyRetryCount = "retry_count"
 	// MetadataExtraKeyStepCount is the key for the total number of steps in a workflow
 	MetadataExtraKeyStepCount = "step_count"
-	// MetadataExtraKeyParallelSteps is the key for the number of parallel steps
-	MetadataExtraKeyParallelSteps = "parallel_steps"
 )

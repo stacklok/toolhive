@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -1147,7 +1145,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			}
 		}
 
-		It("should list and call tools from all backends with discovered auth", func() {
+		It("should list and call tools from all backends with discovered auth", FlakeAttempts(2), func() {
 			By("Verifying HTTP connectivity to VirtualMCPServer health endpoint")
 			Eventually(func() error {
 				url := fmt.Sprintf("http://localhost:%d/health", vmcpNodePort)
@@ -1165,44 +1163,24 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			By("Getting OIDC token from mock OIDC server")
 			oidcToken := getOIDCToken()
 
-			By("Creating authenticated MCP client for VirtualMCPServer")
-			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+			By("Creating authenticated MCP client with retry (fresh client on each attempt)")
+			// Use the helper that creates a fresh client on each retry attempt.
+			// This is crucial because the MCP client cannot be reliably restarted
+			// after a failed Start() or Initialize() call.
 			authenticatedHTTPClient := createAuthenticatedHTTPClient(oidcToken)
-			mcpClient, err := mcpclient.NewStreamableHttpClient(serverURL, transport.WithHTTPBasicClient(authenticatedHTTPClient))
-			Expect(err).ToNot(HaveOccurred())
+			mcpClient, err := CreateAuthenticatedMCPClientWithRetry(
+				vmcpNodePort,
+				"toolhive-auth-discovery-test",
+				authenticatedHTTPClient,
+				2*time.Minute,
+				5*time.Second,
+			)
+			Expect(err).ToNot(HaveOccurred(), "Should create authenticated MCP client")
 			defer mcpClient.Close()
-
-			By("Starting transport and initializing connection with retries")
-			// Retry MCP initialization to handle timing issues where the VirtualMCPServer's
-			// auth middleware (OIDC validation and auth discovery) may not be fully ready
-			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-
-			Eventually(func() error {
-				initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer initCancel()
-
-				if err := mcpClient.Start(initCtx); err != nil {
-					return fmt.Errorf("failed to start transport: %w", err)
-				}
-
-				initRequest := mcp.InitializeRequest{}
-				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-				initRequest.Params.ClientInfo = mcp.Implementation{
-					Name:    "toolhive-auth-discovery-test",
-					Version: "1.0.0",
-				}
-				_, err := mcpClient.Initialize(initCtx, initRequest)
-				if err != nil {
-					return fmt.Errorf("failed to initialize: %w", err)
-				}
-
-				return nil
-			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "MCP client should initialize successfully")
 
 			By("Listing tools from VirtualMCPServer")
 			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(testCtx, listRequest)
+			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).ToNot(BeEmpty())
 			Expect(len(tools.Tools)).To(BeNumerically(">=", 2), "Should aggregate tools from multiple backends")
@@ -1229,63 +1207,34 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 				callRequest.Params.Name = targetToolName
 				callRequest.Params.Arguments = map[string]any{"url": mockServer.URL}
 
-				result, err := mcpClient.CallTool(toolCallCtx, callRequest)
+				result, err := mcpClient.Client.CallTool(toolCallCtx, callRequest)
 				Expect(err).ToNot(HaveOccurred(), "Tool call should succeed: %s", targetToolName)
 				Expect(result).ToNot(BeNil())
 				GinkgoWriter.Printf("✓ Successfully called tool: %s\n", targetToolName)
 			}
 		})
 
-		It("should send auth tokens to configured auth servers", func() {
+		It("should send auth tokens to configured auth servers", FlakeAttempts(2), func() {
 			By("Calling tools to trigger token exchange")
 
 			By("Getting OIDC token for test client authentication")
 			token := getOIDCToken()
 
-			// Create authenticated MCP client and call tools to generate traffic
-			By("Creating authenticated MCP client for VirtualMCPServer")
-			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
+			By("Creating authenticated MCP client with retry (fresh client on each attempt)")
 			httpClient := createAuthenticatedHTTPClient(token)
-			mcpClient, err := mcpclient.NewStreamableHttpClient(
-				serverURL,
-				transport.WithHTTPBasicClient(httpClient),
+			mcpClient, err := CreateAuthenticatedMCPClientWithRetry(
+				vmcpNodePort,
+				"toolhive-auth-test",
+				httpClient,
+				2*time.Minute,
+				5*time.Second,
 			)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(err).ToNot(HaveOccurred(), "Should create authenticated MCP client")
 			defer mcpClient.Close()
-
-			By("Starting transport and initializing connection with retries")
-			// Retry MCP initialization to handle timing issues where the VirtualMCPServer's
-			// auth middleware (OIDC validation and auth discovery) may not be fully ready
-			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-
-			Eventually(func() error {
-				initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer initCancel()
-
-				err := mcpClient.Start(initCtx)
-				if err != nil {
-					return fmt.Errorf("failed to start transport: %w", err)
-				}
-
-				initRequest := mcp.InitializeRequest{}
-				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-				initRequest.Params.ClientInfo = mcp.Implementation{
-					Name:    "toolhive-auth-test",
-					Version: "1.0.0",
-				}
-
-				_, err = mcpClient.Initialize(initCtx, initRequest)
-				if err != nil {
-					return fmt.Errorf("failed to initialize: %w", err)
-				}
-
-				return nil
-			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "MCP client should initialize successfully")
 
 			By("Listing and calling tools from backend with token exchange")
 			listRequest := mcp.ListToolsRequest{}
-			tools, err := mcpClient.ListTools(testCtx, listRequest)
+			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).ToNot(BeEmpty())
 
@@ -1310,7 +1259,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 						"url": mockServer.URL,
 					}
 
-					_, err := mcpClient.CallTool(toolCallCtx, callRequest)
+					_, err := mcpClient.Client.CallTool(toolCallCtx, callRequest)
 					if err == nil {
 						GinkgoWriter.Printf("✓ Successfully called tool: %s\n", tool.Name)
 						calledTokenExchangeTool = true

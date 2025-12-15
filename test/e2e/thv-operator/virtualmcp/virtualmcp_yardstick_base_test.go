@@ -26,7 +26,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 		backend1Name    = "yardstick-a"
 		backend2Name    = "yardstick-b"
 		timeout         = 3 * time.Minute
-		pollingInterval = 1 * time.Second
+		pollingInterval = 3 * time.Second // Increased from 1s to reduce K8s API pressure
 		vmcpNodePort    int32
 	)
 

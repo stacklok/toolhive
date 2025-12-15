@@ -864,6 +864,22 @@ func checkHTTPHealthReady(nodePort int32, timeout time.Duration) error {
 	return nil
 }
 
+// WaitForHealthy waits for the VirtualMCPServer to be healthy by polling the /health endpoint.
+// This is more robust than time.Sleep as it ensures the server is actually responding.
+func WaitForHealthy(nodePort int32, timeout time.Duration, pollingInterval time.Duration) error {
+	var lastErr error
+
+	success := gomega.Eventually(func() error {
+		lastErr = checkHTTPHealthReady(nodePort, 5*time.Second)
+		return lastErr
+	}, timeout, pollingInterval).Should(gomega.Succeed())
+
+	if !success {
+		return fmt.Errorf("health check failed after %v: %w", timeout, lastErr)
+	}
+	return nil
+}
+
 // TestToolListingAndCall is a shared helper that creates an MCP client, lists tools,
 // finds a tool matching the pattern, calls it, and verifies the response.
 // This eliminates the duplicate "create client → list → call" pattern found in most tests.
@@ -983,4 +999,182 @@ func (gingkoHttpLogger) Infof(format string, v ...any) {
 
 func (gingkoHttpLogger) Errorf(format string, v ...any) {
 	ginkgo.GinkgoLogr.Error(errors.New("http error"), "ERROR: "+format, v...)
+}
+
+// CreateInitializedMCPClientWithRetry creates an MCP client with retry logic that creates
+// a fresh client on each attempt. This is more robust than reusing a client across retries
+// because the MCP client may be in an inconsistent state after a failed Start() or Initialize().
+// Returns the initialized client which must be closed by the caller.
+func CreateInitializedMCPClientWithRetry(
+	nodePort int32,
+	clientName string,
+	timeout time.Duration,
+	pollingInterval time.Duration,
+	options ...transport.StreamableHTTPCOption,
+) (*InitializedMCPClient, error) {
+	serverURL := fmt.Sprintf("http://localhost:%d/mcp", nodePort)
+	var result *InitializedMCPClient
+	var lastErr error
+
+	success := gomega.Eventually(func() error {
+		// Create a fresh client on each attempt - this is crucial because
+		// the MCP client cannot be reliably restarted after a failed attempt
+		mcpClient, err := mcpclient.NewStreamableHttpClient(serverURL, options...)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to create MCP client: %w", err)
+			return lastErr
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+
+		if err := mcpClient.Start(ctx); err != nil {
+			cancel()
+			_ = mcpClient.Close()
+			lastErr = fmt.Errorf("failed to start MCP client: %w", err)
+			return lastErr
+		}
+
+		initRequest := mcp.InitializeRequest{}
+		initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+		initRequest.Params.Capabilities = mcp.ClientCapabilities{}
+		initRequest.Params.ClientInfo = mcp.Implementation{
+			Name:    clientName,
+			Version: "1.0.0",
+		}
+
+		if _, err := mcpClient.Initialize(ctx, initRequest); err != nil {
+			cancel()
+			_ = mcpClient.Close()
+			lastErr = fmt.Errorf("failed to initialize MCP client: %w", err)
+			return lastErr
+		}
+
+		// Success - store the result
+		result = &InitializedMCPClient{
+			Client: mcpClient,
+			Ctx:    ctx,
+			Cancel: cancel,
+		}
+		return nil
+	}, timeout, pollingInterval).Should(gomega.Succeed())
+
+	if !success {
+		return nil, fmt.Errorf("failed to create initialized MCP client after retries: %w", lastErr)
+	}
+
+	return result, nil
+}
+
+// CreateAuthenticatedMCPClientWithRetry creates an authenticated MCP client with retry logic.
+// The httpClient should have the appropriate authentication configured (e.g., Bearer token).
+func CreateAuthenticatedMCPClientWithRetry(
+	nodePort int32,
+	clientName string,
+	httpClient *http.Client,
+	timeout time.Duration,
+	pollingInterval time.Duration,
+) (*InitializedMCPClient, error) {
+	return CreateInitializedMCPClientWithRetry(
+		nodePort,
+		clientName,
+		timeout,
+		pollingInterval,
+		transport.WithHTTPBasicClient(httpClient),
+	)
+}
+
+// WaitForToolsDiscovered waits for the VirtualMCPServer to discover at least minToolCount tools.
+// This is useful to ensure tools are available before running tool-related tests.
+func WaitForToolsDiscovered(
+	nodePort int32,
+	minToolCount int,
+	timeout time.Duration,
+	pollingInterval time.Duration,
+) error {
+	var lastErr error
+	var lastCount int
+
+	success := gomega.Eventually(func() (int, error) {
+		// Create a fresh client for each check
+		mcpClient, err := CreateInitializedMCPClient(nodePort, "tool-discovery-check", 15*time.Second)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to create MCP client: %w", err)
+			return 0, lastErr
+		}
+		defer mcpClient.Close()
+
+		listRequest := mcp.ListToolsRequest{}
+		tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to list tools: %w", err)
+			return 0, lastErr
+		}
+
+		lastCount = len(tools.Tools)
+		ginkgo.GinkgoWriter.Printf("Tool discovery check: found %d tools (waiting for >= %d)\n",
+			lastCount, minToolCount)
+
+		return lastCount, nil
+	}, timeout, pollingInterval).Should(gomega.BeNumerically(">=", minToolCount),
+		fmt.Sprintf("Should discover at least %d tools", minToolCount))
+
+	if !success {
+		if lastErr != nil {
+			return fmt.Errorf("failed to discover tools: %w", lastErr)
+		}
+		return fmt.Errorf("only discovered %d tools, expected at least %d", lastCount, minToolCount)
+	}
+	return nil
+}
+
+// WaitForSpecificToolsDiscovered waits for specific tools to be available by name.
+// This is more precise than WaitForToolsDiscovered when you need specific tools.
+func WaitForSpecificToolsDiscovered(
+	nodePort int32,
+	toolNames []string,
+	timeout time.Duration,
+	pollingInterval time.Duration,
+) error {
+	var lastErr error
+
+	success := gomega.Eventually(func() error {
+		mcpClient, err := CreateInitializedMCPClient(nodePort, "specific-tool-check", 15*time.Second)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to create MCP client: %w", err)
+			return lastErr
+		}
+		defer mcpClient.Close()
+
+		listRequest := mcp.ListToolsRequest{}
+		tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to list tools: %w", err)
+			return lastErr
+		}
+
+		availableTools := make(map[string]bool)
+		for _, tool := range tools.Tools {
+			availableTools[tool.Name] = true
+		}
+
+		var missingTools []string
+		for _, name := range toolNames {
+			if !availableTools[name] {
+				missingTools = append(missingTools, name)
+			}
+		}
+
+		if len(missingTools) > 0 {
+			lastErr = fmt.Errorf("missing tools: %v (available: %d tools)", missingTools, len(tools.Tools))
+			return lastErr
+		}
+
+		return nil
+	}, timeout, pollingInterval).Should(gomega.Succeed(),
+		fmt.Sprintf("Should find tools: %v", toolNames))
+
+	if !success {
+		return fmt.Errorf("failed to find all tools: %w", lastErr)
+	}
+	return nil
 }

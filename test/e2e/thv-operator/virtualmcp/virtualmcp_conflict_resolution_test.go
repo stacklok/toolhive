@@ -106,7 +106,7 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 	var (
 		testNamespace   = "default"
 		timeout         = 3 * time.Minute
-		pollingInterval = 1 * time.Second
+		pollingInterval = 3 * time.Second // Increased from 1s to reduce K8s API pressure
 	)
 
 	Describe("Prefix Strategy", Ordered, func() {

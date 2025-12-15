@@ -24,7 +24,7 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 		backend1Name    = "yardstick-par-a"
 		backend2Name    = "yardstick-par-b"
 		timeout         = 3 * time.Minute
-		pollingInterval = 1 * time.Second
+		pollingInterval = 3 * time.Second // Increased from 1s to reduce K8s API pressure
 		vmcpNodePort    int32
 
 		// Composite tool name

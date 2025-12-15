@@ -174,17 +174,54 @@ func dumpPods(namespace string) {
 		ginkgo.GinkgoWriter.Printf("    Phase: %s\n", pod.Status.Phase)
 		ginkgo.GinkgoWriter.Printf("    Ready: %v\n", isPodReady(&pod))
 
-		// Container statuses
+		// Pod conditions - shows why pod is not ready
+		ginkgo.GinkgoWriter.Println("    Conditions:")
+		for _, cond := range pod.Status.Conditions {
+			status := string(cond.Status)
+			msg := ""
+			if cond.Message != "" {
+				msg = fmt.Sprintf(" - %s", cond.Message)
+			}
+			if cond.Reason != "" {
+				msg = fmt.Sprintf(" (%s)%s", cond.Reason, msg)
+			}
+			ginkgo.GinkgoWriter.Printf("      %s: %s%s\n", cond.Type, status, msg)
+		}
+
+		// Container statuses and readiness probe config
 		for _, cs := range pod.Status.ContainerStatuses {
-			ginkgo.GinkgoWriter.Printf("    Container %s: Ready=%v, RestartCount=%d\n",
-				cs.Name, cs.Ready, cs.RestartCount)
+			ginkgo.GinkgoWriter.Printf("    Container %s: Ready=%v, RestartCount=%d, Started=%v\n",
+				cs.Name, cs.Ready, cs.RestartCount, cs.Started != nil && *cs.Started)
 			if cs.State.Waiting != nil {
-				ginkgo.GinkgoWriter.Printf("      Waiting: %s - %s\n",
+				ginkgo.GinkgoWriter.Printf("      State: Waiting - %s: %s\n",
 					cs.State.Waiting.Reason, cs.State.Waiting.Message)
 			}
+			if cs.State.Running != nil {
+				ginkgo.GinkgoWriter.Printf("      State: Running since %s\n",
+					cs.State.Running.StartedAt.Format("15:04:05"))
+			}
 			if cs.State.Terminated != nil {
-				ginkgo.GinkgoWriter.Printf("      Terminated: %s (exit %d) - %s\n",
+				ginkgo.GinkgoWriter.Printf("      State: Terminated - %s (exit %d): %s\n",
 					cs.State.Terminated.Reason, cs.State.Terminated.ExitCode, cs.State.Terminated.Message)
+			}
+
+			// Find container spec for readiness probe info
+			for _, containerSpec := range pod.Spec.Containers {
+				if containerSpec.Name == cs.Name && containerSpec.ReadinessProbe != nil {
+					probe := containerSpec.ReadinessProbe
+					ginkgo.GinkgoWriter.Printf("      ReadinessProbe: InitialDelay=%ds, Period=%ds, Timeout=%ds, Failure=%d\n",
+						probe.InitialDelaySeconds, probe.PeriodSeconds, probe.TimeoutSeconds, probe.FailureThreshold)
+					if probe.HTTPGet != nil {
+						ginkgo.GinkgoWriter.Printf("        HTTPGet: %s:%v%s\n",
+							probe.HTTPGet.Scheme, probe.HTTPGet.Port.String(), probe.HTTPGet.Path)
+					}
+					if probe.TCPSocket != nil {
+						ginkgo.GinkgoWriter.Printf("        TCPSocket: port %v\n", probe.TCPSocket.Port.String())
+					}
+					if probe.Exec != nil {
+						ginkgo.GinkgoWriter.Printf("        Exec: %v\n", probe.Exec.Command)
+					}
+				}
 			}
 		}
 

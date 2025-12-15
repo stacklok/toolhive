@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -83,6 +84,133 @@ func TestAuditorMiddlewareWithRequestData(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 	assert.Equal(t, requestBody, rr.Body.String())
+}
+
+func TestAuditorMiddlewareWithOversizedRequestData(t *testing.T) {
+	t.Parallel()
+
+	// Use a small MaxDataSize to easily create an "oversized" body
+	maxSize := 10
+	config := &Config{
+		IncludeRequestData: true,
+		MaxDataSize:        maxSize,
+	}
+	auditor, err := NewAuditorWithTransport(config, "sse")
+	require.NoError(t, err)
+
+	// Track whether the handler received the complete body
+	var receivedBody string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		receivedBody = string(body)
+		w.WriteHeader(http.StatusOK)
+		w.Write(body)
+	})
+
+	middleware := auditor.Middleware(handler)
+
+	// Create a request body that exceeds MaxDataSize
+	oversizedBody := "This is a body that exceeds the max data size limit"
+	require.Greater(t, len(oversizedBody), maxSize, "Test body must exceed MaxDataSize")
+
+	req := httptest.NewRequest("POST", "/test", strings.NewReader(oversizedBody))
+	req.Header.Set("Content-Type", "text/plain")
+	rr := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rr, req)
+
+	// The handler should have received the complete body, even though it exceeds MaxDataSize
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, oversizedBody, receivedBody, "Handler should receive the complete body")
+	assert.Equal(t, oversizedBody, rr.Body.String(), "Response should echo the complete body")
+}
+
+func TestAuditorMiddlewareWithExactMaxSizeBody(t *testing.T) {
+	t.Parallel()
+
+	// Use a specific MaxDataSize
+	maxSize := 20
+	config := &Config{
+		IncludeRequestData: true,
+		MaxDataSize:        maxSize,
+	}
+	auditor, err := NewAuditorWithTransport(config, "sse")
+	require.NoError(t, err)
+
+	// Track whether the handler received the complete body
+	var receivedBody string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		receivedBody = string(body)
+		w.WriteHeader(http.StatusOK)
+		w.Write(body)
+	})
+
+	middleware := auditor.Middleware(handler)
+
+	// Create a request body with exactly MaxDataSize length
+	exactSizeBody := strings.Repeat("x", maxSize)
+	require.Equal(t, maxSize, len(exactSizeBody), "Test body must equal MaxDataSize exactly")
+
+	req := httptest.NewRequest("POST", "/test", strings.NewReader(exactSizeBody))
+	req.Header.Set("Content-Type", "text/plain")
+	rr := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rr, req)
+
+	// The handler should have received the complete body
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, exactSizeBody, receivedBody, "Handler should receive the complete body")
+	assert.Equal(t, exactSizeBody, rr.Body.String(), "Response should echo the complete body")
+}
+
+func TestAuditorMiddlewareWithEmptyBody(t *testing.T) {
+	t.Parallel()
+
+	config := &Config{
+		IncludeRequestData: true,
+		MaxDataSize:        1024,
+	}
+	auditor, err := NewAuditorWithTransport(config, "sse")
+	require.NoError(t, err)
+
+	// Track whether the handler was called and received an empty body
+	handlerCalled := false
+	var receivedBodyLen int
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		receivedBodyLen = len(body)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	middleware := auditor.Middleware(handler)
+
+	// Create a request with an empty body
+	req := httptest.NewRequest("POST", "/test", strings.NewReader(""))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	middleware.ServeHTTP(rr, req)
+
+	// The handler should have been called with an empty body
+	assert.True(t, handlerCalled, "Handler should have been called")
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, 0, receivedBodyLen, "Handler should receive an empty body")
+	assert.Equal(t, "OK", rr.Body.String())
 }
 
 func TestAuditorMiddlewareWithResponseData(t *testing.T) {

@@ -166,10 +166,13 @@ func (a *Auditor) Middleware(next http.Handler) http.Handler {
 		var requestData []byte
 		if a.config.IncludeRequestData && r.Body != nil {
 			body, err := io.ReadAll(r.Body)
-			if err == nil && len(body) <= a.config.MaxDataSize {
-				requestData = body
-				// Restore the body for the next handler
+			if err == nil {
+				// Always restore the body for the next handler
 				r.Body = io.NopCloser(bytes.NewReader(body))
+				// Only capture for auditing if within size limit
+				if len(body) <= a.config.MaxDataSize {
+					requestData = body
+				}
 			}
 		}
 

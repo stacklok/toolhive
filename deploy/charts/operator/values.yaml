@@ -22,7 +22,7 @@ operator:
   toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.6.12
 
   # -- Image to use for Virtual MCP Server (vMCP) deployments
-  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.6.12
+  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.6.13
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0

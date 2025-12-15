@@ -377,7 +377,7 @@ func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv
 	if url == "" {
 		port := int(proxy.GetProxyPort())
 		if port > 0 {
-			url = transport.GenerateMCPServerURL(proxy.Spec.Transport, transport.LocalhostIPv4, port, proxy.Name, "")
+			url = transport.GenerateMCPServerURL(proxy.Spec.Transport, "", transport.LocalhostIPv4, port, proxy.Name, "")
 		}
 	}
 

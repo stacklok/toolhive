@@ -1668,12 +1668,12 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 
 			for i := range discoveredBackends {
 				backend := &discoveredBackends[i]
-				if healthStat, found := healthStatus[backend.Name]; found {
+				if healthInfo, found := healthStatus[backend.Name]; found {
 					// Map vmcp health status to CRD backend status
 					// vmcp statuses: healthy, unhealthy, degraded, unknown
 					// CRD statuses: ready, unavailable, degraded, unknown
 					var newStatus string
-					switch healthStat {
+					switch healthInfo.Status {
 					case "healthy":
 						newStatus = mcpv1alpha1.BackendStatusReady
 					case "unhealthy":
@@ -1687,14 +1687,19 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 						continue
 					}
 
-					// Only log if status changed
+					// Update status if changed
 					if newStatus != backend.Status {
 						ctxLogger.V(1).Info("Backend health check updated status",
 							"name", backend.Name,
 							"old_status", backend.Status,
 							"new_status", newStatus,
-							"health_status", healthStat)
+							"health_status", healthInfo.Status)
 						backend.Status = newStatus
+					}
+
+					// Update LastHealthCheck with actual health check timestamp from vmcp
+					if !healthInfo.LastCheckTime.IsZero() {
+						backend.LastHealthCheck = metav1.NewTime(healthInfo.LastCheckTime)
 					}
 				}
 			}
@@ -2145,6 +2150,12 @@ func (*VirtualMCPServerReconciler) vmcpReferencesCompositeToolDefinition(
 	return false
 }
 
+// BackendHealthInfo contains health information for a single backend
+type BackendHealthInfo struct {
+	Status        string
+	LastCheckTime time.Time
+}
+
 // BackendHealthStatusResponse represents the health status response from the vmcp health API
 type BackendHealthStatusResponse struct {
 	Backends []struct {
@@ -2157,12 +2168,12 @@ type BackendHealthStatusResponse struct {
 	} `json:"backends"`
 }
 
-// queryVMCPHealthStatus queries the vmcp health endpoint and returns backend health status.
+// queryVMCPHealthStatus queries the vmcp health endpoint and returns backend health information.
 // Returns nil if health monitoring is not enabled or if there's an error.
 func (*VirtualMCPServerReconciler) queryVMCPHealthStatus(
 	ctx context.Context,
 	vmcpURL string,
-) map[string]string {
+) map[string]*BackendHealthInfo {
 	ctxLogger := log.FromContext(ctx)
 
 	// Construct health endpoint URL
@@ -2208,10 +2219,13 @@ func (*VirtualMCPServerReconciler) queryVMCPHealthStatus(
 		return nil
 	}
 
-	// Convert to map of backendID -> status
-	healthStatus := make(map[string]string)
+	// Convert to map of backendID -> health info
+	healthStatus := make(map[string]*BackendHealthInfo)
 	for _, backend := range healthResp.Backends {
-		healthStatus[backend.BackendID] = backend.Status
+		healthStatus[backend.BackendID] = &BackendHealthInfo{
+			Status:        backend.Status,
+			LastCheckTime: backend.LastCheckTime,
+		}
 	}
 
 	ctxLogger.V(1).Info("Retrieved health status from vmcp server",

@@ -72,6 +72,44 @@ func WaitForVirtualMCPServerReady(
 	}, timeout, pollingInterval).Should(gomega.Succeed())
 }
 
+// WaitForVirtualMCPServerDeployed waits for a VirtualMCPServer deployment to be running
+// without requiring the Ready condition to be True. This is useful for health monitoring tests
+// where some backends may intentionally be unhealthy.
+func WaitForVirtualMCPServerDeployed(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	timeout time.Duration,
+	pollingInterval time.Duration,
+) {
+	vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+
+	gomega.Eventually(func() error {
+		if err := c.Get(ctx, types.NamespacedName{
+			Name:      name,
+			Namespace: namespace,
+		}, vmcpServer); err != nil {
+			return err
+		}
+
+		// Check that the VirtualMCPServer has a URL (indicating it's been deployed)
+		if vmcpServer.Status.URL == "" {
+			return fmt.Errorf("VirtualMCPServer URL not set yet")
+		}
+
+		// Check that pods are running (but not necessarily all backends healthy)
+		labels := map[string]string{
+			"app.kubernetes.io/name":     "vmcp",
+			"app.kubernetes.io/instance": name,
+		}
+		if err := checkPodsReady(ctx, c, namespace, labels); err != nil {
+			return fmt.Errorf("VirtualMCPServer pods not ready: %w", err)
+		}
+
+		return nil
+	}, timeout, pollingInterval).Should(gomega.Succeed())
+}
+
 // checkPodsReady checks if all pods matching the given labels are ready
 func checkPodsReady(ctx context.Context, c client.Client, namespace string, labels map[string]string) error {
 	podList := &corev1.PodList{}

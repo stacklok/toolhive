@@ -121,8 +121,10 @@ var _ = Describe("VirtualMCPServer Health Monitoring", Ordered, func() {
 		}
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
-		By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+		By("Waiting for VirtualMCPServer to be deployed")
+		// Use WaitForVirtualMCPServerDeployed instead of WaitForVirtualMCPServerReady
+		// because we intentionally have an unhealthy backend, so Ready will be False
+		WaitForVirtualMCPServerDeployed(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
 	})
 
 	AfterAll(func() {
@@ -179,9 +181,7 @@ var _ = Describe("VirtualMCPServer Health Monitoring", Ordered, func() {
 	})
 
 	It("should report healthy status for working backends", func() {
-		// Wait for health checks to run (at least 2 intervals to stabilize)
-		time.Sleep(15 * time.Second)
-
+		// Eventually will poll until health checks stabilize
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 		Eventually(func() error {
 			if err := k8sClient.Get(ctx, types.NamespacedName{
@@ -215,9 +215,8 @@ var _ = Describe("VirtualMCPServer Health Monitoring", Ordered, func() {
 	})
 
 	It("should report unhealthy status for failing backend", func() {
-		// Wait for unhealthy threshold to be exceeded (at least unhealthyThreshold * interval)
+		// Eventually will poll until the unhealthy threshold is exceeded
 		By(fmt.Sprintf("Waiting for unhealthy backend to fail %d consecutive health checks", unhealthyThreshold))
-		time.Sleep(time.Duration(unhealthyThreshold+1) * 5 * time.Second)
 
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 		Eventually(func() error {
@@ -263,10 +262,7 @@ var _ = Describe("VirtualMCPServer Health Monitoring", Ordered, func() {
 			}
 		}
 
-		// Wait for at least 2 health check intervals
-		time.Sleep(12 * time.Second)
-
-		// Verify timestamps have been updated
+		// Eventually will poll until timestamps are updated (after at least 2 health check intervals)
 		Eventually(func() error {
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
@@ -320,9 +316,7 @@ var _ = Describe("VirtualMCPServer Health Monitoring", Ordered, func() {
 		}, timeout, pollingInterval).Should(Succeed())
 
 		By("Waiting for health monitoring to detect recovery")
-		// Give health monitor time to detect the recovery (a few health check intervals)
-		time.Sleep(20 * time.Second)
-
+		// Eventually will poll until health monitoring detects the recovery
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 		Eventually(func() error {
 			if err := k8sClient.Get(ctx, types.NamespacedName{

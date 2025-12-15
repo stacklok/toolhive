@@ -999,7 +999,7 @@ func InitializeMCPClientWithRetries(
 	gomega.Eventually(func() error {
 		// Close any previous client to avoid stale session state
 		if mcpClient != nil {
-			mcpClient.Close()
+			_ = mcpClient.Close()
 		}
 
 		// Create fresh client for each attempt

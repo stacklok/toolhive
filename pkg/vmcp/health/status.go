@@ -1,0 +1,233 @@
+package health
+
+import (
+	"sync"
+	"time"
+
+	"github.com/stacklok/toolhive/pkg/logger"
+	"github.com/stacklok/toolhive/pkg/vmcp"
+)
+
+// backendHealthState tracks the health state of a single backend.
+type backendHealthState struct {
+	// status is the current health status.
+	status vmcp.BackendHealthStatus
+
+	// consecutiveFailures is the number of consecutive failed health checks.
+	consecutiveFailures int
+
+	// lastCheckTime is when the last health check was performed.
+	lastCheckTime time.Time
+
+	// lastError is the last error encountered during health check (if any).
+	lastError error
+
+	// lastTransitionTime is when the status last changed.
+	lastTransitionTime time.Time
+}
+
+// statusTracker tracks health status for multiple backends.
+// It provides thread-safe access to backend health states and handles
+// status transitions with configurable unhealthy thresholds.
+type statusTracker struct {
+	mu sync.RWMutex
+
+	// states maps backend ID to its health state.
+	states map[string]*backendHealthState
+
+	// unhealthyThreshold is the number of consecutive failures before marking unhealthy.
+	unhealthyThreshold int
+}
+
+// newStatusTracker creates a new status tracker.
+//
+// Parameters:
+//   - unhealthyThreshold: Number of consecutive failures before marking backend unhealthy.
+//     Must be >= 1. Recommended: 3 failures.
+//
+// Returns a new status tracker instance.
+func newStatusTracker(unhealthyThreshold int) *statusTracker {
+	if unhealthyThreshold < 1 {
+		unhealthyThreshold = 1
+	}
+
+	return &statusTracker{
+		states:             make(map[string]*backendHealthState),
+		unhealthyThreshold: unhealthyThreshold,
+	}
+}
+
+// RecordSuccess records a successful health check for a backend.
+// This resets the consecutive failure count and marks the backend as healthy.
+// If the backend was previously unhealthy, this transition is logged.
+func (t *statusTracker) RecordSuccess(backendID string, backendName string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	state, exists := t.states[backendID]
+	if !exists {
+		// Initialize new state
+		state = &backendHealthState{
+			status:              vmcp.BackendHealthy,
+			consecutiveFailures: 0,
+			lastCheckTime:       time.Now(),
+			lastError:           nil,
+			lastTransitionTime:  time.Now(),
+		}
+		t.states[backendID] = state
+		logger.Debugf("Backend %s initialized as healthy", backendName)
+		return
+	}
+
+	// Check for status transition
+	previousStatus := state.status
+	previousFailures := state.consecutiveFailures
+	state.status = vmcp.BackendHealthy
+	state.consecutiveFailures = 0
+	state.lastCheckTime = time.Now()
+	state.lastError = nil
+
+	// Log transition if status changed
+	if previousStatus != vmcp.BackendHealthy {
+		state.lastTransitionTime = time.Now()
+		logger.Infof("Backend %s health recovered: %s → %s (was failing for %d consecutive checks)",
+			backendName, previousStatus, vmcp.BackendHealthy, previousFailures)
+	}
+}
+
+// RecordFailure records a failed health check for a backend.
+// This increments the consecutive failure count and may transition the backend to unhealthy
+// if the threshold is exceeded. Status transitions are logged.
+//
+// Parameters:
+//   - backendID: Unique identifier for the backend
+//   - backendName: Human-readable name for logging
+//   - status: The health status returned by the health check (unhealthy, unauthenticated, etc.)
+//   - err: The error encountered during health check
+func (t *statusTracker) RecordFailure(backendID string, backendName string, status vmcp.BackendHealthStatus, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	state, exists := t.states[backendID]
+	if !exists {
+		// Initialize new state with failure
+		state = &backendHealthState{
+			status:              status,
+			consecutiveFailures: 1,
+			lastCheckTime:       time.Now(),
+			lastError:           err,
+			lastTransitionTime:  time.Now(),
+		}
+		t.states[backendID] = state
+		logger.Warnf("Backend %s initialized with failure (status: %s): %v", backendName, status, err)
+		return
+	}
+
+	// Record the failure
+	previousStatus := state.status
+	state.consecutiveFailures++
+	state.lastCheckTime = time.Now()
+	state.lastError = err
+
+	// Determine if we should transition to unhealthy/unauthenticated
+	shouldTransition := state.consecutiveFailures >= t.unhealthyThreshold
+
+	if shouldTransition && previousStatus != status {
+		// Transition to new status
+		state.status = status
+		state.lastTransitionTime = time.Now()
+		logger.Warnf("Backend %s health degraded: %s → %s (%d consecutive failures, threshold: %d) - last error: %v",
+			backendName, previousStatus, status, state.consecutiveFailures, t.unhealthyThreshold, err)
+	} else if !shouldTransition {
+		// Not yet at threshold, keep previous status
+		logger.Debugf("Backend %s health check failed (%d/%d consecutive failures, status: %s): %v",
+			backendName, state.consecutiveFailures, t.unhealthyThreshold, status, err)
+	} else {
+		// Already in failed state, just increment counter
+		logger.Debugf("Backend %s remains %s (%d consecutive failures): %v",
+			backendName, status, state.consecutiveFailures, err)
+	}
+}
+
+// GetStatus returns the current health status for a backend.
+// Returns (status, exists) where exists indicates if the backend is being tracked.
+// If the backend is not being tracked, returns (BackendUnknown, false).
+func (t *statusTracker) GetStatus(backendID string) (vmcp.BackendHealthStatus, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	state, exists := t.states[backendID]
+	if !exists {
+		return vmcp.BackendUnknown, false
+	}
+
+	return state.status, true
+}
+
+// GetState returns a copy of the full health state for a backend.
+// Returns (state, exists) where exists indicates if the backend is being tracked.
+func (t *statusTracker) GetState(backendID string) (*State, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	state, exists := t.states[backendID]
+	if !exists {
+		return nil, false
+	}
+
+	// Return a copy to avoid race conditions
+	return &State{
+		Status:              state.status,
+		ConsecutiveFailures: state.consecutiveFailures,
+		LastCheckTime:       state.lastCheckTime,
+		LastError:           state.lastError,
+		LastTransitionTime:  state.lastTransitionTime,
+	}, true
+}
+
+// GetAllStates returns a copy of all backend health states.
+// Returns a map of backend ID to State.
+func (t *statusTracker) GetAllStates() map[string]*State {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	result := make(map[string]*State, len(t.states))
+	for backendID, state := range t.states {
+		result[backendID] = &State{
+			Status:              state.status,
+			ConsecutiveFailures: state.consecutiveFailures,
+			LastCheckTime:       state.lastCheckTime,
+			LastError:           state.lastError,
+			LastTransitionTime:  state.lastTransitionTime,
+		}
+	}
+
+	return result
+}
+
+// IsHealthy returns true if the backend is currently healthy.
+// Returns false if the backend is unknown or not tracked.
+func (t *statusTracker) IsHealthy(backendID string) bool {
+	status, exists := t.GetStatus(backendID)
+	return exists && status == vmcp.BackendHealthy
+}
+
+// State is an immutable snapshot of a backend's health state.
+// This is returned by GetState and GetAllStates to provide thread-safe access
+// to health information without holding locks.
+type State struct {
+	// Status is the current health status.
+	Status vmcp.BackendHealthStatus
+
+	// ConsecutiveFailures is the number of consecutive failed health checks.
+	ConsecutiveFailures int
+
+	// LastCheckTime is when the last health check was performed.
+	LastCheckTime time.Time
+
+	// LastError is the last error encountered (if any).
+	LastError error
+
+	// LastTransitionTime is when the status last changed.
+	LastTransitionTime time.Time
+}

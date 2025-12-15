@@ -20,6 +20,7 @@ import (
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 )
@@ -253,6 +254,8 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 }
 
 // runServe implements the serve command logic
+//
+//nolint:gocyclo // Complexity is inherent to initialization sequence
 func runServe(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 	configPath := viper.GetString("config")
@@ -339,6 +342,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		AuthInfoHandler:   authInfoHandler,
 		TelemetryProvider: telemetryProvider,
 		AuditConfig:       cfg.Audit,
+	}
+
+	// Configure health monitoring if enabled
+	if cfg.Operational != nil && cfg.Operational.FailureHandling != nil && cfg.Operational.FailureHandling.HealthCheckInterval > 0 {
+		serverCfg.HealthMonitorConfig = &health.MonitorConfig{
+			CheckInterval:      time.Duration(cfg.Operational.FailureHandling.HealthCheckInterval),
+			UnhealthyThreshold: cfg.Operational.FailureHandling.UnhealthyThreshold,
+			Timeout:            10 * time.Second, // Default timeout
+		}
 	}
 
 	// Convert composite tool configurations to workflow definitions

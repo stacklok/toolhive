@@ -356,6 +356,11 @@ func TestGetLogWriter_WithActualFile(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, writer)
 
+		// Close the writer (it's a file)
+		if closer, ok := writer.(io.Closer); ok {
+			defer closer.Close()
+		}
+
 		// Verify file was created
 		fileInfo, err := os.Stat(logFilePath)
 		require.NoError(t, err)
@@ -363,18 +368,6 @@ func TestGetLogWriter_WithActualFile(t *testing.T) {
 
 		// Verify file permissions (0600 = owner read/write only)
 		assert.Equal(t, os.FileMode(0600), fileInfo.Mode().Perm())
-
-		// Create an auditor and write an audit event
-		auditor, err := NewAuditorWithTransport(config, "streamable-http")
-		require.NoError(t, err)
-
-		// The auditor should be using the file writer
-		assert.NotNil(t, auditor.auditLogger)
-
-		// Close the writer (it's a file)
-		if closer, ok := writer.(io.Closer); ok {
-			defer closer.Close()
-		}
 
 		// Read the file and verify it's empty (no events logged yet)
 		content, err := os.ReadFile(logFilePath)
@@ -416,15 +409,10 @@ func TestGetLogWriter_WithActualFile(t *testing.T) {
 			closer.Close()
 		}
 
-		// Read file and verify both entries exist
+		// Read file and verify both entries exist in the correct order
 		content, err := os.ReadFile(logFilePath)
 		require.NoError(t, err)
-		assert.Contains(t, string(content), initialContent)
-		assert.Contains(t, string(content), additionalContent)
-
-		// Verify order (initial content should come first)
-		assert.True(t, strings.Index(string(content), initialContent) <
-			strings.Index(string(content), additionalContent))
+		assert.Equal(t, initialContent+additionalContent, string(content))
 	})
 
 	t.Run("creates nested directories", func(t *testing.T) {
@@ -460,6 +448,22 @@ func TestGetLogWriter_WithActualFile(t *testing.T) {
 	})
 }
 
+// waitForAuditLog polls the audit log file until content is available or timeout is reached.
+// This is more reliable than a fixed sleep for async log writes.
+func waitForAuditLog(t *testing.T, logFilePath string, timeout time.Duration) []byte {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		content, err := os.ReadFile(logFilePath)
+		if err == nil && len(content) > 0 {
+			return content
+		}
+		time.Sleep(50 * time.Millisecond) // Poll every 50ms
+	}
+	t.Fatalf("timeout waiting for audit log at %s after %v", logFilePath, timeout)
+	return nil
+}
+
 func TestHTTPAuditor_WritesValidJSONToFile(t *testing.T) {
 	t.Parallel()
 
@@ -476,12 +480,16 @@ func TestHTTPAuditor_WritesValidJSONToFile(t *testing.T) {
 			LogFile:             logFilePath,
 			IncludeRequestData:  true,
 			IncludeResponseData: true,
+			MaxDataSize:         1024, // Required for data capture
 		}
 
 		// Create HTTP auditor (used by vMCP for MCP protocol requests)
 		auditor, err := NewAuditorWithTransport(config, "streamable-http")
 		require.NoError(t, err)
 		require.NotNil(t, auditor)
+		t.Cleanup(func() {
+			auditor.Close()
+		})
 
 		// Create a test HTTP request simulating an MCP tool call
 		req := httptest.NewRequest("POST", "/mcp/tools/call", strings.NewReader(`{"tool":"calculator","params":{"operation":"add"}}`))
@@ -491,16 +499,13 @@ func TestHTTPAuditor_WritesValidJSONToFile(t *testing.T) {
 		rw := httptest.NewRecorder()
 		handler := auditor.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"result":"success","value":42}`))
+			_, err := w.Write([]byte(`{"result":"success","value":42}`))
+			require.NoError(t, err)
 		}))
 		handler.ServeHTTP(rw, req)
 
-		// Give the logger time to flush
-		time.Sleep(100 * time.Millisecond)
-
-		// Read the log file
-		content, err := os.ReadFile(logFilePath)
-		require.NoError(t, err)
+		// Wait for audit log to be written (with timeout)
+		content := waitForAuditLog(t, logFilePath, 1*time.Second)
 		require.NotEmpty(t, content, "audit log file should not be empty")
 
 		// Verify it's valid JSON
@@ -525,13 +530,13 @@ func TestHTTPAuditor_WritesValidJSONToFile(t *testing.T) {
 		// Verify outcome
 		assert.Equal(t, "success", logEntry["outcome"])
 
-		// Verify data field contains request and response
-		if dataField, ok := logEntry["data"]; ok {
-			data, ok := dataField.(map[string]any)
-			require.True(t, ok, "data should be a map")
-			assert.Contains(t, data, "request", "data should contain request")
-			assert.Contains(t, data, "response", "data should contain response")
-		}
+		// Verify data field contains request and response (must be present since both are enabled)
+		require.Contains(t, logEntry, "data", "audit log should have data field when request/response data is enabled")
+		dataField := logEntry["data"]
+		data, ok := dataField.(map[string]any)
+		require.True(t, ok, "data should be a map")
+		assert.Contains(t, data, "request", "data should contain request")
+		assert.Contains(t, data, "response", "data should contain response")
 	})
 
 	t.Run("multiple HTTP requests create valid newline-delimited JSON", func(t *testing.T) {
@@ -550,11 +555,15 @@ func TestHTTPAuditor_WritesValidJSONToFile(t *testing.T) {
 		// Create HTTP auditor
 		auditor, err := NewAuditorWithTransport(config, "streamable-http")
 		require.NoError(t, err)
+		t.Cleanup(func() {
+			auditor.Close()
+		})
 
 		// Simulate multiple HTTP requests
 		handler := auditor.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"result":"ok"}`))
+			_, err := w.Write([]byte(`{"result":"ok"}`))
+			require.NoError(t, err)
 		}))
 
 		// Make 3 requests
@@ -564,12 +573,8 @@ func TestHTTPAuditor_WritesValidJSONToFile(t *testing.T) {
 			handler.ServeHTTP(rw, req)
 		}
 
-		// Give the logger time to flush
-		time.Sleep(100 * time.Millisecond)
-
-		// Read the log file
-		content, err := os.ReadFile(logFilePath)
-		require.NoError(t, err)
+		// Wait for audit logs to be written (with timeout)
+		content := waitForAuditLog(t, logFilePath, 1*time.Second)
 		require.NotEmpty(t, content, "audit log file should not be empty")
 
 		// Split by newlines and verify each line is valid JSON

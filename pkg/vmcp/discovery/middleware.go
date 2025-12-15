@@ -62,6 +62,11 @@ func Middleware(
 				return
 			}
 
+			// Add session ID to context for backend client connection reuse
+			if sessionID != "" {
+				ctx = WithSessionID(ctx, sessionID)
+			}
+
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

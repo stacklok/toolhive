@@ -68,7 +68,7 @@ var _ = BeforeSuite(func() {
 	testEnv = &envtest.Environment{
 		UseExistingCluster: &useExistingCluster,
 		CRDDirectoryPaths: []string{
-			filepath.Join("..", "..", "..", "..", "deploy", "charts", "operator-crds", "files", "crds"),
+			filepath.Join("..", "..", "..", "..", "deploy", "charts", "operator-crds", "crds"),
 		},
 		ErrorIfCRDPathMissing: true,
 		BinaryAssetsDirectory: kubebuilderAssets,

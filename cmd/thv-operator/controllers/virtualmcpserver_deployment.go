@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -13,7 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -25,9 +23,6 @@ import (
 )
 
 const (
-	// Log level configuration
-	logLevelDebug = "debug" // Debug log level value
-
 	// Network configuration
 	vmcpDefaultPort = int32(4483) // Default port for VirtualMCPServer service (matches vmcp server port)
 
@@ -75,7 +70,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	replicas := int32(1)
 
 	// Build deployment components using helper functions
-	args := r.buildContainerArgsForVmcp(vmcp)
+	args := r.buildContainerArgsForVmcp()
 	volumeMounts, volumes := r.buildVolumesForVmcp(vmcp)
 	env := r.buildEnvVarsForVmcp(ctx, vmcp, typedWorkloads)
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
@@ -126,16 +121,6 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		},
 	}
 
-	// Apply user-provided PodTemplateSpec customizations if present
-	if vmcp.Spec.PodTemplateSpec != nil && vmcp.Spec.PodTemplateSpec.Raw != nil {
-		if err := r.applyPodTemplateSpecToDeployment(ctx, vmcp, dep); err != nil {
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to apply PodTemplateSpec to Deployment")
-			// Return nil to block deployment creation until PodTemplateSpec is fixed
-			return nil
-		}
-	}
-
 	if err := controllerutil.SetControllerReference(vmcp, dep, r.Scheme); err != nil {
 		ctxLogger := log.FromContext(ctx)
 		ctxLogger.Error(err, "Failed to set controller reference for Deployment")
@@ -145,24 +130,13 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 }
 
 // buildContainerArgsForVmcp builds the container arguments for vmcp
-func (*VirtualMCPServerReconciler) buildContainerArgsForVmcp(
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-) []string {
-	args := []string{
+func (*VirtualMCPServerReconciler) buildContainerArgsForVmcp() []string {
+	return []string{
 		"serve",
 		"--config=/etc/vmcp-config/config.yaml",
 		"--host=0.0.0.0", // Listen on all interfaces for Kubernetes service routing
 		"--port=4483",    // Standard vmcp port
 	}
-
-	// Add --debug flag if log level is set to debug
-	// Note: vmcp binary currently only supports --debug flag, not other log levels
-	// The flag must be passed at startup because logger.Initialize() runs before config is loaded
-	if vmcp.Spec.Operational != nil && vmcp.Spec.Operational.LogLevel == logLevelDebug {
-		args = append(args, "--debug")
-	}
-
-	return args
 }
 
 // buildVolumesForVmcp builds volumes and volume mounts for vmcp
@@ -214,6 +188,12 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 		Name:  "VMCP_NAMESPACE",
 		Value: vmcp.Namespace,
 	})
+
+	// TODO: Add log level from operational config when Operational is not nil
+	//nolint:staticcheck // Empty branch reserved for future log level configuration
+	if vmcp.Spec.Operational != nil {
+		// Log level env var will be added here
+	}
 
 	// Mount OIDC client secret
 	env = append(env, r.buildOIDCEnvVars(vmcp)...)
@@ -437,7 +417,7 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		if externalAuthConfig.Spec.TokenExchange.ClientSecretRef == nil {
 			return nil, nil // No secret to mount
 		}
-		envVarName = ctrlutil.GenerateUniqueTokenExchangeEnvVarName(externalAuthConfigName)
+		envVarName = generateUniqueTokenExchangeEnvVarName(externalAuthConfigName)
 		secretRef = externalAuthConfig.Spec.TokenExchange.ClientSecretRef
 
 	case mcpv1alpha1.ExternalAuthTypeHeaderInjection:
@@ -447,12 +427,8 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		if externalAuthConfig.Spec.HeaderInjection.ValueSecretRef == nil {
 			return nil, nil // No secret to mount
 		}
-		envVarName = ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfigName)
+		envVarName = generateUniqueHeaderInjectionEnvVarName(externalAuthConfigName)
 		secretRef = externalAuthConfig.Spec.HeaderInjection.ValueSecretRef
-
-	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
-		// No secrets to mount for unauthenticated
-		return nil, nil
 
 	default:
 		return nil, nil // Not applicable
@@ -495,6 +471,8 @@ func (*VirtualMCPServerReconciler) buildPodTemplateMetadata(
 	// Add vmcp Config checksum annotation to trigger pod rollout when config changes
 	// Use the standard checksum package helper for consistency
 	templateAnnotations := checksum.AddRunConfigChecksumToPodTemplate(nil, vmcpConfigChecksum)
+
+	// TODO: Add support for PodTemplateSpec overrides from spec
 
 	return templateLabels, templateAnnotations
 }
@@ -681,68 +659,6 @@ func (r *VirtualMCPServerReconciler) validateSecretKeyRef(
 		return fmt.Errorf("%s secret %s/%s is missing key %q",
 			secretDesc, namespace, secretRef.Name, secretRef.Key)
 	}
-
-	return nil
-}
-
-// applyPodTemplateSpecToDeployment applies user-provided PodTemplateSpec customizations to the deployment
-// using strategic merge patch. This allows users to customize pod-level settings like node selectors,
-// tolerations, affinity rules, security contexts, and additional containers.
-//
-// The merge strategy:
-// - User-provided fields override controller-generated defaults
-// - Arrays are merged based on strategic merge patch rules (e.g., containers merged by name)
-// - The "vmcp" container is preserved from the controller-generated spec
-func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
-	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-	deployment *appsv1.Deployment,
-) error {
-	ctxLogger := log.FromContext(ctx)
-
-	// Early return if no PodTemplateSpec provided
-	if vmcp.Spec.PodTemplateSpec == nil || len(vmcp.Spec.PodTemplateSpec.Raw) == 0 {
-		return nil
-	}
-
-	// Validate the PodTemplateSpec and check if there are meaningful customizations
-	builder, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp")
-	if err != nil {
-		return fmt.Errorf("failed to build PodTemplateSpec: %w", err)
-	}
-
-	if builder.Build() == nil {
-		// No meaningful customizations to apply
-		return nil
-	}
-
-	// Use the raw user JSON directly for strategic merge patch.
-	// This avoids the nil-slice-becomes-empty-array problem that occurs when
-	// we parse JSON into Go structs and re-marshal - Go's json.Marshal converts
-	// nil slices to [], which strategic merge patch interprets as "replace with empty".
-	// By using the raw JSON, we preserve exactly what the user specified.
-	userJSON := vmcp.Spec.PodTemplateSpec.Raw
-
-	originalJSON, err := json.Marshal(deployment.Spec.Template)
-	if err != nil {
-		return fmt.Errorf("failed to marshal original PodTemplateSpec: %w", err)
-	}
-
-	patchedJSON, err := strategicpatch.StrategicMergePatch(originalJSON, userJSON, corev1.PodTemplateSpec{})
-	if err != nil {
-		return fmt.Errorf("failed to apply strategic merge patch: %w", err)
-	}
-
-	var patchedPodTemplateSpec corev1.PodTemplateSpec
-	if err := json.Unmarshal(patchedJSON, &patchedPodTemplateSpec); err != nil {
-		return fmt.Errorf("failed to unmarshal patched PodTemplateSpec: %w", err)
-	}
-
-	deployment.Spec.Template = patchedPodTemplateSpec
-
-	ctxLogger.V(1).Info("Applied PodTemplateSpec customizations to deployment",
-		"virtualmcpserver", vmcp.Name,
-		"namespace", vmcp.Namespace)
 
 	return nil
 }

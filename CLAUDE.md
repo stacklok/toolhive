@@ -114,7 +114,7 @@ The test framework uses Ginkgo and Gomega for BDD-style testing.
    - Main entry point in `main.go`
    - Command definitions in `app/` directory
    - Uses Cobra for CLI framework
-   - Key commands: run, list, stop, rm, proxy, restart, serve, version, logs, secret, inspector, mcp
+   - Key commands: run, list, stop, rm, proxy, start (restart alias), serve, version, logs, secret, inspector, mcp
 
 2. **Kubernetes Operator (`cmd/thv-operator/`)**
    - CRD definitions in `api/v1alpha1/`

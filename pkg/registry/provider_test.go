@@ -18,13 +18,11 @@ func TestNewRegistryProvider(t *testing.T) {
 		name         string
 		config       *config.Config
 		expectedType string
-		expectError  bool
 	}{
 		{
 			name:         "nil config returns embedded provider",
 			config:       nil,
 			expectedType: "*registry.LocalRegistryProvider",
-			expectError:  false,
 		},
 		{
 			name: "empty registry URL returns embedded provider",
@@ -32,15 +30,13 @@ func TestNewRegistryProvider(t *testing.T) {
 				RegistryUrl: "",
 			},
 			expectedType: "*registry.LocalRegistryProvider",
-			expectError:  false,
 		},
 		{
-			name: "unreachable registry URL returns error",
+			name: "registry URL returns remote provider",
 			config: &config.Config{
-				RegistryUrl: "https://non-existent-host-12345.com/registry.json",
+				RegistryUrl: "https://example.com/registry.json",
 			},
-			expectedType: "",
-			expectError:  true,
+			expectedType: "*registry.RemoteRegistryProvider",
 		},
 		{
 			name: "local registry path returns embedded provider with file path",
@@ -48,22 +44,22 @@ func TestNewRegistryProvider(t *testing.T) {
 				LocalRegistryPath: "/path/to/registry.json",
 			},
 			expectedType: "*registry.LocalRegistryProvider",
-			expectError:  false,
+		},
+		{
+			name: "registry URL takes precedence over local path",
+			config: &config.Config{
+				RegistryUrl:       "https://example.com/registry.json",
+				LocalRegistryPath: "/path/to/registry.json",
+			},
+			expectedType: "*registry.RemoteRegistryProvider",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			provider, err := NewRegistryProvider(tt.config)
+			provider := NewRegistryProvider(tt.config)
 
-			if tt.expectError {
-				assert.Error(t, err)
-				assert.Nil(t, provider)
-				return
-			}
-
-			assert.NoError(t, err)
 			// Check the type of the provider
 			providerType := getTypeName(provider)
 			if providerType != tt.expectedType {
@@ -130,7 +126,21 @@ func TestLocalRegistryProvider(t *testing.T) {
 	}
 }
 
-func TestRemoteRegistryProvider_CreationError(t *testing.T) {
+func TestRemoteRegistryProvider(t *testing.T) {
+	t.Parallel()
+	// Note: This test would require a mock HTTP server for full testing
+	// For now, we just test the creation
+	provider := NewRemoteRegistryProvider("https://example.com/registry.json", false)
+
+	if provider == nil {
+		t.Fatal("NewRemoteRegistryProvider() returned nil")
+	}
+
+	// Test that it implements the interface
+	var _ Provider = provider
+}
+
+func TestRemoteRegistryProvider_GetRegistry_Error(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -154,16 +164,16 @@ func TestRemoteRegistryProvider_CreationError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			provider, err := NewRemoteRegistryProvider(tt.url, false)
+			provider := NewRemoteRegistryProvider(tt.url, false)
+			registry, err := provider.GetRegistry()
 
 			if tt.expectError {
 				assert.Error(t, err)
-				assert.Nil(t, provider)
+				assert.Nil(t, registry)
 			} else {
+				// This case would require a working HTTP server
 				assert.NoError(t, err)
-				assert.NotNil(t, provider)
-				// Test that it implements the interface
-				var _ Provider = provider
+				assert.NotNil(t, registry)
 			}
 		})
 	}
@@ -266,8 +276,7 @@ func TestGetRegistry(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create provider with test config
-	provider, err := NewRegistryProvider(cfg)
-	require.NoError(t, err)
+	provider := NewRegistryProvider(cfg)
 	reg, err := provider.GetRegistry()
 	if err != nil {
 		t.Fatalf("Failed to get registry: %v", err)
@@ -310,8 +319,7 @@ func TestGetServer(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create provider with test config
-	provider, err := NewRegistryProvider(cfg)
-	require.NoError(t, err)
+	provider := NewRegistryProvider(cfg)
 
 	// Test getting an existing server
 	server, err := provider.GetServer("osv")
@@ -363,8 +371,7 @@ func TestSearchServers(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create provider with test config
-	provider, err := NewRegistryProvider(cfg)
-	require.NoError(t, err)
+	provider := NewRegistryProvider(cfg)
 
 	// Test searching for servers
 	servers, err := provider.SearchServers("search")

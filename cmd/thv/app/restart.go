@@ -18,9 +18,10 @@ var (
 )
 
 var restartCmd = &cobra.Command{
-	Use:   "restart [workload-name]",
-	Short: "Restart a tooling server",
-	Long: `Restart a running tooling server managed by ToolHive.
+	Use:     "start [workload-name]",
+	Aliases: []string{"restart"},
+	Short:   "Start a tooling server",
+	Long: `Start a stopped tooling server managed by ToolHive.
 If the server is not running, it will be started.
 Supports both container-based and remote MCP servers.`,
 	Args:              cobra.RangeArgs(0, 1),
@@ -29,9 +30,9 @@ Supports both container-based and remote MCP servers.`,
 }
 
 func init() {
-	restartCmd.Flags().BoolVarP(&restartAll, "all", "a", false, "Restart all MCP servers")
-	restartCmd.Flags().BoolVarP(&restartForeground, "foreground", "f", false, "Run the restarted workload in foreground mode")
-	restartCmd.Flags().StringVarP(&restartGroup, "group", "g", "", "Restart all MCP servers in a specific group")
+	restartCmd.Flags().BoolVarP(&restartAll, "all", "a", false, "Start all MCP servers")
+	restartCmd.Flags().BoolVarP(&restartForeground, "foreground", "f", false, "Run the started workload in foreground mode")
+	restartCmd.Flags().StringVarP(&restartGroup, "group", "g", "", "Start all MCP servers in a specific group")
 
 	// Mark the flags as mutually exclusive
 	restartCmd.MarkFlagsMutuallyExclusive("all", "group")
@@ -66,7 +67,7 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 		return restartWorkloadsByGroup(ctx, workloadManager, restartGroup, restartForeground)
 	}
 
-	// Restart single workload
+	// Start single workload
 	workloadName := args[0]
 	restartGroup, err := workloadManager.RestartWorkloads(ctx, []string{workloadName}, restartForeground)
 	if err != nil {
@@ -75,22 +76,22 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Wait for the restart group to complete
 	if err := restartGroup.Wait(); err != nil {
-		return fmt.Errorf("failed to restart workload %s: %v", workloadName, err)
+		return fmt.Errorf("failed to start workload %s: %v", workloadName, err)
 	}
 
-	fmt.Printf("Workload %s restarted successfully\n", workloadName)
+	fmt.Printf("Workload %s started successfully\n", workloadName)
 	return nil
 }
 
 func restartAllContainers(ctx context.Context, workloadManager workloads.Manager, foreground bool) error {
-	// Get all containers (including stopped ones since restart can start stopped containers)
+	// Get all containers (including stopped ones since start can start stopped containers)
 	allWorkloads, err := workloadManager.ListWorkloads(ctx, true)
 	if err != nil {
 		return fmt.Errorf("failed to list allWorkloads: %v", err)
 	}
 
 	if len(allWorkloads) == 0 {
-		fmt.Println("No workloads found to restart")
+		fmt.Println("No workloads found to start")
 		return nil
 	}
 
@@ -126,14 +127,14 @@ func restartWorkloadsByGroup(ctx context.Context, workloadManager workloads.Mana
 	}
 
 	if len(workloadNames) == 0 {
-		fmt.Printf("No workloads found in group '%s' to restart\n", groupName)
+		fmt.Printf("No workloads found in group '%s' to start\n", groupName)
 		return nil
 	}
 
 	return restartMultipleWorkloads(ctx, workloadManager, workloadNames, foreground)
 }
 
-// restartMultipleWorkloads handles restarting multiple workloads and reporting results
+// restartMultipleWorkloads handles starting multiple workloads and reporting results
 func restartMultipleWorkloads(
 	ctx context.Context,
 	workloadManager workloads.Manager,
@@ -144,12 +145,12 @@ func restartMultipleWorkloads(
 	failedCount := 0
 	var errors []string
 
-	fmt.Printf("Restarting %d workload(s)...\n", len(workloadNames))
+	fmt.Printf("Starting %d workload(s)...\n", len(workloadNames))
 
 	var restartRequests []*errgroup.Group
-	// First, trigger the restarts concurrently.
+	// First, trigger the starts concurrently.
 	for _, workloadName := range workloadNames {
-		fmt.Printf("Restarting %s...", workloadName)
+		fmt.Printf("Starting %s...", workloadName)
 		restart, err := workloadManager.RestartWorkloads(ctx, []string{workloadName}, foreground)
 		if err != nil {
 			fmt.Printf(" failed: %v\n", err)
@@ -162,28 +163,28 @@ func restartMultipleWorkloads(
 		}
 	}
 
-	// Wait for all restarts to complete.
+	// Wait for all starts to complete.
 	for _, restart := range restartRequests {
 		err := restart.Wait()
 		if err != nil {
 			fmt.Printf(" failed: %v\n", err)
 			failedCount++
 			// Unfortunately we don't have the workload name here, so we just log a generic error.
-			errors = append(errors, fmt.Sprintf("Error restarting workload: %v", err))
+			errors = append(errors, fmt.Sprintf("Error starting workload: %v", err))
 		} else {
 			restartedCount++
 		}
 	}
 
 	// Print summary
-	fmt.Printf("\nRestart summary: %d succeeded, %d failed\n", restartedCount, failedCount)
+	fmt.Printf("\nStart summary: %d succeeded, %d failed\n", restartedCount, failedCount)
 
 	if failedCount > 0 {
-		fmt.Println("\nFailed restarts:")
+		fmt.Println("\nFailed starts:")
 		for _, errMsg := range errors {
 			fmt.Printf("  - %s\n", errMsg)
 		}
-		return fmt.Errorf("%d workload(s) failed to restart", failedCount)
+		return fmt.Errorf("%d workload(s) failed to start", failedCount)
 	}
 
 	return nil

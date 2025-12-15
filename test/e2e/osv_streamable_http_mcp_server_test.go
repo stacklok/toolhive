@@ -347,8 +347,8 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "streamable-http", "
 			})
 
 			It("should restart the Streamable HTTP server successfully [Serial]", func() {
-				By("Restarting the server")
-				stdout, _ := e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
+				By("Starting the server")
+				stdout, _ := e2e.NewTHVCommand(config, "start", serverName).ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName))
 
 				By("Waiting for the server to be running again")

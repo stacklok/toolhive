@@ -305,7 +305,7 @@ func BuildRunnerConfig(
 
 // setupOIDCConfiguration sets up OIDC configuration and validates URLs
 func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.TokenValidatorConfig, error) {
-	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret, oidcScopes := getOidcFromFlags(cmd)
+	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret := getOidcFromFlags(cmd)
 
 	if oidcJwksURL != "" {
 		if err := networking.ValidateEndpointURL(oidcJwksURL); err != nil {
@@ -319,7 +319,7 @@ func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.Token
 	}
 
 	return createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
-		oidcClientID, oidcClientSecret, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP, oidcScopes), nil
+		oidcClientID, oidcClientSecret, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP), nil
 }
 
 // setupTelemetryConfiguration sets up telemetry configuration with config fallbacks
@@ -542,8 +542,7 @@ func configureMiddlewareAndOptions(
 	}
 
 	// Get OIDC and telemetry values for legacy configuration
-	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
-		oidcScopes := extractOIDCValues(oidcConfig)
+	oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret := extractOIDCValues(oidcConfig)
 	finalOtelEndpoint, finalOtelSamplingRate, finalOtelEnvironmentVariables := extractTelemetryValues(telemetryConfig)
 
 	// Set additional configurations that are still needed in old format for other parts of the system
@@ -551,9 +550,9 @@ func configureMiddlewareAndOptions(
 		runner.WithOIDCConfig(
 			oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL, oidcClientID, oidcClientSecret,
 			runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile, runFlags.ResourceURL,
-			runFlags.JWKSAllowPrivateIP, runFlags.InsecureAllowHTTP, oidcScopes,
+			runFlags.JWKSAllowPrivateIP, runFlags.InsecureAllowHTTP,
 		),
-		runner.WithTelemetryConfigFromFlags(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
+		runner.WithTelemetryConfig(finalOtelEndpoint, runFlags.OtelEnablePrometheusMetricsPath,
 			runFlags.OtelTracingEnabled, runFlags.OtelMetricsEnabled, runFlags.OtelServiceName,
 			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables,
 		),
@@ -606,14 +605,11 @@ func configureRemoteAuth(runFlags *RunFlags, serverMetadata regtypes.ServerMetad
 }
 
 // extractOIDCValues extracts OIDC values from the OIDC config for legacy configuration
-func extractOIDCValues(
-	config *auth.TokenValidatorConfig,
-) (string, string, string, string, string, string, []string) {
+func extractOIDCValues(config *auth.TokenValidatorConfig) (string, string, string, string, string, string) {
 	if config == nil {
-		return "", "", "", "", "", "", nil
+		return "", "", "", "", "", ""
 	}
-	return config.Issuer, config.Audience, config.JWKSURL, config.IntrospectionURL,
-		config.ClientID, config.ClientSecret, config.Scopes
+	return config.Issuer, config.Audience, config.JWKSURL, config.IntrospectionURL, config.ClientID, config.ClientSecret
 }
 
 // extractTelemetryValues extracts telemetry values from the telemetry config for legacy configuration
@@ -757,16 +753,15 @@ func getRemoteAuthFromRunFlags(runFlags *RunFlags) (*remote.Config, error) {
 }
 
 // getOidcFromFlags extracts OIDC configuration from command flags
-func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, string, string, []string) {
+func getOidcFromFlags(cmd *cobra.Command) (string, string, string, string, string, string) {
 	oidcIssuer := GetStringFlagOrEmpty(cmd, "oidc-issuer")
 	oidcAudience := GetStringFlagOrEmpty(cmd, "oidc-audience")
 	oidcJwksURL := GetStringFlagOrEmpty(cmd, "oidc-jwks-url")
 	introspectionURL := GetStringFlagOrEmpty(cmd, "oidc-introspection-url")
 	oidcClientID := GetStringFlagOrEmpty(cmd, "oidc-client-id")
 	oidcClientSecret := GetStringFlagOrEmpty(cmd, "oidc-client-secret")
-	oidcScopes, _ := cmd.Flags().GetStringSlice("oidc-scopes")
 
-	return oidcIssuer, oidcAudience, oidcJwksURL, introspectionURL, oidcClientID, oidcClientSecret, oidcScopes
+	return oidcIssuer, oidcAudience, oidcJwksURL, introspectionURL, oidcClientID, oidcClientSecret
 }
 
 // getTelemetryFromFlags extracts telemetry configuration from command flags
@@ -805,7 +800,7 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 
 // createOIDCConfig creates an OIDC configuration if any OIDC parameters are provided
 func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
-	oidcClientID, oidcClientSecret, resourceURL string, allowPrivateIP bool, scopes []string) *auth.TokenValidatorConfig {
+	oidcClientID, oidcClientSecret, resourceURL string, allowPrivateIP bool) *auth.TokenValidatorConfig {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
 		oidcClientID != "" || oidcClientSecret != "" || resourceURL != "" {
 		return &auth.TokenValidatorConfig{
@@ -817,7 +812,6 @@ func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionUR
 			ClientSecret:     oidcClientSecret,
 			ResourceURL:      resourceURL,
 			AllowPrivateIP:   allowPrivateIP,
-			Scopes:           scopes,
 		}
 	}
 	return nil

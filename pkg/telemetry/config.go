@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -82,63 +81,6 @@ func DefaultConfig() Config {
 	}
 }
 
-// MaybeMakeConfig creates a new telemetry configuration from the given values.
-// It may return nil if no telemetry is configured.
-func MaybeMakeConfig(
-	otelEndpoint string,
-	otelEnablePrometheusMetricsPath bool,
-	otelTracingEnabled bool,
-	otelMetricsEnabled bool,
-	otelServiceName string,
-	otelSamplingRate float64,
-	otelHeaders []string,
-	otelInsecure bool,
-	otelEnvironmentVariables []string,
-) *Config {
-	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
-		return nil
-	}
-	// Parse headers from key=value format
-	headers := make(map[string]string)
-	for _, header := range otelHeaders {
-		parts := strings.SplitN(header, "=", 2)
-		if len(parts) == 2 {
-			headers[parts[0]] = parts[1]
-		}
-	}
-
-	// Use provided service name or default
-	serviceName := otelServiceName
-	if serviceName == "" {
-		serviceName = DefaultConfig().ServiceName
-	}
-
-	// Process environment variables - split comma-separated values
-	var processedEnvVars []string
-	for _, envVarEntry := range otelEnvironmentVariables {
-		// Split by comma and trim whitespace
-		envVars := strings.Split(envVarEntry, ",")
-		for _, envVar := range envVars {
-			trimmed := strings.TrimSpace(envVar)
-			if trimmed != "" {
-				processedEnvVars = append(processedEnvVars, trimmed)
-			}
-		}
-	}
-	return &Config{
-		Endpoint:                    otelEndpoint,
-		ServiceName:                 serviceName,
-		ServiceVersion:              DefaultConfig().ServiceVersion,
-		TracingEnabled:              otelTracingEnabled,
-		MetricsEnabled:              otelMetricsEnabled,
-		SamplingRate:                otelSamplingRate,
-		Headers:                     headers,
-		Insecure:                    otelInsecure,
-		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
-		EnvironmentVariables:        processedEnvVars,
-	}
-}
-
 // Provider encapsulates OpenTelemetry providers and configuration.
 type Provider struct {
 	config            Config
@@ -200,7 +142,7 @@ func setGlobalProvidersAndReturn(telemetryProviders *providers.CompositeProvider
 
 // Middleware returns an HTTP middleware that instruments requests with OpenTelemetry.
 // serverName is the name of the MCP server (e.g., "github", "fetch")
-// transport is the backend transport type ("stdio", "sse", or "streamable-http").
+// transport is the backend transport type ("stdio" or "sse")
 func (p *Provider) Middleware(serverName, transport string) types.MiddlewareFunction {
 	return NewHTTPMiddleware(p.config, p.tracerProvider, p.meterProvider, serverName, transport)
 }

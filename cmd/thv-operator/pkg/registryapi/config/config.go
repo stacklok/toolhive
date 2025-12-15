@@ -67,7 +67,6 @@ type Config struct {
 	RegistryName string           `yaml:"registryName,omitempty"`
 	Registries   []RegistryConfig `yaml:"registries"`
 	Database     *DatabaseConfig  `yaml:"database,omitempty"`
-	Auth         *AuthConfig      `yaml:"auth,omitempty"`
 }
 
 // DatabaseConfig defines PostgreSQL database configuration
@@ -115,22 +114,6 @@ type RegistryConfig struct {
 	Kubernetes *KubernetesConfig `yaml:"kubernetes,omitempty"`
 	SyncPolicy *SyncPolicyConfig `yaml:"syncPolicy,omitempty"`
 	Filter     *FilterConfig     `yaml:"filter,omitempty"`
-}
-
-// AuthMode represents the authentication mode
-type AuthMode string
-
-const (
-	// AuthModeAnonymous allows unauthenticated access
-	AuthModeAnonymous AuthMode = "anonymous"
-)
-
-// AuthConfig defines authentication configuration for the registry server
-type AuthConfig struct {
-	// Mode specifies the authentication mode (anonymous or oauth)
-	// Defaults to "oauth" if not specified (security-by-default).
-	// Use "anonymous" to explicitly disable authentication for development.
-	Mode AuthMode `yaml:"mode,omitempty"`
 }
 
 // KubernetesConfig defines a Kubernetes-based registry source where data is discovered
@@ -224,12 +207,7 @@ func (c *Config) ToConfigMapWithContentChecksum(mcpRegistry *mcpv1alpha1.MCPRegi
 const DefaultRegistryName = "default"
 
 func (cm *configManager) BuildConfig() (*Config, error) {
-	config := Config{
-		// default to anonymous authentication until we model it consistently in the MCPRegistry CRD
-		Auth: &AuthConfig{
-			Mode: AuthModeAnonymous,
-		},
-	}
+	config := Config{}
 
 	mcpRegistry := cm.mcpRegistry
 
@@ -396,13 +374,8 @@ func buildGitSourceConfig(git *mcpv1alpha1.GitSource) (*GitConfig, error) {
 		return nil, fmt.Errorf("git repository is required")
 	}
 
-	if git.Path == "" {
-		return nil, fmt.Errorf("git path is required")
-	}
-
 	serverGitConfig := GitConfig{
 		Repository: git.Repository,
-		Path:       git.Path,
 	}
 
 	switch {

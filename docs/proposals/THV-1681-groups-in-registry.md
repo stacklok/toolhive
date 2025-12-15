@@ -187,7 +187,7 @@ SMEs at companies will create specific groups for teams working on particular pr
 ### Reusing `thv run`
 
 We considered reusing the existing `thv run` command with a group flag to specify a group from the registry. This would
-align with the current `--group` flag that exists on `thv stop` and `thv restart`.
+align with the current `--group` flag that exists on `thv stop` and `thv start`.
 
 However, there is already a `--group` flag on `thv run` that specifies which group to assign to the created server.
 Furthermore, flags such as `--secret` and `--env` would need to support a different structure when the group is used,

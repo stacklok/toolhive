@@ -988,7 +988,7 @@ func TestGenerateUniqueTokenExchangeEnvVarName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := ctrlutil.GenerateUniqueTokenExchangeEnvVarName(tt.configName)
+			result := generateUniqueTokenExchangeEnvVarName(tt.configName)
 			assert.Contains(t, result, expectedPrefix)
 			assert.Contains(t, result, tt.expectedSuffix)
 			// Verify format: PREFIX_SUFFIX
@@ -1045,7 +1045,7 @@ func TestGenerateUniqueHeaderInjectionEnvVarName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(tt.configName)
+			result := generateUniqueHeaderInjectionEnvVarName(tt.configName)
 			assert.True(t, strings.HasPrefix(result, expectedPrefix+"_"), "Result should start with prefix")
 			assert.True(t, strings.HasSuffix(result, tt.expectedSuffix), "Result should end with suffix")
 			// Verify format: PREFIX_SUFFIX

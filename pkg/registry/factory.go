@@ -4,7 +4,6 @@
 package registry
 
 import (
-	"fmt"
 	"sync"
 
 	"github.com/stacklok/toolhive/pkg/config"
@@ -21,9 +20,8 @@ var (
 	defaultProviderMu sync.Mutex
 )
 
-// NewRegistryProvider creates a new registry provider based on the configuration.
-// Returns an error if a custom registry is configured but cannot be reached.
-func NewRegistryProvider(cfg *config.Config) (Provider, error) {
+// NewRegistryProvider creates a new registry provider based on the configuration
+func NewRegistryProvider(cfg *config.Config) Provider {
 	// Priority order:
 	// 1. API URL (if configured) - for live MCP Registry API queries
 	// 2. Remote URL (if configured) - for static JSON over HTTP
@@ -31,23 +29,23 @@ func NewRegistryProvider(cfg *config.Config) (Provider, error) {
 	// 4. Default - embedded registry data
 
 	if cfg != nil && len(cfg.RegistryApiUrl) > 0 {
+		// Use cached provider with persistent cache enabled by default
+		// This provides 1-hour TTL and works for both CLI and API server
 		provider, err := NewCachedAPIRegistryProvider(cfg.RegistryApiUrl, cfg.AllowPrivateRegistryIp, true)
 		if err != nil {
-			return nil, fmt.Errorf("custom registry API at %s is not reachable: %w", cfg.RegistryApiUrl, err)
+			// Log error but fall back to default provider
+			// This prevents application from failing if API is temporarily unavailable
+			return NewLocalRegistryProvider()
 		}
-		return provider, nil
+		return provider
 	}
 	if cfg != nil && len(cfg.RegistryUrl) > 0 {
-		provider, err := NewRemoteRegistryProvider(cfg.RegistryUrl, cfg.AllowPrivateRegistryIp)
-		if err != nil {
-			return nil, fmt.Errorf("custom registry at %s is not reachable: %w", cfg.RegistryUrl, err)
-		}
-		return provider, nil
+		return NewRemoteRegistryProvider(cfg.RegistryUrl, cfg.AllowPrivateRegistryIp)
 	}
 	if cfg != nil && len(cfg.LocalRegistryPath) > 0 {
-		return NewLocalRegistryProvider(cfg.LocalRegistryPath), nil
+		return NewLocalRegistryProvider(cfg.LocalRegistryPath)
 	}
-	return NewLocalRegistryProvider(), nil
+	return NewLocalRegistryProvider()
 }
 
 // GetDefaultProvider returns the default registry provider instance
@@ -65,7 +63,7 @@ func GetDefaultProviderWithConfig(configProvider config.Provider) (Provider, err
 			defaultProviderErr = err
 			return
 		}
-		defaultProvider, defaultProviderErr = NewRegistryProvider(cfg)
+		defaultProvider = NewRegistryProvider(cfg)
 	})
 
 	return defaultProvider, defaultProviderErr

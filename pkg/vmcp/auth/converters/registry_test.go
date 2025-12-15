@@ -79,12 +79,6 @@ func TestDefaultRegistry(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, headerInjectionConverter)
 		assert.Equal(t, "header_injection", headerInjectionConverter.StrategyType())
-
-		// Test unauthenticated converter
-		unauthenticatedConverter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeUnauthenticated)
-		require.NoError(t, err)
-		require.NotNil(t, unauthenticatedConverter)
-		assert.Equal(t, "unauthenticated", unauthenticatedConverter.StrategyType())
 	})
 }
 
@@ -106,10 +100,6 @@ func TestNewRegistry(t *testing.T) {
 		headerInjectionConverter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeHeaderInjection)
 		require.NoError(t, err)
 		assert.NotNil(t, headerInjectionConverter)
-
-		unauthenticatedConverter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeUnauthenticated)
-		require.NoError(t, err)
-		assert.NotNil(t, unauthenticatedConverter)
 	})
 
 	t.Run("creates independent instances", func(t *testing.T) {
@@ -134,7 +124,6 @@ func TestNewRegistry(t *testing.T) {
 		}{
 			{mcpv1alpha1.ExternalAuthTypeTokenExchange, "token_exchange"},
 			{mcpv1alpha1.ExternalAuthTypeHeaderInjection, "header_injection"},
-			{mcpv1alpha1.ExternalAuthTypeUnauthenticated, "unauthenticated"},
 		}
 
 		for _, tc := range testCases {

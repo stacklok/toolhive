@@ -80,56 +80,11 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 func TestBuildContainerArgsForVmcp(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name     string
-		vmcp     *mcpv1alpha1.VirtualMCPServer
-		wantArgs []string
-	}{
-		{
-			name: "without log level",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
-				},
-			},
-			wantArgs: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483"},
-		},
-		{
-			name: "with log level debug",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: mcpv1alpha1.GroupRef{
-						Name: "test-group",
-					},
-					Operational: &mcpv1alpha1.OperationalConfig{
-						LogLevel: "debug",
-					},
-				},
-			},
-			wantArgs: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483", "--debug"},
-		},
-	}
+	r := &VirtualMCPServerReconciler{}
+	args := r.buildContainerArgsForVmcp()
 
-	for _, tt := range tests {
-		tt := tt // capture range variable
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			r := &VirtualMCPServerReconciler{}
-			args := r.buildContainerArgsForVmcp(tt.vmcp)
-
-			assert.Equal(t, tt.wantArgs, args)
-		})
-	}
+	assert.Contains(t, args, "serve")
+	assert.Contains(t, args, "--config=/etc/vmcp-config/config.yaml")
 }
 
 // TestBuildVolumesForVmcp tests volume and volume mount generation

@@ -41,5 +41,3 @@ cmd/thv-operator/.task/checksum/crdref-gen
 
 # Test coverage
 coverage*
-
-crd-helm-wrapper

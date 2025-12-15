@@ -71,9 +71,6 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 					GroupRef: mcpv1alpha1.GroupRef{
 						Name: mcpGroupName,
 					},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "anonymous",
-					},
 					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
 						{Name: compositeToolDefName},
 					},
@@ -82,26 +79,13 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 			Expect(k8sClient.Create(ctx, vmcp)).Should(Succeed())
 
 			// Wait for initial VirtualMCPServer reconciliation
-			// Check that the CompositeToolRefsValidated condition is set (even if False)
-			// This indicates reconciliation was attempted, similar to how GroupRef validation is tested
 			Eventually(func() bool {
 				updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      vmcpName,
 					Namespace: namespace,
 				}, updatedVMCP)
-				if err != nil {
-					return false
-				}
-
-				// Check for CompositeToolRefsValidated condition
-				for _, cond := range updatedVMCP.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeCompositeToolRefsValidated {
-						return cond.Status == metav1.ConditionFalse &&
-							cond.Reason == mcpv1alpha1.ConditionReasonCompositeToolRefNotFound
-					}
-				}
-				return false
+				return err == nil && updatedVMCP.Status.ObservedGeneration > 0
 			}, timeout, interval).Should(BeTrue())
 		})
 
@@ -150,9 +134,9 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 			}
 			Expect(k8sClient.Create(ctx, compositeToolDef)).Should(Succeed())
 
-			// Wait for VirtualMCPServer to reconcile after the composite tool definition is created
-			// First, wait for the CompositeToolRefsValidated condition to become True
-			Eventually(func() bool {
+			// The VirtualMCPServer should remain reconciled after the composite tool definition is created
+			// We verify this by checking that ObservedGeneration stays current
+			Consistently(func() bool {
 				updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      vmcpName,
@@ -162,32 +146,9 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 					return false
 				}
 
-				// Check for CompositeToolRefsValidated condition to be True
-				for _, cond := range updatedVMCP.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionTypeCompositeToolRefsValidated {
-						return cond.Status == metav1.ConditionTrue &&
-							cond.Reason == mcpv1alpha1.ConditionReasonCompositeToolRefsValid
-					}
-				}
-				return false
-			}, timeout, interval).Should(BeTrue())
-
-			// Then verify that ObservedGeneration is set and matches Generation
-			// This indicates successful reconciliation
-			Eventually(func() bool {
-				updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      vmcpName,
-					Namespace: namespace,
-				}, updatedVMCP)
-				if err != nil {
-					return false
-				}
-
-				// Check that ObservedGeneration is set and matches Generation
-				return updatedVMCP.Status.ObservedGeneration > 0 &&
-					updatedVMCP.Status.ObservedGeneration == updatedVMCP.Generation
-			}, timeout, interval).Should(BeTrue())
+				// Check that ObservedGeneration stays current (indicating successful reconciliation)
+				return updatedVMCP.Status.ObservedGeneration == updatedVMCP.Generation
+			}, time.Second*5, interval).Should(BeTrue())
 
 			// Verify the VirtualMCPServer is in a valid state
 			updatedVMCP := &mcpv1alpha1.VirtualMCPServer{}
@@ -271,9 +232,6 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: mcpv1alpha1.GroupRef{
 						Name: mcpGroupName,
-					},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "anonymous",
 					},
 					CompositeToolRefs: []mcpv1alpha1.CompositeToolDefinitionRef{
 						{Name: compositeToolDefName},
@@ -393,9 +351,6 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 				Spec: mcpv1alpha1.VirtualMCPServerSpec{
 					GroupRef: mcpv1alpha1.GroupRef{
 						Name: mcpGroupName,
-					},
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "anonymous",
 					},
 					// No CompositeToolRefs
 				},

@@ -72,15 +72,17 @@ thv stop my-server
 
 **Implementation**: `pkg/workloads/manager.go`
 
-### Restart
+### Start
 
 ```bash
-thv restart my-server
+thv start my-server
 ```
 
 Loads state → verifies not running → starts workload with saved config
 
 **Implementation**: `pkg/workloads/manager.go`
+
+**Note**: `thv restart` is an alias for `thv start`.
 
 ### Delete
 

@@ -13,9 +13,8 @@ type VirtualMCPServerSpec struct {
 	GroupRef GroupRef `json:"groupRef"`
 
 	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server
-	// Must be explicitly set - use "anonymous" type when no authentication is required
-	// +kubebuilder:validation:Required
-	IncomingAuth *IncomingAuthConfig `json:"incomingAuth"`
+	// +optional
+	IncomingAuth *IncomingAuthConfig `json:"incomingAuth,omitempty"`
 
 	// OutgoingAuth configures authentication from Virtual MCP to backend MCPServers
 	// +optional
@@ -54,11 +53,6 @@ type VirtualMCPServerSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
 	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
-
-	// Telemetry configures OpenTelemetry-based observability for the Virtual MCP server
-	// including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint
-	// +optional
-	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
 }
 
 // GroupRef references an MCPGroup resource
@@ -71,10 +65,9 @@ type GroupRef struct {
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
 type IncomingAuthConfig struct {
 	// Type defines the authentication type: anonymous or oidc
-	// When no authentication is required, explicitly set this to "anonymous"
 	// +kubebuilder:validation:Enum=anonymous;oidc
-	// +kubebuilder:validation:Required
-	Type string `json:"type"`
+	// +optional
+	Type string `json:"type,omitempty"`
 
 	// OIDCConfig defines OIDC authentication configuration
 	// Reuses MCPServer OIDC patterns
@@ -280,14 +273,10 @@ type WorkflowStep struct {
 	// +optional
 	Tool string `json:"tool,omitempty"`
 
-	// Arguments is a map of argument values with template expansion support.
-	// Supports Go template syntax with .params and .steps for string values.
-	// Non-string values (integers, booleans, arrays, objects) are passed as-is.
-	// Note: the templating is only supported on the first level of the key-value pairs.
+	// Arguments is a map of argument templates
+	// Supports Go template syntax with .params and .steps
 	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	// +kubebuilder:validation:Type=object
-	Arguments *runtime.RawExtension `json:"arguments,omitempty"`
+	Arguments map[string]string `json:"arguments,omitempty"`
 
 	// Message is the elicitation message
 	// Only used when Type is "elicitation"
@@ -299,16 +288,6 @@ type WorkflowStep struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Type=object
 	Schema *runtime.RawExtension `json:"schema,omitempty"`
-
-	// OnDecline defines the action to take when the user explicitly declines the elicitation
-	// Only used when Type is "elicitation"
-	// +optional
-	OnDecline *ElicitationResponseHandler `json:"onDecline,omitempty"`
-
-	// OnCancel defines the action to take when the user cancels/dismisses the elicitation
-	// Only used when Type is "elicitation"
-	// +optional
-	OnCancel *ElicitationResponseHandler `json:"onCancel,omitempty"`
 
 	// DependsOn lists step IDs that must complete before this step
 	// +optional
@@ -356,26 +335,8 @@ type ErrorHandling struct {
 	RetryDelay string `json:"retryDelay,omitempty"`
 }
 
-// ElicitationResponseHandler defines how to handle user responses to elicitation requests
-type ElicitationResponseHandler struct {
-	// Action defines the action to take when the user declines or cancels
-	// - skip_remaining: Skip remaining steps in the workflow
-	// - abort: Abort the entire workflow execution
-	// - continue: Continue to the next step
-	// +kubebuilder:validation:Enum=skip_remaining;abort;continue
-	// +kubebuilder:default=abort
-	// +optional
-	Action string `json:"action,omitempty"`
-}
-
 // OperationalConfig defines operational settings
 type OperationalConfig struct {
-	// LogLevel sets the logging level for the Virtual MCP server.
-	// Set to "debug" to enable debug logging. When not set, defaults to info level.
-	// +kubebuilder:validation:Enum=debug
-	// +optional
-	LogLevel string `json:"logLevel,omitempty"`
-
 	// Timeouts configures timeout settings
 	// +optional
 	Timeouts *TimeoutConfig `json:"timeouts,omitempty"`
@@ -439,14 +400,6 @@ type CircuitBreakerConfig struct {
 	// +optional
 	Timeout string `json:"timeout,omitempty"`
 }
-
-// Backend status constants for DiscoveredBackend.Status
-const (
-	BackendStatusReady       = "ready"
-	BackendStatusUnavailable = "unavailable"
-	BackendStatusDegraded    = "degraded"
-	BackendStatusUnknown     = "unknown"
-)
 
 // DiscoveredBackend represents a discovered backend MCPServer in the MCPGroup
 type DiscoveredBackend struct {
@@ -532,14 +485,6 @@ const (
 
 	// ConditionTypeVirtualMCPServerGroupRefValidated indicates whether the GroupRef is valid
 	ConditionTypeVirtualMCPServerGroupRefValidated = "GroupRefValidated"
-
-	// ConditionTypeCompositeToolRefsValidated indicates whether the CompositeToolRefs are valid
-	ConditionTypeCompositeToolRefsValidated = "CompositeToolRefsValidated"
-	// ConditionTypeVirtualMCPServerPodTemplateSpecValid indicates whether the PodTemplateSpec is valid
-	ConditionTypeVirtualMCPServerPodTemplateSpecValid = "PodTemplateSpecValid"
-
-	// ConditionTypeVirtualMCPServerBackendsDiscovered indicates whether backends have been discovered
-	ConditionTypeVirtualMCPServerBackendsDiscovered = "BackendsDiscovered"
 )
 
 // Condition reasons for VirtualMCPServer
@@ -558,36 +503,6 @@ const (
 
 	// ConditionReasonGroupRefNotReady indicates the referenced MCPGroup is not ready
 	ConditionReasonVirtualMCPServerGroupRefNotReady = "GroupRefNotReady"
-
-	// ConditionReasonCompositeToolRefsValid indicates the CompositeToolRefs are valid
-	ConditionReasonCompositeToolRefsValid = "CompositeToolRefsValid"
-
-	// ConditionReasonCompositeToolRefNotFound indicates a referenced VirtualMCPCompositeToolDefinition was not found
-	ConditionReasonCompositeToolRefNotFound = "CompositeToolRefNotFound"
-
-	// ConditionReasonCompositeToolRefInvalid indicates a referenced VirtualMCPCompositeToolDefinition is invalid
-	ConditionReasonCompositeToolRefInvalid = "CompositeToolRefInvalid"
-
-	// ConditionReasonVirtualMCPServerPodTemplateSpecValid indicates PodTemplateSpec validation succeeded
-	ConditionReasonVirtualMCPServerPodTemplateSpecValid = "PodTemplateSpecValid"
-
-	// ConditionReasonVirtualMCPServerPodTemplateSpecInvalid indicates PodTemplateSpec validation failed
-	ConditionReasonVirtualMCPServerPodTemplateSpecInvalid = "InvalidPodTemplateSpec"
-
-	// ConditionReasonVirtualMCPServerBackendsDiscoveredSuccessfully indicates backends were discovered successfully
-	ConditionReasonVirtualMCPServerBackendsDiscoveredSuccessfully = "BackendsDiscoveredSuccessfully"
-
-	// ConditionReasonVirtualMCPServerBackendDiscoveryFailed indicates backend discovery failed
-	ConditionReasonVirtualMCPServerBackendDiscoveryFailed = "BackendDiscoveryFailed"
-
-	// ConditionReasonVirtualMCPServerDeploymentFailed indicates the deployment failed
-	ConditionReasonVirtualMCPServerDeploymentFailed = "DeploymentFailed"
-
-	// ConditionReasonVirtualMCPServerDeploymentReady indicates the deployment is ready
-	ConditionReasonVirtualMCPServerDeploymentReady = "DeploymentReady"
-
-	// ConditionReasonVirtualMCPServerDeploymentNotReady indicates the deployment is not ready
-	ConditionReasonVirtualMCPServerDeploymentNotReady = "DeploymentNotReady"
 )
 
 // Backend authentication types

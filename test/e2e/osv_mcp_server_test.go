@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 
-	"github.com/adrg/xdg"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -358,8 +356,8 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 			})
 
 			It("should restart the streamable-http server successfully [Serial]", func() {
-				By("Restarting the server")
-				stdout, _ := e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
+				By("Starting the server")
+				stdout, _ := e2e.NewTHVCommand(config, "start", serverName).ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName))
 
 				By("Waiting for the server to be running again")
@@ -460,50 +458,39 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 
 	Describe("Running OSV MCP server in the foreground", func() {
 		Context("when running OSV server in foreground", func() {
-			It("starts, creates status file, stays healthy, then stops & updates status file [Serial]", func() {
+			It("starts, creates PID file, stays healthy, then stops & removes PID file [Serial]", func() {
 				serverName := generateUniqueServerName("osv-foreground-test")
 
 				// 1) Start the foreground process in the background (goroutine) with a generous timeout.
+				done := make(chan struct{})
 				fgStdout := ""
 				fgStderr := ""
-				runExited := make(chan struct{}, 1)
-
-				// maintain a reference to the command so we can interrupt it when we're done.
-				runCommand := e2e.NewTHVCommand(
-					config, "run",
-					"--name", serverName,
-					"--transport", "streamable-http",
-					"--foreground",
-					"osv",
-				)
 				go func() {
-					out, errOut, _ := runCommand.RunWithTimeout(5 * time.Minute)
+					out, errOut, _ := e2e.NewTHVCommand(
+						config, "run",
+						"--name", serverName,
+						"--transport", "streamable-http",
+						"--foreground",
+						"osv",
+					).RunWithTimeout(5 * time.Minute)
 					fgStdout, fgStderr = out, errOut
-					runExited <- struct{}{}
-					// Close the channel so any subsequent receives will immediately return.
-					close(runExited)
+					close(done)
 				}()
 
 				// Always try to stop the server at the end so the goroutine returns.
 				defer func() {
-					err := runCommand.Interrupt()
-					if err != nil {
-						// This may be safe to ignore if the server is already stopped.
-						GinkgoWriter.Printf("Error interrupting foreground server during last cleanup: %v\n", err)
+					_, _, _ = e2e.NewTHVCommand(config, "stop", serverName).Run()
+					select {
+					case <-done:
+					case <-time.After(15 * time.Second):
+						// Nothing else we can signal directly; the RunWithTimeout will eventually kill it.
 					}
-					<-runExited
 				}()
 
 				// 2) Wait until the server is reported as running.
 				By("waiting for foreground server to be running")
 				err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
 				Expect(err).ToNot(HaveOccurred(), "server should reach running state")
-
-				// 2.5) Verify status file was created
-				By("verifying status file was created")
-				Eventually(func() bool {
-					return statusFileExists(serverName)
-				}, 5*time.Second, 200*time.Millisecond).Should(BeTrue(), "status file should be created")
 
 				// 3) Verify workload is running via workload manager
 				By("verifying workload status is running via workload manager")
@@ -535,16 +522,14 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 
 				// 6) Stop the server; this should unblock the goroutine.
 				By("stopping the foreground server")
+				_, _ = e2e.NewTHVCommand(config, "stop", serverName).ExpectSuccess()
 
-				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-				err = runCommand.Interrupt()
-				Expect(err).ToNot(HaveOccurred(), "server should be interruptible; stdout="+fgStdout+" stderr="+fgStderr)
+				// Wait for the run goroutine to exit.
 				select {
-				case _, ok := <-runExited:
-					Expect(ok).To(BeTrue(), "server should have exited as result of interrupt; stdout="+fgStdout+" stderr="+fgStderr)
-				case <-ctx.Done():
-					Expect(false).To(BeTrue(), "server should have exited before timeout")
+				case <-done:
+					// ok
+				case <-time.After(15 * time.Second):
+					Fail("foreground run did not exit after stop; stdout="+fgStdout+" stderr="+fgStderr, 1)
 				}
 
 				// 7) Workload should be stopped via workload manager.
@@ -563,29 +548,8 @@ var _ = Describe("OsvMcpServer", Label("mcp", "streamable-http", "e2e"), Serial,
 					return workload.Status
 				}, 15*time.Second, 200*time.Millisecond).Should(Equal(runtime.WorkloadStatusStopped), "workload should be in stopped status after stop")
 
-				// 8) Verify status file does NOT exist. Interrupting a foreground server should delete the status file.
-				// We may want to change this behavior and prefer the status to remain in a stopped state.
-				// For now, this test documents the current behavior.
-				By("verifying status file does not exist after stop")
-				Expect(!statusFileExists(serverName)).To(BeTrue(), "status file should not exist after stop")
-
 			})
 		})
 
 	})
 })
-
-// getStatusFilePath returns the path to the status file for a given workload name
-func getStatusFilePath(workloadName string) (string, error) {
-	return xdg.DataFile(filepath.Join("toolhive", "statuses", workloadName+".json"))
-}
-
-// statusFileExists checks if the status file exists for a given workload
-func statusFileExists(workloadName string) bool {
-	statusPath, err := getStatusFilePath(workloadName)
-	if err != nil {
-		return false
-	}
-	_, err = os.Stat(statusPath)
-	return err == nil
-}

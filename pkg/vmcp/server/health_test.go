@@ -59,10 +59,7 @@ func createTestServer(t *testing.T) *server.Server {
 	// Mock Stop to be called during server shutdown
 	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
-	// Create context for server
-	ctx, cancel := context.WithCancel(t.Context())
-
-	srv, err := server.New(ctx, &server.Config{
+	srv, err := server.New(&server.Config{
 		Name:    "test-vmcp",
 		Version: "1.0.0",
 		Host:    "127.0.0.1",
@@ -71,7 +68,9 @@ func createTestServer(t *testing.T) *server.Server {
 	require.NoError(t, err)
 
 	// Start server in background
+	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
+
 	errCh := make(chan error, 1)
 	go func() {
 		if err := srv.Start(ctx); err != nil {
@@ -176,7 +175,7 @@ func TestServer_SessionManager(t *testing.T) {
 		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 		rt := router.NewDefaultRouter()
 
-		srv, err := server.New(context.Background(), &server.Config{
+		srv, err := server.New(&server.Config{
 			Name:       "test-vmcp",
 			Version:    "1.0.0",
 			SessionTTL: 10 * time.Minute,
@@ -199,7 +198,7 @@ func TestServer_SessionManager(t *testing.T) {
 		rt := router.NewDefaultRouter()
 
 		customTTL := 15 * time.Minute
-		srv, err := server.New(context.Background(), &server.Config{
+		srv, err := server.New(&server.Config{
 			Name:       "test-vmcp",
 			Version:    "1.0.0",
 			SessionTTL: customTTL,

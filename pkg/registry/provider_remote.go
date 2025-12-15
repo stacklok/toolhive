@@ -17,9 +17,8 @@ type RemoteRegistryProvider struct {
 	allowPrivateIp bool
 }
 
-// NewRemoteRegistryProvider creates a new remote registry provider.
-// Validates the registry is reachable before returning.
-func NewRemoteRegistryProvider(registryURL string, allowPrivateIp bool) (*RemoteRegistryProvider, error) {
+// NewRemoteRegistryProvider creates a new remote registry provider
+func NewRemoteRegistryProvider(registryURL string, allowPrivateIp bool) *RemoteRegistryProvider {
 	p := &RemoteRegistryProvider{
 		registryURL:    registryURL,
 		allowPrivateIp: allowPrivateIp,
@@ -28,12 +27,7 @@ func NewRemoteRegistryProvider(registryURL string, allowPrivateIp bool) (*Remote
 	// Initialize the base provider with the GetRegistry function
 	p.BaseProvider = NewBaseProvider(p.GetRegistry)
 
-	// Validate the registry is reachable
-	if _, err := p.GetRegistry(); err != nil {
-		return nil, err
-	}
-
-	return p, nil
+	return p
 }
 
 // GetRegistry returns the remote registry data

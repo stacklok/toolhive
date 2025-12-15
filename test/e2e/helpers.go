@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck // Standard practice for Ginkgo
@@ -43,9 +42,6 @@ type THVCommand struct {
 	env    []string
 	dir    string
 	stdin  string
-
-	// cmd is the underlying exec.Cmd once a Run method is called.
-	cmd *exec.Cmd
 }
 
 // NewTHVCommand creates a new ToolHive command
@@ -86,27 +82,22 @@ func (c *THVCommand) RunWithTimeout(timeout time.Duration) (string, string, erro
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	c.cmd = exec.CommandContext(ctx, c.config.THVBinary, c.args...) //nolint:gosec // Intentional for e2e testing
-	c.cmd.Env = c.env
+	cmd := exec.CommandContext(ctx, c.config.THVBinary, c.args...) //nolint:gosec // Intentional for e2e testing
+	cmd.Env = c.env
 	if c.dir != "" {
-		c.cmd.Dir = c.dir
+		cmd.Dir = c.dir
 	}
 	if c.stdin != "" {
-		c.cmd.Stdin = strings.NewReader(c.stdin)
+		cmd.Stdin = strings.NewReader(c.stdin)
 	}
 
 	var stdout, stderr strings.Builder
-	c.cmd.Stdout = &stdout
-	c.cmd.Stderr = &stderr
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
-	err := c.cmd.Run()
+	err := cmd.Run()
 
 	return stdout.String(), stderr.String(), err
-}
-
-// Interrupt interrupts the command and does NOT wait for it to exit.
-func (c *THVCommand) Interrupt() error {
-	return c.cmd.Process.Signal(syscall.SIGINT)
 }
 
 // ExpectSuccess runs the command and expects it to succeed
@@ -177,7 +168,6 @@ func StopAndRemoveMCPServer(config *TestConfig, serverName string) error {
 		}
 		return err
 	}
-
 	return nil
 }
 

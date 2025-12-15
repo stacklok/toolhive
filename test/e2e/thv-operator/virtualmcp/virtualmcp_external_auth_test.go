@@ -27,9 +27,13 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 		timeout                = 3 * time.Minute
 		pollingInterval        = 1 * time.Second
 		vmcpNodePort           int32
+		mockHTTPServer         *MockHTTPServerInfo
 	)
 
 	BeforeAll(func() {
+		By("Creating mock HTTP server for fetch tool testing")
+		mockHTTPServer = CreateMockHTTPServer(ctx, k8sClient, "mock-http-unauth", testNamespace, timeout, pollingInterval)
+
 		By("Creating MCPExternalAuthConfig with unauthenticated type")
 		externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -130,6 +134,9 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 		_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: externalAuthConfigName, Namespace: testNamespace},
 		})
+
+		By("Cleaning up mock HTTP server")
+		CleanupMockHTTPServer(ctx, k8sClient, "mock-http-unauth", testNamespace)
 	})
 
 	Context("when using unauthenticated backend auth", func() {
@@ -203,7 +210,7 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 
 			callRequest := mcp.CallToolRequest{}
 			callRequest.Params.Name = fetchTool.Name
-			callRequest.Params.Arguments = map[string]interface{}{"url": "https://example.com"}
+			callRequest.Params.Arguments = map[string]interface{}{"url": mockHTTPServer.URL}
 
 			result, err := mcpClient.CallTool(testCtx, callRequest)
 			Expect(err).ToNot(HaveOccurred())
@@ -397,9 +404,13 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 		timeout                = 3 * time.Minute
 		pollingInterval        = 1 * time.Second
 		vmcpNodePort           int32
+		mockHTTPServer         *MockHTTPServerInfo
 	)
 
 	BeforeAll(func() {
+		By("Creating mock HTTP server for fetch tool testing")
+		mockHTTPServer = CreateMockHTTPServer(ctx, k8sClient, "mock-http-header", testNamespace, timeout, pollingInterval)
+
 		By("Creating Secret for header injection")
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -521,6 +532,8 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 		_ = k8sClient.Delete(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: testNamespace},
 		})
+		By("Cleaning up mock HTTP server")
+		CleanupMockHTTPServer(ctx, k8sClient, "mock-http-header", testNamespace)
 	})
 
 	Context("when using headerInjection backend auth", func() {
@@ -611,7 +624,7 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 			Eventually(func() error {
 				callRequest := mcp.CallToolRequest{}
 				callRequest.Params.Name = fetchTool.Name
-				callRequest.Params.Arguments = map[string]interface{}{"url": "https://example.com"}
+				callRequest.Params.Arguments = map[string]interface{}{"url": mockHTTPServer.URL}
 
 				var err error
 				result, err = mcpClient.CallTool(testCtx, callRequest)

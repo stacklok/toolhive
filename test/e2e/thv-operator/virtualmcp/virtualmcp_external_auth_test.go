@@ -30,7 +30,6 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 	)
 
 	BeforeAll(func() {
-		ResetContainerFailureTracking()
 		By("Creating MCPExternalAuthConfig with unauthenticated type")
 		externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -118,7 +117,6 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 	})
 
 	AfterAll(func() {
-		CaptureStateBeforeCleanup()
 		By("Cleaning up test resources")
 		_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},
@@ -227,7 +225,6 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 	)
 
 	BeforeAll(func() {
-		ResetContainerFailureTracking()
 		By("Creating MCPExternalAuthConfig with unauthenticated type for inline mode")
 		externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -319,7 +316,6 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 	})
 
 	AfterAll(func() {
-		CaptureStateBeforeCleanup()
 		By("Cleaning up test resources")
 		_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},
@@ -404,7 +400,6 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 	)
 
 	BeforeAll(func() {
-		ResetContainerFailureTracking()
 		By("Creating Secret for header injection")
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -510,7 +505,6 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 	})
 
 	AfterAll(func() {
-		CaptureStateBeforeCleanup()
 		By("Cleaning up test resources")
 		_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},
@@ -649,7 +643,6 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 	)
 
 	BeforeAll(func() {
-		ResetContainerFailureTracking()
 		By("Creating Secret for inline header injection")
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -760,7 +753,6 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 	})
 
 	AfterAll(func() {
-		CaptureStateBeforeCleanup()
 		By("Cleaning up test resources")
 		_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},

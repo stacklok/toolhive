@@ -102,77 +102,28 @@ var _ = ginkgo.AfterSuite(func() {
 	cancel()
 })
 
-// ReportAfterEach captures Kubernetes state when a test fails for debugging in CI
-var _ = ginkgo.ReportAfterEach(func(report ginkgo.SpecReport) {
-	if report.Failed() {
-		dumpK8sStateOnFailure(report)
-	}
-})
-
-// containerFailed tracks if any spec in the current container failed
-// Reset in BeforeAll, set in AfterEach, read in AfterAll
-// Safe because Ginkgo runs specs sequentially within a container
-var containerFailed bool
-
-// ResetContainerFailureTracking should be called in BeforeAll to reset tracking for this container
-func ResetContainerFailureTracking() {
-	containerFailed = false
-}
-
-// AfterEach tracks if the current spec failed (cumulative - doesn't reset between specs)
-var _ = ginkgo.AfterEach(func() {
+// JustAfterEach captures Kubernetes state immediately when a spec fails
+// This runs before AfterEach/AfterAll cleanup, so resources still exist
+var _ = ginkgo.JustAfterEach(func() {
 	if ginkgo.CurrentSpecReport().Failed() {
-		containerFailed = true
+		dumpK8sState("SPEC FAILED - CAPTURING STATE BEFORE CLEANUP")
 	}
 })
 
-// CaptureStateBeforeCleanup should be called at the START of AfterAll to capture state before cleanup
-// Only captures state if a test in this container failed
-func CaptureStateBeforeCleanup() {
-	if containerFailed {
-		ginkgo.GinkgoWriter.Println("\n" + strings.Repeat("=", 80))
-		ginkgo.GinkgoWriter.Println("🔴 TEST FAILED - CAPTURING STATE BEFORE CLEANUP")
-		ginkgo.GinkgoWriter.Println(strings.Repeat("=", 80))
-
-		namespace := "default"
-		dumpVirtualMCPServers(namespace)
-		dumpMCPServers(namespace)
-		dumpPods(namespace)
-		dumpServices(namespace)
-		dumpEvents(namespace)
-
-		ginkgo.GinkgoWriter.Println(strings.Repeat("=", 80))
-		ginkgo.GinkgoWriter.Println("END OF PRE-CLEANUP STATE DUMP")
-		ginkgo.GinkgoWriter.Println(strings.Repeat("=", 80) + "\n")
-	}
-}
-
-// dumpK8sStateOnFailure captures and logs Kubernetes state for debugging failed tests
-func dumpK8sStateOnFailure(report ginkgo.SpecReport) {
+func dumpK8sState(header string) {
 	ginkgo.GinkgoWriter.Println("\n" + strings.Repeat("=", 80))
-	ginkgo.GinkgoWriter.Println("🔴 TEST FAILED - CAPTURING KUBERNETES STATE FOR DEBUGGING")
-	ginkgo.GinkgoWriter.Println("Test: " + report.FullText())
+	ginkgo.GinkgoWriter.Println("🔴 " + header)
 	ginkgo.GinkgoWriter.Println(strings.Repeat("=", 80))
 
 	namespace := "default"
-
-	// Dump VirtualMCPServer status
 	dumpVirtualMCPServers(namespace)
-
-	// Dump MCPServer status
 	dumpMCPServers(namespace)
-
-	// Dump pod status and logs
 	dumpPods(namespace)
-
-	// Dump services
 	dumpServices(namespace)
-
-	// Dump events (useful for seeing why pods failed)
 	dumpEvents(namespace)
 
 	ginkgo.GinkgoWriter.Println(strings.Repeat("=", 80))
-	ginkgo.GinkgoWriter.Println("END OF KUBERNETES STATE DUMP")
+	ginkgo.GinkgoWriter.Println("END OF STATE DUMP")
 	ginkgo.GinkgoWriter.Println(strings.Repeat("=", 80) + "\n")
 }
 

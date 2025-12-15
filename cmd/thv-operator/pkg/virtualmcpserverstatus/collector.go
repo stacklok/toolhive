@@ -94,6 +94,16 @@ func (s *StatusCollector) SetDiscoveredBackends(backends []mcpv1alpha1.Discovere
 	s.hasChanges = true
 }
 
+// GetDiscoveredBackends returns the current discovered backends value.
+// If SetDiscoveredBackends has been called, returns the new value.
+// Otherwise, returns the existing value from the VirtualMCPServer status.
+func (s *StatusCollector) GetDiscoveredBackends() []mcpv1alpha1.DiscoveredBackend {
+	if s.discoveredBackends != nil {
+		return s.discoveredBackends
+	}
+	return s.vmcp.Status.DiscoveredBackends
+}
+
 // UpdateStatus applies all collected status changes in a single batch update.
 // Expects vmcpStatus to be freshly fetched from the cluster to ensure the update operates on the latest resource version.
 func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alpha1.VirtualMCPServerStatus) bool {
@@ -128,7 +138,7 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 		// Apply discovered backends change
 		if s.discoveredBackends != nil {
 			vmcpStatus.DiscoveredBackends = s.discoveredBackends
-			// BackendCount represents the number of ready backends
+			// BackendCount represents the number of ready backends (only ready backends)
 			readyCount := 0
 			for _, backend := range s.discoveredBackends {
 				if backend.Status == mcpv1alpha1.BackendStatusReady {

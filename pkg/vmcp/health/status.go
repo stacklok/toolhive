@@ -48,6 +48,7 @@ type statusTracker struct {
 // Returns a new status tracker instance.
 func newStatusTracker(unhealthyThreshold int) *statusTracker {
 	if unhealthyThreshold < 1 {
+		logger.Warnf("Invalid unhealthyThreshold %d (must be >= 1), adjusting to 1", unhealthyThreshold)
 		unhealthyThreshold = 1
 	}
 
@@ -129,23 +130,24 @@ func (t *statusTracker) RecordFailure(backendID string, backendName string, stat
 	state.lastCheckTime = time.Now()
 	state.lastError = err
 
-	// Determine if we should transition to unhealthy/unauthenticated
-	shouldTransition := state.consecutiveFailures >= t.unhealthyThreshold
+	// Check if threshold is reached and status has changed
+	thresholdReached := state.consecutiveFailures >= t.unhealthyThreshold
+	statusChanged := previousStatus != status
 
-	if shouldTransition && previousStatus != status {
-		// Transition to new status
+	if thresholdReached && statusChanged {
+		// Transition to new unhealthy status
 		state.status = status
 		state.lastTransitionTime = time.Now()
 		logger.Warnf("Backend %s health degraded: %s → %s (%d consecutive failures, threshold: %d) - last error: %v",
 			backendName, previousStatus, status, state.consecutiveFailures, t.unhealthyThreshold, err)
-	} else if !shouldTransition {
-		// Not yet at threshold, keep previous status
-		logger.Debugf("Backend %s health check failed (%d/%d consecutive failures, status: %s): %v",
-			backendName, state.consecutiveFailures, t.unhealthyThreshold, status, err)
-	} else {
-		// Already in failed state, just increment counter
+	} else if thresholdReached {
+		// Already at threshold with same status - no transition needed
 		logger.Debugf("Backend %s remains %s (%d consecutive failures): %v",
 			backendName, status, state.consecutiveFailures, err)
+	} else {
+		// Below threshold - accumulating failures but not yet unhealthy
+		logger.Debugf("Backend %s health check failed (%d/%d consecutive failures, status: %s): %v",
+			backendName, state.consecutiveFailures, t.unhealthyThreshold, previousStatus, err)
 	}
 }
 

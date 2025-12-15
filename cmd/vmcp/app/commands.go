@@ -346,10 +346,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	// Configure health monitoring if enabled
 	if cfg.Operational != nil && cfg.Operational.FailureHandling != nil && cfg.Operational.FailureHandling.HealthCheckInterval > 0 {
+		defaults := health.DefaultConfig()
 		serverCfg.HealthMonitorConfig = &health.MonitorConfig{
 			CheckInterval:      time.Duration(cfg.Operational.FailureHandling.HealthCheckInterval),
 			UnhealthyThreshold: cfg.Operational.FailureHandling.UnhealthyThreshold,
-			Timeout:            10 * time.Second, // Default timeout
+			Timeout:            defaults.Timeout, // Use default from health package
 		}
 	}
 

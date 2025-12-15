@@ -21,7 +21,7 @@ var _ = Describe("VirtualMCPServer Health Monitoring", Ordered, func() {
 		healthyBackend1     = "healthy-backend-1"
 		healthyBackend2     = "healthy-backend-2"
 		unhealthyBackend    = "unhealthy-backend"
-		timeout             = 5 * time.Minute
+		timeout             = 3 * time.Minute
 		pollingInterval     = 2 * time.Second
 		healthCheckInterval = "5s" // Fast checks for e2e
 		unhealthyThreshold  = 2    // Mark unhealthy after 2 consecutive failures
@@ -159,15 +159,66 @@ var _ = Describe("VirtualMCPServer Health Monitoring", Ordered, func() {
 	})
 
 	It("should discover all backends including the unhealthy one", func() {
+		// Wait for health checks to complete and update backend status
+		// Health monitoring runs every 5s and marks backends unhealthy after 2 consecutive failures
+		// So we need to wait at least 10-15 seconds for the unhealthy backend to be detected
+		Eventually(func() error {
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			}, vmcpServer); err != nil {
+				return err
+			}
+
+			// Should discover all 3 backends
+			if len(vmcpServer.Status.DiscoveredBackends) != 3 {
+				return fmt.Errorf("expected 3 discovered backends, got %d", len(vmcpServer.Status.DiscoveredBackends))
+			}
+
+			// BackendCount should be 2 (only ready backends)
+			if vmcpServer.Status.BackendCount != 2 {
+				return fmt.Errorf("expected BackendCount=2 (only ready backends), got %d", vmcpServer.Status.BackendCount)
+			}
+
+			// Verify unhealthy backend is marked as unavailable/degraded
+			unhealthyFound := false
+			healthyCount := 0
+			for _, backend := range vmcpServer.Status.DiscoveredBackends {
+				if backend.Name == unhealthyBackend {
+					if backend.Status != mcpv1alpha1.BackendStatusUnavailable &&
+						backend.Status != mcpv1alpha1.BackendStatusDegraded {
+						return fmt.Errorf("unhealthy backend %s should be unavailable/degraded but is %s",
+							backend.Name, backend.Status)
+					}
+					unhealthyFound = true
+				} else {
+					if backend.Status != mcpv1alpha1.BackendStatusReady {
+						return fmt.Errorf("healthy backend %s should be ready but is %s",
+							backend.Name, backend.Status)
+					}
+					healthyCount++
+				}
+			}
+
+			if !unhealthyFound {
+				return fmt.Errorf("unhealthy backend not found in discovered backends")
+			}
+
+			if healthyCount != 2 {
+				return fmt.Errorf("expected 2 healthy backends, found %d", healthyCount)
+			}
+
+			return nil
+		}, 30*time.Second, 2*time.Second).Should(Succeed(), "Health checks should mark unhealthy backend as unavailable")
+
+		// Verify all backends are present in discovery
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 		err := k8sClient.Get(ctx, types.NamespacedName{
 			Name:      vmcpServerName,
 			Namespace: testNamespace,
 		}, vmcpServer)
 		Expect(err).NotTo(HaveOccurred())
-
-		// Should discover all 3 backends
-		Expect(vmcpServer.Status.BackendCount).To(Equal(3))
 		Expect(vmcpServer.Status.DiscoveredBackends).To(HaveLen(3))
 
 		// Check that all backends are present in discovery

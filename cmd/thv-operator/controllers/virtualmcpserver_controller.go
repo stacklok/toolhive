@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -21,9 +22,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -44,6 +48,22 @@ const (
 	OutgoingAuthSourceDiscovered = "discovered"
 	// OutgoingAuthSourceInline indicates that auth configs should be explicitly specified
 	OutgoingAuthSourceInline = "inline"
+
+	// defaultHealthCheckTimeout is the default timeout for health check operations
+	// This matches the default timeout used by the vmcp health monitor
+	defaultHealthCheckTimeout = 10 * time.Second
+
+	// minHealthCheckQueryTimeout is the minimum timeout for querying the vmcp health endpoint
+	minHealthCheckQueryTimeout = 5 * time.Second
+
+	// healthCheckRequeueMultiplier determines how frequently the controller reconciles
+	// to fetch updated health status. Set to 2x the health check interval to balance
+	// freshness with reconciliation overhead.
+	healthCheckRequeueMultiplier = 2
+
+	// healthStatusCacheTTL is the time-to-live for cached health status responses
+	// Short TTL ensures relatively fresh data while reducing HTTP overhead from frequent reconciliations
+	healthStatusCacheTTL = 10 * time.Second
 )
 
 // VirtualMCPServerReconciler reconciles a VirtualMCPServer object
@@ -64,6 +84,16 @@ type VirtualMCPServerReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         record.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+
+	// healthStatusCache caches vmcp health endpoint responses to reduce HTTP overhead
+	healthStatusCache      map[string]*healthStatusCacheEntry
+	healthStatusCacheMutex sync.RWMutex
+}
+
+// healthStatusCacheEntry stores cached health status with expiration time
+type healthStatusCacheEntry struct {
+	healthStatus map[string]*BackendHealthInfo
+	expiresAt    time.Time
 }
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch;create;update;patch;delete
@@ -84,6 +114,8 @@ type VirtualMCPServerReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
+//
+//nolint:gocyclo // Complexity is inherent to reconciliation logic
 func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
@@ -173,6 +205,13 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
+	// Apply discovered backends to latestVMCP so updateVirtualMCPServerStatus can use them
+	// for phase determination. The statusManager has the updated backends from discoverBackends,
+	// but they haven't been applied to the CR yet.
+	if discoveredBackends != nil {
+		latestVMCP.Status.DiscoveredBackends = discoveredBackends
+	}
+
 	// Update status based on pod health using the latest Generation
 	if err := r.updateVirtualMCPServerStatus(ctx, latestVMCP, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to update VirtualMCPServer status")
@@ -185,12 +224,39 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	// Reconciliation complete - rely on event-driven reconciliation
+	// Reconciliation complete
+	// If health monitoring is enabled, requeue periodically to fetch updated health status
+	// Health checks run in vmcp pods, and we need to query the health endpoint regularly
+	// to update backend status in the VirtualMCPServer CRD
+	if vmcp.Spec.Operational != nil && vmcp.Spec.Operational.FailureHandling != nil &&
+		vmcp.Spec.Operational.FailureHandling.HealthCheckInterval != "" {
+		// Parse health check interval to determine requeue time
+		// Note: We parse the duration string on each reconciliation rather than caching
+		// because time.ParseDuration is extremely fast (<1μs) and reconciliation frequency
+		// is already throttled (typically every 10s). Caching would add unnecessary complexity.
+		interval, err := time.ParseDuration(vmcp.Spec.Operational.FailureHandling.HealthCheckInterval)
+		if err != nil {
+			// Invalid duration format - log warning and fall through to event-driven reconciliation
+			// This should be caught by webhook validation, but we handle it gracefully here
+			ctxLogger.Error(err, "Invalid HealthCheckInterval format, health monitoring disabled",
+				"health_check_interval", vmcp.Spec.Operational.FailureHandling.HealthCheckInterval)
+			// Continue with event-driven reconciliation instead of periodic
+		} else {
+			// Requeue at a multiple of the health check interval to ensure we catch updates
+			// without reconciling too frequently
+			requeueAfter := interval * healthCheckRequeueMultiplier
+			ctxLogger.Info("Periodic reconciliation enabled for health monitoring",
+				"health_check_interval", interval,
+				"requeue_after", requeueAfter)
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
+	}
+
+	// No health monitoring - rely on event-driven reconciliation
 	// Kubernetes will automatically trigger reconcile when:
 	// - VirtualMCPServer spec changes
 	// - Referenced resources (MCPGroup, Secrets) change
 	// - Owned resources (Deployment, Service) status changes
-	// - vmcp pods emit events about backend health
 	return ctrl.Result{}, nil
 }
 
@@ -1069,10 +1135,11 @@ func countBackendHealth(ctx context.Context, backends []mcpv1alpha1.DiscoveredBa
 func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	discoveredBackends []mcpv1alpha1.DiscoveredBackend,
 ) statusDecision {
 	ctxLogger := log.FromContext(ctx)
 
-	ready, unhealthy := countBackendHealth(ctx, vmcp.Status.DiscoveredBackends)
+	ready, unhealthy := countBackendHealth(ctx, discoveredBackends)
 	total := ready + unhealthy
 
 	// All backends unhealthy
@@ -1127,6 +1194,7 @@ func (*VirtualMCPServerReconciler) determineStatusFromBackends(
 func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
 	ready, pending, failed int,
 ) statusDecision {
 	// Handle non-ready states first (early returns reduce nesting)
@@ -1154,8 +1222,11 @@ func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 		}
 	}
 
+	// Get current discovered backends from status manager (may be updated but not applied yet)
+	discoveredBackends := statusManager.GetDiscoveredBackends()
+
 	// Pods are ready (passed readiness probes) - check backend health if backends exist
-	if len(vmcp.Status.DiscoveredBackends) == 0 {
+	if len(discoveredBackends) == 0 {
 		// No backends discovered yet - pods ready is sufficient for Ready
 		return statusDecision{
 			phase:          mcpv1alpha1.VirtualMCPServerPhaseReady,
@@ -1166,8 +1237,8 @@ func (r *VirtualMCPServerReconciler) determineStatusFromPods(
 		}
 	}
 
-	// Backends exist - determine health status
-	return r.determineStatusFromBackends(ctx, vmcp)
+	// Backends exist - determine health status using current backends from status manager
+	return r.determineStatusFromBackends(ctx, vmcp, discoveredBackends)
 }
 
 func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
@@ -1215,7 +1286,7 @@ func (r *VirtualMCPServerReconciler) updateVirtualMCPServerStatus(
 	}
 
 	// Determine status in one place (no branching/repetition)
-	decision := r.determineStatusFromPods(ctx, vmcp, ready, pending, failed)
+	decision := r.determineStatusFromPods(ctx, vmcp, statusManager, ready, pending, failed)
 
 	// Apply all status updates at once
 	statusManager.SetPhase(decision.phase)
@@ -1586,20 +1657,8 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 		}
 
 		// Convert vmcp.Backend to DiscoveredBackend
-		// Map health status from BackendHealthStatus to string
-		var backendStatus string
-		switch backend.HealthStatus {
-		case vmcptypes.BackendHealthy:
-			backendStatus = mcpv1alpha1.BackendStatusReady
-		case vmcptypes.BackendUnhealthy, vmcptypes.BackendUnauthenticated:
-			backendStatus = mcpv1alpha1.BackendStatusUnavailable
-		case vmcptypes.BackendDegraded:
-			backendStatus = mcpv1alpha1.BackendStatusDegraded
-		case vmcptypes.BackendUnknown:
-			backendStatus = mcpv1alpha1.BackendStatusUnknown
-		default:
-			backendStatus = mcpv1alpha1.BackendStatusUnknown
-		}
+		// Map health status from BackendHealthStatus to CRD status using centralized mapping
+		backendStatus := mapHealthStatusToCRDStatus(string(backend.HealthStatus))
 
 		// Extract auth config reference and check workload phase based on workload type
 		// Using pre-fetched maps instead of individual Get calls
@@ -1613,9 +1672,7 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 					authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef
 				}
 				// Override backend status based on MCPServer phase for non-ready states
-				if mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhasePending ||
-					mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhaseFailed ||
-					mcpServer.Status.Phase == mcpv1alpha1.MCPServerPhaseTerminating {
+				if isPhaseUnhealthy(string(mcpServer.Status.Phase)) {
 					backendStatus = mcpv1alpha1.BackendStatusUnavailable
 					ctxLogger.V(1).Info("Backend MCPServer not ready, marking as unavailable",
 						"name", workloadInfo.Name,
@@ -1629,9 +1686,7 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 					authType = mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef
 				}
 				// Override backend status based on MCPRemoteProxy phase for non-ready states
-				if mcpRemoteProxy.Status.Phase == mcpv1alpha1.MCPRemoteProxyPhasePending ||
-					mcpRemoteProxy.Status.Phase == mcpv1alpha1.MCPRemoteProxyPhaseFailed ||
-					mcpRemoteProxy.Status.Phase == mcpv1alpha1.MCPRemoteProxyPhaseTerminating {
+				if isPhaseUnhealthy(string(mcpRemoteProxy.Status.Phase)) {
 					backendStatus = mcpv1alpha1.BackendStatusUnavailable
 					ctxLogger.V(1).Info("Backend MCPRemoteProxy not ready, marking as unavailable",
 						"name", workloadInfo.Name,
@@ -1659,52 +1714,78 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 
 	// Query vmcp health status and update backend statuses if health monitoring is enabled
 	// This provides real MCP health check results instead of just Pod/Phase status
+	//
+	// Performance: Health status responses are cached with a short TTL (10s) to reduce HTTP
+	// overhead from frequent reconciliations while maintaining relatively fresh health data.
+	// The vmcp health endpoint itself returns cached results from periodic health checks.
 	if vmcp.Status.URL != "" {
-		healthStatus := r.queryVMCPHealthStatus(ctx, vmcp.Status.URL)
+		// Parse health check interval from spec to derive query timeout
+		var healthCheckInterval time.Duration
+		if vmcp.Spec.Operational != nil && vmcp.Spec.Operational.FailureHandling != nil &&
+			vmcp.Spec.Operational.FailureHandling.HealthCheckInterval != "" {
+			if interval, err := time.ParseDuration(vmcp.Spec.Operational.FailureHandling.HealthCheckInterval); err == nil {
+				healthCheckInterval = interval
+			}
+		}
+
+		healthStatus := r.queryVMCPHealthStatus(ctx, vmcp.Status.URL, healthCheckInterval)
 		if healthStatus != nil {
-			ctxLogger.V(1).Info("Updating backend status from vmcp health checks",
+			ctxLogger.Info("Updating backend status from vmcp health checks",
 				"vmcp_url", vmcp.Status.URL,
 				"backend_count", len(healthStatus))
 
 			for i := range discoveredBackends {
-				backend := &discoveredBackends[i]
-				if healthInfo, found := healthStatus[backend.Name]; found {
-					// Map vmcp health status to CRD backend status
-					// vmcp statuses: healthy, unhealthy, degraded, unknown
-					// CRD statuses: ready, unavailable, degraded, unknown
-					var newStatus string
-					switch healthInfo.Status {
-					case "healthy":
-						newStatus = mcpv1alpha1.BackendStatusReady
-					case "unhealthy":
-						newStatus = mcpv1alpha1.BackendStatusUnavailable
-					case "degraded":
-						newStatus = mcpv1alpha1.BackendStatusDegraded
-					case "unknown":
-						newStatus = mcpv1alpha1.BackendStatusUnknown
-					default:
-						// Keep existing status if health status is unexpected
+				// Health status is keyed by BackendID, which equals backend.Name for workloads
+				// (see pkg/vmcp/workloads/k8s.go where ID and Name are both set to workload.Name)
+				if healthInfo, found := healthStatus[discoveredBackends[i].Name]; found {
+					// Map vmcp health status to CRD backend status using centralized mapping
+					newStatus := mapHealthStatusToCRDStatus(healthInfo.Status)
+
+					// IMPORTANT: Re-check current phase to determine if we should trust vmcp health status
+					// If the workload's phase is currently unhealthy (Pending/Failed/Terminating),
+					// we must keep it unavailable even if vmcp health checks report it as healthy.
+					// The phase check is authoritative for workload-level health.
+					shouldPreserveUnavailable := false
+					if mcpServer, found := mcpServerMap[discoveredBackends[i].Name]; found {
+						if isPhaseUnhealthy(string(mcpServer.Status.Phase)) {
+							shouldPreserveUnavailable = true
+							ctxLogger.Info("Preserving unavailable status - MCPServer phase is unhealthy",
+								"name", discoveredBackends[i].Name,
+								"phase", mcpServer.Status.Phase,
+								"vmcp_health_status", newStatus)
+						}
+					} else if mcpRemoteProxy, found := mcpRemoteProxyMap[discoveredBackends[i].Name]; found {
+						if isPhaseUnhealthy(string(mcpRemoteProxy.Status.Phase)) {
+							shouldPreserveUnavailable = true
+							ctxLogger.Info("Preserving unavailable status - MCPRemoteProxy phase is unhealthy",
+								"name", discoveredBackends[i].Name,
+								"phase", mcpRemoteProxy.Status.Phase,
+								"vmcp_health_status", newStatus)
+						}
+					}
+
+					if shouldPreserveUnavailable {
 						continue
 					}
 
 					// Update status if changed
-					if newStatus != backend.Status {
-						ctxLogger.V(1).Info("Backend health check updated status",
-							"name", backend.Name,
-							"old_status", backend.Status,
+					if newStatus != discoveredBackends[i].Status {
+						ctxLogger.Info("Backend health check updated status",
+							"name", discoveredBackends[i].Name,
+							"old_status", discoveredBackends[i].Status,
 							"new_status", newStatus,
 							"health_status", healthInfo.Status)
-						backend.Status = newStatus
+						discoveredBackends[i].Status = newStatus
 					}
 
 					// Update LastHealthCheck with actual health check timestamp from vmcp
 					if !healthInfo.LastCheckTime.IsZero() {
-						backend.LastHealthCheck = metav1.NewTime(healthInfo.LastCheckTime)
+						discoveredBackends[i].LastHealthCheck = metav1.NewTime(healthInfo.LastCheckTime)
 					}
 				}
 			}
 		} else {
-			ctxLogger.V(1).Info("Health monitoring not enabled or failed to query vmcp health endpoint",
+			ctxLogger.Info("Health monitoring not enabled or failed to query vmcp health endpoint",
 				"vmcp_url", vmcp.Status.URL)
 		}
 	}
@@ -1712,16 +1793,107 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 	return discoveredBackends, nil
 }
 
+// isPhaseUnhealthy checks if a workload phase indicates the backend is not ready to serve traffic.
+// Returns true for Pending, Failed, or Terminating phases which indicate the backend cannot handle requests.
+func isPhaseUnhealthy(phase string) bool {
+	return phase == string(mcpv1alpha1.MCPServerPhasePending) ||
+		phase == string(mcpv1alpha1.MCPServerPhaseFailed) ||
+		phase == string(mcpv1alpha1.MCPServerPhaseTerminating) ||
+		phase == string(mcpv1alpha1.MCPRemoteProxyPhasePending) ||
+		phase == string(mcpv1alpha1.MCPRemoteProxyPhaseFailed) ||
+		phase == string(mcpv1alpha1.MCPRemoteProxyPhaseTerminating)
+}
+
+// mapHealthStatusToCRDStatus converts health status strings to CRD backend status constants.
+// This provides a centralized mapping between vmcp health statuses and VirtualMCPServer CRD statuses.
+//
+// Input health statuses (string representations of BackendHealthStatus or raw strings from API):
+//   - "healthy" -> BackendStatusReady
+//   - "unhealthy" -> BackendStatusUnavailable
+//   - "unauthenticated" -> BackendStatusUnavailable
+//   - "degraded" -> BackendStatusDegraded
+//   - "unknown" -> BackendStatusUnknown
+//
+// Returns the corresponding CRD backend status constant.
+func mapHealthStatusToCRDStatus(healthStatus string) string {
+	switch healthStatus {
+	case "healthy":
+		return mcpv1alpha1.BackendStatusReady
+	case "unhealthy":
+		return mcpv1alpha1.BackendStatusUnavailable
+	case "unauthenticated":
+		// Unauthenticated backends cannot serve requests
+		return mcpv1alpha1.BackendStatusUnavailable
+	case "degraded":
+		return mcpv1alpha1.BackendStatusDegraded
+	case "unknown":
+		return mcpv1alpha1.BackendStatusUnknown
+	default:
+		// Default to unknown for unexpected status values
+		return mcpv1alpha1.BackendStatusUnknown
+	}
+}
+
+// phaseChangePredicate triggers reconciliation when status.phase changes on backend resources.
+// This ensures VirtualMCPServer reconciles when backends transition between Running/Pending/Failed states.
+// Works with both MCPServer and MCPRemoteProxy resources.
+type phaseChangePredicate struct {
+	predicate.Funcs
+}
+
+// Update returns true if the status.phase field has changed for either MCPServer or MCPRemoteProxy
+func (phaseChangePredicate) Update(e event.UpdateEvent) bool {
+	if e.ObjectOld == nil || e.ObjectNew == nil {
+		return false
+	}
+
+	// Check MCPServer phase change
+	if oldMCPServer, oldOk := e.ObjectOld.(*mcpv1alpha1.MCPServer); oldOk {
+		if newMCPServer, newOk := e.ObjectNew.(*mcpv1alpha1.MCPServer); newOk {
+			return oldMCPServer.Status.Phase != newMCPServer.Status.Phase
+		}
+	}
+
+	// Check MCPRemoteProxy phase change
+	if oldProxy, oldOk := e.ObjectOld.(*mcpv1alpha1.MCPRemoteProxy); oldOk {
+		if newProxy, newOk := e.ObjectNew.(*mcpv1alpha1.MCPRemoteProxy); newOk {
+			return oldProxy.Status.Phase != newProxy.Status.Phase
+		}
+	}
+
+	return false
+}
+
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Initialize health status cache
+	r.healthStatusCache = make(map[string]*healthStatusCacheEntry)
+
+	// Predicate for watching backend phase changes (used for both MCPServer and MCPRemoteProxy)
+	// Use OR logic: reconcile when either generation changes OR phase changes
+	backendPredicates := builder.WithPredicates(
+		predicate.Or(
+			predicate.GenerationChangedPredicate{},
+			phaseChangePredicate{},
+		),
+	)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.VirtualMCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
 		Watches(&mcpv1alpha1.MCPGroup{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPGroupToVirtualMCPServer)).
-		Watches(&mcpv1alpha1.MCPServer{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToVirtualMCPServer)).
-		Watches(&mcpv1alpha1.MCPRemoteProxy{}, handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToVirtualMCPServer)).
+		Watches(
+			&mcpv1alpha1.MCPServer{},
+			handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToVirtualMCPServer),
+			backendPredicates,
+		).
+		Watches(
+			&mcpv1alpha1.MCPRemoteProxy{},
+			handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToVirtualMCPServer),
+			backendPredicates,
+		).
 		Watches(&mcpv1alpha1.MCPExternalAuthConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapExternalAuthConfigToVirtualMCPServer)).
 		Watches(&mcpv1alpha1.MCPToolConfig{}, handler.EnqueueRequestsFromMapFunc(r.mapToolConfigToVirtualMCPServer)).
 		Watches(
@@ -2170,30 +2342,57 @@ type BackendHealthStatusResponse struct {
 
 // queryVMCPHealthStatus queries the vmcp health endpoint and returns backend health information.
 // Returns nil if health monitoring is not enabled or if there's an error.
-func (*VirtualMCPServerReconciler) queryVMCPHealthStatus(
+// The timeout is derived from the health check interval with a reasonable minimum.
+// Results are cached with a TTL to reduce HTTP overhead from frequent reconciliations.
+func (r *VirtualMCPServerReconciler) queryVMCPHealthStatus(
 	ctx context.Context,
 	vmcpURL string,
+	healthCheckInterval time.Duration,
 ) map[string]*BackendHealthInfo {
 	ctxLogger := log.FromContext(ctx)
 
 	// Construct health endpoint URL
 	healthURL := fmt.Sprintf("%s/api/backends/health", vmcpURL)
 
-	// Create HTTP client with timeout
+	// Check cache first
+	r.healthStatusCacheMutex.RLock()
+	if cached, found := r.healthStatusCache[healthURL]; found {
+		if time.Now().Before(cached.expiresAt) {
+			r.healthStatusCacheMutex.RUnlock()
+			ctxLogger.V(1).Info("Using cached health status", "url", healthURL, "expires_in", time.Until(cached.expiresAt))
+			return cached.healthStatus
+		}
+	}
+	r.healthStatusCacheMutex.RUnlock()
+
+	// Derive timeout from health check interval
+	// Use the health check interval or default, with a minimum to ensure reasonable timeout
+	timeout := healthCheckInterval
+	if timeout == 0 {
+		timeout = defaultHealthCheckTimeout
+	}
+	if timeout < minHealthCheckQueryTimeout {
+		timeout = minHealthCheckQueryTimeout
+	}
+
+	// Create HTTP client with derived timeout
+	// Note: Uses default transport which validates TLS certificates.
+	// If the vmcp server uses self-signed certificates, ensure proper cert configuration
+	// (e.g., via cert-manager) or use HTTP for internal cluster communication.
 	httpClient := &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: timeout,
 	}
 
 	// Create and execute request
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 	if err != nil {
-		ctxLogger.V(1).Error(err, "Failed to create health check request", "url", healthURL)
+		ctxLogger.Error(err, "Failed to create health check request", "url", healthURL)
 		return nil
 	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		ctxLogger.V(1).Error(err, "Failed to query vmcp health endpoint", "url", healthURL)
+		ctxLogger.Error(err, "Failed to query vmcp health endpoint", "url", healthURL)
 		return nil
 	}
 	defer resp.Body.Close()
@@ -2201,12 +2400,12 @@ func (*VirtualMCPServerReconciler) queryVMCPHealthStatus(
 	// Check status code
 	if resp.StatusCode == http.StatusServiceUnavailable {
 		// Health monitoring is not enabled on the vmcp server
-		ctxLogger.V(1).Info("Health monitoring not enabled on vmcp server", "url", healthURL)
+		ctxLogger.Info("Health monitoring not enabled on vmcp server", "url", healthURL)
 		return nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		ctxLogger.V(1).Info("Unexpected status code from vmcp health endpoint",
+		ctxLogger.Info("Unexpected status code from vmcp health endpoint",
 			"url", healthURL,
 			"status_code", resp.StatusCode)
 		return nil
@@ -2215,7 +2414,7 @@ func (*VirtualMCPServerReconciler) queryVMCPHealthStatus(
 	// Parse response
 	var healthResp BackendHealthStatusResponse
 	if err := json.NewDecoder(resp.Body).Decode(&healthResp); err != nil {
-		ctxLogger.V(1).Error(err, "Failed to decode health response", "url", healthURL)
+		ctxLogger.Error(err, "Failed to decode health response", "url", healthURL)
 		return nil
 	}
 
@@ -2228,9 +2427,17 @@ func (*VirtualMCPServerReconciler) queryVMCPHealthStatus(
 		}
 	}
 
-	ctxLogger.V(1).Info("Retrieved health status from vmcp server",
+	ctxLogger.Info("Retrieved health status from vmcp server",
 		"url", healthURL,
 		"backend_count", len(healthStatus))
+
+	// Update cache with new health status
+	r.healthStatusCacheMutex.Lock()
+	r.healthStatusCache[healthURL] = &healthStatusCacheEntry{
+		healthStatus: healthStatus,
+		expiresAt:    time.Now().Add(healthStatusCacheTTL),
+	}
+	r.healthStatusCacheMutex.Unlock()
 
 	return healthStatus
 }

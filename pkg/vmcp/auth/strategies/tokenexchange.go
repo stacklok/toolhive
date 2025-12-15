@@ -12,6 +12,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/env"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
 const (
@@ -92,6 +93,11 @@ func (*TokenExchangeStrategy) Name() string {
 func (s *TokenExchangeStrategy) Authenticate(
 	ctx context.Context, req *http.Request, strategy *authtypes.BackendAuthStrategy,
 ) error {
+	// Skip authentication for health checks
+	if health.IsHealthCheck(ctx) {
+		return nil
+	}
+
 	identity, ok := auth.IdentityFromContext(ctx)
 	if !ok {
 		return fmt.Errorf("no identity found in context")

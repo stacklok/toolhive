@@ -8,6 +8,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/validation"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
 // HeaderInjectionStrategy injects a static header value into request headers.
@@ -58,8 +59,13 @@ func (*HeaderInjectionStrategy) Name() string {
 //   - HeaderName is missing or empty
 //   - HeaderValue is missing or empty
 func (*HeaderInjectionStrategy) Authenticate(
-	_ context.Context, req *http.Request, strategy *authtypes.BackendAuthStrategy,
+	ctx context.Context, req *http.Request, strategy *authtypes.BackendAuthStrategy,
 ) error {
+	// Skip authentication for health checks
+	if health.IsHealthCheck(ctx) {
+		return nil
+	}
+
 	if strategy == nil || strategy.HeaderInjection == nil {
 		return fmt.Errorf("header_injection configuration required")
 	}

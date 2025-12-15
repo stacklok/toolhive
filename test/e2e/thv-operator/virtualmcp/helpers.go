@@ -99,7 +99,7 @@ func WaitForVirtualMCPServerDeployed(
 
 		// Check that pods are running (but not necessarily all backends healthy)
 		labels := map[string]string{
-			"app.kubernetes.io/name":     "vmcp",
+			"app.kubernetes.io/name":     "virtualmcpserver",
 			"app.kubernetes.io/instance": name,
 		}
 		if err := checkPodsReady(ctx, c, namespace, labels); err != nil {

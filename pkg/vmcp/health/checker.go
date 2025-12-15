@@ -104,29 +104,49 @@ func categorizeError(err error) vmcp.BackendHealthStatus {
 }
 
 // isAuthError checks if the error message indicates an authentication failure.
+// Uses more specific patterns to avoid false positives from substrings in hostnames, URLs, etc.
 func isAuthError(errMsg string) bool {
-	return contains(errMsg, "authentication failed") ||
-		contains(errMsg, "unauthenticated") ||
-		contains(errMsg, "unauthorized") ||
-		contains(errMsg, "401")
+	errLower := strings.ToLower(errMsg)
+
+	// Check for explicit authentication failure messages
+	if strings.Contains(errLower, "authentication failed") ||
+		strings.Contains(errLower, "authentication error") {
+		return true
+	}
+
+	// Check for HTTP 401/403 status codes with context
+	// Match patterns like "401 Unauthorized", "HTTP 401", "status code 401"
+	if strings.Contains(errLower, "401 unauthorized") ||
+		strings.Contains(errLower, "403 forbidden") ||
+		strings.Contains(errLower, "http 401") ||
+		strings.Contains(errLower, "http 403") ||
+		strings.Contains(errLower, "status code 401") ||
+		strings.Contains(errLower, "status code 403") {
+		return true
+	}
+
+	// Check for explicit unauthenticated/unauthorized errors
+	// Use word boundaries to avoid matching hostnames
+	if strings.Contains(errLower, "request unauthenticated") ||
+		strings.Contains(errLower, "request unauthorized") ||
+		strings.Contains(errLower, "access denied") {
+		return true
+	}
+
+	return false
 }
 
 // isTimeoutError checks if the error message indicates a timeout.
 func isTimeoutError(errMsg string) bool {
-	return contains(errMsg, "timeout") ||
-		contains(errMsg, "deadline exceeded") ||
-		contains(errMsg, "context deadline exceeded")
+	return strings.Contains(errMsg, "timeout") ||
+		strings.Contains(errMsg, "deadline exceeded") ||
+		strings.Contains(errMsg, "context deadline exceeded")
 }
 
 // isConnectionError checks if the error message indicates a connection failure.
 func isConnectionError(errMsg string) bool {
-	return contains(errMsg, "connection refused") ||
-		contains(errMsg, "connection reset") ||
-		contains(errMsg, "no route to host") ||
-		contains(errMsg, "network is unreachable")
-}
-
-// contains checks if a string contains a substring.
-func contains(s, substr string) bool {
-	return strings.Contains(s, substr)
+	return strings.Contains(errMsg, "connection refused") ||
+		strings.Contains(errMsg, "connection reset") ||
+		strings.Contains(errMsg, "no route to host") ||
+		strings.Contains(errMsg, "network is unreachable")
 }

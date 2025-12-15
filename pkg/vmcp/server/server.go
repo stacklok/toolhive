@@ -504,7 +504,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	actualAddr := listener.Addr().String()
 	logger.Infof("Starting Virtual MCP Server at %s%s", actualAddr, s.config.EndpointPath)
-	logger.Infof("Health endpoints available at %s/health, %s/ping, %s/status, and %s/api/backends/health", actualAddr, actualAddr, actualAddr, actualAddr)
+	logger.Infof("Health endpoints available at %s/health, %s/ping, %s/status, and %s/api/backends/health",
+		actualAddr, actualAddr, actualAddr, actualAddr)
 
 	// Start server in background
 	errCh := make(chan error, 1)

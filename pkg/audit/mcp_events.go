@@ -131,4 +131,6 @@ const (
 	MetadataExtraKeyRetryCount = "retry_count"
 	// MetadataExtraKeyStepCount is the key for the total number of steps in a workflow
 	MetadataExtraKeyStepCount = "step_count"
+	// MetadataExtraKeyTimeout is the key for the workflow timeout in milliseconds
+	MetadataExtraKeyTimeout = "timeout_ms"
 )

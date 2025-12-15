@@ -12,7 +12,7 @@ import (
 )
 
 // WorkflowAuditor provides audit logging for workflow execution.
-// This interface abstracts workflow-specific audit operations from the
+// This struct abstracts workflow-specific audit operations from the
 // HTTP middleware-based Auditor.
 type WorkflowAuditor struct {
 	auditLogger *slog.Logger
@@ -32,10 +32,16 @@ func NewWorkflowAuditor(config *Config) (*WorkflowAuditor, error) {
 		return nil, fmt.Errorf("failed to create log writer: %w", err)
 	}
 
+	// Use configured component or default to vmcp-composer
+	component := config.Component
+	if component == "" {
+		component = "vmcp-composer"
+	}
+
 	return &WorkflowAuditor{
 		auditLogger: NewAuditLogger(logWriter),
 		config:      config,
-		component:   "vmcp-composer",
+		component:   component,
 	}, nil
 }
 
@@ -69,11 +75,16 @@ func (w *WorkflowAuditor) LogWorkflowStarted(
 	}
 	event.WithTarget(target)
 
+	// Add timeout to metadata
+	event.Metadata.Extra = map[string]any{
+		MetadataExtraKeyTimeout: timeout.Milliseconds(),
+	}
+
 	// Add workflow parameters as data (if configured)
-	if w.config.IncludeRequestData {
+	// Using same structure as HTTP auditor for consistency
+	if w.config.IncludeRequestData && parameters != nil {
 		data := map[string]any{
-			"parameters": parameters,
-			"timeout_ms": timeout.Milliseconds(),
+			"request": parameters,
 		}
 		if dataBytes, err := json.Marshal(data); err == nil {
 			rawMsg := json.RawMessage(dataBytes)
@@ -122,8 +133,12 @@ func (w *WorkflowAuditor) LogWorkflowCompleted(
 	}
 
 	// Add output data (if configured)
+	// Using same structure as HTTP auditor for consistency
 	if w.config.IncludeResponseData && output != nil {
-		if dataBytes, err := json.Marshal(output); err == nil {
+		data := map[string]any{
+			"response": output,
+		}
+		if dataBytes, err := json.Marshal(data); err == nil {
 			rawMsg := json.RawMessage(dataBytes)
 			event.WithData(&rawMsg)
 		}
@@ -380,25 +395,7 @@ func (*WorkflowAuditor) extractSubjects(ctx context.Context) map[string]string {
 
 	// Extract user information from Identity
 	if identity, ok := auth.IdentityFromContext(ctx); ok {
-		if identity.Subject != "" {
-			subjects[SubjectKeyUserID] = identity.Subject
-		}
-
-		if identity.Name != "" {
-			subjects[SubjectKeyUser] = identity.Name
-		} else if identity.Email != "" {
-			subjects[SubjectKeyUser] = identity.Email
-		} else if preferredUsername, ok := identity.Claims["preferred_username"].(string); ok {
-			subjects[SubjectKeyUser] = preferredUsername
-		}
-
-		// Add client information if available
-		if clientName, ok := identity.Claims["client_name"].(string); ok {
-			subjects[SubjectKeyClientName] = clientName
-		}
-		if clientVersion, ok := identity.Claims["client_version"].(string); ok {
-			subjects[SubjectKeyClientVersion] = clientVersion
-		}
+		subjects = extractSubjectsFromIdentity(identity)
 	}
 
 	// If no user found, set anonymous

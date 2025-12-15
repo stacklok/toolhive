@@ -67,22 +67,33 @@ func TestNewWorkflowAuditor(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		config  *Config
-		wantErr bool
+		name          string
+		config        *Config
+		wantErr       bool
+		wantComponent string
 	}{
 		{
-			name:    "nil_config_uses_default",
-			config:  nil,
-			wantErr: false,
+			name:          "nil_config_uses_default",
+			config:        nil,
+			wantErr:       false,
+			wantComponent: "vmcp-composer",
 		},
 		{
-			name: "valid_config",
+			name: "valid_config_without_component",
 			config: &Config{
-				Component:  "test-component",
 				EventTypes: []string{EventTypeWorkflowStarted},
 			},
-			wantErr: false,
+			wantErr:       false,
+			wantComponent: "vmcp-composer",
+		},
+		{
+			name: "valid_config_with_custom_component",
+			config: &Config{
+				Component:  "custom-component",
+				EventTypes: []string{EventTypeWorkflowStarted},
+			},
+			wantErr:       false,
+			wantComponent: "custom-component",
 		},
 	}
 
@@ -100,7 +111,7 @@ func TestNewWorkflowAuditor(t *testing.T) {
 				require.NotNil(t, auditor)
 				assert.NotNil(t, auditor.auditLogger)
 				assert.NotNil(t, auditor.config)
-				assert.Equal(t, "vmcp-composer", auditor.component)
+				assert.Equal(t, tt.wantComponent, auditor.component)
 			}
 		})
 	}
@@ -215,16 +226,22 @@ func TestWorkflowAuditor_LogWorkflowStarted(t *testing.T) {
 				}
 			}
 
-			// Verify data inclusion
+			// Verify metadata (timeout should always be in metadata.extra)
+			metadata, ok := entry["metadata"].(map[string]any)
+			require.True(t, ok, "metadata should be a map")
+			extra, ok := metadata["extra"].(map[string]any)
+			require.True(t, ok, "metadata.extra should be a map")
+			assert.Equal(t, float64(tt.timeout.Milliseconds()), extra[MetadataExtraKeyTimeout])
+
+			// Verify data inclusion (using request/response structure like HTTP auditor)
 			if tt.wantIncludeData {
 				data, ok := entry["data"].(map[string]any)
 				require.True(t, ok, "data should be a map")
 				if tt.parameters != nil {
-					params, ok := data["parameters"].(map[string]any)
-					require.True(t, ok, "parameters should be in data")
-					assert.Equal(t, tt.parameters, params)
+					request, ok := data["request"].(map[string]any)
+					require.True(t, ok, "request should be in data")
+					assert.Equal(t, tt.parameters, request)
 				}
-				assert.Equal(t, float64(tt.timeout.Milliseconds()), data["timeout_ms"])
 			} else {
 				_, hasData := entry["data"]
 				assert.False(t, hasData, "data should not be included")

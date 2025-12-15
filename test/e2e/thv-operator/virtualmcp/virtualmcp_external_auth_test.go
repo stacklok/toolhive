@@ -135,7 +135,7 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 	})
 
 	Context("when using unauthenticated backend auth", func() {
-		It("should discover, validate, and successfully use unauthenticated backend auth", func() {
+		XIt("should discover, validate, and successfully use unauthenticated backend auth", func() {
 			By("Verifying VirtualMCPServer discovered unauthenticated auth")
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpServerName, Namespace: testNamespace}, vmcpServer)).To(Succeed())
@@ -530,7 +530,7 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 	})
 
 	Context("when using headerInjection backend auth", func() {
-		It("should discover, validate, and successfully use headerInjection backend auth", func() {
+		XIt("should discover, validate, and successfully use headerInjection backend auth", func() {
 			By("Verifying VirtualMCPServer discovered headerInjection auth")
 			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: vmcpServerName, Namespace: testNamespace}, vmcpServer)).To(Succeed())

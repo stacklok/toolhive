@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 )
 
 const (
@@ -97,6 +98,26 @@ func (i *identityPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Re
 		req = req.Clone(ctx)
 	}
 	return i.base.RoundTrip(req)
+}
+
+// sessionIDPropagatingRoundTripper extracts session ID from context and adds it to backend requests.
+// This mirrors how transparent proxy forwards headers - we explicitly add the session ID
+// since we're using http.Client instead of httputil.ReverseProxy.
+// The session ID is set by the discovery middleware and represents the client's MCP session.
+// By forwarding it to backend servers, we allow them to maintain session state (e.g., browser context in Playwright).
+type sessionIDPropagatingRoundTripper struct {
+	base http.RoundTripper
+}
+
+// RoundTrip implements http.RoundTripper by adding Mcp-Session-Id header from context.
+func (s *sessionIDPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Extract session ID from context (set by discovery middleware)
+	if sessionID, ok := discovery.SessionIDFromContext(req.Context()); ok && sessionID != "" {
+		// Forward the session ID to the backend MCP server (just like transparent proxy forwards headers)
+		req.Header.Set("Mcp-Session-Id", sessionID)
+		logger.Debugf("Propagating session ID %s to backend %s", sessionID, req.URL.Host)
+	}
+	return s.base.RoundTrip(req)
 }
 
 // authRoundTripper is an http.RoundTripper that adds authentication to backend requests.
@@ -178,6 +199,12 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	baseTransport = &identityPropagatingRoundTripper{
 		base:     baseTransport,
 		identity: identity,
+	}
+
+	// Add session ID propagation layer (extracts from context and adds to headers)
+	// This forwards the client's MCP session ID to backend servers
+	baseTransport = &sessionIDPropagatingRoundTripper{
+		base: baseTransport,
 	}
 
 	// Add size limit layer for DoS protection
@@ -415,6 +442,8 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 }
 
 // CallTool invokes a tool on the backend MCP server.
+// It forwards the session ID via headers to maintain session state across requests.
+// The session ID is automatically added to requests by sessionIDPropagatingRoundTripper.
 func (h *httpBackendClient) CallTool(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -423,17 +452,13 @@ func (h *httpBackendClient) CallTool(
 ) (map[string]any, error) {
 	logger.Debugf("Calling tool %s on backend %s", toolName, target.WorkloadName)
 
-	// Create a client for this backend
+	// Create client for this request
+	// Session ID is automatically added to headers by sessionIDPropagatingRoundTripper
 	c, err := h.clientFactory(ctx, target)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client for backend %s: %w", target.WorkloadID, err)
 	}
 	defer c.Close()
-
-	// Initialize the client
-	if _, err := initializeClient(ctx, c); err != nil {
-		return nil, fmt.Errorf("failed to initialize client for backend %s: %w", target.WorkloadID, err)
-	}
 
 	// Call the tool using the original capability name from the backend's perspective.
 	// When conflict resolution renames tools (e.g., "fetch" → "fetch_fetch"),
@@ -503,20 +528,18 @@ func (h *httpBackendClient) CallTool(
 }
 
 // ReadResource retrieves a resource from the backend MCP server.
+// It forwards the session ID via headers to maintain session state across requests.
+// The session ID is automatically added to requests by sessionIDPropagatingRoundTripper.
 func (h *httpBackendClient) ReadResource(ctx context.Context, target *vmcp.BackendTarget, uri string) ([]byte, error) {
 	logger.Debugf("Reading resource %s from backend %s", uri, target.WorkloadName)
 
-	// Create a client for this backend
+	// Create client for this request
+	// Session ID is automatically added to headers by sessionIDPropagatingRoundTripper
 	c, err := h.clientFactory(ctx, target)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client for backend %s: %w", target.WorkloadID, err)
 	}
 	defer c.Close()
-
-	// Initialize the client
-	if _, err := initializeClient(ctx, c); err != nil {
-		return nil, fmt.Errorf("failed to initialize client for backend %s: %w", target.WorkloadID, err)
-	}
 
 	// Read the resource using the original URI from the backend's perspective.
 	// When conflict resolution renames resources, we must use the original backend URI.
@@ -559,6 +582,8 @@ func (h *httpBackendClient) ReadResource(ctx context.Context, target *vmcp.Backe
 }
 
 // GetPrompt retrieves a prompt from the backend MCP server.
+// It forwards the session ID via headers to maintain session state across requests.
+// The session ID is automatically added to requests by sessionIDPropagatingRoundTripper.
 func (h *httpBackendClient) GetPrompt(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -567,17 +592,13 @@ func (h *httpBackendClient) GetPrompt(
 ) (string, error) {
 	logger.Debugf("Getting prompt %s from backend %s", name, target.WorkloadName)
 
-	// Create a client for this backend
+	// Create client for this request
+	// Session ID is automatically added to headers by sessionIDPropagatingRoundTripper
 	c, err := h.clientFactory(ctx, target)
 	if err != nil {
 		return "", fmt.Errorf("failed to create client for backend %s: %w", target.WorkloadID, err)
 	}
 	defer c.Close()
-
-	// Initialize the client
-	if _, err := initializeClient(ctx, c); err != nil {
-		return "", fmt.Errorf("failed to initialize client for backend %s: %w", target.WorkloadID, err)
-	}
 
 	// Get the prompt using the original prompt name from the backend's perspective.
 	// When conflict resolution renames prompts, we must use the original backend name.

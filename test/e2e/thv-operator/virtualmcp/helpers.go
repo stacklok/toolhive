@@ -986,6 +986,54 @@ func (gingkoHttpLogger) Errorf(format string, v ...any) {
 	ginkgo.GinkgoLogr.Error(errors.New("http error"), "ERROR: "+format, v...)
 }
 
+// InitializeMCPClientWithRetries creates and initializes an MCP client with proper retry handling.
+// It creates a NEW client for each retry attempt to avoid stale session state issues.
+// Returns the initialized client. Caller is responsible for calling Close() on the client.
+func InitializeMCPClientWithRetries(
+	serverURL string,
+	timeout time.Duration,
+	opts ...transport.StreamableHTTPCOption,
+) *mcpclient.Client {
+	var mcpClient *mcpclient.Client
+
+	gomega.Eventually(func() error {
+		// Close any previous client to avoid stale session state
+		if mcpClient != nil {
+			mcpClient.Close()
+		}
+
+		// Create fresh client for each attempt
+		var err error
+		mcpClient, err = mcpclient.NewStreamableHttpClient(serverURL, opts...)
+		if err != nil {
+			return fmt.Errorf("failed to create client: %w", err)
+		}
+
+		initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer initCancel()
+
+		if err := mcpClient.Start(initCtx); err != nil {
+			return fmt.Errorf("failed to start transport: %w", err)
+		}
+
+		initRequest := mcp.InitializeRequest{}
+		initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+		initRequest.Params.ClientInfo = mcp.Implementation{
+			Name:    "toolhive-e2e-test",
+			Version: "1.0.0",
+		}
+
+		_, err = mcpClient.Initialize(initCtx, initRequest)
+		if err != nil {
+			return fmt.Errorf("failed to initialize: %w", err)
+		}
+
+		return nil
+	}, timeout, 5*time.Second).Should(gomega.Succeed(), "MCP client should initialize successfully")
+
+	return mcpClient
+}
+
 // MockHTTPServerInfo contains information about a deployed mock HTTP server
 type MockHTTPServerInfo struct {
 	Name      string

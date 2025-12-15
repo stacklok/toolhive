@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -166,31 +165,11 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 
 			By("Creating MCP client and connecting")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL, WithHttpLoggerOption())
-			Expect(err).ToNot(HaveOccurred())
+			mcpClient := InitializeMCPClientWithRetries(serverURL, 2*time.Minute, WithHttpLoggerOption())
 			defer mcpClient.Close()
 
 			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-
-			Eventually(func() error {
-				initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer initCancel()
-
-				if err := mcpClient.Start(initCtx); err != nil {
-					return fmt.Errorf("failed to start transport: %w", err)
-				}
-
-				initRequest := mcp.InitializeRequest{}
-				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-				initRequest.Params.ClientInfo = mcp.Implementation{Name: "toolhive-e2e-test", Version: "1.0.0"}
-				_, err := mcpClient.Initialize(initCtx, initRequest)
-				if err != nil {
-					return fmt.Errorf("failed to initialize: %w", err)
-				}
-
-				return nil
-			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "MCP client should initialize successfully")
 
 			By("Listing and calling tools")
 			listRequest := mcp.ListToolsRequest{}
@@ -350,30 +329,10 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 
 			By("Creating MCP client and listing tools")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
-			Expect(err).ToNot(HaveOccurred())
+			mcpClient := InitializeMCPClientWithRetries(serverURL, 2*time.Minute)
 			defer mcpClient.Close()
 			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-
-			Eventually(func() error {
-				initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer initCancel()
-
-				if err := mcpClient.Start(initCtx); err != nil {
-					return fmt.Errorf("failed to start transport: %w", err)
-				}
-
-				initRequest := mcp.InitializeRequest{}
-				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-				initRequest.Params.ClientInfo = mcp.Implementation{Name: "toolhive-e2e-test", Version: "1.0.0"}
-				_, err := mcpClient.Initialize(initCtx, initRequest)
-				if err != nil {
-					return fmt.Errorf("failed to initialize: %w", err)
-				}
-
-				return nil
-			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "MCP client should initialize successfully")
 
 			listRequest := mcp.ListToolsRequest{}
 			tools, err := mcpClient.ListTools(testCtx, listRequest)
@@ -566,30 +525,10 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 
 			By("Creating MCP client and connecting")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
-			Expect(err).ToNot(HaveOccurred())
+			mcpClient := InitializeMCPClientWithRetries(serverURL, 2*time.Minute)
 			defer mcpClient.Close()
 			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-
-			Eventually(func() error {
-				initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer initCancel()
-
-				if err := mcpClient.Start(initCtx); err != nil {
-					return fmt.Errorf("failed to start transport: %w", err)
-				}
-
-				initRequest := mcp.InitializeRequest{}
-				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-				initRequest.Params.ClientInfo = mcp.Implementation{Name: "toolhive-e2e-test", Version: "1.0.0"}
-				_, err := mcpClient.Initialize(initCtx, initRequest)
-				if err != nil {
-					return fmt.Errorf("failed to initialize: %w", err)
-				}
-
-				return nil
-			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "MCP client should initialize successfully")
 
 			By("Listing and calling tools")
 			var tools *mcp.ListToolsResult
@@ -796,30 +735,10 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 
 			By("Creating MCP client and listing tools")
 			serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpNodePort)
-			mcpClient, err := client.NewStreamableHttpClient(serverURL)
-			Expect(err).ToNot(HaveOccurred())
+			mcpClient := InitializeMCPClientWithRetries(serverURL, 2*time.Minute)
 			defer mcpClient.Close()
 			testCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-
-			Eventually(func() error {
-				initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer initCancel()
-
-				if err := mcpClient.Start(initCtx); err != nil {
-					return fmt.Errorf("failed to start transport: %w", err)
-				}
-
-				initRequest := mcp.InitializeRequest{}
-				initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-				initRequest.Params.ClientInfo = mcp.Implementation{Name: "toolhive-e2e-test", Version: "1.0.0"}
-				_, err := mcpClient.Initialize(initCtx, initRequest)
-				if err != nil {
-					return fmt.Errorf("failed to initialize: %w", err)
-				}
-
-				return nil
-			}, 2*time.Minute, 5*time.Second).Should(Succeed(), "MCP client should initialize successfully")
 
 			listRequest := mcp.ListToolsRequest{}
 			tools, err := mcpClient.ListTools(testCtx, listRequest)

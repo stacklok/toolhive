@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -619,4 +621,317 @@ func TestWorkflowAuditor_EventFiltering(t *testing.T) {
 
 	auditor.LogStepCompleted(ctx, "wf-1", "step-1", time.Second, 0)
 	assert.Empty(t, writer.logs, "step completed should be filtered out")
+}
+
+// TestWorkflowAuditor_WritesValidJSONToFile verifies that workflow auditor
+// writes valid JSON audit logs to files, matching the behavior of HTTP auditor.
+func TestWorkflowAuditor_WritesValidJSONToFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("writes valid JSON workflow audit logs to file", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a temporary file for audit logs
+		tmpDir := t.TempDir()
+		logFilePath := tmpDir + "/vmcp-workflow-audit.log"
+
+		// Create audit config with file output (simulating vMCP workflow configuration)
+		config := &Config{
+			Component:           "vmcp-composer",
+			LogFile:             logFilePath,
+			IncludeRequestData:  true,
+			IncludeResponseData: true,
+			EventTypes: []string{
+				EventTypeWorkflowStarted,
+				EventTypeWorkflowCompleted,
+			},
+		}
+
+		// Create workflow auditor
+		auditor, err := NewWorkflowAuditor(config)
+		require.NoError(t, err)
+		require.NotNil(t, auditor)
+
+		// Create context with identity
+		ctx := auth.WithIdentity(context.Background(), &auth.Identity{
+			Subject: "test-user-123",
+			Email:   "workflow@example.com",
+			Name:    "Workflow Test User",
+		})
+
+		// Log a workflow lifecycle
+		workflowParams := map[string]any{
+			"tool_name": "calculator",
+			"operation": "add",
+		}
+		workflowOutput := map[string]any{
+			"result": "success",
+			"value":  42,
+		}
+
+		// Log workflow started
+		auditor.LogWorkflowStarted(ctx, "wf-test-123", "calculator-workflow", workflowParams, 30*time.Second)
+
+		// Log workflow completed
+		auditor.LogWorkflowCompleted(ctx, "wf-test-123", "calculator-workflow", 2*time.Second, 3, workflowOutput)
+
+		// Give the logger time to flush
+		time.Sleep(100 * time.Millisecond)
+
+		// Read the log file
+		content, err := os.ReadFile(logFilePath)
+		require.NoError(t, err)
+		require.NotEmpty(t, content, "audit log file should not be empty")
+
+		// Split by newlines - should have 2 events (started and completed)
+		lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+		require.Len(t, lines, 2, "should have 2 log entries (started and completed)")
+
+		// Verify first event (workflow started)
+		var startedEvent map[string]any
+		err = json.Unmarshal([]byte(lines[0]), &startedEvent)
+		require.NoError(t, err, "first log entry should be valid JSON")
+
+		// Verify required audit event fields
+		assert.Contains(t, startedEvent, "audit_id", "should have audit_id")
+		assert.Contains(t, startedEvent, "type", "should have type")
+		assert.Contains(t, startedEvent, "logged_at", "should have logged_at")
+		assert.Contains(t, startedEvent, "outcome", "should have outcome")
+		assert.Contains(t, startedEvent, "component", "should have component")
+		assert.Contains(t, startedEvent, "source", "should have source")
+		assert.Contains(t, startedEvent, "subjects", "should have subjects")
+		assert.Contains(t, startedEvent, "target", "should have target")
+		assert.Contains(t, startedEvent, "metadata", "should have metadata")
+
+		// Verify event-specific fields for workflow started
+		assert.Equal(t, EventTypeWorkflowStarted, startedEvent["type"])
+		assert.Equal(t, "vmcp-composer", startedEvent["component"])
+		assert.Equal(t, OutcomeSuccess, startedEvent["outcome"])
+
+		// Verify target contains workflow information
+		target, ok := startedEvent["target"].(map[string]any)
+		require.True(t, ok, "target should be a map")
+		assert.Equal(t, "wf-test-123", target[TargetKeyWorkflowID])
+		assert.Equal(t, "calculator-workflow", target[TargetKeyWorkflowName])
+		assert.Equal(t, TargetTypeWorkflow, target[TargetKeyType])
+
+		// Verify subjects contain user information
+		subjects, ok := startedEvent["subjects"].(map[string]any)
+		require.True(t, ok, "subjects should be a map")
+		assert.Equal(t, "test-user-123", subjects[SubjectKeyUserID])
+		assert.Equal(t, "Workflow Test User", subjects[SubjectKeyUser])
+
+		// Verify source is local
+		source, ok := startedEvent["source"].(map[string]any)
+		require.True(t, ok, "source should be a map")
+		assert.Equal(t, SourceTypeLocal, source["type"])
+		assert.Equal(t, "vmcp-composer", source["value"])
+
+		// Verify metadata contains timeout
+		metadata, ok := startedEvent["metadata"].(map[string]any)
+		require.True(t, ok, "metadata should be a map")
+		extra, ok := metadata["extra"].(map[string]any)
+		require.True(t, ok, "metadata.extra should be a map")
+		assert.Equal(t, float64(30000), extra[MetadataExtraKeyTimeout])
+
+		// Verify data field contains request (workflow parameters)
+		if dataField, ok := startedEvent["data"]; ok {
+			data, ok := dataField.(map[string]any)
+			require.True(t, ok, "data should be a map")
+			assert.Contains(t, data, "request", "data should contain request")
+			request, ok := data["request"].(map[string]any)
+			require.True(t, ok, "request should be a map")
+			assert.Equal(t, "calculator", request["tool_name"])
+			assert.Equal(t, "add", request["operation"])
+		}
+
+		// Verify second event (workflow completed)
+		var completedEvent map[string]any
+		err = json.Unmarshal([]byte(lines[1]), &completedEvent)
+		require.NoError(t, err, "second log entry should be valid JSON")
+
+		assert.Equal(t, EventTypeWorkflowCompleted, completedEvent["type"])
+		assert.Equal(t, OutcomeSuccess, completedEvent["outcome"])
+
+		// Verify metadata contains duration and step count
+		metadata, ok = completedEvent["metadata"].(map[string]any)
+		require.True(t, ok, "metadata should be a map")
+		extra, ok = metadata["extra"].(map[string]any)
+		require.True(t, ok, "metadata.extra should be a map")
+		assert.Equal(t, float64(2000), extra[MetadataExtraKeyDuration])
+		assert.Equal(t, float64(3), extra[MetadataExtraKeyStepCount])
+
+		// Verify data field contains response (workflow output)
+		if dataField, ok := completedEvent["data"]; ok {
+			data, ok := dataField.(map[string]any)
+			require.True(t, ok, "data should be a map")
+			assert.Contains(t, data, "response", "data should contain response")
+			response, ok := data["response"].(map[string]any)
+			require.True(t, ok, "response should be a map")
+			assert.Equal(t, "success", response["result"])
+			assert.Equal(t, float64(42), response["value"])
+		}
+	})
+
+	t.Run("multiple workflow events create valid newline-delimited JSON", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a temporary file for audit logs
+		tmpDir := t.TempDir()
+		logFilePath := tmpDir + "/vmcp-multiple-workflows-audit.log"
+
+		// Create audit config with file output
+		config := &Config{
+			Component: "vmcp-composer",
+			LogFile:   logFilePath,
+			EventTypes: []string{
+				EventTypeWorkflowStarted,
+				EventTypeWorkflowCompleted,
+				EventTypeWorkflowFailed,
+			},
+		}
+
+		// Create workflow auditor
+		auditor, err := NewWorkflowAuditor(config)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+
+		// Log multiple workflow events
+		// Workflow 1: Success
+		auditor.LogWorkflowStarted(ctx, "wf-1", "test-workflow-1", nil, time.Minute)
+		auditor.LogWorkflowCompleted(ctx, "wf-1", "test-workflow-1", time.Second, 2, nil)
+
+		// Workflow 2: Failure
+		auditor.LogWorkflowStarted(ctx, "wf-2", "test-workflow-2", nil, time.Minute)
+		auditor.LogWorkflowFailed(ctx, "wf-2", "test-workflow-2", 500*time.Millisecond, 1, errors.New("test error"))
+
+		// Give the logger time to flush
+		time.Sleep(100 * time.Millisecond)
+
+		// Read the log file
+		content, err := os.ReadFile(logFilePath)
+		require.NoError(t, err)
+		require.NotEmpty(t, content, "audit log file should not be empty")
+
+		// Split by newlines and verify each line is valid JSON
+		lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+		assert.Equal(t, 4, len(lines), "should have 4 log entries")
+
+		for i, line := range lines {
+			var logEntry map[string]any
+			err := json.Unmarshal([]byte(line), &logEntry)
+			require.NoError(t, err, "line %d should be valid JSON", i+1)
+			assert.Contains(t, logEntry, "audit_id")
+			assert.Contains(t, logEntry, "type")
+			assert.Contains(t, logEntry, "component")
+			assert.Equal(t, "vmcp-composer", logEntry["component"])
+		}
+
+		// Verify event types
+		var entry1, entry2, entry3, entry4 map[string]any
+		json.Unmarshal([]byte(lines[0]), &entry1)
+		json.Unmarshal([]byte(lines[1]), &entry2)
+		json.Unmarshal([]byte(lines[2]), &entry3)
+		json.Unmarshal([]byte(lines[3]), &entry4)
+
+		assert.Equal(t, EventTypeWorkflowStarted, entry1["type"])
+		assert.Equal(t, EventTypeWorkflowCompleted, entry2["type"])
+		assert.Equal(t, EventTypeWorkflowStarted, entry3["type"])
+		assert.Equal(t, EventTypeWorkflowFailed, entry4["type"])
+
+		// Verify outcomes
+		assert.Equal(t, OutcomeSuccess, entry1["outcome"])
+		assert.Equal(t, OutcomeSuccess, entry2["outcome"])
+		assert.Equal(t, OutcomeSuccess, entry3["outcome"])
+		assert.Equal(t, OutcomeFailure, entry4["outcome"])
+	})
+
+	t.Run("workflow step events write valid JSON to file", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a temporary file for audit logs
+		tmpDir := t.TempDir()
+		logFilePath := tmpDir + "/vmcp-workflow-steps-audit.log"
+
+		// Create audit config for step events
+		config := &Config{
+			Component: "vmcp-composer",
+			LogFile:   logFilePath,
+			EventTypes: []string{
+				EventTypeWorkflowStepStarted,
+				EventTypeWorkflowStepCompleted,
+				EventTypeWorkflowStepFailed,
+				EventTypeWorkflowStepSkipped,
+			},
+		}
+
+		auditor, err := NewWorkflowAuditor(config)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+
+		// Log various step events
+		auditor.LogStepStarted(ctx, "wf-1", "step-1", "tool", "calculator")
+		auditor.LogStepCompleted(ctx, "wf-1", "step-1", 500*time.Millisecond, 0)
+
+		auditor.LogStepStarted(ctx, "wf-1", "step-2", "tool", "formatter")
+		auditor.LogStepFailed(ctx, "wf-1", "step-2", 200*time.Millisecond, 2, errors.New("failed"))
+
+		auditor.LogStepSkipped(ctx, "wf-1", "step-3", "{{.params.skip}} == true")
+
+		// Give the logger time to flush
+		time.Sleep(100 * time.Millisecond)
+
+		// Read the log file
+		content, err := os.ReadFile(logFilePath)
+		require.NoError(t, err)
+		require.NotEmpty(t, content, "audit log file should not be empty")
+
+		// Split by newlines - should have 5 events
+		lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+		require.Len(t, lines, 5, "should have 5 step events")
+
+		// Verify all are valid JSON
+		for i, line := range lines {
+			var logEntry map[string]any
+			err := json.Unmarshal([]byte(line), &logEntry)
+			require.NoError(t, err, "line %d should be valid JSON", i+1)
+
+			// Verify step-specific target fields
+			target, ok := logEntry["target"].(map[string]any)
+			require.True(t, ok, "target should be a map")
+			assert.Equal(t, "wf-1", target[TargetKeyWorkflowID])
+			assert.Contains(t, target, TargetKeyStepID)
+			assert.Equal(t, TargetTypeWorkflowStep, target[TargetKeyType])
+		}
+
+		// Verify step event types
+		var step1Started, step1Completed, step2Started, step2Failed, step3Skipped map[string]any
+		json.Unmarshal([]byte(lines[0]), &step1Started)
+		json.Unmarshal([]byte(lines[1]), &step1Completed)
+		json.Unmarshal([]byte(lines[2]), &step2Started)
+		json.Unmarshal([]byte(lines[3]), &step2Failed)
+		json.Unmarshal([]byte(lines[4]), &step3Skipped)
+
+		assert.Equal(t, EventTypeWorkflowStepStarted, step1Started["type"])
+		assert.Equal(t, EventTypeWorkflowStepCompleted, step1Completed["type"])
+		assert.Equal(t, EventTypeWorkflowStepStarted, step2Started["type"])
+		assert.Equal(t, EventTypeWorkflowStepFailed, step2Failed["type"])
+		assert.Equal(t, EventTypeWorkflowStepSkipped, step3Skipped["type"])
+
+		// Verify retry count in metadata for failed step
+		metadata, ok := step2Failed["metadata"].(map[string]any)
+		require.True(t, ok)
+		extra, ok := metadata["extra"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, float64(2), extra[MetadataExtraKeyRetryCount])
+
+		// Verify condition in metadata for skipped step
+		metadata, ok = step3Skipped["metadata"].(map[string]any)
+		require.True(t, ok)
+		extra, ok = metadata["extra"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "{{.params.skip}} == true", extra["condition"])
+	})
 }

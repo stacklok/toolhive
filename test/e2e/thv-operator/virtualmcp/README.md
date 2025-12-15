@@ -64,6 +64,7 @@ ginkgo -vv
 
 - `suite_test.go` - Ginkgo test suite setup with kubeconfig loading
 - `virtualmcp_discovered_mode_test.go` - Tests VirtualMCPServer with discovered mode aggregation
+- `virtualmcp_health_monitoring_test.go` - Tests VirtualMCPServer health monitoring functionality
 - `helpers.go` - Common helper functions for interacting with Kubernetes resources
 - `README.md` - This file
 
@@ -76,6 +77,16 @@ Comprehensive E2E tests for VirtualMCPServer in discovered mode, which automatic
 - Tests tool calls through the VirtualMCPServer proxy
 - Validates discovered mode configuration and backend discovery
 - Uses prefix conflict resolution strategy to namespace tools from different backends
+
+#### Health Monitoring Tests (`virtualmcp_health_monitoring_test.go`)
+End-to-end tests for VirtualMCPServer health monitoring of backend MCP servers:
+- Creates VirtualMCPServer with configured health check interval and unhealthy threshold
+- Creates multiple backend MCPServers (2 healthy, 1 initially unhealthy)
+- Verifies health monitoring correctly identifies healthy and unhealthy backends
+- Tests that health check timestamps are updated periodically
+- Validates backend recovery detection (unhealthy → healthy transitions)
+- Ensures health status is accurately reflected in VirtualMCPServer status
+- Uses fast health check intervals (5s) for quicker test execution
 
 ## Environment Variables
 

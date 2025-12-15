@@ -369,6 +369,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		HealthMonitorConfig: healthMonitorConfig,
 	}
 
+	// Configure health monitoring if enabled
+	if cfg.Operational != nil && cfg.Operational.FailureHandling != nil && cfg.Operational.FailureHandling.HealthCheckInterval > 0 {
+		serverCfg.HealthMonitorConfig = &health.MonitorConfig{
+			CheckInterval:      time.Duration(cfg.Operational.FailureHandling.HealthCheckInterval),
+			UnhealthyThreshold: cfg.Operational.FailureHandling.UnhealthyThreshold,
+			Timeout:            10 * time.Second, // Default timeout
+		}
+	}
+
 	// Convert composite tool configurations to workflow definitions
 	workflowDefs, err := vmcpserver.ConvertConfigToWorkflowDefinitions(cfg.CompositeTools)
 	if err != nil {

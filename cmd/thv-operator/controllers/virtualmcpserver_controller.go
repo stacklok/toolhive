@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/http"
 	"reflect"
 	"strings"
 	"time"
@@ -1660,6 +1661,53 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 			"authConfigRef", authConfigRef)
 	}
 
+	// Query vmcp health status and update backend statuses if health monitoring is enabled
+	// This provides real MCP health check results instead of just Pod/Phase status
+	if vmcp.Status.URL != "" {
+		healthStatus := r.queryVMCPHealthStatus(ctx, vmcp.Status.URL)
+		if healthStatus != nil {
+			ctxLogger.V(1).Info("Updating backend status from vmcp health checks",
+				"vmcp_url", vmcp.Status.URL,
+				"backend_count", len(healthStatus))
+
+			for i := range discoveredBackends {
+				backend := &discoveredBackends[i]
+				if healthStat, found := healthStatus[backend.Name]; found {
+					// Map vmcp health status to CRD backend status
+					// vmcp statuses: healthy, unhealthy, degraded, unknown
+					// CRD statuses: ready, unavailable, degraded, unknown
+					var newStatus string
+					switch healthStat {
+					case "healthy":
+						newStatus = mcpv1alpha1.BackendStatusReady
+					case "unhealthy":
+						newStatus = mcpv1alpha1.BackendStatusUnavailable
+					case "degraded":
+						newStatus = mcpv1alpha1.BackendStatusDegraded
+					case "unknown":
+						newStatus = mcpv1alpha1.BackendStatusUnknown
+					default:
+						// Keep existing status if health status is unexpected
+						continue
+					}
+
+					// Only log if status changed
+					if newStatus != backend.Status {
+						ctxLogger.V(1).Info("Backend health check updated status",
+							"name", backend.Name,
+							"old_status", backend.Status,
+							"new_status", newStatus,
+							"health_status", healthStat)
+						backend.Status = newStatus
+					}
+				}
+			}
+		} else {
+			ctxLogger.V(1).Info("Health monitoring not enabled or failed to query vmcp health endpoint",
+				"vmcp_url", vmcp.Status.URL)
+		}
+	}
+
 	return discoveredBackends, nil
 }
 
@@ -2099,4 +2147,80 @@ func (*VirtualMCPServerReconciler) vmcpReferencesCompositeToolDefinition(
 	}
 
 	return false
+}
+
+// BackendHealthStatusResponse represents the health status response from the vmcp health API
+type BackendHealthStatusResponse struct {
+	Backends []struct {
+		BackendID           string    `json:"backendId"`
+		Status              string    `json:"status"`
+		ConsecutiveFailures int       `json:"consecutiveFailures"`
+		LastCheckTime       time.Time `json:"lastCheckTime"`
+		LastError           string    `json:"lastError,omitempty"`
+		LastTransitionTime  time.Time `json:"lastTransitionTime"`
+	} `json:"backends"`
+}
+
+// queryVMCPHealthStatus queries the vmcp health endpoint and returns backend health status.
+// Returns nil if health monitoring is not enabled or if there's an error.
+func (*VirtualMCPServerReconciler) queryVMCPHealthStatus(
+	ctx context.Context,
+	vmcpURL string,
+) map[string]string {
+	ctxLogger := log.FromContext(ctx)
+
+	// Construct health endpoint URL
+	healthURL := fmt.Sprintf("%s/api/backends/health", vmcpURL)
+
+	// Create HTTP client with timeout
+	httpClient := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	// Create and execute request
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+	if err != nil {
+		ctxLogger.V(1).Error(err, "Failed to create health check request", "url", healthURL)
+		return nil
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		ctxLogger.V(1).Error(err, "Failed to query vmcp health endpoint", "url", healthURL)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// Check status code
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		// Health monitoring is not enabled on the vmcp server
+		ctxLogger.V(1).Info("Health monitoring not enabled on vmcp server", "url", healthURL)
+		return nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		ctxLogger.V(1).Info("Unexpected status code from vmcp health endpoint",
+			"url", healthURL,
+			"status_code", resp.StatusCode)
+		return nil
+	}
+
+	// Parse response
+	var healthResp BackendHealthStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&healthResp); err != nil {
+		ctxLogger.V(1).Error(err, "Failed to decode health response", "url", healthURL)
+		return nil
+	}
+
+	// Convert to map of backendID -> status
+	healthStatus := make(map[string]string)
+	for _, backend := range healthResp.Backends {
+		healthStatus[backend.BackendID] = backend.Status
+	}
+
+	ctxLogger.V(1).Info("Retrieved health status from vmcp server",
+		"url", healthURL,
+		"backend_count", len(healthStatus))
+
+	return healthStatus
 }

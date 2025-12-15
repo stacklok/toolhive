@@ -348,8 +348,8 @@ var _ = Describe("FetchMcpServer", Label("mcp", "e2e"), func() {
 			})
 
 			It("should restart the server successfully", func() {
-				By("Restarting the server")
-				stdout, _ := e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
+				By("Starting the server")
+				stdout, _ := e2e.NewTHVCommand(config, "start", serverName).ExpectSuccess()
 				Expect(stdout).To(ContainSubstring(serverName))
 
 				By("Waiting for the server to be running again")

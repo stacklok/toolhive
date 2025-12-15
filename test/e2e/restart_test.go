@@ -51,9 +51,9 @@ var _ = Describe("Server Restart", Label("core", "restart", "e2e"), func() {
 				originalURL, err := e2e.GetMCPServerURL(config, serverName)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to get server URL")
 
-				By("Restarting the server")
-				stdout, stderr = e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("restart"), "Output should mention restart operation")
+				By("Starting the server")
+				stdout, stderr = e2e.NewTHVCommand(config, "start", serverName).ExpectSuccess()
+				Expect(stdout+stderr).To(ContainSubstring("start"), "Output should mention start operation")
 
 				By("Waiting for the server to be running again")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -101,9 +101,9 @@ var _ = Describe("Server Restart", Label("core", "restart", "e2e"), func() {
 					return false // Server not found in list
 				}, 10*time.Second, 1*time.Second).Should(BeTrue(), "Server should be stopped")
 
-				By("Restarting the stopped server")
-				stdout, stderr = e2e.NewTHVCommand(config, "restart", serverName).ExpectSuccess()
-				Expect(stdout+stderr).To(ContainSubstring("restart"), "Output should mention restart operation")
+				By("Starting the stopped server")
+				stdout, stderr = e2e.NewTHVCommand(config, "start", serverName).ExpectSuccess()
+				Expect(stdout+stderr).To(ContainSubstring("start"), "Output should mention start operation")
 
 				By("Waiting for the server to be running again")
 				err = e2e.WaitForMCPServer(config, serverName, 60*time.Second)
@@ -176,9 +176,9 @@ var _ = Describe("Server Restart", Label("core", "restart", "e2e"), func() {
 		//			return server1Found && server2Found && !server1Running && !server2Running
 		//		}, 10*time.Second, 1*time.Second).Should(BeTrue(), "Both servers should be stopped")
 		//
-		//		By("Restarting all servers in the group")
-		//		stdout, stderr = e2e.NewTHVCommand(config, "restart", "--group", groupName).ExpectSuccess()
-		//		Expect(stdout+stderr).To(ContainSubstring("restart"), "Output should mention restart operation")
+		//		By("Starting all servers in the group")
+		//		stdout, stderr = e2e.NewTHVCommand(config, "start", "--group", groupName).ExpectSuccess()
+		//		Expect(stdout+stderr).To(ContainSubstring("start"), "Output should mention start operation")
 		//
 		//		By("Waiting for both servers to be running again")
 		//		err = e2e.WaitForMCPServer(config, serverName1, 60*time.Second)

@@ -183,8 +183,8 @@ var _ = Describe("Group", Label("core", "groups", "e2e"), func() {
 			})
 
 			It("should allow restarting the workload in the group", func() {
-				By("Restarting the workload")
-				_, _ = e2e.NewTHVCommand(config, "restart", workloadName).ExpectSuccess()
+				By("Starting the workload")
+				_, _ = e2e.NewTHVCommand(config, "start", workloadName).ExpectSuccess()
 
 				By("Verifying the workload is still in the correct group")
 				err := e2e.WaitForMCPServer(config, workloadName, 60*time.Second)

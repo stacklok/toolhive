@@ -995,7 +995,12 @@ type MockHTTPServerInfo struct {
 
 // CreateMockHTTPServer creates an in-cluster mock HTTP server for testing fetch tools.
 // This avoids network issues with external URLs like https://example.com in CI.
-func CreateMockHTTPServer(ctx context.Context, c client.Client, name, namespace string, timeout, pollingInterval time.Duration) *MockHTTPServerInfo {
+func CreateMockHTTPServer(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	timeout, pollingInterval time.Duration,
+) *MockHTTPServerInfo {
 	configMapName := name + "-code"
 
 	// Create ConfigMap with simple HTTP server

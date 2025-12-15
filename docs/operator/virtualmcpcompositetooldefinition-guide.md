@@ -330,6 +330,14 @@ arguments:
 - `.params.<name>`: Access workflow parameters
 - `.steps.<step_id>.<field>`: Access step results (Phase 2)
 
+**Available Template Functions**:
+
+Composite Tools supports all the built-in functions from [text/template](https://pkg.go.dev/text/template#hdr-Functions) (`eq`, `ne`, `lt`, `le`, `gt`, `ge`, `and`, `or`, `not`, `index`, `len`, `printf`, etc.) plus custom functions:
+
+- `json`: Encode a value as a JSON string
+- `fromJson`: Parse a JSON string into a value (useful when tools return JSON as text)
+- `quote`: Quote a string value
+
 ### Step Output Format
 
 Backend tools can return results in two formats, which affects how you access the data in templates:
@@ -353,6 +361,15 @@ When a backend tool returns text content, it is stored under the `text` key:
 # If echo_tool returns: "Hello, world!"
 arguments:
   message: "{{.steps.echo_tool.output.text}}"
+```
+
+If a tool returns JSON as text content, use the `fromJson` function to parse it and access fields:
+
+```yaml
+# If api_call returns text: '{"user": {"name": "Alice", "email": "alice@example.com"}}'
+arguments:
+  name: "{{(fromJson .steps.api_call.output.text).user.name}}"
+  email: "{{(fromJson .steps.api_call.output.text).user.email}}"
 ```
 
 > **Important**: Structured content must be an object (map). If a tool returns an array, primitive, or other non-object type, it falls back to unstructured content handling.

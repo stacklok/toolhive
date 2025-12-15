@@ -189,6 +189,7 @@ Workflows use Go's [text/template](https://pkg.go.dev/text/template) with these 
 
 **Custom Functions**:
 - `json` - JSON encode a value
+- `fromJson` - Parse a JSON string into a value (useful when MCP servers return JSON as text content)
 - `quote` - Quote a string value
 
 **Built-in Functions**: All Go template built-ins are available (`eq`, `ne`, `lt`, `le`, `gt`, `ge`, `and`, `or`, `not`, `index`, `len`, `range`, `with`, `printf`, etc.)

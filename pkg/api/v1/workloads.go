@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -208,12 +209,11 @@ func (s *WorkloadRoutes) stopWorkload(w http.ResponseWriter, r *http.Request) {
 //	@Failure		404		{string}	string	"Not Found"
 //	@Router			/api/v1beta/workloads/{name}/restart [post]
 func (s *WorkloadRoutes) restartWorkload(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	name := chi.URLParam(r, "name")
 
 	// Use the bulk method with a single workload
 	// Note: In the API, we always assume that the restart is a background operation
-	_, err := s.workloadManager.RestartWorkloads(ctx, []string{name}, false)
+	_, err := s.workloadManager.RestartWorkloads(context.Background(), []string{name}, false)
 	if err != nil {
 		if errors.Is(err, wt.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)
@@ -455,7 +455,7 @@ func (s *WorkloadRoutes) restartWorkloadsBulk(w http.ResponseWriter, r *http.Req
 	// Note that this is an asynchronous operation.
 	// The request is not blocked on completion.
 	// Note: In the API, we always assume that the restart is a background operation.
-	_, err = s.workloadManager.RestartWorkloads(ctx, workloadNames, false)
+	_, err = s.workloadManager.RestartWorkloads(context.Background(), workloadNames, false)
 	if err != nil {
 		if errors.Is(err, wt.ErrInvalidWorkloadName) {
 			http.Error(w, "Invalid workload name: "+err.Error(), http.StatusBadRequest)

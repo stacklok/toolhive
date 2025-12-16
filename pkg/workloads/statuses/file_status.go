@@ -146,6 +146,7 @@ func (f *fileStatusManager) populateRemoteWorkloadData(ctx context.Context, work
 	if config.Port > 0 {
 		proxyURL = transport.GenerateMCPServerURL(
 			transportType.String(),
+			config.ProxyMode,
 			transport.LocalhostIPv4,
 			config.Port,
 			workload.Name,

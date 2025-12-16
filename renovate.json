@@ -12,7 +12,8 @@
       "matchDatasources": ["docker"],
       "matchPackageNames": [
         "ghcr.io/stacklok/toolhive/proxyrunner",
-        "ghcr.io/stacklok/toolhive/operator"
+        "ghcr.io/stacklok/toolhive/operator",
+        "ghcr.io/stacklok/toolhive/vmcp"
       ],
       "matchFileNames": ["deploy/charts/operator/**"]
     },

@@ -85,6 +85,60 @@ spec:
                     default: registry
                     description: Database is the database name
                     type: string
+                  dbAppUserPasswordSecretRef:
+                    description: |-
+                      DBAppUserPasswordSecretRef references a Kubernetes Secret containing the password for the application database user.
+                      The operator will use this password along with DBMigrationUserPasswordSecretRef to generate a pgpass file
+                      that is mounted to the registry API container.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  dbMigrationUserPasswordSecretRef:
+                    description: |-
+                      DBMigrationUserPasswordSecretRef references a Kubernetes Secret containing the password for the migration database user.
+                      The operator will use this password along with DBAppUserPasswordSecretRef to generate a pgpass file
+                      that is mounted to the registry API container.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
                   host:
                     default: postgres
                     description: Host is the database server hostname
@@ -133,6 +187,9 @@ spec:
                       User is the application user (limited privileges: SELECT, INSERT, UPDATE, DELETE)
                       Credentials should be provided via pgpass file or environment variables
                     type: string
+                required:
+                - dbAppUserPasswordSecretRef
+                - dbMigrationUserPasswordSecretRef
                 type: object
               displayName:
                 description: DisplayName is a human-readable name for the registry

@@ -866,3 +866,154 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		assert.Contains(t, source, "value", "Source should have IP address")
 	})
 }
+
+// TestIntegration_AuditLoggingWithAuth tests that the vMCP server audit logs capture user
+// identity from authentication tokens.
+//
+//nolint:paralleltest // Uses dedicated server instance
+func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	ctx := context.Background()
+
+	// Create mock backend client
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+
+	// Create mock discovery manager
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockDiscoveryMgr.EXPECT().
+		Discover(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
+			return &aggregator.AggregatedCapabilities{
+				Tools: []vmcp.Tool{
+					{
+						Name:        "test_tool",
+						Description: "A test tool",
+						InputSchema: map[string]any{"type": "object"},
+					},
+				},
+			}, nil
+		}).
+		AnyTimes()
+	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
+
+	backends := []vmcp.Backend{}
+
+	// Create router
+	rt := router.NewDefaultRouter()
+
+	// Create identity middleware for auth
+	identityMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			identity := &auth.Identity{
+				Subject: "user-123",
+				Name:    "John Doe",
+				Email:   "john.doe@example.com",
+				Claims: map[string]any{
+					"client_name":    "mcp-client",
+					"client_version": "2.0.0",
+				},
+			}
+			ctx := auth.WithIdentity(r.Context(), identity)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+
+	// Create temp file for audit logs
+	auditLogFile, err := os.CreateTemp("", "vmcp-auth-audit-*.log")
+	require.NoError(t, err)
+	auditLogPath := auditLogFile.Name()
+	auditLogFile.Close()
+	defer os.Remove(auditLogPath)
+
+	// Create audit config
+	auditConfig := &audit.Config{
+		Component:           "vmcp-auth-test",
+		IncludeRequestData:  true,
+		IncludeResponseData: true,
+		LogFile:             auditLogPath,
+	}
+
+	// Create server with auth middleware and audit config
+	srv, err := server.New(ctx, &server.Config{
+		Host:           "127.0.0.1",
+		Port:           0, // Let OS assign port
+		AuditConfig:    auditConfig,
+		AuthMiddleware: identityMiddleware,
+	}, rt, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	require.NoError(t, err)
+
+	// Start server
+	serverCtx, cancelServer := context.WithCancel(ctx)
+	t.Cleanup(cancelServer)
+
+	serverErrCh := make(chan error, 1)
+	go func() {
+		if err := srv.Start(serverCtx); err != nil && err != context.Canceled {
+			serverErrCh <- err
+		}
+	}()
+
+	// Wait for server ready
+	select {
+	case <-srv.Ready():
+	case err := <-serverErrCh:
+		t.Fatalf("Server failed to start: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Server timeout waiting for ready")
+	}
+
+	baseURL := "http://" + srv.Address()
+
+	// Make an MCP request (initialize)
+	initReq := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2024-11-05",
+			"clientInfo": map[string]any{
+				"name":    "auth-test-client",
+				"version": "1.0.0",
+			},
+		},
+	}
+	reqBody, _ := json.Marshal(initReq)
+	req, _ := http.NewRequest("POST", baseURL+"/mcp", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Wait for audit event to be written
+	time.Sleep(500 * time.Millisecond)
+
+	// Read and verify audit log
+	auditData, err := os.ReadFile(auditLogPath)
+	require.NoError(t, err)
+	auditLog := string(auditData)
+
+	// Verify user identity fields are captured
+	assert.Contains(t, auditLog, "user-123", "Should capture user ID (subject)")
+	assert.Contains(t, auditLog, "John Doe", "Should capture user name")
+	assert.Contains(t, auditLog, "mcp-client", "Should capture client name from claims")
+	assert.Contains(t, auditLog, "2.0.0", "Should capture client version from claims")
+
+	// Parse the audit event and verify subjects structure
+	lines := strings.Split(strings.TrimSpace(auditLog), "\n")
+	require.Greater(t, len(lines), 0, "Should have at least one audit event")
+
+	var auditEvent map[string]any
+	err = json.Unmarshal([]byte(lines[0]), &auditEvent)
+	require.NoError(t, err, "Audit log should be valid JSON")
+
+	// Verify subjects field exists and has correct structure
+	subjects, ok := auditEvent["subjects"].(map[string]any)
+	require.True(t, ok, "Should have subjects field")
+	assert.Equal(t, "user-123", subjects["user_id"], "Should have correct user_id")
+	assert.Equal(t, "John Doe", subjects["user"], "Should have correct user name")
+	assert.Equal(t, "mcp-client", subjects["client_name"], "Should have correct client_name")
+	assert.Equal(t, "2.0.0", subjects["client_version"], "Should have correct client_version")
+}

@@ -204,7 +204,14 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 			port = int(mcpServer.Spec.Port) // Fallback to deprecated Port field
 		}
 		if port > 0 {
-			url = transport.GenerateMCPServerURL(mcpServer.Spec.Transport, transport.LocalhostIPv4, port, mcpServer.Name, "")
+			url = transport.GenerateMCPServerURL(
+				mcpServer.Spec.Transport,
+				mcpServer.Spec.ProxyMode,
+				transport.LocalhostIPv4,
+				port,
+				mcpServer.Name,
+				"",
+			)
 		}
 	}
 
@@ -370,7 +377,7 @@ func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv
 	if url == "" {
 		port := int(proxy.GetProxyPort())
 		if port > 0 {
-			url = transport.GenerateMCPServerURL(proxy.Spec.Transport, transport.LocalhostIPv4, port, proxy.Name, "")
+			url = transport.GenerateMCPServerURL(proxy.Spec.Transport, "", transport.LocalhostIPv4, port, proxy.Name, "")
 		}
 	}
 

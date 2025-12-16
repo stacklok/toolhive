@@ -330,6 +330,64 @@ arguments:
 - `.params.<name>`: Access workflow parameters
 - `.steps.<step_id>.<field>`: Access step results (Phase 2)
 
+**Available Template Functions**:
+
+Composite Tools supports all the built-in functions from [text/template](https://pkg.go.dev/text/template#hdr-Functions) (`eq`, `ne`, `lt`, `le`, `gt`, `ge`, `and`, `or`, `not`, `index`, `len`, `printf`, etc.) plus custom functions:
+
+- `json`: Encode a value as a JSON string
+- `fromJson`: Parse a JSON string into a value (useful when tools return JSON as text)
+- `quote`: Quote a string value
+
+### Step Output Format
+
+Backend tools can return results in two formats, which affects how you access the data in templates:
+
+**Structured Content (Object Response)**
+
+When a backend tool returns structured content (an object), fields are directly accessible:
+
+```yaml
+# If get_user returns: {"name": "Alice", "profile": {"email": "alice@example.com"}}
+arguments:
+  user_name: "{{.steps.get_user.output.name}}"
+  email: "{{.steps.get_user.output.profile.email}}"
+```
+
+**Unstructured Content (Text Response)**
+
+When a backend tool returns text content, it is stored under the `text` key:
+
+```yaml
+# If echo_tool returns: "Hello, world!"
+arguments:
+  message: "{{.steps.echo_tool.output.text}}"
+```
+
+If a tool returns JSON as text content, use the `fromJson` function to parse it and access fields:
+
+```yaml
+# If api_call returns text: '{"user": {"name": "Alice", "email": "alice@example.com"}}'
+arguments:
+  name: "{{(fromJson .steps.api_call.output.text).user.name}}"
+  email: "{{(fromJson .steps.api_call.output.text).user.email}}"
+```
+
+> **Important**: Structured content must be an object (map). If a tool returns an array, primitive, or other non-object type, it falls back to unstructured content handling.
+
+### Numeric Values in Templates
+
+All numeric values from JSON are unmarshaled as `float64`. When using numeric comparisons in templates, always use float literals:
+
+```yaml
+# Correct: use float literal (10.0)
+value: '{{if ge .steps.get_stats.output.count 10.0}}high{{else}}low{{end}}'
+
+# Incorrect: integer literal will cause type mismatch error
+value: '{{if ge .steps.get_stats.output.count 10}}high{{else}}low{{end}}'
+```
+
+This applies to all numeric comparisons (`eq`, `ne`, `lt`, `le`, `gt`, `ge`) when comparing against step output values.
+
 ## Complete Examples
 
 ### Example 1: Simple Deployment

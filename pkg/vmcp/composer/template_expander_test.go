@@ -399,3 +399,95 @@ func TestTemplateExpander_WorkflowMetadataEmpty(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"id": "<no value>"}, result)
 }
+
+func TestTemplateExpander_FromJsonFunction(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		data     map[string]any
+		steps    map[string]*StepResult
+		expected map[string]any
+		wantErr  bool
+	}{
+		{
+			name: "parse JSON from step output and access field",
+			data: map[string]any{"name": `{{(fromJson .steps.fetch.output.text).name}}`},
+			steps: map[string]*StepResult{
+				"fetch": {
+					Status: StepStatusCompleted,
+					Output: map[string]any{"text": `{"name": "Alice", "email": "alice@example.com"}`},
+				},
+			},
+			expected: map[string]any{"name": "Alice"},
+		},
+		{
+			name: "parse JSON and access nested field",
+			data: map[string]any{"email": `{{(fromJson .steps.fetch.output.text).user.email}}`},
+			steps: map[string]*StepResult{
+				"fetch": {
+					Status: StepStatusCompleted,
+					Output: map[string]any{"text": `{"user": {"email": "bob@example.com"}}`},
+				},
+			},
+			expected: map[string]any{"email": "bob@example.com"},
+		},
+		{
+			name: "parse JSON array and use with index",
+			data: map[string]any{"first": `{{index (fromJson .steps.fetch.output.text) 0}}`},
+			steps: map[string]*StepResult{
+				"fetch": {
+					Status: StepStatusCompleted,
+					Output: map[string]any{"text": `["apple", "banana", "cherry"]`},
+				},
+			},
+			expected: map[string]any{"first": "apple"},
+		},
+		{
+			name: "combine fromJson with json function",
+			data: map[string]any{"data": `{{json (fromJson .steps.fetch.output.text)}}`},
+			steps: map[string]*StepResult{
+				"fetch": {
+					Status: StepStatusCompleted,
+					Output: map[string]any{"text": `{"key": "value"}`},
+				},
+			},
+			expected: map[string]any{"data": `{"key":"value"}`},
+		},
+		{
+			name: "fromJson with invalid JSON causes error",
+			data: map[string]any{"val": `{{(fromJson .steps.fetch.output.text).key}}`},
+			steps: map[string]*StepResult{
+				"fetch": {
+					Status: StepStatusCompleted,
+					Output: map[string]any{"text": `not valid json`},
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	expander := NewTemplateExpander()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := &WorkflowContext{
+				WorkflowID: "test",
+				Params:     map[string]any{},
+				Steps:      tt.steps,
+				Variables:  map[string]any{},
+			}
+
+			result, err := expander.Expand(context.Background(), tt.data, ctx)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}

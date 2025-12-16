@@ -34,6 +34,7 @@ func NewTemplateExpander() TemplateExpander {
 			"quote": func(s string) string {
 				return fmt.Sprintf("%q", s)
 			},
+			"fromJson": fromJson,
 		},
 	}
 }
@@ -244,4 +245,14 @@ func jsonEncode(v any) (string, error) {
 		return "", fmt.Errorf("failed to encode JSON: %w", err)
 	}
 	return string(b), nil
+}
+
+// fromJson is a template function that parses a JSON string into a value.
+// It is useful when the underlying MCP server does not support structured content.
+func fromJson(s string) (any, error) {
+	var v any
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
+	}
+	return v, nil
 }

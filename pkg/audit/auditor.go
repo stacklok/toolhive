@@ -64,6 +64,7 @@ type Auditor struct {
 	config        *Config
 	auditLogger   *slog.Logger
 	transportType string // e.g., "sse", "streamable-http"
+	logWriter     io.Writer
 }
 
 // NewAuditorWithTransport creates a new Auditor with the given configuration and transport information.
@@ -84,7 +85,17 @@ func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, er
 		config:        config,
 		auditLogger:   NewAuditLogger(logWriter),
 		transportType: transportType,
+		logWriter:     logWriter,
 	}, nil
+}
+
+// Close closes the underlying log writer if it implements io.Closer.
+// This should be called when the auditor is no longer needed to properly release resources.
+func (a *Auditor) Close() error {
+	if closer, ok := a.logWriter.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 // isSSETransport checks if the current transport is SSE

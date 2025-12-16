@@ -160,6 +160,10 @@ type Proxy interface {
 	ForwardResponseToClients(ctx context.Context, msg jsonrpc2.Message) error
 }
 
+// HealthCheckFailedCallback is a function that is called when a health check fails.
+// This allows the transport to notify the runner/status manager when remote servers become unhealthy.
+type HealthCheckFailedCallback func()
+
 // Config contains configuration options for a transport.
 type Config struct {
 	// Type is the type of transport to use.
@@ -204,6 +208,10 @@ type Config struct {
 
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	ProxyMode ProxyMode
+
+	// OnHealthCheckFailed is an optional callback that is called when a health check fails
+	// for remote MCP servers. This allows the runner to update the workload status.
+	OnHealthCheckFailed HealthCheckFailedCallback
 }
 
 // ProxyMode represents the proxy mode for stdio transport.

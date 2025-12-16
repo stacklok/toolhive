@@ -272,15 +272,258 @@ thv config usage-metrics enable
 **Responsibilities**:
 - Determine event type based on request characteristics
 - Extract audit-relevant data from request and response
-- Log structured audit events
+- Log structured audit events as JSON
 - Track request duration and outcome
+- Support file-based and stdout log destinations
 
 **Event Types**:
+- `mcp_initialize` - Client initialization events
 - `mcp_tool_call` - Tool execution events
+- `mcp_tools_list` - Tool listing events
 - `mcp_resource_read` - Resource access events
+- `mcp_resources_list` - Resource listing events
 - `mcp_prompt_get` - Prompt retrieval events
-- `mcp_list_operation` - List operation events
-- `http_request` - General HTTP request events
+- `mcp_prompts_list` - Prompt listing events
+- `mcp_notification` - Notification message events
+- `mcp_ping` - Ping events
+- `mcp_logging` - Logging level change events
+- `mcp_completion` - Completion events
+- `mcp_roots_list_changed` - Roots list change notifications
+- `sse_connection` - SSE connection events (for SSE transport)
+- `http_request` - General HTTP request events (fallback)
+
+#### Configuration
+
+The audit middleware is configured via the `audit-config` parameter:
+
+```bash
+# CLI usage
+thv run --transport sse --name my-server --audit-config audit.json my-image:latest
+```
+
+**Configuration File Format** (`audit.json`):
+
+```json
+{
+  "component": "my-service",
+  "log_file": "/var/log/audit/audit.log",
+  "event_types": ["mcp_tool_call", "mcp_resource_read"],
+  "exclude_event_types": ["mcp_ping"],
+  "include_request_data": true,
+  "include_response_data": true,
+  "max_data_size": 4096
+}
+```
+
+**Configuration Options**:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `component` | string | No | `"toolhive-api"` | Component name to include in audit logs |
+| `log_file` | string | No | stdout | Path to audit log file (creates parent dirs with 0755, file with 0600) |
+| `event_types` | []string | No | all events | Whitelist of event types to audit (empty = audit all) |
+| `exclude_event_types` | []string | No | none | Blacklist of event types to exclude (takes precedence) |
+| `include_request_data` | bool | No | `false` | Include request body in audit logs |
+| `include_response_data` | bool | No | `false` | Include response body in audit logs |
+| `max_data_size` | int | No | `1024` | Maximum bytes to capture for request/response data |
+
+**Important Notes**:
+- `exclude_event_types` takes precedence over `event_types`
+- When `include_request_data` or `include_response_data` is enabled, **`max_data_size` must be set** (non-zero) for data capture to work
+- Log files are created with restrictive permissions (0600) for security
+- Logs are written in newline-delimited JSON format for easy parsing
+
+#### Log Output Format
+
+Audit events are logged as structured JSON objects:
+
+```json
+{
+  "audit_id": "01be8d47-3ab0-4aa9-ad14-bd5bb408005d",
+  "type": "mcp_tool_call",
+  "logged_at": "2025-12-15T10:38:32.164124Z",
+  "outcome": "success",
+  "component": "vmcp-server",
+  "source": {
+    "type": "network",
+    "value": "192.168.1.100",
+    "extra": {
+      "user_agent": "mcp-client/1.0",
+      "request_id": "req-12345"
+    }
+  },
+  "subjects": {
+    "user_id": "user123",
+    "user": "john.doe@example.com",
+    "client_name": "my-mcp-client",
+    "client_version": "1.0.0"
+  },
+  "target": {
+    "endpoint": "/messages",
+    "method": "POST",
+    "type": "tool",
+    "resource_id": "weather_tool"
+  },
+  "metadata": {
+    "extra": {
+      "duration_ms": 150,
+      "transport": "streamable-http",
+      "response_size_bytes": 1024
+    }
+  },
+  "data": {
+    "request": {"location": "New York"},
+    "response": {"temperature": "22°C", "humidity": "65%"}
+  }
+}
+```
+
+**Field Descriptions**:
+
+- `audit_id`: Unique identifier for the audit event (ULID format)
+- `type`: Event type (one of the event types listed above)
+- `logged_at`: ISO 8601 timestamp when the event was logged
+- `outcome`: Result of the operation (`success`, `failure`, `denied`, `error`)
+- `component`: Service/component that generated the event
+- `source`: Information about the request source
+  - `type`: Source type (`network` for HTTP requests)
+  - `value`: Source identifier (client IP address)
+  - `extra`: Additional source metadata (user agent, request ID, etc.)
+- `subjects`: Information about the authenticated user/client
+  - `user_id`: User subject identifier from JWT
+  - `user`: User display name (from `name` claim, `preferred_username`, or `email`)
+  - `client_name`: MCP client name (from JWT claims)
+  - `client_version`: MCP client version (from JWT claims)
+- `target`: Information about the operation target
+  - `endpoint`: HTTP endpoint path
+  - `method`: HTTP method
+  - `type`: Target type (`tool`, `resource`, `prompt`, `endpoint`)
+  - `resource_id`: MCP resource identifier (tool name, resource URI, etc.)
+- `metadata.extra`: Additional operational metadata
+  - `duration_ms`: Request duration in milliseconds
+  - `transport`: Transport type (`sse`, `streamable-http`, `http`)
+  - `response_size_bytes`: Response body size (when capturing response data)
+- `data`: Captured request/response data (only present if enabled)
+  - `request`: Request body (parsed as JSON if possible, otherwise string)
+  - `response`: Response body (parsed as JSON if possible, otherwise string)
+
+#### Virtual MCP Server Audit Logging
+
+The Virtual MCP Server (vMCP) supports comprehensive audit logging with file-based output, making it ideal for compliance and security monitoring in Kubernetes environments.
+
+**Kubernetes Configuration Example**:
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: my-vmcp
+spec:
+  groupRef:
+    name: my-group
+  incomingAuth:
+    type: anonymous
+  audit:
+    component: "vmcp-production"
+    logFile: "/var/log/audit/vmcp-audit.log"
+    includeRequestData: true
+    includeResponseData: true
+    maxDataSize: 8192
+    eventTypes:
+      - mcp_tool_call
+      - mcp_resource_read
+    excludeEventTypes:
+      - mcp_ping
+```
+
+**Volume Mounting for Log Persistence**:
+
+To persist audit logs outside the container, mount a volume:
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: my-vmcp
+spec:
+  groupRef:
+    name: my-group
+  audit:
+    logFile: "/var/log/audit/vmcp-audit.log"
+  podTemplate:
+    spec:
+      volumes:
+        - name: audit-logs
+          persistentVolumeClaim:
+            claimName: vmcp-audit-logs
+      containers:
+        - name: vmcp-server
+          volumeMounts:
+            - name: audit-logs
+              mountPath: /var/log/audit
+```
+
+**Log Format**: vMCP audit logs use newline-delimited JSON (NDJSON), with one JSON object per line:
+
+```ndjson
+{"audit_id":"01be8d47...","type":"mcp_tool_call","logged_at":"2025-12-15T10:38:32Z",...}
+{"audit_id":"02cf9e58...","type":"mcp_resource_read","logged_at":"2025-12-15T10:38:35Z",...}
+{"audit_id":"03dfa069...","type":"mcp_tool_call","logged_at":"2025-12-15T10:38:40Z",...}
+```
+
+This format is ideal for:
+- Log aggregation tools (Fluentd, Logstash, Vector)
+- SIEM systems (Splunk, Elastic Security, Datadog)
+- Stream processing (Apache Kafka, Amazon Kinesis)
+- Command-line analysis with `jq`
+
+**Example: Analyzing Audit Logs**:
+
+```bash
+# Count events by type
+jq -r '.type' vmcp-audit.log | sort | uniq -c
+
+# Find failed tool calls
+jq 'select(.type=="mcp_tool_call" and .outcome!="success")' vmcp-audit.log
+
+# Extract tool usage statistics
+jq -r 'select(.type=="mcp_tool_call") | .target.resource_id' vmcp-audit.log | sort | uniq -c | sort -rn
+
+# Get average response time for tool calls
+jq -r 'select(.type=="mcp_tool_call") | .metadata.extra.duration_ms' vmcp-audit.log | awk '{sum+=$1; count++} END {print sum/count}'
+```
+
+**Security Considerations**:
+
+1. **File Permissions**: Audit log files are created with `0600` permissions (owner read/write only)
+2. **Directory Permissions**: Parent directories are created with `0755` permissions if they don't exist
+3. **Sensitive Data**: Request/response data may contain sensitive information - enable `include_request_data` and `include_response_data` only when necessary
+4. **Log Rotation**: Implement log rotation using external tools (logrotate, Kubernetes CronJob) to prevent disk space exhaustion
+5. **Access Control**: Restrict access to audit logs using Kubernetes RBAC and network policies
+
+#### CLI Usage
+
+**With audit configuration file**:
+```bash
+thv run --transport sse --name my-server --audit-config audit.json my-image:latest
+```
+
+**Minimal audit configuration (stdout)**:
+```bash
+thv run --transport sse --name my-server --audit-config <(echo '{"component":"my-service"}') my-image:latest
+```
+
+**Event filtering example**:
+```json
+{
+  "component": "api-gateway",
+  "event_types": ["mcp_tool_call", "mcp_resource_read"],
+  "exclude_event_types": ["mcp_ping"],
+  "include_request_data": true,
+  "include_response_data": true,
+  "max_data_size": 2048
+}
+```
 
 ## Data Flow Through Context
 

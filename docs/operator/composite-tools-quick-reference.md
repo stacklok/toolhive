@@ -80,10 +80,17 @@ Workflows use Go's [text/template](https://pkg.go.dev/text/template) syntax with
 
 ### Functions
 
+Composite Tools supports all the built-in functions from the [text/template](https://pkg.go.dev/text/template#hdr-Functions) library in addition to some functions for converting to/from JSON.
+
 ```yaml
-# JSON encoding
+# JSON encoding - convert value to JSON string
 arguments:
   data: "{{json .steps.step1.output}}"
+
+# JSON decoding - parse JSON string to access fields
+# Useful when MCP servers return JSON as text content
+arguments:
+  name: "{{(fromJson .steps.api.output.text).user.name}}"
 
 # String quoting
 arguments:

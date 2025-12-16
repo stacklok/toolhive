@@ -26,6 +26,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -1088,6 +1089,13 @@ with socketserver.TCPServer(("", 8080), Handler) as httpd:
 			},
 		},
 		Spec: corev1.PodSpec{
+
+			// Provide a security context to avoid running as root.
+			SecurityContext: &corev1.PodSecurityContext{
+				RunAsNonRoot: ptr.To(true),
+				RunAsUser:    ptr.To(int64(1000)),
+			},
+
 			Containers: []corev1.Container{
 				{
 					Name:  "http-server",

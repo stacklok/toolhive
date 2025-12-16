@@ -320,7 +320,7 @@ thv run --transport sse --name my-server --audit-config audit.json my-image:late
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `component` | string | No | `"toolhive-api"` | Component name to include in audit logs |
-| `log_file` | string | No | stdout | Path to audit log file (creates parent dirs with 0755, file with 0600) |
+| `log_file` | string | No | stdout | Path to audit log file (file created with 0600 permissions; parent directory must exist) |
 | `event_types` | []string | No | all events | Whitelist of event types to audit (empty = audit all) |
 | `exclude_event_types` | []string | No | none | Blacklist of event types to exclude (takes precedence) |
 | `include_request_data` | bool | No | `false` | Include request body in audit logs |
@@ -362,7 +362,7 @@ Audit events are logged as structured JSON objects:
     "endpoint": "/messages",
     "method": "POST",
     "type": "tool",
-    "resource_id": "weather_tool"
+    "name": "weather_tool"
   },
   "metadata": {
     "extra": {
@@ -380,7 +380,7 @@ Audit events are logged as structured JSON objects:
 
 **Field Descriptions**:
 
-- `audit_id`: Unique identifier for the audit event (ULID format)
+- `audit_id`: Unique identifier for the audit event (UUID format)
 - `type`: Event type (one of the event types listed above)
 - `logged_at`: ISO 8601 timestamp when the event was logged
 - `outcome`: Result of the operation (`success`, `failure`, `denied`, `error`)
@@ -398,7 +398,7 @@ Audit events are logged as structured JSON objects:
   - `endpoint`: HTTP endpoint path
   - `method`: HTTP method
   - `type`: Target type (`tool`, `resource`, `prompt`, `endpoint`)
-  - `resource_id`: MCP resource identifier (tool name, resource URI, etc.)
+  - `name`: MCP resource identifier (tool name, resource URI, etc.)
 - `metadata.extra`: Additional operational metadata
   - `duration_ms`: Request duration in milliseconds
   - `transport`: Transport type (`sse`, `streamable-http`, `http`)

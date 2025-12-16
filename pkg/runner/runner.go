@@ -124,7 +124,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Populate default middlewares from old config fields if not already populated
 	if len(r.Config.MiddlewareConfigs) == 0 {
 		if err := PopulateMiddlewareConfigs(r.Config); err != nil {
-			return fmt.Errorf("failed to populate middleware configs: %v", err)
+			return fmt.Errorf("failed to populate middleware configs: %w", err)
 		}
 	}
 
@@ -151,7 +151,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Create the middleware instance using the factory function.
 		// The factory will add the middleware to the runner and handle any special configuration.
 		if err := factory(&middlewareConfig, r); err != nil {
-			return fmt.Errorf("failed to create middleware of type %s: %v", middlewareConfig.Type, err)
+			return fmt.Errorf("failed to create middleware of type %s: %w", middlewareConfig.Type, err)
 		}
 	}
 
@@ -184,7 +184,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		secretManager, err := secrets.CreateSecretProvider(providerType)
 		if err != nil {
-			return fmt.Errorf("error instantiating secret manager %v", err)
+			return fmt.Errorf("error instantiating secret manager %w", err)
 		}
 
 		// Process secrets (including RemoteAuthConfig.ClientSecret resolution)
@@ -220,7 +220,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.Config.TargetHost,
 		)
 		if err != nil {
-			return fmt.Errorf("failed to set up workload: %v", err)
+			return fmt.Errorf("failed to set up workload: %w", err)
 		}
 		setupResult = result
 
@@ -234,7 +234,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Create transport with options
 	transportHandler, err := transport.NewFactory().Create(transportConfig, transportOpts...)
 	if err != nil {
-		return fmt.Errorf("failed to create transport: %v", err)
+		return fmt.Errorf("failed to create transport: %w", err)
 	}
 
 	// For remote MCP servers, set the remote URL on HTTP transports
@@ -269,7 +269,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Start the transport (which also starts the container and monitoring)
 	logger.Infof("Starting %s transport for %s...", r.Config.Transport, r.Config.ContainerName)
 	if err := transportHandler.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start transport: %v", err)
+		return fmt.Errorf("failed to start transport: %w", err)
 	}
 
 	logger.Infof("MCP server %s started successfully", r.Config.ContainerName)
@@ -391,7 +391,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	// At this point, we can consider the workload started successfully.
 	if err := r.statusManager.SetWorkloadStatus(ctx, r.Config.BaseName, rt.WorkloadStatusRunning, ""); err != nil {
 		// If we can't set the status to `running` - treat it as a fatal error.
-		return fmt.Errorf("failed to set workload status: %v", err)
+		return fmt.Errorf("failed to set workload status: %w", err)
 	}
 
 	// Wait for either a signal or the done channel to be closed

@@ -235,7 +235,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	// Get authentication middleware for incoming requests
 	authMiddleware, authInfoHandler, err := auth.GetAuthenticationMiddleware(ctx, oidcConfig)
 	if err != nil {
-		return fmt.Errorf("failed to create authentication middleware: %v", err)
+		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
 	middlewares = append(middlewares, types.NamedMiddleware{
 		Name:     "auth",
@@ -263,7 +263,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		"",
 		middlewares...)
 	if err := proxy.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start proxy: %v", err)
+		return fmt.Errorf("failed to start proxy: %w", err)
 	}
 
 	logger.Infof("Transparent proxy started for server %s on port %d -> %s",
@@ -396,13 +396,13 @@ func addExternalTokenMiddleware(middlewares *[]types.NamedMiddleware, tokenSourc
 			// Create middleware using TokenSource - middleware handles token selection
 			tokenExchangeMiddleware, err = tokenexchange.CreateMiddlewareFromTokenSource(*tokenExchangeConfig, tokenSource)
 			if err != nil {
-				return fmt.Errorf("failed to create token exchange middleware: %v", err)
+				return fmt.Errorf("failed to create token exchange middleware: %w", err)
 			}
 		} else {
 			// Create middleware that extracts token from Authorization header
 			tokenExchangeMiddleware, err = tokenexchange.CreateMiddlewareFromHeader(*tokenExchangeConfig)
 			if err != nil {
-				return fmt.Errorf("failed to create token exchange middleware: %v", err)
+				return fmt.Errorf("failed to create token exchange middleware: %w", err)
 			}
 		}
 		*middlewares = append(*middlewares, types.NamedMiddleware{

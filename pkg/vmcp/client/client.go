@@ -453,7 +453,7 @@ func (h *httpBackendClient) CallTool(
 	})
 	if err != nil {
 		// Network/connection errors are operational errors
-		return nil, fmt.Errorf("%w: tool call failed on backend %s: %v", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
+		return nil, fmt.Errorf("%w: tool call failed on backend %s: %w", vmcp.ErrBackendUnavailable, target.WorkloadID, err)
 	}
 
 	// Check if the tool call returned an error (MCP domain error)

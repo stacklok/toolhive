@@ -112,8 +112,8 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
-		By("Waiting for VirtualMCPServer to stabilize")
-		time.Sleep(5 * time.Second)
+		By("Waiting for VirtualMCPServer to be healthy")
+		Expect(WaitForHealthy(vmcpNodePort, 30*time.Second, 3*time.Second)).To(Succeed(), "VirtualMCPServer should be healthy")
 	})
 
 	AfterAll(func() {
@@ -311,8 +311,8 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
-		By("Waiting for VirtualMCPServer to stabilize")
-		time.Sleep(5 * time.Second)
+		By("Waiting for VirtualMCPServer to be healthy")
+		Expect(WaitForHealthy(vmcpNodePort, 30*time.Second, 3*time.Second)).To(Succeed(), "VirtualMCPServer should be healthy")
 	})
 
 	AfterAll(func() {
@@ -500,8 +500,8 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
-		By("Waiting for VirtualMCPServer to stabilize")
-		time.Sleep(5 * time.Second)
+		By("Waiting for VirtualMCPServer to be healthy")
+		Expect(WaitForHealthy(vmcpNodePort, 30*time.Second, 3*time.Second)).To(Succeed(), "VirtualMCPServer should be healthy")
 	})
 
 	AfterAll(func() {
@@ -748,8 +748,8 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 
 		By("Getting NodePort for VirtualMCPServer")
 		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
-		By("Waiting for VirtualMCPServer to stabilize")
-		time.Sleep(5 * time.Second)
+		By("Waiting for VirtualMCPServer to be healthy")
+		Expect(WaitForHealthy(vmcpNodePort, 30*time.Second, 3*time.Second)).To(Succeed(), "VirtualMCPServer should be healthy")
 	})
 
 	AfterAll(func() {

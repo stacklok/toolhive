@@ -23,7 +23,7 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 		vmcpServerName  = "test-vmcp-composite-seq"
 		backendName     = "yardstick-composite-seq"
 		timeout         = 3 * time.Minute
-		pollingInterval = 1 * time.Second
+		pollingInterval = 3 * time.Second // Increased from 1s to reduce K8s API pressure
 		vmcpNodePort    int32
 
 		// Composite tool names

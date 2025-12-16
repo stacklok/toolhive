@@ -23,7 +23,7 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 		backend1Name    = "yardstick-filter-a"
 		backend2Name    = "yardstick-filter-b"
 		timeout         = 3 * time.Minute
-		pollingInterval = 1 * time.Second
+		pollingInterval = 3 * time.Second // Increased from 1s to reduce K8s API pressure
 		vmcpNodePort    int32
 	)
 

@@ -21,7 +21,7 @@ var _ = Describe("VirtualMCPServer Tool Overrides", Ordered, func() {
 		vmcpServerName  = "test-vmcp-overrides"
 		backendName     = "yardstick-override"
 		timeout         = 3 * time.Minute
-		pollingInterval = 1 * time.Second
+		pollingInterval = 3 * time.Second // Increased from 1s to reduce K8s API pressure
 		vmcpNodePort    int32
 
 		// The original and renamed tool names

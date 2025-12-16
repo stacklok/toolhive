@@ -89,14 +89,14 @@ Define workflow steps that execute tools:
 spec:
   steps:
     - id: validate_deployment
-      type: tool_call
+      type: tool
       tool: kubectl.validate
       arguments:
         namespace: "{{.params.environment}}"
         manifest: "deployment.yaml"
 
     - id: apply_deployment
-      type: tool_call
+      type: tool
       tool: kubectl.apply
       arguments:
         namespace: "{{.params.environment}}"
@@ -105,7 +105,7 @@ spec:
         - validate_deployment
 
     - id: verify_health
-      type: tool_call
+      type: tool
       tool: kubectl.wait
       arguments:
         resource: "deployment/myapp"
@@ -117,12 +117,12 @@ spec:
 
 **Step Types**:
 
-#### tool_call (Phase 1)
+#### tool (Phase 1)
 Execute a backend tool. The `tool` field must be in format `workload.tool_name`.
 
 ```yaml
 - id: deploy
-  type: tool_call
+  type: tool
   tool: kubectl.apply
   arguments:
     manifest: "{{.params.manifest}}"
@@ -149,17 +149,17 @@ Define execution order using `dependsOn`:
 spec:
   steps:
     - id: step1
-      type: tool_call
+      type: tool
       tool: workload.tool_a
 
     - id: step2
-      type: tool_call
+      type: tool
       tool: workload.tool_b
       dependsOn:
         - step1
 
     - id: step3
-      type: tool_call
+      type: tool
       tool: workload.tool_c
       dependsOn:
         - step1
@@ -207,7 +207,7 @@ When a step may be skipped (due to a condition) or may fail with `continue` erro
 
 ```yaml
 - id: optional_enrichment
-  type: tool_call
+  type: tool
   tool: enrichment.service
   condition: "{{.params.enable_enrichment}}"
   arguments:
@@ -217,7 +217,7 @@ When a step may be skipped (due to a condition) or may fail with `continue` erro
     text: "no enrichment performed"
 
 - id: use_result
-  type: tool_call
+  type: tool
   tool: processor.handle
   dependsOn:
     - optional_enrichment
@@ -242,7 +242,7 @@ When a step may be skipped (due to a condition) or may fail with `continue` erro
 
 ```yaml
 - id: external_lookup
-  type: tool_call
+  type: tool
   tool: external.api
   onError:
     action: continue  # Continue workflow even if this fails
@@ -250,7 +250,7 @@ When a step may be skipped (due to a condition) or may fail with `continue` erro
     text: "{\"status\": \"unavailable\", \"data\": null}"
 
 - id: process_result
-  type: tool_call
+  type: tool
   tool: internal.process
   dependsOn:
     - external_lookup
@@ -413,7 +413,7 @@ spec:
 
   steps:
     - id: apply
-      type: tool_call
+      type: tool
       tool: kubectl.apply
       arguments:
         namespace: "{{.params.environment}}"
@@ -452,14 +452,14 @@ spec:
 
   steps:
     - id: validate_config
-      type: tool_call
+      type: tool
       tool: kubectl.validate
       arguments:
         namespace: "{{.params.environment}}"
         manifest: "deployment.yaml"
 
     - id: apply_deployment
-      type: tool_call
+      type: tool
       tool: kubectl.apply
       arguments:
         namespace: "{{.params.environment}}"
@@ -472,7 +472,7 @@ spec:
         maxRetries: 3
 
     - id: wait_for_ready
-      type: tool_call
+      type: tool
       tool: kubectl.wait
       arguments:
         namespace: "{{.params.environment}}"
@@ -483,7 +483,7 @@ spec:
         - apply_deployment
 
     - id: notify_success
-      type: tool_call
+      type: tool
       tool: slack.send
       arguments:
         channel: "#deployments"
@@ -528,7 +528,7 @@ spec:
 
   steps:
     - id: get_pod_status
-      type: tool_call
+      type: tool
       tool: kubectl.get
       arguments:
         resource: "pods"
@@ -536,7 +536,7 @@ spec:
         selector: "app={{.params.service}}"
 
     - id: get_recent_logs
-      type: tool_call
+      type: tool
       tool: kubectl.logs
       arguments:
         namespace: "{{.params.namespace}}"
@@ -546,7 +546,7 @@ spec:
         - get_pod_status
 
     - id: check_recent_events
-      type: tool_call
+      type: tool
       tool: kubectl.events
       arguments:
         namespace: "{{.params.namespace}}"
@@ -555,7 +555,7 @@ spec:
         - get_pod_status
 
     - id: query_metrics
-      type: tool_call
+      type: tool
       tool: prometheus.query
       arguments:
         query: "rate(http_requests_total{service=\"{{.params.service}}\"}[5m])"
@@ -564,7 +564,7 @@ spec:
         - get_pod_status
 
     - id: create_report
-      type: tool_call
+      type: tool
       tool: jira.create_issue
       arguments:
         project: "SRE"
@@ -614,13 +614,13 @@ spec:
 
   steps:
     - id: validate_image
-      type: tool_call
+      type: tool
       tool: registry.inspect
       arguments:
         image: "{{.params.image}}"
 
     - id: deploy_canary
-      type: tool_call
+      type: tool
       tool: kubectl.patch
       arguments:
         resource: "deployment/{{.params.service}}-canary"
@@ -631,7 +631,7 @@ spec:
       timeout: 5m
 
     - id: wait_canary_ready
-      type: tool_call
+      type: tool
       tool: kubectl.wait
       arguments:
         resource: "deployment/{{.params.service}}-canary"
@@ -641,7 +641,7 @@ spec:
         - deploy_canary
 
     - id: monitor_canary
-      type: tool_call
+      type: tool
       tool: prometheus.query
       arguments:
         query: "rate(http_requests_total{deployment=\"{{.params.service}}-canary\",status=\"200\"}[5m])"
@@ -651,7 +651,7 @@ spec:
       timeout: 10m
 
     - id: validate_metrics
-      type: tool_call
+      type: tool
       tool: metrics.evaluate
       arguments:
         success_rate: "{{.params.success_threshold}}"
@@ -660,7 +660,7 @@ spec:
         - monitor_canary
 
     - id: promote_to_production
-      type: tool_call
+      type: tool
       tool: kubectl.patch
       arguments:
         resource: "deployment/{{.params.service}}"
@@ -671,7 +671,7 @@ spec:
         action: abort
 
     - id: notify_success
-      type: tool_call
+      type: tool
       tool: slack.send
       arguments:
         channel: "#deployments"
@@ -769,7 +769,7 @@ The CRD includes comprehensive validation:
 
 ### Step Validation
 - Unique step IDs
-- Valid step types (`tool_call`, `elicitation`)
+- Valid step types (`tool`, `elicitation`)
 - Tool references in format `workload.tool_name`
 - Valid Go template syntax in arguments
 - No circular dependencies

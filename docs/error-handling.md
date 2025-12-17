@@ -42,13 +42,13 @@ return fmt.Errorf("failed to start container: %w", err)
 return fmt.Errorf("workload %s not accessible: %w", name, runtime.ErrWorkloadNotFound)
 ```
 
-Don't use `errors.Wrap` unless you really want a stack trace. Excessively capturing stack traces can result in challenging to read errors and unecessary memory use if errors occur frequently.
+Don't use `errors.Wrap` (from github.com/pkg/error) unless you really want a stack trace. Excessively capturing stack traces can result in challenging-to-read errors and unnecessary memory use if errors occur frequently.
 
 ### When should I wrap an error?
 
 It is NOT necessary to wrap all errors, and it's best if we don't. Wrapping errors excessively
 can lead to hard to understand errors. Typically, one would wrap an error to better indicate 
-a particular step is failing. Consider using `errors.WithStack` or `errors.Wrap` if you find yourself needing to wrap errors many times in order to debug.
+which particular step is failing. Consider using `errors.WithStack` or `errors.Wrap` if you find yourself needing to wrap errors many times in order to debug.
 
 
 

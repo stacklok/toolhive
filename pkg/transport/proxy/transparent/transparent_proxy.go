@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -69,8 +70,8 @@ type TransparentProxy struct {
 	// Sessions for tracking state
 	sessionManager *session.Manager
 
-	// If mcp server has been initialized
-	IsServerInitialized bool
+	// If mcp server has been initialized (atomic access)
+	isServerInitialized atomic.Bool
 
 	// Listener for the HTTP server
 	listener net.Listener
@@ -128,12 +129,14 @@ type tracingTransport struct {
 }
 
 func (p *TransparentProxy) setServerInitialized() {
-	if !p.IsServerInitialized {
-		p.mutex.Lock()
-		p.IsServerInitialized = true
-		p.mutex.Unlock()
+	if p.isServerInitialized.CompareAndSwap(false, true) {
 		logger.Infof("Server was initialized successfully for %s", p.targetURI)
 	}
+}
+
+// serverInitialized returns whether the server has been initialized (thread-safe)
+func (p *TransparentProxy) serverInitialized() bool {
+	return p.isServerInitialized.Load()
 }
 
 func (t *tracingTransport) forward(req *http.Request) (*http.Response, error) {
@@ -191,7 +194,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			return resp, nil
 		}
 		// status was ok and we saw an initialize call
-		if sawInitialize && !t.p.IsServerInitialized {
+		if sawInitialize && !t.p.serverInitialized() {
 			t.p.setServerInitialized()
 			return resp, nil
 		}
@@ -422,7 +425,7 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			return
 		case <-ticker.C:
 			// Perform health check only if mcp server has been initialized
-			if p.IsServerInitialized {
+			if p.serverInitialized() {
 				alive := p.healthChecker.CheckHealth(parentCtx)
 				if alive.Status != healthcheck.StatusHealthy {
 					logger.Infof("Health check failed for %s; initiating proxy shutdown", p.targetURI)

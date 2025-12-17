@@ -8,10 +8,12 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
@@ -61,7 +63,7 @@ func TestStreamingSessionIDDetection(t *testing.T) {
 	assert.Contains(t, bodyLines, "data: sessionId=ABC123")
 
 	// side-effect: proxy should have seen session
-	assert.True(t, proxy.IsServerInitialized, "server should have been initialized")
+	assert.True(t, proxy.serverInitialized(), "server should have been initialized")
 	_, ok := proxy.sessionManager.Get("ABC123")
 	assert.True(t, ok, "sessionManager should have stored ABC123")
 }
@@ -100,7 +102,7 @@ func TestNoSessionIDInNonSSE(t *testing.T) {
 
 	proxy.ServeHTTP(rec, req)
 
-	assert.False(t, p.IsServerInitialized, "server should not be initialized for application/json")
+	assert.False(t, p.serverInitialized(), "server should not be initialized for application/json")
 	_, ok := p.sessionManager.Get("XYZ789")
 	assert.False(t, ok, "no session should be added")
 }
@@ -126,7 +128,7 @@ func TestHeaderBasedSessionInitialization(t *testing.T) {
 	req := httptest.NewRequest("GET", target.URL, nil)
 	proxy.ServeHTTP(rec, req)
 
-	assert.True(t, p.IsServerInitialized, "server should not be initialized for application/json")
+	assert.True(t, p.serverInitialized(), "server should not be initialized for application/json")
 	_, ok := p.sessionManager.Get("XYZ789")
 	assert.True(t, ok, "no session should be added")
 }
@@ -394,4 +396,489 @@ func TestTransparentProxy_StopWithoutStart(t *testing.T) {
 	// This may return an error or succeed depending on implementation
 	// The key is it shouldn't panic
 	_ = err
+}
+
+// TestTransparentProxy_RemoteServerFailure_5xxStatus tests that 5xx status codes
+// trigger health check failure and callback invocation
+func TestTransparentProxy_RemoteServerFailure_5xxStatus(t *testing.T) {
+	t.Parallel()
+
+	callbackInvoked := false
+	var mu sync.Mutex
+
+	callback := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		callbackInvoked = true
+	}
+
+	// Create mock server that returns 500 Internal Server Error
+	failingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("Internal Server Error"))
+	}))
+	defer failingServer.Close()
+
+	proxy := NewTransparentProxy(
+		"127.0.0.1",
+		0,
+		failingServer.URL,
+		nil,
+		nil,
+		true, // enableHealthCheck
+		true, // isRemote
+		"sse",
+		callback,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+
+	// Mark server as initialized so health checks will run
+	proxy.setServerInitialized()
+
+	// Wait for health check cycle (10s ticker + 1s buffer)
+	time.Sleep(11 * time.Second)
+
+	mu.Lock()
+	invoked := callbackInvoked
+	mu.Unlock()
+
+	assert.True(t, invoked, "Callback should be invoked for 5xx status codes")
+
+	running, _ := proxy.IsRunning(ctx)
+	assert.False(t, running, "Proxy should stop after health check failure")
+
+	_ = proxy.Stop(ctx)
+}
+
+// TestTransparentProxy_RemoteServerFailure_ConnectionRefused tests that connection
+// failures trigger health check failure
+func TestTransparentProxy_RemoteServerFailure_ConnectionRefused(t *testing.T) {
+	t.Parallel()
+
+	callbackInvoked := false
+	var mu sync.Mutex
+
+	callback := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		callbackInvoked = true
+	}
+
+	// Create a server, get its URL, then close it immediately
+	// This simulates a server that was running but then stopped
+	tempServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Extract the URL before closing
+	serverURL := tempServer.URL
+	tempServer.Close() // Close immediately - connection will be refused
+
+	proxy := NewTransparentProxy(
+		"127.0.0.1",
+		0,
+		serverURL, // This URL will refuse connections
+		nil,
+		nil,
+		true,
+		true,
+		"sse",
+		callback,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+
+	proxy.setServerInitialized()
+
+	// Wait for health check
+	time.Sleep(11 * time.Second)
+
+	mu.Lock()
+	invoked := callbackInvoked
+	mu.Unlock()
+
+	assert.True(t, invoked, "Callback should be invoked when connection is refused")
+
+	running, _ := proxy.IsRunning(ctx)
+	assert.False(t, running, "Proxy should stop after connection failure")
+
+	_ = proxy.Stop(ctx)
+}
+
+// TestTransparentProxy_RemoteServerFailure_Timeout tests that timeouts
+// trigger health check failure
+func TestTransparentProxy_RemoteServerFailure_Timeout(t *testing.T) {
+	t.Parallel()
+
+	callbackInvoked := false
+	var mu sync.Mutex
+
+	callback := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		callbackInvoked = true
+	}
+
+	// Create server that hangs (simulates timeout)
+	// Note: The pinger has a 5-second timeout, so we need to hang longer
+	// Use a channel to allow graceful shutdown
+	serverDone := make(chan struct{})
+	hangingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Sleep longer than the pinger timeout (5 seconds)
+		// But use a select to allow cancellation
+		select {
+		case <-time.After(6 * time.Second):
+			w.WriteHeader(http.StatusOK)
+		case <-serverDone:
+			return
+		}
+	}))
+	defer func() {
+		close(serverDone)
+		hangingServer.Close()
+	}()
+
+	proxy := NewTransparentProxy(
+		"127.0.0.1",
+		0,
+		hangingServer.URL,
+		nil,
+		nil,
+		true,
+		true,
+		"sse",
+		callback,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+
+	proxy.setServerInitialized()
+
+	// Wait for health check cycle (10s ticker) + timeout duration (5s) + buffer
+	// The health check runs at t=10s, timeout occurs at t=15s, so we need to wait at least 16s
+	time.Sleep(16 * time.Second)
+
+	mu.Lock()
+	invoked := callbackInvoked
+	mu.Unlock()
+
+	assert.True(t, invoked, "Callback should be invoked on timeout")
+
+	running, _ := proxy.IsRunning(ctx)
+	assert.False(t, running, "Proxy should stop after timeout")
+
+	_ = proxy.Stop(ctx)
+}
+
+// TestTransparentProxy_RemoteServerFailure_BecomesUnavailable tests that a server
+// that starts healthy but becomes unavailable triggers the callback
+func TestTransparentProxy_RemoteServerFailure_BecomesUnavailable(t *testing.T) {
+	t.Parallel()
+
+	callbackInvoked := false
+	var mu sync.Mutex
+
+	callback := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		callbackInvoked = true
+	}
+
+	// Create server that starts healthy
+	healthyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	}))
+
+	proxy := NewTransparentProxy(
+		"127.0.0.1",
+		0,
+		healthyServer.URL,
+		nil,
+		nil,
+		true,
+		true,
+		"sse",
+		callback,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+
+	proxy.setServerInitialized()
+
+	// Wait for first health check (should succeed)
+	time.Sleep(11 * time.Second)
+
+	mu.Lock()
+	invokedBeforeFailure := callbackInvoked
+	mu.Unlock()
+
+	assert.False(t, invokedBeforeFailure, "Callback should NOT be invoked while server is healthy")
+
+	// Now close the server to simulate it becoming unavailable
+	healthyServer.Close()
+
+	// Wait for next health check cycle (need to wait for the full cycle to complete)
+	// The health check runs every 10 seconds, so we wait 12 seconds to ensure it completes
+	time.Sleep(12 * time.Second)
+
+	mu.Lock()
+	invokedAfterFailure := callbackInvoked
+	mu.Unlock()
+
+	assert.True(t, invokedAfterFailure, "Callback should be invoked after server becomes unavailable")
+
+	running, _ := proxy.IsRunning(ctx)
+	assert.False(t, running, "Proxy should stop after server becomes unavailable")
+
+	_ = proxy.Stop(ctx)
+}
+
+// TestTransparentProxy_RemoteServerFailure_Different5xxCodes tests various 5xx status codes
+func TestTransparentProxy_RemoteServerFailure_Different5xxCodes(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name       string
+		statusCode int
+	}{
+		{"500 Internal Server Error", http.StatusInternalServerError},
+		{"502 Bad Gateway", http.StatusBadGateway},
+		{"503 Service Unavailable", http.StatusServiceUnavailable},
+		{"504 Gateway Timeout", http.StatusGatewayTimeout},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			callbackInvoked := false
+			var mu sync.Mutex
+
+			callback := func() {
+				mu.Lock()
+				defer mu.Unlock()
+				callbackInvoked = true
+			}
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.statusCode)
+			}))
+			defer server.Close()
+
+			proxy := NewTransparentProxy(
+				"127.0.0.1",
+				0,
+				server.URL,
+				nil,
+				nil,
+				true,
+				true,
+				"sse",
+				callback,
+			)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+
+			err := proxy.Start(ctx)
+			require.NoError(t, err)
+
+			proxy.setServerInitialized()
+			time.Sleep(11 * time.Second)
+
+			mu.Lock()
+			invoked := callbackInvoked
+			mu.Unlock()
+
+			assert.True(t, invoked, "Callback should be invoked for status code %d", tc.statusCode)
+			_ = proxy.Stop(ctx)
+		})
+	}
+}
+
+// TestTransparentProxy_RemoteServerHealthy_4xxCodes tests that 4xx codes
+// are considered healthy (per the pinger logic)
+func TestTransparentProxy_RemoteServerHealthy_4xxCodes(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name       string
+		statusCode int
+	}{
+		{"401 Unauthorized", http.StatusUnauthorized},
+		{"403 Forbidden", http.StatusForbidden},
+		{"404 Not Found", http.StatusNotFound},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			callbackInvoked := false
+			var mu sync.Mutex
+
+			callback := func() {
+				mu.Lock()
+				defer mu.Unlock()
+				callbackInvoked = true
+			}
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.statusCode)
+			}))
+			defer server.Close()
+
+			proxy := NewTransparentProxy(
+				"127.0.0.1",
+				0,
+				server.URL,
+				nil,
+				nil,
+				true,
+				true,
+				"sse",
+				callback,
+			)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			err := proxy.Start(ctx)
+			require.NoError(t, err)
+
+			proxy.setServerInitialized()
+			time.Sleep(11 * time.Second)
+
+			mu.Lock()
+			invoked := callbackInvoked
+			mu.Unlock()
+
+			// 4xx codes should NOT trigger callback (they're considered healthy)
+			assert.False(t, invoked, "Callback should NOT be invoked for status code %d (4xx is healthy)", tc.statusCode)
+
+			running, _ := proxy.IsRunning(ctx)
+			assert.True(t, running, "Proxy should continue running for 4xx status codes")
+
+			_ = proxy.Stop(ctx)
+		})
+	}
+}
+
+// TestTransparentProxy_HealthCheckNotRunBeforeInitialization tests that health checks
+// are skipped until the server is initialized
+func TestTransparentProxy_HealthCheckNotRunBeforeInitialization(t *testing.T) {
+	t.Parallel()
+
+	callbackInvoked := false
+	var mu sync.Mutex
+
+	callback := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		callbackInvoked = true
+	}
+
+	// Create a failing server
+	failingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer failingServer.Close()
+
+	proxy := NewTransparentProxy(
+		"127.0.0.1",
+		0,
+		failingServer.URL,
+		nil,
+		nil,
+		true,
+		true,
+		"sse",
+		callback,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+
+	// Do NOT mark server as initialized
+	// proxy.setServerInitialized() // Intentionally commented out
+
+	// Wait for health check cycle
+	time.Sleep(11 * time.Second)
+
+	mu.Lock()
+	invoked := callbackInvoked
+	mu.Unlock()
+
+	// Callback should NOT be invoked because server is not initialized
+	assert.False(t, invoked, "Callback should NOT be invoked before server initialization")
+
+	// Proxy should still be running
+	running, _ := proxy.IsRunning(ctx)
+	assert.True(t, running, "Proxy should continue running when server is not initialized")
+
+	_ = proxy.Stop(ctx)
+}
+
+// TestTransparentProxy_HealthCheckFailureWithNilCallback tests that proxy stops
+// gracefully even when callback is nil
+func TestTransparentProxy_HealthCheckFailureWithNilCallback(t *testing.T) {
+	t.Parallel()
+
+	// Create a failing server
+	failingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer failingServer.Close()
+
+	proxy := NewTransparentProxy(
+		"127.0.0.1",
+		0,
+		failingServer.URL,
+		nil,
+		nil,
+		true,
+		true,
+		"sse",
+		nil, // nil callback
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	err := proxy.Start(ctx)
+	require.NoError(t, err)
+
+	proxy.setServerInitialized()
+
+	// Wait for health check cycle
+	time.Sleep(11 * time.Second)
+
+	// Proxy should stop even without callback
+	running, _ := proxy.IsRunning(ctx)
+	assert.False(t, running, "Proxy should stop after health check failure even with nil callback")
+
+	_ = proxy.Stop(ctx)
 }

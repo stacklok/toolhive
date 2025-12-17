@@ -445,86 +445,34 @@ func setupRemoteProxyTest(t *testing.T, serverURL string, callback types.HealthC
 	return proxy, ctx, cancel
 }
 
-// TestTransparentProxy_RemoteServerFailure tests various remote server failure scenarios
-func TestTransparentProxy_RemoteServerFailure(t *testing.T) {
+// TestTransparentProxy_RemoteServerFailure_ConnectionRefused tests that connection
+// failures (network-level, not HTTP status codes) trigger health check failure
+func TestTransparentProxy_RemoteServerFailure_ConnectionRefused(t *testing.T) {
 	t.Parallel()
 
-	testCases := []struct {
-		name           string
-		setupServer    func(t *testing.T) (string, func()) // returns serverURL and cleanup func
-		waitDuration   time.Duration
-		expectCallback bool
-		expectRunning  bool
-		description    string
-	}{
-		{
-			name: "5xx status code triggers failure",
-			setupServer: func(t *testing.T) (string, func()) {
-				t.Helper()
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					w.WriteHeader(http.StatusInternalServerError)
-				}))
-				return server.URL, server.Close
-			},
-			expectCallback: true,
-			expectRunning:  false,
-			description:    "5xx status codes should trigger callback and stop proxy",
-		},
-		{
-			name: "connection refused triggers failure",
-			setupServer: func(t *testing.T) (string, func()) {
-				t.Helper()
-				// Create a server, get its URL, then close it immediately
-				tempServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					w.WriteHeader(http.StatusOK)
-				}))
-				serverURL := tempServer.URL
-				tempServer.Close()          // Close immediately - connection will be refused
-				return serverURL, func() {} // No cleanup needed
-			},
-			expectCallback: true,
-			expectRunning:  false,
-			description:    "Connection refused should trigger callback and stop proxy",
-		},
-		{
-			name: "4xx status code does not trigger failure",
-			setupServer: func(t *testing.T) (string, func()) {
-				t.Helper()
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					w.WriteHeader(http.StatusUnauthorized)
-				}))
-				return server.URL, server.Close
-			},
-			expectCallback: false,
-			expectRunning:  true,
-			description:    "4xx status codes should not trigger callback (considered healthy)",
-		},
-	}
+	tracker, callback := newCallbackTracker()
 
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	// Create a server, get its URL, then close it immediately
+	// This simulates a server that was running but then stopped
+	tempServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	serverURL := tempServer.URL
+	tempServer.Close() // Close immediately - connection will be refused
 
-			tracker, callback := newCallbackTracker()
-			serverURL, cleanup := tc.setupServer(t)
-			defer cleanup()
+	proxy, ctx, cancel := setupRemoteProxyTest(t, serverURL, callback)
+	defer cancel()
+	defer func() { _ = proxy.Stop(ctx) }()
 
-			proxy, ctx, cancel := setupRemoteProxyTest(t, serverURL, callback)
-			defer cancel()
-			defer func() { _ = proxy.Stop(ctx) }()
+	proxy.setServerInitialized()
 
-			proxy.setServerInitialized()
+	// Health check runs every 10 seconds, wait for one cycle + buffer
+	time.Sleep(11 * time.Second)
 
-			// Health check runs every 10 seconds, wait for one cycle + buffer
-			time.Sleep(11 * time.Second)
+	assert.True(t, tracker.isInvoked(), "Callback should be invoked when connection is refused")
 
-			assert.Equal(t, tc.expectCallback, tracker.isInvoked(), tc.description)
-
-			running, _ := proxy.IsRunning(ctx)
-			assert.Equal(t, tc.expectRunning, running, "Proxy running state should match expectation")
-		})
-	}
+	running, _ := proxy.IsRunning(ctx)
+	assert.False(t, running, "Proxy should stop after connection failure")
 }
 
 // TestTransparentProxy_RemoteServerFailure_Timeout tests that timeouts
@@ -603,18 +551,27 @@ func TestTransparentProxy_RemoteServerFailure_BecomesUnavailable(t *testing.T) {
 	assert.False(t, running, "Proxy should stop after server becomes unavailable")
 }
 
-// TestTransparentProxy_RemoteServerFailure_5xxCodes tests various 5xx status codes
-func TestTransparentProxy_RemoteServerFailure_5xxCodes(t *testing.T) {
+// TestTransparentProxy_RemoteServerStatusCodes tests various HTTP status codes
+// and verifies that 5xx codes trigger failures while 4xx codes are considered healthy
+func TestTransparentProxy_RemoteServerStatusCodes(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
-		name       string
-		statusCode int
+		name           string
+		statusCode     int
+		expectCallback bool
+		expectRunning  bool
+		description    string
 	}{
-		{"500 Internal Server Error", http.StatusInternalServerError},
-		{"502 Bad Gateway", http.StatusBadGateway},
-		{"503 Service Unavailable", http.StatusServiceUnavailable},
-		{"504 Gateway Timeout", http.StatusGatewayTimeout},
+		// 5xx codes should trigger callback and stop proxy
+		{"500 Internal Server Error", http.StatusInternalServerError, true, false, "5xx codes should trigger callback"},
+		{"502 Bad Gateway", http.StatusBadGateway, true, false, "5xx codes should trigger callback"},
+		{"503 Service Unavailable", http.StatusServiceUnavailable, true, false, "5xx codes should trigger callback"},
+		{"504 Gateway Timeout", http.StatusGatewayTimeout, true, false, "5xx codes should trigger callback"},
+		// 4xx codes should NOT trigger callback (considered healthy)
+		{"401 Unauthorized", http.StatusUnauthorized, false, true, "4xx codes should not trigger callback"},
+		{"403 Forbidden", http.StatusForbidden, false, true, "4xx codes should not trigger callback"},
+		{"404 Not Found", http.StatusNotFound, false, true, "4xx codes should not trigger callback"},
 	}
 
 	for _, tc := range testCases {
@@ -638,54 +595,10 @@ func TestTransparentProxy_RemoteServerFailure_5xxCodes(t *testing.T) {
 			// Health check runs every 10 seconds, wait for one cycle + buffer
 			time.Sleep(11 * time.Second)
 
-			assert.True(t, tracker.isInvoked(), "Callback should be invoked for status code %d", tc.statusCode)
+			assert.Equal(t, tc.expectCallback, tracker.isInvoked(), "%s: %s", tc.name, tc.description)
 
 			running, _ := proxy.IsRunning(ctx)
-			assert.False(t, running, "Proxy should stop after health check failure")
-		})
-	}
-}
-
-// TestTransparentProxy_RemoteServerHealthy_4xxCodes tests that 4xx codes
-// are considered healthy (per the pinger logic)
-func TestTransparentProxy_RemoteServerHealthy_4xxCodes(t *testing.T) {
-	t.Parallel()
-
-	testCases := []struct {
-		name       string
-		statusCode int
-	}{
-		{"401 Unauthorized", http.StatusUnauthorized},
-		{"403 Forbidden", http.StatusForbidden},
-		{"404 Not Found", http.StatusNotFound},
-	}
-
-	for _, tc := range testCases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			tracker, callback := newCallbackTracker()
-
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(tc.statusCode)
-			}))
-			defer server.Close()
-
-			proxy, ctx, cancel := setupRemoteProxyTest(t, server.URL, callback)
-			defer cancel()
-			defer func() { _ = proxy.Stop(ctx) }()
-
-			proxy.setServerInitialized()
-
-			// Health check runs every 10 seconds, wait for one cycle + buffer
-			time.Sleep(11 * time.Second)
-
-			// 4xx codes should NOT trigger callback (they're considered healthy)
-			assert.False(t, tracker.isInvoked(), "Callback should NOT be invoked for status code %d (4xx is healthy)", tc.statusCode)
-
-			running, _ := proxy.IsRunning(ctx)
-			assert.True(t, running, "Proxy should continue running for 4xx status codes")
+			assert.Equal(t, tc.expectRunning, running, "%s: Proxy running state should match expectation", tc.name)
 		})
 	}
 }

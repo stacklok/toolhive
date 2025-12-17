@@ -320,7 +320,7 @@ thv run --transport sse --name my-server --audit-config audit.json my-image:late
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `component` | string | No | `"toolhive-api"` | Component name to include in audit logs |
-| `log_file` | string | No | stdout | Path to audit log file (creates parent dirs with 0755, file with 0600) |
+| `log_file` | string | No | stdout | Path to audit log file (file created with 0600 permissions; parent directory must exist) |
 | `event_types` | []string | No | all events | Whitelist of event types to audit (empty = audit all) |
 | `exclude_event_types` | []string | No | none | Blacklist of event types to exclude (takes precedence) |
 | `include_request_data` | bool | No | `false` | Include request body in audit logs |
@@ -362,7 +362,7 @@ Audit events are logged as structured JSON objects:
     "endpoint": "/messages",
     "method": "POST",
     "type": "tool",
-    "resource_id": "weather_tool"
+    "name": "weather_tool"
   },
   "metadata": {
     "extra": {
@@ -380,7 +380,7 @@ Audit events are logged as structured JSON objects:
 
 **Field Descriptions**:
 
-- `audit_id`: Unique identifier for the audit event (ULID format)
+- `audit_id`: Unique identifier for the audit event (UUID format)
 - `type`: Event type (one of the event types listed above)
 - `logged_at`: ISO 8601 timestamp when the event was logged
 - `outcome`: Result of the operation (`success`, `failure`, `denied`, `error`)
@@ -398,7 +398,7 @@ Audit events are logged as structured JSON objects:
   - `endpoint`: HTTP endpoint path
   - `method`: HTTP method
   - `type`: Target type (`tool`, `resource`, `prompt`, `endpoint`)
-  - `resource_id`: MCP resource identifier (tool name, resource URI, etc.)
+  - `name`: MCP resource identifier (tool name, resource URI, etc.)
 - `metadata.extra`: Additional operational metadata
   - `duration_ms`: Request duration in milliseconds
   - `transport`: Transport type (`sse`, `streamable-http`, `http`)
@@ -406,100 +406,6 @@ Audit events are logged as structured JSON objects:
 - `data`: Captured request/response data (only present if enabled)
   - `request`: Request body (parsed as JSON if possible, otherwise string)
   - `response`: Response body (parsed as JSON if possible, otherwise string)
-
-#### Virtual MCP Server Audit Logging
-
-The Virtual MCP Server (vMCP) supports comprehensive audit logging with file-based output, making it ideal for compliance and security monitoring in Kubernetes environments.
-
-**Kubernetes Configuration Example**:
-
-```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: VirtualMCPServer
-metadata:
-  name: my-vmcp
-spec:
-  groupRef:
-    name: my-group
-  incomingAuth:
-    type: anonymous
-  audit:
-    component: "vmcp-production"
-    logFile: "/var/log/audit/vmcp-audit.log"
-    includeRequestData: true
-    includeResponseData: true
-    maxDataSize: 8192
-    eventTypes:
-      - mcp_tool_call
-      - mcp_resource_read
-    excludeEventTypes:
-      - mcp_ping
-```
-
-**Volume Mounting for Log Persistence**:
-
-To persist audit logs outside the container, mount a volume:
-
-```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
-kind: VirtualMCPServer
-metadata:
-  name: my-vmcp
-spec:
-  groupRef:
-    name: my-group
-  audit:
-    logFile: "/var/log/audit/vmcp-audit.log"
-  podTemplate:
-    spec:
-      volumes:
-        - name: audit-logs
-          persistentVolumeClaim:
-            claimName: vmcp-audit-logs
-      containers:
-        - name: vmcp-server
-          volumeMounts:
-            - name: audit-logs
-              mountPath: /var/log/audit
-```
-
-**Log Format**: vMCP audit logs use newline-delimited JSON (NDJSON), with one JSON object per line:
-
-```ndjson
-{"audit_id":"01be8d47...","type":"mcp_tool_call","logged_at":"2025-12-15T10:38:32Z",...}
-{"audit_id":"02cf9e58...","type":"mcp_resource_read","logged_at":"2025-12-15T10:38:35Z",...}
-{"audit_id":"03dfa069...","type":"mcp_tool_call","logged_at":"2025-12-15T10:38:40Z",...}
-```
-
-This format is ideal for:
-- Log aggregation tools (Fluentd, Logstash, Vector)
-- SIEM systems (Splunk, Elastic Security, Datadog)
-- Stream processing (Apache Kafka, Amazon Kinesis)
-- Command-line analysis with `jq`
-
-**Example: Analyzing Audit Logs**:
-
-```bash
-# Count events by type
-jq -r '.type' vmcp-audit.log | sort | uniq -c
-
-# Find failed tool calls
-jq 'select(.type=="mcp_tool_call" and .outcome!="success")' vmcp-audit.log
-
-# Extract tool usage statistics
-jq -r 'select(.type=="mcp_tool_call") | .target.resource_id' vmcp-audit.log | sort | uniq -c | sort -rn
-
-# Get average response time for tool calls
-jq -r 'select(.type=="mcp_tool_call") | .metadata.extra.duration_ms' vmcp-audit.log | awk '{sum+=$1; count++} END {print sum/count}'
-```
-
-**Security Considerations**:
-
-1. **File Permissions**: Audit log files are created with `0600` permissions (owner read/write only)
-2. **Directory Permissions**: Parent directories are created with `0755` permissions if they don't exist
-3. **Sensitive Data**: Request/response data may contain sensitive information - enable `include_request_data` and `include_response_data` only when necessary
-4. **Log Rotation**: Implement log rotation using external tools (logrotate, Kubernetes CronJob) to prevent disk space exhaustion
-5. **Access Control**: Restrict access to audit logs using Kubernetes RBAC and network policies
 
 #### CLI Usage
 

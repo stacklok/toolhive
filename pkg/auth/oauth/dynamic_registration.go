@@ -21,6 +21,9 @@ const ToolHiveMCPClientName = "ToolHive MCP Client"
 // AuthorizationCode is the grant type for authorization code
 const AuthorizationCode = "authorization_code"
 
+// RefreshToken is the grant type for refresh token
+const RefreshToken = "refresh_token"
+
 // ResponseTypeCode is the response type for code
 const ResponseTypeCode = "code"
 
@@ -50,7 +53,7 @@ func NewDynamicClientRegistrationRequest(scopes []string, callbackPort int) *Dyn
 		ClientName:              ToolHiveMCPClientName,
 		RedirectURIs:            redirectURIs,
 		TokenEndpointAuthMethod: "none", // For PKCE flow
-		GrantTypes:              []string{AuthorizationCode},
+		GrantTypes:              []string{AuthorizationCode, RefreshToken},
 		ResponseTypes:           []string{ResponseTypeCode},
 		Scopes:                  scopes,
 	}
@@ -203,7 +206,7 @@ func validateAndSetDefaults(request *DynamicClientRegistrationRequest) error {
 		request.ClientName = ToolHiveMCPClientName
 	}
 	if len(request.GrantTypes) == 0 {
-		request.GrantTypes = []string{AuthorizationCode}
+		request.GrantTypes = []string{AuthorizationCode, RefreshToken}
 	}
 	if len(request.ResponseTypes) == 0 {
 		request.ResponseTypes = []string{ResponseTypeCode}

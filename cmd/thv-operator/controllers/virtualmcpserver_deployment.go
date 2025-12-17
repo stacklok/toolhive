@@ -127,13 +127,16 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	}
 
 	// Apply user-provided PodTemplateSpec customizations if present
-	if vmcp.Spec.PodTemplateSpec != nil && vmcp.Spec.PodTemplateSpec.Raw != nil {
+	if vmcp.Spec.PodTemplateSpec != nil && len(vmcp.Spec.PodTemplateSpec.Raw) > 0 {
 		if err := r.applyPodTemplateSpecToDeployment(ctx, vmcp, dep); err != nil {
 			ctxLogger := log.FromContext(ctx)
 			ctxLogger.Error(err, "Failed to apply PodTemplateSpec to Deployment")
 			// Return nil to block deployment creation until PodTemplateSpec is fixed
 			return nil
 		}
+	} else {
+		// No PodTemplateSpec, so just set default resources
+		dep.Spec.Template.Spec.Containers[0].Resources = r.buildDefaultResourcesForVmcp()
 	}
 
 	if err := controllerutil.SetControllerReference(vmcp, dep, r.Scheme); err != nil {
@@ -529,6 +532,50 @@ func (*VirtualMCPServerReconciler) buildContainerPortsForVmcp(
 	}}
 }
 
+// buildDefaultResourcesForVmcp builds default resource requirements for the vmcp container.
+// These defaults provide reasonable CPU and memory limits to prevent resource monopolization
+// while allowing user customization through PodTemplateSpec.
+func (*VirtualMCPServerReconciler) buildDefaultResourcesForVmcp() corev1.ResourceRequirements {
+	return ctrlutil.BuildDefaultResourceRequirements()
+}
+
+// buildMergedResourcesForVmcp extracts user-provided resources from PodTemplateSpec (if any),
+// applies intelligent merging with defaults, and returns the final resource requirements.
+// This implements the same intelligent merging strategy as MCPServer:
+// 1. User provides both requests and limits → use user's values
+// 2. User only provides limits → use limits for both requests and limits
+// 3. User only provides requests → compare with defaults and choose appropriately
+// 4. User provides nothing → use defaults
+func (*VirtualMCPServerReconciler) buildMergedResourcesForVmcp(
+	vmcp *mcpv1alpha1.VirtualMCPServer,
+) corev1.ResourceRequirements {
+	defaultResources := ctrlutil.BuildDefaultResourceRequirements()
+
+	// If no PodTemplateSpec provided, use defaults
+	if vmcp.Spec.PodTemplateSpec == nil || len(vmcp.Spec.PodTemplateSpec.Raw) == 0 {
+		return defaultResources
+	}
+
+	// Parse PodTemplateSpec to extract user-provided resources
+	var podTemplateSpec corev1.PodTemplateSpec
+	if err := json.Unmarshal(vmcp.Spec.PodTemplateSpec.Raw, &podTemplateSpec); err != nil {
+		// If we can't parse, use defaults
+		return defaultResources
+	}
+
+	// Find the vmcp container in user's PodTemplateSpec
+	var userResources corev1.ResourceRequirements
+	for _, container := range podTemplateSpec.Spec.Containers {
+		if container.Name == "vmcp" {
+			userResources = container.Resources
+			break
+		}
+	}
+
+	// Apply intelligent merging
+	return ctrlutil.MergeResourceRequirements(defaultResources, userResources)
+}
+
 // serviceForVirtualMCPServer returns a VirtualMCPServer Service object
 func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 	ctx context.Context,
@@ -693,17 +740,12 @@ func (r *VirtualMCPServerReconciler) validateSecretKeyRef(
 // - User-provided fields override controller-generated defaults
 // - Arrays are merged based on strategic merge patch rules (e.g., containers merged by name)
 // - The "vmcp" container is preserved from the controller-generated spec
-func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
+func (r *VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 	ctx context.Context,
 	vmcp *mcpv1alpha1.VirtualMCPServer,
 	deployment *appsv1.Deployment,
 ) error {
 	ctxLogger := log.FromContext(ctx)
-
-	// Early return if no PodTemplateSpec provided
-	if vmcp.Spec.PodTemplateSpec == nil || len(vmcp.Spec.PodTemplateSpec.Raw) == 0 {
-		return nil
-	}
 
 	// Validate the PodTemplateSpec and check if there are meaningful customizations
 	builder, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp")
@@ -712,7 +754,12 @@ func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 	}
 
 	if builder.Build() == nil {
-		// No meaningful customizations to apply
+		// No meaningful customizations to apply via strategic merge patch
+		// Set default resources and return
+		deployment.Spec.Template.Spec.Containers[0].Resources = r.buildDefaultResourcesForVmcp()
+		ctxLogger.V(1).Info("No PodTemplateSpec customizations to apply, using defaults",
+			"virtualmcpserver", vmcp.Name,
+			"namespace", vmcp.Namespace)
 		return nil
 	}
 
@@ -739,6 +786,16 @@ func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 	}
 
 	deployment.Spec.Template = patchedPodTemplateSpec
+
+	// After strategic merge, set the intelligently merged resources on vmcp container
+	// This ensures our intelligent merging logic takes precedence over any user-specified resources
+	mergedResources := r.buildMergedResourcesForVmcp(vmcp)
+	for i := range deployment.Spec.Template.Spec.Containers {
+		if deployment.Spec.Template.Spec.Containers[i].Name == "vmcp" {
+			deployment.Spec.Template.Spec.Containers[i].Resources = mergedResources
+			break
+		}
+	}
 
 	ctxLogger.V(1).Info("Applied PodTemplateSpec customizations to deployment",
 		"virtualmcpserver", vmcp.Name,

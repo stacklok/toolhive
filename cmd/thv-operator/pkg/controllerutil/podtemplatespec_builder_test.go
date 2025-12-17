@@ -10,7 +10,10 @@ import (
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 )
 
-const testContainerName = "test-container"
+const (
+	testContainerName  = "test-container"
+	testServiceAccount = "my-sa"
+)
 
 func TestNewPodTemplateSpecBuilder(t *testing.T) {
 	t.Parallel()
@@ -70,7 +73,7 @@ func TestPodTemplateSpecBuilder_Build(t *testing.T) {
 		{
 			name: "with service account returns spec",
 			setup: func(b *PodTemplateSpecBuilder) {
-				sa := "my-sa"
+				sa := testServiceAccount
 				b.WithServiceAccount(&sa)
 			},
 			expectNil: false,
@@ -238,16 +241,231 @@ func TestPodTemplateSpecBuilder_Chaining(t *testing.T) {
 	builder, err := NewPodTemplateSpecBuilder(nil, testContainerName)
 	require.NoError(t, err)
 
-	sa := "my-sa"
+	sa := testServiceAccount
 	result := builder.
 		WithServiceAccount(&sa).
 		WithSecrets([]mcpv1alpha1.SecretRef{{Name: "secret", Key: "KEY"}}).
 		Build()
 
 	require.NotNil(t, result)
-	assert.Equal(t, "my-sa", result.Spec.ServiceAccountName)
+	assert.Equal(t, testServiceAccount, result.Spec.ServiceAccountName)
 	require.Len(t, result.Spec.Containers, 1)
 	assert.Equal(t, testContainerName, result.Spec.Containers[0].Name)
+}
+
+func TestPodTemplateSpecBuilder_WithResources(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty resources does nothing", func(t *testing.T) {
+		t.Parallel()
+		builder, err := NewPodTemplateSpecBuilder(nil, testContainerName)
+		require.NoError(t, err)
+
+		// Empty resources should not create a container
+		emptyResources := BuildResourceRequirements(mcpv1alpha1.ResourceRequirements{})
+		builder.WithResources(emptyResources)
+
+		assert.Empty(t, builder.spec.Spec.Containers)
+	})
+
+	t.Run("creates container with resources", func(t *testing.T) {
+		t.Parallel()
+		builder, err := NewPodTemplateSpecBuilder(nil, testContainerName)
+		require.NoError(t, err)
+
+		resources := BuildResourceRequirements(mcpv1alpha1.ResourceRequirements{
+			Limits: mcpv1alpha1.ResourceList{
+				CPU:    "500m",
+				Memory: "512Mi",
+			},
+			Requests: mcpv1alpha1.ResourceList{
+				CPU:    "100m",
+				Memory: "128Mi",
+			},
+		})
+		builder.WithResources(resources)
+
+		require.Len(t, builder.spec.Spec.Containers, 1)
+		container := builder.spec.Spec.Containers[0]
+		assert.Equal(t, testContainerName, container.Name)
+
+		// Verify limits
+		assert.Equal(t, "500m", container.Resources.Limits.Cpu().String())
+		assert.Equal(t, "512Mi", container.Resources.Limits.Memory().String())
+
+		// Verify requests
+		assert.Equal(t, "100m", container.Resources.Requests.Cpu().String())
+		assert.Equal(t, "128Mi", container.Resources.Requests.Memory().String())
+	})
+
+	t.Run("merges into existing container", func(t *testing.T) {
+		t.Parallel()
+		raw := &runtime.RawExtension{
+			Raw: []byte(`{"spec":{"containers":[{"name":"test-container","image":"test:latest"}]}}`),
+		}
+		builder, err := NewPodTemplateSpecBuilder(raw, testContainerName)
+		require.NoError(t, err)
+
+		resources := BuildResourceRequirements(mcpv1alpha1.ResourceRequirements{
+			Limits: mcpv1alpha1.ResourceList{
+				CPU: "200m",
+			},
+		})
+		builder.WithResources(resources)
+
+		require.Len(t, builder.spec.Spec.Containers, 1)
+		container := builder.spec.Spec.Containers[0]
+		assert.Equal(t, "test:latest", container.Image)
+		assert.Equal(t, "200m", container.Resources.Limits.Cpu().String())
+	})
+
+	t.Run("adds to different container", func(t *testing.T) {
+		t.Parallel()
+		raw := &runtime.RawExtension{
+			Raw: []byte(`{"spec":{"containers":[{"name":"other-container"}]}}`),
+		}
+		builder, err := NewPodTemplateSpecBuilder(raw, testContainerName)
+		require.NoError(t, err)
+
+		resources := BuildResourceRequirements(mcpv1alpha1.ResourceRequirements{
+			Requests: mcpv1alpha1.ResourceList{
+				Memory: "64Mi",
+			},
+		})
+		builder.WithResources(resources)
+
+		require.Len(t, builder.spec.Spec.Containers, 2)
+		assert.Equal(t, "other-container", builder.spec.Spec.Containers[0].Name)
+		assert.Equal(t, testContainerName, builder.spec.Spec.Containers[1].Name)
+		assert.Equal(t, "64Mi", builder.spec.Spec.Containers[1].Resources.Requests.Memory().String())
+	})
+}
+
+func TestPodTemplateSpecBuilder_WithResourcesChaining(t *testing.T) {
+	t.Parallel()
+
+	builder, err := NewPodTemplateSpecBuilder(nil, testContainerName)
+	require.NoError(t, err)
+
+	sa := testServiceAccount
+	resources := BuildResourceRequirements(mcpv1alpha1.ResourceRequirements{
+		Limits: mcpv1alpha1.ResourceList{
+			CPU:    "1000m",
+			Memory: "1Gi",
+		},
+	})
+
+	result := builder.
+		WithServiceAccount(&sa).
+		WithSecrets([]mcpv1alpha1.SecretRef{{Name: "secret", Key: "KEY"}}).
+		WithResources(resources).
+		Build()
+
+	require.NotNil(t, result)
+	assert.Equal(t, testServiceAccount, result.Spec.ServiceAccountName)
+	require.Len(t, result.Spec.Containers, 1)
+
+	container := result.Spec.Containers[0]
+	assert.Equal(t, testContainerName, container.Name)
+	assert.Len(t, container.Env, 1)
+	// 1000m is normalized to 1 CPU core
+	assert.Equal(t, "1", container.Resources.Limits.Cpu().String())
+	assert.Equal(t, "1Gi", container.Resources.Limits.Memory().String())
+}
+
+func TestPodTemplateSpecBuilder_WithResourcesMerging(t *testing.T) {
+	t.Parallel()
+
+	t.Run("existing resources take precedence over defaults", func(t *testing.T) {
+		t.Parallel()
+		// Create pod template with existing resources
+		raw := &runtime.RawExtension{
+			Raw: []byte(`{
+				"spec": {
+					"containers": [{
+						"name": "test-container",
+						"resources": {
+							"limits": {"cpu": "2", "memory": "2Gi"},
+							"requests": {"cpu": "500m"}
+						}
+					}]
+				}
+			}`),
+		}
+		builder, err := NewPodTemplateSpecBuilder(raw, testContainerName)
+		require.NoError(t, err)
+
+		// Try to set different resources (these should be overridden by existing)
+		defaultResources := BuildResourceRequirements(mcpv1alpha1.ResourceRequirements{
+			Limits: mcpv1alpha1.ResourceList{
+				CPU:    "1",
+				Memory: "1Gi",
+			},
+			Requests: mcpv1alpha1.ResourceList{
+				CPU:    "100m",
+				Memory: "128Mi",
+			},
+		})
+
+		builder.WithResources(defaultResources)
+		result := builder.Build()
+
+		require.NotNil(t, result)
+		require.Len(t, result.Spec.Containers, 1)
+		container := result.Spec.Containers[0]
+
+		// Existing values should be preserved
+		assert.Equal(t, "2", container.Resources.Limits.Cpu().String())
+		assert.Equal(t, "2Gi", container.Resources.Limits.Memory().String())
+		assert.Equal(t, "500m", container.Resources.Requests.Cpu().String())
+		// Memory request was not in existing, so default should be used
+		assert.Equal(t, "128Mi", container.Resources.Requests.Memory().String())
+	})
+
+	t.Run("defaults fill in missing resources", func(t *testing.T) {
+		t.Parallel()
+		// Create pod template with partial resources (only CPU limit)
+		raw := &runtime.RawExtension{
+			Raw: []byte(`{
+				"spec": {
+					"containers": [{
+						"name": "test-container",
+						"resources": {
+							"limits": {"cpu": "3"}
+						}
+					}]
+				}
+			}`),
+		}
+		builder, err := NewPodTemplateSpecBuilder(raw, testContainerName)
+		require.NoError(t, err)
+
+		// Set complete resource defaults
+		defaultResources := BuildResourceRequirements(mcpv1alpha1.ResourceRequirements{
+			Limits: mcpv1alpha1.ResourceList{
+				CPU:    "1",
+				Memory: "1Gi",
+			},
+			Requests: mcpv1alpha1.ResourceList{
+				CPU:    "100m",
+				Memory: "128Mi",
+			},
+		})
+
+		builder.WithResources(defaultResources)
+		result := builder.Build()
+
+		require.NotNil(t, result)
+		require.Len(t, result.Spec.Containers, 1)
+		container := result.Spec.Containers[0]
+
+		// Existing CPU limit should be preserved
+		assert.Equal(t, "3", container.Resources.Limits.Cpu().String())
+		// Other resources should come from defaults
+		assert.Equal(t, "1Gi", container.Resources.Limits.Memory().String())
+		assert.Equal(t, "100m", container.Resources.Requests.Cpu().String())
+		assert.Equal(t, "128Mi", container.Resources.Requests.Memory().String())
+	})
 }
 
 // ptr is a helper to create a pointer to a string.

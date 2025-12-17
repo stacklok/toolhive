@@ -18,7 +18,6 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -928,9 +927,13 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			defaultSA := mcpServerServiceAccountName(m.Name)
 			serviceAccount = &defaultSA
 		}
+		// Convert MCP server resources to Kubernetes format
+		mcpResources := resourceRequirementsForMCPServer(m)
+
 		finalPodTemplateSpec := builder.
 			WithServiceAccount(serviceAccount).
 			WithSecrets(m.Spec.Secrets).
+			WithResources(mcpResources).
 			Build()
 		// Add pod template patch if we have one
 		if finalPodTemplateSpec != nil {
@@ -1062,26 +1065,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		volumes = append(volumes, *authzVolume)
 	}
 
-	// Prepare container resources
-	resources := corev1.ResourceRequirements{}
-	if m.Spec.Resources.Limits.CPU != "" || m.Spec.Resources.Limits.Memory != "" {
-		resources.Limits = corev1.ResourceList{}
-		if m.Spec.Resources.Limits.CPU != "" {
-			resources.Limits[corev1.ResourceCPU] = resource.MustParse(m.Spec.Resources.Limits.CPU)
-		}
-		if m.Spec.Resources.Limits.Memory != "" {
-			resources.Limits[corev1.ResourceMemory] = resource.MustParse(m.Spec.Resources.Limits.Memory)
-		}
-	}
-	if m.Spec.Resources.Requests.CPU != "" || m.Spec.Resources.Requests.Memory != "" {
-		resources.Requests = corev1.ResourceList{}
-		if m.Spec.Resources.Requests.CPU != "" {
-			resources.Requests[corev1.ResourceCPU] = resource.MustParse(m.Spec.Resources.Requests.CPU)
-		}
-		if m.Spec.Resources.Requests.Memory != "" {
-			resources.Requests[corev1.ResourceMemory] = resource.MustParse(m.Spec.Resources.Requests.Memory)
-		}
-	}
+	// Prepare container resources for the proxy runner container
+	// Note: This is separate from MCP server container resources (which are in the pod template patch)
+	resources := resourceRequirementsForProxyRunner(m)
 
 	// Prepare deployment metadata with overrides
 	deploymentLabels := ls
@@ -1528,9 +1514,13 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			return true
 		}
 
+		// Convert MCP server resources to Kubernetes format (same as in deploymentForMCPServer)
+		mcpResources := resourceRequirementsForMCPServer(mcpServer)
+
 		expectedPodTemplateSpec := builder.
 			WithServiceAccount(serviceAccount).
 			WithSecrets(mcpServer.Spec.Secrets).
+			WithResources(mcpResources).
 			Build()
 
 		// Find the current pod template patch in the container args
@@ -1560,8 +1550,8 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			return true
 		}
 
-		// Check if the resource requirements have changed
-		if !reflect.DeepEqual(container.Resources, resourceRequirementsForMCPServer(mcpServer)) {
+		// Check if the proxy runner container resource requirements have changed
+		if !reflect.DeepEqual(container.Resources, resourceRequirementsForProxyRunner(mcpServer)) {
 			return true
 		}
 	}
@@ -1656,28 +1646,25 @@ func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1alpha1.MCPServe
 	return false
 }
 
-// resourceRequirementsForMCPServer returns the resource requirements for the MCPServer
+// resourceRequirementsForMCPServer returns the resource requirements for the MCP server container
+// with intelligent merging of defaults and user-provided values
 func resourceRequirementsForMCPServer(m *mcpv1alpha1.MCPServer) corev1.ResourceRequirements {
-	resources := corev1.ResourceRequirements{}
-	if m.Spec.Resources.Limits.CPU != "" || m.Spec.Resources.Limits.Memory != "" {
-		resources.Limits = corev1.ResourceList{}
-		if m.Spec.Resources.Limits.CPU != "" {
-			resources.Limits[corev1.ResourceCPU] = resource.MustParse(m.Spec.Resources.Limits.CPU)
-		}
-		if m.Spec.Resources.Limits.Memory != "" {
-			resources.Limits[corev1.ResourceMemory] = resource.MustParse(m.Spec.Resources.Limits.Memory)
-		}
-	}
-	if m.Spec.Resources.Requests.CPU != "" || m.Spec.Resources.Requests.Memory != "" {
-		resources.Requests = corev1.ResourceList{}
-		if m.Spec.Resources.Requests.CPU != "" {
-			resources.Requests[corev1.ResourceCPU] = resource.MustParse(m.Spec.Resources.Requests.CPU)
-		}
-		if m.Spec.Resources.Requests.Memory != "" {
-			resources.Requests[corev1.ResourceMemory] = resource.MustParse(m.Spec.Resources.Requests.Memory)
-		}
-	}
-	return resources
+	defaultResources := ctrlutil.BuildDefaultResourceRequirements()
+	userResources := ctrlutil.BuildResourceRequirements(m.Spec.Resources)
+	return ctrlutil.MergeResourceRequirements(defaultResources, userResources)
+}
+
+// resourceRequirementsForProxyRunner returns the resource requirements for the proxy runner container
+// with intelligent merging of defaults and user-provided values
+func resourceRequirementsForProxyRunner(m *mcpv1alpha1.MCPServer) corev1.ResourceRequirements {
+	// Get default proxy runner resources (lighter than MCP server defaults)
+	defaultProxyResources := ctrlutil.BuildDefaultProxyRunnerResourceRequirements()
+
+	// Get user-defined proxy resources from the dedicated field
+	userProxyResources := ctrlutil.BuildResourceRequirements(m.Spec.ProxyRunnerResources)
+
+	// Merge defaults with user-defined values
+	return ctrlutil.MergeResourceRequirements(defaultProxyResources, userProxyResources)
 }
 
 // mcpServerServiceAccountName returns the service account name for the mcp server

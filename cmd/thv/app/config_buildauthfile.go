@@ -2,7 +2,6 @@ package app
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -108,7 +107,7 @@ func init() {
 	)
 }
 
-func setBuildAuthFileCmdFunc(_ *cobra.Command, args []string) error {
+func setBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 	name := args[0]
 
 	// Validate the file name first
@@ -140,7 +139,7 @@ func setBuildAuthFileCmdFunc(_ *cobra.Command, args []string) error {
 
 	// Store the content in the secrets provider
 	secretName := config.BuildAuthFileSecretName(name)
-	ctx := context.Background()
+	ctx := cmd.Context()
 	if err := manager.SetSecret(ctx, secretName, content); err != nil {
 		return fmt.Errorf("failed to store auth file in secrets: %w", err)
 	}
@@ -181,9 +180,9 @@ func readFromStdin() (string, error) {
 	return content, nil
 }
 
-func getBuildAuthFileCmdFunc(_ *cobra.Command, args []string) error {
+func getBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 	provider := config.NewDefaultProvider()
-	ctx := context.Background()
+	ctx := cmd.Context()
 
 	if len(args) == 1 {
 		name := args[0]
@@ -246,9 +245,9 @@ func getBuildAuthFileCmdFunc(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func unsetBuildAuthFileCmdFunc(_ *cobra.Command, args []string) error {
+func unsetBuildAuthFileCmdFunc(cmd *cobra.Command, args []string) error {
 	provider := config.NewDefaultProvider()
-	ctx := context.Background()
+	ctx := cmd.Context()
 
 	if unsetBuildAuthFileAll {
 		configuredFiles := provider.GetConfiguredBuildAuthFiles()

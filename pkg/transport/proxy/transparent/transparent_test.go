@@ -564,14 +564,56 @@ func TestTransparentProxy_RemoteServerStatusCodes(t *testing.T) {
 		description    string
 	}{
 		// 5xx codes should trigger callback and stop proxy
-		{"500 Internal Server Error", http.StatusInternalServerError, true, false, "5xx codes should trigger callback"},
-		{"502 Bad Gateway", http.StatusBadGateway, true, false, "5xx codes should trigger callback"},
-		{"503 Service Unavailable", http.StatusServiceUnavailable, true, false, "5xx codes should trigger callback"},
-		{"504 Gateway Timeout", http.StatusGatewayTimeout, true, false, "5xx codes should trigger callback"},
+		{
+			name:           "500 Internal Server Error",
+			statusCode:     http.StatusInternalServerError,
+			expectCallback: true,
+			expectRunning:  false,
+			description:    "5xx codes should trigger callback",
+		},
+		{
+			name:           "502 Bad Gateway",
+			statusCode:     http.StatusBadGateway,
+			expectCallback: true,
+			expectRunning:  false,
+			description:    "5xx codes should trigger callback",
+		},
+		{
+			name:           "503 Service Unavailable",
+			statusCode:     http.StatusServiceUnavailable,
+			expectCallback: true,
+			expectRunning:  false,
+			description:    "5xx codes should trigger callback",
+		},
+		{
+			name:           "504 Gateway Timeout",
+			statusCode:     http.StatusGatewayTimeout,
+			expectCallback: true,
+			expectRunning:  false,
+			description:    "5xx codes should trigger callback",
+		},
 		// 4xx codes should NOT trigger callback (considered healthy)
-		{"401 Unauthorized", http.StatusUnauthorized, false, true, "4xx codes should not trigger callback"},
-		{"403 Forbidden", http.StatusForbidden, false, true, "4xx codes should not trigger callback"},
-		{"404 Not Found", http.StatusNotFound, false, true, "4xx codes should not trigger callback"},
+		{
+			name:           "401 Unauthorized",
+			statusCode:     http.StatusUnauthorized,
+			expectCallback: false,
+			expectRunning:  true,
+			description:    "4xx codes should not trigger callback",
+		},
+		{
+			name:           "403 Forbidden",
+			statusCode:     http.StatusForbidden,
+			expectCallback: false,
+			expectRunning:  true,
+			description:    "4xx codes should not trigger callback",
+		},
+		{
+			name:           "404 Not Found",
+			statusCode:     http.StatusNotFound,
+			expectCallback: false,
+			expectRunning:  true,
+			description:    "4xx codes should not trigger callback",
+		},
 	}
 
 	for _, tc := range testCases {
@@ -620,8 +662,7 @@ func TestTransparentProxy_HealthCheckNotRunBeforeInitialization(t *testing.T) {
 	defer cancel()
 	defer func() { _ = proxy.Stop(ctx) }()
 
-	// Do NOT mark server as initialized
-	// proxy.setServerInitialized() // Intentionally commented out
+	// Do NOT mark server as initialized - health checks should be skipped
 
 	// Wait for health check cycle (should be skipped since server is not initialized)
 	time.Sleep(11 * time.Second)

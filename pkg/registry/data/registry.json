@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-12-16T00:19:53Z",
+  "last_updated": "2025-12-17T00:18:39Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -896,7 +896,7 @@
         "automation",
         "browser"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/brightdata-mcp:2.6.2",
+      "image": "ghcr.io/stacklok/dockyard/npx/brightdata-mcp:2.7.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -1115,9 +1115,9 @@
         "chroma_delete_documents"
       ],
       "metadata": {
-        "stars": 421,
+        "stars": 445,
         "pulls": 0,
-        "last_updated": "2025-11-16T02:34:28Z"
+        "last_updated": "2025-12-16T02:36:32Z"
       },
       "repository_url": "https://github.com/chroma-core/chroma-mcp",
       "tags": [
@@ -1550,7 +1550,7 @@
       "metadata": {
         "stars": 5,
         "pulls": 0,
-        "last_updated": "2025-11-16T02:34:28Z"
+        "last_updated": "2025-12-16T02:36:33Z"
       },
       "repository_url": "https://github.com/dolthub/dolt-mcp",
       "tags": [
@@ -2083,7 +2083,7 @@
         "update",
         "issues"
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.24.1",
+      "image": "ghcr.io/github/github-mcp-server:v0.25.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -3260,10 +3260,9 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
-        "run_select_query",
         "list_databases",
         "list_tables",
-        "run_chdb_select_query"
+        "run_select_query"
       ],
       "metadata": {
         "stars": 599,
@@ -3278,7 +3277,7 @@
         "analytics",
         "olap"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-clickhouse:0.1.12",
+      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-clickhouse:0.1.13",
       "permissions": {
         "network": {
           "outbound": {
@@ -3574,7 +3573,7 @@
         "knowledge-graph",
         "graph-database"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-memory:0.4.3",
+      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-memory:0.4.4",
       "permissions": {
         "network": {
           "outbound": {
@@ -3626,11 +3625,9 @@
       "status": "Active",
       "transport": "streamable-http",
       "tools": [
-        "find_tool",
         "call_tool",
-        "list_tools",
-        "search_registry",
-        "install_server"
+        "find_tool",
+        "list_tools"
       ],
       "metadata": {
         "stars": 4,
@@ -3644,7 +3641,7 @@
         "gateway",
         "intelligent"
       ],
-      "image": "ghcr.io/stackloklabs/mcp-optimizer:0.1.3",
+      "image": "ghcr.io/stackloklabs/mcp-optimizer:0.2.0",
       "target_port": 9900,
       "permissions": {
         "network": {
@@ -3876,9 +3873,9 @@
         "find_underused_resource_classes"
       ],
       "metadata": {
-        "stars": 69,
+        "stars": 74,
         "pulls": 0,
-        "last_updated": "2025-11-16T02:34:28Z"
+        "last_updated": "2025-12-16T02:36:33Z"
       },
       "repository_url": "https://github.com/CircleCI-Public/mcp-server-circleci",
       "tags": [
@@ -4385,9 +4382,9 @@
         "get_block_info"
       ],
       "metadata": {
-        "stars": 70,
+        "stars": 75,
         "pulls": 0,
-        "last_updated": "2025-11-17T02:33:28Z"
+        "last_updated": "2025-12-16T02:36:33Z"
       },
       "repository_url": "https://github.com/Bankless/onchain-mcp",
       "tags": [
@@ -4659,9 +4656,9 @@
         "upsert-prompt"
       ],
       "metadata": {
-        "stars": 7692,
+        "stars": 7935,
         "pulls": 0,
-        "last_updated": "2025-11-17T02:33:28Z"
+        "last_updated": "2025-12-16T02:36:33Z"
       },
       "repository_url": "https://github.com/Arize-ai/phoenix",
       "tags": [
@@ -5497,7 +5494,7 @@
         "baas",
         "postgresql"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/supabase-mcp-server:0.5.9",
+      "image": "ghcr.io/stacklok/dockyard/npx/supabase-mcp-server:0.5.10",
       "permissions": {
         "network": {
           "outbound": {
@@ -5553,7 +5550,7 @@
         "api",
         "real-time"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/tavily-mcp:0.2.10",
+      "image": "ghcr.io/stacklok/dockyard/npx/tavily-mcp:0.2.11",
       "permissions": {
         "network": {
           "outbound": {

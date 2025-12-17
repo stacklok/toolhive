@@ -2,6 +2,7 @@ package vmcp_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -1108,4 +1109,68 @@ func TestVMCPServer_StructuredContent_IntegerComparisonError(t *testing.T) {
 	// Verify the error message indicates type incompatibility
 	assert.Contains(t, errorText, "incompatible types for comparison",
 		"Error should mention incompatible types. Got: %s", errorText)
+}
+
+// TestVMCPServer_StatusEndpoint verifies that the /status endpoint returns
+// correct backend information and health status.
+func TestVMCPServer_StatusEndpoint(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup: Create backend servers
+	githubServer := helpers.CreateBackendServer(t, []helpers.BackendTool{
+		helpers.NewBackendTool("list_repos", "List repositories",
+			func(_ context.Context, _ map[string]any) string {
+				return `{"repos": ["repo1"]}`
+			}),
+	}, helpers.WithBackendName("github-mcp"))
+	defer githubServer.Close()
+
+	backends := []vmcp.Backend{
+		helpers.NewBackend("github",
+			helpers.WithURL(githubServer.URL+"/mcp"),
+			helpers.WithMetadata("group", "test-group"),
+		),
+	}
+
+	// Create vMCP server
+	vmcpServer := helpers.NewVMCPServer(ctx, t, backends,
+		helpers.WithPrefixConflictResolution("{workload}_"),
+	)
+
+	// Test /status endpoint
+	statusURL := "http://" + vmcpServer.Address() + "/status"
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	statusResp, err := httpClient.Get(statusURL)
+	require.NoError(t, err, "failed to fetch status")
+	defer statusResp.Body.Close()
+
+	require.Equal(t, http.StatusOK, statusResp.StatusCode)
+	require.Equal(t, "application/json", statusResp.Header.Get("Content-Type"))
+
+	// Parse response
+	var status struct {
+		Backends []struct {
+			Name      string `json:"name"`
+			Health    string `json:"health"`
+			Transport string `json:"transport"`
+			AuthType  string `json:"auth_type,omitempty"`
+		} `json:"backends"`
+		Healthy  bool   `json:"healthy"`
+		Version  string `json:"version"`
+		GroupRef string `json:"group_ref"`
+	}
+	err = json.NewDecoder(statusResp.Body).Decode(&status)
+	require.NoError(t, err, "failed to decode status response")
+
+	// Verify response
+	assert.True(t, status.Healthy, "should be healthy with one healthy backend")
+	assert.NotEmpty(t, status.Version, "version should be populated")
+	require.Len(t, status.Backends, 1, "should have one backend")
+	assert.Equal(t, "github", status.Backends[0].Name)
+	assert.Equal(t, "healthy", status.Backends[0].Health)
+	assert.Equal(t, "streamable-http", status.Backends[0].Transport)
+	assert.Equal(t, "unauthenticated", status.Backends[0].AuthType)
 }

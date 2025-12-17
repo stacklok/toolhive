@@ -208,10 +208,6 @@ type Config struct {
 
 	// ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
 	ProxyMode ProxyMode
-
-	// OnHealthCheckFailed is an optional callback that is called when a health check fails
-	// for remote MCP servers. This allows the runner to update the workload status.
-	OnHealthCheckFailed HealthCheckFailedCallback
 }
 
 // ProxyMode represents the proxy mode for stdio transport.

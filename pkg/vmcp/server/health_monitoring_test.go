@@ -383,7 +383,9 @@ func TestServer_Stop_StopsHealthMonitor(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify health monitor is running
+	srv.healthMonitorMu.RLock()
 	assert.NotNil(t, srv.healthMonitor)
+	srv.healthMonitorMu.RUnlock()
 
 	// Cancel context to trigger graceful shutdown
 	cancel()
@@ -396,10 +398,16 @@ func TestServer_Stop_StopsHealthMonitor(t *testing.T) {
 		t.Fatal("timeout waiting for server to stop")
 	}
 
-	// Verify health monitor operations after stop
+	// Verify health monitor still exists after stop (not set to nil)
+	// The monitor is stopped but the pointer remains valid
+	srv.healthMonitorMu.RLock()
+	assert.NotNil(t, srv.healthMonitor, "health monitor should still exist after stop")
+	srv.healthMonitorMu.RUnlock()
+
+	// Verify getter methods still work (they query the stopped monitor)
+	// This ensures no panics occur when accessing a stopped monitor
 	status, err := srv.GetBackendHealthStatus("backend-1")
-	// After stop, the health monitor should still exist but might return stale data or errors
-	// This depends on the monitor implementation, so we just verify the call doesn't panic
-	_ = status
-	_ = err
+	assert.NoError(t, err, "getter should not error after stop")
+	// Status might be stale but should be valid
+	assert.NotEqual(t, vmcp.BackendUnknown, status, "should return last known status")
 }

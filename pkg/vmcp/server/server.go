@@ -164,7 +164,9 @@ type Server struct {
 
 	// healthMonitor performs periodic health checks on backends.
 	// Nil if health monitoring is disabled.
-	healthMonitor *health.Monitor
+	// Protected by healthMonitorMu for concurrent access from HTTP handlers.
+	healthMonitor   *health.Monitor
+	healthMonitorMu sync.RWMutex
 }
 
 // New creates a new Virtual MCP Server instance.
@@ -183,9 +185,8 @@ func New(
 	if cfg.Host == "" {
 		cfg.Host = "127.0.0.1"
 	}
-	if cfg.Port == 0 {
-		cfg.Port = 4483
-	}
+	// Note: Port 0 means "let OS assign random port" - intentionally no default applied here.
+	// CLI provides default via flag (4483), so Port is only 0 in tests for dynamic port assignment.
 	if cfg.EndpointPath == "" {
 		cfg.EndpointPath = "/mcp"
 	}
@@ -522,12 +523,18 @@ func (s *Server) Start(ctx context.Context) error {
 	})
 
 	// Start health monitor if configured
-	if s.healthMonitor != nil {
-		if err := s.healthMonitor.Start(ctx); err != nil {
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	if healthMon != nil {
+		if err := healthMon.Start(ctx); err != nil {
 			// Log error and disable health monitoring - treat as if it wasn't configured
 			// This ensures getter methods correctly report monitoring as disabled
 			logger.Warnf("Failed to start health monitor, disabling health monitoring: %v", err)
+			s.healthMonitorMu.Lock()
 			s.healthMonitor = nil
+			s.healthMonitorMu.Unlock()
 		} else {
 			logger.Info("Health monitor started")
 		}
@@ -573,8 +580,12 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 
 	// Stop health monitor to clean up health check goroutines
-	if s.healthMonitor != nil {
-		if err := s.healthMonitor.Stop(); err != nil {
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	if healthMon != nil {
+		if err := healthMon.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to stop health monitor: %w", err))
 		}
 	}
@@ -769,37 +780,53 @@ func validateAndCreateExecutors(
 // GetBackendHealthStatus returns the health status of a specific backend.
 // Returns error if health monitoring is disabled or backend not found.
 func (s *Server) GetBackendHealthStatus(backendID string) (vmcp.BackendHealthStatus, error) {
-	if s.healthMonitor == nil {
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	if healthMon == nil {
 		return vmcp.BackendUnknown, fmt.Errorf("health monitoring is disabled")
 	}
-	return s.healthMonitor.GetBackendStatus(backendID)
+	return healthMon.GetBackendStatus(backendID)
 }
 
 // GetBackendHealthState returns the full health state of a specific backend.
 // Returns error if health monitoring is disabled or backend not found.
 func (s *Server) GetBackendHealthState(backendID string) (*health.State, error) {
-	if s.healthMonitor == nil {
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	if healthMon == nil {
 		return nil, fmt.Errorf("health monitoring is disabled")
 	}
-	return s.healthMonitor.GetBackendState(backendID)
+	return healthMon.GetBackendState(backendID)
 }
 
 // GetAllBackendHealthStates returns the health states of all backends.
 // Returns empty map if health monitoring is disabled.
 func (s *Server) GetAllBackendHealthStates() map[string]*health.State {
-	if s.healthMonitor == nil {
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	if healthMon == nil {
 		return make(map[string]*health.State)
 	}
-	return s.healthMonitor.GetAllBackendStates()
+	return healthMon.GetAllBackendStates()
 }
 
 // GetHealthSummary returns a summary of backend health across all backends.
 // Returns zero-valued summary if health monitoring is disabled.
 func (s *Server) GetHealthSummary() health.Summary {
-	if s.healthMonitor == nil {
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	if healthMon == nil {
 		return health.Summary{}
 	}
-	return s.healthMonitor.GetHealthSummary()
+	return healthMon.GetHealthSummary()
 }
 
 // BackendHealthResponse represents the health status response for all backends.
@@ -822,20 +849,31 @@ type BackendHealthResponse struct {
 // Security Note: This endpoint is unauthenticated and may expose backend topology.
 // Consider applying authentication middleware if operating in multi-tenant mode.
 func (s *Server) handleBackendHealth(w http.ResponseWriter, _ *http.Request) {
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
 	response := BackendHealthResponse{
-		MonitoringEnabled: s.healthMonitor != nil,
+		MonitoringEnabled: healthMon != nil,
 	}
 
-	if s.healthMonitor != nil {
+	if healthMon != nil {
 		summary := s.GetHealthSummary()
 		response.Summary = &summary
 		response.Backends = s.GetAllBackendHealthStates()
 	}
 
+	// Encode response before writing headers to ensure encoding succeeds
+	data, err := json.Marshal(response)
+	if err != nil {
+		logger.Errorf("Failed to encode backend health response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Errorf("Failed to encode backend health response: %v", err)
+	if _, err := w.Write(data); err != nil {
+		logger.Errorf("Failed to write backend health response: %v", err)
 	}
 }

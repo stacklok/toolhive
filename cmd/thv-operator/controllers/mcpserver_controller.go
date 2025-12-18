@@ -992,6 +992,17 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		} else {
 			env = append(env, tokenExchangeEnvVars...)
 		}
+
+		// Add OAuth environment variables (for upstream client secret)
+		oauthEnvVars, err := ctrlutil.GenerateOAuthEnvVars(
+			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef, ctrlutil.GetExternalAuthConfigByName,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate OAuth environment variables")
+		} else {
+			env = append(env, oauthEnvVars...)
+		}
 	}
 
 	// Add OIDC client secret environment variable if using inline config with secretRef
@@ -1060,6 +1071,25 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	if authzVolumeMount != nil {
 		volumeMounts = append(volumeMounts, *authzVolumeMount)
 		volumes = append(volumes, *authzVolume)
+	}
+
+	// Add OAuth signing key volume if using OAuth external auth
+	if m.Spec.ExternalAuthConfigRef != nil {
+		externalAuthConfig, err := ctrlutil.GetExternalAuthConfigByName(
+			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef.Name,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to get MCPExternalAuthConfig for OAuth volume config")
+		} else if externalAuthConfig != nil &&
+			externalAuthConfig.Spec.Type == mcpv1alpha1.ExternalAuthTypeOAuth &&
+			externalAuthConfig.Spec.OAuth != nil {
+			oauthVolumeConfig := ctrlutil.GenerateOAuthVolumeConfig(externalAuthConfig.Spec.OAuth)
+			if oauthVolumeConfig != nil {
+				volumeMounts = append(volumeMounts, oauthVolumeConfig.VolumeMount)
+				volumes = append(volumes, oauthVolumeConfig.Volume)
+			}
+		}
 	}
 
 	// Prepare container resources
@@ -1483,6 +1513,16 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 				return true
 			}
 			expectedProxyEnv = append(expectedProxyEnv, tokenExchangeEnvVars...)
+
+			// Add OAuth environment variables (for upstream client secret)
+			oauthEnvVars, err := ctrlutil.GenerateOAuthEnvVars(
+				ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.ExternalAuthConfigRef, ctrlutil.GetExternalAuthConfigByName,
+			)
+			if err != nil {
+				// If we can't generate env vars, consider the deployment needs update
+				return true
+			}
+			expectedProxyEnv = append(expectedProxyEnv, oauthEnvVars...)
 		}
 
 		// Add OIDC client secret environment variable if using inline config with secretRef

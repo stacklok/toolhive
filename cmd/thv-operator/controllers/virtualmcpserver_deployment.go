@@ -454,6 +454,11 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		// No secrets to mount for unauthenticated
 		return nil, nil
 
+	case mcpv1alpha1.ExternalAuthTypeOAuth:
+		// OAuth type is not yet supported in vMCP - needs auth server integration
+		// For now, return nil to skip. Full support requires volume mounts for signing key.
+		return nil, nil
+
 	default:
 		return nil, nil // Not applicable
 	}

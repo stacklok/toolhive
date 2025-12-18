@@ -119,6 +119,8 @@ func AddExternalAuthConfigOptions(
 	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
 		// No config to add for unauthenticated
 		return nil
+	case mcpv1alpha1.ExternalAuthTypeOAuth:
+		return addOAuthConfig(ctx, c, namespace, externalAuthConfig, options)
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	}

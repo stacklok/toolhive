@@ -136,14 +136,6 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
-	// Set up VirtualMCPServer webhook
-	err = (&mcpv1alpha1.VirtualMCPServer{}).SetupWebhookWithManager(k8sManager)
-	Expect(err).ToNot(HaveOccurred())
-
-	// Set up VirtualMCPCompositeToolDefinition webhook
-	err = (&mcpv1alpha1.VirtualMCPCompositeToolDefinition{}).SetupWebhookWithManager(k8sManager)
-	Expect(err).ToNot(HaveOccurred())
-
 	// Start the manager in a goroutine
 	go func() {
 		defer GinkgoRecover()

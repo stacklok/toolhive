@@ -1,3 +1,0 @@
-{{- if .Values.crds.install.server }}
-{{ $.Files.Get "crd-files/toolhive.stacklok.dev_mcptoolconfigs.yaml" }}
-{{- end }}

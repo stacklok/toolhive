@@ -1,3 +1,0 @@
-{{- if or .Values.crds.install.server .Values.crds.install.virtualMCP }}
-{{ $.Files.Get "crd-files/toolhive.stacklok.dev_mcpexternalauthconfigs.yaml" }}
-{{- end }}

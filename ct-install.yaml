@@ -8,7 +8,3 @@ validate-maintainers: false
 remote: origin
 target-branch: main
 
-skip-clean-up: true
-
-helm-extra-set-args: >
-  --set operator.testMode=true

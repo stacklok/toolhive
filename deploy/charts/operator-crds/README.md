@@ -48,63 +48,6 @@ To ensure CRDs are upgraded alongside the chart, this chart places CRDs in `temp
 
 However, placing CRDs in `templates/` means they would be deleted when the Helm release is uninstalled, which could result in data loss. To prevent this, CRDs are annotated with `helm.sh/resource-policy: keep` by default (controlled by `crds.keep`). This ensures CRDs persist even after uninstalling the chart.
 
-### Skipping CRDs
-
-By default, all CRDs are installed. You can selectively disable CRD groups based on your needs:
-
-#### Skipping Server CRDs
-
-To skip server-related CRDs (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, and ToolConfig):
-
-```shell
-helm upgrade -i toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-operator-crds \
-  --set crds.install.server=false
-```
-
-**Important:** When server CRDs are not installed, you should also disable the server controllers in the operator:
-
-```shell
-helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-operator \
-  -n toolhive-system --create-namespace \
-  --set operator.features.server=false
-```
-
-#### Skipping Registry CRD
-
-To skip the registry CRD (MCPRegistry):
-
-```shell
-helm upgrade -i toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-operator-crds \
-  --set crds.install.registry=false
-```
-
-**Important:** When registry CRD is not installed, you should also disable the registry controller in the operator:
-
-```shell
-helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-operator \
-  -n toolhive-system --create-namespace \
-  --set operator.features.registry=false
-```
-
-#### Skipping Virtual MCP CRDs
-
-To skip Virtual MCP CRDs (VirtualMCPServer, VirtualMCPCompositeToolDefinition, and MCPGroup):
-
-```shell
-helm upgrade -i toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-operator-crds \
-  --set crds.install.virtualMcp=false
-```
-
-**Important:** When Virtual MCP CRDs are not installed, you should also disable the Virtual MCP controllers in the operator:
-
-```shell
-helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-operator \
-  -n toolhive-system --create-namespace \
-  --set operator.features.virtualMCP=false
-```
-
-This is useful for deployments that don't require Virtual MCP aggregation features.
-
 ## Values
 
 | Key | Type | Default | Description |

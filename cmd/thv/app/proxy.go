@@ -258,6 +258,8 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		proxyTargetURI,
 		nil,
 		authInfoHandler,
+		nil, // authServerMux
+		nil, // authServerWellKnownMux
 		false,
 		false, // isRemote
 		"",

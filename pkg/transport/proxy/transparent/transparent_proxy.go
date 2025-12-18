@@ -84,9 +84,31 @@ type TransparentProxy struct {
 
 	// Callback when health check fails (for remote servers)
 	onHealthCheckFailed types.HealthCheckFailedCallback
+
+	// Health check interval (default: 10 seconds)
+	healthCheckInterval time.Duration
 }
 
-// NewTransparentProxy creates a new transparent proxy with optional middlewares.
+const (
+	// DefaultHealthCheckInterval is the default interval for health checks
+	DefaultHealthCheckInterval = 10 * time.Second
+)
+
+// Option is a functional option for configuring TransparentProxy
+type Option func(*TransparentProxy)
+
+// withHealthCheckInterval sets the health check interval.
+// This is primarily useful for testing with shorter intervals.
+// Ignores non-positive intervals; default will be used.
+func withHealthCheckInterval(interval time.Duration) Option {
+	return func(p *TransparentProxy) {
+		if interval > 0 {
+			p.healthCheckInterval = interval
+		}
+	}
+}
+
+// NewTransparentProxy creates a new transparent proxy with optional middlewares and configuration options.
 func NewTransparentProxy(
 	host string,
 	port int,
@@ -98,6 +120,34 @@ func NewTransparentProxy(
 	transportType string,
 	onHealthCheckFailed types.HealthCheckFailedCallback,
 	middlewares ...types.NamedMiddleware,
+) *TransparentProxy {
+	return newTransparentProxyWithOptions(
+		host,
+		port,
+		targetURI,
+		prometheusHandler,
+		authInfoHandler,
+		enableHealthCheck,
+		isRemote,
+		transportType,
+		onHealthCheckFailed,
+		middlewares,
+	)
+}
+
+// newTransparentProxyWithOptions creates a new transparent proxy with optional configuration.
+func newTransparentProxyWithOptions(
+	host string,
+	port int,
+	targetURI string,
+	prometheusHandler http.Handler,
+	authInfoHandler http.Handler,
+	enableHealthCheck bool,
+	isRemote bool,
+	transportType string,
+	onHealthCheckFailed types.HealthCheckFailedCallback,
+	middlewares []types.NamedMiddleware,
+	options ...Option,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
 		host:                host,
@@ -111,6 +161,12 @@ func NewTransparentProxy(
 		isRemote:            isRemote,
 		transportType:       transportType,
 		onHealthCheckFailed: onHealthCheckFailed,
+		healthCheckInterval: DefaultHealthCheckInterval,
+	}
+
+	// Apply options
+	for _, opt := range options {
+		opt(proxy)
 	}
 
 	// Create health checker always for Kubernetes probes
@@ -412,7 +468,11 @@ func (p *TransparentProxy) CloseListener() error {
 }
 
 func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
-	ticker := time.NewTicker(10 * time.Second)
+	interval := p.healthCheckInterval
+	if interval == 0 {
+		interval = DefaultHealthCheckInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {

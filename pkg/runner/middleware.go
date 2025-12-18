@@ -5,7 +5,9 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/idptokenswap"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
@@ -19,6 +21,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 	return map[string]types.MiddlewareFactory{
 		auth.MiddlewareType:              auth.CreateMiddleware,
 		tokenexchange.MiddlewareType:     tokenexchange.CreateMiddleware,
+		idptokenswap.MiddlewareType:      idptokenswap.CreateMiddleware,
 		mcp.ParserMiddlewareType:         mcp.CreateParserMiddleware,
 		mcp.ToolFilterMiddlewareType:     mcp.CreateToolFilterMiddleware,
 		mcp.ToolCallFilterMiddlewareType: mcp.CreateToolCallFilterMiddleware,
@@ -49,6 +52,12 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 
 	// Token exchange middleware (if configured)
 	middlewareConfigs, err = addTokenExchangeMiddleware(middlewareConfigs, config.TokenExchangeConfig)
+	if err != nil {
+		return err
+	}
+
+	// IDP token swap middleware (if auth server with upstream is configured)
+	middlewareConfigs, err = addIDPTokenSwapMiddleware(middlewareConfigs, config.AuthServerConfig)
 	if err != nil {
 		return err
 	}
@@ -182,4 +191,28 @@ func addUsageMetricsMiddleware(middlewares []types.MiddlewareConfig, configDisab
 		return nil, fmt.Errorf("failed to create usage metrics middleware config: %w", err)
 	}
 	return append(middlewares, *usageMetricsConfig), nil
+}
+
+// addIDPTokenSwapMiddleware adds IDP token swap middleware if an auth server with upstream is configured.
+// This middleware swaps the proxy-issued JWT for the original IDP access token stored during OAuth flow.
+func addIDPTokenSwapMiddleware(
+	middlewares []types.MiddlewareConfig,
+	authServerConfig *authserver.RunConfig,
+) ([]types.MiddlewareConfig, error) {
+	// Only enable IDP token swap when:
+	// 1. Auth server config is present and enabled
+	// 2. An upstream IDP is configured (tokens to swap exist)
+	if authServerConfig == nil || !authServerConfig.Enabled {
+		return middlewares, nil
+	}
+	if authServerConfig.Upstream == nil || authServerConfig.Upstream.Issuer == "" {
+		return middlewares, nil
+	}
+
+	idpTokenSwapParams := idptokenswap.MiddlewareParams{}
+	idpTokenSwapConfig, err := types.NewMiddlewareConfig(idptokenswap.MiddlewareType, idpTokenSwapParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create IDP token swap middleware config: %w", err)
+	}
+	return append(middlewares, *idpTokenSwapConfig), nil
 }

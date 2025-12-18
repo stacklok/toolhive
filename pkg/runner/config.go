@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	authoauth "github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -129,6 +131,18 @@ type RunConfig struct {
 
 	// Deployer is the container runtime to use (not serialized)
 	Deployer rt.Deployer `json:"-" yaml:"-"`
+
+	// AuthServerMux is an optional HTTP handler for the embedded OAuth authorization server (not serialized)
+	AuthServerMux http.Handler `json:"-" yaml:"-"`
+
+	// AuthServerWellKnownMux is an optional HTTP handler for the embedded OAuth authorization server's
+	// well-known endpoints (not serialized)
+	AuthServerWellKnownMux http.Handler `json:"-" yaml:"-"`
+
+	// AuthServerConfig configures the embedded OAuth authorization server.
+	// When set and Enabled is true, the proxy will mount OAuth endpoints.
+	// This takes precedence over AuthServerMux/AuthServerWellKnownMux if set.
+	AuthServerConfig *authserver.RunConfig `json:"auth_server_config,omitempty" yaml:"auth_server_config,omitempty"`
 
 	// buildContext indicates whether this config is being built for CLI or operator use (not serialized)
 	buildContext BuildContext

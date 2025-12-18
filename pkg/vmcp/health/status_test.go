@@ -65,7 +65,7 @@ func TestStatusTracker_RecordSuccess(t *testing.T) {
 	tracker := newStatusTracker(3)
 
 	// Record success for new backend
-	tracker.RecordSuccess("backend-1", "Backend 1")
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
 
 	status, exists := tracker.GetStatus("backend-1")
 	assert.True(t, exists)
@@ -95,11 +95,11 @@ func TestStatusTracker_RecordSuccess_AfterFailures(t *testing.T) {
 	assert.Equal(t, vmcp.BackendUnhealthy, state.Status)
 	assert.Equal(t, 5, state.ConsecutiveFailures)
 
-	// Record success - should reset everything
-	tracker.RecordSuccess("backend-1", "Backend 1")
+	// Record success - should mark as degraded due to recovering from failures
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
 
 	state, _ = tracker.GetState("backend-1")
-	assert.Equal(t, vmcp.BackendHealthy, state.Status)
+	assert.Equal(t, vmcp.BackendDegraded, state.Status) // Degraded because recovering from failures
 	assert.Equal(t, 0, state.ConsecutiveFailures)
 	assert.Nil(t, state.LastError)
 }
@@ -150,7 +150,7 @@ func TestStatusTracker_RecordFailure_StatusTransitions(t *testing.T) {
 	tracker := newStatusTracker(2)
 
 	// Start with healthy
-	tracker.RecordSuccess("backend-1", "Backend 1")
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
 	status, _ := tracker.GetStatus("backend-1")
 	assert.Equal(t, vmcp.BackendHealthy, status)
 
@@ -188,11 +188,6 @@ func TestStatusTracker_RecordFailure_DifferentStatusTypes(t *testing.T) {
 			name:           "unauthenticated failures",
 			failureStatus:  vmcp.BackendUnauthenticated,
 			expectedStatus: vmcp.BackendUnauthenticated,
-		},
-		{
-			name:           "degraded failures",
-			failureStatus:  vmcp.BackendDegraded,
-			expectedStatus: vmcp.BackendDegraded,
 		},
 	}
 
@@ -240,14 +235,14 @@ func TestStatusTracker_GetAllStates(t *testing.T) {
 	tracker := newStatusTracker(3)
 
 	// Add multiple backends with different states
-	tracker.RecordSuccess("backend-1", "Backend 1")
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
 
 	// Record enough failures to reach threshold for backend-2
 	for i := 0; i < 3; i++ {
 		tracker.RecordFailure("backend-2", "Backend 2", vmcp.BackendUnhealthy, errors.New("failed"))
 	}
 
-	tracker.RecordSuccess("backend-3", "Backend 3")
+	tracker.RecordSuccess("backend-3", "Backend 3", vmcp.BackendHealthy)
 
 	allStates := tracker.GetAllStates()
 	assert.Len(t, allStates, 3)
@@ -271,7 +266,7 @@ func TestStatusTracker_GetAllStates_Immutability(t *testing.T) {
 	t.Parallel()
 
 	tracker := newStatusTracker(3)
-	tracker.RecordSuccess("backend-1", "Backend 1")
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
 
 	// Get states
 	states1 := tracker.GetAllStates()
@@ -291,7 +286,7 @@ func TestStatusTracker_IsHealthy(t *testing.T) {
 	tracker := newStatusTracker(3)
 
 	// Healthy backend
-	tracker.RecordSuccess("backend-healthy", "Healthy Backend")
+	tracker.RecordSuccess("backend-healthy", "Healthy Backend", vmcp.BackendHealthy)
 	assert.True(t, tracker.IsHealthy("backend-healthy"))
 
 	// Unhealthy backend
@@ -318,7 +313,7 @@ func TestStatusTracker_ConcurrentAccess(t *testing.T) {
 		go func(_ int) {
 			defer wg.Done()
 			for j := 0; j < numOperations; j++ {
-				tracker.RecordSuccess("backend-success", "Backend Success")
+				tracker.RecordSuccess("backend-success", "Backend Success", vmcp.BackendHealthy)
 			}
 		}(i)
 	}
@@ -366,7 +361,7 @@ func TestStatusTracker_StateTimestamps(t *testing.T) {
 	testErr := errors.New("test error")
 
 	// Initial success
-	tracker.RecordSuccess("backend-1", "Backend 1")
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
 	state1, _ := tracker.GetState("backend-1")
 	initialTransitionTime := state1.LastTransitionTime
 
@@ -399,7 +394,7 @@ func TestStatusTracker_MultipleBackends(t *testing.T) {
 	tracker := newStatusTracker(2)
 
 	// Backend 1: Healthy
-	tracker.RecordSuccess("backend-1", "Backend 1")
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
 
 	// Backend 2: Unhealthy
 	for i := 0; i < 2; i++ {
@@ -442,11 +437,11 @@ func TestStatusTracker_RecoveryAfterFailures(t *testing.T) {
 	// Wait a bit
 	time.Sleep(10 * time.Millisecond)
 
-	// Single success should recover immediately
-	tracker.RecordSuccess("backend-1", "Backend 1")
+	// Single success should mark as degraded (recovering from failures)
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
 
 	state, _ = tracker.GetState("backend-1")
-	assert.Equal(t, vmcp.BackendHealthy, state.Status)
+	assert.Equal(t, vmcp.BackendDegraded, state.Status) // Degraded because recovering from failures
 	assert.Equal(t, 0, state.ConsecutiveFailures)
 	assert.Nil(t, state.LastError)
 	assert.True(t, state.LastTransitionTime.After(beforeRecoveryTransitionTime))

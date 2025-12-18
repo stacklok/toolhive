@@ -59,40 +59,58 @@ func newStatusTracker(unhealthyThreshold int) *statusTracker {
 }
 
 // RecordSuccess records a successful health check for a backend.
-// This resets the consecutive failure count and marks the backend as healthy.
+// This may mark the backend as healthy or degraded depending on recent failure history.
+// If the backend had recent failures, it's marked as degraded (recovering state).
 // If the backend was previously unhealthy, this transition is logged.
-func (t *statusTracker) RecordSuccess(backendID string, backendName string) {
+//
+// Parameters:
+//   - backendID: Unique identifier for the backend
+//   - backendName: Human-readable name for logging
+//   - status: The health status returned by the health check (healthy or degraded)
+func (t *statusTracker) RecordSuccess(backendID string, backendName string, status vmcp.BackendHealthStatus) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	state, exists := t.states[backendID]
 	if !exists {
-		// Initialize new state
+		// Initialize new state - no failure history, so accept status as-is
 		state = &backendHealthState{
-			status:              vmcp.BackendHealthy,
+			status:              status,
 			consecutiveFailures: 0,
 			lastCheckTime:       time.Now(),
 			lastError:           nil,
 			lastTransitionTime:  time.Now(),
 		}
 		t.states[backendID] = state
-		logger.Debugf("Backend %s initialized as healthy", backendName)
+		logger.Debugf("Backend %s initialized as %s", backendName, status)
 		return
 	}
 
 	// Check for status transition
 	previousStatus := state.status
 	previousFailures := state.consecutiveFailures
-	state.status = vmcp.BackendHealthy
+
+	// If backend had recent failures, mark as degraded (recovering state)
+	// This takes precedence over the health check's status determination
+	if previousFailures > 0 {
+		state.status = vmcp.BackendDegraded
+		logger.Infof("Backend %s recovering from failures: %s → %s (had %d consecutive failures)",
+			backendName, previousStatus, vmcp.BackendDegraded, previousFailures)
+	} else {
+		// No recent failures, use the status from health check (healthy or degraded from slow response)
+		state.status = status
+		if previousStatus != status {
+			logger.Infof("Backend %s status changed: %s → %s", backendName, previousStatus, status)
+		}
+	}
+
 	state.consecutiveFailures = 0
 	state.lastCheckTime = time.Now()
 	state.lastError = nil
 
-	// Log transition if status changed
-	if previousStatus != vmcp.BackendHealthy {
+	// Update transition time if status changed
+	if previousStatus != state.status {
 		state.lastTransitionTime = time.Now()
-		logger.Infof("Backend %s health recovered: %s → %s (was failing for %d consecutive checks)",
-			backendName, previousStatus, vmcp.BackendHealthy, previousFailures)
 	}
 }
 

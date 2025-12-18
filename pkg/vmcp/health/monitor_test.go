@@ -492,6 +492,7 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, 30*time.Second, config.CheckInterval)
 	assert.Equal(t, 3, config.UnhealthyThreshold)
 	assert.Equal(t, 10*time.Second, config.Timeout)
+	assert.Equal(t, 5*time.Second, config.DegradedThreshold)
 }
 
 func TestHealthCheckMarker(t *testing.T) {
@@ -516,8 +517,8 @@ func TestSummary_String(t *testing.T) {
 	summary := Summary{
 		Total:           10,
 		Healthy:         5,
-		Unhealthy:       2,
 		Degraded:        1,
+		Unhealthy:       2,
 		Unknown:         1,
 		Unauthenticated: 1,
 	}
@@ -525,8 +526,8 @@ func TestSummary_String(t *testing.T) {
 	str := summary.String()
 	assert.Contains(t, str, "total=10")
 	assert.Contains(t, str, "healthy=5")
-	assert.Contains(t, str, "unhealthy=2")
 	assert.Contains(t, str, "degraded=1")
+	assert.Contains(t, str, "unhealthy=2")
 	assert.Contains(t, str, "unknown=1")
 	assert.Contains(t, str, "unauthenticated=1")
 }

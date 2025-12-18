@@ -6,8 +6,8 @@ package health
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/logger"
@@ -21,6 +21,11 @@ type healthChecker struct {
 
 	// timeout is the timeout for health check operations.
 	timeout time.Duration
+
+	// degradedThreshold is the response time threshold for marking a backend as degraded.
+	// If a health check succeeds but takes longer than this duration, the backend is marked degraded.
+	// Zero means disabled (backends will never be marked degraded based on response time alone).
+	degradedThreshold time.Duration
 }
 
 // NewHealthChecker creates a new health checker that uses BackendClient.ListCapabilities
@@ -30,12 +35,14 @@ type healthChecker struct {
 // Parameters:
 //   - client: BackendClient for communicating with backend MCP servers
 //   - timeout: Maximum duration for health check operations (0 = no timeout)
+//   - degradedThreshold: Response time threshold for marking backend as degraded (0 = disabled)
 //
 // Returns a new HealthChecker implementation.
-func NewHealthChecker(client vmcp.BackendClient, timeout time.Duration) vmcp.HealthChecker {
+func NewHealthChecker(client vmcp.BackendClient, timeout time.Duration, degradedThreshold time.Duration) vmcp.HealthChecker {
 	return &healthChecker{
-		client:  client,
-		timeout: timeout,
+		client:            client,
+		timeout:           timeout,
+		degradedThreshold: degradedThreshold,
 	}
 }
 
@@ -43,7 +50,8 @@ func NewHealthChecker(client vmcp.BackendClient, timeout time.Duration) vmcp.Hea
 // This validates the full MCP communication stack and returns the backend's health status.
 //
 // Health determination logic:
-//   - Success: Backend is healthy (BackendHealthy)
+//   - Success with fast response: Backend is healthy (BackendHealthy)
+//   - Success with slow response (> degradedThreshold): Backend is degraded (BackendDegraded)
 //   - Authentication error: Backend is unauthenticated (BackendUnauthenticated)
 //   - Timeout or connection error: Backend is unhealthy (BackendUnhealthy)
 //   - Other errors: Backend is unhealthy (BackendUnhealthy)
@@ -61,94 +69,68 @@ func (h *healthChecker) CheckHealth(ctx context.Context, target *vmcp.BackendTar
 
 	logger.Debugf("Performing health check for backend %s (%s)", target.WorkloadName, target.BaseURL)
 
+	// Track response time for degraded detection
+	startTime := time.Now()
+
 	// Use ListCapabilities as the health check - it performs:
 	// 1. Client creation with transport setup
 	// 2. MCP protocol initialization handshake
 	// 3. Capabilities query (tools, resources, prompts)
 	// This validates the full communication stack
 	_, err := h.client.ListCapabilities(checkCtx, target)
+	responseDuration := time.Since(startTime)
+
 	if err != nil {
 		// Categorize the error to determine health status
 		status := categorizeError(err)
-		logger.Debugf("Health check failed for backend %s: %v (status: %s)",
-			target.WorkloadName, err, status)
+		logger.Debugf("Health check failed for backend %s: %v (status: %s, duration: %v)",
+			target.WorkloadName, err, status, responseDuration)
 		return status, fmt.Errorf("health check failed: %w", err)
 	}
 
-	logger.Debugf("Health check succeeded for backend %s", target.WorkloadName)
+	// Check if response time indicates degraded performance
+	if h.degradedThreshold > 0 && responseDuration > h.degradedThreshold {
+		logger.Warnf("Health check succeeded for backend %s but response was slow: %v (threshold: %v) - marking as degraded",
+			target.WorkloadName, responseDuration, h.degradedThreshold)
+		return vmcp.BackendDegraded, nil
+	}
+
+	logger.Debugf("Health check succeeded for backend %s (duration: %v)", target.WorkloadName, responseDuration)
 	return vmcp.BackendHealthy, nil
 }
 
 // categorizeError determines the appropriate health status based on the error type.
-// This helps distinguish between different failure modes (auth, timeout, connectivity, etc.).
+// This uses sentinel error checking with errors.Is() for type-safe error categorization.
+// Falls back to string-based detection for backwards compatibility with non-wrapped errors.
 func categorizeError(err error) vmcp.BackendHealthStatus {
 	if err == nil {
 		return vmcp.BackendHealthy
 	}
 
-	// Check error message for common patterns
-	errMsg := err.Error()
-
-	// Authentication failures
-	if isAuthError(errMsg) {
+	// 1. Type-safe detection: Check for sentinel errors using errors.Is()
+	// BackendClient now wraps all errors with appropriate sentinel errors
+	if errors.Is(err, vmcp.ErrAuthenticationFailed) || errors.Is(err, vmcp.ErrAuthorizationFailed) {
 		return vmcp.BackendUnauthenticated
 	}
 
-	// Timeout and connection errors
-	if isTimeoutError(errMsg) || isConnectionError(errMsg) {
+	if errors.Is(err, vmcp.ErrTimeout) || errors.Is(err, vmcp.ErrCancelled) {
+		return vmcp.BackendUnhealthy
+	}
+
+	if errors.Is(err, vmcp.ErrBackendUnavailable) {
+		return vmcp.BackendUnhealthy
+	}
+
+	// 2. String-based detection: Fallback for backwards compatibility
+	// This handles errors from sources that don't wrap with sentinel errors
+	if vmcp.IsAuthenticationError(err) {
+		return vmcp.BackendUnauthenticated
+	}
+
+	if vmcp.IsTimeoutError(err) || vmcp.IsConnectionError(err) {
 		return vmcp.BackendUnhealthy
 	}
 
 	// Default to unhealthy for unknown errors
 	return vmcp.BackendUnhealthy
-}
-
-// isAuthError checks if the error message indicates an authentication failure.
-// Uses more specific patterns to avoid false positives from substrings in hostnames, URLs, etc.
-func isAuthError(errMsg string) bool {
-	errLower := strings.ToLower(errMsg)
-
-	// Check for explicit authentication failure messages
-	if strings.Contains(errLower, "authentication failed") ||
-		strings.Contains(errLower, "authentication error") {
-		return true
-	}
-
-	// Check for HTTP 401/403 status codes with context
-	// Match patterns like "401 Unauthorized", "HTTP 401", "status code 401"
-	if strings.Contains(errLower, "401 unauthorized") ||
-		strings.Contains(errLower, "403 forbidden") ||
-		strings.Contains(errLower, "http 401") ||
-		strings.Contains(errLower, "http 403") ||
-		strings.Contains(errLower, "status code 401") ||
-		strings.Contains(errLower, "status code 403") {
-		return true
-	}
-
-	// Check for explicit unauthenticated/unauthorized errors
-	// Use word boundaries to avoid matching hostnames
-	if strings.Contains(errLower, "request unauthenticated") ||
-		strings.Contains(errLower, "request unauthorized") ||
-		strings.Contains(errLower, "access denied") {
-		return true
-	}
-
-	return false
-}
-
-// isTimeoutError checks if the error message indicates a timeout.
-func isTimeoutError(errMsg string) bool {
-	errLower := strings.ToLower(errMsg)
-	return strings.Contains(errLower, "timeout") ||
-		strings.Contains(errLower, "deadline exceeded") ||
-		strings.Contains(errLower, "context deadline exceeded")
-}
-
-// isConnectionError checks if the error message indicates a connection failure.
-func isConnectionError(errMsg string) bool {
-	errLower := strings.ToLower(errMsg)
-	return strings.Contains(errLower, "connection refused") ||
-		strings.Contains(errLower, "connection reset") ||
-		strings.Contains(errLower, "no route to host") ||
-		strings.Contains(errLower, "network is unreachable")
 }

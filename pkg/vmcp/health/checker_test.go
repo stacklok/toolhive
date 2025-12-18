@@ -41,7 +41,7 @@ func TestNewHealthChecker(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			checker := NewHealthChecker(mockClient, tt.timeout)
+			checker := NewHealthChecker(mockClient, tt.timeout, 0)
 			require.NotNil(t, checker)
 
 			// Type assert to access internals for verification
@@ -65,7 +65,7 @@ func TestHealthChecker_CheckHealth_Success(t *testing.T) {
 		Return(&vmcp.CapabilityList{}, nil).
 		Times(1)
 
-	checker := NewHealthChecker(mockClient, 5*time.Second)
+	checker := NewHealthChecker(mockClient, 5*time.Second, 0)
 	target := &vmcp.BackendTarget{
 		WorkloadID:   "backend-1",
 		WorkloadName: "test-backend",
@@ -92,7 +92,7 @@ func TestHealthChecker_CheckHealth_ContextCancellation(t *testing.T) {
 		}).
 		Times(1)
 
-	checker := NewHealthChecker(mockClient, 100*time.Millisecond)
+	checker := NewHealthChecker(mockClient, 100*time.Millisecond, 0)
 	target := &vmcp.BackendTarget{
 		WorkloadID:   "backend-1",
 		WorkloadName: "test-backend",
@@ -120,7 +120,7 @@ func TestHealthChecker_CheckHealth_NoTimeout(t *testing.T) {
 		Times(1)
 
 	// Create checker with no timeout
-	checker := NewHealthChecker(mockClient, 0)
+	checker := NewHealthChecker(mockClient, 0, 0)
 	target := &vmcp.BackendTarget{
 		WorkloadID:   "backend-1",
 		WorkloadName: "test-backend",
@@ -210,7 +210,7 @@ func TestHealthChecker_CheckHealth_ErrorCategorization(t *testing.T) {
 				Return(nil, tt.err).
 				Times(1)
 
-			checker := NewHealthChecker(mockClient, 5*time.Second)
+			checker := NewHealthChecker(mockClient, 5*time.Second, 0)
 			target := &vmcp.BackendTarget{
 				WorkloadID:   "backend-1",
 				WorkloadName: "test-backend",
@@ -309,43 +309,43 @@ func TestCategorizeError(t *testing.T) {
 	}
 }
 
-func TestIsAuthError(t *testing.T) {
+func TestIsAuthenticationError(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name      string
-		errMsg    string
+		err       error
 		expectErr bool
 	}{
 		// Positive cases
-		{name: "authentication failed", errMsg: "authentication failed", expectErr: true},
-		{name: "Authentication Failed (uppercase)", errMsg: "Authentication Failed", expectErr: true},
-		{name: "authentication error", errMsg: "authentication error: bad token", expectErr: true},
-		{name: "401 unauthorized", errMsg: "401 unauthorized", expectErr: true},
-		{name: "403 forbidden", errMsg: "403 forbidden", expectErr: true},
-		{name: "HTTP 401", errMsg: "HTTP 401", expectErr: true},
-		{name: "HTTP 403", errMsg: "HTTP 403", expectErr: true},
-		{name: "status code 401", errMsg: "status code 401", expectErr: true},
-		{name: "status code 403", errMsg: "status code 403", expectErr: true},
-		{name: "request unauthenticated", errMsg: "request unauthenticated", expectErr: true},
-		{name: "request unauthorized", errMsg: "request unauthorized", expectErr: true},
-		{name: "access denied", errMsg: "access denied", expectErr: true},
+		{name: "authentication failed", err: errors.New("authentication failed"), expectErr: true},
+		{name: "Authentication Failed (uppercase)", err: errors.New("Authentication Failed"), expectErr: true},
+		{name: "authentication error", err: errors.New("authentication error: bad token"), expectErr: true},
+		{name: "401 unauthorized", err: errors.New("401 unauthorized"), expectErr: true},
+		{name: "403 forbidden", err: errors.New("403 forbidden"), expectErr: true},
+		{name: "HTTP 401", err: errors.New("HTTP 401"), expectErr: true},
+		{name: "HTTP 403", err: errors.New("HTTP 403"), expectErr: true},
+		{name: "status code 401", err: errors.New("status code 401"), expectErr: true},
+		{name: "status code 403", err: errors.New("status code 403"), expectErr: true},
+		{name: "request unauthenticated", err: errors.New("request unauthenticated"), expectErr: true},
+		{name: "request unauthorized", err: errors.New("request unauthorized"), expectErr: true},
+		{name: "access denied", err: errors.New("access denied"), expectErr: true},
 
 		// Negative cases - should NOT be detected as auth errors
-		{name: "connection refused", errMsg: "connection refused", expectErr: false},
-		{name: "timeout", errMsg: "request timeout", expectErr: false},
-		{name: "generic error", errMsg: "something went wrong", expectErr: false},
-		{name: "404 not found", errMsg: "404 not found", expectErr: false},
-		{name: "500 internal server error", errMsg: "500 internal server error", expectErr: false},
-		{name: "hostname with 401", errMsg: "http://backend401.example.com", expectErr: false},
-		{name: "empty string", errMsg: "", expectErr: false},
+		{name: "connection refused", err: errors.New("connection refused"), expectErr: false},
+		{name: "timeout", err: errors.New("request timeout"), expectErr: false},
+		{name: "generic error", err: errors.New("something went wrong"), expectErr: false},
+		{name: "404 not found", err: errors.New("404 not found"), expectErr: false},
+		{name: "500 internal server error", err: errors.New("500 internal server error"), expectErr: false},
+		{name: "hostname with 401", err: errors.New("http://backend401.example.com"), expectErr: false},
+		{name: "nil error", err: nil, expectErr: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := isAuthError(tt.errMsg)
+			result := vmcp.IsAuthenticationError(tt.err)
 			assert.Equal(t, tt.expectErr, result)
 		})
 	}
@@ -356,23 +356,23 @@ func TestIsTimeoutError(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		errMsg    string
+		err       error
 		expectErr bool
 	}{
-		{name: "timeout", errMsg: "request timeout", expectErr: true},
-		{name: "deadline exceeded", errMsg: "deadline exceeded", expectErr: true},
-		{name: "context deadline exceeded", errMsg: "context deadline exceeded", expectErr: true},
-		{name: "Timeout (uppercase)", errMsg: "Request Timeout", expectErr: true},
-		{name: "connection refused", errMsg: "connection refused", expectErr: false},
-		{name: "generic error", errMsg: "something went wrong", expectErr: false},
-		{name: "empty string", errMsg: "", expectErr: false},
+		{name: "timeout", err: errors.New("request timeout"), expectErr: true},
+		{name: "deadline exceeded", err: errors.New("deadline exceeded"), expectErr: true},
+		{name: "context deadline exceeded", err: errors.New("context deadline exceeded"), expectErr: true},
+		{name: "Timeout (uppercase)", err: errors.New("Request Timeout"), expectErr: true},
+		{name: "connection refused", err: errors.New("connection refused"), expectErr: false},
+		{name: "generic error", err: errors.New("something went wrong"), expectErr: false},
+		{name: "nil error", err: nil, expectErr: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := isTimeoutError(tt.errMsg)
+			result := vmcp.IsTimeoutError(tt.err)
 			assert.Equal(t, tt.expectErr, result)
 		})
 	}
@@ -383,25 +383,25 @@ func TestIsConnectionError(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		errMsg    string
+		err       error
 		expectErr bool
 	}{
-		{name: "connection refused", errMsg: "connection refused", expectErr: true},
-		{name: "connection reset", errMsg: "connection reset by peer", expectErr: true},
-		{name: "no route to host", errMsg: "no route to host", expectErr: true},
-		{name: "network unreachable", errMsg: "network is unreachable", expectErr: true},
-		{name: "Connection Refused (uppercase)", errMsg: "Connection Refused", expectErr: true},
-		{name: "timeout", errMsg: "request timeout", expectErr: false},
-		{name: "authentication failed", errMsg: "authentication failed", expectErr: false},
-		{name: "generic error", errMsg: "something went wrong", expectErr: false},
-		{name: "empty string", errMsg: "", expectErr: false},
+		{name: "connection refused", err: errors.New("connection refused"), expectErr: true},
+		{name: "connection reset", err: errors.New("connection reset by peer"), expectErr: true},
+		{name: "no route to host", err: errors.New("no route to host"), expectErr: true},
+		{name: "network unreachable", err: errors.New("network is unreachable"), expectErr: true},
+		{name: "Connection Refused (uppercase)", err: errors.New("Connection Refused"), expectErr: true},
+		{name: "timeout", err: errors.New("request timeout"), expectErr: false},
+		{name: "authentication failed", err: errors.New("authentication failed"), expectErr: false},
+		{name: "generic error", err: errors.New("something went wrong"), expectErr: false},
+		{name: "nil error", err: nil, expectErr: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := isConnectionError(tt.errMsg)
+			result := vmcp.IsConnectionError(tt.err)
 			assert.Equal(t, tt.expectErr, result)
 		})
 	}
@@ -427,7 +427,7 @@ func TestHealthChecker_CheckHealth_Timeout(t *testing.T) {
 		}).
 		Times(1)
 
-	checker := NewHealthChecker(mockClient, 100*time.Millisecond)
+	checker := NewHealthChecker(mockClient, 100*time.Millisecond, 0)
 	target := &vmcp.BackendTarget{
 		WorkloadID:   "backend-1",
 		WorkloadName: "test-backend",
@@ -464,7 +464,7 @@ func TestHealthChecker_CheckHealth_MultipleBackends(t *testing.T) {
 		}).
 		Times(4)
 
-	checker := NewHealthChecker(mockClient, 5*time.Second)
+	checker := NewHealthChecker(mockClient, 5*time.Second, 0)
 
 	// Test healthy backend
 	status, err := checker.CheckHealth(context.Background(), &vmcp.BackendTarget{

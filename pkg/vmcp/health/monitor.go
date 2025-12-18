@@ -75,6 +75,12 @@ type MonitorConfig struct {
 	// Timeout is the maximum duration for a single health check operation.
 	// Zero means no timeout (not recommended).
 	Timeout time.Duration
+
+	// DegradedThreshold is the response time threshold for marking a backend as degraded.
+	// If a health check succeeds but takes longer than this duration, the backend is marked degraded.
+	// Zero means disabled (backends will never be marked degraded based on response time alone).
+	// Recommended: 5s.
+	DegradedThreshold time.Duration
 }
 
 // DefaultConfig returns sensible default configuration values.
@@ -83,6 +89,7 @@ func DefaultConfig() MonitorConfig {
 		CheckInterval:      30 * time.Second,
 		UnhealthyThreshold: 3,
 		Timeout:            10 * time.Second,
+		DegradedThreshold:  5 * time.Second,
 	}
 }
 
@@ -107,8 +114,8 @@ func NewMonitor(
 		return nil, fmt.Errorf("unhealthy threshold must be >= 1, got %d", config.UnhealthyThreshold)
 	}
 
-	// Create health checker
-	checker := NewHealthChecker(client, config.Timeout)
+	// Create health checker with degraded threshold
+	checker := NewHealthChecker(client, config.Timeout, config.DegradedThreshold)
 
 	// Create status tracker
 	statusTracker := newStatusTracker(config.UnhealthyThreshold)
@@ -239,7 +246,9 @@ func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend)
 	if err != nil {
 		m.statusTracker.RecordFailure(backend.ID, backend.Name, status, err)
 	} else {
-		m.statusTracker.RecordSuccess(backend.ID, backend.Name)
+		// Pass status to RecordSuccess - it may be healthy or degraded (from slow response)
+		// RecordSuccess will further check for recovering state (had recent failures)
+		m.statusTracker.RecordSuccess(backend.ID, backend.Name, status)
 	}
 }
 
@@ -276,15 +285,15 @@ func (m *Monitor) IsBackendHealthy(backendID string) bool {
 }
 
 // GetHealthSummary returns a summary of backend health for logging/monitoring.
-// Returns counts of healthy, unhealthy, and total backends.
+// Returns counts of healthy, degraded, unhealthy, and total backends.
 func (m *Monitor) GetHealthSummary() Summary {
 	allStates := m.statusTracker.GetAllStates()
 
 	summary := Summary{
 		Total:           len(allStates),
 		Healthy:         0,
-		Unhealthy:       0,
 		Degraded:        0,
+		Unhealthy:       0,
 		Unknown:         0,
 		Unauthenticated: 0,
 	}
@@ -293,10 +302,10 @@ func (m *Monitor) GetHealthSummary() Summary {
 		switch state.Status {
 		case vmcp.BackendHealthy:
 			summary.Healthy++
-		case vmcp.BackendUnhealthy:
-			summary.Unhealthy++
 		case vmcp.BackendDegraded:
 			summary.Degraded++
+		case vmcp.BackendUnhealthy:
+			summary.Unhealthy++
 		case vmcp.BackendUnknown:
 			summary.Unknown++
 		case vmcp.BackendUnauthenticated:
@@ -311,14 +320,14 @@ func (m *Monitor) GetHealthSummary() Summary {
 type Summary struct {
 	Total           int
 	Healthy         int
-	Unhealthy       int
 	Degraded        int
+	Unhealthy       int
 	Unknown         int
 	Unauthenticated int
 }
 
 // String returns a human-readable summary.
 func (s Summary) String() string {
-	return fmt.Sprintf("total=%d healthy=%d unhealthy=%d degraded=%d unknown=%d unauthenticated=%d",
-		s.Total, s.Healthy, s.Unhealthy, s.Degraded, s.Unknown, s.Unauthenticated)
+	return fmt.Sprintf("total=%d healthy=%d degraded=%d unhealthy=%d unknown=%d unauthenticated=%d",
+		s.Total, s.Healthy, s.Degraded, s.Unhealthy, s.Unknown, s.Unauthenticated)
 }

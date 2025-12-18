@@ -1,6 +1,6 @@
 # ToolHive Operator CRDs Helm Chart
 
-![Version: 0.0.70](https://img.shields.io/badge/Version-0.0.70-informational?style=flat-square)
+![Version: 0.0.86](https://img.shields.io/badge/Version-0.0.86-informational?style=flat-square)
 ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square)
 
 A Helm chart for installing the ToolHive Operator CRDs into Kubernetes.
@@ -39,6 +39,14 @@ To uninstall/delete the `toolhive-operator-crds` deployment:
 ```console
 helm uninstall <release_name>
 ```
+
+## Why CRDs in templates/?
+
+Helm does not upgrade CRDs placed in the `crds/` directory during `helm upgrade` operations. This is a [known Helm limitation](https://helm.sh/docs/chart_best_practices/custom_resource_definitions/#some-caveats-and-explanations) to prevent accidental data loss. As a result, users running `helm upgrade` would silently have stale CRDs.
+
+To ensure CRDs are upgraded alongside the chart, this chart places CRDs in `templates/` with Helm conditionals. This follows the pattern used by several popular projects.
+
+However, placing CRDs in `templates/` means they would be deleted when the Helm release is uninstalled, which could result in data loss. To prevent this, CRDs are annotated with `helm.sh/resource-policy: keep` by default (controlled by `crds.keep`). This ensures CRDs persist even after uninstalling the chart.
 
 ### Skipping CRDs
 
@@ -84,10 +92,8 @@ To skip Virtual MCP CRDs (VirtualMCPServer, VirtualMCPCompositeToolDefinition, a
 
 ```shell
 helm upgrade -i toolhive-operator-crds oci://ghcr.io/stacklok/toolhive/toolhive-operator-crds \
-  --set crds.install.virtualMCP=false
+  --set crds.install.virtualMcp=false
 ```
-
-You can also combine this with disabling the registry CRD (see [Skipping Registry CRD](#skipping-registry-crd) section above) if you don't need registry features.
 
 **Important:** When Virtual MCP CRDs are not installed, you should also disable the Virtual MCP controllers in the operator:
 
@@ -97,14 +103,16 @@ helm upgrade -i toolhive-operator oci://ghcr.io/stacklok/toolhive/toolhive-opera
   --set operator.features.virtualMCP=false
 ```
 
-If you also disabled the registry CRD, disable the registry controller as well (see the [Skipping Registry CRD](#skipping-registry-crd) section above).
-
-This is useful for deployments that don't require Virtual MCP aggregation features. When `operator.features.virtualMCP=false`, the operator will skip setting up the VirtualMCPServer controller, MCPGroup controller, and their associated webhooks.
+This is useful for deployments that don't require Virtual MCP aggregation features.
 
 ## Values
 
 | Key | Type | Default | Description |
 |-----|-------------|------|---------|
-| crds.install.registry | bool | `true` | Install registry CRD (MCPRegistry). Users who only need server management without registry features can set this to false to skip installing the registry CRD. |
-| crds.install.server | bool | `true` | Install server-related CRDs (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, and ToolConfig). Users who only need registry or aggregation features can set this to false to skip installing server management CRDs. |
-| crds.install.virtualMCP | bool | `true` | Install Virtual MCP CRDs (VirtualMCPServer, VirtualMCPCompositeToolDefinition and MCPGroup). Users who only need core MCP server management can set this to false to skip installing Virtual MCP aggregation features. |
+| crds | object | `{"install":{"registry":true,"server":true,"virtualMcp":true},"keep":true}` | CRD installation configuration |
+| crds.install | object | `{"registry":true,"server":true,"virtualMcp":true}` | Feature flags for CRD groups |
+| crds.install.registry | bool | `true` | Install Registry CRDs (mcpregistries) |
+| crds.install.server | bool | `true` | Install Server CRDs (mcpservers, mcpremoteproxies, mcptoolconfigs, mcpgroups) |
+| crds.install.virtualMcp | bool | `true` | Install VirtualMCP CRDs (virtualmcpservers, virtualmcpcompositetooldefinitions) |
+| crds.keep | bool | `true` | Whether to add the "helm.sh/resource-policy: keep" annotation to CRDs When true, CRDs will not be deleted when the Helm release is uninstalled |
+

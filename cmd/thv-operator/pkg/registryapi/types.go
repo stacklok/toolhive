@@ -49,13 +49,38 @@ const (
 	// RegistryDataMountPath is the mount path for registry data in containers
 	RegistryDataMountPath = "/data/registry"
 
-	// DefaultServiceAccountName is the default service account used by registry API pods
-	DefaultServiceAccountName = "toolhive-registry-api"
 	// ServeCommand is the command used to start the registry API server
 	ServeCommand = "serve"
 
+	// registryAPIResourceSuffix is the suffix used for registry API resources
+	registryAPIResourceSuffix = "-registry-api"
+
 	// DefaultReplicas is the default number of replicas for the registry API deployment
 	DefaultReplicas = 1
+
+	// PGPass volume and path constants
+	// pgpassSecretVolumeName is the name of the volume for the pgpass secret
+	pgpassSecretVolumeName = "pgpass-secret"
+	// pgpassVolumeName is the name of the emptyDir volume for the prepared pgpass file
+	pgpassVolumeName = "pgpass"
+	// pgpassInitContainerName is the name of the init container that sets up the pgpass file
+	pgpassInitContainerName = "setup-pgpass"
+	// pgpassInitContainerImage is the image used by the init container.
+	// Using Chainguard's busybox which runs as nonroot (65532) by default,
+	// matching the typical app user so no chown is needed.
+	// nolint:gosec // G101: This is a container image reference, not a credential
+	pgpassInitContainerImage = "cgr.dev/chainguard/busybox:latest"
+	// pgpassSecretMountPath is the path where the secret is mounted in the init container
+	// nolint:gosec // G101: This is a file path, not a credential
+	pgpassSecretMountPath = "/secret"
+	// pgpassEmptyDirMountPath is the path where the emptyDir is mounted
+	// nolint:gosec // G101: This is a file path, not a credential
+	pgpassEmptyDirMountPath = "/pgpass"
+	// pgpassAppUserMountPath is the path where the pgpass file is mounted in the app container
+	// nolint:gosec // G101: This is a file path, not a credential
+	pgpassAppUserMountPath = "/home/appuser/.pgpass"
+	// pgpassFileName is the name of the pgpass file
+	pgpassFileName = ".pgpass"
 )
 
 //go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=types.go Manager
@@ -70,4 +95,10 @@ type Manager interface {
 
 	// IsAPIReady checks if the registry API deployment is ready and serving requests
 	IsAPIReady(ctx context.Context, mcpRegistry *mcpv1alpha1.MCPRegistry) bool
+}
+
+// GetServiceAccountName returns the service account name for a given MCPRegistry.
+// The name follows the pattern: {registry-name}-registry-api
+func GetServiceAccountName(mcpRegistry *mcpv1alpha1.MCPRegistry) string {
+	return mcpRegistry.Name + registryAPIResourceSuffix
 }

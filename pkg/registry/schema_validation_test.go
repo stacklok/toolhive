@@ -580,7 +580,7 @@ func TestValidateUpstreamRegistry_RealWorld(t *testing.T) {
 		"data": {
 			"servers": [
 				{
-					"$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+					"$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
 					"name": "io.github.stacklok/test-server",
 					"description": "A test MCP server",
 					"version": "1.0.0",

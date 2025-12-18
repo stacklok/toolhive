@@ -10,15 +10,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-)
-
-// Token cache provider types
-const (
-	// CacheProviderMemory represents in-memory token cache provider
-	CacheProviderMemory = "memory"
-	// CacheProviderRedis represents Redis token cache provider
-	CacheProviderRedis = "redis"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 // Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
@@ -89,14 +84,17 @@ type Config struct {
 	// For Kubernetes, complex workflows can also reference VirtualMCPCompositeToolDefinition CRDs.
 	CompositeTools []*CompositeToolConfig `json:"composite_tools,omitempty" yaml:"composite_tools,omitempty"`
 
-	// TokenCache configures token caching.
-	TokenCache *TokenCacheConfig `json:"token_cache,omitempty" yaml:"token_cache,omitempty"`
-
 	// Operational configures operational settings.
 	Operational *OperationalConfig `json:"operational,omitempty" yaml:"operational,omitempty"`
 
 	// Metadata stores additional configuration metadata.
 	Metadata map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+
+	// Telemetry configures telemetry settings.
+	Telemetry *telemetry.Config `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+
+	// Audit configures audit logging settings.
+	Audit *audit.Config `json:"audit,omitempty" yaml:"audit,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.
@@ -156,49 +154,38 @@ type AuthzConfig struct {
 
 // OutgoingAuthConfig configures backend authentication.
 type OutgoingAuthConfig struct {
-	// Source defines how to discover backend auth: "inline", "discovered", "mixed"
+	// Source defines how to discover backend auth: "inline", "discovered"
 	// - inline: Explicit configuration in OutgoingAuth
 	// - discovered: Auto-discover from backend MCPServer.externalAuthConfigRef (Kubernetes only)
-	// - mixed: Discover with selective overrides
 	Source string `json:"source" yaml:"source"`
 
 	// Default is the default auth strategy for backends without explicit config.
-	Default *BackendAuthStrategy `json:"default,omitempty" yaml:"default,omitempty"`
+	Default *authtypes.BackendAuthStrategy `json:"default,omitempty" yaml:"default,omitempty"`
 
 	// Backends contains per-backend auth configuration.
-	Backends map[string]*BackendAuthStrategy `json:"backends,omitempty" yaml:"backends,omitempty"`
+	Backends map[string]*authtypes.BackendAuthStrategy `json:"backends,omitempty" yaml:"backends,omitempty"`
 }
 
-// BackendAuthStrategy defines how to authenticate to a specific backend.
-type BackendAuthStrategy struct {
-	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange"
-	Type string `json:"type" yaml:"type"`
-
-	// Metadata contains strategy-specific configuration.
-	// This is opaque and interpreted by the auth strategy implementation.
-	Metadata map[string]any `json:"metadata,omitempty" yaml:"metadata,omitempty"`
-}
-
-// ResolveForBackend returns the auth strategy and metadata for a given backend ID.
+// ResolveForBackend returns the auth strategy for a given backend ID.
 // It checks for backend-specific config first, then falls back to default.
-// Returns empty string and nil if no authentication is configured.
-func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) (string, map[string]any) {
+// Returns nil if no authentication is configured.
+func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.BackendAuthStrategy {
 	if c == nil {
-		return "", nil
+		return nil
 	}
 
 	// Check for backend-specific configuration
 	if strategy, exists := c.Backends[backendID]; exists && strategy != nil {
-		return strategy.Type, strategy.Metadata
+		return strategy
 	}
 
 	// Fall back to default configuration
 	if c.Default != nil {
-		return c.Default.Type, c.Default.Metadata
+		return c.Default
 	}
 
 	// No authentication configured
-	return "", nil
+	return nil
 }
 
 // AggregationConfig configures capability aggregation.
@@ -246,45 +233,6 @@ type ToolOverride struct {
 
 	// Description is the new tool description (for updating).
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
-}
-
-// TokenCacheConfig configures token caching.
-type TokenCacheConfig struct {
-	// Provider is the cache provider: "memory", "redis"
-	Provider string `json:"provider" yaml:"provider"`
-
-	// Memory contains memory cache config (when Provider = "memory").
-	Memory *MemoryCacheConfig `json:"memory,omitempty" yaml:"memory,omitempty"`
-
-	// Redis contains Redis cache config (when Provider = "redis").
-	Redis *RedisCacheConfig `json:"redis,omitempty" yaml:"redis,omitempty"`
-}
-
-// MemoryCacheConfig configures in-memory token caching.
-type MemoryCacheConfig struct {
-	// MaxEntries is the maximum number of cached tokens.
-	MaxEntries int `json:"max_entries" yaml:"max_entries"`
-
-	// TTLOffset is how long before expiry to refresh tokens.
-	TTLOffset Duration `json:"ttl_offset" yaml:"ttl_offset"`
-}
-
-// RedisCacheConfig configures Redis token caching.
-type RedisCacheConfig struct {
-	// Address is the Redis server address.
-	Address string `json:"address" yaml:"address"`
-
-	// DB is the Redis database number.
-	DB int `json:"db" yaml:"db"`
-
-	// KeyPrefix is the prefix for cache keys.
-	KeyPrefix string `json:"key_prefix,omitempty" yaml:"key_prefix,omitempty"`
-
-	// Password is the Redis password (or secret reference).
-	Password string `json:"password,omitempty" yaml:"password,omitempty"`
-
-	// TTLOffset is how long before expiry to refresh tokens.
-	TTLOffset Duration `json:"ttl_offset" yaml:"ttl_offset"`
 }
 
 // OperationalConfig contains operational settings.
@@ -405,6 +353,11 @@ type WorkflowStepConfig struct {
 	// Elicitation response handlers.
 	OnDecline *ElicitationResponseConfig `json:"on_decline,omitempty"`
 	OnCancel  *ElicitationResponseConfig `json:"on_cancel,omitempty"`
+
+	// DefaultResults provides fallback output values when this step is skipped
+	// (due to condition evaluating to false) or fails (when onError.action is "continue").
+	// Each key corresponds to an output field name referenced by downstream steps.
+	DefaultResults map[string]any `json:"default_results,omitempty" yaml:"default_results,omitempty"`
 }
 
 // StepErrorHandling defines error handling for a workflow step.

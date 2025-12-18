@@ -41,7 +41,8 @@ func TestAuditorMiddlewareDisabled(t *testing.T) {
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("test response"))
+		_, err := w.Write([]byte("test response"))
+		require.NoError(t, err)
 	})
 
 	middleware := auditor.Middleware(handler)
@@ -69,7 +70,8 @@ func TestAuditorMiddlewareWithRequestData(t *testing.T) {
 		body := make([]byte, 100)
 		n, _ := r.Body.Read(body)
 		w.WriteHeader(http.StatusOK)
-		w.Write(body[:n])
+		_, err := w.Write(body[:n])
+		require.NoError(t, err)
 	})
 
 	middleware := auditor.Middleware(handler)
@@ -98,7 +100,8 @@ func TestAuditorMiddlewareWithResponseData(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(responseData))
+		_, err := w.Write([]byte(responseData))
+		require.NoError(t, err)
 	})
 
 	middleware := auditor.Middleware(handler)
@@ -120,7 +123,8 @@ func TestAuditorMiddlewareWithDifferentSSEPaths(t *testing.T) {
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("test response"))
+		_, err := w.Write([]byte("test response"))
+		require.NoError(t, err)
 	})
 
 	middleware := auditor.Middleware(handler)
@@ -517,8 +521,9 @@ func TestAddMetadata(t *testing.T) {
 		ResponseWriter: httptest.NewRecorder(),
 		body:           bytes.NewBufferString("test response"),
 	}
+	req := httptest.NewRequest("GET", "/test", nil)
 
-	auditor.addMetadata(event, duration, rw)
+	auditor.addMetadata(event, req, duration, rw)
 
 	require.NotNil(t, event.Metadata.Extra)
 	assert.Equal(t, int64(150), event.Metadata.Extra[MetadataExtraKeyDuration])

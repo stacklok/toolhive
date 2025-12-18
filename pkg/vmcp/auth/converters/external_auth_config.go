@@ -1,3 +1,3 @@
 // Package converters provides functions to convert external authentication configurations
-// to vMCP auth strategy metadata.
+// to typed vMCP BackendAuthStrategy configurations.
 package converters

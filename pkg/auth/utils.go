@@ -70,7 +70,7 @@ func GetAuthenticationMiddleware(ctx context.Context, oidcConfig *TokenValidator
 			return nil, nil, err
 		}
 
-		authInfoHandler := NewAuthInfoHandler(oidcConfig.Issuer, jwtValidator.jwksURL, oidcConfig.ResourceURL, nil)
+		authInfoHandler := NewAuthInfoHandler(oidcConfig.Issuer, jwtValidator.jwksURL, oidcConfig.ResourceURL, oidcConfig.Scopes)
 		return jwtValidator.Middleware, authInfoHandler, nil
 	}
 

@@ -213,6 +213,7 @@ _Appears in:_
 | `parameters` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Parameters defines the input parameter schema in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Per MCP specification, this should follow standard JSON Schema for tool inputSchema.<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \} |  | Type: object <br /> |
 | `steps` _[WorkflowStep](#workflowstep) array_ | Steps defines the workflow steps |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `timeout` _string_ | Timeout is the maximum execution time for the composite tool | 30m |  |
+| `output` _[OutputSpec](#outputspec)_ | Output defines the structured output schema for the composite tool.<br />Specifies how to construct the final output from workflow step results.<br />If not specified, the workflow returns the last step's output (backward compatible). |  |  |
 
 
 #### ConfigMapAuthzRef
@@ -287,6 +288,22 @@ _Appears in:_
 | `url` _string_ | URL is the URL of the backend MCPServer |  |  |
 
 
+#### ElicitationResponseHandler
+
+
+
+ElicitationResponseHandler defines how to handle user responses to elicitation requests
+
+
+
+_Appears in:_
+- [WorkflowStep](#workflowstep)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `action` _string_ | Action defines the action to take when the user declines or cancels<br />- skip_remaining: Skip remaining steps in the workflow<br />- abort: Abort the entire workflow execution<br />- continue: Continue to the next step | abort | Enum: [skip_remaining abort continue] <br /> |
+
+
 
 
 #### EnvVar
@@ -359,6 +376,7 @@ _Appears in:_
 | --- | --- |
 | `tokenExchange` | ExternalAuthTypeTokenExchange is the type for RFC-8693 token exchange<br /> |
 | `headerInjection` | ExternalAuthTypeHeaderInjection is the type for custom header injection<br /> |
+| `unauthenticated` | ExternalAuthTypeUnauthenticated is the type for no authentication<br />This should only be used for backends on trusted networks (e.g., localhost, VPC)<br />or when authentication is handled by network-level security<br /> |
 
 
 #### FailureHandlingConfig
@@ -448,7 +466,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type defines the authentication type: anonymous or oidc |  | Enum: [anonymous oidc] <br /> |
+| `type` _string_ | Type defines the authentication type: anonymous or oidc<br />When no authentication is required, explicitly set this to "anonymous" |  | Enum: [anonymous oidc] <br />Required: \{\} <br /> |
 | `oidcConfig` _[OIDCConfigRef](#oidcconfigref)_ | OIDCConfig defines OIDC authentication configuration<br />Reuses MCPServer OIDC patterns |  |  |
 | `authzConfig` _[AuthzConfigRef](#authzconfigref)_ | AuthzConfig defines authorization policy configuration<br />Reuses MCPServer authz patterns |  |  |
 
@@ -495,6 +513,7 @@ _Appears in:_
 | `jwksAllowPrivateIP` _boolean_ | JWKSAllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses<br />Use with caution - only enable for trusted internal IDPs | false |  |
 | `protectedResourceAllowPrivateIP` _boolean_ | ProtectedResourceAllowPrivateIP allows protected resource endpoint on private IP addresses<br />Use with caution - only enable for trusted internal IDPs or testing | false |  |
 | `insecureAllowHTTP` _boolean_ | InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing<br />WARNING: This is insecure and should NEVER be used in production<br />Only enable for local development, testing, or trusted internal networks | false |  |
+| `scopes` _string array_ | Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)<br />If empty, defaults to ["openid"] |  |  |
 
 
 #### KubernetesOIDCConfig
@@ -579,7 +598,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[ExternalAuthType](#externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection] <br />Required: \{\} <br /> |
+| `type` _[ExternalAuthType](#externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection unauthenticated] <br />Required: \{\} <br /> |
 | `tokenExchange` _[TokenExchangeConfig](#tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  |  |
 | `headerInjection` _[HeaderInjectionConfig](#headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  |  |
 
@@ -693,8 +712,10 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `phase` _[MCPGroupPhase](#mcpgroupphase)_ | Phase indicates current state | Pending | Enum: [Ready Pending Failed] <br /> |
-| `servers` _string array_ | Servers lists server names in this group |  |  |
-| `serverCount` _integer_ | ServerCount is the number of servers |  |  |
+| `servers` _string array_ | Servers lists MCPServer names in this group |  |  |
+| `serverCount` _integer_ | ServerCount is the number of MCPServers |  |  |
+| `remoteProxies` _string array_ | RemoteProxies lists MCPRemoteProxy names in this group |  |  |
+| `remoteProxyCount` _integer_ | RemoteProxyCount is the number of MCPRemoteProxies |  |  |
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent observations |  |  |
 
 
@@ -720,6 +741,40 @@ _Appears in:_
 | `status` _[MCPRegistryStatus](#mcpregistrystatus)_ |  |  |  |
 
 
+#### MCPRegistryAuthConfig
+
+
+
+MCPRegistryAuthConfig defines authentication configuration for the registry API server.
+
+
+
+_Appears in:_
+- [MCPRegistrySpec](#mcpregistryspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `mode` _[MCPRegistryAuthMode](#mcpregistryauthmode)_ | Mode specifies the authentication mode (anonymous or oauth)<br />Defaults to "anonymous" if not specified.<br />Use "oauth" to enable OAuth/OIDC authentication. | anonymous | Enum: [anonymous oauth] <br /> |
+| `oauth` _[MCPRegistryOAuthConfig](#mcpregistryoauthconfig)_ | OAuth defines OAuth/OIDC specific authentication settings<br />Only used when Mode is "oauth" |  |  |
+
+
+#### MCPRegistryAuthMode
+
+_Underlying type:_ _string_
+
+MCPRegistryAuthMode represents the authentication mode for the registry API server
+
+
+
+_Appears in:_
+- [MCPRegistryAuthConfig](#mcpregistryauthconfig)
+
+| Field | Description |
+| --- | --- |
+| `anonymous` | MCPRegistryAuthModeAnonymous allows unauthenticated access<br /> |
+| `oauth` | MCPRegistryAuthModeOAuth enables OAuth/OIDC authentication<br /> |
+
+
 #### MCPRegistryConfig
 
 
@@ -735,11 +790,39 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is a unique identifier for this registry configuration within the MCPRegistry |  | MinLength: 1 <br />Required: \{\} <br /> |
 | `format` _string_ | Format is the data format (toolhive, upstream) | toolhive | Enum: [toolhive upstream] <br /> |
-| `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef defines the ConfigMap source configuration<br />Mutually exclusive with Git and API |  |  |
-| `git` _[GitSource](#gitsource)_ | Git defines the Git repository source configuration<br />Mutually exclusive with ConfigMapRef and API |  |  |
-| `api` _[APISource](#apisource)_ | API defines the API source configuration<br />Mutually exclusive with ConfigMapRef and Git |  |  |
+| `configMapRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | ConfigMapRef defines the ConfigMap source configuration<br />Mutually exclusive with Git, API, and PVCRef |  |  |
+| `git` _[GitSource](#gitsource)_ | Git defines the Git repository source configuration<br />Mutually exclusive with ConfigMapRef, API, and PVCRef |  |  |
+| `api` _[APISource](#apisource)_ | API defines the API source configuration<br />Mutually exclusive with ConfigMapRef, Git, and PVCRef |  |  |
+| `pvcRef` _[PVCSource](#pvcsource)_ | PVCRef defines the PersistentVolumeClaim source configuration<br />Mutually exclusive with ConfigMapRef, Git, and API |  |  |
 | `syncPolicy` _[SyncPolicy](#syncpolicy)_ | SyncPolicy defines the automatic synchronization behavior for this registry.<br />If specified, enables automatic synchronization at the given interval.<br />Manual synchronization is always supported via annotation-based triggers<br />regardless of this setting. |  |  |
 | `filter` _[RegistryFilter](#registryfilter)_ | Filter defines include/exclude patterns for registry content |  |  |
+
+
+#### MCPRegistryDatabaseConfig
+
+
+
+MCPRegistryDatabaseConfig defines PostgreSQL database configuration for the registry API server.
+Uses a two-user security model: separate users for operations and migrations.
+
+
+
+_Appears in:_
+- [MCPRegistrySpec](#mcpregistryspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `host` _string_ | Host is the database server hostname | postgres |  |
+| `port` _integer_ | Port is the database server port | 5432 | Maximum: 65535 <br />Minimum: 1 <br /> |
+| `user` _string_ | User is the application user (limited privileges: SELECT, INSERT, UPDATE, DELETE)<br />Credentials should be provided via pgpass file or environment variables | db_app |  |
+| `migrationUser` _string_ | MigrationUser is the migration user (elevated privileges: CREATE, ALTER, DROP)<br />Used for running database schema migrations<br />Credentials should be provided via pgpass file or environment variables | db_migrator |  |
+| `database` _string_ | Database is the database name | registry |  |
+| `sslMode` _string_ | SSLMode is the SSL mode for the connection<br />Valid values: disable, allow, prefer, require, verify-ca, verify-full | prefer | Enum: [disable allow prefer require verify-ca verify-full] <br /> |
+| `maxOpenConns` _integer_ | MaxOpenConns is the maximum number of open connections to the database | 10 | Minimum: 1 <br /> |
+| `maxIdleConns` _integer_ | MaxIdleConns is the maximum number of idle connections in the pool | 2 | Minimum: 0 <br /> |
+| `connMaxLifetime` _string_ | ConnMaxLifetime is the maximum amount of time a connection may be reused (Go duration format)<br />Examples: "30m", "1h", "24h" | 30m | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br /> |
+| `dbAppUserPasswordSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | DBAppUserPasswordSecretRef references a Kubernetes Secret containing the password for the application database user.<br />The operator will use this password along with DBMigrationUserPasswordSecretRef to generate a pgpass file<br />that is mounted to the registry API container. |  | Required: \{\} <br /> |
+| `dbMigrationUserPasswordSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | DBMigrationUserPasswordSecretRef references a Kubernetes Secret containing the password for the migration database user.<br />The operator will use this password along with DBAppUserPasswordSecretRef to generate a pgpass file<br />that is mounted to the registry API container. |  | Required: \{\} <br /> |
 
 
 #### MCPRegistryList
@@ -760,6 +843,52 @@ MCPRegistryList contains a list of MCPRegistry
 | `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  |  |
 | `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
 | `items` _[MCPRegistry](#mcpregistry) array_ |  |  |  |
+
+
+#### MCPRegistryOAuthConfig
+
+
+
+MCPRegistryOAuthConfig defines OAuth/OIDC specific authentication settings
+
+
+
+_Appears in:_
+- [MCPRegistryAuthConfig](#mcpregistryauthconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `resourceUrl` _string_ | ResourceURL is the URL identifying this protected resource (RFC 9728)<br />Used in the /.well-known/oauth-protected-resource endpoint |  |  |
+| `providers` _[MCPRegistryOAuthProviderConfig](#mcpregistryoauthproviderconfig) array_ | Providers defines the OAuth/OIDC providers for authentication<br />Multiple providers can be configured (e.g., Kubernetes + external IDP) |  | MinItems: 1 <br /> |
+| `scopesSupported` _string array_ | ScopesSupported defines the OAuth scopes supported by this resource (RFC 9728)<br />Defaults to ["mcp-registry:read", "mcp-registry:write"] if not specified |  |  |
+| `realm` _string_ | Realm is the protection space identifier for WWW-Authenticate header (RFC 7235)<br />Defaults to "mcp-registry" if not specified |  |  |
+
+
+#### MCPRegistryOAuthProviderConfig
+
+
+
+MCPRegistryOAuthProviderConfig defines configuration for an OAuth/OIDC provider
+
+
+
+_Appears in:_
+- [MCPRegistryOAuthConfig](#mcpregistryoauthconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is a unique identifier for this provider (e.g., "kubernetes", "keycloak") |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `issuerUrl` _string_ | IssuerURL is the OIDC issuer URL (e.g., https://accounts.google.com)<br />The JWKS URL will be discovered automatically from .well-known/openid-configuration<br />unless JwksUrl is explicitly specified |  | MinLength: 1 <br />Pattern: `^https?://.*` <br />Required: \{\} <br /> |
+| `jwksUrl` _string_ | JwksUrl is the URL to fetch the JSON Web Key Set (JWKS) from<br />If specified, OIDC discovery is skipped and this URL is used directly<br />Example: https://kubernetes.default.svc/openid/v1/jwks |  | Pattern: `^https?://.*` <br /> |
+| `audience` _string_ | Audience is the expected audience claim in the token (REQUIRED)<br />Per RFC 6749 Section 4.1.3, tokens must be validated against expected audience<br />For Kubernetes, this is typically the API server URL |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `clientId` _string_ | ClientID is the OAuth client ID for token introspection (optional) |  |  |
+| `clientSecretRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | ClientSecretRef is a reference to a Secret containing the client secret<br />The secret should have a key "clientSecret" containing the secret value |  |  |
+| `caCertRef` _[ConfigMapKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#configmapkeyselector-v1-core)_ | CACertRef is a reference to a ConfigMap containing the CA certificate bundle<br />for verifying the provider's TLS certificate.<br />Required for Kubernetes in-cluster authentication or self-signed certificates |  |  |
+| `caCertPath` _string_ | CaCertPath is the path to the CA certificate bundle for verifying the provider's TLS certificate.<br />Required for Kubernetes in-cluster authentication or self-signed certificates |  |  |
+| `authTokenRef` _[SecretKeySelector](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#secretkeyselector-v1-core)_ | AuthTokenRef is a reference to a Secret containing a bearer token for authenticating<br />to OIDC/JWKS endpoints. Useful when the OIDC discovery or JWKS endpoint requires authentication.<br />Example: ServiceAccount token for Kubernetes API server |  |  |
+| `authTokenFile` _string_ | AuthTokenFile is the path to a file containing a bearer token for authenticating to OIDC/JWKS endpoints.<br />Useful when the OIDC discovery or JWKS endpoint requires authentication.<br />Example: /var/run/secrets/kubernetes.io/serviceaccount/token |  |  |
+| `introspectionUrl` _string_ | IntrospectionURL is the OAuth 2.0 Token Introspection endpoint (RFC 7662)<br />Used for validating opaque (non-JWT) tokens<br />If not specified, only JWT tokens can be validated via JWKS |  | Pattern: `^https?://.*` <br /> |
+| `allowPrivateIP` _boolean_ | AllowPrivateIP allows JWKS/OIDC endpoints on private IP addresses<br />Required when the OAuth provider (e.g., Kubernetes API server) is running on a private network<br />Example: Set to true when using https://kubernetes.default.svc as the issuer URL | false |  |
 
 
 #### MCPRegistryPhase
@@ -800,6 +929,8 @@ _Appears in:_
 | `registries` _[MCPRegistryConfig](#mcpregistryconfig) array_ | Registries defines the configuration for the registry data sources |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `enforceServers` _boolean_ | EnforceServers indicates whether MCPServers in this namespace must have their images<br />present in at least one registry in the namespace. When any registry in the namespace<br />has this field set to true, enforcement is enabled for the entire namespace.<br />MCPServers with images not found in any registry will be rejected.<br />When false (default), MCPServers can be deployed regardless of registry presence. | false |  |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the registry API server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the registry API server runs in, you must specify<br />the `registry-api` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br /> |
+| `databaseConfig` _[MCPRegistryDatabaseConfig](#mcpregistrydatabaseconfig)_ | DatabaseConfig defines the PostgreSQL database configuration for the registry API server.<br />If not specified, defaults will be used:<br />  - Host: "postgres"<br />  - Port: 5432<br />  - User: "db_app"<br />  - MigrationUser: "db_migrator"<br />  - Database: "registry"<br />  - SSLMode: "prefer"<br />  - MaxOpenConns: 10<br />  - MaxIdleConns: 2<br />  - ConnMaxLifetime: "30m" |  |  |
+| `authConfig` _[MCPRegistryAuthConfig](#mcpregistryauthconfig)_ | AuthConfig defines the authentication configuration for the registry API server.<br />If not specified, defaults to anonymous authentication. |  |  |
 
 
 #### MCPRegistryStatus
@@ -913,6 +1044,7 @@ _Appears in:_
 | `resources` _[ResourceRequirements](#resourcerequirements)_ | Resources defines the resource requirements for the proxy container |  |  |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false |  |
 | `resourceOverrides` _[ResourceOverrides](#resourceoverrides)_ | ResourceOverrides allows overriding annotations and labels for resources created by the operator |  |  |
+| `groupRef` _string_ | GroupRef is the name of the MCPGroup this proxy belongs to<br />Must reference an existing MCPGroup in the same namespace |  |  |
 
 
 #### MCPRemoteProxyStatus
@@ -1143,23 +1275,6 @@ _Appears in:_
 | `referencingServers` _string array_ | ReferencingServers is a list of MCPServer resources that reference this MCPToolConfig<br />This helps track which servers need to be reconciled when this config changes |  |  |
 
 
-#### MemoryCacheConfig
-
-
-
-MemoryCacheConfig configures in-memory token caching
-
-
-
-_Appears in:_
-- [TokenCacheConfig](#tokencacheconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `maxEntries` _integer_ | MaxEntries is the maximum number of cache entries | 1000 |  |
-| `ttlOffset` _string_ | TTLOffset is the duration before token expiry to refresh | 5m |  |
-
-
 #### NameFilter
 
 
@@ -1284,6 +1399,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
+| `logLevel` _string_ | LogLevel sets the logging level for the Virtual MCP server.<br />Set to "debug" to enable debug logging. When not set, defaults to info level. |  | Enum: [debug] <br /> |
 | `timeouts` _[TimeoutConfig](#timeoutconfig)_ | Timeouts configures timeout settings |  |  |
 | `failureHandling` _[FailureHandlingConfig](#failurehandlingconfig)_ | FailureHandling configures failure handling behavior |  |  |
 
@@ -1319,9 +1435,65 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `source` _string_ | Source defines how backend authentication configurations are determined<br />- discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef<br />- inline: Explicit per-backend configuration in VirtualMCPServer<br />- mixed: Discover most, override specific backends | discovered | Enum: [discovered inline mixed] <br /> |
+| `source` _string_ | Source defines how backend authentication configurations are determined<br />- discovered: Automatically discover from backend's MCPServer.spec.externalAuthConfigRef<br />- inline: Explicit per-backend configuration in VirtualMCPServer | discovered | Enum: [discovered inline] <br /> |
 | `default` _[BackendAuthConfig](#backendauthconfig)_ | Default defines default behavior for backends without explicit auth config |  |  |
-| `backends` _object (keys:string, values:[BackendAuthConfig](#backendauthconfig))_ | Backends defines per-backend authentication overrides<br />Works in all modes (discovered, inline, mixed) |  |  |
+| `backends` _object (keys:string, values:[BackendAuthConfig](#backendauthconfig))_ | Backends defines per-backend authentication overrides<br />Works in all modes (discovered, inline) |  |  |
+
+
+#### OutputPropertySpec
+
+
+
+OutputPropertySpec defines a single output property
+
+
+
+_Appears in:_
+- [OutputPropertySpec](#outputpropertyspec)
+- [OutputSpec](#outputspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _string_ | Type is the JSON Schema type: "string", "integer", "number", "boolean", "object", "array" |  | Enum: [string integer number boolean object array] <br />Required: \{\} <br /> |
+| `description` _string_ | Description is a human-readable description exposed to clients and models |  |  |
+| `value` _string_ | Value is a template string for constructing the runtime value<br />Supports template syntax: \{\{.steps.step_id.output.field\}\}, \{\{.params.param_name\}\}<br />For object types, this can be a JSON string that will be deserialized |  |  |
+| `properties` _object (keys:string, values:[OutputPropertySpec](#outputpropertyspec))_ | Properties defines nested properties for object types |  | Schemaless: \{\} <br /> |
+| `default` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Default is the fallback value if template expansion fails |  | Schemaless: \{\} <br /> |
+
+
+#### OutputSpec
+
+
+
+OutputSpec defines the structured output schema for a composite tool workflow
+
+
+
+_Appears in:_
+- [CompositeToolSpec](#compositetoolspec)
+- [VirtualMCPCompositeToolDefinitionSpec](#virtualmcpcompositetooldefinitionspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `properties` _object (keys:string, values:[OutputPropertySpec](#outputpropertyspec))_ | Properties defines the output properties<br />Map key is the property name, value is the property definition |  |  |
+| `required` _string array_ | Required lists property names that must be present in the output |  |  |
+
+
+#### PVCSource
+
+
+
+PVCSource defines PersistentVolumeClaim source configuration
+
+
+
+_Appears in:_
+- [MCPRegistryConfig](#mcpregistryconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `claimName` _string_ | ClaimName is the name of the PersistentVolumeClaim |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `path` _string_ | Path is the relative path to the registry file within the PVC.<br />The PVC is mounted at /config/registry/\{registryName\}/.<br />The full file path becomes: /config/registry/\{registryName\}/\{path\}<br />This design:<br />- Each registry gets its own mount point (consistent with ConfigMap sources)<br />- Multiple registries can share the same PVC by mounting it at different paths<br />- Users control PVC organization freely via the path field<br />Examples:<br />  Registry "production" using PVC "shared-data" with path "prod/registry.json":<br />    PVC contains /prod/registry.json → accessed at /config/registry/production/prod/registry.json<br />  Registry "development" using SAME PVC "shared-data" with path "dev/registry.json":<br />    PVC contains /dev/registry.json → accessed at /config/registry/development/dev/registry.json<br />    (Same PVC, different mount path)<br />  Registry "staging" using DIFFERENT PVC "other-pvc" with path "registry.json":<br />    PVC contains /registry.json → accessed at /config/registry/staging/registry.json<br />    (Different PVC, independent mount)<br />  Registry "team-a" with path "v1/servers.json":<br />    PVC contains /v1/servers.json → accessed at /config/registry/team-a/v1/servers.json<br />    (Subdirectories allowed in path) | registry.json | Pattern: `^.*\.json$` <br /> |
 
 
 #### PermissionProfileRef
@@ -1377,26 +1549,6 @@ _Appears in:_
 | `labels` _object (keys:string, values:string)_ | Labels to add or override on the resource |  |  |
 | `podTemplateMetadataOverrides` _[ResourceMetadataOverrides](#resourcemetadataoverrides)_ |  |  |  |
 | `env` _[EnvVar](#envvar) array_ | Env are environment variables to set in the proxy container (thv run process)<br />These affect the toolhive proxy itself, not the MCP server it manages<br />Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy |  |  |
-
-
-#### RedisCacheConfig
-
-
-
-RedisCacheConfig configures Redis token caching
-
-
-
-_Appears in:_
-- [TokenCacheConfig](#tokencacheconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `address` _string_ | Address is the Redis server address |  | Required: \{\} <br /> |
-| `db` _integer_ | DB is the Redis database number | 0 |  |
-| `keyPrefix` _string_ | KeyPrefix is the prefix for cache keys | vmcp:tokens: |  |
-| `passwordRef` _[SecretKeyRef](#secretkeyref)_ | PasswordRef references a secret containing the Redis password |  |  |
-| `tls` _boolean_ | TLS enables TLS for Redis connections | false |  |
 
 
 #### RegistryFilter
@@ -1518,7 +1670,6 @@ SecretKeyRef is a reference to a key within a Secret
 _Appears in:_
 - [HeaderInjectionConfig](#headerinjectionconfig)
 - [InlineOIDCConfig](#inlineoidcconfig)
-- [RedisCacheConfig](#rediscacheconfig)
 - [TokenExchangeConfig](#tokenexchangeconfig)
 
 | Field | Description | Default | Validation |
@@ -1650,6 +1801,7 @@ TelemetryConfig defines observability configuration for the MCP server
 _Appears in:_
 - [MCPRemoteProxySpec](#mcpremoteproxyspec)
 - [MCPServerSpec](#mcpserverspec)
+- [VirtualMCPServerSpec](#virtualmcpserverspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -1672,24 +1824,6 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `default` _string_ | Default is the default timeout for backend requests | 30s |  |
 | `perWorkload` _object (keys:string, values:string)_ | PerWorkload defines per-workload timeout overrides |  |  |
-
-
-#### TokenCacheConfig
-
-
-
-TokenCacheConfig configures token caching behavior
-
-
-
-_Appears in:_
-- [VirtualMCPServerSpec](#virtualmcpserverspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `provider` _string_ | Provider defines the cache provider type | memory | Enum: [memory redis] <br /> |
-| `memory` _[MemoryCacheConfig](#memorycacheconfig)_ | Memory configures in-memory token caching<br />Only used when Provider is "memory" |  |  |
-| `redis` _[RedisCacheConfig](#rediscacheconfig)_ | Redis configures Redis token caching<br />Only used when Provider is "redis" |  |  |
 
 
 #### TokenExchangeConfig
@@ -1838,6 +1972,7 @@ _Appears in:_
 | `steps` _[WorkflowStep](#workflowstep) array_ | Steps defines the workflow step definitions<br />Steps are executed sequentially in Phase 1<br />Phase 2 will support DAG execution via dependsOn |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `timeout` _string_ | Timeout is the overall workflow timeout<br />Defaults to 30m if not specified | 30m | Pattern: `^([0-9]+(\.[0-9]+)?(ms\|s\|m\|h))+$` <br /> |
 | `failureMode` _string_ | FailureMode defines the failure handling strategy<br />- abort: Stop execution on first failure (default)<br />- continue: Continue executing remaining steps | abort | Enum: [abort continue] <br /> |
+| `output` _[OutputSpec](#outputspec)_ | Output defines the structured output schema for the composite tool.<br />Specifies how to construct the final output from workflow step results.<br />If not specified, the workflow returns the last step's output (backward compatible). |  |  |
 
 
 #### VirtualMCPCompositeToolDefinitionStatus
@@ -1937,15 +2072,15 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `groupRef` _[GroupRef](#groupref)_ | GroupRef references an existing MCPGroup that defines backend workloads<br />The referenced MCPGroup must exist in the same namespace |  | Required: \{\} <br /> |
-| `incomingAuth` _[IncomingAuthConfig](#incomingauthconfig)_ | IncomingAuth configures authentication for clients connecting to the Virtual MCP server |  |  |
+| `incomingAuth` _[IncomingAuthConfig](#incomingauthconfig)_ | IncomingAuth configures authentication for clients connecting to the Virtual MCP server<br />Must be explicitly set - use "anonymous" type when no authentication is required |  | Required: \{\} <br /> |
 | `outgoingAuth` _[OutgoingAuthConfig](#outgoingauthconfig)_ | OutgoingAuth configures authentication from Virtual MCP to backend MCPServers |  |  |
 | `aggregation` _[AggregationConfig](#aggregationconfig)_ | Aggregation defines tool aggregation and conflict resolution strategies |  |  |
 | `compositeTools` _[CompositeToolSpec](#compositetoolspec) array_ | CompositeTools defines inline composite tool definitions<br />For complex workflows, reference VirtualMCPCompositeToolDefinition resources instead |  |  |
 | `compositeToolRefs` _[CompositeToolDefinitionRef](#compositetooldefinitionref) array_ | CompositeToolRefs references VirtualMCPCompositeToolDefinition resources<br />for complex, reusable workflows |  |  |
-| `tokenCache` _[TokenCacheConfig](#tokencacheconfig)_ | TokenCache configures token caching behavior |  |  |
 | `operational` _[OperationalConfig](#operationalconfig)_ | Operational defines operational settings like timeouts and health checks |  |  |
 | `serviceType` _string_ | ServiceType specifies the Kubernetes service type for the Virtual MCP server | ClusterIP | Enum: [ClusterIP NodePort LoadBalancer] <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the Virtual MCP server<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the Virtual MCP server runs in, you must specify<br />the 'vmcp' container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br /> |
+| `telemetry` _[TelemetryConfig](#telemetryconfig)_ | Telemetry configures OpenTelemetry-based observability for the Virtual MCP server<br />including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint |  |  |
 
 
 #### VirtualMCPServerStatus
@@ -2006,13 +2141,16 @@ _Appears in:_
 | `id` _string_ | ID is the unique identifier for this step |  | Required: \{\} <br /> |
 | `type` _string_ | Type is the step type (tool, elicitation, etc.) | tool | Enum: [tool elicitation] <br /> |
 | `tool` _string_ | Tool is the tool to call (format: "workload.tool_name")<br />Only used when Type is "tool" |  |  |
-| `arguments` _object (keys:string, values:string)_ | Arguments is a map of argument templates<br />Supports Go template syntax with .params and .steps |  |  |
+| `arguments` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Arguments is a map of argument values with template expansion support.<br />Supports Go template syntax with .params and .steps for string values.<br />Non-string values (integers, booleans, arrays, objects) are passed as-is.<br />Note: the templating is only supported on the first level of the key-value pairs. |  | Type: object <br /> |
 | `message` _string_ | Message is the elicitation message<br />Only used when Type is "elicitation" |  |  |
 | `schema` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | Schema defines the expected response schema for elicitation |  | Type: object <br /> |
+| `onDecline` _[ElicitationResponseHandler](#elicitationresponsehandler)_ | OnDecline defines the action to take when the user explicitly declines the elicitation<br />Only used when Type is "elicitation" |  |  |
+| `onCancel` _[ElicitationResponseHandler](#elicitationresponsehandler)_ | OnCancel defines the action to take when the user cancels/dismisses the elicitation<br />Only used when Type is "elicitation" |  |  |
 | `dependsOn` _string array_ | DependsOn lists step IDs that must complete before this step |  |  |
 | `condition` _string_ | Condition is a template expression that determines if the step should execute |  |  |
 | `onError` _[ErrorHandling](#errorhandling)_ | OnError defines error handling behavior |  |  |
 | `timeout` _string_ | Timeout is the maximum execution time for this step |  |  |
+| `defaultResults` _object (keys:string, values:[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg))_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps.<br />Required if the step may be skipped AND downstream steps reference this step's output. |  | Schemaless: \{\} <br /> |
 
 
 #### WorkloadToolConfig

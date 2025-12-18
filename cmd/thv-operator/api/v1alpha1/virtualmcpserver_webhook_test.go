@@ -36,6 +36,33 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			errMsg:  "spec.groupRef.name is required",
 		},
 		{
+			name: "empty IncomingAuth type",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					IncomingAuth: &IncomingAuthConfig{
+						Type: "",
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.incomingAuth.type is required",
+		},
+		{
+			name: "OIDC auth without OIDCConfig",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					IncomingAuth: &IncomingAuthConfig{
+						Type:       "oidc",
+						OIDCConfig: nil,
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.incomingAuth.oidcConfig is required when type is oidc",
+		},
+		{
 			name: "valid outgoingAuth with discovered source",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
@@ -58,7 +85,24 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.outgoingAuth.source must be one of: discovered, inline, mixed",
+			errMsg:  "spec.outgoingAuth.source must be one of: discovered, inline",
+		},
+		{
+			name: "invalid backend auth type",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					OutgoingAuth: &OutgoingAuthConfig{
+						Backends: map[string]BackendAuthConfig{
+							"test-backend": {
+								Type: "invalid-type",
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.outgoingAuth.backends[test-backend].type must be one of: discovered, external_auth_config_ref",
 		},
 		{
 			name: "valid backend external auth config ref",
@@ -370,65 +414,40 @@ func TestVirtualMCPServerValidate(t *testing.T) {
 			errMsg:  "spec.compositeTools[0].steps[1].id \"step1\" is duplicated",
 		},
 		{
-			name: "valid token cache - memory",
+			name: "invalid composite tool - invalid step type",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
 					GroupRef: GroupRef{Name: "test-group"},
-					TokenCache: &TokenCacheConfig{
-						Provider: "memory",
-						Memory: &MemoryCacheConfig{
-							MaxEntries: 1000,
-						},
-					},
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "valid token cache - redis with password",
-			vmcp: &VirtualMCPServer{
-				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
-					TokenCache: &TokenCacheConfig{
-						Provider: "redis",
-						Redis: &RedisCacheConfig{
-							Address: "redis:6379",
-							PasswordRef: &SecretKeyRef{
-								Name: "redis-secret",
-								Key:  "password",
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:   "step1",
+									Type: "invalid-type",
+									Tool: "backend.tool",
+								},
 							},
 						},
 					},
 				},
 			},
-			wantErr: false,
+			wantErr: true,
+			errMsg:  "spec.compositeTools[0].steps[0].type must be tool or elicitation",
 		},
 		{
-			name: "invalid token cache - redis without address",
+			name: "invalid aggregation - invalid conflict resolution strategy",
 			vmcp: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
 					GroupRef: GroupRef{Name: "test-group"},
-					TokenCache: &TokenCacheConfig{
-						Provider: "redis",
-						Redis:    &RedisCacheConfig{},
+					Aggregation: &AggregationConfig{
+						ConflictResolution: "invalid-strategy",
 					},
 				},
 			},
 			wantErr: true,
-			errMsg:  "spec.tokenCache.redis.address is required",
-		},
-		{
-			name: "invalid token cache - invalid provider",
-			vmcp: &VirtualMCPServer{
-				Spec: VirtualMCPServerSpec{
-					GroupRef: GroupRef{Name: "test-group"},
-					TokenCache: &TokenCacheConfig{
-						Provider: "invalid",
-					},
-				},
-			},
-			wantErr: true,
-			errMsg:  "spec.tokenCache.provider must be memory or redis",
+			errMsg:  "spec.aggregation.conflictResolution must be one of: prefix, priority, manual",
 		},
 	}
 
@@ -518,6 +537,31 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 				},
 			},
 			wantErr: false,
+		},
+		{
+			name: "invalid error handling action",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:   "step1",
+									Tool: "backend.tool1",
+									OnError: &ErrorHandling{
+										Action: "invalid-action",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.compositeTools[0].steps[0].onError.action must be abort, continue, or retry",
 		},
 		{
 			name: "invalid error handling - retry without maxRetries",
@@ -623,6 +667,259 @@ func TestValidateCompositeToolsWithDependencies(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "spec.compositeTools[0].steps[0].onError.retryDelay: invalid duration format \"invalid\", expected format like '30s', '5m', '1h', '1h30m'",
+		},
+		{
+			name: "invalid composite tool - unknown dependency reference",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:        "step1",
+									Tool:      "backend.tool1",
+									DependsOn: []string{"unknown-step"},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.compositeTools[0].steps[0].dependsOn references unknown step \"unknown-step\"",
+		},
+		{
+			name: "valid elicitation with OnDecline skip_remaining",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnDecline: &ElicitationResponseHandler{
+										Action: "skip_remaining",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid elicitation with OnDecline abort",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnDecline: &ElicitationResponseHandler{
+										Action: "abort",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid elicitation with OnDecline continue",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnDecline: &ElicitationResponseHandler{
+										Action: "continue",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid elicitation with OnCancel skip_remaining",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnCancel: &ElicitationResponseHandler{
+										Action: "skip_remaining",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid elicitation with OnCancel abort",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnCancel: &ElicitationResponseHandler{
+										Action: "abort",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid elicitation with OnCancel continue",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnCancel: &ElicitationResponseHandler{
+										Action: "continue",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid elicitation with both OnDecline and OnCancel",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnDecline: &ElicitationResponseHandler{
+										Action: "skip_remaining",
+									},
+									OnCancel: &ElicitationResponseHandler{
+										Action: "abort",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid elicitation - OnDecline with invalid action",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnDecline: &ElicitationResponseHandler{
+										Action: "invalid-action",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.compositeTools[0].steps[0].onDecline.action must be one of: skip_remaining, abort, continue",
+		},
+		{
+			name: "invalid elicitation - OnCancel with invalid action",
+			vmcp: &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef: GroupRef{Name: "test-group"},
+					CompositeTools: []CompositeToolSpec{
+						{
+							Name:        "test-tool",
+							Description: "Test composite tool",
+							Steps: []WorkflowStep{
+								{
+									ID:      "step1",
+									Type:    WorkflowStepTypeElicitation,
+									Message: "Please provide input",
+									OnCancel: &ElicitationResponseHandler{
+										Action: "invalid-action",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "spec.compositeTools[0].steps[0].onCancel.action must be one of: skip_remaining, abort, continue",
 		},
 	}
 

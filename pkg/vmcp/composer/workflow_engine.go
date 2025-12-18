@@ -10,6 +10,7 @@ import (
 
 	"github.com/cenkalti/backoff/v5"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
@@ -53,6 +54,9 @@ type workflowEngine struct {
 
 	// stateStore manages workflow state persistence.
 	stateStore WorkflowStateStore
+
+	// auditor provides audit logging for workflow execution (optional).
+	auditor *audit.WorkflowAuditor
 }
 
 // NewWorkflowEngine creates a new workflow execution engine.
@@ -62,11 +66,14 @@ type workflowEngine struct {
 //
 // The stateStore parameter is optional. If nil, workflow status tracking and cancellation
 // will not be available. Use NewInMemoryStateStore() for basic state tracking.
+//
+// The auditor parameter is optional. If nil, workflow execution will not be audited.
 func NewWorkflowEngine(
 	rtr router.Router,
 	backendClient vmcp.BackendClient,
 	elicitationHandler ElicitationProtocolHandler,
 	stateStore WorkflowStateStore,
+	auditor *audit.WorkflowAuditor,
 ) Composer {
 	return &workflowEngine{
 		router:             rtr,
@@ -76,6 +83,7 @@ func NewWorkflowEngine(
 		elicitationHandler: elicitationHandler,
 		dagExecutor:        newDAGExecutor(defaultMaxParallelSteps),
 		stateStore:         stateStore,
+		auditor:            auditor,
 	}
 }
 
@@ -118,6 +126,9 @@ func (e *workflowEngine) ExecuteWorkflow(
 		StartTime:  time.Now(),
 		Metadata:   make(map[string]string),
 	}
+
+	// Audit workflow start
+	e.auditWorkflowStart(ctx, workflowCtx.WorkflowID, def.Name, paramsWithDefaults, timeout)
 
 	// Save initial workflow state
 	if e.stateStore != nil {
@@ -172,6 +183,9 @@ func (e *workflowEngine) ExecuteWorkflow(
 			result.EndTime = time.Now()
 			result.Duration = result.EndTime.Sub(result.StartTime)
 
+			// Audit workflow timeout
+			e.auditWorkflowTimeout(ctx, workflowCtx.WorkflowID, def.Name, result.Duration, len(result.Steps))
+
 			// Save timeout state
 			if e.stateStore != nil {
 				finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusTimedOut)
@@ -190,6 +204,9 @@ func (e *workflowEngine) ExecuteWorkflow(
 		result.Error = dagErr
 		result.EndTime = time.Now()
 		result.Duration = result.EndTime.Sub(result.StartTime)
+
+		// Audit workflow failure
+		e.auditWorkflowFailure(ctx, workflowCtx.WorkflowID, def.Name, result.Duration, len(result.Steps), dagErr)
 
 		// Save failure state
 		if e.stateStore != nil {
@@ -223,6 +240,9 @@ func (e *workflowEngine) ExecuteWorkflow(
 			result.EndTime = time.Now()
 			result.Duration = result.EndTime.Sub(result.StartTime)
 
+			// Audit workflow failure
+			e.auditWorkflowFailure(ctx, workflowCtx.WorkflowID, def.Name, result.Duration, len(result.Steps), result.Error)
+
 			// Save failure state
 			if e.stateStore != nil {
 				finalState := e.buildWorkflowStatus(workflowCtx, WorkflowStatusFailed)
@@ -240,6 +260,9 @@ func (e *workflowEngine) ExecuteWorkflow(
 
 	result.EndTime = time.Now()
 	result.Duration = result.EndTime.Sub(result.StartTime)
+
+	// Audit workflow completion
+	e.auditWorkflowCompletion(ctx, workflowCtx.WorkflowID, def.Name, result.Duration, len(result.Steps), result.Output)
 
 	// Save final workflow state
 	if e.stateStore != nil {
@@ -265,8 +288,18 @@ func (e *workflowEngine) executeStep(
 ) error {
 	logger.Debugf("Executing step: %s (type: %s)", step.ID, step.Type)
 
+	// Record step start time for audit logging
+	stepStartTime := time.Now()
+
 	// Record step start
 	workflowCtx.RecordStepStart(step.ID)
+
+	// Audit step start
+	toolName := ""
+	if step.Type == StepTypeTool {
+		toolName = step.Tool
+	}
+	e.auditStepStart(ctx, workflowCtx.WorkflowID, step.ID, string(step.Type), toolName)
 
 	// Apply step timeout
 	timeout := step.Timeout
@@ -286,26 +319,54 @@ func (e *workflowEngine) executeStep(
 			condErr := fmt.Errorf("%w: failed to evaluate condition for step %s: %v",
 				ErrTemplateExpansion, step.ID, err)
 			workflowCtx.RecordStepFailure(step.ID, condErr)
+
+			// Audit step failure
+			e.auditStepFailure(ctx, workflowCtx.WorkflowID, step.ID, time.Since(stepStartTime), 0, condErr)
+
 			return condErr
 		}
 		if !shouldExecute {
 			logger.Debugf("Step %s skipped due to condition", step.ID)
-			workflowCtx.RecordStepSkipped(step.ID)
+			workflowCtx.RecordStepSkipped(step.ID, step.DefaultResults)
+
+			// Audit step skipped
+			e.auditStepSkipped(ctx, workflowCtx.WorkflowID, step.ID, step.Condition)
+
 			return nil
 		}
 	}
 
 	// Execute based on step type
+	var err error
 	switch step.Type {
 	case StepTypeTool:
-		return e.executeToolStep(stepCtx, step, workflowCtx)
+		err = e.executeToolStep(stepCtx, step, workflowCtx)
 	case StepTypeElicitation:
-		return e.executeElicitationStep(stepCtx, step, workflowCtx)
+		err = e.executeElicitationStep(stepCtx, step, workflowCtx)
 	default:
-		err := fmt.Errorf("unsupported step type: %s", step.Type)
+		err = fmt.Errorf("unsupported step type: %s", step.Type)
 		workflowCtx.RecordStepFailure(step.ID, err)
+
+		// Audit step failure
+		e.auditStepFailure(ctx, workflowCtx.WorkflowID, step.ID, time.Since(stepStartTime), 0, err)
+
 		return err
 	}
+
+	// Audit step completion or failure
+	duration := time.Since(stepStartTime)
+	retryCount := 0
+	if result, exists := workflowCtx.GetStepResult(step.ID); exists {
+		retryCount = result.RetryCount
+	}
+
+	if err != nil {
+		e.auditStepFailure(ctx, workflowCtx.WorkflowID, step.ID, duration, retryCount, err)
+	} else {
+		e.auditStepCompletion(ctx, workflowCtx.WorkflowID, step.ID, duration, retryCount)
+	}
+
+	return err
 }
 
 // executeToolStep executes a tool step.
@@ -428,6 +489,9 @@ func (*workflowEngine) handleToolStepFailure(
 	// Check if we should continue on error
 	if step.OnError != nil && step.OnError.ContinueOnError {
 		logger.Warnf("Continuing workflow despite step %s failure (continue_on_error=true)", step.ID)
+		if result, exists := workflowCtx.GetStepResult(step.ID); exists && step.DefaultResults != nil {
+			result.Output = step.DefaultResults
+		}
 		return nil
 	}
 
@@ -964,4 +1028,110 @@ func applyParameterDefaults(schema map[string]any, params map[string]any) map[st
 	}
 
 	return result
+}
+
+// auditWorkflowStart logs workflow start if auditor is configured.
+func (e *workflowEngine) auditWorkflowStart(
+	ctx context.Context,
+	workflowID string,
+	workflowName string,
+	parameters map[string]any,
+	timeout time.Duration,
+) {
+	if e.auditor != nil {
+		e.auditor.LogWorkflowStarted(ctx, workflowID, workflowName, parameters, timeout)
+	}
+}
+
+// auditWorkflowCompletion logs successful workflow completion if auditor is configured.
+func (e *workflowEngine) auditWorkflowCompletion(
+	ctx context.Context,
+	workflowID string,
+	workflowName string,
+	duration time.Duration,
+	stepCount int,
+	output map[string]any,
+) {
+	if e.auditor != nil {
+		e.auditor.LogWorkflowCompleted(ctx, workflowID, workflowName, duration, stepCount, output)
+	}
+}
+
+// auditWorkflowFailure logs workflow failure if auditor is configured.
+func (e *workflowEngine) auditWorkflowFailure(
+	ctx context.Context,
+	workflowID string,
+	workflowName string,
+	duration time.Duration,
+	stepCount int,
+	err error,
+) {
+	if e.auditor != nil {
+		e.auditor.LogWorkflowFailed(ctx, workflowID, workflowName, duration, stepCount, err)
+	}
+}
+
+// auditWorkflowTimeout logs workflow timeout if auditor is configured.
+func (e *workflowEngine) auditWorkflowTimeout(
+	ctx context.Context,
+	workflowID string,
+	workflowName string,
+	duration time.Duration,
+	stepCount int,
+) {
+	if e.auditor != nil {
+		e.auditor.LogWorkflowTimedOut(ctx, workflowID, workflowName, duration, stepCount)
+	}
+}
+
+// auditStepStart logs step start if auditor is configured.
+func (e *workflowEngine) auditStepStart(
+	ctx context.Context,
+	workflowID string,
+	stepID string,
+	stepType string,
+	toolName string,
+) {
+	if e.auditor != nil {
+		e.auditor.LogStepStarted(ctx, workflowID, stepID, stepType, toolName)
+	}
+}
+
+// auditStepCompletion logs step completion if auditor is configured.
+func (e *workflowEngine) auditStepCompletion(
+	ctx context.Context,
+	workflowID string,
+	stepID string,
+	duration time.Duration,
+	retryCount int,
+) {
+	if e.auditor != nil {
+		e.auditor.LogStepCompleted(ctx, workflowID, stepID, duration, retryCount)
+	}
+}
+
+// auditStepFailure logs step failure if auditor is configured.
+func (e *workflowEngine) auditStepFailure(
+	ctx context.Context,
+	workflowID string,
+	stepID string,
+	duration time.Duration,
+	retryCount int,
+	err error,
+) {
+	if e.auditor != nil {
+		e.auditor.LogStepFailed(ctx, workflowID, stepID, duration, retryCount, err)
+	}
+}
+
+// auditStepSkipped logs step skip if auditor is configured.
+func (e *workflowEngine) auditStepSkipped(
+	ctx context.Context,
+	workflowID string,
+	stepID string,
+	condition string,
+) {
+	if e.auditor != nil {
+		e.auditor.LogStepSkipped(ctx, workflowID, stepID, condition)
+	}
 }

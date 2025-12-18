@@ -70,6 +70,8 @@ spec:
           {{- end }}
           - name: TOOLHIVE_RUNNER_IMAGE
             value: "{{ .Values.operator.toolhiveRunnerImage }}"
+          - name: VMCP_IMAGE
+            value: "{{ .Values.operator.vmcpImage }}"
           - name: TOOLHIVE_PROXY_HOST
             value: "{{ .Values.operator.proxyHost }}"
           - name: TOOLHIVE_REGISTRY_API_IMAGE

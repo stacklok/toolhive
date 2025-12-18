@@ -3,6 +3,7 @@ package audit
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -20,6 +21,30 @@ import (
 
 // LevelAudit is a custom audit log level - between Info and Warn
 const LevelAudit = slog.Level(2)
+
+// contextKey is an unexported type for context keys to avoid collisions
+type contextKey struct{}
+
+// backendInfoKey is the context key for storing backend routing information
+var backendInfoKey = contextKey{}
+
+// BackendInfo stores backend routing information that can be mutated by handlers.
+// This allows handlers deep in the call stack to provide backend info to the audit middleware.
+type BackendInfo struct {
+	BackendName string
+}
+
+// WithBackendInfo returns a new context with BackendInfo attached.
+func WithBackendInfo(ctx context.Context, info *BackendInfo) context.Context {
+	return context.WithValue(ctx, backendInfoKey, info)
+}
+
+// BackendInfoFromContext retrieves BackendInfo from the context.
+// Returns (nil, false) if BackendInfo is not found in the context.
+func BackendInfoFromContext(ctx context.Context) (*BackendInfo, bool) {
+	info, ok := ctx.Value(backendInfoKey).(*BackendInfo)
+	return info, ok
+}
 
 // NewAuditLogger creates a new structured audit logger that writes to the specified writer.
 func NewAuditLogger(w io.Writer) *slog.Logger {
@@ -39,6 +64,7 @@ type Auditor struct {
 	config        *Config
 	auditLogger   *slog.Logger
 	transportType string // e.g., "sse", "streamable-http"
+	logWriter     io.Writer
 }
 
 // NewAuditorWithTransport creates a new Auditor with the given configuration and transport information.
@@ -59,7 +85,17 @@ func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, er
 		config:        config,
 		auditLogger:   NewAuditLogger(logWriter),
 		transportType: transportType,
+		logWriter:     logWriter,
 	}, nil
+}
+
+// Close closes the underlying log writer if it implements io.Closer.
+// This should be called when the auditor is no longer needed to properly release resources.
+func (a *Auditor) Close() error {
+	if closer, ok := a.logWriter.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 // isSSETransport checks if the current transport is SSE
@@ -129,6 +165,14 @@ func (a *Auditor) Middleware(next http.Handler) http.Handler {
 
 		startTime := time.Now()
 
+		// Add BackendInfo to context if not already present
+		// (backend enrichment middleware may have already added it)
+		if _, ok := BackendInfoFromContext(r.Context()); !ok {
+			backendInfo := &BackendInfo{}
+			ctx := WithBackendInfo(r.Context(), backendInfo)
+			r = r.WithContext(ctx)
+		}
+
 		// Capture request data if configured
 		var requestData []byte
 		if a.config.IncludeRequestData && r.Body != nil {
@@ -194,7 +238,7 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 	}
 
 	// Add metadata
-	a.addMetadata(event, duration, rw)
+	a.addMetadata(event, r, duration, rw)
 
 	// Add request/response data if configured
 	a.addEventData(event, r, rw, requestData)
@@ -318,32 +362,45 @@ func (*Auditor) getClientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// extractSubjectsFromIdentity extracts subject information from an Identity.
+// This helper ensures consistent fallback order and validation across all auditors.
+// Fallback order for user: Name → PreferredUsername → Email
+func extractSubjectsFromIdentity(identity *auth.Identity) map[string]string {
+	subjects := make(map[string]string)
+
+	// Extract user ID (subject)
+	if identity.Subject != "" {
+		subjects[SubjectKeyUserID] = identity.Subject
+	}
+
+	// Extract user name with fallback order: Name → PreferredUsername → Email
+	if identity.Name != "" {
+		subjects[SubjectKeyUser] = identity.Name
+	} else if preferredUsername, ok := identity.Claims["preferred_username"].(string); ok && preferredUsername != "" {
+		subjects[SubjectKeyUser] = preferredUsername
+	} else if identity.Email != "" {
+		subjects[SubjectKeyUser] = identity.Email
+	}
+
+	// Add client information if available
+	if clientName, ok := identity.Claims["client_name"].(string); ok && clientName != "" {
+		subjects[SubjectKeyClientName] = clientName
+	}
+
+	if clientVersion, ok := identity.Claims["client_version"].(string); ok && clientVersion != "" {
+		subjects[SubjectKeyClientVersion] = clientVersion
+	}
+
+	return subjects
+}
+
 // extractSubjects extracts subject information from the HTTP request.
 func (*Auditor) extractSubjects(r *http.Request) map[string]string {
 	subjects := make(map[string]string)
 
 	// Extract user information from Identity
 	if identity, ok := auth.IdentityFromContext(r.Context()); ok {
-		if identity.Subject != "" {
-			subjects[SubjectKeyUserID] = identity.Subject
-		}
-
-		if identity.Name != "" {
-			subjects[SubjectKeyUser] = identity.Name
-		} else if preferredUsername, ok := identity.Claims["preferred_username"].(string); ok && preferredUsername != "" {
-			subjects[SubjectKeyUser] = preferredUsername
-		} else if identity.Email != "" {
-			subjects[SubjectKeyUser] = identity.Email
-		}
-
-		// Add client information if available
-		if clientName, ok := identity.Claims["client_name"].(string); ok && clientName != "" {
-			subjects[SubjectKeyClientName] = clientName
-		}
-
-		if clientVersion, ok := identity.Claims["client_version"].(string); ok && clientVersion != "" {
-			subjects[SubjectKeyClientVersion] = clientVersion
-		}
+		subjects = extractSubjectsFromIdentity(identity)
 	}
 
 	// If no user found in claims, set anonymous
@@ -398,7 +455,7 @@ func (*Auditor) extractTarget(r *http.Request, eventType string) map[string]stri
 }
 
 // addMetadata adds metadata to the audit event.
-func (a *Auditor) addMetadata(event *AuditEvent, duration time.Duration, rw *responseWriter) {
+func (a *Auditor) addMetadata(event *AuditEvent, r *http.Request, duration time.Duration, rw *responseWriter) {
 	if event.Metadata.Extra == nil {
 		event.Metadata.Extra = make(map[string]any)
 	}
@@ -416,6 +473,12 @@ func (a *Auditor) addMetadata(event *AuditEvent, duration time.Duration, rw *res
 	// Add response size if available
 	if rw.body != nil {
 		event.Metadata.Extra[MetadataExtraKeyResponseSize] = rw.body.Len()
+	}
+
+	// Add backend routing information from context if available
+	// Backend info is populated by the backend enrichment middleware
+	if backendInfo, ok := BackendInfoFromContext(r.Context()); ok && backendInfo != nil && backendInfo.BackendName != "" {
+		event.Metadata.Extra["backend_name"] = backendInfo.BackendName
 	}
 }
 

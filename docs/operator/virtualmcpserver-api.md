@@ -47,13 +47,26 @@ Configures authentication for clients connecting to the Virtual MCP server. Reus
 **Type**: `IncomingAuthConfig`
 
 **Fields**:
-- `oidcConfig` (OIDCConfigRef, optional): OIDC authentication configuration
+- `type` (string, required): Authentication type. Must be explicitly specified.
+  - `anonymous`: No authentication required (use this when no auth is needed)
+  - `oidc`: OIDC/OAuth2 authentication
+- `oidcConfig` (OIDCConfigRef, optional): OIDC authentication configuration (required when type=oidc)
 - `authzConfig` (AuthzConfigRef, optional): Authorization policy configuration
 
-**Example**:
+**Important**: The `type` field must always be explicitly specified. When no authentication is required, use `type: anonymous`.
+
+**Example (anonymous auth)**:
 ```yaml
 spec:
   incomingAuth:
+    type: anonymous
+```
+
+**Example (OIDC auth)**:
+```yaml
+spec:
+  incomingAuth:
+    type: oidc
     oidcConfig:
       type: kubernetes
       kubernetes:
@@ -80,7 +93,6 @@ Configures authentication from Virtual MCP to backend MCPServers.
 - `source` (string, optional): How backend authentication configurations are determined
   - `discovered` (default): Automatically discover from backend's `MCPServer.spec.externalAuthConfigRef`
   - `inline`: Explicit per-backend configuration in VirtualMCPServer
-  - `mixed`: Discover most, override specific backends
 - `default` (BackendAuthConfig, optional): Default behavior for backends without explicit auth config
 - `backends` (map[string]BackendAuthConfig, optional): Per-backend authentication overrides
 
@@ -111,27 +123,6 @@ spec:
             key: token
           headerName: Authorization
           headerFormat: "Bearer {token}"
-```
-
-**Example (mixed mode)**:
-```yaml
-spec:
-  outgoingAuth:
-    source: mixed
-    default:
-      type: discovered
-    backends:
-      # Override specific backends while others use discovery
-      slack:
-        type: service_account
-        serviceAccount:
-          credentialsRef:
-            name: slack-bot-override
-            key: token
-          headerName: Authorization
-          headerFormat: "Bearer {token}"
-      # Other backends (github, jira, etc.) will automatically
-      # discover auth config from their MCPServer.spec.externalAuthConfigRef
 ```
 
 #### BackendAuthConfig
@@ -249,40 +240,6 @@ spec:
           dependsOn: ["confirm_deploy"]
 ```
 
-### `.spec.tokenCache` (optional)
-
-Configures token caching behavior.
-
-**Type**: `TokenCacheConfig`
-
-**Fields**:
-- `provider` (string, optional, default: "memory"): Cache provider type (`memory` or `redis`)
-- `memory` (MemoryCacheConfig, optional): In-memory cache configuration
-- `redis` (RedisCacheConfig, optional): Redis cache configuration
-
-**Example (memory)**:
-```yaml
-spec:
-  tokenCache:
-    provider: memory
-    memory:
-      maxEntries: 1000
-      ttlOffset: 5m
-```
-
-**Example (redis)**:
-```yaml
-spec:
-  tokenCache:
-    provider: redis
-    redis:
-      address: redis:6379
-      db: 0
-      passwordRef:
-        name: redis-secret
-        key: password
-```
-
 ### `.spec.operational` (optional)
 
 Defines operational settings like timeouts and health checks.
@@ -332,6 +289,47 @@ spec:
               memory: "512Mi"
               cpu: "1000m"
 ```
+
+### `.spec.telemetry` (optional)
+
+Configures OpenTelemetry-based observability for the Virtual MCP server, including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint. Uses the same configuration structure as `MCPServer.spec.telemetry`.
+
+**Type**: `TelemetryConfig`
+
+**Fields**:
+- `openTelemetry` (OpenTelemetryConfig, optional): OpenTelemetry configuration
+  - `enabled` (boolean): Controls whether OpenTelemetry is enabled
+  - `endpoint` (string): OTLP endpoint URL for tracing and metrics
+  - `serviceName` (string): Service name for telemetry (defaults to VirtualMCPServer name)
+  - `headers` ([]string): Authentication headers for OTLP endpoint (key=value format)
+  - `insecure` (boolean): Use HTTP instead of HTTPS for the OTLP endpoint
+  - `metrics` (OpenTelemetryMetricsConfig, optional): Metrics-specific configuration
+    - `enabled` (boolean): Controls whether OTLP metrics are sent
+  - `tracing` (OpenTelemetryTracingConfig, optional): Tracing-specific configuration
+    - `enabled` (boolean): Controls whether OTLP tracing is sent
+    - `samplingRate` (string): Trace sampling rate (0.0-1.0, default: "0.05")
+- `prometheus` (PrometheusConfig, optional): Prometheus-specific configuration
+  - `enabled` (boolean): Controls whether Prometheus metrics endpoint is exposed at /metrics
+
+**Example**:
+```yaml
+spec:
+  telemetry:
+    openTelemetry:
+      enabled: true
+      endpoint: "otel-collector:4317"
+      serviceName: "my-vmcp"
+      insecure: true
+      tracing:
+        enabled: true
+        samplingRate: "0.1"
+      metrics:
+        enabled: true
+    prometheus:
+      enabled: true
+```
+
+For details on what metrics and traces are emitted, see the [Virtual MCP Server Observability](./virtualmcpserver-observability.md) documentation.
 
 ## Status Fields
 
@@ -418,6 +416,7 @@ spec:
 
   # Client authentication
   incomingAuth:
+    type: oidc
     oidcConfig:
       type: kubernetes
       kubernetes:
@@ -478,13 +477,6 @@ spec:
             description: "{{.steps.fetch_logs.output}}"
           dependsOn: ["fetch_logs"]
 
-  # Token caching
-  tokenCache:
-    provider: memory
-    memory:
-      maxEntries: 1000
-      ttlOffset: 5m
-
   # Operational settings
   operational:
     timeouts:
@@ -499,6 +491,19 @@ spec:
         enabled: true
         failureThreshold: 5
         timeout: 60s
+
+  # Observability
+  telemetry:
+    openTelemetry:
+      enabled: true
+      endpoint: "otel-collector:4317"
+      tracing:
+        enabled: true
+        samplingRate: "0.1"
+      metrics:
+        enabled: true
+    prometheus:
+      enabled: true
 
 status:
   phase: Ready
@@ -552,7 +557,9 @@ status:
 
 The VirtualMCPServer CRD includes comprehensive validation:
 
-1. **Required Fields**: `spec.groupRef.name` must be specified
+1. **Required Fields**:
+   - `spec.groupRef.name` must be specified
+   - `spec.incomingAuth.type` must be explicitly specified (use `anonymous` when no auth is needed)
 2. **Reference Validation**: All references (groupRef, authConfigRef, toolConfigRef) must be valid
 3. **Conflict Resolution**: Priority strategy requires `priorityOrder` configuration
 4. **Composite Tools**: Must have unique names, valid steps with IDs, and proper dependencies
@@ -565,4 +572,5 @@ The VirtualMCPServer CRD includes comprehensive validation:
 - [MCPServer](./mcpserver-api.md): Individual MCP server instances
 - [MCPExternalAuthConfig](./mcpexternalauthconfig-api.md): External authentication configuration
 - [MCPToolConfig](./toolconfig-api.md): Tool filtering and renaming configuration
+- [Virtual MCP Server Observability](./virtualmcpserver-observability.md): Telemetry and metrics documentation
 - [Virtual MCP Proposal](../proposals/THV-2106-virtual-mcp-server.md): Complete design proposal

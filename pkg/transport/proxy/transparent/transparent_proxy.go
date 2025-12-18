@@ -80,6 +80,9 @@ type TransparentProxy struct {
 
 	// Transport type (sse, streamable-http)
 	transportType string
+
+	// Callback when health check fails (for remote servers)
+	onHealthCheckFailed types.HealthCheckFailedCallback
 }
 
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
@@ -92,24 +95,24 @@ func NewTransparentProxy(
 	enableHealthCheck bool,
 	isRemote bool,
 	transportType string,
+	onHealthCheckFailed types.HealthCheckFailedCallback,
 	middlewares ...types.NamedMiddleware,
 ) *TransparentProxy {
 	proxy := &TransparentProxy{
-		host:              host,
-		port:              port,
-		targetURI:         targetURI,
-		middlewares:       middlewares,
-		shutdownCh:        make(chan struct{}),
-		prometheusHandler: prometheusHandler,
-		authInfoHandler:   authInfoHandler,
-		sessionManager:    session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
-		isRemote:          isRemote,
-		transportType:     transportType,
+		host:                host,
+		port:                port,
+		targetURI:           targetURI,
+		middlewares:         middlewares,
+		shutdownCh:          make(chan struct{}),
+		prometheusHandler:   prometheusHandler,
+		authInfoHandler:     authInfoHandler,
+		sessionManager:      session.NewManager(session.DefaultSessionTTL, session.NewProxySession),
+		isRemote:            isRemote,
+		transportType:       transportType,
+		onHealthCheckFailed: onHealthCheckFailed,
 	}
 
 	// Create health checker always for Kubernetes probes
-	// For remote proxies, pass nil pinger since we can't ping authenticated servers
-	// For local proxies, create pinger to check MCP server status
 	var mcpPinger healthcheck.MCPPinger
 	if enableHealthCheck {
 		mcpPinger = NewMCPPinger(targetURI)
@@ -423,6 +426,10 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 				alive := p.healthChecker.CheckHealth(parentCtx)
 				if alive.Status != healthcheck.StatusHealthy {
 					logger.Infof("Health check failed for %s; initiating proxy shutdown", p.targetURI)
+					// Notify the runner about health check failure so it can update workload status
+					if p.onHealthCheckFailed != nil {
+						p.onHealthCheckFailed()
+					}
 					if err := p.Stop(parentCtx); err != nil {
 						logger.Errorf("Failed to stop proxy for %s: %v", p.targetURI, err)
 					}

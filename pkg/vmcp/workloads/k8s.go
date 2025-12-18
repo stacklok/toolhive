@@ -3,6 +3,7 @@ package workloads
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -65,8 +66,12 @@ func NewK8SDiscovererWithClient(k8sClient client.Client, namespace string) Disco
 	}
 }
 
-// ListWorkloadsInGroup returns all workload names that belong to the specified group.
-func (d *k8sDiscoverer) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]string, error) {
+// ListWorkloadsInGroup returns all workloads that belong to the specified group.
+// This includes both MCPServers and MCPRemoteProxies.
+func (d *k8sDiscoverer) ListWorkloadsInGroup(ctx context.Context, groupName string) ([]TypedWorkload, error) {
+	var groupWorkloads []TypedWorkload
+
+	// List MCPServers in the group
 	mcpServerList := &mcpv1alpha1.MCPServerList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(d.namespace),
@@ -76,19 +81,51 @@ func (d *k8sDiscoverer) ListWorkloadsInGroup(ctx context.Context, groupName stri
 		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
 	}
 
-	var groupWorkloads []string
 	for i := range mcpServerList.Items {
 		mcpServer := &mcpServerList.Items[i]
 		if mcpServer.Spec.GroupRef == groupName {
-			groupWorkloads = append(groupWorkloads, mcpServer.Name)
+			groupWorkloads = append(groupWorkloads, TypedWorkload{
+				Name: mcpServer.Name,
+				Type: WorkloadTypeMCPServer,
+			})
+		}
+	}
+
+	// List MCPRemoteProxies in the group
+	mcpRemoteProxyList := &mcpv1alpha1.MCPRemoteProxyList{}
+	if err := d.k8sClient.List(ctx, mcpRemoteProxyList, listOpts...); err != nil {
+		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
+	}
+
+	for i := range mcpRemoteProxyList.Items {
+		mcpRemoteProxy := &mcpRemoteProxyList.Items[i]
+		if mcpRemoteProxy.Spec.GroupRef == groupName {
+			groupWorkloads = append(groupWorkloads, TypedWorkload{
+				Name: mcpRemoteProxy.Name,
+				Type: WorkloadTypeMCPRemoteProxy,
+			})
 		}
 	}
 
 	return groupWorkloads, nil
 }
 
-// GetWorkloadAsVMCPBackend retrieves workload details by name and converts it to a vmcp.Backend.
-func (d *k8sDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workloadName string) (*vmcp.Backend, error) {
+// GetWorkloadAsVMCPBackend retrieves workload details and converts it to a vmcp.Backend.
+// The workload type determines whether to fetch an MCPServer or MCPRemoteProxy.
+func (d *k8sDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workload TypedWorkload) (*vmcp.Backend, error) {
+	switch workload.Type {
+	case WorkloadTypeMCPRemoteProxy:
+		return d.getMCPRemoteProxyAsBackend(ctx, workload.Name)
+	case WorkloadTypeMCPServer:
+		return d.getMCPServerAsBackend(ctx, workload.Name)
+	default:
+		// Default: treat as MCPServer for backwards compatibility
+		return d.getMCPServerAsBackend(ctx, workload.Name)
+	}
+}
+
+// getMCPServerAsBackend retrieves an MCPServer and converts it to a vmcp.Backend.
+func (d *k8sDiscoverer) getMCPServerAsBackend(ctx context.Context, workloadName string) (*vmcp.Backend, error) {
 	mcpServer := &mcpv1alpha1.MCPServer{}
 	key := client.ObjectKey{Name: workloadName, Namespace: d.namespace}
 	if err := d.k8sClient.Get(ctx, key, mcpServer); err != nil {
@@ -110,6 +147,35 @@ func (d *k8sDiscoverer) GetWorkloadAsVMCPBackend(ctx context.Context, workloadNa
 	// Skip workloads without a URL (not accessible)
 	if backend.BaseURL == "" {
 		logger.Debugf("Skipping workload %s without URL", workloadName)
+		return nil, nil
+	}
+
+	return backend, nil
+}
+
+// getMCPRemoteProxyAsBackend retrieves an MCPRemoteProxy and converts it to a vmcp.Backend.
+func (d *k8sDiscoverer) getMCPRemoteProxyAsBackend(ctx context.Context, proxyName string) (*vmcp.Backend, error) {
+	mcpRemoteProxy := &mcpv1alpha1.MCPRemoteProxy{}
+	key := client.ObjectKey{Name: proxyName, Namespace: d.namespace}
+	if err := d.k8sClient.Get(ctx, key, mcpRemoteProxy); err != nil {
+		if errors.IsNotFound(err) {
+			return nil, fmt.Errorf("MCPRemoteProxy %s not found", proxyName)
+		}
+		return nil, fmt.Errorf("failed to get MCPRemoteProxy: %w", err)
+	}
+
+	// Convert MCPRemoteProxy to Backend
+	backend := d.mcpRemoteProxyToBackend(ctx, mcpRemoteProxy)
+
+	// If conversion failed, return nil
+	if backend == nil {
+		logger.Warnf("Skipping remote proxy %s due to conversion failure", proxyName)
+		return nil, nil
+	}
+
+	// Skip workloads without a URL (not accessible)
+	if backend.BaseURL == "" {
+		logger.Debugf("Skipping remote proxy %s without URL", proxyName)
 		return nil, nil
 	}
 
@@ -138,7 +204,14 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 			port = int(mcpServer.Spec.Port) // Fallback to deprecated Port field
 		}
 		if port > 0 {
-			url = transport.GenerateMCPServerURL(mcpServer.Spec.Transport, transport.LocalhostIPv4, port, mcpServer.Name, "")
+			url = transport.GenerateMCPServerURL(
+				mcpServer.Spec.Transport,
+				mcpServer.Spec.ProxyMode,
+				transport.LocalhostIPv4,
+				port,
+				mcpServer.Name,
+				"",
+			)
 		}
 	}
 
@@ -178,12 +251,11 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 	}
 
 	// Copy user labels to metadata first
-	for k, v := range userLabels {
-		backend.Metadata[k] = v
-	}
+	maps.Copy(backend.Metadata, userLabels)
 
 	// Set system metadata (these override user labels to prevent conflicts)
 	backend.Metadata["tool_type"] = "mcp"
+	backend.Metadata["workload_type"] = "mcp_server"
 	backend.Metadata["workload_status"] = string(mcpServer.Status.Phase)
 	if mcpServer.Namespace != "" {
 		backend.Metadata["namespace"] = mcpServer.Namespace
@@ -209,11 +281,36 @@ func (d *k8sDiscoverer) mcpServerToBackend(ctx context.Context, mcpServer *mcpv1
 //   - Returns nil error if auth config is discovered and successfully populated into backend
 //   - Returns error if auth config exists but discovery/resolution fails (e.g., missing secret, invalid config)
 func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1alpha1.MCPServer, backend *vmcp.Backend) error {
-	// Discover and resolve auth using the converters package
-	strategyType, metadata, err := converters.DiscoverAndResolveAuth(
+	return d.discoverAuthConfigFromRef(
 		ctx,
 		mcpServer.Spec.ExternalAuthConfigRef,
 		mcpServer.Namespace,
+		mcpServer.Name,
+		"MCPServer",
+		backend,
+	)
+}
+
+// discoverAuthConfigFromRef is a helper that discovers and populates authentication configuration
+// from an ExternalAuthConfigRef. This consolidates auth discovery logic for both MCPServer and MCPRemoteProxy.
+//
+// Return behavior:
+//   - Returns nil error if authConfigRef is nil (no auth config) - this is expected behavior
+//   - Returns nil error if auth config is discovered and successfully populated into backend
+//   - Returns error if auth config exists but discovery/resolution fails (e.g., missing secret, invalid config)
+func (d *k8sDiscoverer) discoverAuthConfigFromRef(
+	ctx context.Context,
+	authConfigRef *mcpv1alpha1.ExternalAuthConfigRef,
+	namespace string,
+	resourceName string,
+	resourceKind string,
+	backend *vmcp.Backend,
+) error {
+	// Discover and resolve auth using the converters package
+	strategy, err := converters.DiscoverAndResolveAuth(
+		ctx,
+		authConfigRef,
+		namespace,
 		d.k8sClient,
 	)
 	if err != nil {
@@ -221,16 +318,15 @@ func (d *k8sDiscoverer) discoverAuthConfig(ctx context.Context, mcpServer *mcpv1
 	}
 
 	// If no auth was discovered, nothing to populate
-	if strategyType == "" {
-		logger.Debugf("MCPServer %s has no ExternalAuthConfigRef, no auth config to discover", mcpServer.Name)
+	if strategy == nil {
+		logger.Debugf("%s %s has no ExternalAuthConfigRef, no auth config to discover", resourceKind, resourceName)
 		return nil
 	}
 
-	// Populate backend auth fields
-	backend.AuthStrategy = strategyType
-	backend.AuthMetadata = metadata
+	// Populate backend auth fields with typed strategy
+	backend.AuthConfig = strategy
 
-	logger.Debugf("Discovered auth config for MCPServer %s: strategy=%s", mcpServer.Name, backend.AuthStrategy)
+	logger.Debugf("Discovered auth config for %s %s: strategy=%s", resourceKind, resourceName, strategy.Type)
 	return nil
 }
 
@@ -248,6 +344,110 @@ func mapK8SWorkloadPhaseToHealth(phase mcpv1alpha1.MCPServerPhase) vmcp.BackendH
 	default:
 		return vmcp.BackendUnknown
 	}
+}
+
+// mapMCPRemoteProxyPhaseToHealth converts a MCPRemoteProxyPhase to a backend health status.
+func mapMCPRemoteProxyPhaseToHealth(phase mcpv1alpha1.MCPRemoteProxyPhase) vmcp.BackendHealthStatus {
+	switch phase {
+	case mcpv1alpha1.MCPRemoteProxyPhaseReady:
+		return vmcp.BackendHealthy
+	case mcpv1alpha1.MCPRemoteProxyPhaseFailed:
+		return vmcp.BackendUnhealthy
+	case mcpv1alpha1.MCPRemoteProxyPhaseTerminating:
+		return vmcp.BackendUnhealthy
+	case mcpv1alpha1.MCPRemoteProxyPhasePending:
+		return vmcp.BackendUnknown
+	default:
+		return vmcp.BackendUnknown
+	}
+}
+
+// mcpRemoteProxyToBackend converts an MCPRemoteProxy CRD to a vmcp.Backend.
+// If the MCPRemoteProxy has an ExternalAuthConfigRef, it will be fetched and converted to auth strategy metadata.
+func (d *k8sDiscoverer) mcpRemoteProxyToBackend(ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy) *vmcp.Backend {
+	// Parse transport type from proxy spec
+	transportType, err := transporttypes.ParseTransportType(proxy.Spec.Transport)
+	if err != nil {
+		logger.Warnf("Failed to parse transport type %s for MCPRemoteProxy %s: %v", proxy.Spec.Transport, proxy.Name, err)
+		transportType = transporttypes.TransportTypeStreamableHTTP
+	}
+
+	// Use the status URL if available, otherwise reconstruct from service name
+	url := proxy.Status.URL
+	if url == "" {
+		port := int(proxy.GetProxyPort())
+		if port > 0 {
+			url = transport.GenerateMCPServerURL(proxy.Spec.Transport, "", transport.LocalhostIPv4, port, proxy.Name, "")
+		}
+	}
+
+	// Map proxy phase to backend health status
+	healthStatus := mapMCPRemoteProxyPhaseToHealth(proxy.Status.Phase)
+
+	// Transport type string
+	transportTypeStr := transportType.String()
+	if transportTypeStr == "" {
+		transportTypeStr = "unknown"
+	}
+
+	// Extract user labels from annotations
+	userLabels := make(map[string]string)
+	if proxy.Annotations != nil {
+		for key, value := range proxy.Annotations {
+			if !isStandardK8sAnnotation(key) {
+				userLabels[key] = value
+			}
+		}
+	}
+
+	backend := &vmcp.Backend{
+		ID:            proxy.Name,
+		Name:          proxy.Name,
+		BaseURL:       url,
+		TransportType: transportTypeStr,
+		HealthStatus:  healthStatus,
+		Metadata:      make(map[string]string),
+	}
+
+	// Copy user labels to metadata first
+	for k, v := range userLabels {
+		backend.Metadata[k] = v
+	}
+
+	// Set system metadata (these override user labels to prevent conflicts)
+	backend.Metadata["tool_type"] = "mcp"
+	backend.Metadata["workload_type"] = "remote_proxy"
+	backend.Metadata["workload_status"] = string(proxy.Status.Phase)
+	backend.Metadata["remote_url"] = proxy.Spec.RemoteURL
+	if proxy.Namespace != "" {
+		backend.Metadata["namespace"] = proxy.Namespace
+	}
+
+	// Discover and populate authentication configuration from MCPRemoteProxy
+	if err := d.discoverRemoteProxyAuthConfig(ctx, proxy, backend); err != nil {
+		// If auth discovery fails, we must fail - don't silently allow unauthorized access
+		logger.Errorf("Failed to discover auth config for MCPRemoteProxy %s: %v", proxy.Name, err)
+		return nil
+	}
+
+	return backend
+}
+
+// discoverRemoteProxyAuthConfig discovers and populates authentication configuration
+// from the MCPRemoteProxy's ExternalAuthConfigRef.
+func (d *k8sDiscoverer) discoverRemoteProxyAuthConfig(
+	ctx context.Context,
+	proxy *mcpv1alpha1.MCPRemoteProxy,
+	backend *vmcp.Backend,
+) error {
+	return d.discoverAuthConfigFromRef(
+		ctx,
+		proxy.Spec.ExternalAuthConfigRef,
+		proxy.Namespace,
+		proxy.Name,
+		"MCPRemoteProxy",
+		backend,
+	)
 }
 
 // getEffectiveProxyMode calculates the effective proxy mode based on transport type and configured proxy mode.

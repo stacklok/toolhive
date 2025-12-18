@@ -85,8 +85,8 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 				// Verify pod template annotations
 				assert.Equal(t, "hash-dummy-value", deployment.Spec.Template.Annotations["toolhive.stacklok.dev/config-hash"])
 
-				// Verify service account
-				assert.Equal(t, DefaultServiceAccountName, deployment.Spec.Template.Spec.ServiceAccountName)
+				// Verify service account uses the dynamically generated name (registry-name + "-registry-api")
+				assert.Equal(t, "test-registry-registry-api", deployment.Spec.Template.Spec.ServiceAccountName)
 
 				// Verify containers
 				require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
@@ -176,7 +176,7 @@ func TestManagerBuildRegistryAPIDeployment(t *testing.T) {
 
 			manager := &manager{}
 
-			configManager := config.NewConfigManagerForTesting(tt.mcpRegistry)
+			configManager := config.NewConfigManager(tt.mcpRegistry)
 			deployment := manager.buildRegistryAPIDeployment(context.Background(), tt.mcpRegistry, configManager)
 			tt.validateResult(t, deployment)
 		})

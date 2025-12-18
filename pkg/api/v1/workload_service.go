@@ -240,11 +240,11 @@ func (s *WorkloadService) BuildFullRunConfig(ctx context.Context, req *createReq
 		runner.WithProxyMode(types.ProxyMode(req.ProxyMode)),
 		runner.WithTransportAndPorts(req.Transport, req.ProxyPort, req.TargetPort),
 		runner.WithAuditEnabled(false, ""),
-		runner.WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, req.OIDC.ClientID,
-			"", "", "", "", "", false, false),
+		runner.WithOIDCConfig(req.OIDC.Issuer, req.OIDC.Audience, req.OIDC.JwksURL, "",
+			req.OIDC.ClientID, "", "", "", "", false, false, req.OIDC.Scopes),
 		runner.WithToolsFilter(req.ToolsFilter),
 		runner.WithToolsOverride(toolsOverride),
-		runner.WithTelemetryConfig("", false, false, false, "", 0.0, nil, false, nil),
+		runner.WithTelemetryConfigFromFlags("", false, false, false, "", 0.0, nil, false, nil),
 	}
 
 	// Determine transport type

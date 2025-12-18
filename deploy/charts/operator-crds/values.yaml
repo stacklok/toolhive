@@ -1,15 +1,13 @@
-# Configuration for CRD installation
+# -- CRD installation configuration
 crds:
+  # -- Whether to add the "helm.sh/resource-policy: keep" annotation to CRDs
+  # When true, CRDs will not be deleted when the Helm release is uninstalled
+  keep: true
+  # -- Feature flags for CRD groups
   install:
-    # -- Install server-related CRDs (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, and ToolConfig).
-    # Users who only need registry or aggregation features can set this to false to skip
-    # installing server management CRDs.
+    # -- Install Server CRDs (mcpservers, mcpremoteproxies, mcptoolconfigs, mcpgroups)
     server: true
-    # -- Install registry CRD (MCPRegistry).
-    # Users who only need server management without registry features can set this to false
-    # to skip installing the registry CRD.
+    # -- Install Registry CRDs (mcpregistries)
     registry: true
-    # -- Install Virtual MCP CRDs (VirtualMCPServer, VirtualMCPCompositeToolDefinition and MCPGroup).
-    # Users who only need core MCP server management can set this to false to skip
-    # installing Virtual MCP aggregation features.
-    virtualMCP: true
+    # -- Install VirtualMCP CRDs (virtualmcpservers, virtualmcpcompositetooldefinitions)
+    virtualMcp: true

@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -192,7 +195,7 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 	// Mock Stop to be called during server shutdown
 	mockDiscoveryMgr.EXPECT().Stop().Times(1)
 
-	srv, err := server.New(&server.Config{
+	srv, err := server.New(ctx, &server.Config{
 		Name:    "test-vmcp",
 		Version: "1.0.0",
 		Host:    "127.0.0.1",
@@ -322,7 +325,7 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 	}
 
 	// Create and start server
-	srv, err := server.New(&server.Config{
+	srv, err := server.New(ctx, &server.Config{
 		Name:           "test-vmcp",
 		Version:        "1.0.0",
 		Host:           "127.0.0.1",
@@ -396,16 +399,17 @@ func TestIntegration_HTTPRequestFlowWithRoutingTable(t *testing.T) {
 	require.True(t, ok, "Session should be VMCPSession type, got: %T", sess)
 
 	routingTable := vmcpSess.GetRoutingTable()
+	require.NotNil(t, routingTable, "Routing table should be stored")
 	if routingTable == nil {
 		// Debug: Check session data
 		t.Logf("Session ID: %s", vmcpSess.ID())
 		t.Logf("Session Type: %v", vmcpSess.Type())
 		t.Logf("Session Data: %v", vmcpSess.GetData())
 		t.Fatal("REPRODUCER: Routing table is nil after initialization - this is the bug!")
+		return
 	}
 
 	t.Logf("Routing table has %d tools", len(routingTable.Tools))
-	require.NotNil(t, routingTable, "Routing table should be stored")
 	// Note: Tool name is prefixed with backend ID due to conflict resolution
 	require.Contains(t, routingTable.Tools, "test-backend_test_tool", "Routing table should have prefixed test_tool")
 
@@ -538,4 +542,478 @@ func TestIntegration_ConflictResolutionStrategies(t *testing.T) {
 		assert.Equal(t, "create", result.Tools[0].Name)
 		assert.Equal(t, "backend1", result.Tools[0].BackendID)
 	})
+}
+
+// TestIntegration_AuditLogging tests that the vMCP server logs MCP operations
+// when audit middleware is enabled.
+// Note: This test does not use t.Parallel() because subtests share the same
+// server instance and audit log file, and must run sequentially.
+//
+//nolint:paralleltest // Subtests must run sequentially as they share server state
+func TestIntegration_AuditLogging(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	ctx := context.Background()
+
+	// Create temp file for audit logs
+	auditLogFile, err := os.CreateTemp("", "vmcp-audit-test-*.log")
+	require.NoError(t, err)
+	auditLogPath := auditLogFile.Name()
+	auditLogFile.Close()
+	t.Cleanup(func() {
+		os.Remove(auditLogPath)
+	})
+
+	// Create audit config that writes to temp file
+	auditConfig := &audit.Config{
+		Component:           "vmcp-server-test",
+		IncludeRequestData:  true,
+		IncludeResponseData: false,
+		MaxDataSize:         2048,
+		LogFile:             auditLogPath,
+	}
+
+	// Create mock backend client
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+
+	// Define backend capabilities
+	backendCapabilities := &vmcp.CapabilityList{
+		Tools: []vmcp.Tool{
+			{
+				Name:        "get_weather",
+				Description: "Get weather information",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"location": map[string]any{"type": "string"},
+					},
+				},
+				BackendID: "weather-service",
+			},
+		},
+		Resources: []vmcp.Resource{
+			{
+				URI:         "weather://current",
+				Name:        "Current Weather",
+				Description: "Current weather data",
+				MimeType:    "application/json",
+				BackendID:   "weather-service",
+			},
+		},
+		Prompts: []vmcp.Prompt{
+			{
+				Name:        "weather_summary",
+				Description: "Generate weather summary",
+				Arguments:   []vmcp.PromptArgument{},
+				BackendID:   "weather-service",
+			},
+		},
+	}
+
+	// Mock backend responses
+	mockBackendClient.EXPECT().
+		ListCapabilities(gomock.Any(), gomock.Any()).
+		Return(backendCapabilities, nil).
+		AnyTimes()
+
+	mockBackendClient.EXPECT().
+		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(map[string]any{
+			"result": "Sunny, 72°F",
+		}, nil).
+		AnyTimes()
+
+	mockBackendClient.EXPECT().
+		ReadResource(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return([]byte(`{"temp": 72, "condition": "sunny"}`), nil).
+		AnyTimes()
+
+	// Create backends
+	backends := []vmcp.Backend{
+		{
+			ID:   "weather-service",
+			Name: "Weather Service",
+		},
+	}
+
+	// Create router
+	rt := router.NewDefaultRouter()
+
+	// Create discovery manager
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockDiscoveryMgr.EXPECT().
+		Discover(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
+			resolver := aggregator.NewPrefixConflictResolver("{workload}_")
+			agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil)
+			return agg.AggregateCapabilities(ctx, backends)
+		}).
+		AnyTimes()
+	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
+
+	// Helper function to read audit log file
+	readAuditLog := func() string {
+		data, err := os.ReadFile(auditLogPath)
+		if err != nil {
+			return ""
+		}
+		return string(data)
+	}
+
+	// Create server with audit config
+	srv, err := server.New(ctx, &server.Config{
+		Host:        "127.0.0.1",
+		Port:        0, // Random port
+		AuditConfig: auditConfig,
+	}, rt, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	require.NoError(t, err)
+
+	// Start server
+	serverCtx, cancelServer := context.WithCancel(ctx)
+	t.Cleanup(cancelServer)
+
+	serverErrCh := make(chan error, 1)
+	go func() {
+		if err := srv.Start(serverCtx); err != nil && err != context.Canceled {
+			serverErrCh <- err
+		}
+	}()
+
+	// Wait for server ready
+	select {
+	case <-srv.Ready():
+	case err := <-serverErrCh:
+		t.Fatalf("Server failed to start: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Server timeout waiting for ready")
+	}
+
+	baseURL := "http://" + srv.Address()
+
+	// Capture session ID for subsequent requests
+	var sessionID string
+
+	// Test 1: Initialize request should be logged
+	t.Run("initialize request is logged", func(t *testing.T) {
+		initReq := map[string]any{
+			"method": "initialize",
+			"params": map[string]any{
+				"protocolVersion": "2024-11-05",
+				"capabilities":    map[string]any{},
+				"clientInfo": map[string]any{
+					"name":    "audit-test-client",
+					"version": "1.0.0",
+				},
+			},
+		}
+
+		reqBody, err := json.Marshal(initReq)
+		require.NoError(t, err)
+
+		resp, err := http.Post(baseURL+"/mcp", "application/json", bytes.NewReader(reqBody))
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		// Capture session ID for subsequent tests
+		sessionID = resp.Header.Get("Mcp-Session-Id")
+		require.NotEmpty(t, sessionID, "Session ID should be returned")
+
+		// Wait for audit event to be written
+		time.Sleep(500 * time.Millisecond)
+
+		// Verify audit log contains initialize event
+		auditLog := readAuditLog()
+		assert.Contains(t, auditLog, "vmcp-server-test", "Should contain component name")
+		assert.Contains(t, auditLog, "\"method\":\"initialize\"", "Should log initialize method in request data")
+		assert.Contains(t, auditLog, "audit-test-client", "Should capture client name")
+	})
+
+	// Test 2: Tool list request should be logged
+	t.Run("tools/list request is logged", func(t *testing.T) {
+		require.NotEmpty(t, sessionID, "Session ID must be set from initialize test")
+
+		toolsReq := map[string]any{
+			"method": "tools/list",
+		}
+
+		reqBody, err := json.Marshal(toolsReq)
+		require.NoError(t, err)
+
+		req, err := http.NewRequest("POST", baseURL+"/mcp", bytes.NewReader(reqBody))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Mcp-Session-Id", sessionID)
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		// Wait for audit event
+		time.Sleep(500 * time.Millisecond)
+
+		auditLog := readAuditLog()
+		assert.Contains(t, auditLog, "\"method\":\"tools/list\"", "Should log tools/list method in request data")
+		assert.Contains(t, auditLog, "vmcp-server-test", "Should contain component name")
+	})
+
+	// Test 3: Tool call should be logged
+	t.Run("tool call is logged", func(t *testing.T) {
+		require.NotEmpty(t, sessionID, "Session ID must be set from initialize test")
+
+		toolCallReq := map[string]any{
+			"method": "tools/call",
+			"params": map[string]any{
+				"name": "weather-service_get_weather", // Prefix added by aggregator
+				"arguments": map[string]any{
+					"location": "San Francisco",
+				},
+			},
+		}
+
+		reqBody, err := json.Marshal(toolCallReq)
+		require.NoError(t, err)
+
+		req, err := http.NewRequest("POST", baseURL+"/mcp", bytes.NewReader(reqBody))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Mcp-Session-Id", sessionID)
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		// Check response
+		require.Equal(t, http.StatusOK, resp.StatusCode, "HTTP request should succeed")
+		body, _ := io.ReadAll(resp.Body)
+		t.Logf("tools/call response: %s", string(body))
+
+		// Wait for audit event
+		time.Sleep(500 * time.Millisecond)
+
+		auditLog := readAuditLog()
+		assert.Contains(t, auditLog, "\"method\":\"tools/call\"", "Should log tools/call method in request data")
+		assert.Contains(t, auditLog, "get_weather", "Should capture tool name in request data")
+		assert.Contains(t, auditLog, "San Francisco", "Should capture tool arguments in request data")
+		assert.Contains(t, auditLog, "vmcp-server-test", "Should contain component name")
+		assert.Contains(t, auditLog, "\"backend_name\":\"Weather Service\"", "Should capture backend routing decision")
+	})
+
+	// Test 4: Resource read should be logged
+	t.Run("resource read is logged", func(t *testing.T) {
+		require.NotEmpty(t, sessionID, "Session ID must be set from initialize test")
+
+		resourceReq := map[string]any{
+			"method": "resources/read",
+			"params": map[string]any{
+				"uri": "weather://current",
+			},
+		}
+
+		reqBody, err := json.Marshal(resourceReq)
+		require.NoError(t, err)
+
+		req, err := http.NewRequest("POST", baseURL+"/mcp", bytes.NewReader(reqBody))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Mcp-Session-Id", sessionID)
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		// Wait for audit event
+		time.Sleep(500 * time.Millisecond)
+
+		auditLog := readAuditLog()
+		assert.Contains(t, auditLog, "\"method\":\"resources/read\"", "Should log resources/read method in request data")
+		assert.Contains(t, auditLog, "weather://current", "Should capture resource URI in request data")
+		assert.Contains(t, auditLog, "vmcp-server-test", "Should contain component name")
+		assert.Contains(t, auditLog, "\"backend_name\":\"Weather Service\"", "Should capture backend routing decision")
+	})
+
+	// Test 5: Verify audit events have required fields
+	t.Run("audit events contain required fields", func(t *testing.T) {
+		// Get all audit logs
+		auditLog := readAuditLog()
+
+		// Split into individual log lines
+		lines := strings.Split(strings.TrimSpace(auditLog), "\n")
+		require.Greater(t, len(lines), 0, "Should have at least one audit event")
+
+		// Parse first audit event
+		var auditEvent map[string]any
+		err := json.Unmarshal([]byte(lines[0]), &auditEvent)
+		require.NoError(t, err, "Audit log should be valid JSON")
+
+		// Verify required fields
+		assert.Contains(t, auditEvent, "audit_id", "Should have audit_id")
+		assert.Contains(t, auditEvent, "type", "Should have type")
+		assert.Contains(t, auditEvent, "logged_at", "Should have logged_at")
+		assert.Contains(t, auditEvent, "outcome", "Should have outcome")
+		assert.Contains(t, auditEvent, "component", "Should have component")
+		assert.Contains(t, auditEvent, "source", "Should have source")
+
+		// Verify component value
+		assert.Equal(t, "vmcp-server-test", auditEvent["component"])
+
+		// Verify source has network information
+		source, ok := auditEvent["source"].(map[string]any)
+		require.True(t, ok, "Source should be an object")
+		assert.Equal(t, "network", source["type"])
+		assert.Contains(t, source, "value", "Source should have IP address")
+	})
+}
+
+// TestIntegration_AuditLoggingWithAuth tests that the vMCP server audit logs capture user
+// identity from authentication tokens.
+//
+//nolint:paralleltest // Uses dedicated server instance
+func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	ctx := context.Background()
+
+	// Create mock backend client
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+
+	// Create mock discovery manager
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+	mockDiscoveryMgr.EXPECT().
+		Discover(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
+			return &aggregator.AggregatedCapabilities{
+				Tools: []vmcp.Tool{
+					{
+						Name:        "test_tool",
+						Description: "A test tool",
+						InputSchema: map[string]any{"type": "object"},
+					},
+				},
+			}, nil
+		}).
+		AnyTimes()
+	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
+
+	backends := []vmcp.Backend{}
+
+	// Create router
+	rt := router.NewDefaultRouter()
+
+	// Create identity middleware for auth
+	identityMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			identity := &auth.Identity{
+				Subject: "user-123",
+				Name:    "John Doe",
+				Email:   "john.doe@example.com",
+				Claims: map[string]any{
+					"client_name":    "mcp-client",
+					"client_version": "2.0.0",
+				},
+			}
+			ctx := auth.WithIdentity(r.Context(), identity)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+
+	// Create temp file for audit logs
+	auditLogFile, err := os.CreateTemp("", "vmcp-auth-audit-*.log")
+	require.NoError(t, err)
+	auditLogPath := auditLogFile.Name()
+	auditLogFile.Close()
+	defer os.Remove(auditLogPath)
+
+	// Create audit config
+	auditConfig := &audit.Config{
+		Component:           "vmcp-auth-test",
+		IncludeRequestData:  true,
+		IncludeResponseData: true,
+		LogFile:             auditLogPath,
+	}
+
+	// Create server with auth middleware and audit config
+	srv, err := server.New(ctx, &server.Config{
+		Host:           "127.0.0.1",
+		Port:           0, // Let OS assign port
+		AuditConfig:    auditConfig,
+		AuthMiddleware: identityMiddleware,
+	}, rt, mockBackendClient, mockDiscoveryMgr, backends, nil)
+	require.NoError(t, err)
+
+	// Start server
+	serverCtx, cancelServer := context.WithCancel(ctx)
+	t.Cleanup(cancelServer)
+
+	serverErrCh := make(chan error, 1)
+	go func() {
+		if err := srv.Start(serverCtx); err != nil && err != context.Canceled {
+			serverErrCh <- err
+		}
+	}()
+
+	// Wait for server ready
+	select {
+	case <-srv.Ready():
+	case err := <-serverErrCh:
+		t.Fatalf("Server failed to start: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Server timeout waiting for ready")
+	}
+
+	baseURL := "http://" + srv.Address()
+
+	// Make an MCP request (initialize)
+	initReq := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2024-11-05",
+			"clientInfo": map[string]any{
+				"name":    "auth-test-client",
+				"version": "1.0.0",
+			},
+		},
+	}
+	reqBody, _ := json.Marshal(initReq)
+	req, _ := http.NewRequest("POST", baseURL+"/mcp", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Wait for audit event to be written
+	time.Sleep(500 * time.Millisecond)
+
+	// Read and verify audit log
+	auditData, err := os.ReadFile(auditLogPath)
+	require.NoError(t, err)
+	auditLog := string(auditData)
+
+	// Verify user identity fields are captured
+	assert.Contains(t, auditLog, "user-123", "Should capture user ID (subject)")
+	assert.Contains(t, auditLog, "John Doe", "Should capture user name")
+	assert.Contains(t, auditLog, "mcp-client", "Should capture client name from claims")
+	assert.Contains(t, auditLog, "2.0.0", "Should capture client version from claims")
+
+	// Parse the audit event and verify subjects structure
+	lines := strings.Split(strings.TrimSpace(auditLog), "\n")
+	require.Greater(t, len(lines), 0, "Should have at least one audit event")
+
+	var auditEvent map[string]any
+	err = json.Unmarshal([]byte(lines[0]), &auditEvent)
+	require.NoError(t, err, "Audit log should be valid JSON")
+
+	// Verify subjects field exists and has correct structure
+	subjects, ok := auditEvent["subjects"].(map[string]any)
+	require.True(t, ok, "Should have subjects field")
+	assert.Equal(t, "user-123", subjects["user_id"], "Should have correct user_id")
+	assert.Equal(t, "John Doe", subjects["user"], "Should have correct user name")
+	assert.Equal(t, "mcp-client", subjects["client_name"], "Should have correct client_name")
+	assert.Equal(t, "2.0.0", subjects["client_version"], "Should have correct client_version")
 }

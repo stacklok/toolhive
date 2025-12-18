@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
 
       - name: Run Trivy vulnerability scanner in repo mode
         uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
 
       - name: Run Trivy configuration scanner
         uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
 
       - name: Run govulncheck
         uses: golang/govulncheck-action@v1
@@ -72,3 +72,50 @@ jobs:
           go-version-file: go.mod
           go-package: ./...
           repo-checkout: false
+          output-format: json
+          output-file: govulncheck-output.json
+
+      - name: Check for vulnerabilities (with exclusions)
+        run: |
+          # Ignored vulnerabilities with justification:
+          # GO-2025-4192: sigstore/timestamp-authority excessive memory allocation (CVE-2025-66564)
+          #   Indirect dependency via sigstore-go (used for container signature verification).
+          #   The vulnerability affects timestamp-authority server request parsing endpoints.
+          #   ToolHive only uses sigstore-go as a client to verify signatures, it does not
+          #   expose any timestamp-authority server endpoints. Fix requires sigstore-go to
+          #   upgrade to timestamp-authority/v2 which hasn't been released yet.
+          IGNORED_VULNS="GO-2025-4192"
+
+          # Show the raw output for debugging
+          echo "::group::govulncheck raw output"
+          cat govulncheck-output.json
+          echo "::endgroup::"
+
+          # Extract vulnerability IDs that have actual findings (called symbols)
+          # The JSON has "finding" objects with "osv" field only for vulnerabilities
+          # where vulnerable code paths are actually called
+          FOUND_VULNS=$(jq -r 'select(.finding != null) | .finding.osv' govulncheck-output.json | sort -u | grep -E '^GO-' || true)
+
+          if [ -z "$FOUND_VULNS" ]; then
+            echo "✅ No vulnerabilities found"
+            exit 0
+          fi
+
+          echo "Found vulnerabilities: $FOUND_VULNS"
+
+          # Check if all found vulnerabilities are in the ignore list
+          UNIGNORED=""
+          for vuln in $FOUND_VULNS; do
+            if ! echo "$IGNORED_VULNS" | grep -qw "$vuln"; then
+              UNIGNORED="$UNIGNORED $vuln"
+            fi
+          done
+          UNIGNORED=$(echo "$UNIGNORED" | xargs)
+
+          if [ -z "$UNIGNORED" ]; then
+            echo "⚠️  All vulnerabilities are ignored: $FOUND_VULNS"
+            exit 0
+          fi
+
+          echo "❌ Vulnerabilities need attention: $UNIGNORED"
+          exit 1

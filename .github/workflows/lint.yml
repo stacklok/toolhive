@@ -11,7 +11,7 @@ jobs:
     name: Lint Go Code
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
 
       - name: Set up Go
         uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6
@@ -28,7 +28,7 @@ jobs:
 
       # Cache Go build cache for faster compilation during linting
       - name: Cache Go build cache
-        uses: actions/cache@v4
+        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5
         with:
           path: ~/.cache/go-build
           key: ${{ runner.os }}-go-build-lint-${{ hashFiles('**/go.sum') }}
@@ -37,7 +37,7 @@ jobs:
             ${{ runner.os }}-go-build-
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@e7fa5ac41e1cf5b7d48e45e42232ce7ada589601 # v9.1.0
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
         with:
           # Enable golangci-lint's built-in caching (removes skip-cache: true)
           args: --timeout=5m

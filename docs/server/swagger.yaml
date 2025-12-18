@@ -80,6 +80,13 @@ components:
           description: ResourceURL is the explicit resource URL for OAuth discovery
             (RFC 9728)
           type: string
+        scopes:
+          description: |-
+            Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
+            If empty, defaults to ["openid"]
+          items:
+            type: string
+          type: array
       type: object
     authz.CedarConfig:
       description: |-
@@ -135,6 +142,7 @@ components:
       - OpenCode
       - Kiro
       - Antigravity
+      - Zed
     client.MCPClientStatus:
       properties:
         client_type:
@@ -161,6 +169,7 @@ components:
           - OpenCode
           - Kiro
           - Antigravity
+          - Zed
         installed:
           description: Installed indicates whether the client is installed on the
             system
@@ -225,11 +234,6 @@ components:
           description: |-
             StatusContext provides additional context about the workload's status.
             The exact meaning is determined by the status and the underlying runtime.
-          type: string
-        tool_type:
-          description: |-
-            ToolType is the type of tool this workload represents.
-            For now, it will always be "mcp" - representing an MCP server.
           type: string
         tools:
           description: ToolsFilter is the filter on tools applied to the workload.
@@ -1046,7 +1050,9 @@ components:
           type: string
       type: object
     types.ProxyMode:
-      description: ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+      description: |-
+        ProxyMode is the proxy mode for stdio transport ("sse" or "streamable-http")
+        Note: "sse" is deprecated; use "streamable-http" instead.
       type: string
       x-enum-varnames:
       - ProxyModeSSE
@@ -1126,6 +1132,7 @@ components:
             - OpenCode
             - Kiro
             - Antigravity
+            - Zed
           type: array
           uniqueItems: false
       type: object
@@ -1181,6 +1188,7 @@ components:
           - OpenCode
           - Kiro
           - Antigravity
+          - Zed
       type: object
     v1.createClientResponse:
       properties:
@@ -1214,6 +1222,7 @@ components:
           - OpenCode
           - Kiro
           - Antigravity
+          - Zed
       type: object
     v1.createGroupRequest:
       properties:
@@ -1452,6 +1461,12 @@ components:
         jwks_url:
           description: JWKS URL for key verification
           type: string
+        scopes:
+          description: OAuth scopes to advertise in well-known endpoint (RFC 9728)
+          items:
+            type: string
+          type: array
+          uniqueItems: false
       type: object
     v1.providerCapabilitiesResponse:
       description: Capabilities of the secrets provider

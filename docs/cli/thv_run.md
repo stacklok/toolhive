@@ -114,6 +114,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --oidc-introspection-url string              URL for token introspection endpoint
       --oidc-issuer string                         OIDC issuer URL (e.g., https://accounts.google.com)
       --oidc-jwks-url string                       URL to fetch the JWKS from
+      --oidc-scopes strings                        OAuth scopes to advertise in the well-known endpoint (RFC 9728, defaults to 'openid' if not specified)
       --otel-custom-attributes string              Custom resource attributes for OpenTelemetry in key=value format (e.g., server_type=prod,region=us-east-1,team=platform)
       --otel-enable-prometheus-metrics-path        Enable Prometheus-style /metrics endpoint on the main transport port
       --otel-endpoint string                       OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)
@@ -126,7 +127,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --otel-tracing-enabled                       Enable distributed tracing (when OTLP endpoint is configured) (default true)
       --permission-profile string                  Permission profile to use (none, network, or path to JSON file)
       --print-resolved-overlays                    Debug: show resolved container paths for tmpfs overlays
-      --proxy-mode string                          Proxy mode for stdio (streamable-http or sse) (default "streamable-http")
+      --proxy-mode string                          Proxy mode for stdio (streamable-http or sse (deprecated, will be removed)) (default "streamable-http")
       --proxy-port int                             Port for the HTTP proxy to listen on (host port)
       --remote-auth                                Enable OAuth/OIDC authentication to remote MCP server
       --remote-auth-authorize-url string           OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)

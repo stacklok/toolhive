@@ -76,7 +76,8 @@ func NewBackendDiscoverer(
 		if err != nil {
 			return nil, fmt.Errorf("failed to create workload manager: %w", err)
 		}
-		workloadDiscoverer = manager
+		// Wrap CLI manager with adapter to implement Discoverer interface
+		workloadDiscoverer = workloadsmgr.NewDiscovererAdapter(manager)
 	}
 	return NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig), nil
 }
@@ -106,25 +107,25 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vm
 		return nil, fmt.Errorf("group %s not found", groupRef)
 	}
 
-	// Get all workload names in the group
-	workloadNames, err := d.workloadsManager.ListWorkloadsInGroup(ctx, groupRef)
+	// Get all typedWorkloads in the group
+	typedWorkloads, err := d.workloadsManager.ListWorkloadsInGroup(ctx, groupRef)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workloads in group: %w", err)
 	}
 
-	if len(workloadNames) == 0 {
+	if len(typedWorkloads) == 0 {
 		logger.Infof("No workloads found in group %s", groupRef)
 		return []vmcp.Backend{}, nil
 	}
 
-	logger.Debugf("Found %d workloads in group %s, discovering backends", len(workloadNames), groupRef)
+	logger.Debugf("Found %d workloads in group %s, discovering backends", len(typedWorkloads), groupRef)
 
 	// Query each workload and convert to backend
 	var backends []vmcp.Backend
-	for _, name := range workloadNames {
-		backend, err := d.workloadsManager.GetWorkloadAsVMCPBackend(ctx, name)
+	for _, workload := range typedWorkloads {
+		backend, err := d.workloadsManager.GetWorkloadAsVMCPBackend(ctx, workload)
 		if err != nil {
-			logger.Warnf("Failed to get workload %s: %v, skipping", name, err)
+			logger.Warnf("Failed to get workload %s: %v, skipping", workload.Name, err)
 			continue
 		}
 
@@ -134,7 +135,7 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vm
 		}
 
 		// Apply authentication configuration to backend
-		d.applyAuthConfigToBackend(backend, name)
+		d.applyAuthConfigToBackend(backend, workload.Name)
 
 		// Set group metadata (override user labels to prevent conflicts)
 		if backend.Metadata == nil {
@@ -159,7 +160,6 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) ([]vm
 //
 // Auth resolution logic:
 // - "discovered" mode: Use discovered auth if available, otherwise fall back to Default or backend-specific config
-// - "mixed" mode: Use discovered auth unless there's an explicit backend override in config
 // - "inline" mode (or ""): Always use config-based auth, ignore discovered auth
 // - unknown mode: Default to config-based auth for safety
 //
@@ -179,12 +179,7 @@ func (d *backendDiscoverer) applyAuthConfigToBackend(backend *vmcp.Backend, back
 		// In discovered mode, use auth discovered from MCPServer (if any exists)
 		// If no auth is discovered, fall back to config-based auth via ResolveForBackend
 		// which will use backend-specific config, then Default, then no auth
-		useDiscoveredAuth = backend.AuthStrategy != ""
-	case "mixed":
-		// In mixed mode, use discovered auth as default, but allow config overrides
-		// If there's no explicit config for this backend, use discovered auth
-		_, hasExplicitConfig := d.authConfig.Backends[backendName]
-		useDiscoveredAuth = !hasExplicitConfig && backend.AuthStrategy != ""
+		useDiscoveredAuth = backend.AuthConfig != nil
 	case "inline", "":
 		// For inline mode or empty source, always use config-based auth
 		// Ignore any discovered auth from backends
@@ -197,14 +192,13 @@ func (d *backendDiscoverer) applyAuthConfigToBackend(backend *vmcp.Backend, back
 
 	if useDiscoveredAuth {
 		// Keep the auth discovered from MCPServer (already populated in backend)
-		logger.Debugf("Backend %s using discovered auth strategy: %s", backendName, backend.AuthStrategy)
+		logger.Debugf("Backend %s using discovered auth strategy: %s", backendName, backend.AuthConfig.Type)
 	} else {
-		// Use auth from config (inline mode or explicit override in mixed mode)
-		authStrategy, authMetadata := d.authConfig.ResolveForBackend(backendName)
-		if authStrategy != "" {
-			backend.AuthStrategy = authStrategy
-			backend.AuthMetadata = authMetadata
-			logger.Debugf("Backend %s configured with auth strategy from config: %s", backendName, authStrategy)
+		// Use auth from config (inline mode)
+		authConfig := d.authConfig.ResolveForBackend(backendName)
+		if authConfig != nil {
+			backend.AuthConfig = authConfig
+			logger.Debugf("Backend %s configured with auth strategy from config: %s", backendName, authConfig.Type)
 		}
 	}
 }

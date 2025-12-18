@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -266,6 +264,23 @@ func (r *Runner) Run(ctx context.Context) error {
 		if httpTransport, ok := transportHandler.(interface{ SetTokenSource(oauth2.TokenSource) }); ok {
 			httpTransport.SetTokenSource(tokenSource)
 		}
+
+		// Set the health check failure callback for remote servers
+		if httpTransport, ok := transportHandler.(interface {
+			SetOnHealthCheckFailed(types.HealthCheckFailedCallback)
+		}); ok {
+			httpTransport.SetOnHealthCheckFailed(func() {
+				logger.Warnf("Health check failed for remote server %s, marking as unhealthy", r.Config.BaseName)
+				if err := r.statusManager.SetWorkloadStatus(
+					context.Background(),
+					r.Config.BaseName,
+					rt.WorkloadStatusUnhealthy,
+					"Health check failed",
+				); err != nil {
+					logger.Errorf("Failed to update workload status: %v", err)
+				}
+			})
+		}
 	}
 
 	// Start the transport (which also starts the container and monitoring)
@@ -284,6 +299,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportType := labels.GetTransportType(r.Config.ContainerLabels)
 	serverURL := transport.GenerateMCPServerURL(
 		transportType,
+		string(r.Config.ProxyMode),
 		"localhost",
 		r.Config.Port,
 		r.Config.ContainerName,
@@ -317,16 +333,19 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Define a function to stop the MCP server
 	stopMCPServer := func(reason string) {
+		// Use a background context to avoid cancellation of the main context.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 1*time.Minute)
+		defer cleanupCancel()
 		logger.Infof("Stopping MCP server: %s", reason)
 
 		// Stop the transport (which also stops the container, monitoring, and handles removal)
 		logger.Infof("Stopping %s transport...", r.Config.Transport)
-		if err := transportHandler.Stop(ctx); err != nil {
+		if err := transportHandler.Stop(cleanupCtx); err != nil {
 			logger.Warnf("Warning: Failed to stop transport: %v", err)
 		}
 
 		// Cleanup telemetry provider
-		if err := r.Cleanup(ctx); err != nil {
+		if err := r.Cleanup(cleanupCtx); err != nil {
 			logger.Warnf("Warning: Failed to cleanup telemetry: %v", err)
 		}
 
@@ -335,17 +354,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err := process.RemovePIDFile(r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to remove PID file: %v", err)
 		}
-		if err := r.statusManager.ResetWorkloadPID(ctx, r.Config.BaseName); err != nil {
+		if err := r.statusManager.ResetWorkloadPID(cleanupCtx, r.Config.BaseName); err != nil {
 			logger.Warnf("Warning: Failed to reset workload %s PID: %v", r.Config.ContainerName, err)
 		}
 
 		logger.Infof("MCP server %s stopped", r.Config.ContainerName)
 	}
 
-	// TODO: Stop writing to PID file once we migrate over to statuses.
-	if err := process.WriteCurrentPIDFile(r.Config.BaseName); err != nil {
-		logger.Warnf("Warning: Failed to write PID file: %v", err)
-	}
 	if err := r.statusManager.SetWorkloadPID(ctx, r.Config.BaseName, os.Getpid()); err != nil {
 		logger.Warnf("Warning: Failed to set workload PID: %v", err)
 	}
@@ -357,10 +372,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	} else {
 		logger.Info("Press Ctrl+C to stop or wait for container to exit")
 	}
-
-	// Set up signal handling
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// Create a done channel to signal when the server has been stopped
 	doneCh := make(chan struct{})
@@ -403,8 +414,8 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Wait for either a signal or the done channel to be closed
 	select {
-	case sig := <-sigCh:
-		stopMCPServer(fmt.Sprintf("Received signal %s", sig))
+	case <-ctx.Done():
+		stopMCPServer("Context cancelled")
 	case <-doneCh:
 		// The transport has already been stopped (likely by the container exit)
 		// Clean up the PID file and state

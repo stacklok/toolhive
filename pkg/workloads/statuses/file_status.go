@@ -19,6 +19,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/state"
+	"github.com/stacklok/toolhive/pkg/transport"
+	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads/types"
 )
 
@@ -102,6 +104,70 @@ func (f *fileStatusManager) isRemoteWorkload(ctx context.Context, workloadName s
 	return strings.Contains(string(data), `"remote_url"`), nil
 }
 
+// remoteWorkloadConfig is a minimal struct to parse only the fields we need from RunConfig
+// without importing the runner package (which would create a circular dependency).
+type remoteWorkloadConfig struct {
+	RemoteURL       string            `json:"remote_url"`
+	Port            int               `json:"port"`
+	Transport       string            `json:"transport"` // Parse as string, then convert to transport type
+	ProxyMode       string            `json:"proxy_mode"`
+	Group           string            `json:"group"`
+	ContainerLabels map[string]string `json:"container_labels"`
+}
+
+// populateRemoteWorkloadData populates a workload with data from the run config for remote workloads.
+// This includes URL, port, transport type, and other fields that are stored in the run config.
+func (f *fileStatusManager) populateRemoteWorkloadData(ctx context.Context, workload *core.Workload) error {
+	// Load the run configuration JSON
+	reader, err := f.runConfigStore.GetReader(ctx, workload.Name)
+	if err != nil {
+		return fmt.Errorf("failed to load run config for remote workload %s: %w", workload.Name, err)
+	}
+	defer reader.Close()
+
+	// Parse only the fields we need
+	var config remoteWorkloadConfig
+	decoder := json.NewDecoder(reader)
+	if err := decoder.Decode(&config); err != nil {
+		return fmt.Errorf("failed to decode run config for remote workload %s: %w", workload.Name, err)
+	}
+
+	if config.RemoteURL == "" {
+		return fmt.Errorf("workload %s does not have a remote URL", workload.Name)
+	}
+
+	// Parse the transport type from string
+	transportType, err := transporttypes.ParseTransportType(config.Transport)
+	if err != nil {
+		return fmt.Errorf("failed to parse transport type for remote workload %s: %w", workload.Name, err)
+	}
+
+	proxyURL := ""
+	if config.Port > 0 {
+		proxyURL = transport.GenerateMCPServerURL(
+			transportType.String(),
+			config.ProxyMode,
+			transport.LocalhostIPv4,
+			config.Port,
+			workload.Name,
+			config.RemoteURL,
+		)
+	}
+
+	effectiveProxyMode := types.GetEffectiveProxyMode(transportType, config.ProxyMode)
+
+	workload.Package = "remote"
+	workload.URL = proxyURL
+	workload.Port = config.Port
+	workload.TransportType = transportType
+	workload.ProxyMode = effectiveProxyMode
+	workload.Group = config.Group
+	workload.Labels = config.ContainerLabels
+	workload.Remote = true
+
+	return nil
+}
+
 // workloadStatusFile represents the JSON structure stored on disk
 type workloadStatusFile struct {
 	Status        rt.WorkloadStatus `json:"status"`
@@ -134,6 +200,7 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 		result.Status = statusFile.Status
 		result.StatusContext = statusFile.StatusContext
 		result.CreatedAt = statusFile.CreatedAt
+
 		fileFound = true
 
 		// Check if PID migration is needed
@@ -169,7 +236,13 @@ func (f *fileStatusManager) GetWorkload(ctx context.Context, workloadName string
 			logger.Debugf("failed to check if remote workload %s is remote: %v", workloadName, err)
 		}
 		if remote {
-			result.Remote = true
+			// Populate remote workload data from run config
+			if err := f.populateRemoteWorkloadData(ctx, &result); err != nil {
+				logger.Warnf("failed to populate remote workload data for %s: %v", workloadName, err)
+				// Mark as remote even if we couldn't load full data
+				result.Remote = true
+				result.Package = "remote (data failed to load)"
+			}
 		}
 
 		// If workload is running, validate against runtime
@@ -430,12 +503,11 @@ func (*fileStatusManager) migratePIDFromFile(workloadName string, containerInfo 
 	}
 	logger.Debugf("found PID %d in PID file for workload %s, will update status file", pid, workloadName)
 
-	// TODO: reinstate this once we decide to completely get rid of PID files.
 	// Delete the PID file after successful migration
-	/*if err := process.RemovePIDFile(baseName); err != nil {
+	if err := process.RemovePIDFile(baseName); err != nil {
 		logger.Warnf("failed to remove PID file for workload %s (base name: %s): %v", workloadName, baseName, err)
 		// Don't return false here - the migration succeeded, cleanup just failed
-	}*/
+	}
 
 	return pid, true
 }
@@ -530,6 +602,7 @@ func (f *fileStatusManager) withFileReadLock(ctx context.Context, workloadName s
 // readStatusFile reads and parses a workload status file from disk.
 func (*fileStatusManager) readStatusFile(statusFilePath string) (*workloadStatusFile, error) {
 	data, err := os.ReadFile(statusFilePath) //nolint:gosec // file path is constructed by our own function
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to read status file: %w", err)
 	}

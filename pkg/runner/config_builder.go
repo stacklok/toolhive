@@ -323,6 +323,7 @@ func WithOIDCConfig(
 	resourceURL string,
 	jwksAllowPrivateIP bool,
 	insecureAllowHTTP bool,
+	scopes []string,
 ) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
@@ -336,6 +337,7 @@ func WithOIDCConfig(
 				ClientSecret:      oidcClientSecret,
 				AllowPrivateIP:    jwksAllowPrivateIP,
 				InsecureAllowHTTP: insecureAllowHTTP,
+				Scopes:            scopes,
 			}
 		}
 
@@ -365,8 +367,8 @@ func WithTokenExchangeConfig(config *tokenexchange.Config) RunConfigBuilderOptio
 	}
 }
 
-// WithTelemetryConfig configures telemetry settings (legacy - custom attributes handled via middleware)
-func WithTelemetryConfig(
+// WithTelemetryConfigFromFlags configures telemetry settings (legacy - custom attributes handled via middleware)
+func WithTelemetryConfigFromFlags(
 	otelEndpoint string,
 	otelEnablePrometheusMetricsPath bool,
 	otelTracingEnabled bool,
@@ -377,51 +379,24 @@ func WithTelemetryConfig(
 	otelInsecure bool,
 	otelEnvironmentVariables []string,
 ) RunConfigBuilderOption {
+	config := telemetry.MaybeMakeConfig(
+		otelEndpoint,
+		otelEnablePrometheusMetricsPath,
+		otelTracingEnabled,
+		otelMetricsEnabled,
+		otelServiceName,
+		otelSamplingRate,
+		otelHeaders,
+		otelInsecure,
+		otelEnvironmentVariables,
+	)
+	return WithTelemetryConfig(config)
+}
+
+// WithTelemetryConfig sets the telemetry configuration
+func WithTelemetryConfig(config *telemetry.Config) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
-		if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
-			return nil
-		}
-
-		// Parse headers from key=value format
-		headers := make(map[string]string)
-		for _, header := range otelHeaders {
-			parts := strings.SplitN(header, "=", 2)
-			if len(parts) == 2 {
-				headers[parts[0]] = parts[1]
-			}
-		}
-
-		// Use provided service name or default
-		serviceName := otelServiceName
-		if serviceName == "" {
-			serviceName = telemetry.DefaultConfig().ServiceName
-		}
-
-		// Process environment variables - split comma-separated values
-		var processedEnvVars []string
-		for _, envVarEntry := range otelEnvironmentVariables {
-			// Split by comma and trim whitespace
-			envVars := strings.Split(envVarEntry, ",")
-			for _, envVar := range envVars {
-				trimmed := strings.TrimSpace(envVar)
-				if trimmed != "" {
-					processedEnvVars = append(processedEnvVars, trimmed)
-				}
-			}
-		}
-
-		b.config.TelemetryConfig = &telemetry.Config{
-			Endpoint:                    otelEndpoint,
-			ServiceName:                 serviceName,
-			ServiceVersion:              telemetry.DefaultConfig().ServiceVersion,
-			TracingEnabled:              otelTracingEnabled,
-			MetricsEnabled:              otelMetricsEnabled,
-			SamplingRate:                otelSamplingRate,
-			Headers:                     headers,
-			Insecure:                    otelInsecure,
-			EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
-			EnvironmentVariables:        processedEnvVars,
-		}
+		b.config.TelemetryConfig = config
 		return nil
 	}
 }

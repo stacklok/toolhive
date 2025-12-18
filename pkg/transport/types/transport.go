@@ -160,6 +160,10 @@ type Proxy interface {
 	ForwardResponseToClients(ctx context.Context, msg jsonrpc2.Message) error
 }
 
+// HealthCheckFailedCallback is a function that is called when a health check fails.
+// This allows the transport to notify the runner/status manager when remote servers become unhealthy.
+type HealthCheckFailedCallback func()
+
 // Config contains configuration options for a transport.
 type Config struct {
 	// Type is the type of transport to use.
@@ -211,6 +215,8 @@ type ProxyMode string
 
 const (
 	// ProxyModeSSE is the proxy mode for SSE.
+	// Deprecated: SSE proxy mode is deprecated and will be removed in a future release.
+	// Use ProxyModeStreamableHTTP instead.
 	ProxyModeSSE ProxyMode = "sse"
 	// ProxyModeStreamableHTTP is the proxy mode for streamable HTTP.
 	ProxyModeStreamableHTTP ProxyMode = "streamable-http"

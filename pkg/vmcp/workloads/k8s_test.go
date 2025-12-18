@@ -94,23 +94,26 @@ func TestDiscoverAuth_TokenExchange(t *testing.T) {
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
 
 	ctx := context.Background()
-	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, "test-server")
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, TypedWorkload{
+		Name: "test-server",
+		Type: WorkloadTypeMCPServer,
+	})
 
 	require.NoError(t, err)
 	require.NotNil(t, backend)
 
 	// Verify backend has auth populated
-	assert.Equal(t, "token_exchange", backend.AuthStrategy)
-	assert.NotNil(t, backend.AuthMetadata)
+	assert.Equal(t, "token_exchange", backend.AuthConfig.Type)
+	assert.NotNil(t, backend.AuthConfig)
 
-	// Verify metadata contains expected fields
-	metadata := backend.AuthMetadata
-	assert.Equal(t, "https://auth.example.com/token", metadata["token_url"])
-	assert.Equal(t, "test-client", metadata["client_id"])
-	assert.Equal(t, "my-secret-value", metadata["client_secret"])
-	assert.Equal(t, "https://api.example.com", metadata["audience"])
-	assert.Equal(t, []string{"read", "write"}, metadata["scopes"])
-	assert.Equal(t, "urn:ietf:params:oauth:token-type:access_token", metadata["subject_token_type"])
+	// Verify typed fields contain expected values
+	assert.NotNil(t, backend.AuthConfig.TokenExchange)
+	assert.Equal(t, "https://auth.example.com/token", backend.AuthConfig.TokenExchange.TokenURL)
+	assert.Equal(t, "test-client", backend.AuthConfig.TokenExchange.ClientID)
+	assert.Equal(t, "my-secret-value", backend.AuthConfig.TokenExchange.ClientSecret)
+	assert.Equal(t, "https://api.example.com", backend.AuthConfig.TokenExchange.Audience)
+	assert.Equal(t, []string{"read", "write"}, backend.AuthConfig.TokenExchange.Scopes)
+	assert.Equal(t, "urn:ietf:params:oauth:token-type:access_token", backend.AuthConfig.TokenExchange.SubjectTokenType)
 }
 
 func TestDiscoverAuth_HeaderInjection(t *testing.T) {
@@ -171,21 +174,24 @@ func TestDiscoverAuth_HeaderInjection(t *testing.T) {
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
 
 	ctx := context.Background()
-	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, "test-server")
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, TypedWorkload{
+		Name: "test-server",
+		Type: WorkloadTypeMCPServer,
+	})
 
 	require.NoError(t, err)
 	require.NotNil(t, backend)
 
 	// Verify backend has auth populated
-	assert.Equal(t, "header_injection", backend.AuthStrategy)
-	assert.NotNil(t, backend.AuthMetadata)
+	assert.Equal(t, "header_injection", backend.AuthConfig.Type)
+	assert.NotNil(t, backend.AuthConfig)
 
-	// Verify metadata contains expected fields
-	metadata := backend.AuthMetadata
-	assert.Equal(t, "X-API-Key", metadata["header_name"])
-	assert.Equal(t, "my-api-key-value", metadata["header_value"])
+	// Verify typed fields contain expected values
+	assert.NotNil(t, backend.AuthConfig.HeaderInjection)
+	assert.Equal(t, "X-API-Key", backend.AuthConfig.HeaderInjection.HeaderName)
+	assert.Equal(t, "my-api-key-value", backend.AuthConfig.HeaderInjection.HeaderValue)
 	// Env var reference should be removed after secret resolution
-	assert.NotContains(t, metadata, "header_value_env")
+	assert.Empty(t, backend.AuthConfig.HeaderInjection.HeaderValueEnv)
 }
 
 func TestDiscoverAuth_NoAuthConfig(t *testing.T) {
@@ -214,14 +220,16 @@ func TestDiscoverAuth_NoAuthConfig(t *testing.T) {
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
 
 	ctx := context.Background()
-	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, "test-server")
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, TypedWorkload{
+		Name: "test-server",
+		Type: WorkloadTypeMCPServer,
+	})
 
 	require.NoError(t, err)
 	require.NotNil(t, backend)
 
 	// Verify backend has no auth
-	assert.Empty(t, backend.AuthStrategy)
-	assert.Nil(t, backend.AuthMetadata)
+	assert.Nil(t, backend.AuthConfig)
 }
 
 func TestDiscoverAuth_AuthConfigNotFound(t *testing.T) {
@@ -253,7 +261,10 @@ func TestDiscoverAuth_AuthConfigNotFound(t *testing.T) {
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
 
 	ctx := context.Background()
-	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, "test-server")
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, TypedWorkload{
+		Name: "test-server",
+		Type: WorkloadTypeMCPServer,
+	})
 
 	// Should return nil backend when auth config is referenced but not found
 	// This is security-critical: fail closed rather than allowing unauthorized access
@@ -309,7 +320,10 @@ func TestDiscoverAuth_SecretNotFound(t *testing.T) {
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
 
 	ctx := context.Background()
-	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, "test-server")
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, TypedWorkload{
+		Name: "test-server",
+		Type: WorkloadTypeMCPServer,
+	})
 
 	// Should return nil backend when secret is missing
 	// This is security-critical: fail closed rather than allowing unauthorized access
@@ -352,6 +366,7 @@ func TestMCPServerToBackend_BasicFields(t *testing.T) {
 	assert.Equal(t, "streamable-http", backend.TransportType)
 	assert.Equal(t, vmcp.BackendHealthy, backend.HealthStatus)
 	assert.Equal(t, "mcp", backend.Metadata["tool_type"])
+	assert.Equal(t, "mcp_server", backend.Metadata["workload_type"])
 	assert.Equal(t, string(mcpv1alpha1.MCPServerPhaseRunning), backend.Metadata["workload_status"])
 	assert.Equal(t, namespace, backend.Metadata["namespace"])
 }
@@ -475,11 +490,417 @@ func TestListWorkloadsInGroup(t *testing.T) {
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
 
 	ctx := context.Background()
-	workloads, err := discoverer.ListWorkloadsInGroup(ctx, "group-a")
+	workloadList, err := discoverer.ListWorkloadsInGroup(ctx, "group-a")
 
 	require.NoError(t, err)
-	assert.Len(t, workloads, 2)
-	assert.Contains(t, workloads, "server1")
-	assert.Contains(t, workloads, "server2")
-	assert.NotContains(t, workloads, "server3")
+	assert.Len(t, workloadList, 2)
+	assert.Contains(t, workloadList, TypedWorkload{
+		Name: "server1",
+		Type: WorkloadTypeMCPServer,
+	})
+	assert.Contains(t, workloadList, TypedWorkload{
+		Name: "server2",
+		Type: WorkloadTypeMCPServer,
+	})
+	assert.NotContains(t, workloadList, TypedWorkload{
+		Name: "server3",
+		Type: WorkloadTypeMCPServer,
+	})
+}
+
+func TestListWorkloadsInGroup_MCPRemoteProxies(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	// Create multiple MCPRemoteProxies in different groups
+	proxy1 := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "proxy1",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			GroupRef: "group-a",
+		},
+	}
+
+	proxy2 := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "proxy2",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			GroupRef: "group-a",
+		},
+	}
+
+	proxy3 := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "proxy3",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			GroupRef: "group-b",
+		},
+	}
+
+	k8sClient := setupTestClient(t, proxy1, proxy2, proxy3)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+	ctx := context.Background()
+	workloadList, err := discoverer.ListWorkloadsInGroup(ctx, "group-a")
+
+	require.NoError(t, err)
+	assert.Len(t, workloadList, 2)
+	assert.Contains(t, workloadList, TypedWorkload{
+		Name: "proxy1",
+		Type: WorkloadTypeMCPRemoteProxy,
+	})
+	assert.Contains(t, workloadList, TypedWorkload{
+		Name: "proxy2",
+		Type: WorkloadTypeMCPRemoteProxy,
+	})
+	assert.NotContains(t, workloadList, TypedWorkload{
+		Name: "proxy3",
+		Type: WorkloadTypeMCPRemoteProxy,
+	})
+}
+
+func TestListWorkloadsInGroup_MixedWorkloads(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	// Create MCPServers
+	server1 := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server1",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "streamable-http",
+			GroupRef:  "group-a",
+		},
+	}
+
+	server2 := &mcpv1alpha1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "server2",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "streamable-http",
+			GroupRef:  "group-b", // Different group
+		},
+	}
+
+	// Create MCPRemoteProxies
+	proxy1 := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "proxy1",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			GroupRef: "group-a",
+		},
+	}
+
+	proxy2 := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "proxy2",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			GroupRef: "group-a",
+		},
+	}
+
+	k8sClient := setupTestClient(t, server1, server2, proxy1, proxy2)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+	ctx := context.Background()
+	workloadList, err := discoverer.ListWorkloadsInGroup(ctx, "group-a")
+
+	require.NoError(t, err)
+	assert.Len(t, workloadList, 3) // 1 server + 2 proxies
+
+	// Verify MCPServer is included with correct type
+	assert.Contains(t, workloadList, TypedWorkload{
+		Name: "server1",
+		Type: WorkloadTypeMCPServer,
+	})
+
+	// Verify MCPRemoteProxies are included with correct type
+	assert.Contains(t, workloadList, TypedWorkload{
+		Name: "proxy1",
+		Type: WorkloadTypeMCPRemoteProxy,
+	})
+	assert.Contains(t, workloadList, TypedWorkload{
+		Name: "proxy2",
+		Type: WorkloadTypeMCPRemoteProxy,
+	})
+
+	// Verify server from different group is not included
+	assert.NotContains(t, workloadList, TypedWorkload{
+		Name: "server2",
+		Type: WorkloadTypeMCPServer,
+	})
+}
+
+func TestMCPRemoteProxyToBackend_BasicFields(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	proxy := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-proxy",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL: "https://remote-mcp.example.com",
+			Transport: "streamable-http",
+		},
+		Status: mcpv1alpha1.MCPRemoteProxyStatus{
+			Phase: mcpv1alpha1.MCPRemoteProxyPhaseReady,
+			URL:   "http://proxy-service:8080",
+		},
+	}
+
+	k8sClient := setupTestClient(t, proxy)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
+
+	ctx := context.Background()
+	backend := discoverer.mcpRemoteProxyToBackend(ctx, proxy)
+
+	require.NotNil(t, backend)
+
+	assert.Equal(t, "test-proxy", backend.ID)
+	assert.Equal(t, "test-proxy", backend.Name)
+	assert.Equal(t, "http://proxy-service:8080", backend.BaseURL)
+	assert.Equal(t, "streamable-http", backend.TransportType)
+	assert.Equal(t, vmcp.BackendHealthy, backend.HealthStatus)
+	assert.Equal(t, "mcp", backend.Metadata["tool_type"])
+	assert.Equal(t, "remote_proxy", backend.Metadata["workload_type"])
+	assert.Equal(t, string(mcpv1alpha1.MCPRemoteProxyPhaseReady), backend.Metadata["workload_status"])
+	assert.Equal(t, namespace, backend.Metadata["namespace"])
+}
+
+func TestMCPRemoteProxyToBackend_WithAnnotations(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	proxy := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-proxy",
+			Namespace: namespace,
+			Annotations: map[string]string{
+				"custom-annotation":         "custom-value",
+				"kubectl.kubernetes.io/foo": "should-be-filtered",
+			},
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL: "https://remote-mcp.example.com",
+			Transport: "streamable-http",
+		},
+		Status: mcpv1alpha1.MCPRemoteProxyStatus{
+			Phase: mcpv1alpha1.MCPRemoteProxyPhaseReady,
+			URL:   "http://proxy-service:8080",
+		},
+	}
+
+	k8sClient := setupTestClient(t, proxy)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
+
+	ctx := context.Background()
+	backend := discoverer.mcpRemoteProxyToBackend(ctx, proxy)
+
+	require.NotNil(t, backend)
+
+	// Custom annotation should be in metadata
+	assert.Equal(t, "custom-value", backend.Metadata["custom-annotation"])
+	// Standard k8s annotation should be filtered out
+	assert.NotContains(t, backend.Metadata, "kubectl.kubernetes.io/foo")
+}
+
+func TestMCPRemoteProxyToBackend_HealthStatusMapping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		phase          mcpv1alpha1.MCPRemoteProxyPhase
+		expectedHealth vmcp.BackendHealthStatus
+	}{
+		{
+			name:           "Ready phase maps to Healthy",
+			phase:          mcpv1alpha1.MCPRemoteProxyPhaseReady,
+			expectedHealth: vmcp.BackendHealthy,
+		},
+		{
+			name:           "Failed phase maps to Unhealthy",
+			phase:          mcpv1alpha1.MCPRemoteProxyPhaseFailed,
+			expectedHealth: vmcp.BackendUnhealthy,
+		},
+		{
+			name:           "Pending phase maps to Unknown",
+			phase:          mcpv1alpha1.MCPRemoteProxyPhasePending,
+			expectedHealth: vmcp.BackendUnknown,
+		},
+		{
+			name:           "Terminating phase maps to Unhealthy",
+			phase:          mcpv1alpha1.MCPRemoteProxyPhaseTerminating,
+			expectedHealth: vmcp.BackendUnhealthy,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			namespace := testNamespace
+
+			proxy := &mcpv1alpha1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-proxy",
+					Namespace: namespace,
+				},
+				Spec: mcpv1alpha1.MCPRemoteProxySpec{
+					RemoteURL: "https://remote-mcp.example.com",
+					Transport: "streamable-http",
+				},
+				Status: mcpv1alpha1.MCPRemoteProxyStatus{
+					Phase: tt.phase,
+					URL:   "http://proxy-service:8080",
+				},
+			}
+
+			k8sClient := setupTestClient(t, proxy)
+			discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
+
+			ctx := context.Background()
+			backend := discoverer.mcpRemoteProxyToBackend(ctx, proxy)
+
+			require.NotNil(t, backend)
+			assert.Equal(t, tt.expectedHealth, backend.HealthStatus)
+		})
+	}
+}
+
+func TestGetWorkloadAsVMCPBackend_MCPRemoteProxy(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	proxy := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-proxy",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL: "https://remote-mcp.example.com",
+			Transport: "streamable-http",
+		},
+		Status: mcpv1alpha1.MCPRemoteProxyStatus{
+			Phase: mcpv1alpha1.MCPRemoteProxyPhaseReady,
+			URL:   "http://proxy-service:8080",
+		},
+	}
+
+	k8sClient := setupTestClient(t, proxy)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+	ctx := context.Background()
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, TypedWorkload{
+		Name: "test-proxy",
+		Type: WorkloadTypeMCPRemoteProxy,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, backend)
+
+	assert.Equal(t, "test-proxy", backend.ID)
+	assert.Equal(t, "http://proxy-service:8080", backend.BaseURL)
+}
+
+func TestDiscoverAuth_MCPRemoteProxy_TokenExchange(t *testing.T) {
+	t.Parallel()
+
+	namespace := testNamespace
+
+	// Create test secret
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-client-secret",
+			Namespace: namespace,
+		},
+		Data: map[string][]byte{
+			"client-secret": []byte("my-secret-value"),
+		},
+	}
+
+	// Create MCPExternalAuthConfig with token exchange
+	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-token-exchange",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
+			Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				TokenURL: "https://auth.example.com/token",
+				ClientID: "test-client",
+				ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+					Name: "test-client-secret",
+					Key:  "client-secret",
+				},
+				Audience:         "https://api.example.com",
+				Scopes:           []string{"read", "write"},
+				SubjectTokenType: "access_token",
+			},
+		},
+	}
+
+	// Create MCPRemoteProxy that references the auth config
+	proxy := &mcpv1alpha1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-proxy",
+			Namespace: namespace,
+		},
+		Spec: mcpv1alpha1.MCPRemoteProxySpec{
+			RemoteURL: "https://remote-mcp.example.com",
+			Transport: "streamable-http",
+			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+				Name: "test-token-exchange",
+			},
+		},
+		Status: mcpv1alpha1.MCPRemoteProxyStatus{
+			Phase: mcpv1alpha1.MCPRemoteProxyPhaseReady,
+			URL:   "http://proxy-service:8080",
+		},
+	}
+
+	k8sClient := setupTestClient(t, secret, authConfig, proxy)
+	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
+
+	ctx := context.Background()
+	backend, err := discoverer.GetWorkloadAsVMCPBackend(ctx, TypedWorkload{
+		Name: "test-proxy",
+		Type: WorkloadTypeMCPRemoteProxy,
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, backend)
+
+	// Verify backend has auth populated
+	assert.Equal(t, "token_exchange", backend.AuthConfig.Type)
+	assert.NotNil(t, backend.AuthConfig)
+
+	// Verify typed fields contain expected values
+	assert.NotNil(t, backend.AuthConfig.TokenExchange)
+	assert.Equal(t, "https://auth.example.com/token", backend.AuthConfig.TokenExchange.TokenURL)
+	assert.Equal(t, "test-client", backend.AuthConfig.TokenExchange.ClientID)
+	assert.Equal(t, "my-secret-value", backend.AuthConfig.TokenExchange.ClientSecret)
 }

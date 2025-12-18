@@ -517,6 +517,11 @@ type InlineOIDCConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	InsecureAllowHTTP bool `json:"insecureAllowHTTP"`
+
+	// Scopes is the list of OAuth scopes to advertise in the well-known endpoint (RFC 9728)
+	// If empty, defaults to ["openid"]
+	// +optional
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // AuthzConfigRef defines a reference to authorization configuration

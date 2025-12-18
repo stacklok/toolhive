@@ -35,6 +35,9 @@ type Config struct {
 	DefaultGroupMigration  bool                `yaml:"default_group_migration,omitempty"`
 	DisableUsageMetrics    bool                `yaml:"disable_usage_metrics,omitempty"`
 	BuildEnv               map[string]string   `yaml:"build_env,omitempty"`
+	BuildEnvFromSecrets    map[string]string   `yaml:"build_env_from_secrets,omitempty"`
+	BuildEnvFromShell      []string            `yaml:"build_env_from_shell,omitempty"`
+	BuildAuthFiles         map[string]string   `yaml:"build_auth_files,omitempty"`
 }
 
 // Secrets contains the settings for secrets management.

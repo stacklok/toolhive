@@ -128,7 +128,7 @@ aggregation:
 			wantErr: false,
 		},
 		{
-			name: "valid configuration with token cache",
+			name: "partial operational config gets defaults for missing fields",
 			yaml: `
 name: test-vmcp
 group: test-group
@@ -146,28 +146,31 @@ aggregation:
   conflict_resolution_config:
     prefix_format: "{workload}_"
 
-token_cache:
-  provider: memory
-  config:
-    max_entries: 1000
-    ttl_offset: 5m
+operational:
+  timeouts:
+    default: 45s
 `,
 			want: func(t *testing.T, cfg *Config) {
 				t.Helper()
-				if cfg.TokenCache == nil {
-					t.Fatal("TokenCache is nil")
+				if cfg.Operational == nil {
+					t.Fatal("Operational should not be nil")
 				}
-				if cfg.TokenCache.Provider != CacheProviderMemory {
-					t.Errorf("TokenCache.Provider = %v, want memory", cfg.TokenCache.Provider)
+				// Custom timeout should be preserved
+				if cfg.Operational.Timeouts.Default != Duration(45*time.Second) {
+					t.Errorf("Timeouts.Default = %v, want 45s", cfg.Operational.Timeouts.Default)
 				}
-				if cfg.TokenCache.Memory == nil {
-					t.Fatal("TokenCache.Memory is nil")
+				// FailureHandling should be created with defaults
+				if cfg.Operational.FailureHandling == nil {
+					t.Fatal("FailureHandling should not be nil")
 				}
-				if cfg.TokenCache.Memory.MaxEntries != 1000 {
-					t.Errorf("Memory.MaxEntries = %v, want 1000", cfg.TokenCache.Memory.MaxEntries)
+				if cfg.Operational.FailureHandling.HealthCheckInterval != Duration(30*time.Second) {
+					t.Errorf("HealthCheckInterval = %v, want 30s (default)", cfg.Operational.FailureHandling.HealthCheckInterval)
 				}
-				if cfg.TokenCache.Memory.TTLOffset != Duration(5*time.Minute) {
-					t.Errorf("Memory.TTLOffset = %v, want 5m", cfg.TokenCache.Memory.TTLOffset)
+				if cfg.Operational.FailureHandling.UnhealthyThreshold != 3 {
+					t.Errorf("UnhealthyThreshold = %v, want 3 (default)", cfg.Operational.FailureHandling.UnhealthyThreshold)
+				}
+				if cfg.Operational.FailureHandling.CircuitBreaker == nil {
+					t.Fatal("CircuitBreaker should not be nil (should get defaults)")
 				}
 			},
 			wantErr: false,
@@ -280,34 +283,6 @@ aggregation:
 			wantErr: false,
 		},
 		{
-			name: "invalid duration format",
-			yaml: `
-name: test-vmcp
-group: test-group
-
-incoming_auth:
-  type: anonymous
-
-outgoing_auth:
-  source: inline
-  default:
-    type: unauthenticated
-
-aggregation:
-  conflict_resolution: prefix
-  conflict_resolution_config:
-    prefix_format: "{workload}_"
-
-token_cache:
-  provider: memory
-  config:
-    max_entries: 1000
-    ttl_offset: invalid-duration
-`,
-			wantErr: true,
-			errMsg:  "invalid ttl_offset",
-		},
-		{
 			name: "composite tool with missing parameter type",
 			yaml: `
 name: test-vmcp
@@ -378,13 +353,12 @@ aggregation:
 				if backend.Type != "header_injection" {
 					t.Errorf("Backend.Type = %v, want header_injection", backend.Type)
 				}
-				// Verify the resolved value is in metadata
-				headerValue, ok := backend.Metadata["header_value"].(string)
-				if !ok {
-					t.Fatal("header_value not found in metadata")
+				// Verify the resolved value is in HeaderInjection config
+				if backend.HeaderInjection == nil {
+					t.Fatal("HeaderInjection is nil")
 				}
-				if headerValue != "secret-token-123" {
-					t.Errorf("header_value = %v, want secret-token-123", headerValue)
+				if backend.HeaderInjection.HeaderValue != "secret-token-123" {
+					t.Errorf("HeaderInjection.HeaderValue = %v, want secret-token-123", backend.HeaderInjection.HeaderValue)
 				}
 			},
 			wantErr: false,
@@ -418,12 +392,11 @@ aggregation:
 				if !ok {
 					t.Fatal("api-service backend not found")
 				}
-				headerValue, ok := backend.Metadata["header_value"].(string)
-				if !ok {
-					t.Fatal("header_value not found in metadata")
+				if backend.HeaderInjection == nil {
+					t.Fatal("HeaderInjection is nil")
 				}
-				if headerValue != "v1" {
-					t.Errorf("header_value = %v, want v1", headerValue)
+				if backend.HeaderInjection.HeaderValue != "v1" {
+					t.Errorf("HeaderInjection.HeaderValue = %v, want v1", backend.HeaderInjection.HeaderValue)
 				}
 			},
 			wantErr: false,
@@ -534,6 +507,66 @@ aggregation:
 			},
 			wantErr: true,
 			errMsg:  "environment variable EMPTY_TOKEN not set or empty",
+		},
+		{
+			name: "valid audit configuration",
+			yaml: `
+name: test-vmcp
+group: test-group
+
+incoming_auth:
+  type: anonymous
+
+outgoing_auth:
+  source: inline
+  default:
+    type: unauthenticated
+
+aggregation:
+  conflict_resolution: prefix
+  conflict_resolution_config:
+    prefix_format: "{workload}_"
+
+audit:
+  component: "vmcp-server"
+  event_types:
+    - "mcp_initialize"
+    - "mcp_tool_call"
+  exclude_event_types:
+    - "mcp_ping"
+  include_request_data: true
+  include_response_data: false
+  max_data_size: 10000
+  log_file: "/var/log/vmcp/audit.log"
+`,
+			want: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				if cfg.Audit == nil {
+					t.Fatal("Audit should not be nil")
+				}
+				if cfg.Audit.Component != "vmcp-server" {
+					t.Errorf("Audit.Component = %v, want vmcp-server", cfg.Audit.Component)
+				}
+				if len(cfg.Audit.EventTypes) != 2 || cfg.Audit.EventTypes[0] != "mcp_initialize" || cfg.Audit.EventTypes[1] != "mcp_tool_call" {
+					t.Errorf("Audit.EventTypes = %v, want [mcp_initialize mcp_tool_call]", cfg.Audit.EventTypes)
+				}
+				if len(cfg.Audit.ExcludeEventTypes) != 1 || cfg.Audit.ExcludeEventTypes[0] != "mcp_ping" {
+					t.Errorf("Audit.ExcludeEventTypes = %v, want [mcp_ping]", cfg.Audit.ExcludeEventTypes)
+				}
+				if !cfg.Audit.IncludeRequestData {
+					t.Error("Audit.IncludeRequestData = false, want true")
+				}
+				if cfg.Audit.IncludeResponseData {
+					t.Error("Audit.IncludeResponseData = true, want false")
+				}
+				if cfg.Audit.MaxDataSize != 10000 {
+					t.Errorf("Audit.MaxDataSize = %v, want 10000", cfg.Audit.MaxDataSize)
+				}
+				if cfg.Audit.LogFile != "/var/log/vmcp/audit.log" {
+					t.Errorf("Audit.LogFile = %v, want /var/log/vmcp/audit.log", cfg.Audit.LogFile)
+				}
+			},
+			wantErr: false,
 		},
 	}
 

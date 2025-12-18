@@ -15,9 +15,11 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth"
+	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
 const (
@@ -48,7 +50,7 @@ type httpBackendClient struct {
 
 	// registry manages authentication strategies for outgoing requests to backend MCP servers.
 	// Must not be nil - use UnauthenticatedStrategy for no authentication.
-	registry auth.OutgoingAuthRegistry
+	registry vmcpauth.OutgoingAuthRegistry
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
@@ -59,7 +61,7 @@ type httpBackendClient struct {
 // "unauthenticated" strategy.
 //
 // Returns an error if registry is nil.
-func NewHTTPBackendClient(registry auth.OutgoingAuthRegistry) (vmcp.BackendClient, error) {
+func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendClient, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("registry cannot be nil; use UnauthenticatedStrategy for no authentication")
 	}
@@ -79,13 +81,31 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+// identityPropagatingRoundTripper propagates identity to backend HTTP requests.
+// This ensures that identity information from the vMCP handler is available for authentication
+// strategies that need it (e.g., token exchange).
+type identityPropagatingRoundTripper struct {
+	base     http.RoundTripper
+	identity *auth.Identity
+}
+
+// RoundTrip implements http.RoundTripper by adding identity to the request context.
+func (i *identityPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if i.identity != nil {
+		// Add identity to the request's context
+		ctx := auth.WithIdentity(req.Context(), i.identity)
+		req = req.Clone(ctx)
+	}
+	return i.base.RoundTrip(req)
+}
+
 // authRoundTripper is an http.RoundTripper that adds authentication to backend requests.
-// The authentication strategy and metadata are pre-resolved and validated at client creation time,
+// The authentication strategy is pre-resolved and validated at client creation time,
 // eliminating per-request lookups and validation overhead.
 type authRoundTripper struct {
 	base         http.RoundTripper
-	authStrategy auth.Strategy
-	authMetadata map[string]any
+	authStrategy vmcpauth.Strategy
+	authConfig   *authtypes.BackendAuthStrategy
 	target       *vmcp.BackendTarget
 }
 
@@ -97,7 +117,7 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	reqClone := req.Clone(req.Context())
 
 	// Apply pre-resolved authentication strategy
-	if err := a.authStrategy.Authenticate(reqClone.Context(), reqClone, a.authMetadata); err != nil {
+	if err := a.authStrategy.Authenticate(reqClone.Context(), reqClone, a.authConfig); err != nil {
 		return nil, fmt.Errorf("authentication failed for backend %s: %w", a.target.WorkloadID, err)
 	}
 
@@ -107,15 +127,14 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 }
 
 // resolveAuthStrategy resolves the authentication strategy for a backend target.
-// It handles defaulting to "unauthenticated" when no strategy is specified.
+// It handles defaulting to "unauthenticated" when no auth config is specified.
 // This method should be called once at client creation time to enable fail-fast
 // behavior for invalid authentication configurations.
-func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (auth.Strategy, error) {
-	strategyName := target.AuthStrategy
-
+func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (vmcpauth.Strategy, error) {
 	// Default to unauthenticated if not specified
-	if strategyName == "" {
-		strategyName = "unauthenticated"
+	strategyName := authtypes.StrategyTypeUnauthenticated
+	if target.AuthConfig != nil {
+		strategyName = target.AuthConfig.Type
 	}
 
 	// Resolve strategy from registry
@@ -129,7 +148,7 @@ func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (aut
 
 // defaultClientFactory creates mark3labs MCP clients for different transport types.
 func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
-	// Build transport chain: size limit → authentication → HTTP
+	// Build transport chain: size limit → context propagation → authentication → HTTP
 	var baseTransport = http.DefaultTransport
 
 	// Resolve authentication strategy ONCE at client creation time
@@ -139,8 +158,8 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 			target.WorkloadID, err)
 	}
 
-	// Validate metadata ONCE at client creation time
-	if err := authStrategy.Validate(target.AuthMetadata); err != nil {
+	// Validate auth config ONCE at client creation time
+	if err := authStrategy.Validate(target.AuthConfig); err != nil {
 		return nil, fmt.Errorf("invalid authentication configuration for backend %s: %w",
 			target.WorkloadID, err)
 	}
@@ -149,8 +168,16 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	baseTransport = &authRoundTripper{
 		base:         baseTransport,
 		authStrategy: authStrategy,
-		authMetadata: target.AuthMetadata,
+		authConfig:   target.AuthConfig,
 		target:       target,
+	}
+
+	// Extract identity from context and propagate it to backend requests
+	// This ensures authentication strategies (e.g., token exchange) can access identity
+	identity, _ := auth.IdentityFromContext(ctx)
+	baseTransport = &identityPropagatingRoundTripper{
+		base:     baseTransport,
+		identity: identity,
 	}
 
 	// Add size limit layer for DoS protection
@@ -388,6 +415,8 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 }
 
 // CallTool invokes a tool on the backend MCP server.
+//
+//nolint:gocyclo // this function is complex because it handles tool calls with various content types and error handling.
 func (h *httpBackendClient) CallTool(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
@@ -444,8 +473,22 @@ func (h *httpBackendClient) CallTool(
 		return nil, fmt.Errorf("%w: %s on backend %s: %s", vmcp.ErrToolExecutionFailed, toolName, target.WorkloadID, errorMsg)
 	}
 
-	// Convert result contents to a map
-	// MCP tools return an array of Content interface (TextContent, ImageContent, etc.)
+	// Check for structured content first (preferred for composite tool step chaining).
+	// StructuredContent allows templates to access nested fields directly via {{.steps.stepID.output.field}}.
+	// Note: StructuredContent must be an object (map). Arrays or primitives are not supported.
+	if result.StructuredContent != nil {
+		if structuredMap, ok := result.StructuredContent.(map[string]any); ok {
+			logger.Debugf("Using structured content from tool %s on backend %s", toolName, target.WorkloadID)
+			return structuredMap, nil
+		}
+		// StructuredContent is not an object - fall through to Content processing
+		logger.Debugf("StructuredContent from tool %s on backend %s is not an object, falling back to Content",
+			toolName, target.WorkloadID)
+	}
+
+	// Fallback: Convert result contents to a map.
+	// MCP tools return an array of Content interface (TextContent, ImageContent, etc.).
+	// Text content is stored under "text" key, accessible via {{.steps.stepID.output.text}}.
 	resultMap := make(map[string]any)
 	if len(result.Content) > 0 {
 		textIndex := 0

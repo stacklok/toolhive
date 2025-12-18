@@ -73,6 +73,11 @@ func (s *StatusCollector) SetGroupRefValidatedCondition(reason, message string, 
 	s.SetCondition(mcpv1alpha1.ConditionTypeVirtualMCPServerGroupRefValidated, reason, message, status)
 }
 
+// SetCompositeToolRefsValidatedCondition sets the CompositeToolRefs validation condition.
+func (s *StatusCollector) SetCompositeToolRefsValidatedCondition(reason, message string, status metav1.ConditionStatus) {
+	s.SetCondition(mcpv1alpha1.ConditionTypeCompositeToolRefsValidated, reason, message, status)
+}
+
 // SetAuthConfiguredCondition sets the AuthConfigured condition.
 func (s *StatusCollector) SetAuthConfiguredCondition(reason, message string, status metav1.ConditionStatus) {
 	s.SetCondition(mcpv1alpha1.ConditionTypeAuthConfigured, reason, message, status)
@@ -123,7 +128,14 @@ func (s *StatusCollector) UpdateStatus(ctx context.Context, vmcpStatus *mcpv1alp
 		// Apply discovered backends change
 		if s.discoveredBackends != nil {
 			vmcpStatus.DiscoveredBackends = s.discoveredBackends
-			vmcpStatus.BackendCount = len(s.discoveredBackends)
+			// BackendCount represents the number of ready backends
+			readyCount := 0
+			for _, backend := range s.discoveredBackends {
+				if backend.Status == mcpv1alpha1.BackendStatusReady {
+					readyCount++
+				}
+			}
+			vmcpStatus.BackendCount = readyCount
 		}
 
 		ctxLogger.V(1).Info("Batched status update applied",

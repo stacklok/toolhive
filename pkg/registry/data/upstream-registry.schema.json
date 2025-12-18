@@ -45,7 +45,7 @@
           "type": "array",
           "description": "Array of MCP servers using the official MCP server schema",
           "items": {
-            "$ref": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json"
+            "$ref": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json"
           }
         },
         "groups": {
@@ -71,7 +71,7 @@
                 "type": "array",
                 "description": "Array of servers in this group",
                 "items": {
-                  "$ref": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json"
+                  "$ref": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json"
                 }
               }
             }

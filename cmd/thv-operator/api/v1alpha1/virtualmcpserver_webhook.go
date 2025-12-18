@@ -74,13 +74,6 @@ func (r *VirtualMCPServer) Validate() error {
 		}
 	}
 
-	// Validate TokenCache configuration
-	if r.Spec.TokenCache != nil {
-		if err := r.validateTokenCache(); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
@@ -109,10 +102,9 @@ func (r *VirtualMCPServer) validateOutgoingAuth() error {
 	validSources := map[string]bool{
 		"discovered": true,
 		"inline":     true,
-		"mixed":      true,
 	}
 	if auth.Source != "" && !validSources[auth.Source] {
-		return fmt.Errorf("spec.outgoingAuth.source must be one of: discovered, inline, mixed")
+		return fmt.Errorf("spec.outgoingAuth.source must be one of: discovered, inline")
 	}
 
 	// Validate backend configurations
@@ -236,7 +228,13 @@ func (*VirtualMCPServer) validateCompositeTool(index int, tool CompositeToolSpec
 	toolNames[tool.Name] = true
 
 	// Validate steps
-	return validateCompositeToolSteps(index, tool.Steps)
+	if err := validateCompositeToolSteps(index, tool.Steps); err != nil {
+		return err
+	}
+
+	// Validate defaultResults for skippable steps
+	pathPrefix := fmt.Sprintf("spec.compositeTools[%d].steps", index)
+	return validateDefaultResultsForSteps(pathPrefix, tool.Steps, tool.Output)
 }
 
 // validateCompositeToolSteps validates all steps in a composite tool
@@ -277,7 +275,18 @@ func validateCompositeToolStep(
 	}
 
 	// Validate error handling
-	return validateStepErrorHandling(toolIndex, stepIndex, step)
+	if err := validateStepErrorHandling(toolIndex, stepIndex, step); err != nil {
+		return err
+	}
+
+	// Validate elicitation response handlers
+	if err := validateStepElicitationResponseHandlers(toolIndex, stepIndex, step); err != nil {
+		return err
+	}
+
+	// Validate templates in arguments and other fields
+	pathPrefix := fmt.Sprintf("spec.compositeTools[%d].steps", toolIndex)
+	return validateWorkflowStepTemplates(pathPrefix, stepIndex, step)
 }
 
 // validateStepType validates the step type and type-specific requirements
@@ -356,36 +365,27 @@ func validateStepErrorHandling(toolIndex, stepIndex int, step WorkflowStep) erro
 	return nil
 }
 
-// validateTokenCache validates token cache configuration
-func (r *VirtualMCPServer) validateTokenCache() error {
-	cache := r.Spec.TokenCache
+// validateStepElicitationResponseHandlers validates elicitation response handler configuration for a step
+func validateStepElicitationResponseHandlers(toolIndex, stepIndex int, step WorkflowStep) error {
+	validActions := map[string]bool{
+		"skip_remaining": true,
+		"abort":          true,
+		"continue":       true,
+	}
 
-	// Validate provider
-	if cache.Provider != "" {
-		validProviders := map[string]bool{
-			"memory": true,
-			"redis":  true,
-		}
-		if !validProviders[cache.Provider] {
-			return fmt.Errorf("spec.tokenCache.provider must be memory or redis")
+	// Validate OnDecline action
+	if step.OnDecline != nil && step.OnDecline.Action != "" {
+		if !validActions[step.OnDecline.Action] {
+			return fmt.Errorf("spec.compositeTools[%d].steps[%d].onDecline.action must be one of: skip_remaining, abort, continue",
+				toolIndex, stepIndex)
 		}
 	}
 
-	// Validate provider-specific configuration
-	if cache.Provider == "redis" || (cache.Provider == "" && cache.Redis != nil) {
-		if cache.Redis == nil {
-			return fmt.Errorf("spec.tokenCache.redis is required when provider is redis")
-		}
-		if cache.Redis.Address == "" {
-			return fmt.Errorf("spec.tokenCache.redis.address is required")
-		}
-		if cache.Redis.PasswordRef != nil {
-			if cache.Redis.PasswordRef.Name == "" {
-				return fmt.Errorf("spec.tokenCache.redis.passwordRef.name is required when passwordRef is specified")
-			}
-			if cache.Redis.PasswordRef.Key == "" {
-				return fmt.Errorf("spec.tokenCache.redis.passwordRef.key is required when passwordRef is specified")
-			}
+	// Validate OnCancel action
+	if step.OnCancel != nil && step.OnCancel.Action != "" {
+		if !validActions[step.OnCancel.Action] {
+			return fmt.Errorf("spec.compositeTools[%d].steps[%d].onCancel.action must be one of: skip_remaining, abort, continue",
+				toolIndex, stepIndex)
 		}
 	}
 

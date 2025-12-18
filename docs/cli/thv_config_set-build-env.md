@@ -24,6 +24,11 @@ Environment variable names must:
 - Contain only uppercase letters, numbers, and underscores
 - Not be a reserved system variable (PATH, HOME, etc.)
 
+You can set the value in three ways:
+1. Directly: thv config set-build-env KEY value
+2. From a ToolHive secret: thv config set-build-env KEY --from-secret secret-name
+3. From shell environment: thv config set-build-env KEY --from-env
+
 Common use cases:
 - NPM_CONFIG_REGISTRY: Custom npm registry URL
 - PIP_INDEX_URL: Custom PyPI index URL
@@ -33,18 +38,19 @@ Common use cases:
 
 Examples:
   thv config set-build-env NPM_CONFIG_REGISTRY https://npm.corp.example.com
-  thv config set-build-env PIP_INDEX_URL https://pypi.corp.example.com/simple
-  thv config set-build-env GOPROXY https://goproxy.corp.example.com
-  thv config set-build-env GOPRIVATE "github.com/myorg/*"
+  thv config set-build-env GITHUB_TOKEN --from-secret github-pat
+  thv config set-build-env ARTIFACTORY_API_KEY --from-env
 
 ```
-thv config set-build-env <KEY> <value> [flags]
+thv config set-build-env <KEY> [value] [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help   help for set-build-env
+      --from-env      Read value from shell environment at build time
+      --from-secret   Read value from a ToolHive secret at build time (value argument becomes secret name)
+  -h, --help          help for set-build-env
 ```
 
 ### Options inherited from parent commands

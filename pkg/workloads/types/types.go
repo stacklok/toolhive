@@ -57,9 +57,6 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 		}
 	}
 
-	// Get tool type from labels
-	toolType := labels.GetToolType(container.Labels)
-
 	// Get port from labels
 	port, err := labels.GetPort(container.Labels)
 	if err != nil {
@@ -69,30 +66,29 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 	// check if we have the label for transport type (toolhive-transport)
 	transportType := labels.GetTransportType(container.Labels)
 
-	// Generate URL for the MCP server
-	url := ""
-	if port > 0 {
-		url = transport.GenerateMCPServerURL(transportType, transport.LocalhostIPv4, port, name, "")
-	}
-
 	tType, err := types.ParseTransportType(transportType)
 	if err != nil {
 		// If we can't parse the transport type, default to SSE.
 		tType = types.TransportTypeSSE
 	}
 
+	ctx := context.Background()
+	runConfig, err := loadRunConfigFields(ctx, name)
+	if err != nil {
+		return core.Workload{}, err
+	}
+
+	// Generate URL for the MCP server
+	url := ""
+	if port > 0 {
+		url = transport.GenerateMCPServerURL(transportType, runConfig.ProxyMode, transport.LocalhostIPv4, port, name, "")
+	}
 	// Filter out standard ToolHive labels to show only user-defined labels
 	userLabels := make(map[string]string)
 	for key, value := range container.Labels {
 		if !labels.IsStandardToolHiveLabel(key) {
 			userLabels[key] = value
 		}
-	}
-
-	ctx := context.Background()
-	runConfig, err := loadRunConfigFields(ctx, name)
-	if err != nil {
-		return core.Workload{}, err
 	}
 
 	// Calculate the effective proxy mode that clients should use
@@ -103,7 +99,6 @@ func WorkloadFromContainerInfo(container *runtime.ContainerInfo) (core.Workload,
 		Name:          name, // Use the calculated workload name (base name), not container name
 		Package:       container.Image,
 		URL:           url,
-		ToolType:      toolType,
 		TransportType: tType,
 		ProxyMode:     effectiveProxyMode,
 		Status:        container.State,

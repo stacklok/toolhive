@@ -7,9 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -126,7 +124,7 @@ func init() {
 	AddOIDCFlags(runCmd)
 }
 
-func cleanupAndWait(workloadManager workloads.Manager, name string, cancel context.CancelFunc, errCh <-chan error) {
+func cleanupAndWait(workloadManager workloads.Manager, name string) {
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cleanupCancel()
 
@@ -137,13 +135,6 @@ func cleanupAndWait(workloadManager workloads.Manager, name string, cancel conte
 		if err := group.Wait(); err != nil {
 			logger.Warnf("DeleteWorkloads group error for %q: %v", name, err)
 		}
-	}
-
-	cancel()
-	select {
-	case <-errCh:
-	case <-time.After(5 * time.Second):
-		logger.Warnf("Timeout waiting for workload to stop")
 	}
 }
 
@@ -304,28 +295,26 @@ func getworkloadDefaultName(_ context.Context, serverOrImage string) string {
 }
 
 func runForeground(ctx context.Context, workloadManager workloads.Manager, runnerConfig *runner.RunConfig) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(sigCh)
 
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- workloadManager.RunWorkload(ctx, runnerConfig)
 	}()
 
-	select {
-	case sig := <-sigCh:
-		if !process.IsDetached() {
-			logger.Infof("Received signal: %v, stopping server %q", sig, runnerConfig.BaseName)
-			cleanupAndWait(workloadManager, runnerConfig.BaseName, cancel, errCh)
-		}
-		return nil
-	case err := <-errCh:
-		return err
+	// workloadManager.RunWorkload will block until the context is cancelled
+	// or an unrecoverable error is returned. In either case, it will stop the server.
+	// We wait until workloadManager.RunWorkload exits before deleting the workload,
+	// so stopping and deleting don't race.
+	//
+	// There's room for improvement in the factoring here.
+	// Shutdown and cancellation logic is unnecessarily spread across two goroutines.
+	err := <-errCh
+	if !process.IsDetached() {
+		logger.Infof("RunWorkload Exited. Error: %v, stopping server %q", err, runnerConfig.BaseName)
+		cleanupAndWait(workloadManager, runnerConfig.BaseName)
 	}
+	return err
+
 }
 
 func validateGroup(ctx context.Context, workloadsManager workloads.Manager, serverOrImage string) error {
@@ -505,6 +494,13 @@ func validateRunFlags(cmd *cobra.Command, args []string) error {
 		if len(conflictingFlags) > 0 {
 			return fmt.Errorf("--from-config cannot be used with other configuration flags: %v", conflictingFlags)
 		}
+	}
+
+	// Show deprecation warning if --proxy-mode is explicitly set to SSE
+	proxyModeFlag := cmd.Flags().Lookup("proxy-mode")
+	if proxyModeFlag != nil && proxyModeFlag.Changed && proxyModeFlag.Value.String() == "sse" {
+		logger.Warn("The 'sse' proxy mode is deprecated and will be removed in a future release. " +
+			"Please migrate to 'streamable-http' (the new default).")
 	}
 
 	return nil

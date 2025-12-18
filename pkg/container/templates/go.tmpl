@@ -33,12 +33,22 @@ ENV CGO_ENABLED=0 \
 # Set working directory
 WORKDIR /build
 
+{{if index .BuildAuthFiles "netrc"}}
+# Copy netrc for private Go module authentication (build stage only)
+COPY .netrc /root/.netrc
+RUN chmod 600 /root/.netrc
+{{end}}
+
 {{if .IsLocalPath}}
 # Copy the local source code
 COPY . /build/
 
 # Build the application
 RUN go build -o /app/mcp-server {{.MCPPackage}}
+
+# Clean up auth files from build directory to prevent leaking to final image
+# (authentication was already used during go build to fetch private modules)
+RUN rm -f /build/.netrc /build/.npmrc /build/.yarnrc /root/.netrc
 {{else}}
 # Pre-install the Go package at build time
 # This downloads all dependencies and builds the binary

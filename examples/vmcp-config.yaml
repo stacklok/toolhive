@@ -91,14 +91,6 @@ outgoing_auth:
     #     audience: "jira-api"  # Token audience for Jira API
     #     scopes: ["read:jira-work", "write:jira-work"]
 
-# ===== TOKEN CACHING =====
-# Token cache configuration
-token_cache:
-  provider: memory  # Options: memory | redis | custom
-  config:
-    max_entries: 1000
-    ttl_offset: "5m"  # Refresh tokens 5 minutes before expiry
-
 # ===== TOOL AGGREGATION =====
 aggregation:
   # Conflict resolution strategy
@@ -195,3 +187,28 @@ operational:
 #           environment: "{{.steps.confirm_deploy.content.environment}}"
 #         depends_on: ["confirm_deploy"]
 #         condition: "{{.steps.confirm_deploy.action == 'accept'}}"
+
+# ===== OBSERVABILITY =====
+# OpenTelemetry-based metrics and tracing for backend operations and workflows
+telemetry:
+  endpoint: "localhost:4317"  # OTLP collector endpoint
+  servicename: "engineering-vmcp"
+  tracingenabled: true
+  metricsenabled: true
+  samplingrate: 0.1  # 10% sampling
+  insecure: true  # Use HTTP instead of HTTPS
+  enableprometheusmetricspath: true  # Expose /metrics endpoint
+
+# ===== AUDIT LOGGING =====
+# Audit logging for MCP operations (optional)
+# audit:
+#   component: "vmcp-server"  # Component name in audit events
+#   event_types:  # Specific event types to audit (empty = audit all)
+#     - "mcp_initialize"
+#     - "mcp_tool_call"
+#   # exclude_event_types:  # Event types to exclude (takes precedence over event_types)
+#   #   - "mcp_ping"
+#   include_request_data: true  # Include request data in audit logs
+#   include_response_data: false  # Include response data in audit logs
+#   max_data_size: 10000  # Max size of request/response data (bytes)
+#   log_file: "/var/log/vmcp/audit.log"  # Log file path (empty = stdout)

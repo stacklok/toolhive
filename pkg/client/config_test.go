@@ -352,6 +352,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				string(OpenCode),
 				string(Kiro),
 				string(Antigravity),
+				string(Zed),
 			},
 		},
 	}
@@ -445,6 +446,9 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case OpenCode:
 				assert.Contains(t, string(content), `"mcp":`,
 					"OpenCode config should contain mcp key")
+			case Zed:
+				assert.Contains(t, string(content), `"context_servers":`,
+					"Zed config should contain context_servers key")
 			case Goose:
 				// YAML files are created empty and initialized on first use
 				// Just verify the file exists and is readable
@@ -486,7 +490,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity:
+				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}

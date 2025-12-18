@@ -17,7 +17,7 @@ metadata:
 data:
   registry.json: |
     {
-      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/schema.json",
+      "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
       "version": "1.0.0",
       "last_updated": "2025-01-14T00:00:00Z",
       "servers": {
@@ -200,12 +200,95 @@ spec:
 - HTTPS is recommended for production use
 - Authentication support planned for future release
 
+### PVC Source
+
+Store registry data in PersistentVolumeClaims for dynamic, persistent storage:
+
+```yaml
+spec:
+  registries:
+    - name: production
+      format: toolhive
+      pvcRef:
+        claimName: registry-data-pvc
+        path: production/registry.json  # Path within the PVC
+      syncPolicy:
+        interval: "1h"
+```
+
+**How PVC mounting works:**
+- Each registry gets its own volume mount at `/config/registry/{registryName}/`
+- File path becomes: `/config/registry/{registryName}/{path}`
+- Multiple registries can share the same PVC by mounting it at different paths
+- Consistent with ConfigMap source behavior (all sources use `{registryName}` pattern)
+
+**PVC Structure Examples:**
+
+Single PVC with multiple registries:
+```
+PVC "shared-data":
+  /prod-data/registry.json
+  /dev-data/registry.json
+
+Registry "production": pvcRef: {claimName: shared-data, path: prod-data/registry.json}
+→ Mounted at: /config/registry/production/
+→ File path: /config/registry/production/prod-data/registry.json
+
+Registry "development": pvcRef: {claimName: shared-data, path: dev-data/registry.json}
+→ Mounted at: /config/registry/development/
+→ File path: /config/registry/development/dev-data/registry.json
+
+Note: Same PVC mounted twice at different paths, allowing independent registry access
+```
+
+**Populating PVC Data:**
+
+The PVC can be populated using:
+- **Kubernetes Job** (recommended for initial setup)
+- **Init container** in a deployment
+- **Manual copy**: `kubectl cp registry.json pod:/path`
+- **CSI driver** that provides pre-populated data
+- **External sync process** that writes to the PVC
+
+Example populate Job:
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: populate-registry
+spec:
+  template:
+    spec:
+      containers:
+      - name: populate
+        image: busybox
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          mkdir -p /data/production
+          cat > /data/production/registry.json <<EOF
+          {"version": "1.0.0", "servers": {...}}
+          EOF
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: registry-data-pvc
+      restartPolicy: OnFailure
+```
+
+**See Also:**
+- Complete PVC example: [examples/operator/mcp-registries/mcpregistry-pvc.yaml](../../examples/operator/mcp-registries/mcpregistry-pvc.yaml)
+- Multi-source example: [examples/operator/mcp-registries/mcpregistry-multi-source.yaml](../../examples/operator/mcp-registries/mcpregistry-multi-source.yaml)
+
 ### Registry Formats
 
 **ToolHive Format** (default):
 - Native ToolHive registry schema
 - Supports all ToolHive features
-- See [registry schema](../../pkg/registry/data/schema.json)
+- See [registry schema](../../pkg/registry/data/toolhive-legacy-registry.schema.json)
 
 **Upstream Format**:
 - Standard MCP registry format
@@ -557,4 +640,4 @@ Each registry configuration must have a unique `name` within the MCPRegistry.
 - [MCPServer Documentation](README.md#usage)
 - [Operator Installation](../../docs/kind/deploying-toolhive-operator.md)
 - [Registry Examples](../../examples/operator/mcp-registries/)
-- [Registry Schema](../../pkg/registry/data/schema.json)
+- [Registry Schema](../../pkg/registry/data/toolhive-legacy-registry.schema.json)

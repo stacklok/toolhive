@@ -48,6 +48,9 @@ type HTTPTransport struct {
 	// tokenSource is the OAuth token source for remote authentication
 	tokenSource oauth2.TokenSource
 
+	// onHealthCheckFailed is called when a health check fails for remote servers
+	onHealthCheckFailed types.HealthCheckFailedCallback
+
 	// Mutex for protecting shared state
 	mutex sync.Mutex
 
@@ -111,6 +114,11 @@ func (t *HTTPTransport) SetRemoteURL(remoteURL string) {
 // SetTokenSource sets the OAuth token source for remote authentication
 func (t *HTTPTransport) SetTokenSource(tokenSource oauth2.TokenSource) {
 	t.tokenSource = tokenSource
+}
+
+// SetOnHealthCheckFailed sets the callback for health check failures
+func (t *HTTPTransport) SetOnHealthCheckFailed(callback types.HealthCheckFailedCallback) {
+	t.onHealthCheckFailed = callback
 }
 
 // createTokenInjectionMiddleware creates a middleware that injects the OAuth token into requests
@@ -205,9 +213,10 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		targetURI,
 		t.prometheusHandler,
 		t.authInfoHandler,
-		t.remoteURL == "",
+		true,
 		t.remoteURL != "",
 		string(t.transportType),
+		t.onHealthCheckFailed,
 		middlewares...)
 	if err := t.proxy.Start(ctx); err != nil {
 		return err

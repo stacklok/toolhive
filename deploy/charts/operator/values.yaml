@@ -39,7 +39,7 @@ operator:
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0
 
-  # -- Additional environment variables to set in the operator container.
+  # -- Environment variables to set in the operator container
   env: {}
 
   # -- List of ports to expose from the operator container

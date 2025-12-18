@@ -60,7 +60,7 @@ The command removes all the Kubernetes components associated with the chart and 
 | operator.autoscaling.minReplicas | int | `1` | Minimum number of replicas |
 | operator.autoscaling.targetCPUUtilizationPercentage | int | `80` | Target CPU utilization percentage for autoscaling |
 | operator.containerSecurityContext | object | `{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"runAsUser":1000,"seccompProfile":{"type":"RuntimeDefault"}}` | Container security context settings for the operator |
-| operator.env | object | `{}` | Additional environment variables to set in the operator container. |
+| operator.env | object | `{}` | Environment variables to set in the operator container |
 | operator.features.experimental | bool | `false` | Enable experimental features |
 | operator.features.registry | bool | `true` | Enable registry controller (MCPRegistry). This automatically sets ENABLE_REGISTRY environment variable. |
 | operator.features.server | bool | `true` | Enable server-related controllers (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, and ToolConfig). This automatically sets ENABLE_SERVER environment variable. |

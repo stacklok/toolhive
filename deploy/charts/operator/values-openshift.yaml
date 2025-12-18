@@ -39,10 +39,7 @@ operator:
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0
 
-  # -- Additional environment variables to set in the operator container.
-  # Note: Feature flags (server, registry, virtualMCP) should be set via operator.features.* helm values
-  # instead of using env variables directly. This allows for proper documentation and validation.
-  # Use this only for custom environment variables not covered by feature flags.
+# -- Environment variables to set in the operator container
   env: {}
 
   # -- List of ports to expose from the operator container

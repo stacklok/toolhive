@@ -64,6 +64,7 @@ type Auditor struct {
 	config        *Config
 	auditLogger   *slog.Logger
 	transportType string // e.g., "sse", "streamable-http"
+	logWriter     io.Writer
 }
 
 // NewAuditorWithTransport creates a new Auditor with the given configuration and transport information.
@@ -84,7 +85,17 @@ func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, er
 		config:        config,
 		auditLogger:   NewAuditLogger(logWriter),
 		transportType: transportType,
+		logWriter:     logWriter,
 	}, nil
+}
+
+// Close closes the underlying log writer if it implements io.Closer.
+// This should be called when the auditor is no longer needed to properly release resources.
+func (a *Auditor) Close() error {
+	if closer, ok := a.logWriter.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 // isSSETransport checks if the current transport is SSE
@@ -351,32 +362,45 @@ func (*Auditor) getClientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// extractSubjectsFromIdentity extracts subject information from an Identity.
+// This helper ensures consistent fallback order and validation across all auditors.
+// Fallback order for user: Name → PreferredUsername → Email
+func extractSubjectsFromIdentity(identity *auth.Identity) map[string]string {
+	subjects := make(map[string]string)
+
+	// Extract user ID (subject)
+	if identity.Subject != "" {
+		subjects[SubjectKeyUserID] = identity.Subject
+	}
+
+	// Extract user name with fallback order: Name → PreferredUsername → Email
+	if identity.Name != "" {
+		subjects[SubjectKeyUser] = identity.Name
+	} else if preferredUsername, ok := identity.Claims["preferred_username"].(string); ok && preferredUsername != "" {
+		subjects[SubjectKeyUser] = preferredUsername
+	} else if identity.Email != "" {
+		subjects[SubjectKeyUser] = identity.Email
+	}
+
+	// Add client information if available
+	if clientName, ok := identity.Claims["client_name"].(string); ok && clientName != "" {
+		subjects[SubjectKeyClientName] = clientName
+	}
+
+	if clientVersion, ok := identity.Claims["client_version"].(string); ok && clientVersion != "" {
+		subjects[SubjectKeyClientVersion] = clientVersion
+	}
+
+	return subjects
+}
+
 // extractSubjects extracts subject information from the HTTP request.
 func (*Auditor) extractSubjects(r *http.Request) map[string]string {
 	subjects := make(map[string]string)
 
 	// Extract user information from Identity
 	if identity, ok := auth.IdentityFromContext(r.Context()); ok {
-		if identity.Subject != "" {
-			subjects[SubjectKeyUserID] = identity.Subject
-		}
-
-		if identity.Name != "" {
-			subjects[SubjectKeyUser] = identity.Name
-		} else if preferredUsername, ok := identity.Claims["preferred_username"].(string); ok && preferredUsername != "" {
-			subjects[SubjectKeyUser] = preferredUsername
-		} else if identity.Email != "" {
-			subjects[SubjectKeyUser] = identity.Email
-		}
-
-		// Add client information if available
-		if clientName, ok := identity.Claims["client_name"].(string); ok && clientName != "" {
-			subjects[SubjectKeyClientName] = clientName
-		}
-
-		if clientVersion, ok := identity.Claims["client_version"].(string); ok && clientVersion != "" {
-			subjects[SubjectKeyClientVersion] = clientVersion
-		}
+		subjects = extractSubjectsFromIdentity(identity)
 	}
 
 	// If no user found in claims, set anonymous

@@ -22,9 +22,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -983,4 +985,217 @@ func (gingkoHttpLogger) Infof(format string, v ...any) {
 
 func (gingkoHttpLogger) Errorf(format string, v ...any) {
 	ginkgo.GinkgoLogr.Error(errors.New("http error"), "ERROR: "+format, v...)
+}
+
+// InitializeMCPClientWithRetries creates and initializes an MCP client with proper retry handling.
+// It creates a NEW client for each retry attempt to avoid stale session state issues.
+// Returns the initialized client. Caller is responsible for calling Close() on the client.
+func InitializeMCPClientWithRetries(
+	serverURL string,
+	timeout time.Duration,
+	opts ...transport.StreamableHTTPCOption,
+) *mcpclient.Client {
+	var mcpClient *mcpclient.Client
+
+	gomega.Eventually(func() error {
+		// Close any previous client to avoid stale session state
+		if mcpClient != nil {
+			_ = mcpClient.Close()
+		}
+
+		// Create fresh client for each attempt
+		var err error
+		mcpClient, err = mcpclient.NewStreamableHttpClient(serverURL, opts...)
+		if err != nil {
+			return fmt.Errorf("failed to create client: %w", err)
+		}
+
+		initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer initCancel()
+
+		if err := mcpClient.Start(initCtx); err != nil {
+			return fmt.Errorf("failed to start transport: %w", err)
+		}
+
+		initRequest := mcp.InitializeRequest{}
+		initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+		initRequest.Params.ClientInfo = mcp.Implementation{
+			Name:    "toolhive-e2e-test",
+			Version: "1.0.0",
+		}
+
+		_, err = mcpClient.Initialize(initCtx, initRequest)
+		if err != nil {
+			return fmt.Errorf("failed to initialize: %w", err)
+		}
+
+		return nil
+	}, timeout, 5*time.Second).Should(gomega.Succeed(), "MCP client should initialize successfully")
+
+	return mcpClient
+}
+
+// MockHTTPServerInfo contains information about a deployed mock HTTP server
+type MockHTTPServerInfo struct {
+	Name      string
+	Namespace string
+	URL       string // In-cluster URL: http://<name>.<namespace>.svc.cluster.local
+}
+
+// CreateMockHTTPServer creates an in-cluster mock HTTP server for testing fetch tools.
+// This avoids network issues with external URLs like https://example.com in CI.
+func CreateMockHTTPServer(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	timeout, pollingInterval time.Duration,
+) *MockHTTPServerInfo {
+	configMapName := name + "-code"
+
+	// Create ConfigMap with simple HTTP server
+	httpConfigMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName,
+			Namespace: namespace,
+		},
+		Data: map[string]string{
+			"server.py": `#!/usr/bin/env python3
+import http.server
+import socketserver
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        self.wfile.write(b'<html><body><h1>Mock HTTP Server</h1><p>This is a test response.</p></body></html>')
+        return
+
+with socketserver.TCPServer(("", 8080), Handler) as httpd:
+    print("Mock server running on port 8080")
+    httpd.serve_forever()
+`,
+		},
+	}
+	gomega.Expect(c.Create(ctx, httpConfigMap)).To(gomega.Succeed())
+
+	// Create Pod running the mock server
+	mockPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app": name,
+			},
+		},
+		Spec: corev1.PodSpec{
+
+			// Provide a security context to avoid running as root.
+			SecurityContext: &corev1.PodSecurityContext{
+				RunAsNonRoot: ptr.To(true),
+				RunAsUser:    ptr.To(int64(1000)),
+			},
+
+			Containers: []corev1.Container{
+				{
+					Name:  "http-server",
+					Image: "python:3.11-slim",
+					Command: []string{
+						"python3", "/app/server.py",
+					},
+					Ports: []corev1.ContainerPort{
+						{ContainerPort: 8080},
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "server-code",
+							MountPath: "/app",
+						},
+					},
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							TCPSocket: &corev1.TCPSocketAction{
+								Port: intstr.FromInt(8080),
+							},
+						},
+						InitialDelaySeconds: 2,
+						PeriodSeconds:       2,
+						TimeoutSeconds:      5,
+						SuccessThreshold:    1,
+						FailureThreshold:    15,
+					},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "server-code",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: configMapName,
+							},
+							DefaultMode: int32Ptr(0755),
+						},
+					},
+				},
+			},
+		},
+	}
+	gomega.Expect(c.Create(ctx, mockPod)).To(gomega.Succeed())
+
+	// Create Service
+	mockService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{
+				"app": name,
+			},
+			Ports: []corev1.ServicePort{
+				{
+					Port:       80,
+					TargetPort: intstr.FromInt(8080),
+				},
+			},
+		},
+	}
+	gomega.Expect(c.Create(ctx, mockService)).To(gomega.Succeed())
+
+	// Wait for pod to be ready
+	ginkgo.By("Waiting for mock HTTP server to be ready")
+	gomega.Eventually(func() bool {
+		pod := &corev1.Pod{}
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, pod); err != nil {
+			return false
+		}
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+				return true
+			}
+		}
+		return false
+	}, timeout, pollingInterval).Should(gomega.BeTrue(), "Mock HTTP server pod should be ready")
+
+	return &MockHTTPServerInfo{
+		Name:      name,
+		Namespace: namespace,
+		URL:       fmt.Sprintf("http://%s.%s.svc.cluster.local", name, namespace),
+	}
+}
+
+// CleanupMockHTTPServer removes the mock HTTP server resources
+func CleanupMockHTTPServer(ctx context.Context, c client.Client, name, namespace string) {
+	configMapName := name + "-code"
+
+	_ = c.Delete(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+	})
+	_ = c.Delete(ctx, &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+	})
+	_ = c.Delete(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace},
+	})
 }

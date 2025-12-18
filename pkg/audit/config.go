@@ -128,6 +128,11 @@ func GetMiddlewareFromFile(path string, transportType string) (func(http.Handler
 
 // Validate validates the audit configuration.
 func (c *Config) Validate() error {
+	// Apply default for MaxDataSize if not set (0 means use default)
+	if c.MaxDataSize == 0 {
+		c.MaxDataSize = DefaultConfig().MaxDataSize
+	}
+
 	if c.MaxDataSize < 0 {
 		return fmt.Errorf("max_data_size cannot be negative")
 	}
@@ -146,6 +151,15 @@ func (c *Config) Validate() error {
 		EventTypeMCPLogging:          true,
 		EventTypeMCPCompletion:       true,
 		EventTypeMCPRootsListChanged: true,
+		// Workflow event types for vMCP composite workflows
+		EventTypeWorkflowStarted:       true,
+		EventTypeWorkflowCompleted:     true,
+		EventTypeWorkflowFailed:        true,
+		EventTypeWorkflowTimedOut:      true,
+		EventTypeWorkflowStepStarted:   true,
+		EventTypeWorkflowStepCompleted: true,
+		EventTypeWorkflowStepFailed:    true,
+		EventTypeWorkflowStepSkipped:   true,
 		// Fallback event types that can also be emitted by the middleware
 		EventTypeMCPRequest:  true,
 		EventTypeHTTPRequest: true,

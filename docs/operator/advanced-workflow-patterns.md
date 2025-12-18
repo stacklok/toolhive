@@ -189,6 +189,7 @@ Workflows use Go's [text/template](https://pkg.go.dev/text/template) with these 
 
 **Custom Functions**:
 - `json` - JSON encode a value
+- `fromJson` - Parse a JSON string into a value (useful when MCP servers return JSON as text content)
 - `quote` - Quote a string value
 
 **Built-in Functions**: All Go template built-ins are available (`eq`, `ne`, `lt`, `le`, `gt`, `ge`, `and`, `or`, `not`, `index`, `len`, `range`, `with`, `printf`, etc.)
@@ -201,6 +202,42 @@ Workflows use Go's [text/template](https://pkg.go.dev/text/template) with these 
   arguments:
     message: "{{printf \"Found %d items\" (len .steps.fetch_data.output.items)}}"
     data: "{{json .steps.fetch_data.output}}"
+```
+
+### Step Output Format
+
+Backend tools can return results in two formats:
+
+**Structured Content (Object Response)**: When a tool returns structured content (an object), fields are directly accessible via `.steps.<id>.output.<field>`:
+
+```yaml
+# Tool returns: {"user": {"name": "Alice", "email": "alice@example.com"}, "status": "active"}
+arguments:
+  name: "{{.steps.get_user.output.user.name}}"
+  email: "{{.steps.get_user.output.user.email}}"
+  status: "{{.steps.get_user.output.status}}"
+```
+
+**Unstructured Content (Text Response)**: When a tool returns text content, it is stored under the `text` key:
+
+```yaml
+# Tool returns: "Operation completed successfully"
+arguments:
+  result: "{{.steps.run_command.output.text}}"
+```
+
+> **Note**: Structured content must be an object. Arrays, primitives, or other non-object types fall back to unstructured content handling.
+
+### Numeric Comparisons
+
+All numeric values from JSON are `float64`. Use float literals in comparisons:
+
+```yaml
+# Correct: float literal
+condition: '{{if gt .steps.get_count.output.total 100.0}}true{{else}}false{{end}}'
+
+# Incorrect: integer literal causes type mismatch
+condition: '{{if gt .steps.get_count.output.total 100}}true{{else}}false{{end}}'
 ```
 
 ---
@@ -237,7 +274,7 @@ steps:
   - id: optional_notification
     type: tool
     tool: slack.notify
-    on_error:
+    onError:
       action: continue  # Don't fail workflow if Slack is down
 
   - id: critical_payment
@@ -255,7 +292,7 @@ steps:
   - id: fetch_external_api
     type: tool
     tool: external.fetch_data
-    on_error:
+    onError:
       action: retry
       maxRetries: 3           # Maximum 3 retries (4 total attempts)
 ```
@@ -281,7 +318,7 @@ spec:
     - id: fetch_artifact
       type: tool
       tool: s3.download
-      on_error:
+      onError:
         action: retry
         maxRetries: 3
 
@@ -296,14 +333,14 @@ spec:
       type: tool
       tool: slack.notify
       dependsOn: [deploy]
-      on_error:
+      onError:
         action: continue  # Don't fail if notification fails
 
     - id: update_dashboard
       type: tool
       tool: grafana.update
       dependsOn: [deploy]
-      on_error:
+      onError:
         action: continue
 ```
 
@@ -508,7 +545,7 @@ steps:
     type: tool
     tool: email.send
     dependsOn: [charge_payment]
-    on_error:
+    onError:
       action: continue
 ```
 
@@ -521,7 +558,7 @@ spec:
   steps:
     - id: external_api
       timeout: 30s  # Individual operation: 30 seconds
-      on_error:
+      onError:
         action: retry
         maxRetries: 3
 ```
@@ -657,7 +694,7 @@ steps:
   - id: try_primary
     type: tool
     tool: primary_api.call
-    on_error:
+    onError:
       action: retry
       maxRetries: 2
 
@@ -699,7 +736,7 @@ steps:
     type: tool
     tool: external.api
     dependsOn: [fetch_core_data]
-    on_error:
+    onError:
       action: continue
     # Fallback when step fails
     defaultResults:

@@ -1,0 +1,42 @@
+# MCPExternalAuthConfig with OAuth type
+# Configures the embedded OAuth authorization server and upstream Google IDP
+#
+# IMPORTANT: Update the issuer URL to match your ngrok domain!
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPExternalAuthConfig
+metadata:
+  name: google-oauth
+  namespace: oauth-test
+spec:
+  type: oauth
+  oauth:
+    # Auth server config - the embedded OAuth server in the proxy
+    authServer:
+      # The issuer URL must be the public URL where clients access the auth server
+      # This is used for OIDC discovery and token validation
+      # Replace <YOUR-OAUTH-DOMAIN> with your actual domain for OAuth endpoints
+      issuer: "https://<YOUR-OAUTH-DOMAIN>/oauth-test"
+      signingKeyRef:
+        name: auth-signing-key
+        key: private.pem
+      accessTokenLifespan: "1h"
+      clients:
+        - id: "vscode"
+          redirectUris:
+            # RFC 8252 Section 7.3: For loopback addresses, any port is allowed
+            # The LoopbackClient implementation matches any port on 127.0.0.1
+            - "http://127.0.0.1/"
+          public: true
+    # Upstream IDP config - Google OAuth
+    upstream:
+      issuer: "https://accounts.google.com"
+      clientId: "<YOUR-GOOGLE-CLIENT-ID>"
+      clientSecretRef:
+        name: google-oauth-secret
+        key: client-secret
+      scopes:
+        - openid
+        - email
+        # Google Drive and Docs read-only access for final E2E test
+        - https://www.googleapis.com/auth/drive.readonly
+        - https://www.googleapis.com/auth/documents.readonly

@@ -1,0 +1,8 @@
+# Namespace for OAuth test resources
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: oauth-test
+  labels:
+    app.kubernetes.io/name: oauth-test
+    app.kubernetes.io/part-of: toolhive

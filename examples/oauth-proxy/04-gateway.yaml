@@ -1,0 +1,154 @@
+# Gateway and HTTPRoutes for exposing OAuth endpoints via ngrok
+# Split across two domains to stay under ngrok's 15-rule policy limit:
+# - Domain 1 (<YOUR-MCP-DOMAIN>): MCP endpoint + protected resource metadata
+# - Domain 2 (<YOUR-OAUTH-DOMAIN>): All OAuth/OIDC endpoints
+
+---
+# Gateway for Domain 1 - MCP endpoint
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ngrok-gateway
+  namespace: oauth-test
+spec:
+  gatewayClassName: ngrok
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: <YOUR-MCP-DOMAIN>
+      allowedRoutes:
+        namespaces:
+          from: All
+
+---
+# Gateway for Domain 2 - OAuth endpoints
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ngrok-oauth-gateway
+  namespace: oauth-test
+spec:
+  gatewayClassName: ngrok
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: <YOUR-OAUTH-DOMAIN>
+      allowedRoutes:
+        namespaces:
+          from: All
+
+---
+# HTTPRoute for Domain 1 - MCP endpoint only
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mcp-route
+  namespace: oauth-test
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: ngrok-gateway
+      namespace: oauth-test
+  hostnames:
+    - <YOUR-MCP-DOMAIN>
+  rules:
+    # MCP endpoint - The main API endpoint
+    - matches:
+        - path:
+            type: Exact
+            value: /oauth-test/mcp
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: /mcp
+      backendRefs:
+        - name: mcp-oauth-test-server-proxy
+          port: 8080
+    # Protected resource metadata (RFC 9728) - no rewrite needed
+    - matches:
+        - path:
+            type: Exact
+            value: /.well-known/oauth-protected-resource/oauth-test/mcp
+      backendRefs:
+        - name: mcp-oauth-test-server-proxy
+          port: 8080
+
+---
+# HTTPRoute for Domain 2 - All OAuth/OIDC endpoints
+# Using PathPrefix + ReplacePrefixMatch for OAuth routes to preserve query params
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: oauth-route
+  namespace: oauth-test
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: ngrok-oauth-gateway
+      namespace: oauth-test
+  hostnames:
+    - <YOUR-OAUTH-DOMAIN>
+  rules:
+    # OIDC Discovery - no query params needed, use ReplaceFullPath
+    - matches:
+        - path:
+            type: Exact
+            value: /oauth-test/.well-known/openid-configuration
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: /.well-known/openid-configuration
+      backendRefs:
+        - name: mcp-oauth-test-server-proxy
+          port: 8080
+    # JWKS - no query params needed, use ReplaceFullPath
+    - matches:
+        - path:
+            type: Exact
+            value: /oauth-test/.well-known/jwks.json
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: /.well-known/jwks.json
+      backendRefs:
+        - name: mcp-oauth-test-server-proxy
+          port: 8080
+    # OAuth endpoints (authorize, callback, token) - use PathPrefix + ReplacePrefixMatch
+    # This preserves query parameters which are essential for OAuth flow
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /oauth-test/oauth/
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /oauth/
+      backendRefs:
+        - name: mcp-oauth-test-server-proxy
+          port: 8080
+    # DCR endpoint (RFC 7591) - Dynamic Client Registration
+    - matches:
+        - path:
+            type: Exact
+            value: /oauth-test/oauth2/register
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: /oauth2/register
+      backendRefs:
+        - name: mcp-oauth-test-server-proxy
+          port: 8080

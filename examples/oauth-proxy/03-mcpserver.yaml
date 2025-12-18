@@ -1,0 +1,53 @@
+# MCPServer with embedded OAuth authorization server
+# Testing OAuth flow with gdrive MCP server (without explicit mcpPort)
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: oauth-test-server
+  namespace: oauth-test
+spec:
+  # Google Drive MCP server
+  image: gdrive-gdocs-mcp:v0.1.0
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 3000
+
+  # Pod template for MCP container settings
+  podTemplateSpec:
+    spec:
+      containers:
+      - name: mcp
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          readOnlyRootFilesystem: false
+
+  # External auth config - OAuth with embedded auth server
+  externalAuthConfigRef:
+    name: google-oauth
+
+  # OIDC config for validating tokens from our embedded auth server
+  oidcConfig:
+    type: inline
+    # resourceUrl stays on domain 1 (MCP endpoint)
+    resourceUrl: "https://jackal-busy-mantis.ngrok-free.app/oauth-test/mcp"
+    inline:
+      # issuer is on domain 2 (OAuth endpoints)
+      issuer: "https://toolhive.ngrok.app/oauth-test"
+      insecureAllowHTTP: true
+      jwksAllowPrivateIP: true
+
+  # Resource limits for the MCP server
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+  # Resource overrides for proxy debugging
+  resourceOverrides:
+    proxyDeployment:
+      env:
+      - name: TOOLHIVE_DEBUG
+        value: "true"

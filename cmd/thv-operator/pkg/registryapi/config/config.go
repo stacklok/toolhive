@@ -329,6 +329,7 @@ func (cm *configManager) BuildConfig() (*Config, error) {
 	// Prepend the default kubernetes registry as the first entry
 	defaultRegistry := RegistryConfig{
 		Name:       DefaultRegistryName,
+		Format:     mcpv1alpha1.RegistryFormatUpstream,
 		Kubernetes: &KubernetesConfig{},
 	}
 	config.Registries = append([]RegistryConfig{defaultRegistry}, userRegistries...)

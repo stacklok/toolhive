@@ -59,6 +59,11 @@ type VirtualMCPServerSpec struct {
 	// including distributed tracing, OTLP metrics export, and Prometheus metrics endpoint
 	// +optional
 	Telemetry *TelemetryConfig `json:"telemetry,omitempty"`
+
+	// Audit configures audit logging for the Virtual MCP server
+	// When enabled, audit logs include MCP protocol operations
+	// +optional
+	Audit *AuditConfig `json:"audit,omitempty"`
 }
 
 // GroupRef references an MCPGroup resource

@@ -152,6 +152,18 @@ spec:
                       type: object
                     type: array
                 type: object
+              audit:
+                description: |-
+                  Audit configures audit logging for the Virtual MCP server
+                  When enabled, audit logs include MCP protocol operations
+                properties:
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled controls whether audit logging is enabled
+                      When true, enables audit logging with default configuration
+                    type: boolean
+                type: object
               compositeToolRefs:
                 description: |-
                   CompositeToolRefs references VirtualMCPCompositeToolDefinition resources

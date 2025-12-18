@@ -53,6 +53,8 @@ func (*MCPExternalAuthConfig) ValidateDelete(_ context.Context, _ runtime.Object
 }
 
 // validate performs validation on the MCPExternalAuthConfig spec
+//
+//nolint:gocyclo // Function is straightforward, just repetitive validation checks for each auth type
 func (r *MCPExternalAuthConfig) validate() error {
 	switch r.Spec.Type {
 	case ExternalAuthTypeTokenExchange:
@@ -62,6 +64,9 @@ func (r *MCPExternalAuthConfig) validate() error {
 		if r.Spec.HeaderInjection != nil {
 			return fmt.Errorf("headerInjection must not be set when type is 'tokenExchange'")
 		}
+		if r.Spec.OAuth != nil {
+			return fmt.Errorf("oauth must not be set when type is 'tokenExchange'")
+		}
 
 	case ExternalAuthTypeHeaderInjection:
 		if r.Spec.HeaderInjection == nil {
@@ -70,6 +75,9 @@ func (r *MCPExternalAuthConfig) validate() error {
 		if r.Spec.TokenExchange != nil {
 			return fmt.Errorf("tokenExchange must not be set when type is 'headerInjection'")
 		}
+		if r.Spec.OAuth != nil {
+			return fmt.Errorf("oauth must not be set when type is 'headerInjection'")
+		}
 
 	case ExternalAuthTypeUnauthenticated:
 		if r.Spec.TokenExchange != nil {
@@ -77,6 +85,20 @@ func (r *MCPExternalAuthConfig) validate() error {
 		}
 		if r.Spec.HeaderInjection != nil {
 			return fmt.Errorf("headerInjection must not be set when type is 'unauthenticated'")
+		}
+		if r.Spec.OAuth != nil {
+			return fmt.Errorf("oauth must not be set when type is 'unauthenticated'")
+		}
+
+	case ExternalAuthTypeOAuth:
+		if r.Spec.OAuth == nil {
+			return fmt.Errorf("oauth configuration is required when type is 'oauth'")
+		}
+		if r.Spec.TokenExchange != nil {
+			return fmt.Errorf("tokenExchange must not be set when type is 'oauth'")
+		}
+		if r.Spec.HeaderInjection != nil {
+			return fmt.Errorf("headerInjection must not be set when type is 'oauth'")
 		}
 
 	default:

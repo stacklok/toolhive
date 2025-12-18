@@ -83,6 +83,124 @@ spec:
                 - headerName
                 - valueSecretRef
                 type: object
+              oauth:
+                description: |-
+                  OAuth configures OAuth flow with an upstream Identity Provider
+                  Only used when Type is "oauth"
+                properties:
+                  authServer:
+                    description: |-
+                      AuthServer configures the embedded OAuth authorization server
+                      that clients authenticate to (the proxy's own auth endpoints).
+                    properties:
+                      accessTokenLifespan:
+                        default: 1h
+                        description: |-
+                          AccessTokenLifespan is the lifetime of access tokens issued by this server.
+                          Defaults to "1h" if not specified.
+                        pattern: ^[0-9]+(s|m|h)$
+                        type: string
+                      clients:
+                        description: Clients are the OAuth clients allowed to authenticate
+                          to this auth server.
+                        items:
+                          description: OAuthClientConfig defines a pre-registered
+                            OAuth client
+                          properties:
+                            id:
+                              description: ID is the client identifier
+                              type: string
+                            public:
+                              default: false
+                              description: Public indicates this is a public client
+                                (no secret required)
+                              type: boolean
+                            redirectUris:
+                              description: RedirectURIs are the allowed redirect URIs
+                                for this client
+                              items:
+                                type: string
+                              type: array
+                            secret:
+                              description: Secret is the client secret. Empty for
+                                public clients.
+                              type: string
+                          required:
+                          - id
+                          - redirectUris
+                          type: object
+                        type: array
+                      issuer:
+                        description: |-
+                          Issuer is where clients access the proxy's /.well-known/openid-configuration
+                          This should match the external URL where clients reach the MCP server.
+                        type: string
+                      signingKeyRef:
+                        description: |-
+                          SigningKeyRef references a Secret containing the RSA private key (PEM)
+                          for signing JWTs issued by this auth server.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    required:
+                    - issuer
+                    - signingKeyRef
+                    type: object
+                  upstream:
+                    description: |-
+                      Upstream configures the external Identity Provider
+                      that users authenticate against (e.g., Google, Okta).
+                    properties:
+                      clientId:
+                        description: ClientID is the OAuth client ID registered with
+                          the upstream IDP
+                        type: string
+                      clientSecretRef:
+                        description: ClientSecretRef references a Secret containing
+                          the upstream client secret
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      issuer:
+                        description: |-
+                          Issuer is the URL of the upstream IDP (e.g., https://accounts.google.com)
+                          The proxy will use OIDC discovery to find authorization and token endpoints.
+                        type: string
+                      scopes:
+                        default:
+                        - openid
+                        - email
+                        description: |-
+                          Scopes are the OAuth scopes to request from the upstream IDP.
+                          Defaults to ["openid", "email"] if not specified.
+                        items:
+                          type: string
+                        type: array
+                    required:
+                    - clientId
+                    - clientSecretRef
+                    - issuer
+                    type: object
+                required:
+                - authServer
+                - upstream
+                type: object
               tokenExchange:
                 description: |-
                   TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange
@@ -148,6 +266,7 @@ spec:
                 - tokenExchange
                 - headerInjection
                 - unauthenticated
+                - oauth
                 type: string
             required:
             - type

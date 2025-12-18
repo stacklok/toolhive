@@ -16,6 +16,11 @@ const (
 	// This should only be used for backends on trusted networks (e.g., localhost, VPC)
 	// or when authentication is handled by network-level security
 	ExternalAuthTypeUnauthenticated ExternalAuthType = "unauthenticated"
+
+	// ExternalAuthTypeOAuth is the type for OAuth with an upstream Identity Provider.
+	// The proxy authenticates users via the upstream IDP (e.g., Google, Okta) and passes
+	// the obtained token directly to the backend MCP server.
+	ExternalAuthTypeOAuth ExternalAuthType = "oauth"
 )
 
 // ExternalAuthType represents the type of external authentication
@@ -26,7 +31,7 @@ type ExternalAuthType string
 // MCPServer resources in the same namespace.
 type MCPExternalAuthConfigSpec struct {
 	// Type is the type of external authentication to configure
-	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;unauthenticated
+	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;unauthenticated;oauth
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
 
@@ -39,6 +44,11 @@ type MCPExternalAuthConfigSpec struct {
 	// Only used when Type is "headerInjection"
 	// +optional
 	HeaderInjection *HeaderInjectionConfig `json:"headerInjection,omitempty"`
+
+	// OAuth configures OAuth flow with an upstream Identity Provider
+	// Only used when Type is "oauth"
+	// +optional
+	OAuth *OAuthConfig `json:"oauth,omitempty"`
 }
 
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
@@ -97,6 +107,89 @@ type HeaderInjectionConfig struct {
 	// ValueSecretRef references a Kubernetes Secret containing the header value
 	// +kubebuilder:validation:Required
 	ValueSecretRef *SecretKeyRef `json:"valueSecretRef"`
+}
+
+// OAuthConfig configures OAuth flow with an upstream Identity Provider.
+// The proxy runs an embedded OAuth authorization server that authenticates
+// users via the upstream IDP and passes the obtained token to the backend MCP server.
+type OAuthConfig struct {
+	// AuthServer configures the embedded OAuth authorization server
+	// that clients authenticate to (the proxy's own auth endpoints).
+	// +kubebuilder:validation:Required
+	AuthServer OAuthAuthServerConfig `json:"authServer"`
+
+	// Upstream configures the external Identity Provider
+	// that users authenticate against (e.g., Google, Okta).
+	// +kubebuilder:validation:Required
+	Upstream OAuthUpstreamConfig `json:"upstream"`
+}
+
+// OAuthAuthServerConfig configures the embedded OAuth authorization server.
+// This is the auth server running IN the proxy that clients interact with.
+type OAuthAuthServerConfig struct {
+	// Issuer is where clients access the proxy's /.well-known/openid-configuration
+	// This should match the external URL where clients reach the MCP server.
+	// +kubebuilder:validation:Required
+	Issuer string `json:"issuer"`
+
+	// SigningKeyRef references a Secret containing the RSA private key (PEM)
+	// for signing JWTs issued by this auth server.
+	// +kubebuilder:validation:Required
+	SigningKeyRef SecretKeyRef `json:"signingKeyRef"`
+
+	// AccessTokenLifespan is the lifetime of access tokens issued by this server.
+	// Defaults to "1h" if not specified.
+	// +kubebuilder:validation:Pattern=`^[0-9]+(s|m|h)$`
+	// +kubebuilder:default="1h"
+	// +optional
+	AccessTokenLifespan string `json:"accessTokenLifespan,omitempty"`
+
+	// Clients are the OAuth clients allowed to authenticate to this auth server.
+	// +optional
+	Clients []OAuthClientConfig `json:"clients,omitempty"`
+}
+
+// OAuthUpstreamConfig configures the upstream Identity Provider.
+// This is the external IDP (Google, Okta, etc.) that authenticates users.
+type OAuthUpstreamConfig struct {
+	// Issuer is the URL of the upstream IDP (e.g., https://accounts.google.com)
+	// The proxy will use OIDC discovery to find authorization and token endpoints.
+	// +kubebuilder:validation:Required
+	Issuer string `json:"issuer"`
+
+	// ClientID is the OAuth client ID registered with the upstream IDP
+	// +kubebuilder:validation:Required
+	ClientID string `json:"clientId"`
+
+	// ClientSecretRef references a Secret containing the upstream client secret
+	// +kubebuilder:validation:Required
+	ClientSecretRef SecretKeyRef `json:"clientSecretRef"`
+
+	// Scopes are the OAuth scopes to request from the upstream IDP.
+	// Defaults to ["openid", "email"] if not specified.
+	// +kubebuilder:default={"openid","email"}
+	// +optional
+	Scopes []string `json:"scopes,omitempty"`
+}
+
+// OAuthClientConfig defines a pre-registered OAuth client
+type OAuthClientConfig struct {
+	// ID is the client identifier
+	// +kubebuilder:validation:Required
+	ID string `json:"id"`
+
+	// Secret is the client secret. Empty for public clients.
+	// +optional
+	Secret string `json:"secret,omitempty"`
+
+	// RedirectURIs are the allowed redirect URIs for this client
+	// +kubebuilder:validation:Required
+	RedirectURIs []string `json:"redirectUris"`
+
+	// Public indicates this is a public client (no secret required)
+	// +kubebuilder:default=false
+	// +optional
+	Public bool `json:"public,omitempty"`
 }
 
 // SecretKeyRef is a reference to a key within a Secret

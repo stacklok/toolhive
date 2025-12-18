@@ -345,6 +345,15 @@ type OIDCDiscoveryDocument struct {
 	// Add other fields as needed
 }
 
+// oidcDiscoveryParams holds the parameters needed to perform lazy OIDC discovery.
+type oidcDiscoveryParams struct {
+	issuer            string
+	caCertPath        string
+	authTokenFile     string
+	allowPrivateIP    bool
+	insecureAllowHTTP bool
+}
+
 // TokenValidator validates JWT or opaque tokens using OIDC configuration.
 type TokenValidator struct {
 	// OIDC configuration
@@ -363,6 +372,13 @@ type TokenValidator struct {
 	jwksRegistered      bool
 	jwksRegistrationMu  sync.Mutex
 	jwksRegistrationErr error
+
+	// Lazy OIDC discovery - allows deferring discovery until first validation request
+	// This is needed when the OIDC provider (auth server) is the same pod and starts after
+	// the token validator is created.
+	oidcDiscoveryOnce   sync.Once
+	oidcDiscoveryErr    error
+	oidcDiscoveryConfig *oidcDiscoveryParams // Parameters needed to perform discovery later
 }
 
 // TokenValidatorConfig contains configuration for the token validator.
@@ -540,7 +556,12 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 
 	jwksURL := config.JWKSURL
 
-	// If JWKS URL is not provided but issuer is, try to discover it
+	// Determine if we need lazy OIDC discovery
+	// Discovery is deferred when JWKS URL is not provided but issuer is,
+	// allowing the validator to start before the OIDC provider is ready.
+	var discoveryConfig *oidcDiscoveryParams
+	needsLazyDiscovery := false
+
 	// Skip discovery if VMCP_SKIP_OIDC_DISCOVERY is set (for testing only)
 	skipDiscovery := os.Getenv("VMCP_SKIP_OIDC_DISCOVERY") == "true"
 	if skipDiscovery {
@@ -550,17 +571,23 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 			jwksURL = config.Issuer + "/.well-known/jwks.json"
 		}
 	} else if jwksURL == "" && config.Issuer != "" {
-		doc, err := discoverOIDCConfiguration(
-			ctx, config.Issuer, config.CACertPath, config.AuthTokenFile,
-			config.AllowPrivateIP, config.InsecureAllowHTTP,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrFailedToDiscoverOIDC, err)
+		// Instead of discovering now, defer it until first validation request.
+		// This allows the validator to be created even if the OIDC provider
+		// (which might be the same pod) is not yet ready.
+		needsLazyDiscovery = true
+		discoveryConfig = &oidcDiscoveryParams{
+			issuer:            config.Issuer,
+			caCertPath:        config.CACertPath,
+			authTokenFile:     config.AuthTokenFile,
+			allowPrivateIP:    config.AllowPrivateIP,
+			insecureAllowHTTP: config.InsecureAllowHTTP,
 		}
-		jwksURL = doc.JWKSURI
+		// Use a placeholder JWKS URL - will be replaced during lazy discovery
+		jwksURL = config.Issuer + "/.well-known/jwks.json"
+		logger.Debugf("OIDC discovery deferred for issuer '%s' - will discover on first validation request", config.Issuer)
 	}
 
-	// Ensure we have a JWKS URL either provided or discovered
+	// Ensure we have a JWKS URL either provided, discovered, or a placeholder for lazy discovery
 	if jwksURL == "" {
 		return nil, ErrMissingIssuerAndJWKSURL
 	}
@@ -602,7 +629,7 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 		return nil, err
 	}
 
-	return &TokenValidator{
+	validator := &TokenValidator{
 		issuer:        config.Issuer,
 		audience:      config.Audience,
 		jwksURL:       jwksURL,
@@ -613,7 +640,14 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig) (*Token
 		client:        config.httpClient,
 		resourceURL:   config.ResourceURL,
 		registry:      registry,
-	}, nil
+	}
+
+	// Set up lazy discovery if needed
+	if needsLazyDiscovery {
+		validator.oidcDiscoveryConfig = discoveryConfig
+	}
+
+	return validator, nil
 }
 
 // ensureJWKSRegistered ensures that the JWKS URL is registered with the cache.
@@ -641,6 +675,87 @@ func (v *TokenValidator) ensureJWKSRegistered(ctx context.Context) error {
 
 	v.jwksRegistered = true
 	return v.jwksRegistrationErr
+}
+
+// ensureOIDCDiscovered performs lazy OIDC discovery with retry logic.
+// This method is called on first token validation to discover the OIDC configuration
+// (including JWKS URL) from the issuer. It uses exponential backoff to handle cases
+// where the OIDC provider is starting up (e.g., same pod, load balancer warmup).
+//
+// The discovery is performed at most once using sync.Once. If discovery fails after
+// all retries, subsequent calls will return the stored error immediately.
+func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
+	// If no lazy discovery is configured, nothing to do
+	if v.oidcDiscoveryConfig == nil {
+		return nil
+	}
+
+	v.oidcDiscoveryOnce.Do(func() {
+		config := v.oidcDiscoveryConfig
+
+		// Retry configuration: 3 attempts with exponential backoff
+		// Starting at 500ms, doubling each time: 500ms, 1s, 2s
+		const maxRetries = 3
+		baseDelay := 500 * time.Millisecond
+
+		var lastErr error
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			if attempt > 0 {
+				// Calculate delay with exponential backoff
+				delay := baseDelay * time.Duration(1<<(attempt-1))
+				logger.Debugf(
+					"OIDC discovery attempt %d/%d failed, retrying in %v: %v",
+					attempt, maxRetries, delay, lastErr,
+				)
+
+				// Wait before retrying, but respect context cancellation
+				select {
+				case <-ctx.Done():
+					v.oidcDiscoveryErr = fmt.Errorf("OIDC discovery cancelled: %w", ctx.Err())
+					return
+				case <-time.After(delay):
+					// Continue with retry
+				}
+			}
+
+			// Create a per-attempt context with timeout
+			attemptCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			doc, err := discoverOIDCConfiguration(
+				attemptCtx,
+				config.issuer,
+				config.caCertPath,
+				config.authTokenFile,
+				config.allowPrivateIP,
+				config.insecureAllowHTTP,
+			)
+			cancel()
+
+			if err == nil {
+				// Discovery succeeded - update the JWKS URL
+				v.jwksURL = doc.JWKSURI
+				logger.Infof(
+					"OIDC discovery succeeded for issuer '%s': JWKS URL is '%s'",
+					config.issuer, doc.JWKSURI,
+				)
+				v.oidcDiscoveryErr = nil
+				return
+			}
+
+			lastErr = err
+		}
+
+		// All retries exhausted
+		v.oidcDiscoveryErr = fmt.Errorf(
+			"%w after %d attempts: %v",
+			ErrFailedToDiscoverOIDC, maxRetries, lastErr,
+		)
+		logger.Errorf(
+			"OIDC discovery failed for issuer '%s' after %d attempts: %v",
+			config.issuer, maxRetries, lastErr,
+		)
+	})
+
+	return v.oidcDiscoveryErr
 }
 
 // getKeyFromJWKS gets the key from the JWKS.
@@ -794,6 +909,12 @@ func (v *TokenValidator) introspectOpaqueToken(ctx context.Context, tokenStr str
 
 // ValidateToken validates a token.
 func (v *TokenValidator) ValidateToken(ctx context.Context, tokenString string) (jwt.MapClaims, error) {
+	// Ensure OIDC discovery is complete (lazy discovery with retry)
+	// This is a no-op if discovery was already performed or if JWKS URL was provided directly
+	if err := v.ensureOIDCDiscovered(ctx); err != nil {
+		return nil, fmt.Errorf("OIDC discovery failed: %w", err)
+	}
+
 	// Parse the token
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
 		return v.getKeyFromJWKS(ctx, token)

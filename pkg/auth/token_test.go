@@ -603,9 +603,23 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			t.Errorf("Expected issuer %s but got %s", oidcServer.URL, validator.issuer)
 		}
 
+		// With lazy discovery, the JWKS URL is initially a placeholder
+		// Discovery happens on first validation or when ensureOIDCDiscovered is called
+		expectedPlaceholderJWKSURL := oidcServer.URL + "/.well-known/jwks.json"
+		if validator.jwksURL != expectedPlaceholderJWKSURL {
+			t.Errorf("Expected placeholder JWKS URL %s but got %s", expectedPlaceholderJWKSURL, validator.jwksURL)
+		}
+
+		// Trigger lazy OIDC discovery
+		err = validator.ensureOIDCDiscovered(ctx)
+		if err != nil {
+			t.Fatalf("Failed to perform OIDC discovery: %v", err)
+		}
+
+		// After discovery, the JWKS URL should be updated
 		expectedJWKSURL := jwksServer.URL + "/jwks"
 		if validator.jwksURL != expectedJWKSURL {
-			t.Errorf("Expected JWKS URL %s but got %s", expectedJWKSURL, validator.jwksURL)
+			t.Errorf("Expected JWKS URL %s after discovery but got %s", expectedJWKSURL, validator.jwksURL)
 		}
 
 		// Test that the validator can actually validate tokens
@@ -694,20 +708,37 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 			Issuer:   "https://non-existent-domain.example",
 			Audience: "test-audience",
 			ClientID: "test-client",
-			// No CA cert or AllowPrivateIP for this test - it should fail
+			// No CA cert or AllowPrivateIP for this test - discovery should fail
 		}
 
+		// With lazy discovery, NewTokenValidator succeeds even if OIDC endpoint is unreachable
 		validator, err := NewTokenValidator(ctx, config)
-		if err == nil {
-			t.Error("Expected error but got nil")
+		if err != nil {
+			t.Fatalf("Expected no error from NewTokenValidator (lazy discovery), but got: %v", err)
 		}
-		if validator != nil {
-			t.Error("Expected validator to be nil")
+		if validator == nil {
+			t.Fatal("Expected validator to be non-nil")
+		}
+
+		// Discovery failure should occur when we try to validate a token
+		// or explicitly call ensureOIDCDiscovered
+		err = validator.ensureOIDCDiscovered(ctx)
+		if err == nil {
+			t.Error("Expected error from ensureOIDCDiscovered but got nil")
 		}
 
 		// Check that the error is related to OIDC discovery
 		if !errors.Is(err, ErrFailedToDiscoverOIDC) {
 			t.Errorf("Expected error to wrap %v but got %v", ErrFailedToDiscoverOIDC, err)
+		}
+
+		// Also verify that ValidateToken returns the discovery error
+		_, tokenErr := validator.ValidateToken(ctx, "dummy-token")
+		if tokenErr == nil {
+			t.Error("Expected error from ValidateToken but got nil")
+		}
+		if !errors.Is(tokenErr, ErrFailedToDiscoverOIDC) {
+			t.Errorf("Expected ValidateToken error to wrap %v but got %v", ErrFailedToDiscoverOIDC, tokenErr)
 		}
 	})
 }

@@ -12,6 +12,7 @@ import (
 const (
 	// RegistryFormatToolHive is the native ToolHive registry format
 	RegistryFormatToolHive = "toolhive"
+	RegistryFormatUpstream = "upstream"
 )
 
 // MCPRegistrySpec defines the desired state of MCPRegistry

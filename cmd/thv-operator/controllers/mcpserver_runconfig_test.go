@@ -19,6 +19,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
@@ -322,14 +323,15 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				// Verify authorization config is set
 				assert.NotNil(t, config.AuthzConfig)
 				assert.Equal(t, "v1", config.AuthzConfig.Version)
-				assert.Equal(t, authz.ConfigTypeCedarV1, config.AuthzConfig.Type)
-				assert.NotNil(t, config.AuthzConfig.Cedar)
+				assert.Equal(t, authz.ConfigType(cedar.ConfigType), config.AuthzConfig.Type)
 
 				// Check Cedar-specific configuration
-				assert.Len(t, config.AuthzConfig.Cedar.Policies, 2)
-				assert.Contains(t, config.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
-				assert.Contains(t, config.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
-				assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, config.AuthzConfig.Cedar.EntitiesJSON)
+				cedarCfg, err := cedar.ExtractConfig(config.AuthzConfig)
+				require.NoError(t, err)
+				assert.Len(t, cedarCfg.Options.Policies, 2)
+				assert.Contains(t, cedarCfg.Options.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
+				assert.Contains(t, cedarCfg.Options.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
+				assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, cedarCfg.Options.EntitiesJSON)
 			},
 		},
 		{
@@ -359,11 +361,13 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				// For ConfigMap type, with new feature, authorization config is embedded in RunConfig
 				require.NotNil(t, config.AuthzConfig)
 				assert.Equal(t, "v1", config.AuthzConfig.Version)
-				assert.Equal(t, authz.ConfigTypeCedarV1, config.AuthzConfig.Type)
-				require.NotNil(t, config.AuthzConfig.Cedar)
-				assert.Len(t, config.AuthzConfig.Cedar.Policies, 1)
-				assert.Contains(t, config.AuthzConfig.Cedar.Policies[0], "call_tool")
-				assert.Equal(t, "[]", config.AuthzConfig.Cedar.EntitiesJSON)
+				assert.Equal(t, authz.ConfigType(cedar.ConfigType), config.AuthzConfig.Type)
+
+				cedarCfg, err := cedar.ExtractConfig(config.AuthzConfig)
+				require.NoError(t, err)
+				assert.Len(t, cedarCfg.Options.Policies, 1)
+				assert.Contains(t, cedarCfg.Options.Policies[0], "call_tool")
+				assert.Equal(t, "[]", cedarCfg.Options.EntitiesJSON)
 			},
 		},
 		{
@@ -748,14 +752,15 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 				// Verify authorization configuration is properly serialized
 				assert.NotNil(t, runConfig.AuthzConfig, "AuthzConfig should be present in runconfig.json")
 				assert.Equal(t, "v1", runConfig.AuthzConfig.Version)
-				assert.Equal(t, authz.ConfigTypeCedarV1, runConfig.AuthzConfig.Type)
-				assert.NotNil(t, runConfig.AuthzConfig.Cedar)
+				assert.Equal(t, authz.ConfigType(cedar.ConfigType), runConfig.AuthzConfig.Type)
 
 				// Check Cedar-specific configuration
-				assert.Len(t, runConfig.AuthzConfig.Cedar.Policies, 2)
-				assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
-				assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
-				assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, runConfig.AuthzConfig.Cedar.EntitiesJSON)
+				cedarCfg, err := cedar.ExtractConfig(runConfig.AuthzConfig)
+				require.NoError(t, err)
+				assert.Len(t, cedarCfg.Options.Policies, 2)
+				assert.Contains(t, cedarCfg.Options.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
+				assert.Contains(t, cedarCfg.Options.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
+				assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, cedarCfg.Options.EntitiesJSON)
 			},
 		},
 		{
@@ -968,12 +973,14 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 
 		require.NotNil(t, runConfig.AuthzConfig)
 		assert.Equal(t, "v1", runConfig.AuthzConfig.Version)
-		assert.Equal(t, authz.ConfigTypeCedarV1, runConfig.AuthzConfig.Type)
-		require.NotNil(t, runConfig.AuthzConfig.Cedar)
-		assert.Len(t, runConfig.AuthzConfig.Cedar.Policies, 2)
-		assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
-		assert.Contains(t, runConfig.AuthzConfig.Cedar.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
-		assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, runConfig.AuthzConfig.Cedar.EntitiesJSON)
+		assert.Equal(t, authz.ConfigType(cedar.ConfigType), runConfig.AuthzConfig.Type)
+
+		cedarCfg, err := cedar.ExtractConfig(runConfig.AuthzConfig)
+		require.NoError(t, err)
+		assert.Len(t, cedarCfg.Options.Policies, 2)
+		assert.Contains(t, cedarCfg.Options.Policies, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
+		assert.Contains(t, cedarCfg.Options.Policies, `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`)
+		assert.Equal(t, `[{"uid": {"type": "User", "id": "user1"}, "attrs": {}}]`, cedarCfg.Options.EntitiesJSON)
 	})
 }
 

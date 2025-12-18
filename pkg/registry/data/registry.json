@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-12-17T00:18:39Z",
+  "last_updated": "2025-12-18T00:16:08Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -130,9 +130,9 @@
         "example_GetAstronautsCurrentlyInSpace"
       ],
       "metadata": {
-        "stars": 231,
+        "stars": 239,
         "pulls": 0,
-        "last_updated": "2025-11-17T02:33:29Z"
+        "last_updated": "2025-12-17T02:34:40Z"
       },
       "repository_url": "https://github.com/apollographql/apollo-mcp-server",
       "tags": [
@@ -896,7 +896,7 @@
         "automation",
         "browser"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/brightdata-mcp:2.7.0",
+      "image": "ghcr.io/stacklok/dockyard/npx/brightdata-mcp:2.7.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -1322,7 +1322,7 @@
         "documentation",
         "code-examples"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.31",
+      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.32",
       "permissions": {
         "network": {
           "outbound": {
@@ -2224,9 +2224,9 @@
         "download_attachment"
       ],
       "metadata": {
-        "stars": 743,
-        "pulls": 34542,
-        "last_updated": "2025-11-17T02:33:29Z"
+        "stars": 826,
+        "pulls": 43891,
+        "last_updated": "2025-12-17T02:34:40Z"
       },
       "repository_url": "https://github.com/zereight/gitlab-mcp",
       "tags": [
@@ -3429,7 +3429,7 @@
         "cloud",
         "management"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-aura-manager:0.4.6",
+      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-aura-manager:0.4.7",
       "permissions": {
         "network": {
           "outbound": {
@@ -4260,9 +4260,9 @@
         "API-create-a-comment"
       ],
       "metadata": {
-        "stars": 3478,
+        "stars": 3589,
         "pulls": 40073,
-        "last_updated": "2025-11-17T02:33:29Z"
+        "last_updated": "2025-12-17T02:34:41Z"
       },
       "repository_url": "https://github.com/makenotion/notion-mcp-server",
       "tags": [
@@ -4885,7 +4885,7 @@
         "observability",
         "query"
       ],
-      "image": "ghcr.io/pab1it0/prometheus-mcp-server:1.5.1",
+      "image": "ghcr.io/pab1it0/prometheus-mcp-server:1.5.2",
       "permissions": {
         "network": {
           "outbound": {
@@ -5812,7 +5812,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-18T02:32:51Z"
+        "last_updated": "2025-12-17T02:34:41Z"
       },
       "tags": [
         "remote",
@@ -5895,7 +5895,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-18T02:32:51Z"
+        "last_updated": "2025-12-17T02:34:41Z"
       },
       "tags": [
         "remote",

@@ -206,3 +206,62 @@ jobs:
 #                                            --source-tag "$GITHUB_REF_NAME" \
 #                                            "$fn"
 #          done <<<"$checksums"
+
+  notify-release-failure:
+    name: Notify Release Failure
+    needs:
+      - compute-build-flags
+      - release-binaries
+      - image-build-and-push
+      - update-docs-website-binaries
+    if: ${{ failure() }}
+    runs-on: ubuntu-slim
+    permissions: {}
+    steps:
+      - name: Send Slack Notification
+        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1
+        with:
+          webhook: ${{ secrets.SLACK_TOOLHIVE_RELEASE_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "🚨 ToolHive Release Failed",
+                    "emoji": true
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Version:*\n${{ github.ref_name }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Triggered by:*\n${{ github.actor }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Workflow Run:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Failed Run>"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "Repository: ${{ github.repository }} | Commit: ${{ github.sha }}"
+                    }
+                  ]
+                }
+              ]
+            }

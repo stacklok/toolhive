@@ -10,6 +10,24 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
+// healthCheckContextKey is a marker for health check requests.
+type healthCheckContextKey struct{}
+
+// WithHealthCheckMarker marks a context as a health check request.
+// Authentication layers can use IsHealthCheck to identify and skip authentication
+// for health check requests.
+func WithHealthCheckMarker(ctx context.Context) context.Context {
+	return context.WithValue(ctx, healthCheckContextKey{}, true)
+}
+
+// IsHealthCheck returns true if the context is marked as a health check.
+// Authentication strategies use this to bypass authentication for health checks,
+// since health checks verify backend availability and should not require user credentials.
+func IsHealthCheck(ctx context.Context) bool {
+	val, ok := ctx.Value(healthCheckContextKey{}).(bool)
+	return ok && val
+}
+
 // Monitor performs periodic health checks on backend MCP servers.
 // It runs background goroutines for each backend, tracking their health status
 // and consecutive failure counts. The monitor supports graceful shutdown and
@@ -219,8 +237,12 @@ func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend)
 		Metadata:      backend.Metadata,
 	}
 
+	// Mark context as health check to bypass authentication
+	// Health checks verify backend availability and should not require user credentials
+	healthCheckCtx := WithHealthCheckMarker(ctx)
+
 	// Perform health check
-	status, err := m.checker.CheckHealth(ctx, target)
+	status, err := m.checker.CheckHealth(healthCheckCtx, target)
 
 	// Record result in status tracker
 	if err != nil {

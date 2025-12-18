@@ -20,6 +20,7 @@ import (
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 )
@@ -253,6 +254,8 @@ func discoverBackends(ctx context.Context, cfg *config.Config) ([]vmcp.Backend, 
 }
 
 // runServe implements the serve command logic
+//
+//nolint:gocyclo // Complexity from server initialization and configuration is acceptable
 func runServe(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 	configPath := viper.GetString("config")
@@ -330,15 +333,29 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}()
 	}
 
+	// Configure health monitoring if enabled
+	var healthMonitorConfig *health.MonitorConfig
+	if cfg.Operational != nil && cfg.Operational.FailureHandling != nil && cfg.Operational.FailureHandling.HealthCheckInterval > 0 {
+		defaults := health.DefaultConfig()
+		healthMonitorConfig = &health.MonitorConfig{
+			CheckInterval:      time.Duration(cfg.Operational.FailureHandling.HealthCheckInterval),
+			UnhealthyThreshold: cfg.Operational.FailureHandling.UnhealthyThreshold,
+			Timeout:            defaults.Timeout,
+			DegradedThreshold:  defaults.DegradedThreshold,
+		}
+		logger.Info("Health monitoring configured from operational settings")
+	}
+
 	serverCfg := &vmcpserver.Config{
-		Name:              cfg.Name,
-		Version:           getVersion(),
-		Host:              host,
-		Port:              port,
-		AuthMiddleware:    authMiddleware,
-		AuthInfoHandler:   authInfoHandler,
-		TelemetryProvider: telemetryProvider,
-		AuditConfig:       cfg.Audit,
+		Name:                cfg.Name,
+		Version:             getVersion(),
+		Host:                host,
+		Port:                port,
+		AuthMiddleware:      authMiddleware,
+		AuthInfoHandler:     authInfoHandler,
+		TelemetryProvider:   telemetryProvider,
+		AuditConfig:         cfg.Audit,
+		HealthMonitorConfig: healthMonitorConfig,
 	}
 
 	// Convert composite tool configurations to workflow definitions

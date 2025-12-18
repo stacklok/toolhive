@@ -1,4 +1,4 @@
-// Package authz provides authorization utilities using Cedar policies.
+// Package authz provides authorization utilities for MCP servers.
 package authz
 
 import (
@@ -11,6 +11,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"golang.org/x/exp/jsonrpc2"
+
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
 var errBug = errors.New("there's a bug")
@@ -18,7 +20,7 @@ var errBug = errors.New("there's a bug")
 // ResponseFilteringWriter wraps an http.ResponseWriter to intercept and filter responses
 type ResponseFilteringWriter struct {
 	http.ResponseWriter
-	authorizer *CedarAuthorizer
+	authorizer authorizers.Authorizer
 	request    *http.Request
 	method     string
 	buffer     *bytes.Buffer
@@ -27,7 +29,7 @@ type ResponseFilteringWriter struct {
 
 // NewResponseFilteringWriter creates a new response filtering writer
 func NewResponseFilteringWriter(
-	w http.ResponseWriter, authorizer *CedarAuthorizer, r *http.Request, method string,
+	w http.ResponseWriter, authorizer authorizers.Authorizer, r *http.Request, method string,
 ) *ResponseFilteringWriter {
 	return &ResponseFilteringWriter{
 		ResponseWriter: w,
@@ -261,8 +263,8 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 		// Check if the user is authorized to call this tool
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
 			rfw.request.Context(),
-			MCPFeatureTool,
-			MCPOperationCall,
+			authorizers.MCPFeatureTool,
+			authorizers.MCPOperationCall,
 			tool.Name,
 			nil, // No arguments for the authorization check
 		)
@@ -313,8 +315,8 @@ func (rfw *ResponseFilteringWriter) filterPromptsResponse(response *jsonrpc2.Res
 		// Check if the user is authorized to get this prompt
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
 			rfw.request.Context(),
-			MCPFeaturePrompt,
-			MCPOperationGet,
+			authorizers.MCPFeaturePrompt,
+			authorizers.MCPOperationGet,
 			prompt.Name,
 			nil, // No arguments for the authorization check
 		)
@@ -365,8 +367,8 @@ func (rfw *ResponseFilteringWriter) filterResourcesResponse(response *jsonrpc2.R
 		// Check if the user is authorized to read this resource
 		authorized, err := rfw.authorizer.AuthorizeWithJWTClaims(
 			rfw.request.Context(),
-			MCPFeatureResource,
-			MCPOperationRead,
+			authorizers.MCPFeatureResource,
+			authorizers.MCPOperationRead,
 			resource.URI,
 			nil, // No arguments for the authorization check
 		)

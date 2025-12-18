@@ -1,4 +1,6 @@
-// Package authz provides authorization utilities using Cedar policies.
+// Package authz provides authorization utilities for MCP servers.
+// It supports a pluggable authorizer architecture where different authorization
+// backends (e.g., Cedar, OPA) can be registered and used based on configuration.
 package authz
 
 import (
@@ -9,6 +11,7 @@ import (
 
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
@@ -17,16 +20,16 @@ import (
 
 // MCPMethodToFeatureOperation maps MCP method names to feature and operation pairs.
 var MCPMethodToFeatureOperation = map[string]struct {
-	Feature   MCPFeature
-	Operation MCPOperation
+	Feature   authorizers.MCPFeature
+	Operation authorizers.MCPOperation
 }{
-	"tools/call":      {Feature: MCPFeatureTool, Operation: MCPOperationCall},
-	"tools/list":      {Feature: MCPFeatureTool, Operation: MCPOperationList},
-	"prompts/get":     {Feature: MCPFeaturePrompt, Operation: MCPOperationGet},
-	"prompts/list":    {Feature: MCPFeaturePrompt, Operation: MCPOperationList},
-	"resources/read":  {Feature: MCPFeatureResource, Operation: MCPOperationRead},
-	"resources/list":  {Feature: MCPFeatureResource, Operation: MCPOperationList},
-	"features/list":   {Feature: "", Operation: MCPOperationList},
+	"tools/call":      {Feature: authorizers.MCPFeatureTool, Operation: authorizers.MCPOperationCall},
+	"tools/list":      {Feature: authorizers.MCPFeatureTool, Operation: authorizers.MCPOperationList},
+	"prompts/get":     {Feature: authorizers.MCPFeaturePrompt, Operation: authorizers.MCPOperationGet},
+	"prompts/list":    {Feature: authorizers.MCPFeaturePrompt, Operation: authorizers.MCPOperationList},
+	"resources/read":  {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationRead},
+	"resources/list":  {Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationList},
+	"features/list":   {Feature: "", Operation: authorizers.MCPOperationList},
 	"ping":            {Feature: "", Operation: ""}, // Always allowed
 	"progress/update": {Feature: "", Operation: ""}, // Always allowed
 	"initialize":      {Feature: "", Operation: ""}, // Always allowed
@@ -110,34 +113,18 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 	}
 }
 
-// Middleware creates an HTTP middleware that authorizes MCP requests using Cedar policies.
+// Middleware creates an HTTP middleware that authorizes MCP requests.
 // This middleware extracts the MCP message from the request, determines the feature,
-// operation, and resource ID, and authorizes the request using Cedar policies.
+// operation, and resource ID, and authorizes the request using the configured authorizer.
 //
 // For list operations (tools/list, prompts/list, resources/list), the middleware allows
 // the request to proceed but intercepts the response to filter out items that the user
 // is not authorized to access based on the corresponding call/get/read policies.
 //
-// Example usage:
-//
-//	// Create a Cedar authorizer with a policy that covers all tools and resources
-//	cedarAuthorizer, _ := authz.NewCedarAuthorizer(authz.CedarAuthorizerConfig{
-//	    Policies: []string{
-//	        `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-//	        `permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
-//	        `permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
-//	    },
-//	})
-//
-//	// Create a transport with the middleware
-//	middlewares := []types.Middleware{
-//	    jwtValidator.Middleware, // JWT middleware should be applied first
-//	    cedarAuthorizer.Middleware, // Cedar middleware is applied second
-//	}
-//
-//	proxy := httpsse.NewHTTPSSEProxy(8080, "my-container", middlewares...)
-//	proxy.Start(context.Background())
-func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
+// The authorizer parameter should implement the authorizers.Authorizer interface,
+// which can be created using authz.CreateMiddlewareFromConfig() or directly
+// from an authorizer package (e.g., cedar.NewCedarAuthorizer()).
+func Middleware(a authorizers.Authorizer, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if we should skip authorization before checking parsed data
 		if shouldSkipInitialAuthorization(r) {
@@ -169,7 +156,8 @@ func (a *CedarAuthorizer) Middleware(next http.Handler) http.Handler {
 		}
 
 		// Handle list operations differently - allow them through but filter the response
-		if featureOp.Operation == MCPOperationList {
+		if featureOp.Operation == authorizers.MCPOperationList {
+
 			// Create a response filtering writer to intercept and filter the response
 			filteringWriter := NewResponseFilteringWriter(w, a, r, parsedRequest.Method)
 
@@ -257,7 +245,7 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		return fmt.Errorf("either config_data or config_path is required for authorization middleware")
 	}
 
-	middleware, err := authzConfig.CreateMiddleware()
+	middleware, err := CreateMiddlewareFromConfig(authzConfig, runner.GetConfig().GetName())
 	if err != nil {
 		return fmt.Errorf("failed to create authorization middleware: %w", err)
 	}

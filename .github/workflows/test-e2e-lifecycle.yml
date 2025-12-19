@@ -27,9 +27,9 @@ jobs:
       fail-fast: false
       matrix:
         version: [
-          "kindest/node:v1.32.8",
-          "kindest/node:v1.33.4",
-          "kindest/node:v1.34.2"
+          "kindest/node:v1.33.7",
+          "kindest/node:v1.34.3",
+          "kindest/node:v1.35.0"
         ]
 
     steps:

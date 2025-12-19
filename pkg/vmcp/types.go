@@ -99,6 +99,9 @@ const (
 	BackendHealthy BackendHealthStatus = "healthy"
 
 	// BackendDegraded indicates the backend is operational but experiencing issues.
+	// This occurs when:
+	// - Health checks succeed but response times exceed the degraded threshold (slow but working)
+	// - Backend just recovered from failures and is in a stabilizing state
 	BackendDegraded BackendHealthStatus = "degraded"
 
 	// BackendUnhealthy indicates the backend is not responding to health checks.

@@ -247,6 +247,15 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 // Error detection strategy (in order of preference):
 // 1. Check for standard Go error types (context errors, net.Error, url.Error)
 // 2. Fall back to string pattern matching for library-specific errors (MCP SDK, HTTP libs)
+//
+// Error chain preservation:
+// The returned error wraps the sentinel error (ErrTimeout, ErrBackendUnavailable, etc.) with %w
+// and formats the original error with %v. This means:
+// - errors.Is() works for checking the sentinel error (e.g., errors.Is(err, vmcp.ErrTimeout))
+// - errors.As() cannot access the underlying original error type
+// This is a deliberate trade-off due to Go's limitation of one %w per fmt.Errorf call.
+// If access to the underlying error type is needed in the future, consider implementing
+// a custom error type with multiple Unwrap() methods (Go 1.20+).
 func wrapBackendError(err error, backendID string, operation string) error {
 	if err == nil {
 		return nil

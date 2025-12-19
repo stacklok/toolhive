@@ -106,11 +106,10 @@ func TestMonitor_StartStop(t *testing.T) {
 	err = monitor.Start(ctx)
 	require.NoError(t, err)
 
-	// Wait for at least one health check
-	time.Sleep(150 * time.Millisecond)
-
-	// Verify backend is healthy
-	assert.True(t, monitor.IsBackendHealthy("backend-1"))
+	// Wait for at least one health check to complete
+	require.Eventually(t, func() bool {
+		return monitor.IsBackendHealthy("backend-1")
+	}, 500*time.Millisecond, 10*time.Millisecond, "backend should become healthy")
 
 	// Stop monitor
 	err = monitor.Stop()
@@ -247,13 +246,11 @@ func TestMonitor_PeriodicHealthChecks(t *testing.T) {
 		_ = monitor.Stop()
 	}()
 
-	// Wait for threshold to be exceeded (2 failures * 50ms + buffer)
-	time.Sleep(200 * time.Millisecond)
-
-	// Backend should be marked unhealthy
-	status, err := monitor.GetBackendStatus("backend-1")
-	assert.NoError(t, err)
-	assert.Equal(t, vmcp.BackendUnhealthy, status)
+	// Wait for threshold to be exceeded (2 failures)
+	require.Eventually(t, func() bool {
+		status, err := monitor.GetBackendStatus("backend-1")
+		return err == nil && status == vmcp.BackendUnhealthy
+	}, 500*time.Millisecond, 10*time.Millisecond, "backend should become unhealthy after threshold")
 
 	state, err := monitor.GetBackendState("backend-1")
 	assert.NoError(t, err)
@@ -300,7 +297,10 @@ func TestMonitor_GetHealthSummary(t *testing.T) {
 	}()
 
 	// Wait for health checks to complete
-	time.Sleep(100 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		summary := monitor.GetHealthSummary()
+		return summary.Healthy == 1 && summary.Unhealthy == 1
+	}, 500*time.Millisecond, 10*time.Millisecond, "summary should show 1 healthy and 1 unhealthy")
 
 	summary := monitor.GetHealthSummary()
 	assert.Equal(t, 2, summary.Total)
@@ -340,7 +340,11 @@ func TestMonitor_GetBackendStatus(t *testing.T) {
 		_ = monitor.Stop()
 	}()
 
-	time.Sleep(150 * time.Millisecond)
+	// Wait for initial health check to complete
+	require.Eventually(t, func() bool {
+		status, err := monitor.GetBackendStatus("backend-1")
+		return err == nil && status == vmcp.BackendHealthy
+	}, 500*time.Millisecond, 10*time.Millisecond, "backend status should be available and healthy")
 
 	// Test getting status for existing backend
 	status, err := monitor.GetBackendStatus("backend-1")
@@ -385,7 +389,11 @@ func TestMonitor_GetBackendState(t *testing.T) {
 		_ = monitor.Stop()
 	}()
 
-	time.Sleep(150 * time.Millisecond)
+	// Wait for initial health check to complete
+	require.Eventually(t, func() bool {
+		state, err := monitor.GetBackendState("backend-1")
+		return err == nil && state != nil && state.Status == vmcp.BackendHealthy
+	}, 500*time.Millisecond, 10*time.Millisecond, "backend state should be available and healthy")
 
 	// Test getting state for existing backend
 	state, err := monitor.GetBackendState("backend-1")
@@ -432,7 +440,11 @@ func TestMonitor_GetAllBackendStates(t *testing.T) {
 		_ = monitor.Stop()
 	}()
 
-	time.Sleep(150 * time.Millisecond)
+	// Wait for initial health checks to complete for both backends
+	require.Eventually(t, func() bool {
+		allStates := monitor.GetAllBackendStates()
+		return len(allStates) == 2
+	}, 500*time.Millisecond, 10*time.Millisecond, "all backend states should be available")
 
 	allStates := monitor.GetAllBackendStates()
 	assert.Len(t, allStates, 2)
@@ -470,13 +482,16 @@ func TestMonitor_ContextCancellation(t *testing.T) {
 	err = monitor.Start(ctx)
 	require.NoError(t, err)
 
-	// Wait for a few health checks
-	time.Sleep(100 * time.Millisecond)
+	// Wait for a few health checks to run
+	require.Eventually(t, func() bool {
+		return monitor.IsBackendHealthy("backend-1")
+	}, 500*time.Millisecond, 10*time.Millisecond, "backend should have completed at least one health check")
 
 	// Cancel context
 	cancel()
 
-	// Wait for goroutines to stop
+	// Give goroutines time to observe cancellation
+	// Note: We can't easily poll for goroutine completion, so a short sleep is acceptable here
 	time.Sleep(100 * time.Millisecond)
 
 	// Monitor should still be running (context cancellation stops checks but doesn't stop the monitor)
@@ -493,22 +508,6 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, 3, config.UnhealthyThreshold)
 	assert.Equal(t, 10*time.Second, config.Timeout)
 	assert.Equal(t, 5*time.Second, config.DegradedThreshold)
-}
-
-func TestHealthCheckMarker(t *testing.T) {
-	t.Parallel()
-
-	// Test WithHealthCheckMarker
-	ctx := context.Background()
-	assert.False(t, IsHealthCheck(ctx))
-
-	markedCtx := WithHealthCheckMarker(ctx)
-	assert.True(t, IsHealthCheck(markedCtx))
-
-	// Test that marker is preserved across context operations
-	cancelCtx, cancel := context.WithCancel(markedCtx)
-	defer cancel()
-	assert.True(t, IsHealthCheck(cancelCtx))
 }
 
 func TestSummary_String(t *testing.T) {

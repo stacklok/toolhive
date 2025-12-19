@@ -72,9 +72,9 @@ func WaitForVirtualMCPServerReady(
 	}, timeout, pollingInterval).Should(gomega.Succeed())
 }
 
-// WaitForVirtualMCPServerDeployed waits for a VirtualMCPServer deployment to be running
+// WaitForVirtualMCPServerDeployed waits for a VirtualMCPServer to have pods running and a URL assigned,
 // without requiring the Ready condition to be True. This is useful for health monitoring tests
-// where some backends may intentionally be unhealthy.
+// where some backends may intentionally be unhealthy, causing Ready condition to be False.
 func WaitForVirtualMCPServerDeployed(
 	ctx context.Context,
 	c client.Client,

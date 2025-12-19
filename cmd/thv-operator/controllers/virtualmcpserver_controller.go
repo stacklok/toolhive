@@ -86,6 +86,7 @@ type VirtualMCPServerReconciler struct {
 	PlatformDetector *ctrlutil.SharedPlatformDetector
 
 	// healthStatusCache caches vmcp health endpoint responses to reduce HTTP overhead
+	// Initialized in SetupWithManager before reconciliation starts (controller-runtime contract)
 	healthStatusCache      map[string]*healthStatusCacheEntry
 	healthStatusCacheMutex sync.RWMutex
 }
@@ -205,14 +206,9 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	// Apply discovered backends to latestVMCP so updateVirtualMCPServerStatus can use them
-	// for phase determination. The statusManager has the updated backends from discoverBackends,
-	// but they haven't been applied to the CR yet.
-	if discoveredBackends != nil {
-		latestVMCP.Status.DiscoveredBackends = discoveredBackends
-	}
-
 	// Update status based on pod health using the latest Generation
+	// Note: updateVirtualMCPServerStatus uses statusManager.GetDiscoveredBackends()
+	// for phase determination, so discovered backends don't need to be applied here
 	if err := r.updateVirtualMCPServerStatus(ctx, latestVMCP, statusManager); err != nil {
 		ctxLogger.Error(err, "Failed to update VirtualMCPServer status")
 		return ctrl.Result{}, err
@@ -231,16 +227,13 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if vmcp.Spec.Operational != nil && vmcp.Spec.Operational.FailureHandling != nil &&
 		vmcp.Spec.Operational.FailureHandling.HealthCheckInterval != "" {
 		// Parse health check interval to determine requeue time
-		// Note: We parse the duration string on each reconciliation rather than caching
-		// because time.ParseDuration is extremely fast (<1μs) and reconciliation frequency
-		// is already throttled (typically every 10s). Caching would add unnecessary complexity.
 		interval, err := time.ParseDuration(vmcp.Spec.Operational.FailureHandling.HealthCheckInterval)
 		if err != nil {
 			// Invalid duration format - log warning and fall through to event-driven reconciliation
 			// This should be caught by webhook validation, but we handle it gracefully here
-			ctxLogger.Error(err, "Invalid HealthCheckInterval format, health monitoring disabled",
+			ctxLogger.Error(err, "Invalid HealthCheckInterval format, falling back to event-driven reconciliation",
 				"health_check_interval", vmcp.Spec.Operational.FailureHandling.HealthCheckInterval)
-			// Continue with event-driven reconciliation instead of periodic
+			// Continue with event-driven reconciliation instead of periodic polling
 		} else {
 			// Requeue at a multiple of the health check interval to ensure we catch updates
 			// without reconciling too frequently
@@ -1719,7 +1712,7 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 	// Query vmcp health status and update backend statuses if health monitoring is enabled
 	// This provides real MCP health check results instead of just Pod/Phase status
 	//
-	// Performance: Health status responses are cached with a short TTL (10s) to reduce HTTP
+	// Performance: Health status responses are cached with healthStatusCacheTTL to reduce HTTP
 	// overhead from frequent reconciliations while maintaining relatively fresh health data.
 	// The vmcp health endpoint itself returns cached results from periodic health checks.
 	if vmcp.Status.URL != "" {
@@ -1768,7 +1761,14 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 						}
 					}
 
+					// Update LastHealthCheck with actual health check timestamp from vmcp
+					// Do this BEFORE the shouldPreserveUnavailable check so timestamp is always fresh
+					if !healthInfo.LastCheckTime.IsZero() {
+						discoveredBackends[i].LastHealthCheck = metav1.NewTime(healthInfo.LastCheckTime)
+					}
+
 					if shouldPreserveUnavailable {
+						// Skip status update but keep timestamp fresh (already updated above)
 						continue
 					}
 
@@ -1780,11 +1780,6 @@ func (r *VirtualMCPServerReconciler) discoverBackends(
 							"new_status", newStatus,
 							"health_status", healthInfo.Status)
 						discoveredBackends[i].Status = newStatus
-					}
-
-					// Update LastHealthCheck with actual health check timestamp from vmcp
-					if !healthInfo.LastCheckTime.IsZero() {
-						discoveredBackends[i].LastHealthCheck = metav1.NewTime(healthInfo.LastCheckTime)
 					}
 				}
 			}
@@ -1865,6 +1860,9 @@ func (phaseChangePredicate) Update(e event.UpdateEvent) bool {
 		}
 	}
 
+	// Return false for any other type. This should never happen in practice because
+	// this predicate is only registered for MCPServer and MCPRemoteProxy watches
+	// in SetupWithManager(). The controller-runtime framework guarantees type safety.
 	return false
 }
 
@@ -2383,8 +2381,8 @@ func (r *VirtualMCPServerReconciler) queryVMCPHealthStatus(
 
 	// Create HTTP client with derived timeout
 	// Note: Uses default transport which validates TLS certificates.
-	// If the vmcp server uses self-signed certificates, ensure proper cert configuration
-	// (e.g., via cert-manager) or use HTTP for internal cluster communication.
+	// For self-signed certificates, use proper certificate management (e.g., cert-manager)
+	// to establish trust. Disabling TLS validation or using HTTP is not recommended.
 	httpClient := &http.Client{
 		Timeout: timeout,
 	}

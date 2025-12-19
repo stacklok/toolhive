@@ -147,12 +147,6 @@ spec:
       # Recommended: best_effort for production to maintain availability
       partialFailureMode: best_effort
 
-      # Optional: Circuit breaker (not yet implemented in this release)
-      # circuitBreaker:
-      #   enabled: true
-      #   failureThreshold: 5
-      #   timeout: 60s
-
 ---
 # Example: To test health monitoring behavior, you can:
 #

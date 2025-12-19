@@ -15,16 +15,17 @@ import (
 
 var _ = Describe("VirtualMCPServer Health Monitoring", Ordered, func() {
 	var (
-		testNamespace       = "default"
-		mcpGroupName        = "test-health-group"
-		vmcpServerName      = "test-vmcp-health"
-		healthyBackend1     = "healthy-backend-1"
-		healthyBackend2     = "healthy-backend-2"
-		unhealthyBackend    = "unhealthy-backend"
-		timeout             = 3 * time.Minute
-		pollingInterval     = 2 * time.Second
-		healthCheckInterval = "5s" // Fast checks for e2e
-		unhealthyThreshold  = 2    // Mark unhealthy after 2 consecutive failures
+		testNamespace               = "default"
+		mcpGroupName                = "test-health-group"
+		vmcpServerName              = "test-vmcp-health"
+		healthyBackend1             = "healthy-backend-1"
+		healthyBackend2             = "healthy-backend-2"
+		unhealthyBackend            = "unhealthy-backend"
+		timeout                     = 3 * time.Minute
+		pollingInterval             = 2 * time.Second
+		healthCheckInterval         = "5s"             // Fast checks for e2e
+		unhealthyThreshold          = 2                // Mark unhealthy after 2 consecutive failures
+		healthCheckStabilizeTimeout = 30 * time.Second // Time for health checks to stabilize and detect failures
 	)
 
 	BeforeAll(func() {
@@ -210,7 +211,7 @@ var _ = Describe("VirtualMCPServer Health Monitoring", Ordered, func() {
 			}
 
 			return nil
-		}, 30*time.Second, 2*time.Second).Should(Succeed(), "Health checks should mark unhealthy backend as unavailable")
+		}, healthCheckStabilizeTimeout, pollingInterval).Should(Succeed(), "Health checks should mark unhealthy backend as unavailable")
 
 		// Verify all backends are present in discovery
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}

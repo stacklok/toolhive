@@ -1399,3 +1399,740 @@ func TestBuildConfig_DatabaseConfig(t *testing.T) {
 		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
 	})
 }
+
+func TestBuildConfig_AuthConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("default auth config when nil", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "auth-nil-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				// AuthConfig not specified, should default to anonymous
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.NotNil(t, config.Auth)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
+		assert.Nil(t, config.Auth.OAuth)
+	})
+
+	t.Run("explicit anonymous mode", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "auth-anonymous-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
+					Mode: mcpv1alpha1.MCPRegistryAuthModeAnonymous,
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.NotNil(t, config.Auth)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
+		assert.Nil(t, config.Auth.OAuth)
+	})
+
+	t.Run("oauth mode with full config", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "auth-oauth-full-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
+					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
+					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
+						ResourceURL:     "https://registry.example.com",
+						ScopesSupported: []string{"read", "write", "admin"},
+						Realm:           "my-registry",
+						Providers: []mcpv1alpha1.MCPRegistryOAuthProviderConfig{
+							{
+								Name:      "keycloak",
+								IssuerURL: "https://keycloak.example.com/realms/myrealm",
+								Audience:  "registry-api",
+								ClientID:  "registry-client",
+								ClientSecretRef: &corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "keycloak-secret",
+									},
+									Key: "client-secret",
+								},
+								CACertRef: &corev1.ConfigMapKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "keycloak-ca",
+									},
+									Key: "ca.crt",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.NotNil(t, config.Auth)
+		assert.Equal(t, AuthModeOAuth, config.Auth.Mode)
+		require.NotNil(t, config.Auth.OAuth)
+		assert.Equal(t, "https://registry.example.com", config.Auth.OAuth.ResourceURL)
+		assert.Equal(t, []string{"read", "write", "admin"}, config.Auth.OAuth.ScopesSupported)
+		assert.Equal(t, "my-registry", config.Auth.OAuth.Realm)
+
+		// Should have only the keycloak provider
+		require.Len(t, config.Auth.OAuth.Providers, 1)
+
+		// Verify keycloak provider
+		assert.Equal(t, "keycloak", config.Auth.OAuth.Providers[0].Name)
+		assert.Equal(t, "https://keycloak.example.com/realms/myrealm", config.Auth.OAuth.Providers[0].IssuerURL)
+		assert.Equal(t, "registry-api", config.Auth.OAuth.Providers[0].Audience)
+		assert.Equal(t, "registry-client", config.Auth.OAuth.Providers[0].ClientID)
+		assert.Equal(t, "/secrets/keycloak-secret/client-secret", config.Auth.OAuth.Providers[0].ClientSecretFile)
+		assert.Equal(t, "/config/certs/keycloak-ca/ca.crt", config.Auth.OAuth.Providers[0].CACertPath)
+	})
+
+	t.Run("oauth mode with multiple providers", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "auth-multi-provider-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
+					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
+					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
+						Providers: []mcpv1alpha1.MCPRegistryOAuthProviderConfig{
+							{
+								Name:      "google",
+								IssuerURL: "https://accounts.google.com",
+								Audience:  "my-app.apps.googleusercontent.com",
+							},
+							{
+								Name:      "azure",
+								IssuerURL: "https://login.microsoftonline.com/tenant-id/v2.0",
+								Audience:  "api://my-app",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.NotNil(t, config.Auth)
+		assert.Equal(t, AuthModeOAuth, config.Auth.Mode)
+		require.NotNil(t, config.Auth.OAuth)
+
+		// Should have google and azure providers
+		require.Len(t, config.Auth.OAuth.Providers, 2)
+		assert.Equal(t, "google", config.Auth.OAuth.Providers[0].Name)
+		assert.Equal(t, "azure", config.Auth.OAuth.Providers[1].Name)
+	})
+
+	t.Run("oauth mode without oauth config returns error", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "auth-oauth-no-config-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
+					Mode:  mcpv1alpha1.MCPRegistryAuthModeOAuth,
+					OAuth: nil, // OAuth mode but no OAuth config
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		// OAuth mode without OAuth config should still work (oauth config is optional)
+		// and won't add the default kubernetes provider since OAuth is nil
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.NotNil(t, config.Auth)
+		assert.Equal(t, AuthModeOAuth, config.Auth.Mode)
+		assert.Nil(t, config.Auth.OAuth)
+	})
+
+	t.Run("empty mode defaults to anonymous", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "auth-empty-mode-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
+					Mode: "", // Empty mode should default to anonymous
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.NotNil(t, config.Auth)
+		assert.Equal(t, AuthModeAnonymous, config.Auth.Mode)
+	})
+}
+
+func TestBuildOAuthProviderConfig_Validation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing provider name", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "provider-no-name-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
+					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
+					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
+						Providers: []mcpv1alpha1.MCPRegistryOAuthProviderConfig{
+							{
+								Name:      "", // Missing name
+								IssuerURL: "https://issuer.example.com",
+								Audience:  "my-app",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "provider name is required")
+		assert.Nil(t, config)
+	})
+
+	t.Run("missing issuer URL", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "provider-no-issuer-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
+					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
+					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
+						Providers: []mcpv1alpha1.MCPRegistryOAuthProviderConfig{
+							{
+								Name:      "my-provider",
+								IssuerURL: "", // Missing issuer URL
+								Audience:  "my-app",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "provider issuer URL is required")
+		assert.Nil(t, config)
+	})
+
+	t.Run("missing audience", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "provider-no-audience-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
+					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
+					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
+						Providers: []mcpv1alpha1.MCPRegistryOAuthProviderConfig{
+							{
+								Name:      "my-provider",
+								IssuerURL: "https://issuer.example.com",
+								Audience:  "", // Missing audience
+							},
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "provider audience is required")
+		assert.Nil(t, config)
+	})
+}
+
+func TestBuildSecretFilePath(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil secret ref returns empty string", func(t *testing.T) {
+		t.Parallel()
+		result := buildSecretFilePath(nil)
+		assert.Equal(t, "", result)
+	})
+
+	t.Run("secret ref with key", func(t *testing.T) {
+		t.Parallel()
+		secretRef := &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: "my-secret",
+			},
+			Key: "my-key",
+		}
+		result := buildSecretFilePath(secretRef)
+		assert.Equal(t, "/secrets/my-secret/my-key", result)
+	})
+
+	t.Run("secret ref without key uses default", func(t *testing.T) {
+		t.Parallel()
+		secretRef := &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: "my-secret",
+			},
+			Key: "",
+		}
+		result := buildSecretFilePath(secretRef)
+		assert.Equal(t, "/secrets/my-secret/clientSecret", result)
+	})
+}
+
+func TestBuildCACertFilePath(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil configmap ref returns empty string", func(t *testing.T) {
+		t.Parallel()
+		result := buildCACertFilePath(nil)
+		assert.Equal(t, "", result)
+	})
+
+	t.Run("configmap ref with key", func(t *testing.T) {
+		t.Parallel()
+		configMapRef := &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: "my-ca-configmap",
+			},
+			Key: "custom-ca.pem",
+		}
+		result := buildCACertFilePath(configMapRef)
+		assert.Equal(t, "/config/certs/my-ca-configmap/custom-ca.pem", result)
+	})
+
+	t.Run("configmap ref without key uses default", func(t *testing.T) {
+		t.Parallel()
+		configMapRef := &corev1.ConfigMapKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: "my-ca-configmap",
+			},
+			Key: "",
+		}
+		result := buildCACertFilePath(configMapRef)
+		assert.Equal(t, "/config/certs/my-ca-configmap/ca.crt", result)
+	})
+}
+
+func TestBuildOAuthProviderConfig_DirectPaths(t *testing.T) {
+	t.Parallel()
+
+	t.Run("direct caCertPath takes precedence over CACertRef", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "direct-ca-path-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
+					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
+					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
+						Providers: []mcpv1alpha1.MCPRegistryOAuthProviderConfig{
+							{
+								Name:       "my-provider",
+								IssuerURL:  "https://issuer.example.com",
+								Audience:   "my-app",
+								CaCertPath: "/custom/path/to/ca.crt", // Direct path
+								CACertRef: &corev1.ConfigMapKeySelector{ // Should be ignored
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "ca-configmap",
+									},
+									Key: "ca.crt",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.NotNil(t, config.Auth.OAuth)
+		require.Len(t, config.Auth.OAuth.Providers, 1)
+		// Direct path should be used, not the ref-based path
+		assert.Equal(t, "/custom/path/to/ca.crt", config.Auth.OAuth.Providers[0].CACertPath)
+	})
+
+	t.Run("CACertRef is used when caCertPath is empty", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "ref-ca-path-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
+					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
+					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
+						Providers: []mcpv1alpha1.MCPRegistryOAuthProviderConfig{
+							{
+								Name:      "my-provider",
+								IssuerURL: "https://issuer.example.com",
+								Audience:  "my-app",
+								// CaCertPath not set
+								CACertRef: &corev1.ConfigMapKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "ca-configmap",
+									},
+									Key: "custom-ca.pem",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.NotNil(t, config.Auth.OAuth)
+		require.Len(t, config.Auth.OAuth.Providers, 1)
+		// Ref-based path should be used
+		assert.Equal(t, "/config/certs/ca-configmap/custom-ca.pem", config.Auth.OAuth.Providers[0].CACertPath)
+	})
+
+	t.Run("direct authTokenFile takes precedence over AuthTokenRef", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "direct-token-path-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
+					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
+					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
+						Providers: []mcpv1alpha1.MCPRegistryOAuthProviderConfig{
+							{
+								Name:          "my-provider",
+								IssuerURL:     "https://issuer.example.com",
+								Audience:      "my-app",
+								AuthTokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token", // Direct path
+								AuthTokenRef: &corev1.SecretKeySelector{ // Should be ignored
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "token-secret",
+									},
+									Key: "token",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.NotNil(t, config.Auth.OAuth)
+		require.Len(t, config.Auth.OAuth.Providers, 1)
+		// Direct path should be used, not the ref-based path
+		assert.Equal(t, "/var/run/secrets/kubernetes.io/serviceaccount/token", config.Auth.OAuth.Providers[0].AuthTokenFile)
+	})
+
+	t.Run("AuthTokenRef is used when authTokenFile is empty", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "ref-token-path-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
+					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
+					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
+						Providers: []mcpv1alpha1.MCPRegistryOAuthProviderConfig{
+							{
+								Name:      "my-provider",
+								IssuerURL: "https://issuer.example.com",
+								Audience:  "my-app",
+								// AuthTokenFile not set
+								AuthTokenRef: &corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "token-secret",
+									},
+									Key: "my-token",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.NotNil(t, config.Auth.OAuth)
+		require.Len(t, config.Auth.OAuth.Providers, 1)
+		// Ref-based path should be used
+		assert.Equal(t, "/secrets/token-secret/my-token", config.Auth.OAuth.Providers[0].AuthTokenFile)
+	})
+
+	t.Run("provider with all direct paths set", func(t *testing.T) {
+		t.Parallel()
+		mcpRegistry := &mcpv1alpha1.MCPRegistry{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "test-registry",
+			},
+			Spec: mcpv1alpha1.MCPRegistrySpec{
+				Registries: []mcpv1alpha1.MCPRegistryConfig{
+					{
+						Name:   "all-direct-paths-registry",
+						Format: mcpv1alpha1.RegistryFormatToolHive,
+						ConfigMapRef: &corev1.ConfigMapKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "test-configmap",
+							},
+							Key: "registry.json",
+						},
+					},
+				},
+				AuthConfig: &mcpv1alpha1.MCPRegistryAuthConfig{
+					Mode: mcpv1alpha1.MCPRegistryAuthModeOAuth,
+					OAuth: &mcpv1alpha1.MCPRegistryOAuthConfig{
+						Providers: []mcpv1alpha1.MCPRegistryOAuthProviderConfig{
+							{
+								Name:           "kubernetes-custom",
+								IssuerURL:      "https://kubernetes.default.svc",
+								Audience:       "my-api",
+								CaCertPath:     "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+								AuthTokenFile:  "/var/run/secrets/kubernetes.io/serviceaccount/token",
+								AllowPrivateIP: true,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		manager := NewConfigManager(mcpRegistry)
+		config, err := manager.BuildConfig()
+
+		require.NoError(t, err)
+		require.NotNil(t, config)
+		require.NotNil(t, config.Auth.OAuth)
+		require.Len(t, config.Auth.OAuth.Providers, 1)
+
+		// Verify the custom kubernetes provider
+		customProvider := config.Auth.OAuth.Providers[0]
+		assert.Equal(t, "kubernetes-custom", customProvider.Name)
+		assert.Equal(t, "https://kubernetes.default.svc", customProvider.IssuerURL)
+		assert.Equal(t, "my-api", customProvider.Audience)
+		assert.Equal(t, "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt", customProvider.CACertPath)
+		assert.Equal(t, "/var/run/secrets/kubernetes.io/serviceaccount/token", customProvider.AuthTokenFile)
+		assert.True(t, customProvider.AllowPrivateIP)
+	})
+}

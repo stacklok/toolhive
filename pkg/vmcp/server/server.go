@@ -63,6 +63,10 @@ type Config struct {
 	// Version is the server version
 	Version string
 
+	// GroupRef is the name of the MCPGroup containing backend workloads.
+	// Used for operational visibility in status endpoint and logging.
+	GroupRef string
+
 	// Host is the bind address (default: "127.0.0.1")
 	Host string
 
@@ -385,6 +389,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Unauthenticated health endpoints
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/ping", s.handleHealth)
+	mux.HandleFunc("/status", s.handleStatus)
 
 	// Optional Prometheus metrics endpoint (unauthenticated)
 	if s.config.TelemetryProvider != nil {
@@ -471,7 +476,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	actualAddr := listener.Addr().String()
 	logger.Infof("Starting Virtual MCP Server at %s%s", actualAddr, s.config.EndpointPath)
-	logger.Infof("Health endpoints available at %s/health and %s/ping", actualAddr, actualAddr)
+	logger.Infof("Health endpoints available at %s/health, %s/ping, and %s/status", actualAddr, actualAddr, actualAddr)
 
 	// Start server in background
 	errCh := make(chan error, 1)

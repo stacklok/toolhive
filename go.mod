@@ -23,7 +23,7 @@ require (
 	github.com/lestrrat-go/httprc/v3 v3.0.2
 	github.com/lestrrat-go/jwx/v3 v3.0.12
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/modelcontextprotocol/registry v1.3.10
+	github.com/modelcontextprotocol/registry v1.4.0
 	github.com/olekukonko/tablewriter v1.1.2
 	github.com/onsi/ginkgo/v2 v2.27.3
 	github.com/onsi/gomega v1.38.3

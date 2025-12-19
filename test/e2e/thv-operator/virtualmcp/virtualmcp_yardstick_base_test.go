@@ -319,7 +319,7 @@ var _ = Describe("VirtualMCPServer Yardstick Base", Ordered, func() {
 			}, timeout, pollingInterval).Should(Equal(mcpv1alpha1.VirtualMCPServerPhaseDegraded),
 				"VirtualMCPServer should enter Degraded phase when a backend is unavailable")
 
-			By("Verifying backend count reflects one ready backend")
+			By("Verifying backend count reflects all discovered backends")
 			// Re-fetch VirtualMCPServer to ensure we have the latest status
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,

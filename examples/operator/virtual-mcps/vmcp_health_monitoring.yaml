@@ -1,0 +1,179 @@
+# Example: VirtualMCPServer with Health Monitoring
+#
+# This example demonstrates health monitoring configuration for VirtualMCPServer.
+# Health monitoring enables:
+# - Periodic health checks on backend MCPServers using ListCapabilities calls
+# - Automatic detection of unhealthy backends
+# - Backend status tracking in VirtualMCPServer status
+# - Graceful handling of partial failures (best_effort mode)
+#
+# Health Status Values:
+# - ready: Backend is healthy and responding
+# - unavailable: Backend is not responding or workload is in Pending/Failed/Terminating phase
+# - degraded: Backend is responding but degraded (e.g., slow response times)
+# - unknown: Health status not yet determined
+#
+# This example creates:
+# 1. Three MCPServer backends (demonstrating different health scenarios)
+# 2. An MCPGroup to organize them
+# 3. A VirtualMCPServer with health monitoring enabled
+#
+# Usage:
+#   kubectl apply -f vmcp_health_monitoring.yaml
+#
+# Monitor health status:
+#   kubectl get virtualmcpserver health-monitoring-vmcp -o jsonpath='{.status.discoveredBackends[*].status}'
+#   kubectl get virtualmcpserver health-monitoring-vmcp -o jsonpath='{.status.discoveredBackends[*].lastHealthCheck}'
+
+---
+# Step 1: Create MCPGroup
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: health-monitoring-group
+  namespace: default
+spec:
+  description: Group demonstrating health monitoring for VirtualMCPServer
+
+---
+# Step 2: Create healthy backend MCPServers
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: backend-1-healthy
+  namespace: default
+spec:
+  groupRef: health-monitoring-group
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  env:
+    - name: TRANSPORT
+      value: streamable-http
+    - name: TOOL_PREFIX
+      value: backend1
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: backend-2-healthy
+  namespace: default
+spec:
+  groupRef: health-monitoring-group
+  image: ghcr.io/stackloklabs/yardstick/yardstick-server:0.0.2
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  env:
+    - name: TRANSPORT
+      value: streamable-http
+    - name: TOOL_PREFIX
+      value: backend2
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 3: Create VirtualMCPServer with health monitoring enabled
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: health-monitoring-vmcp
+  namespace: default
+spec:
+  # Reference to the MCPGroup containing backend MCPServers
+  groupRef:
+    name: health-monitoring-group
+
+  # Incoming authentication (client -> vMCP)
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+
+  # Outgoing authentication (vMCP -> backends)
+  outgoingAuth:
+    source: discovered
+
+  # Aggregation configuration
+  aggregation:
+    conflictResolution: prefix
+    conflictResolutionConfig:
+      prefixFormat: "{workload}_"
+
+  # Service type - NodePort for external access
+  serviceType: NodePort
+
+  # Operational settings with health monitoring
+  operational:
+    # Enable debug logging to see health check details
+    logLevel: debug
+
+    # Timeout configuration
+    timeouts:
+      default: 30s
+
+    # Failure handling with health monitoring
+    failureHandling:
+      # Health check interval - how often to check backend health
+      # Shorter intervals provide faster detection but more overhead
+      # Recommended: 30s-60s for production, 5s-10s for testing
+      healthCheckInterval: 30s
+
+      # Unhealthy threshold - consecutive failures before marking unhealthy
+      # Higher values reduce false positives from transient failures
+      # Recommended: 2-3 for production
+      unhealthyThreshold: 3
+
+      # Partial failure mode - behavior when some backends are unavailable
+      # - fail: Fail entire request if any backend is unavailable (strict)
+      # - best_effort: Continue with available backends (resilient)
+      # Recommended: best_effort for production to maintain availability
+      partialFailureMode: best_effort
+
+      # Optional: Circuit breaker (not yet implemented in this release)
+      # circuitBreaker:
+      #   enabled: true
+      #   failureThreshold: 5
+      #   timeout: 60s
+
+---
+# Example: To test health monitoring behavior, you can:
+#
+# 1. Check initial status (all backends should be healthy):
+#    kubectl get virtualmcpserver health-monitoring-vmcp -o yaml
+#
+# 2. View backend health status:
+#    kubectl get virtualmcpserver health-monitoring-vmcp \
+#      -o jsonpath='{range .status.discoveredBackends[*]}{.name}{"\t"}{.status}{"\t"}{.lastHealthCheck}{"\n"}{end}'
+#
+# 3. Simulate an unhealthy backend by deleting one:
+#    kubectl delete mcpserver backend-2-healthy
+#
+# 4. Wait for health checks to detect the failure (up to healthCheckInterval * unhealthyThreshold):
+#    watch kubectl get virtualmcpserver health-monitoring-vmcp \
+#      -o jsonpath='{range .status.discoveredBackends[*]}{.name}{"\t"}{.status}{"\n"}{end}'
+#
+# 5. Observe the VirtualMCPServer phase changes to "Degraded" but continues serving:
+#    kubectl get virtualmcpserver health-monitoring-vmcp
+#
+# 6. Recreate the backend to see recovery:
+#    kubectl apply -f vmcp_health_monitoring.yaml
+#
+# 7. Health monitoring will detect recovery and update status to "ready"

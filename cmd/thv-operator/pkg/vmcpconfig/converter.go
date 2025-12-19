@@ -124,6 +124,7 @@ func (c *Converter) Convert(
 	}
 
 	config.Telemetry = spectoconfig.ConvertTelemetryConfig(ctx, vmcp.Spec.Telemetry, vmcp.Name)
+	config.Audit = spectoconfig.ConvertAuditConfig(ctx, vmcp.Spec.Audit, vmcp.Name)
 
 	// Apply operational defaults (fills missing values)
 	config.EnsureOperationalDefaults()

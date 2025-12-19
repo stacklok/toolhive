@@ -43,6 +43,7 @@ const (
 	middlewareTimeout = 60 * time.Second
 	readHeaderTimeout = 10 * time.Second
 	socketPermissions = 0660 // Socket file permissions (owner/group read-write)
+	maxRequestBodySize = 1 << 20 // 1MB - Maximum request body size
 )
 
 // ServerBuilder provides a fluent interface for building and configuring the API server
@@ -146,6 +147,7 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 		middleware.RequestID,
 		// TODO: Figure out logging middleware. We may want to use a different logger.
 		middleware.Timeout(middlewareTimeout),
+		requestBodySizeLimitMiddleware(maxRequestBodySize),
 		headersMiddleware,
 	)
 
@@ -311,6 +313,23 @@ func updateCheckMiddleware() func(next http.Handler) http.Handler {
 					logger.Warnf("could not check for updates for %s: %s", component, err)
 				}
 			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// requestBodySizeLimitMiddleware limits request body size, returns a 413 for request bodies larger than maxSize.
+func requestBodySizeLimitMiddleware(maxSize int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Check Content-Length header first for early rejection
+			if r.ContentLength > maxSize {
+				http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			
+			// Also set MaxBytesReader as a safety net for requests without Content-Length
+			r.Body = http.MaxBytesReader(w, r.Body, maxSize)
 			next.ServeHTTP(w, r)
 		})
 	}

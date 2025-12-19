@@ -42,6 +42,20 @@ func (m *MockStatusManager) EXPECT() *MockStatusManagerMockRecorder {
 	return m.recorder
 }
 
+// GetDiscoveredBackends mocks base method.
+func (m *MockStatusManager) GetDiscoveredBackends() []v1alpha1.DiscoveredBackend {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetDiscoveredBackends")
+	ret0, _ := ret[0].([]v1alpha1.DiscoveredBackend)
+	return ret0
+}
+
+// GetDiscoveredBackends indicates an expected call of GetDiscoveredBackends.
+func (mr *MockStatusManagerMockRecorder) GetDiscoveredBackends() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetDiscoveredBackends", reflect.TypeOf((*MockStatusManager)(nil).GetDiscoveredBackends))
+}
+
 // SetAuthConfiguredCondition mocks base method.
 func (m *MockStatusManager) SetAuthConfiguredCondition(reason, message string, status v1.ConditionStatus) {
 	m.ctrl.T.Helper()

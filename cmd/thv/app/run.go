@@ -91,7 +91,29 @@ You can specify the network mode for the container using the --network flag:
 - Custom network: $ thv run --network my-network <image>
 - Default (bridge): $ thv run <image>
 
-The --network flag accepts any Docker-compatible network mode.`,
+The --network flag accepts any Docker-compatible network mode.
+
+Examples:
+  # Run a server from the registry
+  thv run filesystem
+
+  # Run a server with custom arguments
+  thv run github -- --repo owner/repo
+
+  # Run from a container image
+  thv run ghcr.io/example/mcp-server:latest
+
+  # Run using a protocol scheme (Python with uv)
+  thv run uvx://mcp-server-sqlite
+
+  # Run using npx (Node.js)
+  thv run npx://@modelcontextprotocol/server-everything
+
+  # Run a local Go project
+  thv run go://./my-local-mcp-server
+
+  # Run from exported configuration
+  thv run --from-config ./exported-config. json`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		// If --from-config is provided, no args are required
 		if runFlags.FromConfig != "" {

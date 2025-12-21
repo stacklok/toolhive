@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-12-20T00:18:00Z",
+  "last_updated": "2025-12-21T00:19:53Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -1243,9 +1243,9 @@
         "create_project"
       ],
       "metadata": {
-        "stars": 469,
+        "stars": 491,
         "pulls": 273,
-        "last_updated": "2025-11-22T02:30:16Z"
+        "last_updated": "2025-12-20T02:33:14Z"
       },
       "repository_url": "https://github.com/GoogleCloudPlatform/cloud-run-mcp",
       "tags": [
@@ -1483,7 +1483,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.23.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.24.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -1964,7 +1964,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.23.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.24.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -2239,7 +2239,7 @@
         "milestones",
         "pipelines"
       ],
-      "image": "iwakitakuma/gitlab-mcp:2.0.13",
+      "image": "iwakitakuma/gitlab-mcp:2.0.19",
       "target_port": 3002,
       "permissions": {
         "network": {
@@ -4743,7 +4743,7 @@
         "web",
         "accessibility"
       ],
-      "image": "mcr.microsoft.com/playwright/mcp:v0.0.52",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.53",
       "target_port": 8931,
       "permissions": {
         "network": {
@@ -4965,6 +4965,11 @@
         "read_file",
         "read_log_file"
       ],
+      "metadata": {
+        "stars": 72,
+        "pulls": 0,
+        "last_updated": "2025-12-20T02:33:14Z"
+      },
       "repository_url": "https://github.com/rhel-lightspeed/linux-mcp-server",
       "tags": [
         "linux",
@@ -5232,6 +5237,7 @@
         "get_trace_details",
         "search_docs",
         "search_events",
+        "search_issue_events",
         "search_issues",
         "update_issue",
         "update_project",
@@ -5250,7 +5256,7 @@
         "error-tracking",
         "observability"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.25.0",
+      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.26.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -6275,7 +6281,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-21T02:32:11Z"
+        "last_updated": "2025-12-20T02:33:14Z"
       },
       "tags": [
         "issue-tracking",
@@ -6305,7 +6311,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-21T02:32:11Z"
+        "last_updated": "2025-12-20T02:33:14Z"
       },
       "tags": [
         "remote",
@@ -6372,9 +6378,9 @@
         "all_widgets_schema"
       ],
       "metadata": {
-        "stars": 336,
+        "stars": 350,
         "pulls": 0,
-        "last_updated": "2025-11-21T02:32:11Z"
+        "last_updated": "2025-12-20T02:33:14Z"
       },
       "repository_url": "https://github.com/mondaycom/mcp",
       "tags": [

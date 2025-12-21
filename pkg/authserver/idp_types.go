@@ -17,11 +17,13 @@
 package authserver
 
 import (
+	"context"
+	"net/http"
 	"time"
 )
 
-// DefaultPendingAuthorizationTTL is the default TTL for pending authorization requests.
-const DefaultPendingAuthorizationTTL = 10 * time.Minute
+// PKCEChallengeMethodS256 is the PKCE challenge method for SHA-256.
+const PKCEChallengeMethodS256 = "S256"
 
 // IDPTokens represents the tokens obtained from an upstream Identity Provider.
 type IDPTokens struct {
@@ -51,34 +53,6 @@ type IDPTokens struct {
 // IsExpired returns true if the access token has expired.
 func (t *IDPTokens) IsExpired() bool {
 	return time.Now().After(t.ExpiresAt)
-}
-
-// PendingAuthorization tracks a client's authorization request while they
-// authenticate with the upstream IDP.
-type PendingAuthorization struct {
-	// ClientID is the ID of the OAuth client making the authorization request.
-	ClientID string
-
-	// RedirectURI is the client's callback URL where we'll redirect after authentication.
-	RedirectURI string
-
-	// State is the client's original state parameter for CSRF protection.
-	State string
-
-	// PKCEChallenge is the client's PKCE code challenge.
-	PKCEChallenge string
-
-	// PKCEMethod is the PKCE challenge method (must be "S256").
-	PKCEMethod string
-
-	// Scopes are the OAuth scopes requested by the client.
-	Scopes []string
-
-	// InternalState is our randomly generated state for correlating upstream callback.
-	InternalState string
-
-	// CreatedAt is when the pending authorization was created.
-	CreatedAt time.Time
 }
 
 // UserInfo contains user information retrieved from the upstream IDP.
@@ -115,4 +89,31 @@ type OIDCEndpoints struct {
 
 	// CodeChallengeMethodsSupported lists the supported PKCE code challenge methods.
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
+}
+
+// IDPProvider handles communication with an upstream Identity Provider.
+type IDPProvider interface {
+	// Name returns the provider name (e.g., "google", "oidc").
+	Name() string
+
+	// AuthorizationURL builds the URL to redirect the user to the upstream IDP.
+	// state: our internal state to correlate callback
+	// codeChallenge: PKCE challenge to send to upstream (if supported)
+	// scopes: scopes to request from upstream
+	AuthorizationURL(state, codeChallenge string, scopes []string) (string, error)
+
+	// ExchangeCode exchanges an authorization code for tokens with the upstream IDP.
+	ExchangeCode(ctx context.Context, code, codeVerifier string) (*IDPTokens, error)
+
+	// RefreshTokens refreshes the upstream IDP tokens.
+	RefreshTokens(ctx context.Context, refreshToken string) (*IDPTokens, error)
+
+	// UserInfo fetches user information from the upstream IDP.
+	UserInfo(ctx context.Context, accessToken string) (*UserInfo, error)
+}
+
+// HTTPClient is an interface for HTTP client operations.
+// This allows for mocking in tests.
+type HTTPClient interface {
+	Do(req *http.Request) (*http.Response, error)
 }

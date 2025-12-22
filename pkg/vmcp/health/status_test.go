@@ -1,0 +1,488 @@
+package health
+
+import (
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/vmcp"
+)
+
+func TestNewStatusTracker(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		threshold         int
+		expectedThreshold int
+		description       string
+	}{
+		{
+			name:              "valid threshold",
+			threshold:         3,
+			expectedThreshold: 3,
+			description:       "should use provided threshold",
+		},
+		{
+			name:              "threshold of 1",
+			threshold:         1,
+			expectedThreshold: 1,
+			description:       "should allow threshold of 1",
+		},
+		{
+			name:              "invalid threshold (0)",
+			threshold:         0,
+			expectedThreshold: 1,
+			description:       "should adjust invalid threshold to 1",
+		},
+		{
+			name:              "invalid threshold (-1)",
+			threshold:         -1,
+			expectedThreshold: 1,
+			description:       "should adjust negative threshold to 1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tracker := newStatusTracker(tt.threshold)
+			require.NotNil(t, tracker)
+			assert.Equal(t, tt.expectedThreshold, tracker.unhealthyThreshold, tt.description)
+			assert.NotNil(t, tracker.states)
+		})
+	}
+}
+
+func TestStatusTracker_RecordSuccess(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+
+	// Record success for new backend
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
+
+	status, exists := tracker.GetStatus("backend-1")
+	assert.True(t, exists)
+	assert.Equal(t, vmcp.BackendHealthy, status)
+
+	state, exists := tracker.GetState("backend-1")
+	assert.True(t, exists)
+	assert.Equal(t, vmcp.BackendHealthy, state.Status)
+	assert.Equal(t, 0, state.ConsecutiveFailures)
+	assert.Nil(t, state.LastError)
+	assert.False(t, state.LastCheckTime.IsZero())
+	assert.False(t, state.LastTransitionTime.IsZero())
+}
+
+func TestStatusTracker_RecordSuccess_AfterFailures(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+	testErr := errors.New("health check failed")
+
+	// Record multiple failures
+	for i := 0; i < 5; i++ {
+		tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+	}
+
+	state, _ := tracker.GetState("backend-1")
+	assert.Equal(t, vmcp.BackendUnhealthy, state.Status)
+	assert.Equal(t, 5, state.ConsecutiveFailures)
+
+	// Record success - should mark as degraded due to recovering from failures
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
+
+	state, _ = tracker.GetState("backend-1")
+	assert.Equal(t, vmcp.BackendDegraded, state.Status) // Degraded because recovering from failures
+	assert.Equal(t, 0, state.ConsecutiveFailures)
+	assert.Nil(t, state.LastError)
+}
+
+func TestStatusTracker_RecordFailure_BelowThreshold(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+	testErr := errors.New("health check failed")
+
+	// First failure - should initialize with unknown status (below threshold)
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+
+	state, exists := tracker.GetState("backend-1")
+	assert.True(t, exists)
+	assert.Equal(t, vmcp.BackendUnknown, state.Status)
+	assert.Equal(t, 1, state.ConsecutiveFailures)
+	assert.NotNil(t, state.LastError)
+
+	// Second failure - still below threshold, status remains unknown
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+	state, _ = tracker.GetState("backend-1")
+	assert.Equal(t, vmcp.BackendUnknown, state.Status)
+	assert.Equal(t, 2, state.ConsecutiveFailures)
+}
+
+func TestStatusTracker_RecordFailure_ReachThreshold(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+	testErr := errors.New("health check failed")
+
+	// Record failures up to threshold
+	for i := 0; i < 3; i++ {
+		tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+	}
+
+	state, _ := tracker.GetState("backend-1")
+	assert.Equal(t, vmcp.BackendUnhealthy, state.Status)
+	assert.Equal(t, 3, state.ConsecutiveFailures)
+	assert.NotNil(t, state.LastError)
+	assert.False(t, state.LastTransitionTime.IsZero())
+}
+
+func TestStatusTracker_RecordFailure_StatusTransitions(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(2)
+
+	// Start with healthy
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
+	status, _ := tracker.GetStatus("backend-1")
+	assert.Equal(t, vmcp.BackendHealthy, status)
+
+	// First failure - still healthy
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("error 1"))
+	status, _ = tracker.GetStatus("backend-1")
+	assert.Equal(t, vmcp.BackendHealthy, status)
+
+	// Second failure - should transition to unhealthy
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, errors.New("error 2"))
+	status, _ = tracker.GetStatus("backend-1")
+	assert.Equal(t, vmcp.BackendUnhealthy, status)
+
+	// Transition to unauthenticated
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnauthenticated, errors.New("auth error"))
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnauthenticated, errors.New("auth error"))
+	status, _ = tracker.GetStatus("backend-1")
+	assert.Equal(t, vmcp.BackendUnauthenticated, status)
+}
+
+func TestStatusTracker_RecordFailure_DifferentStatusTypes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		failureStatus  vmcp.BackendHealthStatus
+		expectedStatus vmcp.BackendHealthStatus
+	}{
+		{
+			name:           "unhealthy failures",
+			failureStatus:  vmcp.BackendUnhealthy,
+			expectedStatus: vmcp.BackendUnhealthy,
+		},
+		{
+			name:           "unauthenticated failures",
+			failureStatus:  vmcp.BackendUnauthenticated,
+			expectedStatus: vmcp.BackendUnauthenticated,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tracker := newStatusTracker(2)
+			testErr := errors.New("test error")
+
+			// Record failures to reach threshold
+			for i := 0; i < 2; i++ {
+				tracker.RecordFailure("backend-1", "Backend 1", tt.failureStatus, testErr)
+			}
+
+			status, _ := tracker.GetStatus("backend-1")
+			assert.Equal(t, tt.expectedStatus, status)
+		})
+	}
+}
+
+func TestStatusTracker_GetStatus_NonExistent(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+
+	status, exists := tracker.GetStatus("nonexistent")
+	assert.False(t, exists)
+	assert.Equal(t, vmcp.BackendUnknown, status)
+}
+
+func TestStatusTracker_GetState_NonExistent(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+
+	state, exists := tracker.GetState("nonexistent")
+	assert.False(t, exists)
+	assert.Nil(t, state)
+}
+
+func TestStatusTracker_GetAllStates(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+
+	// Add multiple backends with different states
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
+
+	// Record enough failures to reach threshold for backend-2
+	for i := 0; i < 3; i++ {
+		tracker.RecordFailure("backend-2", "Backend 2", vmcp.BackendUnhealthy, errors.New("failed"))
+	}
+
+	tracker.RecordSuccess("backend-3", "Backend 3", vmcp.BackendHealthy)
+
+	allStates := tracker.GetAllStates()
+	assert.Len(t, allStates, 3)
+
+	assert.Equal(t, vmcp.BackendHealthy, allStates["backend-1"].Status)
+	assert.Equal(t, vmcp.BackendUnhealthy, allStates["backend-2"].Status)
+	assert.Equal(t, vmcp.BackendHealthy, allStates["backend-3"].Status)
+}
+
+func TestStatusTracker_GetAllStates_Empty(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+
+	allStates := tracker.GetAllStates()
+	assert.NotNil(t, allStates)
+	assert.Len(t, allStates, 0)
+}
+
+func TestStatusTracker_GetAllStates_Immutability(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
+
+	// Get states
+	states1 := tracker.GetAllStates()
+	states2 := tracker.GetAllStates()
+
+	// Verify they are different copies
+	assert.NotSame(t, states1["backend-1"], states2["backend-1"])
+
+	// Modify one copy - should not affect the other
+	states1["backend-1"].Status = vmcp.BackendUnhealthy
+	assert.Equal(t, vmcp.BackendHealthy, states2["backend-1"].Status)
+}
+
+func TestStatusTracker_IsHealthy(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+
+	// Healthy backend
+	tracker.RecordSuccess("backend-healthy", "Healthy Backend", vmcp.BackendHealthy)
+	assert.True(t, tracker.IsHealthy("backend-healthy"))
+
+	// Unhealthy backend
+	tracker.RecordFailure("backend-unhealthy", "Unhealthy Backend",
+		vmcp.BackendUnhealthy, errors.New("failed"))
+	assert.False(t, tracker.IsHealthy("backend-unhealthy"))
+
+	// Non-existent backend
+	assert.False(t, tracker.IsHealthy("backend-nonexistent"))
+}
+
+func TestStatusTracker_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+	numGoroutines := 10
+	numOperations := 100
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines * 3)
+
+	// Concurrent RecordSuccess
+	for i := 0; i < numGoroutines; i++ {
+		go func(_ int) {
+			defer wg.Done()
+			for j := 0; j < numOperations; j++ {
+				tracker.RecordSuccess("backend-success", "Backend Success", vmcp.BackendHealthy)
+			}
+		}(i)
+	}
+
+	// Concurrent RecordFailure
+	for i := 0; i < numGoroutines; i++ {
+		go func(_ int) {
+			defer wg.Done()
+			for j := 0; j < numOperations; j++ {
+				tracker.RecordFailure("backend-failure", "Backend Failure",
+					vmcp.BackendUnhealthy, errors.New("concurrent error"))
+			}
+		}(i)
+	}
+
+	// Concurrent reads
+	for i := 0; i < numGoroutines; i++ {
+		go func(_ int) {
+			defer wg.Done()
+			for j := 0; j < numOperations; j++ {
+				_, _ = tracker.GetStatus("backend-success")
+				_, _ = tracker.GetState("backend-failure")
+				_ = tracker.GetAllStates()
+				_ = tracker.IsHealthy("backend-success")
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Verify states are consistent
+	status1, exists1 := tracker.GetStatus("backend-success")
+	assert.True(t, exists1)
+	assert.Equal(t, vmcp.BackendHealthy, status1)
+
+	status2, exists2 := tracker.GetStatus("backend-failure")
+	assert.True(t, exists2)
+	assert.Equal(t, vmcp.BackendUnhealthy, status2)
+}
+
+func TestStatusTracker_StateTimestamps(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(2)
+	testErr := errors.New("test error")
+
+	// Initial success
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
+	state1, _ := tracker.GetState("backend-1")
+	initialTransitionTime := state1.LastTransitionTime
+
+	// Wait a bit to ensure time difference
+	time.Sleep(10 * time.Millisecond)
+
+	// Record failure (no status change yet, below threshold)
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+	state2, _ := tracker.GetState("backend-1")
+
+	// LastCheckTime should be updated
+	assert.True(t, state2.LastCheckTime.After(state1.LastCheckTime))
+	// LastTransitionTime should NOT change (no status transition)
+	assert.Equal(t, initialTransitionTime, state2.LastTransitionTime)
+
+	// Wait again
+	time.Sleep(10 * time.Millisecond)
+
+	// Second failure - should trigger transition
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+	state3, _ := tracker.GetState("backend-1")
+
+	// LastTransitionTime should be updated (status changed)
+	assert.True(t, state3.LastTransitionTime.After(initialTransitionTime))
+}
+
+func TestStatusTracker_MultipleBackends(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(2)
+
+	// Backend 1: Healthy
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
+
+	// Backend 2: Unhealthy
+	for i := 0; i < 2; i++ {
+		tracker.RecordFailure("backend-2", "Backend 2", vmcp.BackendUnhealthy, errors.New("error"))
+	}
+
+	// Backend 3: Unauthenticated
+	for i := 0; i < 2; i++ {
+		tracker.RecordFailure("backend-3", "Backend 3", vmcp.BackendUnauthenticated, errors.New("auth error"))
+	}
+
+	// Verify each backend independently
+	assert.True(t, tracker.IsHealthy("backend-1"))
+	assert.False(t, tracker.IsHealthy("backend-2"))
+	assert.False(t, tracker.IsHealthy("backend-3"))
+
+	status2, _ := tracker.GetStatus("backend-2")
+	assert.Equal(t, vmcp.BackendUnhealthy, status2)
+
+	status3, _ := tracker.GetStatus("backend-3")
+	assert.Equal(t, vmcp.BackendUnauthenticated, status3)
+}
+
+func TestStatusTracker_RecoveryAfterFailures(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+	testErr := errors.New("health check failed")
+
+	// Record 5 failures (well over threshold)
+	for i := 0; i < 5; i++ {
+		tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+	}
+
+	state, _ := tracker.GetState("backend-1")
+	assert.Equal(t, vmcp.BackendUnhealthy, state.Status)
+	assert.Equal(t, 5, state.ConsecutiveFailures)
+	beforeRecoveryTransitionTime := state.LastTransitionTime
+
+	// Wait a bit
+	time.Sleep(10 * time.Millisecond)
+
+	// Single success should mark as degraded (recovering from failures)
+	tracker.RecordSuccess("backend-1", "Backend 1", vmcp.BackendHealthy)
+
+	state, _ = tracker.GetState("backend-1")
+	assert.Equal(t, vmcp.BackendDegraded, state.Status) // Degraded because recovering from failures
+	assert.Equal(t, 0, state.ConsecutiveFailures)
+	assert.Nil(t, state.LastError)
+	assert.True(t, state.LastTransitionTime.After(beforeRecoveryTransitionTime))
+}
+
+func TestState_Immutability(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(3)
+	testErr := errors.New("test error")
+
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+
+	// Get state copy
+	state, exists := tracker.GetState("backend-1")
+	assert.True(t, exists)
+	assert.NotNil(t, state)
+
+	// Modify the returned state
+	originalStatus := state.Status
+	state.Status = vmcp.BackendHealthy
+	state.ConsecutiveFailures = 0
+
+	// Get state again - should be unchanged
+	state2, _ := tracker.GetState("backend-1")
+	assert.Equal(t, originalStatus, state2.Status)
+	assert.NotEqual(t, 0, state2.ConsecutiveFailures)
+}
+
+func TestStatusTracker_ThresholdOf1(t *testing.T) {
+	t.Parallel()
+
+	tracker := newStatusTracker(1)
+	testErr := errors.New("test error")
+
+	// First failure should immediately mark as unhealthy
+	tracker.RecordFailure("backend-1", "Backend 1", vmcp.BackendUnhealthy, testErr)
+
+	status, _ := tracker.GetStatus("backend-1")
+	assert.Equal(t, vmcp.BackendUnhealthy, status)
+
+	state, _ := tracker.GetState("backend-1")
+	assert.Equal(t, 1, state.ConsecutiveFailures)
+}

@@ -1,6 +1,9 @@
 package vmcp
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 // Common domain errors used across vmcp subpackages.
 // Following DDD principles, domain errors are defined at the package root.
@@ -61,3 +64,82 @@ var (
 	// Wrapping errors should list the conflicting tool names.
 	ErrToolNameConflict = errors.New("tool name conflict")
 )
+
+// Error Categorization Helpers
+//
+// These functions categorize errors by examining error message strings.
+// They serve as a fallback mechanism for error detection when:
+//
+// 1. Errors come from external libraries that use their own error types and formats
+// 2. Legacy code paths don't wrap errors with sentinel errors
+// 3. Backwards compatibility is needed for error detection
+//
+// Note: BackendClient now wraps all errors with appropriate sentinel errors
+// (ErrAuthenticationFailed, ErrTimeout, ErrBackendUnavailable). Health monitoring
+// code should prefer errors.Is() checks over these string-based functions.
+// These functions remain for backwards compatibility and as a fallback mechanism.
+
+// IsAuthenticationError checks if an error message indicates an authentication failure.
+// Uses case-insensitive pattern matching to detect various auth error formats from
+// HTTP libraries, MCP protocol errors, and authentication middleware.
+func IsAuthenticationError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errLower := strings.ToLower(err.Error())
+
+	// Check for explicit authentication failure messages
+	if strings.Contains(errLower, "authentication failed") ||
+		strings.Contains(errLower, "authentication error") {
+		return true
+	}
+
+	// Check for HTTP 401/403 status codes with context
+	// Match patterns like "401 Unauthorized", "HTTP 401", "status code 401"
+	if strings.Contains(errLower, "401 unauthorized") ||
+		strings.Contains(errLower, "403 forbidden") ||
+		strings.Contains(errLower, "http 401") ||
+		strings.Contains(errLower, "http 403") ||
+		strings.Contains(errLower, "status code 401") ||
+		strings.Contains(errLower, "status code 403") {
+		return true
+	}
+
+	// Check for explicit unauthenticated/unauthorized errors
+	if strings.Contains(errLower, "request unauthenticated") ||
+		strings.Contains(errLower, "request unauthorized") ||
+		strings.Contains(errLower, "access denied") {
+		return true
+	}
+
+	return false
+}
+
+// IsTimeoutError checks if an error message indicates a timeout.
+// Detects various timeout formats from context deadlines, HTTP timeouts,
+// and network timeout errors.
+func IsTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errLower := strings.ToLower(err.Error())
+	return strings.Contains(errLower, "timeout") ||
+		strings.Contains(errLower, "deadline exceeded") ||
+		strings.Contains(errLower, "context deadline exceeded")
+}
+
+// IsConnectionError checks if an error message indicates a connection failure.
+// Detects network-level errors like connection refused, reset, unreachable, etc.
+func IsConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errLower := strings.ToLower(err.Error())
+	return strings.Contains(errLower, "connection refused") ||
+		strings.Contains(errLower, "connection reset") ||
+		strings.Contains(errLower, "no route to host") ||
+		strings.Contains(errLower, "network is unreachable")
+}

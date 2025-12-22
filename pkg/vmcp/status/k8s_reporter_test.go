@@ -14,6 +14,7 @@ import (
 )
 
 func TestNewK8SReporter(t *testing.T) {
+	t.Parallel()
 	scheme := runtime.NewScheme()
 	_ = mcpv1alpha1.AddToScheme(scheme)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -70,6 +71,7 @@ func TestNewK8SReporter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			reporter, err := NewK8SReporter(tt.cfg)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("NewK8SReporter() error = %v, wantErr %v", err, tt.wantErr)
@@ -83,42 +85,9 @@ func TestNewK8SReporter(t *testing.T) {
 }
 
 func TestK8SReporter_ReportStatus(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
+	t.Parallel()
 
-	// Create a VirtualMCPServer resource to update
-	vmcp := &mcpv1alpha1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       "test-vmcp",
-			Namespace:  "default",
-			Generation: 1,
-		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: mcpv1alpha1.GroupRef{
-				Name: "test-group",
-			},
-			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type: "anonymous",
-			},
-		},
-		Status: mcpv1alpha1.VirtualMCPServerStatus{
-			Phase:   mcpv1alpha1.VirtualMCPServerPhasePending,
-			Message: "Initializing",
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(vmcp).WithStatusSubresource(vmcp).Build()
-
-	reporter, err := NewK8SReporter(K8SReporterConfig{
-		Client:    fakeClient,
-		Name:      "test-vmcp",
-		Namespace: "default",
-	})
-	if err != nil {
-		t.Fatalf("Failed to create K8SReporter: %v", err)
-	}
-
-	tests := []struct {
+	tests := []struct{
 		name    string
 		status  *Status
 		wantErr bool
@@ -204,9 +173,46 @@ func TestK8SReporter_ReportStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := context.Background()
 
-			err := reporter.ReportStatus(ctx, tt.status)
+			// Create scheme and fake client for this subtest
+			scheme := runtime.NewScheme()
+			_ = mcpv1alpha1.AddToScheme(scheme)
+
+			// Create a VirtualMCPServer resource to update
+			vmcp := &mcpv1alpha1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-vmcp",
+					Namespace:  "default",
+					Generation: 1,
+				},
+				Spec: mcpv1alpha1.VirtualMCPServerSpec{
+					GroupRef: mcpv1alpha1.GroupRef{
+						Name: "test-group",
+					},
+					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
+						Type: "anonymous",
+					},
+				},
+				Status: mcpv1alpha1.VirtualMCPServerStatus{
+					Phase:   mcpv1alpha1.VirtualMCPServerPhasePending,
+					Message: "Initializing",
+				},
+			}
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(vmcp).WithStatusSubresource(vmcp).Build()
+
+			reporter, err := NewK8SReporter(K8SReporterConfig{
+				Client:    fakeClient,
+				Name:      "test-vmcp",
+				Namespace: "default",
+			})
+			if err != nil {
+				t.Fatalf("Failed to create K8SReporter: %v", err)
+			}
+
+			err = reporter.ReportStatus(ctx, tt.status)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("K8SReporter.ReportStatus() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -251,6 +257,7 @@ func TestK8SReporter_ReportStatus(t *testing.T) {
 }
 
 func TestK8SReporter_ReportStatus_ResourceNotFound(t *testing.T) {
+	t.Parallel()
 	scheme := runtime.NewScheme()
 	_ = mcpv1alpha1.AddToScheme(scheme)
 
@@ -280,9 +287,7 @@ func TestK8SReporter_ReportStatus_ResourceNotFound(t *testing.T) {
 }
 
 func TestK8SReporter_StartStop(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	t.Parallel()
 
 	tests := []struct {
 		name             string
@@ -300,6 +305,12 @@ func TestK8SReporter_StartStop(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			_ = mcpv1alpha1.AddToScheme(scheme)
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
 			reporter, err := NewK8SReporter(K8SReporterConfig{
 				Client:           fakeClient,
 				Name:             "test-vmcp",
@@ -327,23 +338,13 @@ func TestK8SReporter_StartStop(t *testing.T) {
 	}
 }
 
-func TestK8SReporter_ImplementsInterface(_ *testing.T) {
+func TestK8SReporter_ImplementsInterface(t *testing.T) {
+	t.Parallel()
 	var _ Reporter = (*K8SReporter)(nil)
 }
 
 func TestK8SReporter_MapConditions(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = mcpv1alpha1.AddToScheme(scheme)
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-
-	reporter, err := NewK8SReporter(K8SReporterConfig{
-		Client:    fakeClient,
-		Name:      "test-vmcp",
-		Namespace: "default",
-	})
-	if err != nil {
-		t.Fatalf("Failed to create K8SReporter: %v", err)
-	}
+	t.Parallel()
 
 	now := time.Now()
 
@@ -419,6 +420,21 @@ func TestK8SReporter_MapConditions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			_ = mcpv1alpha1.AddToScheme(scheme)
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+			reporter, err := NewK8SReporter(K8SReporterConfig{
+				Client:    fakeClient,
+				Name:      "test-vmcp",
+				Namespace: "default",
+			})
+			if err != nil {
+				t.Fatalf("Failed to create K8SReporter: %v", err)
+			}
+
 			result := reporter.mapConditions(tt.newConditions, tt.existingConditions)
 
 			if len(result) != tt.wantLen {

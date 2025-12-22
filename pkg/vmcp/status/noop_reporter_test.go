@@ -7,6 +7,7 @@ import (
 )
 
 func TestNoOpReporter_ReportStatus(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		logUpdates bool
@@ -63,6 +64,7 @@ func TestNoOpReporter_ReportStatus(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			reporter := NewNoOpReporter(tt.logUpdates)
 			ctx := context.Background()
 
@@ -76,6 +78,7 @@ func TestNoOpReporter_ReportStatus(t *testing.T) {
 }
 
 func TestNoOpReporter_StartStop(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		logUpdates bool
@@ -92,6 +95,7 @@ func TestNoOpReporter_StartStop(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			reporter := NewNoOpReporter(tt.logUpdates)
 			ctx := context.Background()
 
@@ -110,6 +114,7 @@ func TestNoOpReporter_StartStop(t *testing.T) {
 	}
 }
 
-func TestNoOpReporter_ImplementsInterface(_ *testing.T) {
+func TestNoOpReporter_ImplementsInterface(t *testing.T) {
+	t.Parallel()
 	var _ Reporter = (*NoOpReporter)(nil)
 }

@@ -40,9 +40,9 @@ import (
 
 // Not sure if these values need to be configurable.
 const (
-	middlewareTimeout = 60 * time.Second
-	readHeaderTimeout = 10 * time.Second
-	socketPermissions = 0660 // Socket file permissions (owner/group read-write)
+	middlewareTimeout  = 60 * time.Second
+	readHeaderTimeout  = 10 * time.Second
+	socketPermissions  = 0660    // Socket file permissions (owner/group read-write)
 	maxRequestBodySize = 1 << 20 // 1MB - Maximum request body size
 )
 
@@ -324,10 +324,14 @@ func requestBodySizeLimitMiddleware(maxSize int64) func(http.Handler) http.Handl
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Check Content-Length header first for early rejection
 			if r.ContentLength > maxSize {
+				// Set Content-Type for API endpoints to match headersMiddleware behavior
+				if strings.HasPrefix(r.URL.Path, "/api/") {
+					w.Header().Set("Content-Type", "application/json")
+				}
 				http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
 				return
 			}
-			
+
 			// Also set MaxBytesReader as a safety net for requests without Content-Length
 			r.Body = http.MaxBytesReader(w, r.Body, maxSize)
 			next.ServeHTTP(w, r)

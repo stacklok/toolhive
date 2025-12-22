@@ -134,6 +134,7 @@ func TestValidateValidConfig(t *testing.T) {
 
 	err := config.Validate()
 	assert.NoError(t, err)
+	assert.Equal(t, 2048, config.MaxDataSize, "MaxDataSize should be preserved when explicitly set")
 }
 
 func TestValidateNegativeMaxDataSize(t *testing.T) {
@@ -145,6 +146,18 @@ func TestValidateNegativeMaxDataSize(t *testing.T) {
 	err := config.Validate()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "max_data_size cannot be negative")
+}
+
+func TestValidateAppliesDefaultMaxDataSize(t *testing.T) {
+	t.Parallel()
+	config := &Config{
+		MaxDataSize: 0, // Not set - should become default (1024) after validation
+	}
+
+	err := config.Validate()
+	assert.NoError(t, err)
+	assert.Equal(t, DefaultConfig().MaxDataSize, config.MaxDataSize,
+		"Validate() should apply default MaxDataSize when 0")
 }
 
 func TestValidateInvalidEventType(t *testing.T) {

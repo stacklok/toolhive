@@ -67,6 +67,11 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 		auditConfig.Component = params.Component
 	}
 
+	// Validate and apply defaults to the config
+	if err := auditConfig.Validate(); err != nil {
+		return fmt.Errorf("invalid audit configuration: %w", err)
+	}
+
 	// Always use the transport-aware constructor
 	middleware, err := auditConfig.CreateMiddlewareWithTransport(params.TransportType)
 	if err != nil {

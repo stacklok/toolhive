@@ -264,6 +264,23 @@ func (r *Runner) Run(ctx context.Context) error {
 		if httpTransport, ok := transportHandler.(interface{ SetTokenSource(oauth2.TokenSource) }); ok {
 			httpTransport.SetTokenSource(tokenSource)
 		}
+
+		// Set the health check failure callback for remote servers
+		if httpTransport, ok := transportHandler.(interface {
+			SetOnHealthCheckFailed(types.HealthCheckFailedCallback)
+		}); ok {
+			httpTransport.SetOnHealthCheckFailed(func() {
+				logger.Warnf("Health check failed for remote server %s, marking as unhealthy", r.Config.BaseName)
+				if err := r.statusManager.SetWorkloadStatus(
+					context.Background(),
+					r.Config.BaseName,
+					rt.WorkloadStatusUnhealthy,
+					"Health check failed",
+				); err != nil {
+					logger.Errorf("Failed to update workload status: %v", err)
+				}
+			})
+		}
 	}
 
 	// Start the transport (which also starts the container and monitoring)

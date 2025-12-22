@@ -1002,16 +1002,16 @@ func (*workflowEngine) updateWorkflowMetadata(
 //
 // If a parameter is missing from params but has a default in the schema, the default is applied.
 // Parameters explicitly provided by the client are never overwritten.
-func applyParameterDefaults(schema map[string]any, params map[string]any) map[string]any {
+func applyParameterDefaults(inputSchema map[string]any, params map[string]any) map[string]any {
 	if params == nil {
 		params = make(map[string]any)
 	}
-	if schema == nil {
+	if inputSchema == nil {
 		return params
 	}
 
 	// Extract properties from JSON Schema
-	properties, ok := schema["properties"].(map[string]any)
+	properties, ok := inputSchema["properties"].(map[string]any)
 	if !ok || properties == nil {
 		return params
 	}

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -112,36 +111,14 @@ func TestVMCPServer_TypeCoercion(t *testing.T) {
 	})
 	helpers.AssertToolCallSuccess(t, resp)
 
-	require.NotNil(t, receivedArgs, "Backend should have received arguments")
-
-	// Verify string stayed as string
-	assert.Equal(t, "hello", receivedArgs["str_param"], "string should stay string")
-
-	// Verify integer was coerced (JSON numbers are float64)
-	switch v := receivedArgs["int_param"].(type) {
-	case float64:
-		assert.Equal(t, float64(42), v)
-	case int64:
-		assert.Equal(t, int64(42), v)
-	default:
-		t.Errorf("int_param is %T (%v), expected numeric", v, v)
-	}
-
-	// Verify number was coerced
-	switch v := receivedArgs["num_param"].(type) {
-	case float64:
-		assert.InDelta(t, 3.14, v, 0.001)
-	default:
-		t.Errorf("num_param is %T (%v), expected float64", v, v)
-	}
-
-	// Verify boolean was coerced
-	switch v := receivedArgs["bool_param"].(type) {
-	case bool:
-		assert.True(t, v)
-	default:
-		t.Errorf("bool_param is %T (%v), expected bool", v, v)
-	}
+	// Verify all types were coerced correctly
+	// JSON transport converts all numbers to float64
+	require.Equal(t, map[string]any{
+		"str_param":  "hello",
+		"int_param":  float64(42),
+		"num_param":  3.14,
+		"bool_param": true,
+	}, receivedArgs)
 }
 
 // TestVMCPServer_TypeCoercion_NestedAndArrays verifies type coercion for
@@ -241,46 +218,14 @@ func TestVMCPServer_TypeCoercion_NestedAndArrays(t *testing.T) {
 	})
 	helpers.AssertToolCallSuccess(t, resp)
 
-	require.NotNil(t, receivedArgs)
-
-	// Check nested object
-	config, ok := receivedArgs["config"].(map[string]any)
-	require.True(t, ok, "config should be map[string]any")
-
-	switch v := config["timeout"].(type) {
-	case float64:
-		assert.Equal(t, float64(30), v)
-	case int64:
-		assert.Equal(t, int64(30), v)
-	default:
-		t.Errorf("config.timeout is %T, expected numeric", v)
-	}
-
-	switch v := config["enabled"].(type) {
-	case bool:
-		assert.True(t, v)
-	default:
-		t.Errorf("config.enabled is %T, expected bool", v)
-	}
-
-	switch v := config["ratio"].(type) {
-	case float64:
-		assert.InDelta(t, 3.14, v, 0.001)
-	default:
-		t.Errorf("config.ratio is %T, expected float64", v)
-	}
-
-	// Check array elements
-	ids, ok := receivedArgs["ids"].([]any)
-	require.True(t, ok, "ids should be []any")
-	require.Len(t, ids, 3)
-
-	for i, id := range ids {
-		switch id.(type) {
-		case float64, int64, int:
-			// Good - numeric type
-		default:
-			t.Errorf("ids[%d] is %T, expected numeric", i, id)
-		}
-	}
+	// Verify nested object and array coercion
+	// JSON transport converts all numbers to float64
+	require.Equal(t, map[string]any{
+		"config": map[string]any{
+			"timeout": float64(30),
+			"enabled": true,
+			"ratio":   3.14,
+		},
+		"ids": []any{float64(1), float64(2), float64(3)},
+	}, receivedArgs)
 }

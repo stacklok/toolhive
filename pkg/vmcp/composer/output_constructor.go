@@ -117,6 +117,9 @@ func (e *workflowEngine) constructOutputPropertyFromValue(
 	}
 
 	// For object types, attempt JSON deserialization
+	// Note, the following type coercion is duplicative with the tool call type coercion
+	// from the schema package.
+	// TODO: Refactor the two to use one implementation.
 	if propertyDef.Type == typeObject {
 		var obj map[string]any
 		if err := json.Unmarshal([]byte(expandedStr), &obj); err != nil {

@@ -84,23 +84,23 @@ Examples:
   # Run a server from the registry
   thv run filesystem
 
-  # Run a server with custom arguments
-  thv run github -- --repo owner/repo
+  # Run a server with custom arguments and toolsets
+  thv run github -- --toolsets repos
 
   # Run from a container image
-  thv run ghcr.io/example/mcp-server:latest
+  thv run ghcr.io/github/github-mcp-server
 
   # Run using a protocol scheme (Python with uv)
-  thv run uvx://mcp-server-sqlite
+  thv run uvx://mcp-server-git
 
   # Run using npx (Node.js)
   thv run npx://@modelcontextprotocol/server-everything
 
-  # Run a local Go project
-  thv run go://./my-local-mcp-server
+  # Run a server in a specific group
+  thv run filesystem --group production
 
-  # Run from exported configuration
-  thv run --from-config ./exported-config. json
+  # Run a remote MCP server with authentication
+  thv run sse://example.com/mcp --env API_KEY=your_token_here
 
 ```
 thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]

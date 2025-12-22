@@ -40,6 +40,21 @@ func BuildResourceRequirements(resourceSpec mcpv1alpha1.ResourceRequirements) co
 	return resources
 }
 
+// BuildDefaultProxyRunnerResourceRequirements returns the default resource requirements
+// 50m/200m CPU, 64Mi/256Mi Memory
+func BuildDefaultProxyRunnerResourceRequirements() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("200m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("50m"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
+		},
+	}
+}
+
 // BuildHealthProbe builds a Kubernetes health probe configuration
 // Shared between MCPServer and MCPRemoteProxy
 func BuildHealthProbe(
@@ -161,3 +176,33 @@ func CreateProxyServiceURL(resourceName, namespace string, port int32) string {
 func ProxyRunnerServiceAccountName(resourceName string) string {
 	return fmt.Sprintf("%s-proxy-runner", resourceName)
 }
+
+// MergeResourceRequirements merges default resources with user overrides.
+// User overrides take precedence.
+func MergeResourceRequirements(defaults, overrides corev1.ResourceRequirements) corev1.ResourceRequirements {
+	merged := defaults.DeepCopy()
+
+	if merged.Limits == nil {
+		merged.Limits = make(corev1.ResourceList)
+	}
+	if merged.Requests == nil {
+		merged.Requests = make(corev1.ResourceList)
+	}
+
+	// Merge Limits
+	if overrides.Limits != nil {
+		for k, v := range overrides.Limits {
+			merged.Limits[k] = v
+		}
+	}
+
+	// Merge Requests
+	if overrides.Requests != nil {
+		for k, v := range overrides.Requests {
+			merged.Requests[k] = v
+		}
+	}
+
+	return *merged
+}
+

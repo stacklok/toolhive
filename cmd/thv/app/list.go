@@ -60,19 +60,19 @@ func listCmdFunc(cmd *cobra.Command, _ []string) error {
 	// Instantiate the status manager.
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create status manager: %v", err)
+		return fmt.Errorf("failed to create status manager: %w", err)
 	}
 
 	workloadList, err := manager.ListWorkloads(ctx, listAll, listLabelFilter...)
 	if err != nil {
-		return fmt.Errorf("failed to list workloads: %v", err)
+		return fmt.Errorf("failed to list workloads: %w", err)
 	}
 
 	// Apply group filtering if specified
 	if listGroupFilter != "" {
 		workloadList, err = workloads.FilterByGroup(workloadList, listGroupFilter)
 		if err != nil {
-			return fmt.Errorf("failed to filter workloads by group: %v", err)
+			return fmt.Errorf("failed to filter workloads by group: %w", err)
 		}
 	}
 
@@ -110,7 +110,7 @@ func printJSONOutput(workloadList []core.Workload) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(workloadList, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %v", err)
+		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
 	// Print JSON directly to stdout
@@ -137,7 +137,7 @@ func printMCPServersOutput(workloadList []core.Workload) error {
 		"mcpServers": mcpServers,
 	}, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %v", err)
+		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
 	// Print JSON directly to stdout

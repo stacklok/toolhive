@@ -21,7 +21,7 @@ type toolsOverrideJSON struct {
 func LoadToolsOverride(path string) (*map[string]runner.ToolOverride, error) {
 	jsonFile, err := os.Open(filepath.Clean(path))
 	if err != nil {
-		return nil, fmt.Errorf("failed to open tools override file: %v", err)
+		return nil, fmt.Errorf("failed to open tools override file: %w", err)
 	}
 	defer jsonFile.Close()
 
@@ -29,7 +29,7 @@ func LoadToolsOverride(path string) (*map[string]runner.ToolOverride, error) {
 	decoder := json.NewDecoder(jsonFile)
 	err = decoder.Decode(&toolsOverride)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode tools override file: %v", err)
+		return nil, fmt.Errorf("failed to decode tools override file: %w", err)
 	}
 	if toolsOverride.ToolsOverride == nil {
 		return nil, errors.New("tools override are empty")

@@ -124,7 +124,7 @@ func ValidateEnvironmentProvider(ctx context.Context, provider Provider, result 
 
 	// Check that we get the expected error message
 	if !strings.Contains(err.Error(), "secret not found") {
-		result.Error = fmt.Errorf("unexpected error format: %v", err)
+		result.Error = fmt.Errorf("unexpected error format: %w", err)
 		result.Message = "Environment provider validation failed"
 		return result
 	}
@@ -234,7 +234,7 @@ func CreateSecretProviderWithPassword(managerType ProviderType, password string)
 		key := sha256.Sum256(secretsPassword)
 		secretsPath, err := xdg.DataFile("toolhive/secrets_encrypted")
 		if err != nil {
-			return nil, fmt.Errorf("unable to access secrets file path %v", err)
+			return nil, fmt.Errorf("unable to access secrets file path %w", err)
 		}
 		primary, err = NewEncryptedManager(secretsPath, key[:])
 		if err != nil {

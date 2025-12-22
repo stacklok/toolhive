@@ -37,11 +37,11 @@ func searchCmdFunc(_ *cobra.Command, args []string) error {
 	query := args[0]
 	provider, err := registry.GetDefaultProvider()
 	if err != nil {
-		return fmt.Errorf("failed to get registry provider: %v", err)
+		return fmt.Errorf("failed to get registry provider: %w", err)
 	}
 	servers, err := provider.SearchServers(query)
 	if err != nil {
-		return fmt.Errorf("failed to search servers: %v", err)
+		return fmt.Errorf("failed to search servers: %w", err)
 	}
 
 	if len(servers) == 0 {
@@ -68,7 +68,7 @@ func printJSONSearchResults(servers []types.ServerMetadata) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(servers, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %v", err)
+		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
 	// Print JSON

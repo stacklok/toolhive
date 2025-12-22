@@ -87,6 +87,11 @@ type MonitorConfig struct {
 	// Zero means disabled (backends will never be marked degraded based on response time alone).
 	// Recommended: 5s.
 	DegradedThreshold time.Duration
+
+	// CircuitBreaker configures circuit breaker behavior (optional, nil = disabled).
+	// When enabled, backends that exceed the failure threshold will have their circuit opened,
+	// causing health checks to be skipped (fast-fail) until the timeout expires.
+	CircuitBreaker *CircuitBreakerConfig
 }
 
 // DefaultConfig returns sensible default configuration values.
@@ -120,11 +125,18 @@ func NewMonitor(
 		return nil, fmt.Errorf("unhealthy threshold must be >= 1, got %d", config.UnhealthyThreshold)
 	}
 
+	// Validate circuit breaker configuration if provided
+	if config.CircuitBreaker != nil {
+		if err := config.CircuitBreaker.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid circuit breaker configuration: %w", err)
+		}
+	}
+
 	// Create health checker with degraded threshold
 	checker := NewHealthChecker(client, config.Timeout, config.DegradedThreshold)
 
-	// Create status tracker
-	statusTracker := newStatusTracker(config.UnhealthyThreshold)
+	// Create status tracker with circuit breaker config
+	statusTracker := newStatusTracker(config.UnhealthyThreshold, config.CircuitBreaker)
 
 	return &Monitor{
 		checker:       checker,
@@ -230,6 +242,16 @@ func (m *Monitor) monitorBackend(ctx context.Context, backend *vmcp.Backend) {
 
 // performHealthCheck performs a single health check for a backend and updates status.
 func (m *Monitor) performHealthCheck(ctx context.Context, backend *vmcp.Backend) {
+	// Check if circuit should transition from open to half-open
+	// IMPORTANT: Must be done BEFORE checking if circuit is open, so the circuit can transition
+	m.statusTracker.checkHalfOpenTransition(backend.ID)
+
+	// Circuit breaker fast-fail: Skip health check if circuit is still open (after checking transition)
+	if m.statusTracker.isCircuitOpen(backend.ID) {
+		logger.Debugf("Skipping health check for backend %s: circuit is open (fast-fail)", backend.Name)
+		return
+	}
+
 	// Create BackendTarget from Backend
 	target := &vmcp.BackendTarget{
 		WorkloadID:    backend.ID,

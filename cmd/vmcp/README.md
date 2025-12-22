@@ -15,12 +15,12 @@ The Virtual MCP Server (vmcp) is a standalone binary that aggregates multiple MC
 - ✅ **Health Endpoints**: `/health` and `/ping` for service monitoring
 - ✅ **Configuration Validation**: `vmcp validate` command for config verification
 - ✅ **Observability**: OpenTelemetry metrics and traces for backend operations and workflow executions
+- ✅ **Health Monitoring & Circuit Breaker**: Per-backend health checks with circuit breaker pattern to prevent cascading failures
 
 ### In Progress
 - 🚧 **Incoming Authentication** (Issue #165): OIDC, local, anonymous authentication
 - 🚧 **Outgoing Authentication** (Issue #160): RFC 8693 token exchange for backend API access
 - 🚧 **Token Caching**: Memory and Redis cache providers
-- 🚧 **Health Monitoring** (Issue #166): Circuit breakers, backend health checks
 
 ### Future (Phase 2+)
 - 📋 **Authorization**: Cedar policy-based access control
@@ -207,6 +207,93 @@ aggregation:
           name: "gh_create_pr"
           description: "Create a GitHub pull request"
 ```
+
+## Health Monitoring & Circuit Breaker
+
+Virtual MCP continuously monitors backend health and implements a circuit breaker pattern to prevent cascading failures when backends become unhealthy.
+
+### Health Monitoring
+
+Virtual MCP performs periodic health checks on all backend workloads using MCP's `ListCapabilities` operation. Health status is tracked per-backend and exposed through the VirtualMCPServer status in Kubernetes.
+
+**Configuration:**
+
+```yaml
+operational:
+  failure_handling:
+    health_check_interval: "30s"     # How often to check backend health
+    unhealthy_threshold: 3           # Failures before marking unhealthy
+    partial_failure_mode: best_effort # Continue with available backends
+```
+
+**Health States:**
+- **Healthy**: Backend responding normally
+- **Degraded**: Backend experiencing issues but still functional (circuit half-open)
+- **Unhealthy**: Backend failing health checks (circuit open)
+
+### Circuit Breaker
+
+The circuit breaker prevents overwhelming failing backends by fast-failing requests when a backend is detected as unhealthy. This provides faster failure detection and reduces resource waste.
+
+**How It Works:**
+
+1. **Closed (Normal)**: All health check requests are sent to the backend
+2. **Open (Fast-Fail)**: After `failure_threshold` consecutive failures, the circuit opens and health checks are skipped
+3. **Half-Open (Testing)**: After `timeout` period, the circuit allows a test request to check if the backend has recovered
+4. **Recovery**: On successful health check in half-open state, the circuit closes and normal operation resumes
+
+**Configuration:**
+
+```yaml
+operational:
+  failure_handling:
+    circuit_breaker:
+      enabled: true              # Enable circuit breaker (default: false)
+      failure_threshold: 5       # Open circuit after N failures (default: 5)
+      timeout: "60s"             # Wait before testing recovery (default: 60s)
+```
+
+**Benefits:**
+- **Faster failure detection**: No need to wait for timeouts on unhealthy backends
+- **Reduced resource usage**: Skip health checks for known-unhealthy backends
+- **Graceful degradation**: Continue serving requests with healthy backends using `partial_failure_mode: best_effort`
+- **Automatic recovery**: Circuit automatically tests for backend recovery after timeout
+
+**Per-Backend Isolation**: Each backend has its own independent circuit breaker. If one backend fails, others continue operating normally.
+
+**Example Configuration:**
+
+```yaml
+name: "production-vmcp"
+group: "prod-services"
+incoming_auth:
+  type: anonymous
+outgoing_auth:
+  source: inline
+  default:
+    type: unauthenticated
+aggregation:
+  conflict_resolution: prefix
+operational:
+  failure_handling:
+    health_check_interval: "30s"
+    unhealthy_threshold: 3
+    partial_failure_mode: best_effort
+    circuit_breaker:
+      enabled: true
+      failure_threshold: 5
+      timeout: "60s"
+```
+
+**Monitoring Circuit State:**
+
+In Kubernetes, check the VirtualMCPServer status to see backend health and circuit states:
+
+```bash
+kubectl get virtualmcpserver my-vmcp -o yaml
+```
+
+Look for `status.discoveredBackends` to see each backend's health status.
 
 ## Architecture
 

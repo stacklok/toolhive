@@ -312,6 +312,13 @@ func New(
 			return
 		}
 
+		// Validate that routing table exists
+		if caps.RoutingTable == nil {
+			logger.Warnw("routing table is nil in discovered capabilities",
+				"session_id", sessionID)
+			return
+		}
+
 		// Add composite tools to capabilities
 		// Composite tools are static (from configuration) and not discovered from backends
 		// They are added here to be exposed alongside backend tools in the session

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-12-18T00:16:08Z",
+  "last_updated": "2025-12-22T00:19:33Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -484,7 +484,7 @@
         "api",
         "devops"
       ],
-      "image": "public.ecr.aws/awslabs-mcp/awslabs/aws-api-mcp-server:1.2.2",
+      "image": "public.ecr.aws/awslabs-mcp/awslabs/aws-api-mcp-server:1.2.3",
       "permissions": {
         "network": {
           "outbound": {
@@ -1243,9 +1243,9 @@
         "create_project"
       ],
       "metadata": {
-        "stars": 469,
+        "stars": 491,
         "pulls": 273,
-        "last_updated": "2025-11-22T02:30:16Z"
+        "last_updated": "2025-12-20T02:33:14Z"
       },
       "repository_url": "https://github.com/GoogleCloudPlatform/cloud-run-mcp",
       "tags": [
@@ -1313,16 +1313,16 @@
         "get-library-docs"
       ],
       "metadata": {
-        "stars": 37342,
+        "stars": 39581,
         "pulls": 313,
-        "last_updated": "2025-11-18T02:32:51Z"
+        "last_updated": "2025-12-19T02:35:44Z"
       },
       "repository_url": "https://github.com/upstash/context7",
       "tags": [
         "documentation",
         "code-examples"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.32",
+      "image": "ghcr.io/stacklok/dockyard/npx/context7:1.0.33",
       "permissions": {
         "network": {
           "outbound": {
@@ -1483,7 +1483,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.23.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.24.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -1964,7 +1964,7 @@
         "genai",
         "mcp-server"
       ],
-      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.23.0",
+      "image": "us-central1-docker.pkg.dev/database-toolbox/toolbox/toolbox:0.24.0",
       "target_port": 5000,
       "permissions": {
         "network": {
@@ -2083,7 +2083,7 @@
         "update",
         "issues"
       ],
-      "image": "ghcr.io/github/github-mcp-server:v0.25.0",
+      "image": "ghcr.io/github/github-mcp-server:v0.26.3",
       "permissions": {
         "network": {
           "outbound": {
@@ -2239,7 +2239,7 @@
         "milestones",
         "pipelines"
       ],
-      "image": "iwakitakuma/gitlab-mcp:2.0.13",
+      "image": "iwakitakuma/gitlab-mcp:2.0.19",
       "target_port": 3002,
       "permissions": {
         "network": {
@@ -2814,9 +2814,9 @@
         "pg_upgrade"
       ],
       "metadata": {
-        "stars": 72,
+        "stars": 74,
         "pulls": 0,
-        "last_updated": "2025-11-23T20:37:27Z"
+        "last_updated": "2025-12-21T02:40:42Z"
       },
       "repository_url": "https://github.com/heroku/heroku-mcp-server",
       "tags": [
@@ -3155,9 +3155,9 @@
         "update-feature-flag"
       ],
       "metadata": {
-        "stars": 16,
+        "stars": 17,
         "pulls": 0,
-        "last_updated": "2025-11-22T02:30:16Z"
+        "last_updated": "2025-12-21T02:40:42Z"
       },
       "repository_url": "https://github.com/launchdarkly/mcp-server",
       "tags": [
@@ -3496,7 +3496,7 @@
         "query",
         "graph-database"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-cypher:0.5.1",
+      "image": "ghcr.io/stacklok/dockyard/uvx/mcp-neo4j-cypher:0.5.2",
       "permissions": {
         "network": {
           "outbound": {
@@ -4743,7 +4743,7 @@
         "web",
         "accessibility"
       ],
-      "image": "mcr.microsoft.com/playwright/mcp:v0.0.52",
+      "image": "mcr.microsoft.com/playwright/mcp:v0.0.53",
       "target_port": 8931,
       "permissions": {
         "network": {
@@ -4935,6 +4935,79 @@
           "name": "PROMETHEUS_CUSTOM_HEADERS",
           "description": "Custom headers as JSON string",
           "required": false
+        }
+      ]
+    },
+    "redhat-linux": {
+      "description": "Read-only Linux sysadmin, diagnostics, and troubleshooting optimized for RHEL-based systems",
+      "tier": "Official",
+      "status": "Active",
+      "transport": "stdio",
+      "tools": [
+        "get_audit_logs",
+        "get_cpu_information",
+        "get_disk_usage",
+        "get_hardware_information",
+        "get_journal_logs",
+        "get_listening_ports",
+        "get_memory_information",
+        "get_network_connections",
+        "get_network_interfaces",
+        "get_process_info",
+        "get_service_logs",
+        "get_service_status",
+        "get_system_information",
+        "list_block_devices",
+        "list_directories",
+        "list_files",
+        "list_processes",
+        "list_services",
+        "read_file",
+        "read_log_file"
+      ],
+      "metadata": {
+        "stars": 72,
+        "pulls": 0,
+        "last_updated": "2025-12-20T02:33:14Z"
+      },
+      "repository_url": "https://github.com/rhel-lightspeed/linux-mcp-server",
+      "tags": [
+        "linux",
+        "diagnostics",
+        "sysadmin",
+        "rhel",
+        "monitoring",
+        "troubleshooting",
+        "networking"
+      ],
+      "image": "quay.io/redhat-services-prod/rhel-lightspeed-tenant/linux-mcp-server:0.1.0a4",
+      "env_vars": [
+        {
+          "name": "LINUX_MCP_USER",
+          "description": "Username for SSH connections",
+          "required": false
+        },
+        {
+          "name": "LINUX_MCP_KEY_PASSPHRASE",
+          "description": "Passphrase for encrypted SSH key decryption",
+          "required": false,
+          "secret": true
+        },
+        {
+          "name": "LINUX_MCP_SSH_KEY_PATH",
+          "description": "Path to SSH private key for remote execution (mounted into container)",
+          "required": false
+        },
+        {
+          "name": "LINUX_MCP_ALLOWED_LOG_PATHS",
+          "description": "Comma-separated whitelist of accessible log file paths",
+          "required": false
+        },
+        {
+          "name": "LINUX_MCP_LOG_LEVEL",
+          "description": "Logging level (DEBUG, INFO, WARNING, ERROR, or CRITICAL)",
+          "required": false,
+          "default": "INFO"
         }
       ]
     },
@@ -5164,6 +5237,7 @@
         "get_trace_details",
         "search_docs",
         "search_events",
+        "search_issue_events",
         "search_issues",
         "update_issue",
         "update_project",
@@ -5182,7 +5256,7 @@
         "error-tracking",
         "observability"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.24.0",
+      "image": "ghcr.io/stacklok/dockyard/npx/sentry-mcp-server:0.26.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -5748,7 +5822,7 @@
         "support",
         "toolhive"
       ],
-      "image": "ghcr.io/stackloklabs/toolhive-doc-mcp:0.0.8",
+      "image": "ghcr.io/stackloklabs/toolhive-doc-mcp:0.0.9",
       "target_port": 8080,
       "env_vars": [
         {
@@ -6039,9 +6113,9 @@
         "update_pull_request_branch"
       ],
       "metadata": {
-        "stars": 24554,
+        "stars": 25271,
         "pulls": 0,
-        "last_updated": "2025-11-18T02:32:52Z"
+        "last_updated": "2025-12-19T02:35:44Z"
       },
       "repository_url": "https://github.com/github/github-mcp-server",
       "tags": [
@@ -6091,7 +6165,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-21T02:32:11Z"
+        "last_updated": "2025-12-19T02:35:44Z"
       },
       "tags": [
         "remote",
@@ -6126,7 +6200,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-21T02:32:11Z"
+        "last_updated": "2025-12-19T02:35:44Z"
       },
       "tags": [
         "remote",
@@ -6207,7 +6281,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-21T02:32:11Z"
+        "last_updated": "2025-12-20T02:33:14Z"
       },
       "tags": [
         "issue-tracking",
@@ -6237,7 +6311,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-21T02:32:11Z"
+        "last_updated": "2025-12-20T02:33:14Z"
       },
       "tags": [
         "remote",
@@ -6304,9 +6378,9 @@
         "all_widgets_schema"
       ],
       "metadata": {
-        "stars": 336,
+        "stars": 350,
         "pulls": 0,
-        "last_updated": "2025-11-21T02:32:11Z"
+        "last_updated": "2025-12-20T02:33:14Z"
       },
       "repository_url": "https://github.com/mondaycom/mcp",
       "tags": [
@@ -6360,7 +6434,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-22T02:30:16Z"
+        "last_updated": "2025-12-21T02:40:42Z"
       },
       "tags": [
         "remote",
@@ -6403,7 +6477,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-18T02:32:51Z"
+        "last_updated": "2025-12-19T02:35:44Z"
       },
       "tags": [
         "remote",
@@ -6463,7 +6537,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-22T02:30:16Z"
+        "last_updated": "2025-12-21T02:40:42Z"
       },
       "tags": [
         "remote",
@@ -6517,7 +6591,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-22T02:30:16Z"
+        "last_updated": "2025-12-21T02:40:42Z"
       },
       "tags": [
         "remote",

@@ -99,8 +99,8 @@ Examples:
   # Run a server in a specific group
   thv run filesystem --group production
 
-  # Run a remote MCP server with authentication
-  thv run sse://example.com/mcp --env API_KEY=your_token_here
+  # Run a remote GitHub MCP server with authentication
+  thv run sse://github-mcp. example.com/mcp --env GITHUB_CLIENT_ID=your_client_id --env GITHUB_CLIENT_SECRET=your_secret
 
 ```
 thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]

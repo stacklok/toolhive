@@ -151,9 +151,9 @@ jobs:
         # but we want to make sure renovate bumps the versions when new ones are released. Doing that with
         # just the number is a bit more difficult and i like simple things.
         version: [
-          "kindest/node:v1.32.8",
-          "kindest/node:v1.33.4",
-          "kindest/node:v1.34.2"
+          "kindest/node:v1.33.7",
+          "kindest/node:v1.34.3",
+          "kindest/node:v1.35.0"
         ]
     
     steps:

@@ -41,7 +41,7 @@ func (d *DockerImageManager) ImageExists(ctx context.Context, imageName string) 
 		Filters: filterArgs,
 	})
 	if err != nil {
-		return false, fmt.Errorf("failed to list images: %v", err)
+		return false, fmt.Errorf("failed to list images: %w", err)
 	}
 
 	return len(images) > 0, nil
@@ -59,13 +59,13 @@ func (d *DockerImageManager) PullImage(ctx context.Context, imageName string) er
 	// Pull the image
 	reader, err := d.client.ImagePull(ctx, imageName, dockerimage.PullOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to pull image: %v", err)
+		return fmt.Errorf("failed to pull image: %w", err)
 	}
 	defer reader.Close()
 
 	// Parse and filter the pull output
 	if err := parsePullOutput(reader, os.Stdout); err != nil {
-		return fmt.Errorf("failed to process pull output: %v", err)
+		return fmt.Errorf("failed to process pull output: %w", err)
 	}
 
 	return nil
@@ -78,7 +78,7 @@ func buildDockerImage(ctx context.Context, dockerClient *client.Client, contextD
 	// Create a tar archive of the context directory
 	tarFile, err := os.CreateTemp("", "docker-build-context-*.tar")
 	if err != nil {
-		return fmt.Errorf("failed to create temporary tar file: %v", err)
+		return fmt.Errorf("failed to create temporary tar file: %w", err)
 	}
 	defer os.Remove(tarFile.Name())
 	defer tarFile.Close()
@@ -102,13 +102,13 @@ func buildDockerImage(ctx context.Context, dockerClient *client.Client, contextD
 
 	response, err := dockerClient.ImageBuild(ctx, tarFile, buildOptions)
 	if err != nil {
-		return fmt.Errorf("failed to build image: %v", err)
+		return fmt.Errorf("failed to build image: %w", err)
 	}
 	defer response.Body.Close()
 
 	// Parse and log the build output
 	if err := parseBuildOutput(response.Body, os.Stdout); err != nil {
-		return fmt.Errorf("failed to process build output: %v", err)
+		return fmt.Errorf("failed to process build output: %w", err)
 	}
 
 	return nil

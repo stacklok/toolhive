@@ -295,7 +295,7 @@ func BuildRunnerConfig(
 	// Parse environment variables
 	envVars, err := environment.ParseEnvironmentVariables(runFlags.Env)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse environment variables: %v", err)
+		return nil, fmt.Errorf("failed to parse environment variables: %w", err)
 	}
 
 	// Build the runner config
@@ -340,7 +340,7 @@ func setupTelemetryConfiguration(cmd *cobra.Command, runFlags *RunFlags) *teleme
 func setupRuntimeAndValidation(ctx context.Context) (runtime.Deployer, runner.EnvVarValidator, error) {
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create container runtime: %v", err)
+		return nil, nil, fmt.Errorf("failed to create container runtime: %w", err)
 	}
 
 	var envVarValidator runner.EnvVarValidator
@@ -370,7 +370,7 @@ func handleImageRetrieval(
 	imageURL, serverMetadata, err := retriever.GetMCPServer(
 		ctx, serverOrImage, runFlags.CACertPath, runFlags.VerifyImage, groupName)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %v", serverOrImage, err)
+		return "", nil, fmt.Errorf("failed to find or create the MCP server %s: %w", serverOrImage, err)
 	}
 
 	// Check if we have a remote server
@@ -469,7 +469,7 @@ func buildRunnerConfig(
 	if runFlags.ToolsOverride != "" {
 		loadedToolsOverride, err := cli.LoadToolsOverride(runFlags.ToolsOverride)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load tools override: %v", err)
+			return nil, fmt.Errorf("failed to load tools override: %w", err)
 		}
 		toolsOverride = *loadedToolsOverride
 	}

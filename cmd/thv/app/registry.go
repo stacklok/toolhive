@@ -60,21 +60,21 @@ func registryListCmdFunc(_ *cobra.Command, _ []string) error {
 	// Get all servers from registry
 	provider, err := registry.GetDefaultProvider()
 	if err != nil {
-		return fmt.Errorf("failed to get registry provider: %v", err)
+		return fmt.Errorf("failed to get registry provider: %w", err)
 	}
 
 	// Force refresh if requested
 	if refreshRegistry {
 		if cached, ok := provider.(*registry.CachedAPIRegistryProvider); ok {
 			if err := cached.ForceRefresh(); err != nil {
-				return fmt.Errorf("failed to refresh registry: %v", err)
+				return fmt.Errorf("failed to refresh registry: %w", err)
 			}
 		}
 	}
 
 	servers, err := provider.ListServers()
 	if err != nil {
-		return fmt.Errorf("failed to list servers: %v", err)
+		return fmt.Errorf("failed to list servers: %w", err)
 	}
 
 	// Sort servers by name using the utility function
@@ -95,21 +95,21 @@ func registryInfoCmdFunc(_ *cobra.Command, args []string) error {
 	serverName := args[0]
 	provider, err := registry.GetDefaultProvider()
 	if err != nil {
-		return fmt.Errorf("failed to get registry provider: %v", err)
+		return fmt.Errorf("failed to get registry provider: %w", err)
 	}
 
 	// Force refresh if requested
 	if refreshRegistry {
 		if cached, ok := provider.(*registry.CachedAPIRegistryProvider); ok {
 			if err := cached.ForceRefresh(); err != nil {
-				return fmt.Errorf("failed to refresh registry: %v", err)
+				return fmt.Errorf("failed to refresh registry: %w", err)
 			}
 		}
 	}
 
 	server, err := provider.GetServer(serverName)
 	if err != nil {
-		return fmt.Errorf("failed to get server information: %v", err)
+		return fmt.Errorf("failed to get server information: %w", err)
 	}
 
 	// Output based on format
@@ -127,7 +127,7 @@ func printJSONServers(servers []types.ServerMetadata) error {
 	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(servers, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %v", err)
+		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
 	// Print JSON
@@ -139,7 +139,7 @@ func printJSONServers(servers []types.ServerMetadata) error {
 func printJSONServer(server types.ServerMetadata) error {
 	jsonData, err := json.MarshalIndent(server, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to marshal JSON: %v", err)
+		return fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
 	// Print JSON

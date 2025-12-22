@@ -206,14 +206,14 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	// Create a container monitor
 	monitorRuntime, err := container.NewFactory().Create(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create container monitor: %v", err)
+		return fmt.Errorf("failed to create container monitor: %w", err)
 	}
 	t.monitor = container.NewMonitor(monitorRuntime, t.containerName)
 
 	// Start monitoring the container
 	t.errorCh, err = t.monitor.StartMonitoring(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to start container monitoring: %v", err)
+		return fmt.Errorf("failed to start container monitoring: %w", err)
 	}
 
 	// Start a goroutine to handle container exit

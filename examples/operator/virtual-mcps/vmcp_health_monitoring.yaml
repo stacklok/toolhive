@@ -1,11 +1,12 @@
-# Example: VirtualMCPServer with Health Monitoring
+# Example: VirtualMCPServer with Health Monitoring & Circuit Breaker
 #
-# This example demonstrates health monitoring configuration for VirtualMCPServer.
+# This example demonstrates health monitoring and circuit breaker configuration for VirtualMCPServer.
 # Health monitoring enables:
 # - Periodic health checks on backend MCPServers using ListCapabilities calls
 # - Automatic detection of unhealthy backends
 # - Backend status tracking in VirtualMCPServer status
 # - Graceful handling of partial failures (best_effort mode)
+# - Circuit breaker pattern to prevent cascading failures
 #
 # Health Status Values:
 # - ready: Backend is healthy and responding
@@ -146,6 +147,24 @@ spec:
       # - best_effort: Continue with available backends (resilient)
       # Recommended: best_effort for production to maintain availability
       partialFailureMode: best_effort
+
+      # Circuit breaker - prevents overwhelming failing backends
+      # When enabled, the circuit breaker fast-fails health checks after
+      # detecting repeated failures, reducing resource waste and improving
+      # failure detection speed
+      circuitBreaker:
+        # Enable circuit breaker (disabled by default for backward compatibility)
+        enabled: true
+
+        # Failure threshold - open circuit after N consecutive failures
+        # Lower values = faster failure detection, higher risk of false positives
+        # Recommended: 3-5 for production
+        failureThreshold: 5
+
+        # Timeout - how long to wait before testing recovery (half-open state)
+        # Longer timeouts give backends more time to recover
+        # Recommended: 60s-120s for production
+        timeout: 60s
 
 ---
 # Example: To test health monitoring behavior, you can:

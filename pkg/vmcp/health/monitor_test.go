@@ -748,3 +748,402 @@ func TestHealthCheckMarker_Integration(t *testing.T) {
 		assert.False(t, IsHealthCheck(baseCtx), "base context should not be health check")
 	})
 }
+
+// Circuit Breaker Integration Tests
+
+func TestMonitor_CircuitBreaker_FastFail(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockClient := mocks.NewMockBackendClient(ctrl)
+	backends := []vmcp.Backend{
+		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
+	}
+
+	config := MonitorConfig{
+		CheckInterval:      50 * time.Millisecond,
+		UnhealthyThreshold: 5, // Higher threshold to not interfere with circuit breaker
+		Timeout:            10 * time.Millisecond,
+		CircuitBreaker: &CircuitBreakerConfig{
+			Enabled:          true,
+			FailureThreshold: 3,
+			Timeout:          500 * time.Millisecond,
+		},
+	}
+
+	// Mock exactly 3 health check calls (to open circuit)
+	// After circuit opens, health checks should be skipped (fast-fail)
+	callCount := 0
+	mockClient.EXPECT().
+		ListCapabilities(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
+			callCount++
+			return nil, errors.New("backend unavailable")
+		}).
+		Times(3)
+
+	monitor, err := NewMonitor(mockClient, backends, config)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	err = monitor.Start(ctx)
+	require.NoError(t, err)
+	defer func() {
+		_ = monitor.Stop()
+	}()
+
+	// Wait for circuit to open (3 failures)
+	require.Eventually(t, func() bool {
+		state, err := monitor.GetBackendState("backend-1")
+		if err != nil {
+			return false
+		}
+		return state.CircuitBreakerState != nil &&
+			state.CircuitBreakerState.State == CircuitStateOpenStr
+	}, 500*time.Millisecond, 10*time.Millisecond, "circuit should open after threshold failures")
+
+	// Verify circuit is open
+	state, err := monitor.GetBackendState("backend-1")
+	require.NoError(t, err)
+	assert.Equal(t, "open", state.CircuitBreakerState.State)
+	assert.Equal(t, vmcp.BackendUnhealthy, state.Status)
+
+	// Wait a bit more and verify no additional calls (fast-fail working)
+	time.Sleep(150 * time.Millisecond)
+	assert.Equal(t, 3, callCount, "Should have exactly 3 calls, no more due to fast-fail")
+}
+
+func TestMonitor_CircuitBreaker_FullCycle(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockClient := mocks.NewMockBackendClient(ctrl)
+	backends := []vmcp.Backend{
+		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
+	}
+
+	config := MonitorConfig{
+		CheckInterval:      40 * time.Millisecond,
+		UnhealthyThreshold: 10, // High threshold to not interfere
+		Timeout:            10 * time.Millisecond,
+		CircuitBreaker: &CircuitBreakerConfig{
+			Enabled:          true,
+			FailureThreshold: 2,
+			Timeout:          120 * time.Millisecond,
+		},
+	}
+
+	// Phase 1: Fail to open circuit (2 failures)
+	// Phase 2: Wait for timeout, transition to half-open
+	// Phase 3: Succeed to close circuit
+	failureCount := 0
+	mockClient.EXPECT().
+		ListCapabilities(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
+			failureCount++
+			if failureCount <= 2 {
+				// First 2 calls fail (open circuit)
+				return nil, errors.New("backend unavailable")
+			}
+			// After timeout and half-open, succeed (close circuit)
+			return &vmcp.CapabilityList{}, nil
+		}).
+		AnyTimes()
+
+	monitor, err := NewMonitor(mockClient, backends, config)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	err = monitor.Start(ctx)
+	require.NoError(t, err)
+	defer func() {
+		_ = monitor.Stop()
+	}()
+
+	// Phase 1: Wait for circuit to open (2 failures at 40ms interval = ~80ms max)
+	require.Eventually(t, func() bool {
+		state, err := monitor.GetBackendState("backend-1")
+		if err != nil {
+			return false
+		}
+		return state.CircuitBreakerState != nil &&
+			state.CircuitBreakerState.State == CircuitStateOpenStr
+	}, 300*time.Millisecond, 10*time.Millisecond, "circuit should open")
+
+	// Phase 2: Wait for circuit to recover (either half-open or closed)
+	// Note: The circuit may transition from open → halfopen → closed very quickly if health check succeeds,
+	// so we accept either halfopen or closed as success (both indicate recovery is happening/happened)
+	require.Eventually(t, func() bool {
+		state, err := monitor.GetBackendState("backend-1")
+		if err != nil {
+			return false
+		}
+		return state.CircuitBreakerState != nil &&
+			(state.CircuitBreakerState.State == CircuitStateHalfOpenStr || state.CircuitBreakerState.State == CircuitStateClosedStr)
+	}, 400*time.Millisecond, 20*time.Millisecond, "circuit should recover (half-open or closed)")
+
+	// Phase 3: Wait for successful recovery and circuit close
+	require.Eventually(t, func() bool {
+		state, err := monitor.GetBackendState("backend-1")
+		if err != nil {
+			return false
+		}
+		return state.CircuitBreakerState != nil &&
+			state.CircuitBreakerState.State == CircuitStateClosedStr &&
+			state.CircuitBreakerState.FailureCount == 0
+	}, 300*time.Millisecond, 10*time.Millisecond, "circuit should close after recovery")
+}
+
+func TestMonitor_CircuitBreaker_MultipleBackendsIndependent(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockClient := mocks.NewMockBackendClient(ctrl)
+	backends := []vmcp.Backend{
+		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
+		{ID: "backend-2", Name: "Backend 2", BaseURL: "http://localhost:8081", TransportType: "sse"},
+	}
+
+	config := MonitorConfig{
+		CheckInterval:      50 * time.Millisecond,
+		UnhealthyThreshold: 10,
+		Timeout:            10 * time.Millisecond,
+		CircuitBreaker: &CircuitBreakerConfig{
+			Enabled:          true,
+			FailureThreshold: 2,
+			Timeout:          200 * time.Millisecond,
+		},
+	}
+
+	// Backend 1 fails, Backend 2 succeeds
+	mockClient.EXPECT().
+		ListCapabilities(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, target *vmcp.BackendTarget) (*vmcp.CapabilityList, error) {
+			if target.WorkloadID == "backend-1" {
+				return nil, errors.New("backend 1 unavailable")
+			}
+			return &vmcp.CapabilityList{}, nil
+		}).
+		AnyTimes()
+
+	monitor, err := NewMonitor(mockClient, backends, config)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	err = monitor.Start(ctx)
+	require.NoError(t, err)
+	defer func() {
+		_ = monitor.Stop()
+	}()
+
+	// Wait for backend-1 circuit to open
+	require.Eventually(t, func() bool {
+		state, err := monitor.GetBackendState("backend-1")
+		if err != nil {
+			return false
+		}
+		return state.CircuitBreakerState != nil &&
+			state.CircuitBreakerState.State == CircuitStateOpenStr
+	}, 300*time.Millisecond, 10*time.Millisecond, "backend-1 circuit should open")
+
+	// Verify backend-2 remains healthy with closed circuit
+	state2, err := monitor.GetBackendState("backend-2")
+	require.NoError(t, err)
+	assert.Equal(t, "closed", state2.CircuitBreakerState.State, "backend-2 circuit should remain closed")
+	assert.Equal(t, vmcp.BackendHealthy, state2.Status, "backend-2 should remain healthy")
+}
+
+func TestMonitor_CircuitBreaker_BackwardCompatibility(t *testing.T) {
+	t.Parallel()
+	// Test 1: No circuit breaker config (nil)
+	t.Run("nil circuit breaker config", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backends := []vmcp.Backend{
+			{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
+		}
+		config := MonitorConfig{
+			CheckInterval:      50 * time.Millisecond,
+			UnhealthyThreshold: 2,
+			Timeout:            10 * time.Millisecond,
+			CircuitBreaker:     nil, // Disabled
+		}
+
+		// Mock many failures
+		mockClient.EXPECT().
+			ListCapabilities(gomock.Any(), gomock.Any()).
+			Return(nil, errors.New("backend unavailable")).
+			MinTimes(5)
+
+		monitor, err := NewMonitor(mockClient, backends, config)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		err = monitor.Start(ctx)
+		require.NoError(t, err)
+		defer func() {
+			_ = monitor.Stop()
+		}()
+
+		// Wait for failures to accumulate
+		time.Sleep(200 * time.Millisecond)
+
+		// Verify no circuit breaker state in response
+		state, err := monitor.GetBackendState("backend-1")
+		require.NoError(t, err)
+		assert.Nil(t, state.CircuitBreakerState, "Circuit breaker state should be nil when disabled")
+		assert.Equal(t, vmcp.BackendUnhealthy, state.Status, "Backend should be unhealthy from regular threshold")
+	})
+
+	// Test 2: Explicitly disabled circuit breaker
+	t.Run("explicitly disabled circuit breaker", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		mockClient := mocks.NewMockBackendClient(ctrl)
+		backends := []vmcp.Backend{
+			{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
+		}
+
+		config := MonitorConfig{
+			CheckInterval:      50 * time.Millisecond,
+			UnhealthyThreshold: 2,
+			Timeout:            10 * time.Millisecond,
+			CircuitBreaker: &CircuitBreakerConfig{
+				Enabled:          false,
+				FailureThreshold: 2,
+				Timeout:          100 * time.Millisecond,
+			},
+		}
+
+		mockClient.EXPECT().
+			ListCapabilities(gomock.Any(), gomock.Any()).
+			Return(nil, errors.New("backend unavailable")).
+			MinTimes(5)
+
+		monitor, err := NewMonitor(mockClient, backends, config)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		err = monitor.Start(ctx)
+		require.NoError(t, err)
+		defer func() {
+			_ = monitor.Stop()
+		}()
+
+		// Wait for failures
+		time.Sleep(200 * time.Millisecond)
+
+		// Verify no circuit breaker state
+		state, err := monitor.GetBackendState("backend-1")
+		require.NoError(t, err)
+		assert.Nil(t, state.CircuitBreakerState, "Circuit breaker state should be nil when explicitly disabled")
+	})
+}
+
+func TestNewMonitor_CircuitBreakerValidation(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(func() {
+		ctrl.Finish()
+	})
+
+	mockClient := mocks.NewMockBackendClient(ctrl)
+	backends := []vmcp.Backend{
+		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080"},
+	}
+
+	tests := []struct {
+		name        string
+		config      MonitorConfig
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "valid circuit breaker config",
+			config: MonitorConfig{
+				CheckInterval:      30 * time.Second,
+				UnhealthyThreshold: 3,
+				Timeout:            10 * time.Second,
+				CircuitBreaker: &CircuitBreakerConfig{
+					Enabled:          true,
+					FailureThreshold: 5,
+					Timeout:          60 * time.Second,
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid circuit breaker - zero threshold",
+			config: MonitorConfig{
+				CheckInterval:      30 * time.Second,
+				UnhealthyThreshold: 3,
+				Timeout:            10 * time.Second,
+				CircuitBreaker: &CircuitBreakerConfig{
+					Enabled:          true,
+					FailureThreshold: 0,
+					Timeout:          60 * time.Second,
+				},
+			},
+			expectError: true,
+			errorMsg:    "invalid circuit breaker configuration",
+		},
+		{
+			name: "invalid circuit breaker - zero timeout",
+			config: MonitorConfig{
+				CheckInterval:      30 * time.Second,
+				UnhealthyThreshold: 3,
+				Timeout:            10 * time.Second,
+				CircuitBreaker: &CircuitBreakerConfig{
+					Enabled:          true,
+					FailureThreshold: 5,
+					Timeout:          0,
+				},
+			},
+			expectError: true,
+			errorMsg:    "invalid circuit breaker configuration",
+		},
+		{
+			name: "disabled circuit breaker with invalid values",
+			config: MonitorConfig{
+				CheckInterval:      30 * time.Second,
+				UnhealthyThreshold: 3,
+				Timeout:            10 * time.Second,
+				CircuitBreaker: &CircuitBreakerConfig{
+					Enabled:          false,
+					FailureThreshold: 0, // Invalid but ignored when disabled
+					Timeout:          0,
+				},
+			},
+			expectError: false, // Should not error when disabled
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			monitor, err := NewMonitor(mockClient, backends, tt.config)
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorMsg != "" {
+					assert.Contains(t, err.Error(), tt.errorMsg)
+				}
+				assert.Nil(t, monitor)
+			} else {
+				assert.NoError(t, err)
+				assert.NotNil(t, monitor)
+			}
+		})
+	}
+}

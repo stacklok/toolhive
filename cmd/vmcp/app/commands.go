@@ -347,12 +347,24 @@ func runServe(cmd *cobra.Command, _ []string) error {
 				cfg.Operational.FailureHandling.UnhealthyThreshold)
 		}
 
+		// Map circuit breaker config if enabled
+		var circuitBreakerConfig *health.CircuitBreakerConfig
+		if cfg.Operational.FailureHandling.CircuitBreaker != nil &&
+			cfg.Operational.FailureHandling.CircuitBreaker.Enabled {
+			circuitBreakerConfig = &health.CircuitBreakerConfig{
+				Enabled:          true,
+				FailureThreshold: cfg.Operational.FailureHandling.CircuitBreaker.FailureThreshold,
+				Timeout:          time.Duration(cfg.Operational.FailureHandling.CircuitBreaker.Timeout),
+			}
+		}
+
 		defaults := health.DefaultConfig()
 		healthMonitorConfig = &health.MonitorConfig{
 			CheckInterval:      checkInterval,
 			UnhealthyThreshold: cfg.Operational.FailureHandling.UnhealthyThreshold,
 			Timeout:            defaults.Timeout,
 			DegradedThreshold:  defaults.DegradedThreshold,
+			CircuitBreaker:     circuitBreakerConfig,
 		}
 		logger.Info("Health monitoring configured from operational settings")
 	}

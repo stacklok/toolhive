@@ -164,7 +164,8 @@ type Server struct {
 
 	// healthMonitor performs periodic health checks on backends.
 	// Nil if health monitoring is disabled.
-	// Protected by healthMonitorMu for concurrent access from HTTP handlers.
+	// Protected by healthMonitorMu: RLock for reads (getter methods, HTTP handlers),
+	// Lock for writes (initialization, disabling on start failure).
 	healthMonitor   *health.Monitor
 	healthMonitorMu sync.RWMutex
 }

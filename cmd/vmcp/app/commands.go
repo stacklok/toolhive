@@ -336,9 +336,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Configure health monitoring if enabled
 	var healthMonitorConfig *health.MonitorConfig
 	if cfg.Operational != nil && cfg.Operational.FailureHandling != nil && cfg.Operational.FailureHandling.HealthCheckInterval > 0 {
+		// Validate configuration values before creating MonitorConfig
+		// This provides defense in depth and clearer error messages
+		checkInterval := time.Duration(cfg.Operational.FailureHandling.HealthCheckInterval)
+		if checkInterval <= 0 {
+			return fmt.Errorf("invalid health check configuration: check interval must be > 0, got %v", checkInterval)
+		}
+		if cfg.Operational.FailureHandling.UnhealthyThreshold < 1 {
+			return fmt.Errorf("invalid health check configuration: unhealthy threshold must be >= 1, got %d",
+				cfg.Operational.FailureHandling.UnhealthyThreshold)
+		}
+
 		defaults := health.DefaultConfig()
 		healthMonitorConfig = &health.MonitorConfig{
-			CheckInterval:      time.Duration(cfg.Operational.FailureHandling.HealthCheckInterval),
+			CheckInterval:      checkInterval,
 			UnhealthyThreshold: cfg.Operational.FailureHandling.UnhealthyThreshold,
 			Timeout:            defaults.Timeout,
 			DegradedThreshold:  defaults.DegradedThreshold,

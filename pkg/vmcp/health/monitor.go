@@ -23,7 +23,11 @@ func WithHealthCheckMarker(ctx context.Context) context.Context {
 // IsHealthCheck returns true if the context is marked as a health check.
 // Authentication strategies use this to bypass authentication for health checks,
 // since health checks verify backend availability and should not require user credentials.
+// Returns false for nil contexts.
 func IsHealthCheck(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
 	val, ok := ctx.Value(healthCheckContextKey{}).(bool)
 	return ok && val
 }

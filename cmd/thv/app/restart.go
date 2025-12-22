@@ -55,7 +55,7 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 	// Create workload managers.
 	workloadManager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %v", err)
+		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
 
 	if restartAll {
@@ -75,7 +75,7 @@ func restartCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Wait for the restart group to complete
 	if err := restartGroup.Wait(); err != nil {
-		return fmt.Errorf("failed to restart workload %s: %v", workloadName, err)
+		return fmt.Errorf("failed to restart workload %s: %w", workloadName, err)
 	}
 
 	fmt.Printf("Workload %s restarted successfully\n", workloadName)
@@ -86,7 +86,7 @@ func restartAllContainers(ctx context.Context, workloadManager workloads.Manager
 	// Get all containers (including stopped ones since restart can start stopped containers)
 	allWorkloads, err := workloadManager.ListWorkloads(ctx, true)
 	if err != nil {
-		return fmt.Errorf("failed to list allWorkloads: %v", err)
+		return fmt.Errorf("failed to list allWorkloads: %w", err)
 	}
 
 	if len(allWorkloads) == 0 {
@@ -107,13 +107,13 @@ func restartWorkloadsByGroup(ctx context.Context, workloadManager workloads.Mana
 	// Create a groups manager to list workloads in the group
 	groupManager, err := groups.NewManager()
 	if err != nil {
-		return fmt.Errorf("failed to create group manager: %v", err)
+		return fmt.Errorf("failed to create group manager: %w", err)
 	}
 
 	// Check if the group exists
 	exists, err := groupManager.Exists(ctx, groupName)
 	if err != nil {
-		return fmt.Errorf("failed to check if group '%s' exists: %v", groupName, err)
+		return fmt.Errorf("failed to check if group '%s' exists: %w", groupName, err)
 	}
 	if !exists {
 		return fmt.Errorf("group '%s' does not exist", groupName)
@@ -122,7 +122,7 @@ func restartWorkloadsByGroup(ctx context.Context, workloadManager workloads.Mana
 	// Get all workload names in the group
 	workloadNames, err := workloadManager.ListWorkloadsInGroup(ctx, groupName)
 	if err != nil {
-		return fmt.Errorf("failed to list workloads in group '%s': %v", groupName, err)
+		return fmt.Errorf("failed to list workloads in group '%s': %w", groupName, err)
 	}
 
 	if len(workloadNames) == 0 {

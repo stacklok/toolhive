@@ -105,7 +105,7 @@ func Setup(
 		isolateNetwork,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create container: %v", err)
+		return nil, fmt.Errorf("failed to create container: %w", err)
 	}
 	logger.Infof("Container created: %s", containerName)
 

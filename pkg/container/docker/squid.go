@@ -41,7 +41,7 @@ func createIngressSquidContainer(
 ) (string, error) {
 	squidConfPath, err := createTempIngressSquidConf(containerName, upstreamPort, squidPort, networkPermissions)
 	if err != nil {
-		return "", fmt.Errorf("failed to create temporary squid.conf: %v", err)
+		return "", fmt.Errorf("failed to create temporary squid.conf: %w", err)
 	}
 
 	return createSquidContainer(
@@ -69,7 +69,7 @@ func createEgressSquidContainer(
 ) (string, error) {
 	squidConfPath, err := createTempEgressSquidConf(perm, containerName)
 	if err != nil {
-		return "", fmt.Errorf("failed to create temporary squid.conf: %v", err)
+		return "", fmt.Errorf("failed to create temporary squid.conf: %w", err)
 	}
 
 	return createSquidContainer(
@@ -111,7 +111,7 @@ func createSquidContainer(
 		if inspectErr == nil {
 			logger.Infof("Squid image %s exists locally, continuing despite pull failure", squidImage)
 		} else {
-			return "", fmt.Errorf("failed to pull squid image: %v", err)
+			return "", fmt.Errorf("failed to pull squid image: %w", err)
 		}
 	}
 
@@ -162,7 +162,7 @@ func createSquidContainer(
 	// Create squid container itself
 	squidContainerId, err := c.createContainer(ctx, squidContainerName, config, squidHostConfig, endpointsConfig)
 	if err != nil {
-		return "", fmt.Errorf("failed to create egress container: %v", err)
+		return "", fmt.Errorf("failed to create egress container: %w", err)
 	}
 
 	return squidContainerId, nil
@@ -192,12 +192,12 @@ func createTempEgressSquidConf(
 	defer tmpFile.Close()
 
 	if _, err := tmpFile.WriteString(sb.String()); err != nil {
-		return "", fmt.Errorf("failed to write to temporary file: %v", err)
+		return "", fmt.Errorf("failed to write to temporary file: %w", err)
 	}
 
 	// Set file permissions to be readable by all users (including squid user in container)
 	if err := tmpFile.Chmod(0644); err != nil {
-		return "", fmt.Errorf("failed to set file permissions: %v", err)
+		return "", fmt.Errorf("failed to set file permissions: %w", err)
 	}
 
 	return tmpFile.Name(), nil
@@ -287,12 +287,12 @@ func createTempIngressSquidConf(
 	defer tmpFile.Close()
 
 	if _, err := tmpFile.WriteString(sb.String()); err != nil {
-		return "", fmt.Errorf("failed to write to temporary file: %v", err)
+		return "", fmt.Errorf("failed to write to temporary file: %w", err)
 	}
 
 	// Set file permissions to be readable by all users (including squid user in container)
 	if err := tmpFile.Chmod(0644); err != nil {
-		return "", fmt.Errorf("failed to set file permissions: %v", err)
+		return "", fmt.Errorf("failed to set file permissions: %w", err)
 	}
 
 	return tmpFile.Name(), nil

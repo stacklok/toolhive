@@ -86,13 +86,13 @@ func (r *runtimeStatusManager) ListWorkloads(ctx context.Context, listAll bool, 
 	// List containers
 	containers, err := r.runtime.ListWorkloads(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list containers: %v", err)
+		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
 
 	// Parse the filters into a format we can use for matching.
 	parsedFilters, err := types.ParseLabelFilters(labelFilters)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse label filters: %v", err)
+		return nil, fmt.Errorf("failed to parse label filters: %w", err)
 	}
 
 	// Filter containers to only show those managed by ToolHive

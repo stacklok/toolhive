@@ -57,9 +57,9 @@ Valid secrets providers:
   - 1password: Read-only secrets provider (requires OP_SERVICE_ACCOUNT_TOKEN)
   - none: Disables secrets functionality`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			provider := args[0]
-			return SetSecretsProvider(secrets.ProviderType(provider))
+			return SetSecretsProvider(cmd.Context(), secrets.ProviderType(provider))
 		},
 	}
 }
@@ -379,7 +379,7 @@ func getSecretsManager() (secrets.Provider, error) {
 	return manager, nil
 }
 
-func runSecretsSetup(_ *cobra.Command, _ []string) error {
+func runSecretsSetup(cmd *cobra.Command, _ []string) error {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Printf(`
@@ -446,7 +446,7 @@ This provider is read-only and suitable for CI/CD and containerized environments
 
 	// SetSecretsProvider will handle validation and configuration
 	fmt.Println("Validating provider setup...")
-	if err := SetSecretsProvider(providerType); err != nil {
+	if err := SetSecretsProvider(cmd.Context(), providerType); err != nil {
 		return fmt.Errorf("failed to configure secrets provider: %w", err)
 	}
 

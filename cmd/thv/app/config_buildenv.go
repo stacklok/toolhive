@@ -135,7 +135,7 @@ func validateSecretExists(ctx context.Context, secretName string) error {
 	return nil
 }
 
-func setBuildEnvCmdFunc(_ *cobra.Command, args []string) error {
+func setBuildEnvCmdFunc(cmd *cobra.Command, args []string) error {
 	key := args[0]
 	provider := config.NewDefaultProvider()
 
@@ -147,7 +147,7 @@ func setBuildEnvCmdFunc(_ *cobra.Command, args []string) error {
 		secretName := args[1]
 
 		// Validate that the secret exists
-		ctx := context.Background()
+		ctx := cmd.Context()
 		if err := validateSecretExists(ctx, secretName); err != nil {
 			return fmt.Errorf("failed to validate secret: %w", err)
 		}

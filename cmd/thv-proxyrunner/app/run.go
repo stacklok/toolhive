@@ -80,7 +80,7 @@ func runCmdFunc(cmd *cobra.Command, args []string) error {
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
+		return fmt.Errorf("failed to create container runtime: %w", err)
 	}
 
 	// Select an env var validation strategy depending on how the CLI is run:
@@ -178,7 +178,7 @@ func runWithFileBasedConfig(
 	if envVarValidator != nil {
 		validatedEnvVars, err := envVarValidator.Validate(ctx, imageMetadata, config, config.EnvVars)
 		if err != nil {
-			return fmt.Errorf("failed to validate environment variables: %v", err)
+			return fmt.Errorf("failed to validate environment variables: %w", err)
 		}
 		config.EnvVars = validatedEnvVars
 	}
@@ -187,7 +187,7 @@ func runWithFileBasedConfig(
 	if config.EnvFileDir != "" {
 		updatedConfig, err := config.WithEnvFilesFromDirectory(config.EnvFileDir)
 		if err != nil {
-			return fmt.Errorf("failed to process environment files from directory %s: %v", config.EnvFileDir, err)
+			return fmt.Errorf("failed to process environment files from directory %s: %w", config.EnvFileDir, err)
 		}
 		config = updatedConfig
 	}
@@ -199,7 +199,7 @@ func runWithFileBasedConfig(
 
 	workloadManager, err := workloads.NewManagerFromRuntime(rt)
 	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %v", err)
+		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
 	return workloadManager.RunWorkload(ctx, config)
 }

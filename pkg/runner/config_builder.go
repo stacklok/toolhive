@@ -691,7 +691,7 @@ func internalRunConfigBuilder(
 	// Apply all the options
 	for _, option := range runConfigOptions {
 		if err := option(b); err != nil {
-			return nil, fmt.Errorf("failed to apply run config option: %v", err)
+			return nil, fmt.Errorf("failed to apply run config option: %w", err)
 		}
 	}
 
@@ -701,7 +701,7 @@ func internalRunConfigBuilder(
 	if envVarValidator != nil {
 		validatedEnvVars, err := envVarValidator.Validate(ctx, imageMetadata, b.config, envVars)
 		if err != nil {
-			return nil, fmt.Errorf("failed to validate environment variables: %v", err)
+			return nil, fmt.Errorf("failed to validate environment variables: %w", err)
 		}
 		processedEnvVars = validatedEnvVars
 	}
@@ -709,12 +709,12 @@ func internalRunConfigBuilder(
 	// Do some final validation which can only be done after everything else is set.
 	// Apply image metadata overrides if needed.
 	if err := b.validateConfig(imageMetadata); err != nil {
-		return nil, fmt.Errorf("failed to validate run config: %v", err)
+		return nil, fmt.Errorf("failed to validate run config: %w", err)
 	}
 
 	// Now set environment variables with the correct transport and ports resolved
 	if _, err := b.config.WithEnvironmentVariables(processedEnvVars); err != nil {
-		return nil, fmt.Errorf("failed to set environment variables: %v", err)
+		return nil, fmt.Errorf("failed to set environment variables: %w", err)
 	}
 
 	// Set schema version.
@@ -808,7 +808,7 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 	if c.AuthzConfigPath != "" {
 		authzConfig, err := authz.LoadConfig(c.AuthzConfigPath)
 		if err != nil {
-			return fmt.Errorf("failed to load authorization configuration: %v", err)
+			return fmt.Errorf("failed to load authorization configuration: %w", err)
 		}
 		c.WithAuthz(authzConfig)
 	}
@@ -817,7 +817,7 @@ func (b *runConfigBuilder) validateConfig(imageMetadata *regtypes.ImageMetadata)
 	if c.AuditConfigPath != "" {
 		auditConfig, err := audit.LoadFromFile(c.AuditConfigPath)
 		if err != nil {
-			return fmt.Errorf("failed to load audit configuration: %v", err)
+			return fmt.Errorf("failed to load audit configuration: %w", err)
 		}
 		c.WithAudit(auditConfig)
 	}
@@ -941,7 +941,7 @@ func (b *runConfigBuilder) processVolumeMounts() error {
 		mount := permissions.MountDeclaration(volumeSpec)
 		source, target, err := mount.Parse()
 		if err != nil {
-			return fmt.Errorf("invalid volume format: %s (%v)", volume, err)
+			return fmt.Errorf("invalid volume format: %s (%w)", volume, err)
 		}
 
 		// Check for duplicate mount target

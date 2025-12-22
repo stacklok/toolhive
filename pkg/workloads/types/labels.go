@@ -12,7 +12,7 @@ func ParseLabelFilters(labelFilters []string) (map[string]string, error) {
 	for _, filter := range labelFilters {
 		key, value, err := labels.ParseLabel(filter)
 		if err != nil {
-			return nil, fmt.Errorf("invalid label filter '%s': %v", filter, err)
+			return nil, fmt.Errorf("invalid label filter '%s': %w", filter, err)
 		}
 		filters[key] = value
 	}

@@ -165,12 +165,12 @@ func ParseLabel(label string) (string, string, error) {
 
 	// Validate key according to Kubernetes label naming conventions
 	if err := validateLabelKey(key); err != nil {
-		return "", "", fmt.Errorf("invalid label key: %v", err)
+		return "", "", fmt.Errorf("invalid label key: %w", err)
 	}
 
 	// Validate value according to Kubernetes label naming conventions
 	if err := validateLabelValue(value); err != nil {
-		return "", "", fmt.Errorf("invalid label value: %v", err)
+		return "", "", fmt.Errorf("invalid label value: %w", err)
 	}
 
 	return key, value, nil

@@ -173,9 +173,10 @@ func convertErrorHandler(cfgHandler *config.StepErrorHandling) *composer.ErrorHa
 	}
 
 	return &composer.ErrorHandler{
-		Action:     cfgHandler.Action,
-		RetryCount: cfgHandler.RetryCount,
-		RetryDelay: retryDelay,
+		Action:          cfgHandler.Action,
+		RetryCount:      cfgHandler.RetryCount,
+		RetryDelay:      retryDelay,
+		ContinueOnError: cfgHandler.Action == "continue",
 	}
 }
 

@@ -368,7 +368,7 @@ func (c *RunConfig) WithSecrets(ctx context.Context, secretManager secrets.Provi
 	if len(c.Secrets) > 0 {
 		secretVariables, err := environment.ParseSecretParameters(ctx, c.Secrets, secretManager)
 		if err != nil {
-			return c, fmt.Errorf("failed to get secrets: %v", err)
+			return c, fmt.Errorf("failed to get secrets: %w", err)
 		}
 
 		// Initialize EnvVars if it's nil

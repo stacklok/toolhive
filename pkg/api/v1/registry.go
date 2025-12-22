@@ -319,7 +319,7 @@ func (rr *RegistryRoutes) handleRegistryURL(registryURL string, allowPrivateIP *
 
 	if err := rr.configProvider.SetRegistryURL(registryURL, allow); err != nil {
 		logger.Errorf("Failed to set registry URL: %v", err)
-		return "", "", fmt.Errorf("failed to set registry URL: %v", err)
+		return "", "", fmt.Errorf("failed to set registry URL: %w", err)
 	}
 	return "url", fmt.Sprintf("Successfully set registry URL: %s", registryURL), nil
 }
@@ -333,7 +333,7 @@ func (rr *RegistryRoutes) handleRegistryAPIURL(apiURL string, allowPrivateIP *bo
 
 	if err := rr.configProvider.SetRegistryAPI(apiURL, allow); err != nil {
 		logger.Errorf("Failed to set registry API URL: %v", err)
-		return "", "", fmt.Errorf("failed to set registry API URL: %v", err)
+		return "", "", fmt.Errorf("failed to set registry API URL: %w", err)
 	}
 	return "api", fmt.Sprintf("Successfully set registry API URL: %s", apiURL), nil
 }
@@ -342,7 +342,7 @@ func (rr *RegistryRoutes) handleRegistryAPIURL(apiURL string, allowPrivateIP *bo
 func (rr *RegistryRoutes) handleRegistryLocalPath(localPath string) (string, string, error) {
 	if err := rr.configProvider.SetRegistryFile(localPath); err != nil {
 		logger.Errorf("Failed to set registry file: %v", err)
-		return "", "", fmt.Errorf("failed to set registry file: %v", err)
+		return "", "", fmt.Errorf("failed to set registry file: %w", err)
 	}
 	return "file", fmt.Sprintf("Successfully set local registry file: %s", localPath), nil
 }

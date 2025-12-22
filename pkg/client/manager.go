@@ -141,7 +141,7 @@ func (m *defaultManager) RegisterClients(clients []Client, workloads []core.Work
 	for _, client := range clients {
 		// Add specified workloads to the client
 		if err := m.addWorkloadsToClient(client.Name, workloads); err != nil {
-			return fmt.Errorf("failed to add workloads to client %s: %v", client.Name, err)
+			return fmt.Errorf("failed to add workloads to client %s: %w", client.Name, err)
 		}
 	}
 	return nil
@@ -152,7 +152,7 @@ func (m *defaultManager) UnregisterClients(_ context.Context, clients []Client, 
 	for _, client := range clients {
 		// Remove specified workloads from the client
 		if err := m.removeWorkloadsFromClient(client.Name, workloads); err != nil {
-			return fmt.Errorf("failed to remove workloads from client %s: %v", client.Name, err)
+			return fmt.Errorf("failed to remove workloads from client %s: %w", client.Name, err)
 		}
 	}
 	return nil
@@ -215,7 +215,7 @@ func (m *defaultManager) addWorkloadsToClient(clientType MCPClient, workloads []
 			string(clientType), workload.Name, workload.URL, string(workload.TransportType),
 		)
 		if err != nil {
-			return fmt.Errorf("failed to add workload %s to client %s: %v", workload.Name, clientType, err)
+			return fmt.Errorf("failed to add workload %s to client %s: %w", workload.Name, clientType, err)
 		}
 
 		logger.Infof("Added MCP server %s to client %s\n", workload.Name, clientType)
@@ -235,7 +235,7 @@ func (m *defaultManager) removeWorkloadsFromClient(clientType MCPClient, workloa
 	for _, workload := range workloads {
 		err := m.removeServerFromClient(clientType, workload.Name)
 		if err != nil {
-			return fmt.Errorf("failed to remove workload %s from client %s: %v", workload.Name, clientType, err)
+			return fmt.Errorf("failed to remove workload %s from client %s: %w", workload.Name, clientType, err)
 		}
 	}
 
@@ -251,7 +251,7 @@ func (*defaultManager) removeServerFromClient(clientName MCPClient, serverName s
 
 	// Remove the MCP server configuration with locking
 	if err := clientConfig.ConfigUpdater.Remove(serverName); err != nil {
-		return fmt.Errorf("failed to remove MCP server configuration from %s: %v", clientConfig.Path, err)
+		return fmt.Errorf("failed to remove MCP server configuration from %s: %w", clientConfig.Path, err)
 	}
 
 	logger.Infof("Removed MCP server %s from client %s", serverName, clientName)
@@ -276,7 +276,7 @@ func (*defaultManager) updateClientWithServer(clientName, serverName, serverURL,
 	logger.Infof("Updating client configuration: %s", clientConfig.Path)
 
 	if err := Upsert(*clientConfig, serverName, serverURL, transportType); err != nil {
-		return fmt.Errorf("failed to update MCP server configuration in %s: %v", clientConfig.Path, err)
+		return fmt.Errorf("failed to update MCP server configuration in %s: %w", clientConfig.Path, err)
 	}
 
 	logger.Infof("Successfully updated client configuration: %s", clientConfig.Path)

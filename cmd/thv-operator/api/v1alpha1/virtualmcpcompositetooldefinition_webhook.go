@@ -109,7 +109,7 @@ func (r *VirtualMCPCompositeToolDefinition) validateParameters() error {
 	// Unmarshal to validate structure
 	var params map[string]interface{}
 	if err := json.Unmarshal(r.Spec.Parameters.Raw, &params); err != nil {
-		return fmt.Errorf("spec.parameters: invalid JSON: %v", err)
+		return fmt.Errorf("spec.parameters: invalid JSON: %w", err)
 	}
 
 	// Validate that it has "type" field
@@ -131,7 +131,7 @@ func (r *VirtualMCPCompositeToolDefinition) validateParameters() error {
 
 	// Validate using JSON Schema validator
 	if err := validateJSONSchema(r.Spec.Parameters.Raw); err != nil {
-		return fmt.Errorf("spec.parameters: invalid JSON Schema: %v", err)
+		return fmt.Errorf("spec.parameters: invalid JSON Schema: %w", err)
 	}
 
 	return nil
@@ -194,7 +194,7 @@ func (r *VirtualMCPCompositeToolDefinition) validateStep(index int, step Workflo
 
 	if step.Timeout != "" {
 		if err := validateDuration(step.Timeout); err != nil {
-			return fmt.Errorf("spec.steps[%d].timeout: %v", index, err)
+			return fmt.Errorf("spec.steps[%d].timeout: %w", index, err)
 		}
 	}
 
@@ -245,13 +245,13 @@ func validateWorkflowStepTemplates(pathPrefix string, index int, step WorkflowSt
 	if step.Arguments != nil && len(step.Arguments.Raw) > 0 {
 		var args map[string]any
 		if err := json.Unmarshal(step.Arguments.Raw, &args); err != nil {
-			return fmt.Errorf("%s[%d].arguments: invalid JSON: %v", pathPrefix, index, err)
+			return fmt.Errorf("%s[%d].arguments: invalid JSON: %w", pathPrefix, index, err)
 		}
 		for argName, argValue := range args {
 			// Only validate template syntax for string values
 			if strValue, ok := argValue.(string); ok {
 				if err := validateTemplate(strValue); err != nil {
-					return fmt.Errorf("%s[%d].arguments[%s]: invalid template: %v", pathPrefix, index, argName, err)
+					return fmt.Errorf("%s[%d].arguments[%s]: invalid template: %w", pathPrefix, index, argName, err)
 				}
 			}
 		}
@@ -259,20 +259,20 @@ func validateWorkflowStepTemplates(pathPrefix string, index int, step WorkflowSt
 
 	if step.Condition != "" {
 		if err := validateTemplate(step.Condition); err != nil {
-			return fmt.Errorf("%s[%d].condition: invalid template: %v", pathPrefix, index, err)
+			return fmt.Errorf("%s[%d].condition: invalid template: %w", pathPrefix, index, err)
 		}
 	}
 
 	if step.Message != "" {
 		if err := validateTemplate(step.Message); err != nil {
-			return fmt.Errorf("%s[%d].message: invalid template: %v", pathPrefix, index, err)
+			return fmt.Errorf("%s[%d].message: invalid template: %w", pathPrefix, index, err)
 		}
 	}
 
 	// Validate JSON Schema for elicitation steps
 	if step.Schema != nil {
 		if err := validateJSONSchema(step.Schema.Raw); err != nil {
-			return fmt.Errorf("%s[%d].schema: invalid JSON Schema: %v", pathPrefix, index, err)
+			return fmt.Errorf("%s[%d].schema: invalid JSON Schema: %w", pathPrefix, index, err)
 		}
 	}
 
@@ -360,7 +360,7 @@ func validateTemplate(tmpl string) error {
 	// Try to parse as Go template
 	_, err := template.New("validation").Parse(tmpl)
 	if err != nil {
-		return fmt.Errorf("invalid template syntax: %v", err)
+		return fmt.Errorf("invalid template syntax: %w", err)
 	}
 	return nil
 }
@@ -374,7 +374,7 @@ func validateJSONSchema(schemaBytes []byte) error {
 	// Parse the schema JSON to verify it's valid JSON
 	var schemaDoc interface{}
 	if err := json.Unmarshal(schemaBytes, &schemaDoc); err != nil {
-		return fmt.Errorf("failed to parse JSON: %v", err)
+		return fmt.Errorf("failed to parse JSON: %w", err)
 	}
 
 	// Use gojsonschema to validate the schema by attempting to use it as a schema
@@ -388,7 +388,7 @@ func validateJSONSchema(schemaBytes []byte) error {
 	_, err := gojsonschema.Validate(schemaLoader, documentLoader)
 	if err != nil {
 		// Check if error is about the schema itself (not validation failure)
-		return fmt.Errorf("invalid JSON Schema: %v", err)
+		return fmt.Errorf("invalid JSON Schema: %w", err)
 	}
 
 	return nil

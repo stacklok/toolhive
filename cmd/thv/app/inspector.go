@@ -102,20 +102,20 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	tokenBytes := make([]byte, 32)
 	_, err := rand.Read(tokenBytes)
 	if err != nil {
-		return fmt.Errorf("failed to generate auth token: %v", err)
+		return fmt.Errorf("failed to generate auth token: %w", err)
 	}
 	authToken := hex.EncodeToString(tokenBytes)
 
 	// find the port of the server if it is running / exists
 	serverPort, transportType, err := getServerPortAndTransport(ctx, serverName)
 	if err != nil {
-		return fmt.Errorf("failed to find server: %v", err)
+		return fmt.Errorf("failed to find server: %w", err)
 	}
 
 	imageManager := images.NewImageManager(ctx)
 	err = imageManager.PullImage(ctx, inspector.Image)
 	if err != nil {
-		return fmt.Errorf("failed to pull inspector image: %v", err)
+		return fmt.Errorf("failed to pull inspector image: %w", err)
 	}
 	processedImage := inspector.Image
 
@@ -128,7 +128,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 	// Create workload runtime
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create workload runtime: %v", err)
+		return fmt.Errorf("failed to create workload runtime: %w", err)
 	}
 
 	labelsMap := map[string]string{}
@@ -150,7 +150,7 @@ func inspectorCmdFunc(cmd *cobra.Command, args []string) error {
 		false, // Do not isolate network
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create inspector workload: %v", err)
+		return fmt.Errorf("failed to create inspector workload: %w", err)
 	}
 
 	// Monitor inspector readiness by checking HTTP response
@@ -185,12 +185,12 @@ func getServerPortAndTransport(ctx context.Context, serverName string) (int, typ
 	// Instantiate the status manager and list all workloads.
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return 0, types.TransportTypeSSE, fmt.Errorf("failed to create status manager: %v", err)
+		return 0, types.TransportTypeSSE, fmt.Errorf("failed to create status manager: %w", err)
 	}
 
 	workloadList, err := manager.ListWorkloads(ctx, true)
 	if err != nil {
-		return 0, types.TransportTypeSSE, fmt.Errorf("failed to list workloads: %v", err)
+		return 0, types.TransportTypeSSE, fmt.Errorf("failed to list workloads: %w", err)
 	}
 
 	for _, c := range workloadList {

@@ -317,7 +317,8 @@ func setupAggregationControllers(mgr ctrl.Manager) error {
 
 // isFeatureEnabled checks if a feature flag environment variable is enabled.
 // If the environment variable is not set, it returns the default value.
-// The environment variable is considered enabled if it's set to "true" (case-insensitive).
+// The environment variable is considered enabled if it's set to "true", "1", or "t" (case-insensitive).
+// Invalid values (e.g., "yes", "enabled") will log a warning and return the default value.
 func isFeatureEnabled(envVar string, defaultValue bool) bool {
 	value, found := os.LookupEnv(envVar)
 	if !found {
@@ -325,6 +326,13 @@ func isFeatureEnabled(envVar string, defaultValue bool) bool {
 	}
 	enabled, err := strconv.ParseBool(value)
 	if err != nil {
+		setupLog.Info(
+			"Invalid boolean value for feature flag, using default",
+			"envVar", envVar,
+			"value", value,
+			"default", defaultValue,
+			"validValues", "true, false, 1, 0, t, f",
+		)
 		return defaultValue
 	}
 	return enabled

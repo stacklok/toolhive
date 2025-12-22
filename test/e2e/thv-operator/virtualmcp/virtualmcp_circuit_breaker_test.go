@@ -272,15 +272,17 @@ var _ = Describe("VirtualMCPServer Circuit Breaker", Ordered, func() {
 	It("should transition to half-open state after timeout", func() {
 		By(fmt.Sprintf("Waiting for circuit breaker timeout (%s) to allow half-open transition", circuitBreakerTimeout))
 
-		// Wait for the circuit breaker timeout plus some buffer
-		time.Sleep(35 * time.Second)
-
-		// Check logs for half-open or recovery activity
-		podList, err := GetVirtualMCPServerPods(ctx, k8sClient, vmcpServerName, testNamespace)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(podList.Items).NotTo(BeEmpty())
-
+		// Use Eventually to wait for half-open transition or recovery activity
+		// Circuit breaker timeout is 30s, so we check for up to 45s to allow some buffer
 		Eventually(func() error {
+			podList, err := GetVirtualMCPServerPods(ctx, k8sClient, vmcpServerName, testNamespace)
+			if err != nil {
+				return fmt.Errorf("failed to get pods: %w", err)
+			}
+			if len(podList.Items) == 0 {
+				return fmt.Errorf("no vMCP pods found")
+			}
+
 			pod := &podList.Items[0]
 			containerName := "vmcp"
 			if len(pod.Spec.Containers) > 0 {
@@ -299,7 +301,7 @@ var _ = Describe("VirtualMCPServer Circuit Breaker", Ordered, func() {
 			}
 
 			return nil
-		}, 20*time.Second, 3*time.Second).Should(Succeed(),
+		}, 45*time.Second, 3*time.Second).Should(Succeed(),
 			"Should find half-open transition or recovery activity in logs after timeout")
 	})
 

@@ -29,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
 
 const (
@@ -97,6 +98,12 @@ type Config struct {
 	// If nil, no audit logging is performed.
 	// Component should be set to "vmcp-server" to distinguish vMCP audit logs.
 	AuditConfig *audit.Config
+
+	// StatusReporter enables vMCP runtime to report operational status.
+	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)
+	// In CLI mode: NoOpReporter (no persistent status)
+	// If nil, status reporting is disabled.
+	StatusReporter vmcpstatus.Reporter
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -127,6 +134,10 @@ type Server struct {
 
 	// Backends for capability discovery
 	backends []vmcp.Backend
+
+	// Status reporter for updating vMCP operational status
+	// Reports backend discovery results, health status, and lifecycle events
+	statusReporter vmcpstatus.Reporter
 
 	// Session manager for tracking MCP protocol sessions
 	// This is ToolHive's session.Manager (pkg/transport/session) - the same component
@@ -281,6 +292,7 @@ func New(
 		handlerFactory:    handlerFactory,
 		discoveryMgr:      discoveryMgr,
 		backends:          backends,
+		statusReporter:    cfg.StatusReporter,
 		sessionManager:    sessionManager,
 		capabilityAdapter: capabilityAdapter,
 		workflowDefs:      workflowDefs,
@@ -485,6 +497,14 @@ func (s *Server) Start(ctx context.Context) error {
 	logger.Infof("Starting Virtual MCP Server at %s%s", actualAddr, s.config.EndpointPath)
 	logger.Infof("Health endpoints available at %s/health, %s/ping, and %s/status", actualAddr, actualAddr, actualAddr)
 
+	// Start status reporter if configured (reports operational status to control plane)
+	if s.statusReporter != nil {
+		if err := s.statusReporter.Start(ctx); err != nil {
+			logger.Warnw("failed to start status reporter (continuing anyway)",
+				"error", err)
+		}
+	}
+
 	// Start server in background
 	errCh := make(chan error, 1)
 	go func() {
@@ -534,6 +554,13 @@ func (s *Server) Stop(ctx context.Context) error {
 	if s.sessionManager != nil {
 		if err := s.sessionManager.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to stop session manager: %w", err))
+		}
+	}
+
+	// Stop status reporter (flush any pending status updates)
+	if s.statusReporter != nil {
+		if err := s.statusReporter.Stop(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop status reporter: %w", err))
 		}
 	}
 

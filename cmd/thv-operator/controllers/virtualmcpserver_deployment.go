@@ -62,6 +62,14 @@ var vmcpRBACRules = []rbacv1.PolicyRule{
 		Resources: []string{"mcpgroups", "mcpservers", "mcpremoteproxies", "mcpexternalauthconfigs"},
 		Verbs:     []string{"get", "list", "watch"},
 	},
+	{
+		// Required for StatusReporter to update VirtualMCPServer status
+		// The vMCP runtime reports backend discovery results and operational status
+		// See pkg/vmcp/status/RBAC.md for details
+		APIGroups: []string{"toolhive.stacklok.dev"},
+		Resources: []string{"virtualmcpservers/status"},
+		Verbs:     []string{"get", "update", "patch"},
+	},
 }
 
 // deploymentForVirtualMCPServer returns a VirtualMCPServer Deployment object

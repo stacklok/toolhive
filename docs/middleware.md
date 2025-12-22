@@ -272,15 +272,164 @@ thv config usage-metrics enable
 **Responsibilities**:
 - Determine event type based on request characteristics
 - Extract audit-relevant data from request and response
-- Log structured audit events
+- Log structured audit events as JSON
 - Track request duration and outcome
+- Support file-based and stdout log destinations
 
 **Event Types**:
+- `mcp_initialize` - Client initialization events
 - `mcp_tool_call` - Tool execution events
+- `mcp_tools_list` - Tool listing events
 - `mcp_resource_read` - Resource access events
+- `mcp_resources_list` - Resource listing events
 - `mcp_prompt_get` - Prompt retrieval events
-- `mcp_list_operation` - List operation events
-- `http_request` - General HTTP request events
+- `mcp_prompts_list` - Prompt listing events
+- `mcp_notification` - Notification message events
+- `mcp_ping` - Ping events
+- `mcp_logging` - Logging level change events
+- `mcp_completion` - Completion events
+- `mcp_roots_list_changed` - Roots list change notifications
+- `sse_connection` - SSE connection events (for SSE transport)
+- `http_request` - General HTTP request events (fallback)
+
+#### Configuration
+
+The audit middleware is configured via the `audit-config` parameter:
+
+```bash
+# CLI usage
+thv run --transport sse --name my-server --audit-config audit.json my-image:latest
+```
+
+**Configuration File Format** (`audit.json`):
+
+```json
+{
+  "component": "my-service",
+  "log_file": "/var/log/audit/audit.log",
+  "event_types": ["mcp_tool_call", "mcp_resource_read"],
+  "exclude_event_types": ["mcp_ping"],
+  "include_request_data": true,
+  "include_response_data": true,
+  "max_data_size": 4096
+}
+```
+
+**Configuration Options**:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `component` | string | No | `"toolhive-api"` | Component name to include in audit logs |
+| `log_file` | string | No | stdout | Path to audit log file (file created with 0600 permissions; parent directory must exist) |
+| `event_types` | []string | No | all events | Whitelist of event types to audit (empty = audit all) |
+| `exclude_event_types` | []string | No | none | Blacklist of event types to exclude (takes precedence) |
+| `include_request_data` | bool | No | `false` | Include request body in audit logs |
+| `include_response_data` | bool | No | `false` | Include response body in audit logs |
+| `max_data_size` | int | No | `1024` | Maximum bytes to capture for request/response data |
+
+**Important Notes**:
+- `exclude_event_types` takes precedence over `event_types`
+- When `include_request_data` or `include_response_data` is enabled, **`max_data_size` must be set** (non-zero) for data capture to work
+- Log files are created with restrictive permissions (0600) for security
+- Logs are written in newline-delimited JSON format for easy parsing
+
+#### Log Output Format
+
+Audit events are logged as structured JSON objects:
+
+```json
+{
+  "audit_id": "01be8d47-3ab0-4aa9-ad14-bd5bb408005d",
+  "type": "mcp_tool_call",
+  "logged_at": "2025-12-15T10:38:32.164124Z",
+  "outcome": "success",
+  "component": "vmcp-server",
+  "source": {
+    "type": "network",
+    "value": "192.168.1.100",
+    "extra": {
+      "user_agent": "mcp-client/1.0",
+      "request_id": "req-12345"
+    }
+  },
+  "subjects": {
+    "user_id": "user123",
+    "user": "john.doe@example.com",
+    "client_name": "my-mcp-client",
+    "client_version": "1.0.0"
+  },
+  "target": {
+    "endpoint": "/messages",
+    "method": "POST",
+    "type": "tool",
+    "name": "weather_tool"
+  },
+  "metadata": {
+    "extra": {
+      "duration_ms": 150,
+      "transport": "streamable-http",
+      "response_size_bytes": 1024
+    }
+  },
+  "data": {
+    "request": {"location": "New York"},
+    "response": {"temperature": "22°C", "humidity": "65%"}
+  }
+}
+```
+
+**Field Descriptions**:
+
+- `audit_id`: Unique identifier for the audit event (UUID format)
+- `type`: Event type (one of the event types listed above)
+- `logged_at`: ISO 8601 timestamp when the event was logged
+- `outcome`: Result of the operation (`success`, `failure`, `denied`, `error`)
+- `component`: Service/component that generated the event
+- `source`: Information about the request source
+  - `type`: Source type (`network` for HTTP requests)
+  - `value`: Source identifier (client IP address)
+  - `extra`: Additional source metadata (user agent, request ID, etc.)
+- `subjects`: Information about the authenticated user/client
+  - `user_id`: User subject identifier from JWT
+  - `user`: User display name (from `name` claim, `preferred_username`, or `email`)
+  - `client_name`: MCP client name (from JWT claims)
+  - `client_version`: MCP client version (from JWT claims)
+- `target`: Information about the operation target
+  - `endpoint`: HTTP endpoint path
+  - `method`: HTTP method
+  - `type`: Target type (`tool`, `resource`, `prompt`, `endpoint`)
+  - `name`: MCP resource identifier (tool name, resource URI, etc.)
+- `metadata.extra`: Additional operational metadata
+  - `duration_ms`: Request duration in milliseconds
+  - `transport`: Transport type (`sse`, `streamable-http`, `http`)
+  - `response_size_bytes`: Response body size (when capturing response data)
+- `data`: Captured request/response data (only present if enabled)
+  - `request`: Request body (parsed as JSON if possible, otherwise string)
+  - `response`: Response body (parsed as JSON if possible, otherwise string)
+
+#### CLI Usage
+
+**With audit configuration file**:
+```bash
+thv run --transport sse --name my-server --audit-config audit.json my-image:latest
+```
+
+**Minimal audit configuration (stdout)**:
+```bash
+thv run --transport sse --name my-server --audit-config <(echo '{"component":"my-service"}') my-image:latest
+```
+
+**Event filtering example**:
+```json
+{
+  "component": "api-gateway",
+  "event_types": ["mcp_tool_call", "mcp_resource_read"],
+  "exclude_event_types": ["mcp_ping"],
+  "include_request_data": true,
+  "include_response_data": true,
+  "max_data_size": 2048
+}
+```
 
 ## Data Flow Through Context
 

@@ -80,10 +80,17 @@ Workflows use Go's [text/template](https://pkg.go.dev/text/template) syntax with
 
 ### Functions
 
+Composite Tools supports all the built-in functions from the [text/template](https://pkg.go.dev/text/template#hdr-Functions) library in addition to some functions for converting to/from JSON.
+
 ```yaml
-# JSON encoding
+# JSON encoding - convert value to JSON string
 arguments:
   data: "{{json .steps.step1.output}}"
+
+# JSON decoding - parse JSON string to access fields
+# Useful when MCP servers return JSON as text content
+arguments:
+  name: "{{(fromJson .steps.api.output.text).user.name}}"
 
 # String quoting
 arguments:
@@ -130,13 +137,13 @@ steps:
   # Continue despite errors
   - id: optional
     tool: notification.send
-    on_error:
+    onError:
       action: continue
 
   # Retry with exponential backoff
   - id: resilient
     tool: external.api
-    on_error:
+    onError:
       action: retry
       maxRetries: 3             # Max 3 retries (4 total attempts)
 ```
@@ -155,7 +162,7 @@ steps:
 
   - id: unreliable_step
     tool: external.api
-    on_error:
+    onError:
       action: continue
     defaultResults:
       text: "{\"status\": \"unavailable\"}"  # Used when step fails
@@ -227,7 +234,7 @@ steps:
 steps:
   - id: try_primary
     tool: primary.api
-    on_error:
+    onError:
       action: retry
       maxRetries: 2
 

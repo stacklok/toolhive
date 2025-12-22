@@ -64,6 +64,7 @@ type Auditor struct {
 	config        *Config
 	auditLogger   *slog.Logger
 	transportType string // e.g., "sse", "streamable-http"
+	logWriter     io.Writer
 }
 
 // NewAuditorWithTransport creates a new Auditor with the given configuration and transport information.
@@ -84,7 +85,17 @@ func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, er
 		config:        config,
 		auditLogger:   NewAuditLogger(logWriter),
 		transportType: transportType,
+		logWriter:     logWriter,
 	}, nil
+}
+
+// Close closes the underlying log writer if it implements io.Closer.
+// This should be called when the auditor is no longer needed to properly release resources.
+func (a *Auditor) Close() error {
+	if closer, ok := a.logWriter.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 // isSSETransport checks if the current transport is SSE
@@ -166,10 +177,13 @@ func (a *Auditor) Middleware(next http.Handler) http.Handler {
 		var requestData []byte
 		if a.config.IncludeRequestData && r.Body != nil {
 			body, err := io.ReadAll(r.Body)
-			if err == nil && len(body) <= a.config.MaxDataSize {
-				requestData = body
-				// Restore the body for the next handler
+			if err == nil {
+				// Always restore the body for the next handler
 				r.Body = io.NopCloser(bytes.NewReader(body))
+				// Only capture for auditing if within size limit
+				if len(body) <= a.config.MaxDataSize {
+					requestData = body
+				}
 			}
 		}
 

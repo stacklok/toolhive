@@ -93,7 +93,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %v", err)
+		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
 
 	if proxy {
@@ -116,7 +116,7 @@ func logsCmdFunc(cmd *cobra.Command, args []string) error {
 			logger.Infof("Workload %s not found", workloadName)
 			return nil
 		}
-		return fmt.Errorf("failed to get logs for workload %s: %v", workloadName, err)
+		return fmt.Errorf("failed to get logs for workload %s: %w", workloadName, err)
 	}
 
 	fmt.Print(logs)
@@ -155,7 +155,7 @@ func logsPruneCmdFunc(cmd *cobra.Command) error {
 func getLogsDirectory() (string, error) {
 	logsDir, err := xdg.DataFile("toolhive/logs")
 	if err != nil {
-		return "", fmt.Errorf("failed to get logs directory path: %v", err)
+		return "", fmt.Errorf("failed to get logs directory path: %w", err)
 	}
 
 	if _, err := os.Stat(logsDir); os.IsNotExist(err) {
@@ -169,12 +169,12 @@ func getLogsDirectory() (string, error) {
 func getManagedContainerNames(ctx context.Context) (map[string]bool, error) {
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create status manager: %v", err)
+		return nil, fmt.Errorf("failed to create status manager: %w", err)
 	}
 
 	managedContainers, err := manager.ListWorkloads(ctx, true)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list workloads: %v", err)
+		return nil, fmt.Errorf("failed to list workloads: %w", err)
 	}
 
 	managedNames := make(map[string]bool)
@@ -195,7 +195,7 @@ func getLogFiles(logsDir string) ([]string, error) {
 
 	logFiles, err := filepath.Glob(filepath.Join(logsDir, "*.log"))
 	if err != nil {
-		return nil, fmt.Errorf("failed to list log files: %v", err)
+		return nil, fmt.Errorf("failed to list log files: %w", err)
 	}
 
 	return logFiles, nil
@@ -245,7 +245,7 @@ func getProxyLogs(workloadName string) error {
 	// Get the proxy log file path
 	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", workloadName))
 	if err != nil {
-		return fmt.Errorf("failed to get proxy log file path: %v", err)
+		return fmt.Errorf("failed to get proxy log file path: %w", err)
 	}
 
 	// Clean the file path to prevent path traversal
@@ -268,7 +268,7 @@ func followProxyLogFile(logFilePath string) error {
 	// Open the file
 	file, err := os.Open(cleanLogFilePath)
 	if err != nil {
-		return fmt.Errorf("failed to open proxy log %s: %v", cleanLogFilePath, err)
+		return fmt.Errorf("failed to open proxy log %s: %w", cleanLogFilePath, err)
 	}
 	defer file.Close()
 
@@ -281,7 +281,7 @@ func followProxyLogFile(logFilePath string) error {
 	// Seek to the end of the file for following
 	_, err = file.Seek(0, 2)
 	if err != nil {
-		return fmt.Errorf("failed to seek to end of proxy log: %v", err)
+		return fmt.Errorf("failed to seek to end of proxy log: %w", err)
 	}
 
 	// Follow the file for new content
@@ -290,7 +290,7 @@ func followProxyLogFile(logFilePath string) error {
 		buffer := make([]byte, 1024)
 		n, err := file.Read(buffer)
 		if err != nil && err.Error() != "EOF" {
-			return fmt.Errorf("error reading proxy log: %v", err)
+			return fmt.Errorf("error reading proxy log: %w", err)
 		}
 
 		if n > 0 {

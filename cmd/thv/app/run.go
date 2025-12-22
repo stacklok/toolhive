@@ -112,8 +112,8 @@ Examples:
   # Run a server in a specific group
   thv run filesystem --group production
 
-  # Run a remote MCP server with authentication
-  thv run sse://example.com/mcp --env API_KEY=your_token_here`,
+  # Run a remote GitHub MCP server with authentication
+  thv run sse://github-mcp. example.com/mcp --env GITHUB_CLIENT_ID=your_client_id --env GITHUB_CLIENT_SECRET=your_secret`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		// If --from-config is provided, no args are required
 		if runFlags.FromConfig != "" {

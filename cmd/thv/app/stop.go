@@ -16,9 +16,20 @@ import (
 )
 
 var stopCmd = &cobra.Command{
-	Use:               "stop [workload-name...]",
-	Short:             "Stop one or more MCP servers",
-	Long:              `Stop one or more running MCP servers managed by ToolHive.`,
+	Use:   "stop [workload-name...]",
+	Short: "Stop one or more MCP servers",
+	Long: `Stop one or more running MCP servers managed by ToolHive. Examples:
+  # Stop a single MCP server
+  thv stop filesystem
+
+  # Stop multiple MCP servers
+  thv stop filesystem github slack
+
+  # Stop all running MCP servers
+  thv stop --all
+
+  # Stop all servers in a group
+  thv stop --group production`,
 	Args:              validateStopArgs,
 	RunE:              stopCmdFunc,
 	ValidArgsFunction: completeMCPServerNames,

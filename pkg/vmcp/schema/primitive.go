@@ -2,6 +2,8 @@ package schema
 
 import (
 	"strconv"
+
+	"github.com/stacklok/toolhive/pkg/logger"
 )
 
 // primitiveSchema represents string/integer/number/boolean types.
@@ -34,24 +36,29 @@ func (s primitiveSchema) TryCoerce(value any) any {
 		return value
 
 	case "integer":
-		if v, err := strconv.ParseInt(str, 10, 64); err == nil {
-			return v
+		v, err := strconv.ParseInt(str, 10, 64)
+		if err != nil {
+			logger.Debugf("Failed to coerce %q to integer: %v", str, err)
+			return value
 		}
+		return v
 
 	case "number":
-		if v, err := strconv.ParseFloat(str, 64); err == nil {
-			return v
+		v, err := strconv.ParseFloat(str, 64)
+		if err != nil {
+			logger.Debugf("Failed to coerce %q to number: %v", str, err)
+			return value
 		}
+		return v
 
 	case "boolean":
-		switch str {
-		case "true", "True", "TRUE", "1":
-			return true
-		case "false", "False", "FALSE", "0":
-			return false
+		b, err := strconv.ParseBool(str)
+		if err != nil {
+			logger.Debugf("Failed to coerce %q to boolean: %v", str, err)
+			return value
 		}
+		return b
 	}
 
-	// Coercion failed, return original value
 	return value
 }

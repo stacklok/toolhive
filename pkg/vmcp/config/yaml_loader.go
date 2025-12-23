@@ -158,17 +158,15 @@ func (l *YAMLLoader) processCompositeTool(tool *CompositeToolConfig) error {
 	}
 
 	// Process each step
-	for i, step := range tool.Steps {
-		if err := l.processWorkflowStep(step); err != nil {
-			return fmt.Errorf("step[%d] %s: %w", i, step.ID, err)
-		}
+	for _, step := range tool.Steps {
+		l.processWorkflowStep(step)
 	}
 
 	return nil
 }
 
 // processWorkflowStep applies post-processing to a workflow step.
-func (*YAMLLoader) processWorkflowStep(step *WorkflowStepConfig) error {
+func (*YAMLLoader) processWorkflowStep(step *WorkflowStepConfig) {
 	// Apply type inference: if type is empty and tool field is present, infer as "tool"
 	if step.Type == "" && step.Tool != "" {
 		step.Type = "tool"
@@ -178,8 +176,6 @@ func (*YAMLLoader) processWorkflowStep(step *WorkflowStepConfig) error {
 	if step.Type == "elicitation" && step.Timeout == 0 {
 		step.Timeout = Duration(5 * time.Minute)
 	}
-
-	return nil
 }
 
 // validateParametersJSONSchema validates that parameters follows JSON Schema format.

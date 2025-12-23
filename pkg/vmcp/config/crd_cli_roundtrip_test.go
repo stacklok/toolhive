@@ -2,10 +2,13 @@ package config
 
 import (
 	"bytes"
+	"os"
 	"testing"
 
+	"go.uber.org/mock/gomock"
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/env/mocks"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -546,4 +549,296 @@ func stringSliceEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestCRDToCliRoundtrip_HeaderInjection_EnvVarResolution tests that the full
+// YAMLLoader.Load() flow correctly resolves environment variables in HeaderInjection.
+func TestCRDToCliRoundtrip_HeaderInjection_EnvVarResolution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		config          *Config
+		envVars         map[string]string
+		wantHeaderValue string
+		wantErr         bool
+		errContains     string
+	}{
+		{
+			name: "env var is resolved to header value",
+			config: &Config{
+				Name:  "test-server",
+				Group: "test-group",
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+					Default: &authtypes.BackendAuthStrategy{
+						Type: authtypes.StrategyTypeHeaderInjection,
+						HeaderInjection: &authtypes.HeaderInjectionConfig{
+							HeaderName:     "Authorization",
+							HeaderValueEnv: "MY_SECRET_TOKEN",
+						},
+					},
+				},
+			},
+			envVars: map[string]string{
+				"MY_SECRET_TOKEN": "Bearer resolved-secret-value",
+			},
+			wantHeaderValue: "Bearer resolved-secret-value",
+		},
+		{
+			name: "per-backend env var is resolved",
+			config: &Config{
+				Name:  "test-server",
+				Group: "test-group",
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+					Backends: map[string]*authtypes.BackendAuthStrategy{
+						"github": {
+							Type: authtypes.StrategyTypeHeaderInjection,
+							HeaderInjection: &authtypes.HeaderInjectionConfig{
+								HeaderName:     "X-API-Key",
+								HeaderValueEnv: "GITHUB_API_KEY",
+							},
+						},
+					},
+				},
+			},
+			envVars: map[string]string{
+				"GITHUB_API_KEY": "ghp_secret123",
+			},
+			wantHeaderValue: "ghp_secret123",
+		},
+		{
+			name: "missing env var returns error",
+			config: &Config{
+				Name:  "test-server",
+				Group: "test-group",
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+					Default: &authtypes.BackendAuthStrategy{
+						Type: authtypes.StrategyTypeHeaderInjection,
+						HeaderInjection: &authtypes.HeaderInjectionConfig{
+							HeaderName:     "Authorization",
+							HeaderValueEnv: "MISSING_VAR",
+						},
+					},
+				},
+			},
+			wantErr:     true,
+			errContains: "environment variable MISSING_VAR not set",
+		},
+		{
+			name: "empty env var returns error",
+			config: &Config{
+				Name:  "test-server",
+				Group: "test-group",
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+					Default: &authtypes.BackendAuthStrategy{
+						Type: authtypes.StrategyTypeHeaderInjection,
+						HeaderInjection: &authtypes.HeaderInjectionConfig{
+							HeaderName:     "Authorization",
+							HeaderValueEnv: "EMPTY_VAR",
+						},
+					},
+				},
+			},
+			envVars: map[string]string{
+				"EMPTY_VAR": "",
+			},
+			wantErr:     true,
+			errContains: "environment variable EMPTY_VAR not set or empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Step 1: Marshal the config to YAML
+			yamlBytes, err := yaml.Marshal(tt.config)
+			if err != nil {
+				t.Fatalf("failed to marshal config to YAML: %v", err)
+			}
+
+			// Step 2: Write to temp file
+			tmpFile, err := os.CreateTemp("", "env-var-test-*.yaml")
+			if err != nil {
+				t.Fatalf("failed to create temp file: %v", err)
+			}
+			defer os.Remove(tmpFile.Name())
+
+			if _, err := tmpFile.Write(yamlBytes); err != nil {
+				t.Fatalf("failed to write temp file: %v", err)
+			}
+			if err := tmpFile.Close(); err != nil {
+				t.Fatalf("failed to close temp file: %v", err)
+			}
+
+			// Step 3: Create mock env reader
+			ctrl := gomock.NewController(t)
+			mockEnv := mocks.NewMockReader(ctrl)
+			for key, value := range tt.envVars {
+				mockEnv.EXPECT().Getenv(key).Return(value).AnyTimes()
+			}
+			mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+
+			// Step 4: Load via YAMLLoader
+			loader := NewYAMLLoader(tmpFile.Name(), mockEnv)
+			loadedConfig, err := loader.Load()
+
+			// Step 5: Check error expectations
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errContains)
+				}
+				if tt.errContains != "" && !containsString(err.Error(), tt.errContains) {
+					t.Errorf("error = %q, want to contain %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Step 6: Verify env var was resolved into HeaderValue
+			if loadedConfig.OutgoingAuth == nil {
+				t.Fatal("OutgoingAuth is nil")
+			}
+
+			var strategy *authtypes.BackendAuthStrategy
+			if loadedConfig.OutgoingAuth.Default != nil {
+				strategy = loadedConfig.OutgoingAuth.Default
+			} else if len(loadedConfig.OutgoingAuth.Backends) > 0 {
+				// Get first backend
+				for _, s := range loadedConfig.OutgoingAuth.Backends {
+					strategy = s
+					break
+				}
+			}
+
+			if strategy == nil {
+				t.Fatal("no auth strategy found")
+			}
+
+			if strategy.HeaderInjection == nil {
+				t.Fatal("HeaderInjection is nil")
+			}
+
+			if strategy.HeaderInjection.HeaderValue != tt.wantHeaderValue {
+				t.Errorf("HeaderValue = %q, want %q",
+					strategy.HeaderInjection.HeaderValue, tt.wantHeaderValue)
+			}
+		})
+	}
+}
+
+// TestCRDToCliRoundtrip_TokenExchange_EnvVarResolution tests that the full
+// YAMLLoader.Load() flow correctly validates environment variables in TokenExchange.
+func TestCRDToCliRoundtrip_TokenExchange_EnvVarResolution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		config      *Config
+		envVars     map[string]string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "env var is validated but not resolved (lazy evaluation)",
+			config: &Config{
+				Name:  "test-server",
+				Group: "test-group",
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+					Default: &authtypes.BackendAuthStrategy{
+						Type: authtypes.StrategyTypeTokenExchange,
+						TokenExchange: &authtypes.TokenExchangeConfig{
+							TokenURL:        "https://auth.example.com/token",
+							ClientID:        "client-123",
+							ClientSecretEnv: "CLIENT_SECRET",
+						},
+					},
+				},
+			},
+			envVars: map[string]string{
+				"CLIENT_SECRET": "secret-value",
+			},
+		},
+		{
+			name: "missing env var returns error",
+			config: &Config{
+				Name:  "test-server",
+				Group: "test-group",
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+					Default: &authtypes.BackendAuthStrategy{
+						Type: authtypes.StrategyTypeTokenExchange,
+						TokenExchange: &authtypes.TokenExchangeConfig{
+							TokenURL:        "https://auth.example.com/token",
+							ClientID:        "client-123",
+							ClientSecretEnv: "MISSING_SECRET",
+						},
+					},
+				},
+			},
+			wantErr:     true,
+			errContains: "environment variable MISSING_SECRET not set",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Step 1: Marshal the config to YAML
+			yamlBytes, err := yaml.Marshal(tt.config)
+			if err != nil {
+				t.Fatalf("failed to marshal config to YAML: %v", err)
+			}
+
+			// Step 2: Write to temp file
+			tmpFile, err := os.CreateTemp("", "token-exchange-test-*.yaml")
+			if err != nil {
+				t.Fatalf("failed to create temp file: %v", err)
+			}
+			defer os.Remove(tmpFile.Name())
+
+			if _, err := tmpFile.Write(yamlBytes); err != nil {
+				t.Fatalf("failed to write temp file: %v", err)
+			}
+			if err := tmpFile.Close(); err != nil {
+				t.Fatalf("failed to close temp file: %v", err)
+			}
+
+			// Step 3: Create mock env reader
+			ctrl := gomock.NewController(t)
+			mockEnv := mocks.NewMockReader(ctrl)
+			for key, value := range tt.envVars {
+				mockEnv.EXPECT().Getenv(key).Return(value).AnyTimes()
+			}
+			mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+
+			// Step 4: Load via YAMLLoader
+			loader := NewYAMLLoader(tmpFile.Name(), mockEnv)
+			_, err = loader.Load()
+
+			// Step 5: Check error expectations
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errContains)
+				}
+				if tt.errContains != "" && !containsString(err.Error(), tt.errContains) {
+					t.Errorf("error = %q, want to contain %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
 }

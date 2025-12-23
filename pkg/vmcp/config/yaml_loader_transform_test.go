@@ -376,9 +376,8 @@ func TestYAMLLoader_processWorkflowStep(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			loader := &YAMLLoader{}
-			err := loader.processWorkflowStep(tt.step)
+			loader.processWorkflowStep(tt.step)
 
-			require.NoError(t, err)
 			require.NotNil(t, tt.step)
 			if tt.verify != nil {
 				tt.verify(t, tt.step)

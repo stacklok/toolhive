@@ -26,6 +26,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -97,6 +98,10 @@ type Config struct {
 	// If nil, no audit logging is performed.
 	// Component should be set to "vmcp-server" to distinguish vMCP audit logs.
 	AuditConfig *audit.Config
+
+	// HealthMonitorConfig is the optional health monitoring configuration.
+	// If nil, health monitoring is disabled.
+	HealthMonitorConfig *health.MonitorConfig
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -156,6 +161,13 @@ type Server struct {
 	// Closed once the listener is created and serving.
 	ready     chan struct{}
 	readyOnce sync.Once
+
+	// healthMonitor performs periodic health checks on backends.
+	// Nil if health monitoring is disabled.
+	// Protected by healthMonitorMu: RLock for reads (getter methods, HTTP handlers),
+	// Lock for writes (initialization, disabling on start failure).
+	healthMonitor   *health.Monitor
+	healthMonitorMu sync.RWMutex
 }
 
 // New creates a new Virtual MCP Server instance.
@@ -174,9 +186,8 @@ func New(
 	if cfg.Host == "" {
 		cfg.Host = "127.0.0.1"
 	}
-	if cfg.Port == 0 {
-		cfg.Port = 4483
-	}
+	// Note: Port 0 means "let OS assign random port" - intentionally no default applied here.
+	// CLI provides default via flag (4483), so Port is only 0 in tests for dynamic port assignment.
 	if cfg.EndpointPath == "" {
 		cfg.EndpointPath = "/mcp"
 	}
@@ -272,6 +283,22 @@ func New(
 	// Create capability adapter (single source of truth for converting aggregator types to SDK types)
 	capabilityAdapter := adapter.NewCapabilityAdapter(handlerFactory)
 
+	// Create health monitor if configured
+	var healthMon *health.Monitor
+	if cfg.HealthMonitorConfig != nil {
+		healthMon, err = health.NewMonitor(backendClient, backends, *cfg.HealthMonitorConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create health monitor: %w", err)
+		}
+		logger.Infow("Health monitoring enabled",
+			"check_interval", cfg.HealthMonitorConfig.CheckInterval,
+			"unhealthy_threshold", cfg.HealthMonitorConfig.UnhealthyThreshold,
+			"timeout", cfg.HealthMonitorConfig.Timeout,
+			"degraded_threshold", cfg.HealthMonitorConfig.DegradedThreshold)
+	} else {
+		logger.Info("Health monitoring disabled")
+	}
+
 	// Create Server instance
 	srv := &Server{
 		config:            cfg,
@@ -286,6 +313,7 @@ func New(
 		workflowDefs:      workflowDefs,
 		workflowExecutors: workflowExecutors,
 		ready:             make(chan struct{}),
+		healthMonitor:     healthMon,
 	}
 
 	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
@@ -378,6 +406,8 @@ func New(
 }
 
 // Start starts the Virtual MCP Server and begins serving requests.
+//
+//nolint:gocyclo // Complexity from health monitoring and middleware setup is acceptable
 func (s *Server) Start(ctx context.Context) error {
 	// Create session adapter to expose ToolHive's session.Manager via SDK interface
 	// Sessions are ENTIRELY managed by ToolHive's session.Manager (storage, TTL, cleanup).
@@ -398,6 +428,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/ping", s.handleHealth)
 	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/api/backends/health", s.handleBackendHealth)
 
 	// Optional Prometheus metrics endpoint (unauthenticated)
 	if s.config.TelemetryProvider != nil {
@@ -484,7 +515,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	actualAddr := listener.Addr().String()
 	logger.Infof("Starting Virtual MCP Server at %s%s", actualAddr, s.config.EndpointPath)
-	logger.Infof("Health endpoints available at %s/health, %s/ping, and %s/status", actualAddr, actualAddr, actualAddr)
+	logger.Infof("Health endpoints available at %s/health, %s/ping, %s/status, and %s/api/backends/health",
+		actualAddr, actualAddr, actualAddr, actualAddr)
 
 	// Start server in background
 	errCh := make(chan error, 1)
@@ -498,6 +530,24 @@ func (s *Server) Start(ctx context.Context) error {
 	s.readyOnce.Do(func() {
 		close(s.ready)
 	})
+
+	// Start health monitor if configured
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	if healthMon != nil {
+		if err := healthMon.Start(ctx); err != nil {
+			// Log error and disable health monitoring - treat as if it wasn't configured
+			// This ensures getter methods correctly report monitoring as disabled
+			logger.Warnf("Failed to start health monitor, disabling health monitoring: %v", err)
+			s.healthMonitorMu.Lock()
+			s.healthMonitor = nil
+			s.healthMonitorMu.Unlock()
+		} else {
+			logger.Info("Health monitor started")
+		}
+	}
 
 	// Wait for either context cancellation or server error
 	select {
@@ -535,6 +585,17 @@ func (s *Server) Stop(ctx context.Context) error {
 	if s.sessionManager != nil {
 		if err := s.sessionManager.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to stop session manager: %w", err))
+		}
+	}
+
+	// Stop health monitor to clean up health check goroutines
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	if healthMon != nil {
+		if err := healthMon.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to stop health monitor: %w", err))
 		}
 	}
 
@@ -723,4 +784,105 @@ func validateAndCreateExecutors(
 	}
 
 	return validDefs, validExecutors, nil
+}
+
+// GetBackendHealthStatus returns the health status of a specific backend.
+// Returns error if health monitoring is disabled or backend not found.
+func (s *Server) GetBackendHealthStatus(backendID string) (vmcp.BackendHealthStatus, error) {
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	if healthMon == nil {
+		return vmcp.BackendUnknown, fmt.Errorf("health monitoring is disabled")
+	}
+	return healthMon.GetBackendStatus(backendID)
+}
+
+// GetBackendHealthState returns the full health state of a specific backend.
+// Returns error if health monitoring is disabled or backend not found.
+func (s *Server) GetBackendHealthState(backendID string) (*health.State, error) {
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	if healthMon == nil {
+		return nil, fmt.Errorf("health monitoring is disabled")
+	}
+	return healthMon.GetBackendState(backendID)
+}
+
+// GetAllBackendHealthStates returns the health states of all backends.
+// Returns empty map if health monitoring is disabled.
+func (s *Server) GetAllBackendHealthStates() map[string]*health.State {
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	if healthMon == nil {
+		return make(map[string]*health.State)
+	}
+	return healthMon.GetAllBackendStates()
+}
+
+// GetHealthSummary returns a summary of backend health across all backends.
+// Returns zero-valued summary if health monitoring is disabled.
+func (s *Server) GetHealthSummary() health.Summary {
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	if healthMon == nil {
+		return health.Summary{}
+	}
+	return healthMon.GetHealthSummary()
+}
+
+// BackendHealthResponse represents the health status response for all backends.
+type BackendHealthResponse struct {
+	// MonitoringEnabled indicates if health monitoring is active.
+	MonitoringEnabled bool `json:"monitoring_enabled"`
+
+	// Summary provides aggregate health statistics.
+	// Only populated if MonitoringEnabled is true.
+	Summary *health.Summary `json:"summary,omitempty"`
+
+	// Backends contains the detailed health state of each backend.
+	// Only populated if MonitoringEnabled is true.
+	Backends map[string]*health.State `json:"backends,omitempty"`
+}
+
+// handleBackendHealth handles /api/backends/health HTTP requests.
+// Returns 200 OK with backend health information.
+//
+// Security Note: This endpoint is unauthenticated and may expose backend topology.
+// Consider applying authentication middleware if operating in multi-tenant mode.
+func (s *Server) handleBackendHealth(w http.ResponseWriter, _ *http.Request) {
+	s.healthMonitorMu.RLock()
+	healthMon := s.healthMonitor
+	s.healthMonitorMu.RUnlock()
+
+	response := BackendHealthResponse{
+		MonitoringEnabled: healthMon != nil,
+	}
+
+	if healthMon != nil {
+		summary := s.GetHealthSummary()
+		response.Summary = &summary
+		response.Backends = s.GetAllBackendHealthStates()
+	}
+
+	// Encode response before writing headers to ensure encoding succeeds
+	data, err := json.Marshal(response)
+	if err != nil {
+		logger.Errorf("Failed to encode backend health response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(data); err != nil {
+		logger.Errorf("Failed to write backend health response: %v", err)
+	}
 }

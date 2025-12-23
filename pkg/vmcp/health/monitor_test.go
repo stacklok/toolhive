@@ -530,3 +530,221 @@ func TestSummary_String(t *testing.T) {
 	assert.Contains(t, str, "unknown=1")
 	assert.Contains(t, str, "unauthenticated=1")
 }
+
+// testContextKey is a custom type for context keys in tests
+type testContextKey string
+
+// TestWithHealthCheckMarker tests the WithHealthCheckMarker function
+func TestWithHealthCheckMarker(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                  string
+		setupCtx              func() context.Context
+		expectPanic           bool
+		originalAlreadyMarked bool // Set to true for idempotent test case
+	}{
+		{
+			name:                  "marks background context",
+			setupCtx:              func() context.Context { return context.Background() },
+			expectPanic:           false,
+			originalAlreadyMarked: false,
+		},
+		{
+			name:                  "marks TODO context",
+			setupCtx:              func() context.Context { return context.TODO() },
+			expectPanic:           false,
+			originalAlreadyMarked: false,
+		},
+		{
+			name: "marks context with existing values",
+			setupCtx: func() context.Context {
+				ctx := context.Background()
+				ctx = context.WithValue(ctx, testContextKey("custom-key"), "custom-value")
+				return ctx
+			},
+			expectPanic:           false,
+			originalAlreadyMarked: false,
+		},
+		{
+			name: "marks already marked context (idempotent)",
+			setupCtx: func() context.Context {
+				ctx := context.Background()
+				return WithHealthCheckMarker(ctx)
+			},
+			expectPanic:           false,
+			originalAlreadyMarked: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if tt.expectPanic {
+				assert.Panics(t, func() {
+					WithHealthCheckMarker(tt.setupCtx())
+				})
+				return
+			}
+
+			ctx := tt.setupCtx()
+			markedCtx := WithHealthCheckMarker(ctx)
+
+			// Verify marked context is not nil
+			assert.NotNil(t, markedCtx, "marked context should not be nil")
+
+			// Verify marked context can be checked
+			assert.True(t, IsHealthCheck(markedCtx), "marked context should be identified as health check")
+
+			// Verify original context state matches expectations
+			if tt.originalAlreadyMarked {
+				assert.True(t, IsHealthCheck(ctx), "original context should remain marked")
+			} else {
+				assert.False(t, IsHealthCheck(ctx), "original context should not be marked")
+			}
+		})
+	}
+}
+
+// TestIsHealthCheck tests the IsHealthCheck function
+func TestIsHealthCheck(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		setupCtx func() context.Context
+		expected bool
+	}{
+		{
+			name:     "returns true for marked context",
+			setupCtx: func() context.Context { return WithHealthCheckMarker(context.Background()) },
+			expected: true,
+		},
+		{
+			name:     "returns false for unmarked background context",
+			setupCtx: func() context.Context { return context.Background() },
+			expected: false,
+		},
+		{
+			name:     "returns false for unmarked TODO context",
+			setupCtx: func() context.Context { return context.TODO() },
+			expected: false,
+		},
+		{
+			name:     "returns false for nil context",
+			setupCtx: func() context.Context { return nil },
+			expected: false,
+		},
+		{
+			name: "returns false for context with different key",
+			setupCtx: func() context.Context {
+				return context.WithValue(context.Background(), testContextKey("other-key"), true)
+			},
+			expected: false,
+		},
+		{
+			name: "returns false for context with wrong value type",
+			setupCtx: func() context.Context {
+				return context.WithValue(context.Background(), healthCheckContextKey{}, "not-a-bool")
+			},
+			expected: false,
+		},
+		{
+			name: "returns false for context with false value",
+			setupCtx: func() context.Context {
+				return context.WithValue(context.Background(), healthCheckContextKey{}, false)
+			},
+			expected: false,
+		},
+		{
+			name: "returns true when nested in parent context",
+			setupCtx: func() context.Context {
+				markedCtx := WithHealthCheckMarker(context.Background())
+				return context.WithValue(markedCtx, testContextKey("custom-key"), "value")
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := tt.setupCtx()
+			result := IsHealthCheck(ctx)
+			assert.Equal(t, tt.expected, result, "IsHealthCheck returned unexpected value")
+		})
+	}
+}
+
+// TestHealthCheckMarker_Integration tests the integration of marker functions
+func TestHealthCheckMarker_Integration(t *testing.T) {
+	t.Parallel()
+
+	t.Run("marker persists through context chain", func(t *testing.T) {
+		t.Parallel()
+
+		// Create base context
+		baseCtx := context.Background()
+		assert.False(t, IsHealthCheck(baseCtx))
+
+		// Mark as health check
+		healthCtx := WithHealthCheckMarker(baseCtx)
+		assert.True(t, IsHealthCheck(healthCtx))
+
+		// Add more values to context
+		ctx1 := context.WithValue(healthCtx, testContextKey("key1"), "value1")
+		assert.True(t, IsHealthCheck(ctx1), "marker should persist through WithValue")
+
+		ctx2 := context.WithValue(ctx1, testContextKey("key2"), "value2")
+		assert.True(t, IsHealthCheck(ctx2), "marker should persist through multiple WithValue")
+	})
+
+	t.Run("marker persists through context with cancel", func(t *testing.T) {
+		t.Parallel()
+
+		healthCtx := WithHealthCheckMarker(context.Background())
+		cancelCtx, cancel := context.WithCancel(healthCtx)
+		defer cancel()
+
+		assert.True(t, IsHealthCheck(cancelCtx), "marker should persist through WithCancel")
+	})
+
+	t.Run("marker persists through context with timeout", func(t *testing.T) {
+		t.Parallel()
+
+		healthCtx := WithHealthCheckMarker(context.Background())
+		timeoutCtx, cancel := context.WithTimeout(healthCtx, time.Second)
+		defer cancel()
+
+		assert.True(t, IsHealthCheck(timeoutCtx), "marker should persist through WithTimeout")
+	})
+
+	t.Run("multiple markers don't interfere", func(t *testing.T) {
+		t.Parallel()
+
+		// Mark same context twice
+		ctx1 := WithHealthCheckMarker(context.Background())
+		ctx2 := WithHealthCheckMarker(ctx1)
+
+		assert.True(t, IsHealthCheck(ctx1))
+		assert.True(t, IsHealthCheck(ctx2))
+	})
+
+	t.Run("marker is request-scoped and doesn't leak", func(t *testing.T) {
+		t.Parallel()
+
+		// Create two independent contexts
+		baseCtx := context.Background()
+
+		// Mark one but not the other
+		markedCtx := WithHealthCheckMarker(baseCtx)
+		unmarkedCtx := context.WithValue(baseCtx, testContextKey("some-key"), "some-value")
+
+		// Verify independence
+		assert.True(t, IsHealthCheck(markedCtx), "marked context should be health check")
+		assert.False(t, IsHealthCheck(unmarkedCtx), "unmarked context should not be health check")
+		assert.False(t, IsHealthCheck(baseCtx), "base context should not be health check")
+	})
+}

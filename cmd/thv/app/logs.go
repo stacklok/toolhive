@@ -30,7 +30,20 @@ func logsCommand() *cobra.Command {
 		Long: `Output the logs of an MCP server managed by ToolHive, or manage log files.
 
 By default, this command shows the logs from the MCP server container.
-Use --proxy to view the logs from the ToolHive proxy process instead.`,
+Use --proxy to view the logs from the ToolHive proxy process instead.
+
+Examples:
+  # View logs of an MCP server
+  thv logs filesystem
+
+  # Follow logs in real-time
+  thv logs filesystem --follow
+
+  # View proxy logs instead of container logs
+  thv logs filesystem --proxy
+
+  # Clean up old log files
+  thv logs prune`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Check if the argument is "prune"

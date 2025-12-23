@@ -277,13 +277,7 @@ func New(
 	// This enables type-safe access to routing tables while maintaining session lifecycle management
 	sessionManager := transportsession.NewManager(cfg.SessionTTL, vmcpsession.VMCPSessionFactory())
 
-	// Create handler factory (used by adapter and for future dynamic registration)
-	handlerFactory := adapter.NewDefaultHandlerFactory(rt, backendClient)
-
-	// Create capability adapter (single source of truth for converting aggregator types to SDK types)
-	capabilityAdapter := adapter.NewCapabilityAdapter(handlerFactory)
-
-	// Create health monitor if configured
+	// Create health monitor if configured (created before handler factory for runtime health checks)
 	var healthMon *health.Monitor
 	if cfg.HealthMonitorConfig != nil {
 		healthMon, err = health.NewMonitor(backendClient, backends, *cfg.HealthMonitorConfig)
@@ -298,6 +292,13 @@ func New(
 	} else {
 		logger.Info("Health monitoring disabled")
 	}
+
+	// Create handler factory with health monitor for runtime health checks
+	// Health monitor is optional (nil = no runtime health checking)
+	handlerFactory := adapter.NewDefaultHandlerFactory(rt, backendClient, healthMon)
+
+	// Create capability adapter (single source of truth for converting aggregator types to SDK types)
+	capabilityAdapter := adapter.NewCapabilityAdapter(handlerFactory)
 
 	// Create Server instance
 	srv := &Server{
@@ -466,8 +467,13 @@ func (s *Server) Start(ctx context.Context) error {
 	// Apply discovery middleware (runs after audit/auth middleware)
 	// Discovery middleware performs per-request capability aggregation with user context
 	// Pass sessionManager to enable session-based capability retrieval for subsequent requests
-	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backends, s.sessionManager)(mcpHandler)
-	logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
+	// Pass healthMonitor to filter unhealthy backends from capabilities (nil = no filtering)
+	mcpHandler = discovery.Middleware(s.discoveryMgr, s.backends, s.sessionManager, s.healthMonitor)(mcpHandler)
+	if s.healthMonitor != nil {
+		logger.Info("Discovery middleware enabled with health-based backend filtering")
+	} else {
+		logger.Info("Discovery middleware enabled for lazy per-user capability discovery")
+	}
 
 	// Apply audit middleware if configured (runs after auth, before discovery)
 	if s.config.AuditConfig != nil {

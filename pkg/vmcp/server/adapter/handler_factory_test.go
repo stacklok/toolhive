@@ -28,7 +28,7 @@ func TestNewDefaultHandlerFactory(t *testing.T) {
 	mockRouter := routermocks.NewMockRouter(ctrl)
 	mockClient := vmcpmocks.NewMockBackendClient(ctrl)
 
-	factory := adapter.NewDefaultHandlerFactory(mockRouter, mockClient)
+	factory := adapter.NewDefaultHandlerFactory(mockRouter, mockClient, nil)
 
 	assert.NotNil(t, factory, "factory should not be nil")
 }
@@ -292,7 +292,7 @@ func TestDefaultHandlerFactory_CreateToolHandler(t *testing.T) {
 
 			tt.setupMocks(mockRouter, mockClient)
 
-			factory := adapter.NewDefaultHandlerFactory(mockRouter, mockClient)
+			factory := adapter.NewDefaultHandlerFactory(mockRouter, mockClient, nil)
 			handler := factory.CreateToolHandler(tt.toolName)
 
 			result, err := handler(context.Background(), tt.request)
@@ -702,7 +702,7 @@ func TestDefaultHandlerFactory_CreateResourceHandler(t *testing.T) {
 
 			tt.setupMocks(mockRouter, mockClient)
 
-			factory := adapter.NewDefaultHandlerFactory(mockRouter, mockClient)
+			factory := adapter.NewDefaultHandlerFactory(mockRouter, mockClient, nil)
 			handler := factory.CreateResourceHandler(tt.uri)
 
 			ctx := tt.setupCtx()
@@ -959,7 +959,7 @@ func TestDefaultHandlerFactory_CreatePromptHandler(t *testing.T) {
 
 			tt.setupMocks(mockRouter, mockClient)
 
-			factory := adapter.NewDefaultHandlerFactory(mockRouter, mockClient)
+			factory := adapter.NewDefaultHandlerFactory(mockRouter, mockClient, nil)
 			handler := factory.CreatePromptHandler(tt.promptName)
 
 			result, err := handler(context.Background(), tt.request)
@@ -1043,7 +1043,7 @@ func TestDefaultHandlerFactory_CreateCompositeToolHandler(t *testing.T) {
 			mockWorkflow := &mockWorkflowExecutor{}
 			tt.setupMock(mockWorkflow)
 
-			factory := adapter.NewDefaultHandlerFactory(mockRouter, mockClient)
+			factory := adapter.NewDefaultHandlerFactory(mockRouter, mockClient, nil)
 			handler := factory.CreateCompositeToolHandler(tt.toolName, mockWorkflow)
 
 			result, err := handler(context.Background(), tt.request)
@@ -1071,4 +1071,128 @@ func (m *mockWorkflowExecutor) ExecuteWorkflow(
 		return m.executeFunc(ctx, params)
 	}
 	return nil, errors.New("not implemented")
+}
+
+// TestCreateToolHandler_RuntimeHealthCheck tests runtime health checking before tool execution.
+func TestCreateToolHandler_RuntimeHealthCheck(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockRouter := routermocks.NewMockRouter(ctrl)
+	mockClient := vmcpmocks.NewMockBackendClient(ctrl)
+
+	// Create mock health provider
+	mockHealthProvider := &mockHealthProvider{
+		statuses: make(map[string]vmcp.BackendHealthStatus),
+	}
+
+	// Test backend is initially unhealthy
+	mockHealthProvider.setStatus("backend1", vmcp.BackendUnhealthy)
+
+	factory := adapter.NewDefaultHandlerFactory(mockRouter, mockClient, mockHealthProvider)
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:   "backend1",
+		WorkloadName: "Backend 1",
+		BaseURL:      "http://backend1:8080",
+	}
+
+	// Mock router to return the target
+	mockRouter.EXPECT().
+		RouteTool(gomock.Any(), "test_tool").
+		Return(target, nil)
+
+	// Backend client should NOT be called since backend is unhealthy
+	// If it gets called, the test will fail due to unexpected call
+
+	handler := factory.CreateToolHandler("test_tool")
+
+	result, err := handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "test_tool",
+			Arguments: map[string]any{"arg1": "value1"},
+		},
+	})
+
+	// Should return error result (not nil error) since tool exists but backend unhealthy
+	require.NoError(t, err, "handler should not return error")
+	require.NotNil(t, result, "result should not be nil")
+	assert.True(t, result.IsError, "result should be error")
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "currently unavailable",
+		"error message should mention unavailability")
+}
+
+// TestCreateToolHandler_RuntimeHealthCheck_HealthyBackend tests successful execution when backend is healthy.
+func TestCreateToolHandler_RuntimeHealthCheck_HealthyBackend(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockRouter := routermocks.NewMockRouter(ctrl)
+	mockClient := vmcpmocks.NewMockBackendClient(ctrl)
+
+	// Create mock health provider
+	mockHealthProvider := &mockHealthProvider{
+		statuses: make(map[string]vmcp.BackendHealthStatus),
+	}
+
+	// Backend is healthy
+	mockHealthProvider.setStatus("backend1", vmcp.BackendHealthy)
+
+	factory := adapter.NewDefaultHandlerFactory(mockRouter, mockClient, mockHealthProvider)
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:   "backend1",
+		WorkloadName: "Backend 1",
+		BaseURL:      "http://backend1:8080",
+	}
+
+	mockRouter.EXPECT().
+		RouteTool(gomock.Any(), "test_tool").
+		Return(target, nil)
+
+	// Backend client SHOULD be called since backend is healthy
+	mockClient.EXPECT().
+		CallTool(gomock.Any(), target, "test_tool", gomock.Any()).
+		Return(map[string]any{"result": "success"}, nil)
+
+	handler := factory.CreateToolHandler("test_tool")
+
+	result, err := handler(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name:      "test_tool",
+			Arguments: map[string]any{"arg1": "value1"},
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsError, "result should not be error when backend is healthy")
+}
+
+// mockHealthProvider is a test implementation of HealthStatusProvider
+type mockHealthProvider struct {
+	statuses map[string]vmcp.BackendHealthStatus
+}
+
+func (m *mockHealthProvider) GetBackendStatus(backendID string) (vmcp.BackendHealthStatus, error) {
+	if status, ok := m.statuses[backendID]; ok {
+		return status, nil
+	}
+	return vmcp.BackendUnknown, errors.New("backend not found")
+}
+
+func (m *mockHealthProvider) IsBackendHealthy(backendID string) bool {
+	status, err := m.GetBackendStatus(backendID)
+	if err != nil {
+		return false
+	}
+	return status == vmcp.BackendHealthy || status == vmcp.BackendDegraded
+}
+
+func (m *mockHealthProvider) setStatus(backendID string, status vmcp.BackendHealthStatus) {
+	m.statuses[backendID] = status
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -14,7 +15,7 @@ import (
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
-var _ = Describe("VirtualMCPServer Circuit Breaker", Ordered, func() {
+var _ = Describe("VirtualMCPServer Circuit Breaker and Health Filtering", Ordered, func() {
 	var (
 		testNamespace           = "default"
 		mcpGroupName            = "test-circuit-breaker-group"
@@ -27,6 +28,8 @@ var _ = Describe("VirtualMCPServer Circuit Breaker", Ordered, func() {
 		unhealthyThreshold      = 10    // Higher than circuit breaker threshold
 		circuitBreakerThreshold = 3     // Open circuit after 3 failures
 		circuitBreakerTimeout   = "30s" // Recover after 30 seconds
+		vmcpNodePort            int32
+		mcpClient               *InitializedMCPClient
 	)
 
 	BeforeAll(func() {
@@ -125,9 +128,22 @@ var _ = Describe("VirtualMCPServer Circuit Breaker", Ordered, func() {
 
 		By("Waiting for VirtualMCPServer to be deployed")
 		WaitForVirtualMCPServerDeployed(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+		By("Getting NodePort for VirtualMCPServer")
+		vmcpNodePort = GetVMCPNodePort(ctx, k8sClient, vmcpServerName, testNamespace, timeout, pollingInterval)
+
+		By(fmt.Sprintf("Creating MCP client connected to http://localhost:%d", vmcpNodePort))
+		var err error
+		mcpClient, err = CreateInitializedMCPClient(vmcpNodePort, "circuit-breaker-test-client", 30*time.Second)
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	AfterAll(func() {
+		By("Closing MCP client")
+		if mcpClient != nil {
+			mcpClient.Close()
+		}
+
 		By("Cleaning up VirtualMCPServer")
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
 			ObjectMeta: metav1.ObjectMeta{
@@ -213,6 +229,81 @@ var _ = Describe("VirtualMCPServer Circuit Breaker", Ordered, func() {
 		}, circuitOpenTimeout, pollingInterval).Should(Succeed(), "Circuit should open for failing backend")
 	})
 
+	It("should reject tool calls to unhealthy backend with clear error message", func() {
+		By("Listing tools to find a tool from the failing backend")
+		listRequest := mcp.ListToolsRequest{}
+		tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Find a tool from the failing backend (if any - may not be discoverable if already unhealthy)
+		var failingBackendTool string
+		for _, tool := range tools.Tools {
+			// The failing backend has TOOL_PREFIX=failing, so tools should have "failing" in name
+			if strings.Contains(tool.Name, "failing") {
+				failingBackendTool = tool.Name
+				break
+			}
+		}
+
+		// If no tools found (backend already filtered out), that's also acceptable
+		// since it means Layer 1 filtering worked. Let's verify the backend is unhealthy.
+		if failingBackendTool == "" {
+			By("Failing backend tools not in capability list (filtered at discovery)")
+			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			}, vmcpServer)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify the failing backend exists but is unhealthy
+			failingBackendFound := false
+			for _, backend := range vmcpServer.Status.DiscoveredBackends {
+				if backend.Name == failingBackend {
+					failingBackendFound = true
+					Expect(backend.Status).To(Or(
+						Equal(mcpv1alpha1.BackendStatusUnavailable),
+						Equal(mcpv1alpha1.BackendStatusDegraded),
+					), "Failing backend should be unavailable/degraded")
+					break
+				}
+			}
+			Expect(failingBackendFound).To(BeTrue(), "Failing backend should be in discovered backends")
+			GinkgoWriter.Printf("✓ Failing backend correctly excluded from capabilities (Layer 1 filtering)\n")
+			return
+		}
+
+		By(fmt.Sprintf("Attempting to call tool from unhealthy backend: %s", failingBackendTool))
+		callRequest := mcp.CallToolRequest{}
+		callRequest.Params.Name = failingBackendTool
+		callRequest.Params.Arguments = map[string]any{
+			"input": "test-input",
+		}
+
+		result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
+		Expect(err).ToNot(HaveOccurred(), "MCP call should not return error")
+		Expect(result).ToNot(BeNil())
+
+		// Verify the result indicates the backend is unavailable (Layer 2 runtime check)
+		Expect(result.IsError).To(BeTrue(), "Tool call should return error")
+		Expect(result.Content).ToNot(BeEmpty())
+
+		// Extract error message
+		var errorMsg string
+		for _, content := range result.Content {
+			if textContent, ok := content.(mcp.TextContent); ok {
+				errorMsg = textContent.Text
+				break
+			}
+		}
+
+		// Verify error message indicates backend is unavailable
+		Expect(errorMsg).To(ContainSubstring("currently unavailable"),
+			"Error message should indicate backend is unavailable")
+
+		GinkgoWriter.Printf("✓ Tool call correctly rejected with error (Layer 2 runtime check): %s\n", errorMsg)
+	})
+
 	It("should keep healthy backend circuit closed and functional", func() {
 		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
 		err := k8sClient.Get(ctx, types.NamespacedName{
@@ -231,6 +322,37 @@ var _ = Describe("VirtualMCPServer Circuit Breaker", Ordered, func() {
 			}
 		}
 		Expect(healthyFound).To(BeTrue(), "Healthy backend should be present")
+
+		By("Verifying tool calls to healthy backend succeed")
+		listRequest := mcp.ListToolsRequest{}
+		tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Find a tool from the healthy backend
+		var healthyBackendTool string
+		for _, tool := range tools.Tools {
+			// The healthy backend has TOOL_PREFIX=healthy, so tools should have "healthy" in name
+			if strings.Contains(tool.Name, "healthy") {
+				healthyBackendTool = tool.Name
+				break
+			}
+		}
+		Expect(healthyBackendTool).ToNot(BeEmpty(), "Should find a tool from healthy backend")
+
+		By(fmt.Sprintf("Calling tool from healthy backend: %s", healthyBackendTool))
+		callRequest := mcp.CallToolRequest{}
+		callRequest.Params.Name = healthyBackendTool
+		callRequest.Params.Arguments = map[string]any{
+			"input": "test-input",
+		}
+
+		result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
+		Expect(err).ToNot(HaveOccurred(), "Should successfully call tool from healthy backend")
+		Expect(result).ToNot(BeNil())
+		Expect(result.Content).ToNot(BeEmpty())
+		Expect(result.IsError).To(BeFalse(), "Tool call should succeed on healthy backend")
+
+		GinkgoWriter.Printf("✓ Tool call to healthy backend succeeded\n")
 	})
 
 	It("should fast-fail health checks when circuit is open", func() {
@@ -395,6 +517,36 @@ var _ = Describe("VirtualMCPServer Circuit Breaker", Ordered, func() {
 
 		Expect(readyBackends).To(Equal(2), "Both backends should be healthy after recovery")
 		Expect(vmcpServer.Status.BackendCount).To(Equal(2), "BackendCount should be 2")
+
+		By("Verifying tool calls to recovered backend succeed")
+		listRequest := mcp.ListToolsRequest{}
+		tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Find a tool from the recovered backend
+		var recoveredBackendTool string
+		for _, tool := range tools.Tools {
+			if strings.Contains(tool.Name, "failing") {
+				recoveredBackendTool = tool.Name
+				break
+			}
+		}
+		Expect(recoveredBackendTool).ToNot(BeEmpty(), "Should find a tool from recovered backend")
+
+		By(fmt.Sprintf("Calling tool from recovered backend: %s", recoveredBackendTool))
+		callRequest := mcp.CallToolRequest{}
+		callRequest.Params.Name = recoveredBackendTool
+		callRequest.Params.Arguments = map[string]any{
+			"input": "test-input",
+		}
+
+		result, err := mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
+		Expect(err).ToNot(HaveOccurred(), "Should successfully call tool from recovered backend")
+		Expect(result).ToNot(BeNil())
+		Expect(result.Content).ToNot(BeEmpty())
+		Expect(result.IsError).To(BeFalse(), "Tool call should succeed after recovery")
+
+		GinkgoWriter.Printf("✓ Tool calls to recovered backend succeed\n")
 	})
 })
 

@@ -127,20 +127,25 @@ operational:
       github: 45s
       jira: 30s
 
-  # Failure handling
+  # Failure handling with health monitoring
   failure_handling:
-    # Backend unavailability
-    health_check_interval: 30s
-    unhealthy_threshold: 3  # Mark unhealthy after N failures
+    # Health monitoring - periodic checks and automatic filtering
+    # When enabled, unhealthy backends are automatically excluded from capabilities
+    # Clients only see tools/resources/prompts from healthy/degraded backends
+    health_check_interval: 30s  # Check backends every 30s
+    unhealthy_threshold: 3       # Mark unhealthy after 3 consecutive failures
 
-    # Partial failures
+    # Partial failures - behavior when some backends are unhealthy
     partial_failure_mode: fail  # fail | best_effort
+    # - fail: Strict mode (errors if any backend unavailable)
+    # - best_effort: Resilient mode (continues with available backends)
 
-    # Circuit breaker
+    # Circuit breaker - prevents overwhelming failing backends
+    # Opens circuit after repeated failures, fast-fails health checks
     circuit_breaker:
       enabled: true
-      failure_threshold: 5
-      timeout: 60s
+      failure_threshold: 5  # Open circuit after 5 failures
+      timeout: 60s          # Wait 60s before testing recovery
 
 # ===== COMPOSITE TOOLS (Phase 2 - Future Feature) =====
 # Composite tools enable multi-step workflows with elicitation support

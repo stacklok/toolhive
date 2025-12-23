@@ -23,6 +23,7 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
@@ -37,11 +38,15 @@ const (
 // Initialize requests (no session ID): discovers capabilities and stores in context.
 // Subsequent requests: retrieves routing table from VMCPSession and reconstructs context.
 //
+// When healthProvider is provided, backends are filtered based on health status before
+// capability discovery. Unhealthy and unauthenticated backends are excluded.
+//
 // Returns HTTP 504 for timeouts, HTTP 503 for discovery errors.
 func Middleware(
 	manager Manager,
 	backends []vmcp.Backend,
 	sessionManager *transportsession.Manager,
+	healthProvider health.StatusProvider,
 ) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +56,7 @@ func Middleware(
 			var err error
 			if sessionID == "" {
 				// Initialize request: discover and cache capabilities in session.
-				ctx, err = handleInitializeRequest(ctx, r, manager, backends)
+				ctx, err = handleInitializeRequest(ctx, r, manager, backends, healthProvider)
 			} else {
 				// Subsequent request: retrieve cached capabilities from session.
 				ctx, err = handleSubsequentRequest(ctx, r, sessionID, sessionManager)
@@ -68,12 +73,14 @@ func Middleware(
 }
 
 // handleInitializeRequest performs capability discovery for initialize requests.
+// Filters backends based on health status before discovery if healthProvider is provided.
 // Returns updated context with discovered capabilities or an error.
 func handleInitializeRequest(
 	ctx context.Context,
 	r *http.Request,
 	manager Manager,
 	backends []vmcp.Backend,
+	healthProvider health.StatusProvider,
 ) (context.Context, error) {
 	discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
@@ -83,7 +90,17 @@ func handleInitializeRequest(
 		"path", r.URL.Path,
 		"backend_count", len(backends))
 
-	capabilities, err := manager.Discover(discoveryCtx, backends)
+	// Filter backends based on health status
+	filteredBackends := FilterHealthyBackends(backends, healthProvider)
+	if len(filteredBackends) < len(backends) {
+		logger.Infow("health filtering applied",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"original_count", len(backends),
+			"filtered_count", len(filteredBackends))
+	}
+
+	capabilities, err := manager.Discover(discoveryCtx, filteredBackends)
 	if err != nil {
 		logger.Errorw("capability discovery failed",
 			"error", err,

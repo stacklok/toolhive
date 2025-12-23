@@ -10,6 +10,30 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
+// StatusProvider provides health status information for backends.
+// This interface allows health checking without tight coupling to the Monitor implementation.
+// The Monitor implements this interface.
+type StatusProvider interface {
+	// GetBackendStatus returns the current health status for a backend.
+	// Returns (status, error). Error is returned if the backend is not found.
+	GetBackendStatus(backendID string) (vmcp.BackendHealthStatus, error)
+
+	// IsBackendHealthy returns true if the backend is currently healthy.
+	// Returns false if the backend is not found or is unhealthy.
+	IsBackendHealthy(backendID string) bool
+}
+
+// IsBackendUsable returns true if the backend can handle requests.
+// This is a helper function that checks if a backend status allows execution.
+// - Healthy and Degraded backends can handle requests (degraded = slow but functional)
+// - Unknown backends are given a chance (health not yet determined)
+// - Unhealthy and Unauthenticated backends cannot handle requests
+func IsBackendUsable(status vmcp.BackendHealthStatus) bool {
+	return status == vmcp.BackendHealthy ||
+		status == vmcp.BackendDegraded ||
+		status == vmcp.BackendUnknown
+}
+
 // healthCheckContextKey is a marker for health check requests.
 type healthCheckContextKey struct{}
 

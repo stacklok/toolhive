@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
 
@@ -56,16 +57,52 @@ type WorkflowResult struct {
 
 // DefaultHandlerFactory creates MCP request handlers that route to backend workloads.
 type DefaultHandlerFactory struct {
-	router        router.Router
-	backendClient vmcp.BackendClient
+	router         router.Router
+	backendClient  vmcp.BackendClient
+	healthProvider health.StatusProvider
 }
 
 // NewDefaultHandlerFactory creates a new default handler factory.
-func NewDefaultHandlerFactory(rt router.Router, backendClient vmcp.BackendClient) *DefaultHandlerFactory {
+// healthProvider is optional (nil = no runtime health checking).
+func NewDefaultHandlerFactory(
+	rt router.Router,
+	backendClient vmcp.BackendClient,
+	healthProvider health.StatusProvider,
+) *DefaultHandlerFactory {
 	return &DefaultHandlerFactory{
-		router:        rt,
-		backendClient: backendClient,
+		router:         rt,
+		backendClient:  backendClient,
+		healthProvider: healthProvider,
 	}
+}
+
+// checkBackendHealth verifies if a backend can handle requests.
+// Returns error with user-friendly message if backend is unavailable.
+// Returns nil if backend is healthy, degraded, unknown, or health checking is disabled.
+func (f *DefaultHandlerFactory) checkBackendHealth(
+	target *vmcp.BackendTarget,
+	requestType string, // "tool", "resource", "prompt"
+	requestName string,
+) error {
+	if f.healthProvider == nil {
+		return nil // Health checking disabled
+	}
+
+	status, err := f.healthProvider.GetBackendStatus(target.WorkloadID)
+	if err != nil {
+		// Backend not found in health monitor - allow execution
+		return nil
+	}
+
+	if !health.IsBackendUsable(status) {
+		// Backend cannot handle requests (Unhealthy or Unauthenticated)
+		logger.Warnf("Rejecting %s request to unhealthy backend: %s=%s, backend=%s, status=%s",
+			requestType, requestType, requestName, target.WorkloadName, status)
+		return fmt.Errorf("backend %s is currently unavailable (status: %s)",
+			target.WorkloadName, status)
+	}
+
+	return nil
 }
 
 // CreateToolHandler creates a tool handler that routes to the appropriate backend.
@@ -84,6 +121,12 @@ func (f *DefaultHandlerFactory) CreateToolHandler(
 			}
 			logger.Warnf("Failed to route tool %s: %v", toolName, err)
 			return mcp.NewToolResultError(fmt.Sprintf("Routing error: %v", err)), nil
+		}
+
+		// Runtime health check: Verify backend is healthy before executing
+		// This provides protection against backends that became unhealthy after session initialization
+		if err := f.checkBackendHealth(target, "tool", toolName); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
 
 		args, ok := request.Params.Arguments.(map[string]any)
@@ -136,6 +179,11 @@ func (f *DefaultHandlerFactory) CreateResourceHandler(uri string) func(
 			return nil, fmt.Errorf("routing error: %w", err)
 		}
 
+		// Runtime health check: Verify backend is healthy before executing
+		if err := f.checkBackendHealth(target, "resource", uri); err != nil {
+			return nil, err
+		}
+
 		backendURI := target.GetBackendCapabilityName(uri)
 
 		data, err := f.backendClient.ReadResource(ctx, target, backendURI)
@@ -185,6 +233,11 @@ func (f *DefaultHandlerFactory) CreatePromptHandler(promptName string) func(
 			}
 			logger.Warnf("Failed to route prompt %s: %v", promptName, err)
 			return nil, fmt.Errorf("routing error: %w", err)
+		}
+
+		// Runtime health check: Verify backend is healthy before executing
+		if err := f.checkBackendHealth(target, "prompt", promptName); err != nil {
+			return nil, err
 		}
 
 		args := make(map[string]any)

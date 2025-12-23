@@ -242,6 +242,11 @@ type OperationalConfig struct {
 
 	// FailureHandling configures failure handling.
 	FailureHandling *FailureHandlingConfig `json:"failure_handling,omitempty" yaml:"failure_handling,omitempty"`
+
+	// CapabilityCacheTTL is the time-to-live for cached capability entries.
+	// Defaults to 5 minutes if not specified or zero.
+	// Shorter values (e.g., 10s) can be used for testing to see capability updates sooner.
+	CapabilityCacheTTL Duration `json:"capability_cache_ttl,omitempty" yaml:"capability_cache_ttl,omitempty"`
 }
 
 // TimeoutConfig configures timeouts.

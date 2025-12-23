@@ -341,7 +341,7 @@ func TestIsProviderInitialized(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := isProviderInitialized(tt.provider)
+			result := health.IsProviderInitialized(tt.provider)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

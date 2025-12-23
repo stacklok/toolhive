@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -86,7 +85,7 @@ func (f *DefaultHandlerFactory) checkBackendHealth(
 	requestName string,
 ) error {
 	// Check both interface nil and typed nil (Go interface semantics)
-	if f.healthProvider == nil || !isHealthProviderInitialized(f.healthProvider) {
+	if !health.IsProviderInitialized(f.healthProvider) {
 		return nil // Health checking disabled
 	}
 
@@ -330,11 +329,4 @@ func (*DefaultHandlerFactory) CreateCompositeToolHandler(
 		logger.Debugf("Composite tool %s completed successfully", toolName)
 		return mcp.NewToolResultStructuredOnly(result.Output), nil
 	}
-}
-
-// isHealthProviderInitialized checks if the health status provider is properly initialized.
-// This handles Go's interface nil semantics where an interface can be "not nil"
-// even when its underlying value is nil (e.g., (*health.Monitor)(nil)).
-func isHealthProviderInitialized(provider health.StatusProvider) bool {
-	return provider != nil && !reflect.ValueOf(provider).IsNil()
 }

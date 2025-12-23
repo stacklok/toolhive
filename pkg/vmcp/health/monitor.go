@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -32,6 +33,16 @@ func IsBackendUsable(status vmcp.BackendHealthStatus) bool {
 	return status == vmcp.BackendHealthy ||
 		status == vmcp.BackendDegraded ||
 		status == vmcp.BackendUnknown
+}
+
+// IsProviderInitialized checks if a StatusProvider is properly initialized.
+// This handles Go's interface nil semantics where an interface can be "not nil"
+// even when its underlying value is nil (e.g., (*Monitor)(nil)).
+//
+// Returns true if the provider is initialized and can be safely called.
+// Returns false if the provider is nil or contains a nil pointer.
+func IsProviderInitialized(provider StatusProvider) bool {
+	return provider != nil && !reflect.ValueOf(provider).IsNil()
 }
 
 // healthCheckContextKey is a marker for health check requests.

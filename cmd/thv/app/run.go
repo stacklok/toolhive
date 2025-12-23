@@ -113,7 +113,9 @@ Examples:
   thv run filesystem --group production
 
   # Run a remote GitHub MCP server with authentication
-  thv run github-remote --remote-auth --remote-auth-client-id <oauth-client-id> --remote-auth-client-secret <oauth-client-secret>`,
+  thv run github-remote --remote-auth \
+  	--remote-auth-client-id <oauth-client-id> \
+	--remote-auth-client-secret <oauth-client-secret>`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		// If --from-config is provided, no args are required
 		if runFlags.FromConfig != "" {

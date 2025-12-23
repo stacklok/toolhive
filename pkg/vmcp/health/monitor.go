@@ -3,12 +3,47 @@ package health
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
+
+// StatusProvider provides health status information for backends.
+// This interface allows health checking without tight coupling to the Monitor implementation.
+// The Monitor implements this interface.
+type StatusProvider interface {
+	// GetBackendStatus returns the current health status for a backend.
+	// Returns (status, error). Error is returned if the backend is not found.
+	GetBackendStatus(backendID string) (vmcp.BackendHealthStatus, error)
+
+	// IsBackendHealthy returns true if the backend is currently healthy.
+	// Returns false if the backend is not found or is unhealthy.
+	IsBackendHealthy(backendID string) bool
+}
+
+// IsBackendUsable returns true if the backend can handle requests.
+// This is a helper function that checks if a backend status allows execution.
+// - Healthy and Degraded backends can handle requests (degraded = slow but functional)
+// - Unknown backends are given a chance (health not yet determined)
+// - Unhealthy and Unauthenticated backends cannot handle requests
+func IsBackendUsable(status vmcp.BackendHealthStatus) bool {
+	return status == vmcp.BackendHealthy ||
+		status == vmcp.BackendDegraded ||
+		status == vmcp.BackendUnknown
+}
+
+// IsProviderInitialized checks if a StatusProvider is properly initialized.
+// This handles Go's interface nil semantics where an interface can be "not nil"
+// even when its underlying value is nil (e.g., (*Monitor)(nil)).
+//
+// Returns true if the provider is initialized and can be safely called.
+// Returns false if the provider is nil or contains a nil pointer.
+func IsProviderInitialized(provider StatusProvider) bool {
+	return provider != nil && !reflect.ValueOf(provider).IsNil()
+}
 
 // healthCheckContextKey is a marker for health check requests.
 type healthCheckContextKey struct{}

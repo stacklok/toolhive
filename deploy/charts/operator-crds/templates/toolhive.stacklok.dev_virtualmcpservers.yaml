@@ -647,6 +647,13 @@ spec:
                 description: Operational defines operational settings like timeouts
                   and health checks
                 properties:
+                  capabilityCacheTTL:
+                    default: 5m
+                    description: |-
+                      CapabilityCacheTTL is the time-to-live for cached capability entries.
+                      Defaults to 5 minutes if not specified.
+                      Shorter values (e.g., "10s") can be used for testing to see capability updates sooner.
+                    type: string
                   failureHandling:
                     description: FailureHandling configures failure handling behavior
                     properties:

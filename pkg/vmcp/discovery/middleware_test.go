@@ -86,7 +86,7 @@ func TestMiddleware_InitializeRequest(t *testing.T) {
 	})
 
 	// Wrap handler with middleware
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Create initialize request (no session ID header)
@@ -155,7 +155,7 @@ func TestMiddleware_SubsequentRequest_SkipsDiscovery(t *testing.T) {
 	require.NoError(t, err, "failed to add session")
 
 	// Wrap handler with middleware
-	middleware := Middleware(mockMgr, backends, sessionMgr)
+	middleware := Middleware(mockMgr, backends, sessionMgr, nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Create subsequent request (with session ID header)
@@ -195,7 +195,7 @@ func TestMiddleware_DiscoveryTimeout(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -235,7 +235,7 @@ func TestMiddleware_DiscoveryFailure(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -335,7 +335,7 @@ func TestMiddleware_CapabilitiesInContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -399,7 +399,7 @@ func TestMiddleware_PreservesUserContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Create initialize request with user context (as auth middleware would)
@@ -451,7 +451,7 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	middleware := Middleware(mockMgr, backends, createTestSessionManager(t))
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil)
 	wrappedHandler := middleware(testHandler)
 
 	// Initialize request (no session ID) - discovery should happen
@@ -462,4 +462,189 @@ func TestMiddleware_ContextTimeoutHandling(t *testing.T) {
 
 	// Verify timeout response (should be 504 Gateway Timeout)
 	assert.Equal(t, http.StatusGatewayTimeout, rec.Code)
+}
+
+func TestMiddleware_FiltersUnhealthyBackends(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockMgr := mocks.NewMockManager(ctrl)
+
+	// Create backends with different health statuses
+	backends := []vmcp.Backend{
+		{ID: "backend1", Name: "Backend 1 (healthy)", HealthStatus: vmcp.BackendHealthy},
+		{ID: "backend2", Name: "Backend 2 (unhealthy)", HealthStatus: vmcp.BackendUnhealthy},
+		{ID: "backend3", Name: "Backend 3 (degraded)", HealthStatus: vmcp.BackendDegraded},
+	}
+
+	// Create mock health provider
+	healthProvider := newMockHealthProvider()
+	healthProvider.setStatus("backend1", vmcp.BackendHealthy)
+	healthProvider.setStatus("backend2", vmcp.BackendUnhealthy)
+	healthProvider.setStatus("backend3", vmcp.BackendDegraded)
+
+	expectedFilteredBackends := []vmcp.Backend{
+		{ID: "backend1", Name: "Backend 1 (healthy)", HealthStatus: vmcp.BackendHealthy},
+		{ID: "backend3", Name: "Backend 3 (degraded)", HealthStatus: vmcp.BackendDegraded},
+	}
+
+	expectedCaps := &aggregator.AggregatedCapabilities{
+		Tools: []vmcp.Tool{
+			{Name: "tool1", BackendID: "backend1"},
+			{Name: "tool3", BackendID: "backend3"},
+		},
+		RoutingTable: &vmcp.RoutingTable{
+			Tools: map[string]*vmcp.BackendTarget{
+				"tool1": {WorkloadID: "backend1"},
+				"tool3": {WorkloadID: "backend3"},
+			},
+			Resources: make(map[string]*vmcp.BackendTarget),
+			Prompts:   make(map[string]*vmcp.BackendTarget),
+		},
+		Metadata: &aggregator.AggregationMetadata{
+			BackendCount: 2,
+			ToolCount:    2,
+		},
+	}
+
+	// Expect discovery to be called with ONLY healthy and degraded backends
+	mockMgr.EXPECT().
+		Discover(gomock.Any(), expectedFilteredBackends).
+		Return(expectedCaps, nil)
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		caps, ok := DiscoveredCapabilitiesFromContext(r.Context())
+		require.True(t, ok, "capabilities should be in context")
+		require.NotNil(t, caps, "capabilities should not be nil")
+
+		// Verify only healthy and degraded backend tools are present
+		assert.Len(t, caps.Tools, 2, "should only have tools from healthy/degraded backends")
+		assert.Equal(t, "tool1", caps.Tools[0].Name)
+		assert.Equal(t, "tool3", caps.Tools[1].Name)
+
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), healthProvider)
+	wrappedHandler := middleware(testHandler)
+
+	// Initialize request (no session ID) - discovery should happen with filtering
+	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/initialize", nil)
+	rec := httptest.NewRecorder()
+
+	wrappedHandler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestMiddleware_NoFilteringWhenHealthMonitoringDisabled(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockMgr := mocks.NewMockManager(ctrl)
+
+	backends := []vmcp.Backend{
+		{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
+		{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendUnhealthy},
+	}
+
+	expectedCaps := &aggregator.AggregatedCapabilities{
+		Tools: []vmcp.Tool{
+			{Name: "tool1", BackendID: "backend1"},
+			{Name: "tool2", BackendID: "backend2"},
+		},
+		RoutingTable: &vmcp.RoutingTable{
+			Tools: map[string]*vmcp.BackendTarget{
+				"tool1": {WorkloadID: "backend1"},
+				"tool2": {WorkloadID: "backend2"},
+			},
+			Resources: make(map[string]*vmcp.BackendTarget),
+			Prompts:   make(map[string]*vmcp.BackendTarget),
+		},
+		Metadata: &aggregator.AggregationMetadata{
+			BackendCount: 2,
+			ToolCount:    2,
+		},
+	}
+
+	// When health provider is nil, ALL backends should be passed to discovery (no filtering)
+	mockMgr.EXPECT().
+		Discover(gomock.Any(), backends).
+		Return(expectedCaps, nil)
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		caps, ok := DiscoveredCapabilitiesFromContext(r.Context())
+		require.True(t, ok, "capabilities should be in context")
+		require.NotNil(t, caps, "capabilities should not be nil")
+
+		// Verify all backend tools are present (no filtering)
+		assert.Len(t, caps.Tools, 2, "should have tools from all backends")
+
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Pass nil health provider (health monitoring disabled)
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), nil)
+	wrappedHandler := middleware(testHandler)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/initialize", nil)
+	rec := httptest.NewRecorder()
+
+	wrappedHandler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestMiddleware_AllBackendsUnhealthy(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockMgr := mocks.NewMockManager(ctrl)
+
+	backends := []vmcp.Backend{
+		{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendUnhealthy},
+		{ID: "backend2", Name: "Backend 2", HealthStatus: vmcp.BackendUnhealthy},
+	}
+
+	healthProvider := newMockHealthProvider()
+	healthProvider.setStatus("backend1", vmcp.BackendUnhealthy)
+	healthProvider.setStatus("backend2", vmcp.BackendUnhealthy)
+
+	// When all backends are unhealthy, discover should be called with empty list
+	mockMgr.EXPECT().
+		Discover(gomock.Any(), []vmcp.Backend{}).
+		Return(&aggregator.AggregatedCapabilities{
+			Tools:        []vmcp.Tool{},
+			Resources:    []vmcp.Resource{},
+			Prompts:      []vmcp.Prompt{},
+			RoutingTable: &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{}, Resources: map[string]*vmcp.BackendTarget{}, Prompts: map[string]*vmcp.BackendTarget{}},
+			Metadata:     &aggregator.AggregationMetadata{BackendCount: 0, ToolCount: 0},
+		}, nil)
+
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		caps, ok := DiscoveredCapabilitiesFromContext(r.Context())
+		require.True(t, ok, "capabilities should be in context")
+		require.NotNil(t, caps, "capabilities should not be nil")
+
+		// Verify no tools are present (all backends filtered out)
+		assert.Len(t, caps.Tools, 0, "should have no tools when all backends are unhealthy")
+
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := Middleware(mockMgr, backends, createTestSessionManager(t), healthProvider)
+	wrappedHandler := middleware(testHandler)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/v1/initialize", nil)
+	rec := httptest.NewRecorder()
+
+	wrappedHandler.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
 }

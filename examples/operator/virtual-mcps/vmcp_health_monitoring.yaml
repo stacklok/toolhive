@@ -4,15 +4,24 @@
 # Health monitoring enables:
 # - Periodic health checks on backend MCPServers using ListCapabilities calls
 # - Automatic detection of unhealthy backends
+# - Automatic filtering of unhealthy backends from capabilities
+#   (unhealthy backends' tools/resources/prompts are excluded from client view)
 # - Backend status tracking in VirtualMCPServer status
 # - Graceful handling of partial failures (best_effort mode)
 # - Circuit breaker pattern to prevent cascading failures
 #
 # Health Status Values:
-# - ready: Backend is healthy and responding
-# - unavailable: Backend is not responding or workload is in Pending/Failed/Terminating phase
-# - degraded: Backend is responding but degraded (e.g., slow response times)
-# - unknown: Health status not yet determined
+# - ready: Backend is healthy and responding (included in capabilities)
+# - unavailable: Backend is not responding or workload is in Pending/Failed/Terminating phase (excluded)
+# - degraded: Backend is responding but degraded (e.g., slow response times) (included - still functional)
+# - unknown: Health status not yet determined (included - during initial checks)
+# - unauthenticated: Backend cannot be authenticated (excluded)
+#
+# Capability Filtering:
+# When health monitoring is enabled, the vMCP server automatically filters backends:
+# - INCLUDED: Healthy, Degraded (slow but functional), Unknown (not yet checked)
+# - EXCLUDED: Unavailable (unhealthy), Unauthenticated (cannot be used)
+# This ensures clients only see tools/resources from backends that can handle requests.
 #
 # This example creates:
 # 1. Three MCPServer backends (demonstrating different health scenarios)

@@ -912,6 +912,11 @@ func applyPodTemplatePatch(
 		baseTemplate = baseTemplate.WithLabels(patchedSpec.Labels)
 	}
 
+	// Copy annotations from the patched spec to our template
+	if patchedSpec.ObjectMetaApplyConfiguration != nil && len(patchedSpec.Annotations) > 0 {
+		baseTemplate = baseTemplate.WithAnnotations(patchedSpec.Annotations)
+	}
+
 	if patchedSpec.Spec != nil {
 		// Ensure baseTemplate.Spec is not nil
 		if baseTemplate.Spec == nil {

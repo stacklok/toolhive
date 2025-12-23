@@ -1,0 +1,19 @@
+# This assertion verifies that custom annotations from MCPServer.spec.podTemplateSpec
+# are correctly applied to the MCP server StatefulSet's pod template.
+# 
+# BUG: The applyPodTemplatePatch function in pkg/container/kubernetes/client.go
+# only copies Labels from the patch, but NOT Annotations. This test demonstrates the bug.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ($testPrefix)
+  namespace: toolhive-system
+spec:
+  template:
+    metadata:
+      annotations:
+        # These annotations should be present but are NOT due to the bug
+        test.toolhive.stacklok.dev/custom-annotation: "custom-value-123"
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+

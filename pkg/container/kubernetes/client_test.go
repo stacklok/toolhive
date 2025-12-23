@@ -170,7 +170,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 					ReadyReplicas: 1,
 				},
 			}
-			clientset := fake.NewSimpleClientset(mockStatefulSet)
+			clientset := fake.NewClientset(mockStatefulSet)
 
 			// Create a fake config for testing
 			fakeConfig := &rest.Config{
@@ -709,7 +709,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 					ReadyReplicas: 1,
 				},
 			}
-			clientset := fake.NewSimpleClientset(mockStatefulSet)
+			clientset := fake.NewClientset(mockStatefulSet)
 
 			// Create a fake config for testing
 			fakeConfig := &rest.Config{

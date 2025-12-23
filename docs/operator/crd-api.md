@@ -1403,6 +1403,7 @@ _Appears in:_
 | `logLevel` _string_ | LogLevel sets the logging level for the Virtual MCP server.<br />Set to "debug" to enable debug logging. When not set, defaults to info level. |  | Enum: [debug] <br /> |
 | `timeouts` _[TimeoutConfig](#timeoutconfig)_ | Timeouts configures timeout settings |  |  |
 | `failureHandling` _[FailureHandlingConfig](#failurehandlingconfig)_ | FailureHandling configures failure handling behavior |  |  |
+| `capabilityCacheTTL` _string_ | CapabilityCacheTTL is the time-to-live for cached capability entries.<br />Defaults to 5 minutes if not specified.<br />Shorter values (e.g., "10s") can be used for testing to see capability updates sooner. | 5m |  |
 
 
 #### OutboundNetworkPermissions

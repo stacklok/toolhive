@@ -921,5 +921,12 @@ func (*Converter) convertOperational(
 		}
 	}
 
+	// Parse capability cache TTL
+	if vmcp.Spec.Operational.CapabilityCacheTTL != "" {
+		if duration, err := time.ParseDuration(vmcp.Spec.Operational.CapabilityCacheTTL); err == nil {
+			operational.CapabilityCacheTTL = vmcpconfig.Duration(duration)
+		}
+	}
+
 	return operational
 }

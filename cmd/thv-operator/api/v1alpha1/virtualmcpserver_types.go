@@ -388,6 +388,13 @@ type OperationalConfig struct {
 	// FailureHandling configures failure handling behavior
 	// +optional
 	FailureHandling *FailureHandlingConfig `json:"failureHandling,omitempty"`
+
+	// CapabilityCacheTTL is the time-to-live for cached capability entries.
+	// Defaults to 5 minutes if not specified.
+	// Shorter values (e.g., "10s") can be used for testing to see capability updates sooner.
+	// +kubebuilder:default="5m"
+	// +optional
+	CapabilityCacheTTL string `json:"capabilityCacheTTL,omitempty"`
 }
 
 // TimeoutConfig configures timeout settings

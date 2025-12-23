@@ -2,6 +2,8 @@
 package discovery
 
 import (
+	"reflect"
+
 	"github.com/stacklok/toolhive/pkg/logger"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
@@ -19,7 +21,8 @@ import (
 // Returns the filtered backend list and logs excluded backends.
 func FilterHealthyBackends(backends []vmcp.Backend, healthProvider health.StatusProvider) []vmcp.Backend {
 	// If health monitoring is disabled, return all backends
-	if healthProvider == nil {
+	// Note: Check both interface nil and typed nil (Go interface semantics)
+	if healthProvider == nil || !isProviderInitialized(healthProvider) {
 		return backends
 	}
 
@@ -55,4 +58,11 @@ func FilterHealthyBackends(backends []vmcp.Backend, healthProvider health.Status
 	}
 
 	return filtered
+}
+
+// isProviderInitialized checks if the health status provider is properly initialized.
+// This handles Go's interface nil semantics where an interface can be "not nil"
+// even when its underlying value is nil (e.g., (*health.Monitor)(nil)).
+func isProviderInitialized(provider health.StatusProvider) bool {
+	return provider != nil && !reflect.ValueOf(provider).IsNil()
 }

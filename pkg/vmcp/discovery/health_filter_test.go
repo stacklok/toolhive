@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
 // mockHealthProvider is a simple test implementation of HealthStatusProvider
@@ -287,4 +288,61 @@ func TestFilterHealthyBackends_ErrorRetrievingStatus(t *testing.T) {
 	require.Len(t, filtered, 2, "backends with health monitor errors should be included")
 	assert.Equal(t, "backend1", filtered[0].ID)
 	assert.Equal(t, "backend2", filtered[1].ID)
+}
+
+func TestFilterHealthyBackends_NilTypedPointer(t *testing.T) {
+	t.Parallel()
+
+	backends := []vmcp.Backend{
+		{ID: "backend1", Name: "Backend 1", HealthStatus: vmcp.BackendHealthy},
+	}
+
+	// Create a nil typed pointer (*health.Monitor)(nil)
+	// This is wrapped in an interface and is NOT caught by simple nil checks
+	// This simulates the common bug where a nil pointer is passed to an interface parameter
+	var nilMonitor *mockHealthProvider
+	var provider health.StatusProvider = nilMonitor
+
+	// Should not panic and should return all backends (health monitoring disabled)
+	filtered := FilterHealthyBackends(backends, provider)
+
+	assert.Len(t, filtered, 1, "Should return all backends when provider is nil pointer")
+	assert.Equal(t, "backend1", filtered[0].ID)
+}
+
+func TestIsProviderInitialized(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		provider health.StatusProvider
+		expected bool
+	}{
+		{
+			name:     "Nil interface",
+			provider: nil,
+			expected: false,
+		},
+		{
+			name:     "Nil typed pointer",
+			provider: (*mockHealthProvider)(nil),
+			expected: false,
+		},
+		{
+			name: "Initialized provider",
+			provider: func() health.StatusProvider {
+				return newMockHealthProvider()
+			}(),
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := isProviderInitialized(tt.provider)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }

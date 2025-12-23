@@ -3,14 +3,12 @@ package schema
 // objectSchema represents a JSON Schema object type.
 type objectSchema struct {
 	properties map[string]TypeCoercer
-	defaults   map[string]any
 }
 
 // makeObjectSchema creates an objectSchema from a raw JSON Schema map.
 func makeObjectSchema(raw map[string]any) objectSchema {
 	schema := objectSchema{
 		properties: make(map[string]TypeCoercer),
-		defaults:   make(map[string]any),
 	}
 
 	properties, ok := raw["properties"].(map[string]any)
@@ -27,10 +25,6 @@ func makeObjectSchema(raw map[string]any) objectSchema {
 		// Recursively create schema for this property
 		schema.properties[propName] = MakeSchema(propMap)
 
-		// Extract default value if present
-		if defaultVal, hasDefault := propMap["default"]; hasDefault {
-			schema.defaults[propName] = defaultVal
-		}
 	}
 
 	return schema

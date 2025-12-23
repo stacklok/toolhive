@@ -46,7 +46,10 @@ func TestVMCPServer_TypeCoercion(t *testing.T) {
 			},
 			func(_ context.Context, args map[string]any) string {
 				receivedArgs = args
-				result, _ := json.Marshal(args)
+				result, err := json.Marshal(args)
+				if err != nil {
+					panic(err)
+				}
 				return string(result)
 			},
 		),
@@ -156,7 +159,10 @@ func TestVMCPServer_TypeCoercion_NestedAndArrays(t *testing.T) {
 			},
 			func(_ context.Context, args map[string]any) string {
 				receivedArgs = args
-				result, _ := json.Marshal(args)
+				result, err := json.Marshal(args)
+				if err != nil {
+					panic(err)
+				}
 				return string(result)
 			},
 		),

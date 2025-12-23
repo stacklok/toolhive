@@ -27,7 +27,7 @@ func MakeSchema(raw map[string]any) TypeCoercer {
 	case "array":
 		return makeArraySchema(raw)
 	case "string", "integer", "number", "boolean":
-		return makePrimitiveSchema(raw, schemaType)
+		return makePrimitiveSchema(schemaType)
 	default:
 		return passthroughSchema{}
 	}

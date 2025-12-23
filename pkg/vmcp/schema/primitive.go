@@ -6,18 +6,13 @@ import (
 
 // primitiveSchema represents string/integer/number/boolean types.
 type primitiveSchema struct {
-	schemaType   string
-	defaultValue any
+	schemaType string
 }
 
 // makePrimitiveSchema creates a primitiveSchema from a raw JSON Schema map.
-func makePrimitiveSchema(raw map[string]any, schemaType string) primitiveSchema {
+func makePrimitiveSchema(schemaType string) primitiveSchema {
 	schema := primitiveSchema{
 		schemaType: schemaType,
-	}
-
-	if defaultVal, hasDefault := raw["default"]; hasDefault {
-		schema.defaultValue = defaultVal
 	}
 
 	return schema

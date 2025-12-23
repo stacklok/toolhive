@@ -262,7 +262,7 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 	// Parse the filters into a format we can use for matching.
 	parsedFilters, err := types.ParseLabelFilters(labelFilters)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse label filters: %v", err)
+		return nil, fmt.Errorf("failed to parse label filters: %w", err)
 	}
 
 	// Get workloads from runtime

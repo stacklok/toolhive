@@ -99,10 +99,10 @@ Examples:
   # Run a server in a specific group
   thv run filesystem --group production
 
-  # Run a remote GitHub MCP server with authentication
-    thv run github-remote --remote-auth \
-  	--remote-auth-client-id <oauth-client-id> \
-	--remote-auth-client-secret <oauth-client-secret>
+# Run a remote GitHub MCP server with authentication
+thv run github-remote --remote-auth \
+  --remote-auth-client-id <oauth-client-id> \
+  --remote-auth-client-secret <oauth-client-secret>
 
 ```
 thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]

@@ -1,0 +1,9 @@
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: ($testPrefix)
+  namespace: toolhive-system
+status:
+  message: "MCP server is running"
+  phase: "Running"
+

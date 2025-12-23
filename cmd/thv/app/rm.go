@@ -12,9 +12,21 @@ import (
 )
 
 var rmCmd = &cobra.Command{
-	Use:               "rm [workload-name...]",
-	Short:             "Remove one or more MCP servers",
-	Long:              `Remove one or more MCP servers managed by ToolHive.`,
+	Use:   "rm [workload-name...]",
+	Short: "Remove one or more MCP servers",
+	Long: `Remove one or more MCP servers managed by ToolHive. 
+Examples:
+  # Remove a single MCP server
+  thv rm filesystem
+
+  # Remove multiple MCP servers
+  thv rm filesystem github slack
+
+  # Remove all workloads
+  thv rm --all
+
+  # Remove all workloads in a group
+  thv rm --group production`,
 	Args:              validateRmArgs,
 	RunE:              rmCmdFunc,
 	ValidArgsFunction: completeMCPServerNames,

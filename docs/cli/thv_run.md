@@ -100,7 +100,7 @@ Examples:
   thv run filesystem --group production
 
   # Run a remote GitHub MCP server with authentication
-  thv run sse://github-mcp. example.com/mcp --env GITHUB_CLIENT_ID=your_client_id --env GITHUB_CLIENT_SECRET=your_secret
+  thv run github-remote --remote-auth --remote-auth-client-id <oauth-client-id> --remote-auth-client-secret <oauth-client-secret>
 
 ```
 thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]

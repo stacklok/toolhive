@@ -167,13 +167,13 @@ func promptForEnvironmentVariable(envVar *registry.EnvVar) (string, error) {
 		var input string
 		_, err = fmt.Scanln(&input)
 		if err != nil {
-			return "", fmt.Errorf("failed to read input for %s: %v", envVar.Name, err)
+			return "", fmt.Errorf("failed to read input for %s: %w", envVar.Name, err)
 		}
 		byteValue = []byte(input)
 	}
 
 	if err != nil {
-		return "", fmt.Errorf("failed to read input for %s: %v", envVar.Name, err)
+		return "", fmt.Errorf("failed to read input for %s: %w", envVar.Name, err)
 	}
 
 	return strings.TrimSpace(string(byteValue)), nil

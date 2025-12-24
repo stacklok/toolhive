@@ -17,6 +17,22 @@ List running MCP servers
 
 List all MCP servers managed by ToolHive, including their status and configuration.
 
+Examples:
+  # List running MCP servers
+  thv list
+
+  # List all MCP servers (including stopped)
+  thv list --all
+
+  # List servers in JSON format
+  thv list --format json
+
+  # List servers in a specific group
+  thv list --group production
+
+  # List servers with specific labels
+  thv list --label env=dev --label team=backend
+
 ```
 thv list [flags]
 ```

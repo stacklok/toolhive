@@ -12,6 +12,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/env"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
 const (
@@ -69,18 +70,19 @@ func (*TokenExchangeStrategy) Name() string {
 // Authenticate exchanges the client's token for a backend token and injects it.
 //
 // This method:
-//  1. Retrieves the client's identity and token from the context
-//  2. Parses and validates the token exchange configuration from strategy
-//  3. Gets or creates a cached ExchangeConfig for this backend configuration
-//  4. Creates a TokenSource with the current identity token
-//  5. Obtains an access token by performing the exchange
-//  6. Injects the token into the backend request's Authorization header
+//  1. Skips authentication if this is a health check request
+//  2. Retrieves the client's identity and token from the context
+//  3. Parses and validates the token exchange configuration from strategy
+//  4. Gets or creates a cached ExchangeConfig for this backend configuration
+//  5. Creates a TokenSource with the current identity token
+//  6. Obtains an access token by performing the exchange
+//  7. Injects the token into the backend request's Authorization header
 //
 // Token caching per user is handled by the upper vMCP TokenCache layer.
 // This strategy only caches the ExchangeConfig template per backend.
 //
 // Parameters:
-//   - ctx: Request context containing the authenticated identity
+//   - ctx: Request context containing the authenticated identity (or health check marker)
 //   - req: The HTTP request to authenticate
 //   - strategy: Backend auth strategy containing token exchange configuration
 //
@@ -92,6 +94,11 @@ func (*TokenExchangeStrategy) Name() string {
 func (s *TokenExchangeStrategy) Authenticate(
 	ctx context.Context, req *http.Request, strategy *authtypes.BackendAuthStrategy,
 ) error {
+	// Skip authentication for health checks
+	if health.IsHealthCheck(ctx) {
+		return nil
+	}
+
 	identity, ok := auth.IdentityFromContext(ctx)
 	if !ok {
 		return fmt.Errorf("no identity found in context")

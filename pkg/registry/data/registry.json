@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-12-23T00:18:43Z",
+  "last_updated": "2025-12-24T00:18:39Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -180,9 +180,9 @@
         "read_paper"
       ],
       "metadata": {
-        "stars": 1895,
+        "stars": 1968,
         "pulls": 77,
-        "last_updated": "2025-11-24T02:36:20Z"
+        "last_updated": "2025-12-23T02:37:33Z"
       },
       "repository_url": "https://github.com/blazickjp/arxiv-mcp-server",
       "tags": [
@@ -884,9 +884,9 @@
         "search_engine_batch"
       ],
       "metadata": {
-        "stars": 1601,
+        "stars": 1769,
         "pulls": 65,
-        "last_updated": "2025-11-24T02:36:20Z"
+        "last_updated": "2025-12-23T02:37:33Z"
       },
       "repository_url": "https://github.com/brightdata/brightdata-mcp",
       "tags": [
@@ -1065,7 +1065,7 @@
         "devops",
         "testing"
       ],
-      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.8.0",
+      "image": "ghcr.io/buildkite/buildkite-mcp-server:0.9.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -2906,9 +2906,9 @@
         "dbg_enable_breakpoint"
       ],
       "metadata": {
-        "stars": 4350,
+        "stars": 4696,
         "pulls": 99,
-        "last_updated": "2025-11-25T02:33:25Z"
+        "last_updated": "2025-12-23T02:37:33Z"
       },
       "repository_url": "https://github.com/mrexodia/ida-pro-mcp",
       "tags": [
@@ -4516,6 +4516,7 @@
         "list_escalation_policies",
         "list_event_orchestrations",
         "list_incident_change_events",
+        "list_incident_notes",
         "list_incident_workflows",
         "list_incidents",
         "list_oncalls",
@@ -4554,7 +4555,7 @@
         "monitoring",
         "alerting"
       ],
-      "image": "ghcr.io/stacklok/dockyard/uvx/pagerduty-mcp:0.10.0",
+      "image": "ghcr.io/stacklok/dockyard/uvx/pagerduty-mcp:0.11.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -4669,7 +4670,7 @@
         "evaluation",
         "ai"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.2.30",
+      "image": "ghcr.io/stacklok/dockyard/npx/phoenix-mcp:2.3.1",
       "permissions": {
         "network": {
           "outbound": {
@@ -6231,7 +6232,7 @@
       "metadata": {
         "stars": 4,
         "pulls": 0,
-        "last_updated": "2025-11-24T02:36:19Z"
+        "last_updated": "2025-12-22T02:40:48Z"
       },
       "repository_url": "https://github.com/alpic-ai/kiwi-mcp-server-public",
       "tags": [
@@ -6625,9 +6626,9 @@
         "get_abstract_syntax_tree"
       ],
       "metadata": {
-        "stars": 613,
+        "stars": 622,
         "pulls": 0,
-        "last_updated": "2025-11-23T20:37:27Z"
+        "last_updated": "2025-12-22T02:40:47Z"
       },
       "repository_url": "https://github.com/semgrep/mcp",
       "tags": [
@@ -6670,7 +6671,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-23T20:37:27Z"
+        "last_updated": "2025-12-22T02:40:47Z"
       },
       "tags": [
         "remote",
@@ -6701,9 +6702,9 @@
         "get_service_info"
       ],
       "metadata": {
-        "stars": 89,
+        "stars": 90,
         "pulls": 0,
-        "last_updated": "2025-11-23T20:37:27Z"
+        "last_updated": "2025-12-22T02:40:48Z"
       },
       "repository_url": "https://github.com/square/square-mcp-server",
       "tags": [
@@ -6759,7 +6760,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-23T20:37:27Z"
+        "last_updated": "2025-12-22T02:40:48Z"
       },
       "tags": [
         "remote",
@@ -6828,7 +6829,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-24T02:36:20Z"
+        "last_updated": "2025-12-23T02:37:33Z"
       },
       "tags": [
         "remote",
@@ -6870,7 +6871,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-24T02:36:20Z"
+        "last_updated": "2025-12-23T02:37:33Z"
       },
       "tags": [
         "remote",

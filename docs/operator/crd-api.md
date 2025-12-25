@@ -846,25 +846,6 @@ _Appears in:_
 | `caBundleRef` _[api.v1alpha1.CABundleSource](#apiv1alpha1cabundlesource)_ | CABundleRef references a ConfigMap containing the CA certificate bundle.<br />When specified, ToolHive auto-mounts the ConfigMap and auto-computes ThvCABundlePath.<br />If the ConfigMap data contains an explicit thvCABundlePath key, it takes precedence. |  |  |
 
 
-#### api.v1alpha1.DiscoveredBackend
-
-
-
-DiscoveredBackend represents a discovered backend MCPServer in the MCPGroup
-
-
-
-_Appears in:_
-- [api.v1alpha1.VirtualMCPServerStatus](#apiv1alpha1virtualmcpserverstatus)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name is the name of the backend MCPServer |  |  |
-| `authConfigRef` _string_ | AuthConfigRef is the name of the discovered MCPExternalAuthConfig (if any) |  |  |
-| `authType` _string_ | AuthType is the type of authentication configured |  |  |
-| `status` _string_ | Status is the current status of the backend (ready, degraded, unavailable) |  |  |
-| `lastHealthCheck` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastHealthCheck is the timestamp of the last health check |  |  |
-| `url` _string_ | URL is the URL of the backend MCPServer |  |  |
 
 
 #### api.v1alpha1.EnvVar

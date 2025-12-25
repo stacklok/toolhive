@@ -7,6 +7,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -107,6 +108,8 @@ type BackendAuthConfig struct {
 // OperationalConfig defines operational settings
 
 // Backend status constants for DiscoveredBackend.Status
+// These are the user-facing values stored in VirtualMCPServer.Status.DiscoveredBackends.
+// Use BackendHealthStatus.ToCRDStatus() to convert from internal health status.
 const (
 	BackendStatusReady       = "ready"
 	BackendStatusUnavailable = "unavailable"
@@ -114,31 +117,9 @@ const (
 	BackendStatusUnknown     = "unknown"
 )
 
-// DiscoveredBackend represents a discovered backend MCPServer in the MCPGroup
-type DiscoveredBackend struct {
-	// Name is the name of the backend MCPServer
-	Name string `json:"name"`
-
-	// AuthConfigRef is the name of the discovered MCPExternalAuthConfig (if any)
-	// +optional
-	AuthConfigRef string `json:"authConfigRef,omitempty"`
-
-	// AuthType is the type of authentication configured
-	// +optional
-	AuthType string `json:"authType,omitempty"`
-
-	// Status is the current status of the backend (ready, degraded, unavailable)
-	// +optional
-	Status string `json:"status,omitempty"`
-
-	// LastHealthCheck is the timestamp of the last health check
-	// +optional
-	LastHealthCheck metav1.Time `json:"lastHealthCheck,omitempty"`
-
-	// URL is the URL of the backend MCPServer
-	// +optional
-	URL string `json:"url,omitempty"`
-}
+// DiscoveredBackend is an alias to the canonical definition in pkg/vmcp/types.go
+// This provides a local name for use in the CRD status.
+type DiscoveredBackend = vmcptypes.DiscoveredBackend
 
 // VirtualMCPServerStatus defines the observed state of VirtualMCPServer
 type VirtualMCPServerStatus struct {

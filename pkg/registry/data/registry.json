@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-12-25T00:18:47Z",
+  "last_updated": "2025-12-26T00:18:38Z",
   "servers": {
     "adb-mysql-mcp-server": {
       "description": "Official MCP server for AnalyticDB for MySQL of Alibaba Cloud",
@@ -967,9 +967,9 @@
         "browserbase_stagehand_observe"
       ],
       "metadata": {
-        "stars": 2849,
+        "stars": 2964,
         "pulls": 133,
-        "last_updated": "2025-11-26T02:34:00Z"
+        "last_updated": "2025-12-25T02:37:38Z"
       },
       "repository_url": "https://github.com/browserbase/mcp-server-browserbase",
       "tags": [
@@ -2515,9 +2515,9 @@
         "webSearch"
       ],
       "metadata": {
-        "stars": 369,
+        "stars": 367,
         "pulls": 109,
-        "last_updated": "2025-11-26T02:33:59Z"
+        "last_updated": "2025-12-25T02:37:37Z"
       },
       "repository_url": "https://github.com/graphlit/graphlit-mcp-server",
       "tags": [
@@ -3484,9 +3484,9 @@
         "write_neo4j_cypher"
       ],
       "metadata": {
-        "stars": 821,
+        "stars": 855,
         "pulls": 91,
-        "last_updated": "2025-11-26T02:33:59Z"
+        "last_updated": "2025-12-25T02:37:38Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -3561,9 +3561,9 @@
         "list_memories"
       ],
       "metadata": {
-        "stars": 821,
+        "stars": 855,
         "pulls": 105,
-        "last_updated": "2025-11-26T02:34:00Z"
+        "last_updated": "2025-12-25T02:37:39Z"
       },
       "repository_url": "https://github.com/neo4j-contrib/mcp-neo4j",
       "tags": [
@@ -4239,25 +4239,27 @@
       "status": "Active",
       "transport": "stdio",
       "tools": [
+        "API-create-a-comment",
+        "API-create-a-data-source",
+        "API-delete-a-block",
+        "API-get-block-children",
+        "API-get-self",
         "API-get-user",
         "API-get-users",
-        "API-get-self",
-        "API-post-database-query",
-        "API-post-search",
-        "API-get-block-children",
+        "API-list-data-source-templates",
+        "API-move-page",
         "API-patch-block-children",
-        "API-retrieve-a-block",
-        "API-update-a-block",
-        "API-delete-a-block",
-        "API-retrieve-a-page",
         "API-patch-page",
         "API-post-page",
-        "API-create-a-database",
-        "API-update-a-database",
-        "API-retrieve-a-database",
-        "API-retrieve-a-page-property",
+        "API-post-search",
+        "API-query-data-source",
+        "API-retrieve-a-block",
         "API-retrieve-a-comment",
-        "API-create-a-comment"
+        "API-retrieve-a-data-source",
+        "API-retrieve-a-page",
+        "API-retrieve-a-page-property",
+        "API-update-a-block",
+        "API-update-a-data-source"
       ],
       "metadata": {
         "stars": 3589,
@@ -4269,7 +4271,7 @@
         "notion",
         "notes"
       ],
-      "image": "ghcr.io/stacklok/dockyard/npx/notion:1.9.1",
+      "image": "ghcr.io/stacklok/dockyard/npx/notion:2.0.0",
       "permissions": {
         "network": {
           "outbound": {
@@ -6339,7 +6341,7 @@
       "metadata": {
         "stars": 0,
         "pulls": 0,
-        "last_updated": "2025-11-26T02:33:59Z"
+        "last_updated": "2025-12-25T02:37:38Z"
       },
       "tags": [
         "remote",

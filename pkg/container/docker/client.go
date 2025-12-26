@@ -212,7 +212,7 @@ func (c *Client) DeployWorkload(
 
 		err = c.ops.createExternalNetworks(ctx)
 		if err != nil {
-			return 0, fmt.Errorf("failed to create external networks: %v", err)
+			return 0, fmt.Errorf("failed to create external networks: %w", err)
 		}
 	} else {
 		logger.Infof("Skipping external network creation for custom network mode: %s", permissionConfig.NetworkMode)
@@ -226,7 +226,7 @@ func (c *Client) DeployWorkload(
 		lb.AddNetworkLabels(internalNetworkLabels, networkName)
 		err := c.ops.createNetwork(ctx, networkName, internalNetworkLabels, true)
 		if err != nil {
-			return 0, fmt.Errorf("failed to create internal network: %v", err)
+			return 0, fmt.Errorf("failed to create internal network: %w", err)
 		}
 
 		// create dns container
@@ -236,7 +236,7 @@ func (c *Client) DeployWorkload(
 			additionalDNS = dnsContainerIP
 		}
 		if err != nil {
-			return 0, fmt.Errorf("failed to create dns container: %v", err)
+			return 0, fmt.Errorf("failed to create dns container: %w", err)
 		}
 
 		// create egress container
@@ -251,7 +251,7 @@ func (c *Client) DeployWorkload(
 			permissionProfile.Network,
 		)
 		if err != nil {
-			return 0, fmt.Errorf("failed to create egress container: %v", err)
+			return 0, fmt.Errorf("failed to create egress container: %w", err)
 		}
 
 		envVars = addEgressEnvVars(envVars, egressContainerName)
@@ -262,7 +262,7 @@ func (c *Client) DeployWorkload(
 	// only remap if is not an auxiliary tool
 	newPortBindings, hostPort, err := generatePortBindings(labels, options.PortBindings)
 	if err != nil {
-		return 0, fmt.Errorf("failed to generate port bindings: %v", err)
+		return 0, fmt.Errorf("failed to generate port bindings: %w", err)
 	}
 
 	// Add a label to the MCP server indicating network isolation.
@@ -286,7 +286,7 @@ func (c *Client) DeployWorkload(
 		isolateNetwork,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create mcp container: %v", err)
+		return 0, fmt.Errorf("failed to create mcp container: %w", err)
 	}
 
 	// Don't try and set up an ingress proxy if the transport type is stdio.
@@ -303,7 +303,7 @@ func (c *Client) DeployWorkload(
 		hostPort, err = c.ops.createIngressContainer(ctx, name, firstPortInt, attachStdio, externalEndpointsConfig,
 			permissionProfile.Network)
 		if err != nil {
-			return 0, fmt.Errorf("failed to create ingress container: %v", err)
+			return 0, fmt.Errorf("failed to create ingress container: %w", err)
 		}
 	}
 
@@ -620,7 +620,7 @@ func (c *Client) IsRunning(ctx context.Context) error {
 	// Try to ping the Docker server
 	_, err := c.client.Ping(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to ping Docker server: %v", err)
+		return fmt.Errorf("failed to ping Docker server: %w", err)
 	}
 
 	return nil
@@ -1263,7 +1263,7 @@ func setupExposedPorts(config *container.Config, exposedPorts map[string]struct{
 	for port := range exposedPorts {
 		natPort, err := nat.NewPort("tcp", strings.Split(port, "/")[0])
 		if err != nil {
-			return fmt.Errorf("failed to parse port: %v", err)
+			return fmt.Errorf("failed to parse port: %w", err)
 		}
 		config.ExposedPorts[natPort] = struct{}{}
 	}
@@ -1281,7 +1281,7 @@ func setupPortBindings(hostConfig *container.HostConfig, portBindings map[string
 	for port, bindings := range portBindings {
 		natPort, err := nat.NewPort("tcp", strings.Split(port, "/")[0])
 		if err != nil {
-			return fmt.Errorf("failed to parse port: %v", err)
+			return fmt.Errorf("failed to parse port: %w", err)
 		}
 
 		natBindings := make([]nat.PortBinding, len(bindings))
@@ -1368,7 +1368,7 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 		if inspectErr == nil {
 			logger.Infof("DNS image %s exists locally, continuing despite pull failure", DnsImage)
 		} else {
-			return "", "", fmt.Errorf("failed to pull DNS image: %v", err)
+			return "", "", fmt.Errorf("failed to pull DNS image: %w", err)
 		}
 	}
 
@@ -1398,12 +1398,12 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 	// now create the dns container
 	dnsContainerId, err := c.createContainer(ctx, dnsContainerName, configDns, dnsHostConfig, endpointsConfig)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to create dns container: %v", err)
+		return "", "", fmt.Errorf("failed to create dns container: %w", err)
 	}
 
 	dnsContainerResponse, err := c.client.ContainerInspect(ctx, dnsContainerId)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to inspect DNS container: %v", err)
+		return "", "", fmt.Errorf("failed to inspect DNS container: %w", err)
 	}
 
 	dnsNetworkSettings, ok := dnsContainerResponse.NetworkSettings.Networks[networkName]
@@ -1491,7 +1491,7 @@ func (c *Client) createMcpContainer(
 	}
 	_, err := c.createContainer(ctx, name, config, hostConfig, internalEndpointsConfig)
 	if err != nil {
-		return fmt.Errorf("failed to create container: %v", err)
+		return fmt.Errorf("failed to create container: %w", err)
 	}
 
 	return nil
@@ -1517,7 +1517,7 @@ func (c *Client) createIngressContainer(ctx context.Context, containerName strin
 	externalEndpointsConfig map[string]*network.EndpointSettings, networkPermissions *permissions.NetworkPermissions) (int, error) {
 	squidPort, err := networking.FindOrUsePort(upstreamPort + 1)
 	if err != nil {
-		return 0, fmt.Errorf("failed to find or use port %d: %v", squidPort, err)
+		return 0, fmt.Errorf("failed to find or use port %d: %w", squidPort, err)
 	}
 	squidExposedPorts := map[string]struct{}{
 		fmt.Sprintf("%d/tcp", squidPort): {},
@@ -1545,7 +1545,7 @@ func (c *Client) createIngressContainer(ctx context.Context, containerName strin
 		networkPermissions,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create ingress container: %v", err)
+		return 0, fmt.Errorf("failed to create ingress container: %w", err)
 	}
 	return squidPort, nil
 
@@ -1565,7 +1565,7 @@ func extractFirstPort(options *runtime.DeployWorkloadOptions) (int, error) {
 	}
 	firstPortInt, err := strconv.Atoi(firstPort)
 	if err != nil {
-		return 0, fmt.Errorf("failed to convert port %s to int: %v", firstPort, err)
+		return 0, fmt.Errorf("failed to convert port %s to int: %w", firstPort, err)
 	}
 	return firstPortInt, nil
 }
@@ -1592,7 +1592,7 @@ func generatePortBindings(labels map[string]string,
 				hostPortStr := bindings[0].HostPort
 				hostPort, err = strconv.Atoi(hostPortStr)
 				if err != nil {
-					return nil, 0, fmt.Errorf("failed to convert host port %s to int: %v", hostPortStr, err)
+					return nil, 0, fmt.Errorf("failed to convert host port %s to int: %w", hostPortStr, err)
 				}
 				break
 			}
@@ -1638,7 +1638,7 @@ func (c *Client) deleteNetworks(ctx context.Context, containerName string) error
 		Filters: filters.NewArgs(filters.Arg("label", "toolhive=true")),
 	})
 	if err != nil {
-		return fmt.Errorf("failed to list containers: %v", err)
+		return fmt.Errorf("failed to list containers: %w", err)
 	}
 
 	// Delete associated internal network

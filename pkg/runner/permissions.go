@@ -18,7 +18,7 @@ import (
 func CreatePermissionProfileFile(serverName string, permProfile *permissions.Profile) (string, error) {
 	tempFile, err := os.CreateTemp("", fmt.Sprintf("toolhive-%s-permissions-*.json", serverName))
 	if err != nil {
-		return "", fmt.Errorf("failed to create temporary file: %v", err)
+		return "", fmt.Errorf("failed to create temporary file: %w", err)
 	}
 	defer tempFile.Close()
 
@@ -28,12 +28,12 @@ func CreatePermissionProfileFile(serverName string, permProfile *permissions.Pro
 	// Serialize the permission profile to JSON
 	permProfileJSON, err := json.Marshal(permProfile)
 	if err != nil {
-		return "", fmt.Errorf("failed to serialize permission profile: %v", err)
+		return "", fmt.Errorf("failed to serialize permission profile: %w", err)
 	}
 
 	// Write the permission profile to the temporary file
 	if _, err := tempFile.Write(permProfileJSON); err != nil {
-		return "", fmt.Errorf("failed to write permission profile to file: %v", err)
+		return "", fmt.Errorf("failed to write permission profile to file: %w", err)
 	}
 
 	logger.Debugf("Wrote permission profile to temporary file: %s", permProfilePath)
@@ -61,7 +61,7 @@ func CleanupTempPermissionProfile(permissionProfilePath string) error {
 
 	// Remove the temporary file
 	if err := os.Remove(permissionProfilePath); err != nil {
-		return fmt.Errorf("failed to remove temporary permission profile file %s: %v", permissionProfilePath, err)
+		return fmt.Errorf("failed to remove temporary permission profile file %s: %w", permissionProfilePath, err)
 	}
 
 	logger.Debugf("Removed temporary permission profile file: %s", permissionProfilePath)

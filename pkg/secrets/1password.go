@@ -31,7 +31,7 @@ func (o *OnePasswordManager) GetSecret(ctx context.Context, path string) (string
 
 	secret, err := o.client.Resolve(ctx, path)
 	if err != nil {
-		return "", fmt.Errorf("error resolving secret: %v", err)
+		return "", fmt.Errorf("error resolving secret: %w", err)
 	}
 
 	return secret, nil
@@ -57,7 +57,7 @@ func (o *OnePasswordManager) ListSecrets(ctx context.Context) ([]SecretDescripti
 	// First, grab the list of vaults we have access to.
 	vaults, err := o.client.ListVaults(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("error retrieving vaults from 1password API: %v", err)
+		return nil, fmt.Errorf("error retrieving vaults from 1password API: %w", err)
 	}
 
 	var secrets []SecretDescription
@@ -65,14 +65,14 @@ func (o *OnePasswordManager) ListSecrets(ctx context.Context) ([]SecretDescripti
 	for _, vault := range vaults {
 		items, err := o.client.ListItems(ctx, vault.ID)
 		if err != nil {
-			return nil, fmt.Errorf("error retrieving secrets from 1password API: %v", err)
+			return nil, fmt.Errorf("error retrieving secrets from 1password API: %w", err)
 		}
 
 		// For each item in the vault...
 		for _, item := range items {
 			details, err := o.client.GetItem(ctx, vault.ID, item.ID)
 			if err != nil {
-				return nil, fmt.Errorf("error retrieving item details from 1password API: %v", err)
+				return nil, fmt.Errorf("error retrieving item details from 1password API: %w", err)
 			}
 			// For each field in the item...
 			for _, field := range details.Fields {
@@ -118,7 +118,7 @@ func NewOnePasswordManager() (Provider, error) {
 
 	client, err := clients.NewOnePasswordClient(ctx, token)
 	if err != nil {
-		return nil, fmt.Errorf("error creating 1Password client: %v", err)
+		return nil, fmt.Errorf("error creating 1Password client: %w", err)
 	}
 
 	return &OnePasswordManager{

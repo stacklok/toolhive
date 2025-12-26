@@ -91,7 +91,31 @@ You can specify the network mode for the container using the --network flag:
 - Custom network: $ thv run --network my-network <image>
 - Default (bridge): $ thv run <image>
 
-The --network flag accepts any Docker-compatible network mode.`,
+The --network flag accepts any Docker-compatible network mode.
+
+Examples:
+  # Run a server from the registry
+  thv run filesystem
+
+  # Run a server with custom arguments and toolsets
+  thv run github -- --toolsets repos
+
+  # Run from a container image
+  thv run ghcr.io/github/github-mcp-server
+
+  # Run using a protocol scheme (Python with uv)
+  thv run uvx://mcp-server-git
+
+  # Run using npx (Node.js)
+  thv run npx://@modelcontextprotocol/server-everything
+
+  # Run a server in a specific group
+  thv run filesystem --group production
+
+# Run a remote GitHub MCP server with authentication
+thv run github-remote --remote-auth \
+  --remote-auth-client-id <oauth-client-id> \
+  --remote-auth-client-secret <oauth-client-secret>`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		// If --from-config is provided, no args are required
 		if runFlags.FromConfig != "" {
@@ -184,11 +208,11 @@ func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage stri
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
+		return fmt.Errorf("failed to create container runtime: %w", err)
 	}
 	workloadManager, err := workloads.NewManagerFromRuntime(rt)
 	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %v", err)
+		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
 
 	if runFlags.Name == "" {
@@ -197,7 +221,7 @@ func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage stri
 	}
 	exists, err := workloadManager.DoesWorkloadExist(ctx, runFlags.Name)
 	if err != nil {
-		return fmt.Errorf("failed to check if workload exists: %v", err)
+		return fmt.Errorf("failed to check if workload exists: %w", err)
 	}
 	if exists {
 		return fmt.Errorf("workload with name '%s' already exists", runFlags.Name)
@@ -216,7 +240,7 @@ func runSingleServer(ctx context.Context, runFlags *RunFlags, serverOrImage stri
 	// Always save the run config to disk before starting (both foreground and detached modes)
 	// NOTE: Save before secrets processing to avoid storing secrets in the state store
 	if err := runnerConfig.SaveState(ctx); err != nil {
-		return fmt.Errorf("failed to save run configuration: %v", err)
+		return fmt.Errorf("failed to save run configuration: %w", err)
 	}
 
 	if runFlags.Foreground {
@@ -336,7 +360,7 @@ func validateGroup(ctx context.Context, workloadsManager workloads.Manager, serv
 	// Create group manager
 	groupManager, err := groups.NewManager()
 	if err != nil {
-		return fmt.Errorf("failed to create group manager: %v", err)
+		return fmt.Errorf("failed to create group manager: %w", err)
 	}
 
 	// Check if the workload is already in a group
@@ -344,7 +368,7 @@ func validateGroup(ctx context.Context, workloadsManager workloads.Manager, serv
 	if err != nil {
 		// If the workload does not exist, we can proceed to create it
 		if !errors.Is(err, runtime.ErrWorkloadNotFound) {
-			return fmt.Errorf("failed to get workload: %v", err)
+			return fmt.Errorf("failed to get workload: %w", err)
 		}
 	} else if workload.Group != "" && workload.Group != runFlags.Group {
 		return fmt.Errorf("workload '%s' is already in group '%s'", workloadName, workload.Group)
@@ -354,7 +378,7 @@ func validateGroup(ctx context.Context, workloadsManager workloads.Manager, serv
 		// Validate that the group specified exists
 		exists, err := groupManager.Exists(ctx, runFlags.Group)
 		if err != nil {
-			return fmt.Errorf("failed to check if group exists: %v", err)
+			return fmt.Errorf("failed to check if group exists: %w", err)
 		}
 		if !exists {
 			return fmt.Errorf("group '%s' does not exist", runFlags.Group)
@@ -423,7 +447,7 @@ func runFromConfigFile(ctx context.Context) error {
 	// Create container runtime
 	rt, err := container.NewFactory().Create(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create container runtime: %v", err)
+		return fmt.Errorf("failed to create container runtime: %w", err)
 	}
 
 	// Set the runtime in the config
@@ -432,13 +456,13 @@ func runFromConfigFile(ctx context.Context) error {
 	// Create workload manager
 	workloadManager, err := workloads.NewManagerFromRuntime(rt)
 	if err != nil {
-		return fmt.Errorf("failed to create workload manager: %v", err)
+		return fmt.Errorf("failed to create workload manager: %w", err)
 	}
 
 	// Save the run config to disk in the usual directory (before running)
 	// This ensures that imported configs are persisted like normal runs
 	if err := runConfig.SaveState(ctx); err != nil {
-		return fmt.Errorf("failed to save run configuration: %v", err)
+		return fmt.Errorf("failed to save run configuration: %w", err)
 	}
 
 	// Run the workload based on foreground flag

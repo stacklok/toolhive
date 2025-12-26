@@ -144,7 +144,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 	// Create a SPDY executor
 	exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create SPDY executor: %v", err)
+		return nil, nil, fmt.Errorf("failed to create SPDY executor: %w", err)
 	}
 
 	logger.Infof("Attaching to pod %s workload %s...", podName, workloadName)
@@ -326,7 +326,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 			Force:        true,
 		})
 	if err != nil {
-		return 0, fmt.Errorf("failed to apply statefulset: %v", err)
+		return 0, fmt.Errorf("failed to apply statefulset: %w", err)
 	}
 
 	logger.Infof("Applied statefulset %s", createdStatefulSet.Name)
@@ -335,7 +335,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 		// Create a headless service for SSE transport
 		err := c.createHeadlessService(ctx, containerName, namespace, containerLabels, options)
 		if err != nil {
-			return 0, fmt.Errorf("failed to create headless service: %v", err)
+			return 0, fmt.Errorf("failed to create headless service: %w", err)
 		}
 	}
 
@@ -459,7 +459,7 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 		LabelSelector: labelSelector,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to list pods: %v", err)
+		return nil, fmt.Errorf("failed to list pods: %w", err)
 	}
 
 	// Convert to our ContainerInfo format
@@ -596,7 +596,7 @@ func parsePortString(portStr string) (int, error) {
 	port := strings.Split(portStr, "/")[0]
 	portNum, err := strconv.Atoi(port)
 	if err != nil {
-		return 0, fmt.Errorf("failed to parse port %s: %v", port, err)
+		return 0, fmt.Errorf("failed to parse port %s: %w", port, err)
 	}
 	return portNum, nil
 }
@@ -822,7 +822,7 @@ func (c *Client) createHeadlessService(
 		})
 
 	if err != nil {
-		return fmt.Errorf("failed to apply service: %v", err)
+		return fmt.Errorf("failed to apply service: %w", err)
 	}
 
 	logger.Infof("Created headless service %s for HTTP transport", containerName)
@@ -910,6 +910,11 @@ func applyPodTemplatePatch(
 	// Copy fields from the patched spec to our template
 	if patchedSpec.ObjectMetaApplyConfiguration != nil && len(patchedSpec.Labels) > 0 {
 		baseTemplate = baseTemplate.WithLabels(patchedSpec.Labels)
+	}
+
+	// Copy annotations from the patched spec to our template
+	if patchedSpec.ObjectMetaApplyConfiguration != nil && len(patchedSpec.Annotations) > 0 {
+		baseTemplate = baseTemplate.WithAnnotations(patchedSpec.Annotations)
 	}
 
 	if patchedSpec.Spec != nil {
